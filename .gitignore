@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+/bench/results/
+/bench/lists/
+/ui/node_modules/
+/ui/dist/
+/fuzz/artifacts/
+/fuzz/corpus/
+*.profraw

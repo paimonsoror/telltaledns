@@ -1,0 +1,71 @@
+# 11 — Architecture Decision Records
+
+Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`). An agent must not contradict an accepted ADR without adding a superseding ADR and flagging it to the owner.
+
+## ADR-001 — Language: Rust (Accepted)
+**Context:** Performance and footprint are paramount. Technitium pays for the .NET runtime and GC (150–300 MB RSS, GC tail latency). Pi-hole inherits C memory-safety issues from dnsmasq. Go (AdGuard Home, Blocky, CoreDNS) is productive, but its GC and ~2× memory overhead fight our RSS targets.
+**Decision:** Rust (stable, 2024 edition), tokio, rustls (ring or aws-lc-rs backend), quinn.
+**Consequences:** No GC, static musl binaries, memory safety, and a mature DNS crate ecosystem (hickory). Compile times are slower and the contributor pool is smaller. `unsafe` is confined to `telltale-net`.
+
+## ADR-002 — Custom hot-path wire handling; hickory for the long tail (Accepted)
+**Context:** Full decode/encode per query costs allocations and µs. Cache hits only need the header, question, and TTL offsets.
+**Decision:** `telltale-proto` handles the hot path zero-copy. `hickory-proto` is used for DNSSEC, zone files, and complex record handling.
+**Consequences:** Two code paths, so cross-checking them against each other is part of fuzzing (differential fuzz: both parsers must agree on header, question, and EDNS).
+
+## ADR-003 — FST + regex DFA snapshots, compiled off-path (Accepted)
+**Context:** Pi-hole's SQLite lookups + linear regex scan, and Technitium's object-heavy in-memory zones, both scale poorly with list size.
+**Decision:** Immutable, mmappable FST snapshots (reversed-label keys) + a multi-pattern lazy DFA, built in the background and swapped atomically.
+**Consequences:** ~10× less memory per domain, O(|qname|) lookups, and instant reloads. Snapshots are immutable, so every edit triggers a recompile. To keep manual rule edits instant, a small **overlay** (a HashMap of manual rules) is consulted before the FST and folded into the next compile.
+
+## ADR-004 — Container-first distribution, Kubernetes-first operations (Accepted)
+**Context:** The owner prioritizes Kubernetes and also runs a Raspberry Pi. Native packaging per distro is costly (Pi-hole's installer complexity; Technitium's runtime upgrades).
+**Decision:** Tier-1 artifacts are the multi-arch OCI image + Helm chart, and the same image runs on the Pi with host networking. The static binary + systemd unit is Tier 2.
+**Consequences:** One artifact to test. The Pi needs Docker/Podman (~50 MB extra), which is acceptable on Pi 3+. A Pi Zero can use the native binary.
+
+## ADR-005 — Clustering: fenced primary/replica with optional witness, not Raft-by-default (Accepted)
+**Context:** The reference topology has exactly two nodes (Pi + k8s). Raft needs 3 voters to tolerate one failure. DNS must never depend on consensus.
+**Decision:** A replicated, signed change log from a single primary. Epoch-based fencing. Promotion is manual (2 nodes), witness-assisted, or quorum (≥ 3). Data-plane independence (CLU-004).
+**Consequences:**
+- Config writes pause during a primary outage in manual mode (DNS is unaffected).
+- Orphaned writes are possible and surfaced, never silently merged.
+- Much simpler than embedding openraft, and correct for 2 nodes.
+- Revisit (ADR-0NN) if multi-writer is ever needed.
+
+## ADR-006 — Telemetry: custom columnar segments + SQLite rollups (Accepted)
+**Context:** Pi-hole's SQLite query DB gets slow and large. Technitium depends on external DB apps. DuckDB/ClickHouse are too heavy for a Pi.
+**Decision:** Hourly columnar segments with dictionary encoding, a block index + bloom filters, and zstd, plus SQLite rollups. Parquet export for external analysis.
+**Consequences:** We own a storage format (versioned, fuzzed, with a migration tool). Search is fast via dictionary-first predicate evaluation. External SQL access goes through export or the API, not live SQL.
+
+## ADR-007 — Plugins out-of-process (socket/exec) first, WASM later (Accepted)
+**Context:** Technitium's in-process DLL apps have full trust. The owner needs custom upstreams.
+**Decision:** DNS-wire-over-socket plugins for upstreams in v1, with WASM (wasmtime, feature-gated) in v2.
+**Consequences:** Plugin crashes can't take down DNS, there is a small IPC latency cost (~20–50 µs), and plugins can be written in any language.
+
+## ADR-008 — Auth: local users + OIDC; no LDAP (Accepted)
+**Context:** The owner requires basic auth and OIDC, and explicitly skips LDAP.
+**Decision:** Local Argon2id users (session login + opt-in HTTP Basic for API/scrapers + tokens + TOTP) and OIDC (PKCE) with claim → role mapping, both P0.
+**Consequences:** Smaller attack surface. LDAP users bridge through an OIDC IdP.
+
+## ADR-010 — Agents as first-class clients via built-in MCP (Accepted)
+**Context:** The owner expects agents to manage the platform and run analytics.
+**Decision:**
+- MCP tools are thin wrappers over the REST service layer, so the tool and API schemas come from one source.
+- Agents get dedicated, scoped, read-only-by-default tokens.
+- Writes use plan/apply with optional human approval.
+- Every node exposes `/mcp`, so agents get the single management plane too.
+
+**Consequences:** No separate logic to keep in sync. Agent writes are always previewable and attributable. The plan store adds a small table replicated with config.
+
+## ADR-009 — UI: Svelte + uPlot embedded (Accepted)
+**Decision:** A small SPA compiled to static assets and embedded via `rust-embed`. No Node runtime in the product.
+**Consequences:** One binary. The UI build is part of CI (Node only at build time).
+
+## ADR-011 — Project name and identifiers: TelltaleDNS (Proposed)
+**Context:** "Vigil" was a working name and collides with an existing Rust project (a status-page monitor). The owner chose **TelltaleDNS** on 2026-10-02. A telltale shows what the wind is doing; DNS shows what the network is doing, which matches the observability-first mission.
+**Decision:** The brand is `TelltaleDNS`. Machine identifiers use the short form `telltale`:
+- binary/CLI `telltale`, crate prefix `telltale-*`, env vars `TELLTALE_*`
+- paths `/var/lib/telltale` and `/etc/telltale`, config file `telltale.toml`
+- Helm chart and image `telltale`, metrics prefix `telltale_`, backup archives `.ttbk`
+
+Workspace crates set `publish = false`, so the short prefix can't collide on crates.io.
+**Consequences:** Short, typeable identifiers. If crates are ever published or the registry name is taken, switch the published names to `telltaledns-*` without renaming internal crates. *Owner to confirm:* short `telltale` form vs. `telltaledns` everywhere.

@@ -1,0 +1,79 @@
+# 10 — Roadmap and Task List
+
+Ordering reflects the owner's priorities: **performance → observability → Kubernetes + Pi deployability → clustering/HA → breadth**. Each task lists the requirement IDs it satisfies and objective acceptance criteria (AC). A task is done only when its AC pass in CI. Tick boxes as you go and keep this file current.
+
+## M0 — Foundations (week 1)
+- [x] **T0.1 Workspace scaffold.** Crates per `02 §2`, `#![forbid(unsafe_code)]` where required, rust-toolchain pinned, CI (fmt, clippy, test, cargo-deny), `LICENSE` (Apache-2.0 OR MIT). *AC:* CI is green on an empty skeleton; `cargo deny check` passes. *Done 2026-10-02: local gate green (fmt/clippy/test/deny); GitHub Actions run pending until a remote exists.*
+- [ ] **T0.2 Config skeleton.** `telltale-config` with the TOML schema for listeners/upstreams/cache/telemetry, env overrides, `telltale config check`, JSON Schema output. *(OPS-005)* *AC:* unknown keys error with path; env override test.
+- [ ] **T0.3 Bench harness skeleton.** `bench/` with dnsperf runner, corpora generator, and JSON results. *(NFR-001)* *AC:* `make bench-smoke` runs against a stub server.
+- [ ] **T0.4 Container build.** Multi-arch `FROM scratch` image, non-root, published on main as `edge`. *(OPS-001)* *AC:* image ≤ 15 MiB compressed; runs on arm64 under QEMU in CI.
+
+## M1 — Fast forwarding resolver (weeks 2–4)
+- [ ] **T1.1 telltale-proto hot path.** Header/question/OPT parse, name normalization + hash, response TTL-offset scan, ID/TTL patching, synthesis helpers (NXDOMAIN/NODATA/A/AAAA/EDE). *(DNS-005, DNS-013, DNS-019)* *AC:* proptest round-trips; fuzz target runs for 10 min clean; differential test vs hickory.
+- [ ] **T1.2 UDP workers.** SO_REUSEPORT per worker, recvmmsg/sendmmsg, PKTINFO. *(DNS-001)* *AC:* answers `kdig`; multi-core scaling test shows ≥ 3.2× qps at 4 workers vs 1.
+- [ ] **T1.3 TCP listener.** Pipelining, limits, idle timeouts. *(DNS-001)*
+- [ ] **T1.4 Cache.** Sharded S3-FIFO, wire storage, TTL clamps, negative caching, singleflight. *(DNS-006)* *AC:* zero-alloc test passes (NFR-002); hit ratio on the Zipf corpus ≥ LRU baseline.
+- [ ] **T1.5 Upstreams v1.** UDP/TCP/DoT/DoH(h2) transports with pooling; strategies (failover, round_robin, weighted, fastest, parallel); health + breaker; bootstrap; loop detection. *(UPS-001, 005, 006, 008, 009)* *AC:* chaos test with toxiproxy: one upstream at 100% loss → no client-visible failures; p99 within 1.5× of the healthy baseline.
+- [ ] **T1.6 Presets catalog.** *(UPS-004)* *AC:* every Pi-hole preset present; each entry resolves `example.com` in an online smoke test (nightly, allowed to be flaky-tolerant).
+- [ ] **T1.7 Local records + conditional forwarding/routes.** *(DNS-010, DNS-017)*
+- [ ] **T1.8 Rate limiting, special names, allowed_networks.** *(DNS-014)*
+- [ ] **T1.9 Metrics core.** Thread-local counters + HDR per path; `/metrics`; `/healthz` `/readyz` `/livez`. *(OBS-005 partial, OPS-006)*
+- [ ] **T1.10 Graceful shutdown + hot reload.** *(OPS-007, OPS-009)*
+- **M1 gate:** `cache-hot` ≥ 150k qps on the 4-core reference box; idle RSS ≤ 20 MiB.
+
+## M2 — Filtering engine (weeks 4–6)
+- [ ] **T2.1 List fetcher** (ETag, caps, retries, stored sources). *(FLT-004)*
+- [ ] **T2.2 Parsers** for all formats in `05 §2`, with golden fixtures. *(FLT-001)*
+- [ ] **T2.3 Compiler:** external-sort merge → FST (subtree/exact), ListSetTable, regex meta set, modifier rules, `$badfilter`. *(FLT-002, FLT-003)* *AC:* 1.5M-domain fixture ≤ 12 B/domain; compile ≤ 8 s on Pi 4.
+- [ ] **T2.4 Matcher + precedence + overlay for manual rules.** *(FLT-003, ADR-003)* *AC:* precedence table tests; lookup p99 ≤ 1 µs (no regex) on x86.
+- [ ] **T2.5 Groups/clients:** identification chain incl. neighbor table, DoH path / SNI client IDs, EDNS MAC. *(FLT-005, FLT-006)*
+- [ ] **T2.6 Block modes + EDE + CNAME inspection + pause.** *(FLT-007, FLT-008, FLT-009)*
+- [ ] **T2.7 Atomic swap under load.** *AC:* recompile during the `realistic-home` run → p99 regression ≤ 10%, zero errors.
+- [ ] **T2.8 Explain engine.** *(FLT-013)*
+- **M2 gate:** `blocked` corpus ≥ 150k qps; RSS with the bench lists ≤ 64 MiB.
+
+## M3 — Observability core + API + auth (weeks 6–9)
+- [ ] **T3.1 QueryEvent rings + aggregator + rollups + top-K + HDR.** *(OBS-001, 002, 004)* *AC:* drop counter is 0 at 100k qps sustained on x86 with default ring sizes.
+- [ ] **T3.2 Segment store:** writer, block index, bloom, dictionary-first search, retention, privacy levels. *(OBS-003)* *AC:* 50M-row synthetic dataset search ≤ 2 s on Pi 4; format fuzzed.
+- [ ] **T3.3 Full Prometheus metric set + Grafana dashboard.** *(OBS-005, OBS-011)*
+- [ ] **T3.4 API skeleton:** axum, OpenAPI generation, problem+json, pagination, scope param (local-only for now). *(API-001, API-002)*
+- [ ] **T3.5 Auth:** local users + Argon2id + sessions + HTTP Basic (opt-in) + tokens + TOTP + RBAC; setup-token first run. *(API-003)*
+- [ ] **T3.6 OIDC:** PKCE, discovery, claim → role mapping, JIT, break-glass local admin. *(API-004)* *AC:* integration tests against Keycloak and Authentik containers.
+- [ ] **T3.7 Live tail (SSE/WS).** *(OBS-008)*
+- [ ] **T3.8 Audit log (hash-chained).** *(API-006)*
+- [ ] **T3.9 UI MVP:** login (local + OIDC), dashboard, query log + explain, groups, lists, upstreams, local DNS, settings. *(API-005)* *AC:* bundle ≤ 400 KiB gz; Playwright suite green.
+
+## M4 — Kubernetes + Pi deployment (weeks 8–10, overlaps M3)
+- [ ] **T4.1 Helm chart** (allInOne, scaled, daemonSet shapes; Services with ETP=Local; PDB; HPA; probes; NetworkPolicy; ServiceMonitor; cert-manager; existingSecret everywhere). *(OPS-002, OPS-003)* *AC:* `ct install` on kind + k3d arm64; DNS answers via the LB; client IP preserved in the query log in an e2e test.
+- [ ] **T4.2 Masked-client-IP detector + NOTES warning.** *(OPS-003)*
+- [ ] **T4.3 Pi Compose bundle + docs; native binary + systemd + install.sh + self-update.** *(OPS-004)*
+- [ ] **T4.4 PROXY protocol v2 on TCP/DoT/DoH.** *(DNS-020)*
+- [ ] **T4.5 DoT + DoH (h2) listeners with cert hot-reload.** *(DNS-002, DNS-003)*
+
+## M5 — Clustering and HA (weeks 10–14)
+- [ ] **T5.1 PKI + join tokens + mTLS channel** (protobuf, persistent streams, reconnect). *(CLU-001)*
+- [ ] **T5.2 Change log + signed snapshots + content-addressed blob sync.** *(CLU-003)* *AC:* a list change ships only the changed blobs; propagation ≤ 5 s p95 across simulated WAN (50 ms RTT).
+- [ ] **T5.3 Data-plane independence + snapshot persistence + cold start from disk.** *(CLU-004)* *AC:* primary killed → replicas keep 100% answer rate; replica restart without primary → serving in ≤ 500 ms.
+- [ ] **T5.4 Epochs, leases, manual promote, witness + quorum election, fencing, conflicts UI.** *(CLU-005)* *AC:* `telltale-sim` 10k randomized partition schedules → never two writers in one epoch; orphaned writes always surfaced.
+- [ ] **T5.5 Node-local overrides.** *(CLU-006)*
+- [ ] **T5.6 Federated reads** (stats merge, top-K merge, HDR merge, k-way query-log merge, partial results). *(CLU-002, OBS-012)*
+- [ ] **T5.7 Write forwarding to primary with identity propagation.** *(CLU-002)*
+- [ ] **T5.8 Telemetry ship mode + store-and-forward.** *(CLU-007)*
+- [ ] **T5.9 Cluster health page, metrics, alerts.** *(CLU-008)*
+- [ ] **T5.10 Ephemeral k8s members + site grouping; Helm values for hybrid.** *(CLU-009)* *AC:* e2e: Pi-like container (outside kind) + kind cluster form one cluster; UI on either shows both; promote works both ways.
+- [ ] **T5.11 Version compatibility N/N-1 + rolling upgrade test.** *(CLU-010)*
+
+## M6 — Protocol depth + migration (weeks 13–16)
+- [ ] **T6.1 DNSSEC validation + NTAs + EDE.** *(DNS-011)*
+- [ ] **T6.2 Serve-stale, prefetch, cache persistence.** *(DNS-007, 008, 009)*
+- [ ] **T6.3 Pi-hole importer (v5 + v6 Teleporter).** *(API-007)*
+- [ ] **T6.4 Backup/restore archive.** *(API-007)*
+- [ ] **T6.5 Agent-ready API hardening:** LLM-grade OpenAPI descriptions, dry-run + impact estimates on all mutations, idempotency keys, agent tokens/scopes, audit attribution, kill switch. *(AGT-001..005, AGT-009)* *AC:* every mutation has a dry-run test; OpenAPI lint (spectral) passes the description rules.
+- [ ] **T6.6 MCP server (read-only tools) at `/mcp` + `telltale mcp --stdio`.** *(AGT-006, AGT-008 bearer part)* *AC:* MCP conformance test green; scope/privacy authorization tests; a scripted agent completes the "why is the TV slow" golden transcript.
+- **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
+
+## M7 — v1.x (post-1.0, priority order)
+MCP write tools with plan/apply + approval inbox, OAuth via OIDC, resources/prompts (AGT-007, 008, 010, 011) → DoQ + DoH3 listeners and upstreams (DNS-004, UPS-002) → schedules, safe search, services (FLT-010..012) → analytics suite + alerts (OBS-009, 010) → recursive resolver (DNS-012, UPS-012) → socket/exec upstream plugins + proxies (UPS-010, 011) → OTLP + dnstap + sinks (OBS-006, 007) → Technitium importer → DHCP (OPS-008) → ECS/DNS64/local zones/rewrites/IP filter (DNS-015, 016, 018, FLT-014, 015) → DNSCrypt (UPS-003) → CLI (API-008).
+
+## M8 — v2 (stretch)
+Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).
