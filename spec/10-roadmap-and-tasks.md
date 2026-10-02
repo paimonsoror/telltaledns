@@ -4,7 +4,7 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
 
 ## M0 — Foundations (week 1)
 - [x] **T0.1 Workspace scaffold.** Crates per `02 §2`, `#![forbid(unsafe_code)]` where required, rust-toolchain pinned, CI (fmt, clippy, test, cargo-deny), `LICENSE` (Apache-2.0 OR MIT). *AC:* CI is green on an empty skeleton; `cargo deny check` passes. *Done 2026-10-02: local gate green (fmt/clippy/test/deny); GitHub Actions run pending until a remote exists.*
-- [ ] **T0.2 Config skeleton.** `telltale-config` with the TOML schema for listeners/upstreams/cache/telemetry, env overrides, `telltale config check`, JSON Schema output. *(OPS-005)* *AC:* unknown keys error with path; env override test.
+- [x] **T0.2 Config skeleton.** `telltale-config` with the TOML schema for listeners/upstreams/cache/telemetry, env overrides, `telltale config check`, JSON Schema output. *(OPS-005)* *AC:* unknown keys error with path; env override test. *Done 2026-10-02. Deferred: node.toml key allow-list (T5.5/CLU-006), GitOps mode (OPS-005, with API in M3), CLI-flag layer (with `telltale run`), config migrations (none needed at v1).*
 - [ ] **T0.3 Bench harness skeleton.** `bench/` with dnsperf runner, corpora generator, and JSON results. *(NFR-001)* *AC:* `make bench-smoke` runs against a stub server.
 - [ ] **T0.4 Container build.** Multi-arch `FROM scratch` image, non-root, published on main as `edge`. *(OPS-001)* *AC:* image ≤ 15 MiB compressed; runs on arm64 under QEMU in CI.
 

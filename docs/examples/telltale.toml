@@ -1,0 +1,73 @@
+# Example telltale.toml — every key is optional; anything omitted uses the built-in default.
+# Validate with:  telltale config check telltale.toml
+# Editor completion: telltale config schema > telltale.schema.json
+config_version = 1
+
+[node]
+role = "all"            # all | resolver | controller
+workers = 0             # 0 = one per available core (respects cgroup CPU limits)
+data_dir = "/var/lib/telltale"
+
+[cluster]
+name = "home"
+site = "home-pi"
+
+# Setting any [[listen]] replaces the default UDP+TCP :53 listeners on IPv4 and IPv6.
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:53"
+
+[[listen]]
+proto = "tcp"
+addr = "0.0.0.0:53"
+
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+path = "/dns-query"
+tls = { cert = "/certs/tls.crt", key = "/certs/tls.key" }
+
+[[upstream]]
+name = "cf-dot"
+url = "tls://1.1.1.1:853"
+tls_server_name = "cloudflare-dns.com"
+
+[[upstream]]
+name = "quad9-doh"
+url = "https://dns.quad9.net/dns-query"
+bootstrap = ["9.9.9.9", "149.112.112.112"]
+
+[[upstream]]
+name = "home-ad"
+url = "udp://192.168.1.10:53"
+
+[[upstream_group]]
+name = "default"
+members = ["cf-dot", "quad9-doh"]
+strategy = "fastest"
+
+[[upstream_group]]
+name = "ad-only"
+members = ["home-ad"]
+
+# Conditional forwarding: the AD domain and its reverse zone go to the domain controller.
+[[route]]
+match_suffix = ["corp.example.com", "168.192.in-addr.arpa"]
+upstream_group = "ad-only"
+dnssec_nta = true
+
+[cache]
+max_bytes = "32MiB"
+max_ttl = 86400
+serve_stale = true
+
+[telemetry]
+mode = "local"          # "ship" sends events to the controller (good for SD-card Pis)
+
+[telemetry.qlog]
+retention_days = 30
+retention_bytes = "2GiB"
+privacy_level = 0
+
+[telemetry.metrics]
+listen = "0.0.0.0:9153"
