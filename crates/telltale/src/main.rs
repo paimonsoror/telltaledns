@@ -5,22 +5,16 @@
 
 mod http;
 mod pipeline;
+mod server;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use telltale_cache::{Cache, CachePolicy};
-use telltale_config::{ListenProto, Loader};
-use telltale_net::{TcpConfig, TcpServer, UdpConfig, UdpListener};
+use telltale_config::Loader;
 use telltale_policy::LocalData;
-use telltale_upstream::Router;
-use tracing::{error, info, warn};
-
-use crate::pipeline::{Handler, Pipeline, Policy, Settings};
+use tracing::info;
 
 /// Default config file location (`spec/08` §3.4).
 const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
@@ -143,32 +137,13 @@ fn config_files(cli: Vec<PathBuf>) -> Vec<PathBuf> {
 fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     init_logging();
     let files = config_files(config);
-    let loaded = match files
-        .iter()
-        .fold(Loader::new(), Loader::file)
-        .process_env()
-        .load()
-    {
-        Ok(l) => l,
-        Err(errors) => {
-            for e in &errors {
-                error!("config: {e}");
-            }
-            return Ok(ExitCode::FAILURE);
-        }
-    };
-    for w in &loaded.warnings {
-        warn!("config: {w}");
-    }
-    let cfg = loaded.config;
-    let workers = match cfg.node.workers {
-        0 => telltale_net::default_workers(),
-        n => usize::from(n),
+    let Some(cfg) = server::load(&files) else {
+        return Ok(ExitCode::FAILURE);
     };
     info!(
         version = env!("CARGO_PKG_VERSION"),
         role = ?cfg.node.role,
-        workers,
+        workers = server::workers(&cfg),
         config = ?files,
         "starting TelltaleDNS"
     );
@@ -178,150 +153,9 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         .enable_all()
         .thread_name("telltale-rt")
         .build()?;
-    rt.block_on(serve(&cfg, workers))?;
+    rt.block_on(server::serve(files, cfg))?;
     info!("stopped");
     Ok(ExitCode::SUCCESS)
-}
-
-fn cache_policy(c: &telltale_config::CacheConfig, workers: usize) -> CachePolicy {
-    CachePolicy {
-        max_bytes: usize::try_from(c.max_bytes.bytes()).unwrap_or(usize::MAX),
-        max_entries: c.max_entries as usize,
-        min_ttl: c.min_ttl,
-        max_ttl: c.max_ttl,
-        negative_ttl_max: c.negative_ttl_max,
-        servfail_ttl: c.servfail_ttl,
-        serve_stale: c.serve_stale,
-        stale_max_age: c.stale_max_age,
-        stale_answer_ttl: c.stale_answer_ttl,
-        prefetch: c.prefetch,
-        prefetch_threshold_pct: c.prefetch_threshold_pct,
-        prefetch_min_hits: c.prefetch_min_hits,
-        // spec/03 §4: power of two >= 4 × workers, at least 64.
-        shards: (workers * 4).max(64),
-    }
-}
-
-async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> {
-    // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
-    telltale_upstream::set_node_tag(rand::random());
-    let router = match Router::from_config(cfg) {
-        Ok(r) => Arc::new(r),
-        Err(errors) => {
-            for e in &errors {
-                error!("upstreams: {e}");
-            }
-            return Err(io::Error::other("invalid upstream configuration"));
-        }
-    };
-    for up in router.upstreams() {
-        info!(name = %up.name, endpoint = %up.endpoint, "upstream");
-    }
-    let health = tokio::spawn(telltale_upstream::active_health_checks(
-        router.upstreams().to_vec(),
-        telltale_upstream::HEALTH_CHECK_INTERVAL,
-    ));
-    let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
-    let settings = Settings {
-        stale_answer_timeout: Duration::from_millis(u64::from(
-            cfg.cache.stale_answer_client_timeout_ms,
-        )),
-        ..Settings::default()
-    };
-    let (local, report) = LocalData::from_config(cfg);
-    for w in &report.warnings {
-        warn!("local records: {w}");
-    }
-    if !report.errors.is_empty() {
-        for e in &report.errors {
-            error!("local records: {e}");
-        }
-        return Err(io::Error::other("invalid local records"));
-    }
-    if !local.is_empty() {
-        info!(records = local.len(), "local records loaded");
-    }
-    let local_records = local.len();
-    let policy = Policy::from_config(cfg, local);
-    let pipeline = Pipeline::new(settings, Arc::clone(&cache), Arc::clone(&router), policy);
-    let metrics = Arc::clone(&pipeline.metrics);
-    let handler = Arc::new(Handler(pipeline));
-    let rt = tokio::runtime::Handle::current();
-    let mut udp = Vec::new();
-    let mut tcp = Vec::new();
-    for l in &cfg.listen {
-        let ctx = |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
-        match l.proto {
-            ListenProto::Udp => {
-                let listener = UdpListener::spawn(&UdpConfig::new(l.addr, workers), &handler, &rt)
-                    .map_err(ctx)?;
-                info!(addr = %listener.local_addr(), workers, "listening (udp)");
-                udp.push(listener);
-            }
-            ListenProto::Tcp => {
-                let server =
-                    TcpServer::bind(TcpConfig::new(l.addr), Arc::clone(&handler)).map_err(ctx)?;
-                info!(addr = %server.local_addr(), "listening (tcp)");
-                tcp.push(server);
-            }
-            other => {
-                warn!(addr = %l.addr, proto = ?other, "listener type not implemented yet; skipping");
-            }
-        }
-    }
-
-    // REQ: OBS-005, OPS-006 — metrics and health probes.
-    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let sources = http::Sources {
-        metrics,
-        cache,
-        router: Arc::clone(&router),
-        udp: udp.iter().flat_map(|l| l.stats().iter().cloned()).collect(),
-        tcp: tcp.iter().map(TcpServer::stats_handle).collect(),
-        local_records,
-        ready: Arc::clone(&ready),
-        started: std::time::Instant::now(),
-        allowed: cfg.access.allowed_networks.clone(),
-    };
-    let stop_http = start_http(cfg, sources).await?;
-    // Every listener is bound: ready for traffic (OPS-006).
-    ready.store(true, std::sync::atomic::Ordering::Release);
-
-    // REQ: OPS-007 (partial) — stop on SIGTERM/SIGINT. Full drain + reload arrive with T1.10.
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! {
-        _ = term.recv() => info!(signal = "SIGTERM", "shutting down"),
-        _ = tokio::signal::ctrl_c() => info!(signal = "SIGINT", "shutting down"),
-    }
-    // Not ready first, so load balancers stop sending new traffic while we drain.
-    ready.store(false, std::sync::atomic::Ordering::Release);
-    let _ = stop_http.send(());
-    for s in tcp {
-        s.shutdown().await;
-    }
-    for l in udp {
-        l.shutdown();
-    }
-    health.abort();
-    Ok(())
-}
-
-/// Starts the metrics/health listener if enabled; send on the returned channel to stop it.
-async fn start_http(
-    cfg: &telltale_config::Config,
-    sources: http::Sources,
-) -> io::Result<tokio::sync::oneshot::Sender<()>> {
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    if cfg.telemetry.metrics.enabled {
-        let addr = cfg.telemetry.metrics.listen;
-        let bound = http::serve(addr, Arc::new(sources), async {
-            let _ = stopped.await;
-        })
-        .await
-        .map_err(|e| io::Error::new(e.kind(), format!("metrics {addr}: {e}")))?;
-        info!(addr = %bound, "serving /metrics, /healthz, /readyz, /livez");
-    }
-    Ok(stop)
 }
 
 fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {

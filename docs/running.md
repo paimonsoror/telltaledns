@@ -178,8 +178,21 @@ Main metrics:
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory.
 
+## Reload without restarting
+Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):
+- The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.
+- Applied immediately, with no dropped queries: upstreams, groups, routes, local records and hosts files, `[access]`, `[ratelimit]`, `[special]`, and `[[listen]]` (new listeners are bound before removed ones are closed).
+- Applied at the next restart (a warning names them): `[cache]`, `[telemetry]`, `[node]`. The cache is kept across reloads, so warm answers aren't lost.
+- Upstream health starts fresh after a reload and is re-learned within a few queries.
+
 ## Stop
-`SIGTERM` or `SIGINT` (Ctrl-C) stops the listeners and exits. Full connection draining and hot reload come later (OPS-007, OPS-009).
+`SIGTERM` or `SIGINT` (Ctrl-C) shuts down gracefully:
+1. `/readyz` turns 503, so load balancers stop sending new queries.
+2. TCP listeners stop accepting and finish the queries already received.
+3. Upstream lookups still in flight get up to 3 seconds to complete and reply.
+4. UDP workers stop.
+
+In Kubernetes, pair this with a short `preStop` sleep so endpoints are removed before the drain begins (the Helm chart will set this).
 
 ## Logging
 Logs go to stderr. Set the level with `TELLTALE_LOG` (`error`, `warn`, `info` (default), `debug`, `trace`).

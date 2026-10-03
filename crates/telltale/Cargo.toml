@@ -16,6 +16,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }
 clap = { version = "4.6.7", features = ["derive"] }
 rand = "0.10.3"

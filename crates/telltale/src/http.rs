@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use axum::Router as HttpRouter;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{StatusCode, header};
@@ -27,10 +28,11 @@ use telltale_upstream::health::Breaker;
 pub(crate) struct Sources {
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) cache: Arc<Cache>,
-    pub(crate) router: Arc<Router>,
-    pub(crate) udp: Vec<Arc<WorkerStats>>,
-    pub(crate) tcp: Vec<Arc<TcpStats>>,
-    pub(crate) local_records: usize,
+    /// Current routing/policy (reloadable) comes from the pipeline.
+    pub(crate) pipeline: Arc<crate::pipeline::Pipeline>,
+    /// Listener counters; replaced when a reload adds or removes listeners.
+    pub(crate) udp: ArcSwap<Vec<Arc<WorkerStats>>>,
+    pub(crate) tcp: ArcSwap<Vec<Arc<TcpStats>>>,
     /// Set once every listener is bound; cleared at the start of shutdown.
     pub(crate) ready: Arc<AtomicBool>,
     pub(crate) started: Instant,
@@ -105,10 +107,11 @@ pub(crate) fn render(src: &Sources) -> String {
     render_process(&mut w, src);
     w.queries(&src.metrics.snapshot());
     render_cache(&mut w, &src.cache);
-    render_upstreams(&mut w, &src.router);
+    let state = src.pipeline.current();
+    render_upstreams(&mut w, &state.router);
     render_listeners(&mut w, src);
     w.family("telltale_local_records", "gauge", "Local records loaded.")
-        .sample("telltale_local_records", &[], src.local_records);
+        .sample("telltale_local_records", &[], state.policy.local.len());
     w.finish()
 }
 
@@ -253,7 +256,8 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
 
 fn render_listeners(w: &mut PromWriter, src: &Sources) {
     use std::sync::atomic::Ordering::Relaxed;
-    let sum = |f: fn(&WorkerStats) -> u64| src.udp.iter().map(|s| f(s)).sum::<u64>();
+    let udp = src.udp.load();
+    let sum = |f: fn(&WorkerStats) -> u64| udp.iter().map(|s| f(s)).sum::<u64>();
     for (name, help, v) in [
         (
             "telltale_udp_received_total",
@@ -283,7 +287,8 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
-    let tsum = |f: fn(&TcpStats) -> u64| src.tcp.iter().map(|s| f(s)).sum::<u64>();
+    let tcp = src.tcp.load();
+    let tsum = |f: fn(&TcpStats) -> u64| tcp.iter().map(|s| f(s)).sum::<u64>();
     for (name, help, v) in [
         (
             "telltale_tcp_connections_total",
@@ -324,13 +329,18 @@ mod tests {
             1,
             Duration::from_micros(80),
         );
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
         let src = Sources {
             metrics,
-            cache: Arc::new(Cache::new(CachePolicy::default())),
-            router: Arc::new(Router::default()),
-            udp: Vec::new(),
-            tcp: Vec::new(),
-            local_records: 3,
+            cache: Arc::clone(&cache),
+            pipeline: crate::pipeline::Pipeline::new(
+                crate::pipeline::Settings::default(),
+                cache,
+                Arc::new(Router::default()),
+                crate::pipeline::Policy::default(),
+            ),
+            udp: ArcSwap::from_pointee(Vec::new()),
+            tcp: ArcSwap::from_pointee(Vec::new()),
             ready: Arc::new(AtomicBool::new(true)),
             started: Instant::now(),
             allowed: Vec::new(),
@@ -351,6 +361,6 @@ mod tests {
             );
         }
         assert!(text.contains("telltale_queries_total{proto=\"udp\",status=\"cached\"} 1"));
-        assert!(text.contains("telltale_local_records 3"));
+        assert!(text.contains("telltale_local_records 0"));
     }
 }

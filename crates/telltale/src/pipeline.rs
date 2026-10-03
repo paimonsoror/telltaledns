@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
 use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
@@ -83,14 +84,20 @@ impl Policy {
     }
 }
 
+/// The part of the pipeline that a config reload replaces (OPS-009).
+#[derive(Debug)]
+pub(crate) struct Dynamic {
+    pub(crate) router: Arc<Router>,
+    pub(crate) policy: Policy,
+}
+
 /// Shared state for every query.
 #[derive(Debug)]
 pub(crate) struct Pipeline {
     settings: Settings,
     cache: Arc<Cache>,
-    router: Arc<Router>,
-    /// Access, rate limits, special names, local data (`spec/03` §3 steps 2–5).
-    policy: Policy,
+    /// Routing and policy, swapped atomically on reload (OPS-009); readers never lock.
+    state: ArcSwap<Dynamic>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
@@ -116,12 +123,32 @@ impl Pipeline {
             metrics: Arc::new(Metrics::new(telltale_net::default_workers() * 2 + 4)),
             settings,
             cache,
-            router,
-            policy,
+            state: ArcSwap::from_pointee(Dynamic { router, policy }),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Swaps in new routing/policy (OPS-009). In-flight queries finish with the state they
+    /// started with; new queries see the new state immediately.
+    pub(crate) fn reload(&self, router: Arc<Router>, policy: Policy) {
+        self.state.store(Arc::new(Dynamic { router, policy }));
+    }
+
+    /// The current routing/policy state.
+    pub(crate) fn current(&self) -> Arc<Dynamic> {
+        self.state.load_full()
+    }
+
+    /// Waits until no upstream resolution is in flight, or `timeout` passes (OPS-007 drain).
+    /// Returns true if everything finished.
+    pub(crate) async fn drain(&self, timeout: Duration) -> bool {
+        let max = u32::try_from(self.settings.max_inflight.max(1)).unwrap_or(u32::MAX);
+        matches!(
+            tokio::time::timeout(timeout, self.inflight.acquire_many(max)).await,
+            Ok(Ok(_))
+        )
     }
 
     fn key(&self, q: &Query<'_>, view: u16) -> CacheKey {
@@ -148,6 +175,7 @@ impl Pipeline {
         start: Instant,
         oc: &mut Outcome,
     ) -> Response {
+        let st = self.state.load();
         oc.status = Status::Malformed;
         let q = match parse_query(req) {
             Ok(q) => q,
@@ -168,7 +196,7 @@ impl Pipeline {
         };
         // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
         if let Some(len) =
-            self.policy
+            st.policy
                 .local
                 .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
         {
@@ -188,10 +216,11 @@ impl Pipeline {
         start: Instant,
         oc: &mut Outcome,
     ) -> Result<Option<Special>, Response> {
+        let st = self.state.load();
         let q = *q;
         oc.status = Status::Refused;
         // 08 §6 — never an open resolver: refuse clients outside allowed_networks.
-        if !telltale_policy::is_allowed(&self.policy.allowed, meta.peer.ip()) {
+        if !telltale_policy::is_allowed(&st.policy.allowed, meta.peer.ip()) {
             return Err(self.simple(
                 &q,
                 out,
@@ -201,11 +230,11 @@ impl Pipeline {
             ));
         }
         // REQ: DNS-014 — per-client rate limit.
-        if let Some(rl) = &self.policy.limiter
+        if let Some(rl) = &st.policy.limiter
             && !rl.check(meta.peer.ip(), start)
         {
             oc.status = Status::RateLimited;
-            return Err(match self.policy.limit_action {
+            return Err(match st.policy.limit_action {
                 RateLimitAction::Drop => Response::Drop,
                 RateLimitAction::Refused => self.simple(
                     &q,
@@ -245,7 +274,7 @@ impl Pipeline {
             return Err(ready(len.map(|l| self.finish(&q, out, l, meta.transport))));
         }
         // DNS-019 / RFC 6761 — special names (ADR-014).
-        let special = telltale_policy::classify(&q, &self.policy.special);
+        let special = telltale_policy::classify(&q, &st.policy.special);
         match special {
             Some(Special::Refused) => Err(self.simple(&q, out, rcode::REFUSED, None, meta)),
             Some(Special::Nxdomain) => Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta)),
@@ -266,9 +295,10 @@ impl Pipeline {
         start: Instant,
         oc: &mut Outcome,
     ) -> Response {
+        let st = self.state.load();
         let q = *q;
         let question = Question::from_query(&q);
-        let selection = self.router.select(&question, &[]);
+        let selection = st.router.select(&question, &[]);
         // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303).
         if special == Some(Special::PrivatePtr) && !selection.is_some_and(|s| s.routed) {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
@@ -467,12 +497,15 @@ impl Pipeline {
     }
 
     async fn resolve_upstream(&self, q: &Query<'_>, key: CacheKey, view: u16) -> Option<Arc<[u8]>> {
+        // A full Arc (not a borrowed guard): it's held across the upstream round trip.
+        let st = self.state.load_full();
         let question = Question::from_query(q);
-        let group = self
-            .router
-            .select(&question, &[])
-            .filter(|s| s.view == view)?
-            .group;
+        let group = Arc::clone(
+            st.router
+                .select(&question, &[])
+                .filter(|s| s.view == view)?
+                .group,
+        );
         let answer = group.resolve(question, self.settings.budget).await.ok()?;
         let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
         Some(answer.bytes.into())
@@ -803,6 +836,52 @@ mod policy_tests {
         assert_eq!(
             ask(&p, peer, "4.3.168.192.in-addr.arpa", rtype::PTR, 1),
             Some((rcode::NXDOMAIN, 0))
+        );
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use telltale_cache::CachePolicy;
+    use telltale_proto::{NameBuf, build_query, rtype, summarize};
+
+    use super::*;
+
+    #[test]
+    fn ops_009_reload_swaps_policy_for_new_queries() {
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
+        let p = Pipeline::new(
+            Settings::default(),
+            cache,
+            Arc::new(Router::default()),
+            Policy::open(),
+        );
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation("nas.home.arpa").unwrap();
+        let len = build_query(&mut buf, 1, &n, rtype::A, 1, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.2:5353".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+        };
+        let answer = |p: &Arc<Pipeline>| {
+            let mut out = [0u8; 1024];
+            match Handler(Arc::clone(p)).handle(&buf[..len], &meta, &mut out) {
+                Response::Ready(l) => summarize(&out[..l]).map(|s| (s.rcode, s.answers)).ok(),
+                _ => None,
+            }
+        };
+        // No upstreams, no local record: REFUSED.
+        assert_eq!(answer(&p), Some((rcode::REFUSED, 0)));
+        let mut local = LocalData::default();
+        local.add("nas.home.arpa", "A", "192.168.1.10", 60).unwrap();
+        let mut policy = Policy::open();
+        policy.local = Arc::new(local);
+        p.reload(Arc::new(Router::default()), policy);
+        assert_eq!(
+            answer(&p),
+            Some((rcode::NOERROR, 1)),
+            "new local record answered after reload"
         );
     }
 }
