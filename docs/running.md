@@ -299,6 +299,31 @@ match = ["10.0.5.0/24"]                  # groups default to ["default"]
 - `[[route]] match_group = ["kids"]` sends a group's queries to its own upstreams (for example, a family-filtering resolver).
 - Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
 
+## Why was it blocked? (explain)
+`telltale explain` shows what happens to a name for a given device, and why. It lists:
+- who the device is recognized as, and its groups;
+- every rule in every list that matches, with its file line, in precedence order;
+- which rule decides;
+- where the query would be forwarded.
+
+```sh
+telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
+# ad.doubleclick.net A from 192.168.1.50
+# client   tablet (identified by ip); groups: kids
+# outcome  ALLOWED: allowed by list family-allow; resolved normally
+# rules    snapshot 1, in precedence order (* decides, - list not used by this client)
+#   * allow  family-allow         doubleclick.net (and subdomains)
+#              family-allow:1  @@||doubleclick.net^
+#   - block  stevenblack          ad.doubleclick.net (and subdomains)
+#              stevenblack:7102  0.0.0.0 ad.doubleclick.net
+# route    upstream group default (default)
+```
+- Options: `-t AAAA` for another query type, `--mac aa:bb:cc:dd:ee:ff` or `--client-id` to explain for a device recognized that way, and `--json` for the same data as JSON (the format the API's `GET /api/v1/explain` will return).
+- `-` marks rules from lists the device's groups don't use, so you can see what another group would get. `!` after `allow`/`block` marks `$important` rules.
+- It reads the config and the data directory (the newest compiled snapshot and the stored lists), so it works whether or not the server is running. A server that hasn't loaded the newest snapshot yet may still be using the previous one.
+- Line numbers come from the stored copy of each list. If a list was downloaded again after the snapshot was compiled, the output says so.
+- Explain covers the query name only. CNAME targets in an upstream answer are checked too when the server answers (see [Blocking](#blocking)); explain a target name to see its rules.
+
 ## Who can query, and how often
 ```toml
 [access]

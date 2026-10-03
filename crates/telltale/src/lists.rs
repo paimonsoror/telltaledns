@@ -564,6 +564,23 @@ pub(crate) fn compile_now(
     Ok(report.regex_errors.is_empty())
 }
 
+/// The newest compiled snapshot as a matcher (FST walk: no index build for a one-off
+/// lookup), for `telltale explain`. `None` if nothing has been compiled yet.
+pub(crate) fn newest_matcher(cfg: &Config) -> Result<Option<Matcher>, String> {
+    let dir = Path::new(cfg.node.data_dir.as_str()).join("snapshots");
+    let Some((_, newest)) = snapshot_versions(&dir).pop() else {
+        return Ok(None);
+    };
+    let snap = Snapshot::open(&newest).map_err(|e| format!("{}: {e}", newest.display()))?;
+    Matcher::with_lookup(Some(Arc::new(snap)), Overlay::default(), Lookup::Walk).map(Some)
+}
+
+/// Reads stored list sources (for explain's line lookups).
+pub(crate) fn source_reader(cfg: &Config) -> impl Fn(&str) -> Option<Vec<u8>> + use<> {
+    let store = Store::open(Path::new(cfg.node.data_dir.as_str())).ok();
+    move |name| store.as_ref()?.read_source(name).ok()
+}
+
 /// `telltale lists fetch`: refresh every enabled list once and print the result.
 pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool, String> {
     let fetcher = build_fetcher(cfg)?;

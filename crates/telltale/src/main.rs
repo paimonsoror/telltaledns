@@ -3,6 +3,7 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+mod explain;
 mod http;
 mod lists;
 mod pipeline;
@@ -56,6 +57,32 @@ enum Command {
     Lists {
         #[command(subcommand)]
         command: ListsCommand,
+    },
+    /// Explain how a query would be handled for a client: who the client is, its groups,
+    /// every matching rule with its list line, the decision, and the upstream route.
+    /// Reads the config and data directory; the server doesn't need to be running.
+    // REQ: FLT-013
+    Explain {
+        /// The name to look up, e.g. ads.example.com.
+        name: String,
+        /// The client's IP address.
+        #[arg(long, default_value = "127.0.0.1")]
+        client: std::net::IpAddr,
+        /// Query type.
+        #[arg(short = 't', long, default_value = "A")]
+        qtype: String,
+        /// The client's MAC address (default: from the neighbor table).
+        #[arg(long)]
+        mac: Option<String>,
+        /// A DoH/DoT client ID.
+        #[arg(long = "client-id")]
+        client_id: Option<String>,
+        /// Print JSON (the API's response format) instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
     },
 }
 
@@ -147,6 +174,23 @@ fn main() -> ExitCode {
         Command::Config { command } => run_config(command),
         Command::Presets { command } => run_presets(command),
         Command::Lists { command } => run_lists(command),
+        Command::Explain {
+            name,
+            client,
+            qtype,
+            mac,
+            client_id,
+            json,
+            config,
+        } => Ok(run_explain(
+            &name,
+            client,
+            &qtype,
+            mac.as_deref(),
+            client_id.as_deref(),
+            json,
+            config,
+        )),
     };
     match result {
         Ok(code) => code,
@@ -255,6 +299,46 @@ fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {
                     Ok(ExitCode::FAILURE)
                 }
             }
+        }
+    }
+}
+
+fn run_explain(
+    name: &str,
+    client: std::net::IpAddr,
+    qtype: &str,
+    mac: Option<&str>,
+    client_id: Option<&str>,
+    json: bool,
+    config: Vec<PathBuf>,
+) -> ExitCode {
+    let Some(qtype_code) = telltale_proto::rtype::from_name(qtype) else {
+        eprintln!("error: unknown query type `{qtype}`");
+        return ExitCode::FAILURE;
+    };
+    let mac = match mac.map(telltale_config::MatchKey::parse) {
+        None => None,
+        Some(Ok(telltale_config::MatchKey::Mac(m))) => Some(m),
+        Some(_) => {
+            eprintln!("error: --mac takes a MAC address like aa:bb:cc:dd:ee:ff");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(cfg) = server::load(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let req = explain::Request {
+        name,
+        qtype: qtype_code,
+        client,
+        mac,
+        client_id,
+    };
+    match explain::run_cli(&cfg, &req, qtype, json, &mut io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
     }
 }

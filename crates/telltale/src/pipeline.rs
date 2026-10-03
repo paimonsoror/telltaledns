@@ -131,7 +131,7 @@ fn retire<T: Send + 'static>(old: T) {
     drop(spawned);
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -197,7 +197,7 @@ impl FilterState {
         }
     }
 
-    fn mask(&self, id: Identity) -> &ListMask {
+    pub(crate) fn mask(&self, id: Identity) -> &ListMask {
         id.client
             .and_then(|c| self.client_masks.get(usize::from(c)))
             .unwrap_or(&self.default_mask)
@@ -268,6 +268,23 @@ impl Pipeline {
             loops: std::sync::atomic::AtomicU64::new(0),
             rt: tokio::runtime::Handle::try_current().ok(),
         })
+    }
+
+    /// Explains what this pipeline would do with a query, and why (FLT-013).
+    pub(crate) fn explain(
+        &self,
+        req: &crate::explain::Request<'_>,
+        source: impl Fn(&str) -> Option<Vec<u8>>,
+    ) -> Result<crate::explain::Explanation, String> {
+        let dynamic = self.state.load();
+        let filter = self.filter.load();
+        let st = crate::explain::State {
+            dynamic: &dynamic,
+            filter: filter.as_deref(),
+            neighbors: &self.neighbors,
+            pause: &self.pause,
+        };
+        crate::explain::explain(&st, req, source)
     }
 
     /// Swaps in new routing/policy (OPS-009). In-flight queries finish with the state they

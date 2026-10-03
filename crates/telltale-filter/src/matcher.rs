@@ -72,6 +72,15 @@ impl ListMask {
     fn intersects(&self, other: &Self) -> bool {
         self.words.iter().zip(&other.words).any(|(a, b)| a & b != 0)
     }
+
+    fn union_with(&mut self, other: &Self) {
+        if self.words.len() < other.words.len() {
+            self.words.resize(other.words.len(), 0);
+        }
+        for (a, b) in self.words.iter_mut().zip(&other.words) {
+            *a |= b;
+        }
+    }
 }
 
 /// Who is asking, for `$client` rules (which name an IP, a CIDR, a device, or a client ID).
@@ -85,7 +94,8 @@ pub struct ClientCtx<'a> {
 }
 
 /// Precedence tier (`spec/05` §1), best first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Tier {
     ImportantAllow,
     ImportantBlock,
@@ -102,7 +112,7 @@ impl Tier {
             Class::Block => Self::Block,
         }
     }
-    fn of(allow: bool, important: bool) -> Self {
+    pub(crate) fn of(allow: bool, important: bool) -> Self {
         Self::from_class(Class::new(allow, important))
     }
     fn is_allow(self) -> bool {
@@ -164,6 +174,86 @@ impl Best {
                     Decision::Block(*a)
                 }
             })
+    }
+}
+
+/// Where the lookup passes report matches: [`Best`] keeps each tier's winner (the query
+/// path), [`Collect`] keeps every match (explain, FLT-013).
+trait Sink {
+    /// A domain entry matched at `labels`: `bits` are the lists with a rule of `tier` there.
+    fn domain(&mut self, tier: Tier, scope: Scope, labels: u8, bits: &[u64], mask: &ListMask);
+    /// One rule from one list matched.
+    fn rule(&mut self, rank: Rank, a: Attribution);
+}
+
+impl Sink for Best {
+    #[inline]
+    fn domain(&mut self, tier: Tier, scope: Scope, labels: u8, bits: &[u64], mask: &ListMask) {
+        if let Some(list) = mask.first_common(bits) {
+            self.offer(
+                tier,
+                domain_rank(scope, labels, list),
+                Attribution {
+                    list,
+                    tier,
+                    rule: RuleRef::Domain { scope, labels },
+                    overlay: false,
+                },
+            );
+        }
+    }
+
+    #[inline]
+    fn rule(&mut self, rank: Rank, a: Attribution) {
+        self.offer(a.tier, rank, a);
+    }
+}
+
+/// One rule that matches a name, from any list (FLT-013 explain).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Match {
+    pub attribution: Attribution,
+    /// The client's groups use this list, so the rule takes part in its decision.
+    pub enabled: bool,
+}
+
+/// Every match, each marked enabled or not for the client's mask.
+struct Collect<'a> {
+    mask: &'a ListMask,
+    out: Vec<(Tier, Rank, Match)>,
+}
+
+impl Sink for Collect<'_> {
+    fn domain(&mut self, tier: Tier, scope: Scope, labels: u8, bits: &[u64], _: &ListMask) {
+        for (w, &word) in bits.iter().enumerate() {
+            let mut rest = word;
+            while rest != 0 {
+                let bit = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                let Ok(list) = u16::try_from(w * 64 + bit) else {
+                    continue;
+                };
+                let a = Attribution {
+                    list,
+                    tier,
+                    rule: RuleRef::Domain { scope, labels },
+                    overlay: false,
+                };
+                self.rule(domain_rank(scope, labels, list), a);
+            }
+        }
+    }
+
+    fn rule(&mut self, rank: Rank, a: Attribution) {
+        let enabled = self.mask.contains(a.list);
+        self.out.push((
+            a.tier,
+            rank,
+            Match {
+                attribution: a,
+                enabled,
+            },
+        ));
     }
 }
 
@@ -754,22 +844,69 @@ impl Matcher {
             return Decision::None;
         };
         let mut best = Best::default();
+        self.run(&name, qname, qtype, client, mask, scratch, &mut best);
+        best.decision()
+    }
+
+    /// Every rule in every list (and the overlay) that matches `qname` for this client and
+    /// qtype, in precedence order (tier, then exact > deeper suffix > regex > list ID), each
+    /// marked `enabled` if `mask` uses its list. The first enabled match is what [`decide`]
+    /// returns. Allocates: for explain (FLT-013), never the query path.
+    ///
+    /// [`decide`]: Matcher::decide
+    pub fn matches(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+    ) -> Vec<Match> {
+        let Some(name) = Name::from_wire(qname) else {
+            return Vec::new();
+        };
+        // Look through every list; `Collect` marks which ones the client uses.
+        let mut every = ListMask::all(self.snapshot.as_ref().map_or(0, |s| s.manifest.lists.len()));
+        every.union_with(&self.overlay.lists);
+        let mut sink = Collect {
+            mask,
+            out: Vec::new(),
+        };
+        let mut scratch = Scratch::default();
+        self.run(&name, qname, qtype, client, &every, &mut scratch, &mut sink);
+        sink.out.sort_by_key(|(tier, rank, _)| (*tier, *rank));
+        sink.out.into_iter().map(|(_, _, m)| m).collect()
+    }
+
+    /// The lookup passes, reporting to `sink`: snapshot domains, modifier rules, overlay,
+    /// regexes.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn run(
+        &self,
+        name: &Name,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+        scratch: &mut Scratch,
+        sink: &mut impl Sink,
+    ) {
         if let Some(s) = &self.snapshot {
-            self.snapshot_domains(s, &name, mask, &mut best);
+            self.snapshot_domains(s, name, mask, sink);
             if !self.mods.is_empty() {
                 walk(
                     s.modrules_index.as_fst(),
-                    &name,
+                    name,
                     1,
                     name.labels,
                     |labels, v| {
-                        self.offer_mods(&name, labels, v, qtype, client, mask, &mut best);
+                        self.offer_mods(name, labels, v, qtype, client, mask, sink);
                     },
                 );
             }
         }
         if !self.overlay.is_empty() && self.overlay.lists.intersects(mask) {
-            self.overlay_domains(&name, qtype, client, mask, &mut best);
+            self.overlay_domains(name, qtype, client, mask, sink);
         }
         let need_regex = (!self.regexes.is_empty() && self.regexes.lists.intersects(mask))
             || self
@@ -778,34 +915,20 @@ impl Matcher {
                 .as_ref()
                 .is_some_and(|r| r.lists.intersects(mask));
         if need_regex {
-            self.regex_pass(qname, qtype, mask, scratch, &mut best);
+            self.regex_pass(qname, qtype, mask, scratch, sink);
         }
-        best.decision()
     }
 
-    fn snapshot_domains(&self, s: &Snapshot, name: &Name, mask: &ListMask, best: &mut Best) {
+    fn snapshot_domains(&self, s: &Snapshot, name: &Name, mask: &ListMask, sink: &mut impl Sink) {
         let total = name.labels;
         let mut offer = |scope: Scope, labels: usize, id: u32| {
             if !scope_applies(scope, labels, total) {
                 return;
             }
+            let labels = u8::try_from(labels).unwrap_or(u8::MAX);
             for class in Class::ALL {
-                let Some(bits) = s.listsets.get(id, class) else {
-                    continue;
-                };
-                if let Some(list) = mask.first_common(bits) {
-                    let labels = u8::try_from(labels).unwrap_or(u8::MAX);
-                    let tier = Tier::from_class(class);
-                    best.offer(
-                        tier,
-                        domain_rank(scope, labels, list),
-                        Attribution {
-                            list,
-                            tier,
-                            rule: RuleRef::Domain { scope, labels },
-                            overlay: false,
-                        },
-                    );
+                if let Some(bits) = s.listsets.get(id, class) {
+                    sink.domain(Tier::from_class(class), scope, labels, bits, mask);
                 }
             }
         };
@@ -853,7 +976,7 @@ impl Matcher {
         qtype: u16,
         client: &ClientCtx<'_>,
         mask: &ListMask,
-        best: &mut Best,
+        sink: &mut impl Sink,
     ) {
         let (Ok(start), Ok(count)) = (usize::try_from(v >> 32), usize::try_from(v & 0xffff_ffff))
         else {
@@ -865,8 +988,7 @@ impl Matcher {
                 && m.applies(name.key(), qtype, client)
             {
                 let labels = u8::try_from(labels).unwrap_or(u8::MAX);
-                best.offer(
-                    m.tier,
+                sink.rule(
                     domain_rank(m.scope, labels, m.list),
                     Attribution {
                         list: m.list,
@@ -887,7 +1009,7 @@ impl Matcher {
         qtype: u16,
         client: &ClientCtx<'_>,
         mask: &ListMask,
-        best: &mut Best,
+        sink: &mut impl Sink,
     ) {
         let o = &self.overlay;
         for labels in 1..=name.labels {
@@ -897,8 +1019,7 @@ impl Matcher {
                 for &(scope, class, list) in entries {
                     if mask.contains(list) && scope_applies(scope, labels, name.labels) {
                         let tier = Tier::from_class(class);
-                        best.offer(
-                            tier,
+                        sink.rule(
                             domain_rank(scope, l8, list),
                             Attribution {
                                 list,
@@ -916,8 +1037,7 @@ impl Matcher {
                         && scope_applies(m.scope, labels, name.labels)
                         && m.applies(name.key(), qtype, client)
                     {
-                        best.offer(
-                            m.tier,
+                        sink.rule(
                             domain_rank(m.scope, l8, m.list),
                             Attribution {
                                 list: m.list,
@@ -940,7 +1060,7 @@ impl Matcher {
         qtype: u16,
         mask: &ListMask,
         scratch: &mut Scratch,
-        best: &mut Best,
+        sink: &mut impl Sink,
     ) {
         // Slots: snapshot normal, snapshot invert, overlay normal, overlay invert.
         let sets: [(Option<&RegexSets>, bool); 2] = [
@@ -1009,8 +1129,7 @@ impl Matcher {
                         continue;
                     }
                     let tier = Tier::of(r.allow, r.important);
-                    best.offer(
-                        tier,
+                    sink.rule(
                         Rank(2, 0, r.list),
                         Attribution {
                             list: r.list,

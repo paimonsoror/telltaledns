@@ -34,7 +34,8 @@ pub enum Action {
 }
 
 /// Which names a domain rule covers (FLT-002).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// The name and every name below it.
     Subtree,

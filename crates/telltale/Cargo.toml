@@ -23,6 +23,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 # mimalloc's huge pages tripled idle RSS (22 MiB vs 6 MiB), breaking the 20 MiB gate (00 §5).
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
 rand = "0.10.3"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 telltale-cache = { version = "0.1.0", path = "../telltale-cache" }
 telltale-config.workspace = true

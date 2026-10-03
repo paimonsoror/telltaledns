@@ -74,7 +74,7 @@ fn cache_policy(c: &telltale_config::CacheConfig, workers: usize) -> CachePolicy
 }
 
 /// Builds everything a reload can replace: upstreams/routes and policy (incl. local records).
-fn build_dynamic(
+pub(crate) fn build_dynamic(
     cfg: &Config,
     reuse: Option<Arc<Router>>,
 ) -> Result<(Arc<Router>, Policy), Vec<String>> {

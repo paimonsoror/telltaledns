@@ -172,6 +172,38 @@
 </section>
 
 <section>
+  <div class="two">
+    <figure class="figure">
+      <svg viewBox="0 0 460 260" role="img">
+        <title>Rule precedence: important allow, important block, allow, block. The first tier with a match decides, and explain shows every match.</title>
+        <text x="10" y="20" class="svg-sub">explain ad.doubleclick.net for the tablet (kids group)</text>
+        <rect x="10" y="32" width="150" height="34" rx="6" class="svg-ok" opacity=".55"/><text x="85" y="53" text-anchor="middle" class="svg-sub">1 · allow $important</text>
+        <rect x="10" y="72" width="150" height="34" rx="6" class="svg-accent" opacity=".55"/><text x="85" y="93" text-anchor="middle" class="svg-sub">2 · block $important</text>
+        <rect x="10" y="112" width="150" height="34" rx="6" class="svg-ok"/><text x="85" y="133" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">3 · allow</text>
+        <rect x="10" y="152" width="150" height="34" rx="6" class="svg-accent" opacity=".8"/><text x="85" y="173" text-anchor="middle" fill="#fff" font-size="11">4 · block</text>
+        <path d="M166 129 H190" class="svg-stroke-ok" stroke-width="2"/>
+        <rect x="194" y="112" width="256" height="34" rx="6" class="svg-box"/>
+        <text x="204" y="127" class="svg-sub">* family-allow:1  @@||doubleclick.net^</text>
+        <text x="204" y="140" class="svg-sub">decides: allowed</text>
+        <path d="M166 169 H190" class="svg-stroke-accent" stroke-dasharray="3 3"/>
+        <rect x="194" y="152" width="256" height="34" rx="6" class="svg-box" stroke-dasharray="4 3"/>
+        <text x="204" y="167" class="svg-sub">stevenblack:7102  0.0.0.0 ad.doubleclick.net</text>
+        <text x="204" y="180" class="svg-sub">adguard-dns:179140  ||doubleclick.net^</text>
+        <text x="10" y="214" class="svg-sub">• Within a tier: exact name &gt; deeper suffix &gt; regex &gt; list order.</text>
+        <text x="10" y="234" class="svg-sub">• Each group picks its lists; CNAME targets are checked too.</text>
+        <text x="10" y="254" class="svg-sub">• Lists are recompiled in the background and swapped in atomically.</text>
+      </svg>
+    </figure>
+    <div>
+      <p class="eyebrow">Blocking</p>
+      <h2>Blocking you can explain</h2>
+      <p class="muted">Hosts files, AdBlock-style lists, and Pi-hole regexes are compiled in the background into one compact snapshot: about 9 bytes per blocked name, and a lookup takes under a microsecond. A new snapshot replaces the old one atomically, without pausing a query, and a recompile under load left p99 latency unchanged in our tests.</p>
+      <p class="muted">Every decision names its rule. <code>telltale explain</code> shows who a device is, its groups, every rule in every list that matches (with its line number), and which one decides.</p>
+    </div>
+  </div>
+</section>
+
+<section>
   <p class="eyebrow">Coming next</p>
   <h2>One cluster across a Pi and Kubernetes</h2>
   <figure class="figure">

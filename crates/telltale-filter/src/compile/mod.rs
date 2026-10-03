@@ -141,7 +141,7 @@ fn class_of(rule: &Rule) -> Class {
 
 /// Rules whose only modifier is `$important` go to the domain FSTs; anything with a predicate
 /// or rewrite becomes a [`ModRule`].
-fn is_plain(m: &Modifiers) -> bool {
+pub(crate) fn is_plain(m: &Modifiers) -> bool {
     m.client.is_empty() && m.dnstype.is_empty() && m.denyallow.is_empty() && m.dnsrewrite.is_none()
 }
 

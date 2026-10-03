@@ -391,3 +391,84 @@ fn flt_003_walk_and_index_agree() {
         }
     }
 }
+
+/// FLT-013: `matches` finds every rule in every list, marks the client's lists, and its first
+/// enabled match is exactly what `decide` picks.
+#[test]
+fn flt_013_matches_lists_every_rule_in_precedence_order() {
+    let m = matcher_with(
+        vec![
+            input("a", ListKind::Block, "||example.com^\n||ads.example.com^\n"),
+            input("b", ListKind::Allow, "ads.example.com\n"),
+            input(
+                "c",
+                ListKind::Block,
+                "/^ads\\./\n||ads.example.com^$important\n",
+            ),
+            input("d", ListKind::Block, "||ads.example.com^$dnstype=AAAA\n"),
+        ],
+        1,
+        Overlay::default(),
+    );
+    let client = ClientCtx {
+        ip: CLIENT_IP,
+        name: None,
+        client_id: None,
+    };
+    let shown = |mask: &ListMask, qtype: u16| -> Vec<String> {
+        m.matches(&wire("ads.example.com"), qtype, &client, mask)
+            .iter()
+            .map(|x| {
+                let on = if x.enabled { "" } else { " (off)" };
+                format!(
+                    "{:?} {}{on}",
+                    x.attribution.tier,
+                    describe(&m, &x.attribution)
+                )
+            })
+            .collect()
+    };
+    let mut a_b = ListMask::default();
+    a_b.set(0);
+    a_b.set(1);
+    assert_eq!(
+        shown(&a_b, rtype::A),
+        [
+            "ImportantBlock c Subtree/3 (off)",
+            "Allow b Subtree/3",
+            "Block a Subtree/3",
+            "Block a Subtree/2",
+            "Block c regex (off)",
+        ]
+    );
+    // The `$dnstype=AAAA` rule only shows up for AAAA.
+    assert!(shown(&a_b, rtype::AAAA).contains(&"Block d mod (off)".to_owned()));
+    // The first enabled match is the decision, for every mask.
+    for bits in 0u16..16 {
+        let mut mask = ListMask::default();
+        for list in 0..4 {
+            if bits & (1 << list) != 0 {
+                mask.set(list);
+            }
+        }
+        for qtype in [rtype::A, rtype::AAAA] {
+            let first = m
+                .matches(&wire("ads.example.com"), qtype, &client, &mask)
+                .into_iter()
+                .find(|x| x.enabled)
+                .map(|x| x.attribution);
+            let mut scratch = Scratch::default();
+            let decided = match m.decide(
+                &wire("ads.example.com"),
+                qtype,
+                &client,
+                &mask,
+                &mut scratch,
+            ) {
+                Decision::None => None,
+                Decision::Allow(a) | Decision::Block(a) => Some(a),
+            };
+            assert_eq!(first, decided, "mask {bits:04b} qtype {qtype}");
+        }
+    }
+}

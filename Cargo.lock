@@ -1783,6 +1783,7 @@ dependencies = [
  "clap",
  "mimalloc",
  "rand 0.10.3",
+ "serde",
  "serde_json",
  "telltale-cache",
  "telltale-config",
