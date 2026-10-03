@@ -15,6 +15,21 @@ pub use handler::{Deferred, QueryHandler, RequestMeta, Response, Transport};
 pub use tcp::{TcpConfig, TcpServer, TcpStats};
 pub use udp::{LocalAddr, UdpConfig, UdpListener, WorkerStats};
 
+/// Lowers the calling thread's CPU priority to at least `nice` (0–19), for background work
+/// that must never slow queries, such as list compilation (`spec/05` §3.4). Best effort: a
+/// no-op off Linux.
+pub fn lower_thread_priority(nice: i32) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        sys::lower_thread_priority(nice)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = nice;
+        Ok(())
+    }
+}
+
 /// Default worker count: available parallelism (which honors cgroup CPU quotas on Linux),
 /// per `spec/08` §3.3.
 pub fn default_workers() -> usize {

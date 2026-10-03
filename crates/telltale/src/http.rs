@@ -18,6 +18,8 @@ use axum::routing::get;
 use telltale_cache::Cache;
 use telltale_config::Cidr;
 use telltale_filter::fetch::{Fetcher, ListMeta};
+
+use crate::lists::ListsShared;
 use telltale_net::{TcpStats, WorkerStats};
 use telltale_telemetry::Metrics;
 use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
@@ -38,8 +40,8 @@ pub(crate) struct Sources {
     pub(crate) ready: Arc<AtomicBool>,
     pub(crate) started: Instant,
     pub(crate) allowed: Vec<Cidr>,
-    /// The list fetcher, when this node downloads lists.
-    pub(crate) lists: ArcSwapOption<Fetcher>,
+    /// The list fetcher and compiler, when this node handles lists.
+    pub(crate) lists: ArcSwapOption<ListsShared>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -112,8 +114,9 @@ pub(crate) fn render(src: &Sources) -> String {
     render_cache(&mut w, &src.cache);
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
-    if let Some(f) = src.lists.load_full() {
-        render_lists(&mut w, &f);
+    if let Some(l) = src.lists.load_full() {
+        render_lists(&mut w, &l.fetcher);
+        render_filter(&mut w, &l);
     }
     render_listeners(&mut w, src);
     w.family("telltale_local_records", "gauge", "Local records loaded.")
@@ -243,6 +246,55 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
             if let Some(v) = value(meta) {
                 w.sample(name, &[("list", list)], v);
             }
+        }
+    }
+}
+
+/// REQ: FLT-003, OBS-005 (`spec/06` metric names): the current filter snapshot.
+fn render_filter(w: &mut PromWriter, lists: &ListsShared) {
+    let compiled = lists
+        .compiled
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(c) = compiled else {
+        return;
+    };
+    let st = &c.manifest.stats;
+    w.family(
+        "telltale_filter_snapshot_version",
+        "gauge",
+        "Version of the newest compiled filter snapshot.",
+    )
+    .sample("telltale_filter_snapshot_version", &[], c.manifest.version);
+    w.family(
+        "telltale_filter_rules",
+        "gauge",
+        "Names, regexes, and modifier rules in the snapshot.",
+    )
+    .sample(
+        "telltale_filter_rules",
+        &[],
+        st.subtree_names + st.exact_names + st.subdomains_names + st.regexes + st.modrules,
+    );
+    w.family(
+        "telltale_filter_compile_seconds",
+        "gauge",
+        "Duration of the last compile (0 when the snapshot was already on disk).",
+    )
+    .sample("telltale_filter_compile_seconds", &[], c.seconds);
+    w.family(
+        "telltale_list_entries",
+        "gauge",
+        "Entries each list contributes to the snapshot.",
+    );
+    for (i, l) in st.per_list.iter().enumerate() {
+        if let Some(m) = c.manifest.lists.get(i) {
+            w.sample(
+                "telltale_list_entries",
+                &[("list", m.name.as_str())],
+                l.entries,
+            );
         }
     }
 }

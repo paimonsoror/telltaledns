@@ -5,5 +5,7 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+pub mod compile;
 pub mod fetch;
 pub mod parse;
+pub mod snapshot;

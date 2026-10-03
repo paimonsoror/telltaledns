@@ -69,6 +69,17 @@ enum ListsCommand {
         #[arg(short, long = "config")]
         config: Vec<PathBuf>,
     },
+    /// Compile the stored lists into a new filter snapshot now and print the result
+    /// (the server does this automatically when lists change).
+    // REQ: FLT-003
+    Compile {
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// Compile threads (default: `[filter] compile_threads`).
+        #[arg(long)]
+        threads: Option<usize>,
+    },
     /// Parse the stored lists and report rules, unsupported and invalid lines (with the
     /// first problem lines of each list). Exits non-zero if a list has invalid lines.
     // REQ: FLT-001
@@ -207,6 +218,19 @@ fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {
                 .enable_all()
                 .build()?;
             match rt.block_on(lists::fetch_once(&cfg, &mut io::stdout().lock())) {
+                Ok(true) => Ok(ExitCode::SUCCESS),
+                Ok(false) => Ok(ExitCode::FAILURE),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+        ListsCommand::Compile { config, threads } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            match lists::compile_now(&cfg, threads, &mut io::stdout().lock()) {
                 Ok(true) => Ok(ExitCode::SUCCESS),
                 Ok(false) => Ok(ExitCode::FAILURE),
                 Err(e) => {

@@ -12,22 +12,26 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# REQ: FLT-003 — compiler: fst (domain sets), regex-automata (regex set, 02 §7).
 # REQ: FLT-001 — parsers: idna (punycode), regex-syntax (validate patterns the regex engine
 # will accept). FLT-004 — list fetcher: HTTP/1.1 over rustls (same stack as the DoH upstream), zstd
 # for stored sources (02 §7), BLAKE3 content hashes (02 §5).
 blake3 = "1.8.7"
 bytes = "1.12.1"
+fst = "0.4.7"
 http = "1.5.0"
 http-body-util = "0.1.5"
 hyper = { version = "1.11.1", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 idna = "1.1.0"
 rand = "0.10.3"
+regex-automata = "0.4.18"
 regex-syntax = "0.8.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 telltale-config.workspace = true
+telltale-net = { version = "0.1.0", path = "../telltale-net" }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync", "fs"] }

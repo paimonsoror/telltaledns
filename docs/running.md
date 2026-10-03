@@ -130,7 +130,7 @@ default_ttl = 300
 - `telltale config check` validates record values and reads the hosts files.
 
 ## Filter lists
-> **Status:** lists are downloaded, stored, and parsed (`telltale lists check`), but not enforced yet. Blocking arrives with the list compiler and matcher (roadmap T2.3–T2.6).
+> **Status:** lists are downloaded, parsed, and compiled into a filter snapshot, but not enforced yet. Blocking arrives with the matcher (roadmap T2.4–T2.6).
 
 ```toml
 [[list]]
@@ -153,6 +153,8 @@ fetch_concurrency = 4
 fetch_timeout_secs = 120                # per attempt, including the download
 fetch_retries = 3                       # network errors, HTTP 5xx, and 429 are retried with backoff
 max_list_bytes = "64MiB"                # per-list `max_bytes` overrides
+compile_threads = 1                     # lists compile at low priority on this many threads
+compile_memory = "128MiB"               # sort budget before spilling to disk
 ```
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
 - **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected, such as an empty body or an HTML page from a captive portal.
@@ -201,7 +203,25 @@ telltale lists check -c telltale.toml --list manual --rules   # every rule in ca
 ```
 It exits non-zero if any list has invalid lines.
 
-Metrics: `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
+### Compiling
+Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match` changes, TelltaleDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
+
+- Compiling runs in the background at low CPU priority (nice 10), on `[filter] compile_threads` threads (default 1, which leaves a Pi's other cores to DNS). It never pauses or locks query handling.
+- Memory stays bounded. List entries are sorted within `[filter] compile_memory` (default `"128MiB"`), and anything beyond that spills to temporary files in the snapshot directory. Each list's text is read only while it's being parsed.
+- Size: about 9 bytes per blocked name. HaGeZi Pro + HaGeZi TIF + OISD big + StevenBlack + the AdGuard DNS filter (2.7M names) compile to 25 MB, in about 4.5 s on a laptop core.
+
+```sh
+telltale lists compile -c telltale.toml     # compile now and show per-list numbers
+# snapshot 1 in /var/lib/telltale/snapshots/1
+#   names 2597518 (subtree 2597518, exact 0, subdomains 0), regexes 0, modifier rules 0, list sets 7, $badfilter removed 0
+#   8.98 bytes/name; 4.56s total (parse 2.03s, merge 2.49s, tables 9.10ms) on 1 thread(s); 0 sort runs spilled
+#   hagezi-tif               entries   2376001  unique   2213895  unsupported      0  invalid      0
+#   hagezi-pro               entries    227420  unique    102069  unsupported      0  invalid      0
+#   oisd-big                 entries    244348  unique     55809  unsupported      0  invalid      0
+```
+`unique` counts the names no other list has. A list with few unique names adds little beyond your other lists.
+
+Metrics: `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
 ```
 time() - telltale_list_last_success_timestamp_seconds > 172800
 ```

@@ -1,24 +1,28 @@
-//! Wiring for the list fetcher (`spec/05` §3.4): startup, reload, and `telltale lists fetch`.
+//! Wiring for the list fetcher and compiler (`spec/05` §3.4): startup, reload, and the
+//! `telltale lists` commands.
 //!
-//! REQ: FLT-004. The fetcher only runs where lists are compiled: role `all` or `controller`.
+//! REQ: FLT-003, FLT-004. Both run only where lists are compiled: role `all` or `controller`.
 //! Failures here are logged and never affect DNS (AGENTS.md rule 5).
 
 use std::future::Future;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use telltale_config::{Config, Role};
+use telltale_filter::compile::{CompileOptions, CompileReport, ListData, ListInput, compile};
 use telltale_filter::fetch::{
     Client, FetchSettings, Fetcher, ListSpec, Outcome, Resolve, Store, SystemResolver,
 };
 use telltale_filter::parse::{ListOptions, parse_list};
+use telltale_filter::snapshot::{MANIFEST, Manifest};
 use telltale_upstream::Bootstrap;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Resolves list hostnames like hostname upstreams do (UPS-009): through the system resolvers
 /// minus our own listeners. When the system resolver *is* this server (a Pi pointing
@@ -66,14 +70,48 @@ fn build_fetcher(cfg: &Config) -> Result<Arc<Fetcher>, String> {
     )))
 }
 
-/// The running fetcher.
-pub(crate) struct Lists {
+/// What `/metrics` reads: fetch state and the last compile.
+#[derive(Debug)]
+pub(crate) struct ListsShared {
     pub(crate) fetcher: Arc<Fetcher>,
+    pub(crate) compiled: Mutex<Option<Compiled>>,
+}
+
+/// The newest snapshot on disk.
+#[derive(Debug, Clone)]
+pub(crate) struct Compiled {
+    pub(crate) manifest: Manifest,
+    /// Wall time of the compile that produced it (0 if it was already on disk).
+    pub(crate) seconds: f64,
+}
+
+/// What to compile: enabled lists in config order (a list's position is its ID).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompileSpec {
+    name: String,
+    options: ListOptions,
+}
+
+fn compile_specs(cfg: &Config) -> Vec<CompileSpec> {
+    cfg.list
+        .iter()
+        .filter(|l| l.enabled)
+        .map(|l| CompileSpec {
+            name: l.name.to_string(),
+            options: ListOptions {
+                kind: l.kind,
+                match_mode: l.match_mode,
+            },
+        })
+        .collect()
+}
+
+/// The running fetcher and compiler.
+pub(crate) struct Lists {
+    pub(crate) shared: Arc<ListsShared>,
     specs: watch::Sender<Arc<Vec<ListSpec>>>,
-    /// Bumped when stored list content changes.
-    #[expect(dead_code, reason = "the list compiler (T2.3) subscribes")]
-    pub(crate) changed: watch::Receiver<u64>,
-    task: JoinHandle<()>,
+    compile_specs: watch::Sender<Arc<Vec<CompileSpec>>>,
+    tasks: Vec<JoinHandle<()>>,
 }
 
 impl Lists {
@@ -97,12 +135,26 @@ impl Lists {
         );
         let (specs_tx, specs_rx) = watch::channel(Arc::new(specs));
         let (changed_tx, changed) = watch::channel(0);
-        let task = tokio::spawn(Arc::clone(&fetcher).run(specs_rx, changed_tx));
+        let (compile_tx, compile_rx) = watch::channel(Arc::new(compile_specs(cfg)));
+        let shared = Arc::new(ListsShared {
+            fetcher: Arc::clone(&fetcher),
+            compiled: Mutex::new(None),
+        });
+        let settings = CompileSettings::from_config(cfg);
+        let tasks = vec![
+            tokio::spawn(Arc::clone(&fetcher).run(specs_rx, changed_tx)),
+            tokio::spawn(compile_loop(
+                Arc::clone(&shared),
+                settings,
+                compile_rx,
+                changed,
+            )),
+        ];
         Some(Self {
-            fetcher,
+            shared,
             specs: specs_tx,
-            changed,
-            task,
+            compile_specs: compile_tx,
+            tasks,
         })
     }
 
@@ -118,11 +170,278 @@ impl Lists {
                 true
             }
         });
+        let compile = compile_specs(cfg);
+        self.compile_specs.send_if_modified(|cur| {
+            if **cur == compile {
+                false
+            } else {
+                *cur = Arc::new(compile);
+                true
+            }
+        });
     }
 
     pub(crate) fn stop(self) {
-        self.task.abort();
+        for t in self.tasks {
+            t.abort();
+        }
     }
+}
+
+/// Where and how snapshots are compiled.
+#[derive(Debug, Clone)]
+struct CompileSettings {
+    snapshots: PathBuf,
+    threads: usize,
+    memory: usize,
+}
+
+/// Snapshots kept on disk (`spec/02` §6).
+const KEEP_SNAPSHOTS: usize = 3;
+/// Changes arriving together (several lists updated in one refresh) compile once.
+const DEBOUNCE: Duration = Duration::from_secs(2);
+
+impl CompileSettings {
+    fn from_config(cfg: &Config) -> Self {
+        Self {
+            snapshots: Path::new(cfg.node.data_dir.as_str()).join("snapshots"),
+            threads: usize::from(cfg.filter.compile_threads.max(1)),
+            memory: usize::try_from(cfg.filter.compile_memory.bytes()).unwrap_or(usize::MAX),
+        }
+    }
+}
+
+/// Snapshot versions on disk with a manifest, ascending.
+fn snapshot_versions(dir: &Path) -> Vec<(u64, PathBuf)> {
+    let mut out: Vec<(u64, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let v = e.file_name().to_str()?.parse::<u64>().ok()?;
+            e.path().join(MANIFEST).is_file().then(|| (v, e.path()))
+        })
+        .collect();
+    out.sort_by_key(|(v, _)| *v);
+    out
+}
+
+fn read_manifest(dir: &Path) -> Option<Manifest> {
+    serde_json::from_slice(&std::fs::read(dir.join(MANIFEST)).ok()?).ok()
+}
+
+/// Lists that have a stored source, with their content hashes, in ID order.
+fn gather(store: &Store, specs: &[CompileSpec]) -> Vec<(CompileSpec, String, u64)> {
+    specs
+        .iter()
+        .filter_map(|s| {
+            let meta = store.load_meta(&s.name);
+            Some((s.clone(), meta.content_hash?, meta.bytes))
+        })
+        .collect()
+}
+
+/// True if `manifest` was compiled from exactly these lists, options, and sources.
+fn up_to_date(manifest: &Manifest, inputs: &[(CompileSpec, String, u64)]) -> bool {
+    manifest.lists.len() == inputs.len()
+        && manifest.lists.iter().zip(inputs).all(|(m, (s, hash, _))| {
+            m.name == s.name
+                && m.source_hash == *hash
+                && m.kind == s.options.kind
+                && m.match_mode == s.options.match_mode
+        })
+}
+
+/// Compiles a new snapshot if the inputs changed. Blocking: call from a blocking thread.
+fn compile_if_changed(
+    store: &Store,
+    settings: &CompileSettings,
+    specs: &[CompileSpec],
+    force: bool,
+) -> Result<Option<(CompileReport, PathBuf)>, String> {
+    let inputs = gather(store, specs);
+    // Nothing downloaded yet (first start): wait for the fetcher rather than publish an
+    // empty snapshot.
+    if inputs.is_empty() && !specs.is_empty() {
+        return Ok(None);
+    }
+    let versions = snapshot_versions(&settings.snapshots);
+    if !force
+        && let Some((_, dir)) = versions.last()
+        && read_manifest(dir).is_some_and(|m| up_to_date(&m, &inputs))
+    {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&settings.snapshots)
+        .map_err(|e| format!("{}: {e}", settings.snapshots.display()))?;
+    let version = versions.last().map_or(1, |(v, _)| v + 1);
+    let out = settings.snapshots.join(version.to_string());
+    let lists: Vec<ListInput> = inputs
+        .into_iter()
+        .map(|(s, hash, size)| ListInput {
+            name: s.name,
+            options: s.options,
+            data: ListData::Stored(store.clone()),
+            source_hash: hash,
+            size,
+        })
+        .collect();
+    let report = compile(
+        lists,
+        &out,
+        &CompileOptions {
+            threads: settings.threads,
+            memory_budget: settings.memory,
+            version,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    // Keep the newest few; older ones are only useful for rollback.
+    let versions = snapshot_versions(&settings.snapshots);
+    for (_, dir) in versions.iter().rev().skip(KEEP_SNAPSHOTS) {
+        if let Err(e) = std::fs::remove_dir_all(dir) {
+            warn!("cannot remove old snapshot {}: {e}", dir.display());
+        }
+    }
+    Ok(Some((report, out)))
+}
+
+/// Recompiles whenever stored list content or the list configuration changes.
+async fn compile_loop(
+    shared: Arc<ListsShared>,
+    settings: CompileSettings,
+    mut specs: watch::Receiver<Arc<Vec<CompileSpec>>>,
+    mut changed: watch::Receiver<u64>,
+) {
+    let store = shared.fetcher.store().clone();
+    // Report what's on disk right away, so metrics are meaningful before any compile.
+    if let Some((_, dir)) = snapshot_versions(&settings.snapshots).last()
+        && let Some(manifest) = read_manifest(dir)
+    {
+        *shared
+            .compiled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Compiled {
+            manifest,
+            seconds: 0.0,
+        });
+    }
+    loop {
+        let current = Arc::clone(&specs.borrow_and_update());
+        changed.borrow_and_update();
+        let (store2, settings2) = (store.clone(), settings.clone());
+        // A dedicated thread, not tokio's blocking pool: compiling lowers its thread's
+        // priority, and pool threads are reused for other work.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("telltale-compile".into())
+            .spawn(move || {
+                let _ = tx.send(compile_if_changed(&store2, &settings2, &current, false));
+            });
+        let result = match spawned {
+            Ok(_) => rx
+                .await
+                .map_err(|_| "compile thread exited without a result".to_owned()),
+            Err(e) => Err(format!("cannot start compile thread: {e}")),
+        };
+        match result {
+            Ok(Ok(Some((report, dir)))) => {
+                let st = &report.manifest.stats;
+                info!(
+                    version = report.manifest.version,
+                    lists = report.manifest.lists.len(),
+                    names = st.subtree_names + st.exact_names + st.subdomains_names,
+                    regexes = st.regexes,
+                    modifier_rules = st.modrules,
+                    bytes_per_name = st.bytes_per_name,
+                    seconds = report.timings.total.as_secs_f64(),
+                    dir = %dir.display(),
+                    "filter snapshot compiled"
+                );
+                for (list, line, why) in &report.regex_errors {
+                    warn!(list = %list, line, "regex rejected: {why}");
+                }
+                *shared
+                    .compiled
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(Compiled {
+                    seconds: report.timings.total.as_secs_f64(),
+                    manifest: report.manifest,
+                });
+            }
+            Ok(Ok(None)) => {}
+            // REQ: FLT-004 — a failed compile keeps the previous snapshot.
+            Ok(Err(e)) => error!("list compile failed; keeping the previous snapshot: {e}"),
+            Err(e) => error!("list compile failed; keeping the previous snapshot: {e}"),
+        }
+        tokio::select! {
+            r = changed.changed() => if r.is_err() { return },
+            r = specs.changed() => if r.is_err() { return },
+        }
+        tokio::time::sleep(DEBOUNCE).await;
+    }
+}
+
+/// `telltale lists compile`: compile the stored lists into a new snapshot now.
+pub(crate) fn compile_now(
+    cfg: &Config,
+    threads: Option<usize>,
+    out: &mut dyn Write,
+) -> Result<bool, String> {
+    let data_dir = Path::new(cfg.node.data_dir.as_str());
+    let store = Store::open(data_dir).map_err(|e| format!("{}/lists: {e}", data_dir.display()))?;
+    let mut settings = CompileSettings::from_config(cfg);
+    if let Some(t) = threads {
+        settings.threads = t.max(1);
+    }
+    let io = |e: std::io::Error| e.to_string();
+    let specs = compile_specs(cfg);
+    let missing: Vec<&str> = specs
+        .iter()
+        .filter(|s| store.load_meta(&s.name).content_hash.is_none())
+        .map(|s| s.name.as_str())
+        .collect();
+    if !missing.is_empty() {
+        writeln!(out, "not downloaded yet (skipped): {}", missing.join(", ")).map_err(io)?;
+    }
+    let Some((report, dir)) = compile_if_changed(&store, &settings, &specs, true)? else {
+        return Ok(true);
+    };
+    let st = &report.manifest.stats;
+    let t = &report.timings;
+    writeln!(
+        out,
+        "snapshot {} in {}\n  names {} (subtree {}, exact {}, subdomains {}), regexes {}, modifier rules {}, list sets {}, $badfilter removed {}",
+        report.manifest.version,
+        dir.display(),
+        st.subtree_names + st.exact_names + st.subdomains_names,
+        st.subtree_names,
+        st.exact_names,
+        st.subdomains_names,
+        st.regexes,
+        st.modrules,
+        st.listsets,
+        st.badfiltered
+    )
+    .map_err(io)?;
+    writeln!(
+        out,
+        "  {:.2} bytes/name; {:.2?} total (parse {:.2?}, merge {:.2?}, tables {:.2?}) on {} thread(s); {} sort runs spilled",
+        st.bytes_per_name, t.total, t.parse, t.merge, t.tables, settings.threads, report.spilled_runs
+    )
+    .map_err(io)?;
+    for (i, l) in st.per_list.iter().enumerate() {
+        writeln!(
+            out,
+            "  {:<24} entries {:>9}  unique {:>9}  unsupported {:>6}  invalid {:>6}",
+            report.manifest.lists[i].name, l.entries, l.unique, l.unsupported, l.invalid
+        )
+        .map_err(io)?;
+    }
+    for (list, line, why) in &report.regex_errors {
+        writeln!(out, "  regex rejected: {list} line {line}: {why}").map_err(io)?;
+    }
+    Ok(report.regex_errors.is_empty())
 }
 
 /// `telltale lists fetch`: refresh every enabled list once and print the result.

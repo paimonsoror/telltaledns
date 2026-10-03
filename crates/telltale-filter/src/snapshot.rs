@@ -1,0 +1,301 @@
+//! Compiled filter snapshot: on-disk layout, manifest, and loading (`spec/05` §3, `02` §5).
+//!
+//! A snapshot directory holds:
+//! - `subtree.fst`, `exact.fst`, `subdomains.fst`: reversed-label keys (`com.example.ads.`)
+//!   → index into `listsets.bin`
+//! - `listsets.bin`: the interned [`ListSetTable`]
+//! - `modrules.fst` + `modrules.json`: rules with `$client`/`$dnstype`/`$denyallow`/
+//!   `$dnsrewrite` (key → range of rules, evaluated only on a hit, §3.3)
+//! - `regex.json`: regex rules with metadata (§3.2)
+//! - `manifest.json`: version, list IDs, per-blob BLAKE3 + size, compile stats
+//!
+//! Blobs are content-addressed by their hash in the manifest, so cluster sync (CLU-003) ships
+//! only blobs whose hash changed.
+
+use std::fs;
+use std::io;
+use std::path::Path;
+
+use fst::Map;
+use serde::{Deserialize, Serialize};
+
+pub use crate::compile::listset::{Class, ListSetTable};
+use crate::parse::Scope;
+
+/// Snapshot format; bump on incompatible layout changes.
+pub const FORMAT: u32 = 1;
+
+pub const SUBTREE_FST: &str = "subtree.fst";
+pub const EXACT_FST: &str = "exact.fst";
+pub const SUBDOMAINS_FST: &str = "subdomains.fst";
+pub const LISTSETS: &str = "listsets.bin";
+pub const MODRULES_FST: &str = "modrules.fst";
+pub const MODRULES: &str = "modrules.json";
+pub const REGEX: &str = "regex.json";
+pub const MANIFEST: &str = "manifest.json";
+
+/// Every blob file, in manifest order.
+pub const BLOBS: [&str; 7] = [
+    SUBTREE_FST,
+    EXACT_FST,
+    SUBDOMAINS_FST,
+    LISTSETS,
+    MODRULES_FST,
+    MODRULES,
+    REGEX,
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Manifest {
+    pub format: u32,
+    pub version: u64,
+    /// Unix seconds.
+    pub created: u64,
+    /// List ID = index. Bit `i` of every list bitset refers to `lists[i]`.
+    pub lists: Vec<ManifestList>,
+    pub blobs: Vec<Blob>,
+    pub stats: CompileStats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestList {
+    pub id: u16,
+    pub name: String,
+    /// BLAKE3 of the list source this snapshot was compiled from.
+    pub source_hash: String,
+    pub kind: telltale_config::ListKind,
+    #[serde(rename = "match")]
+    pub match_mode: telltale_config::ListMatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Blob {
+    pub name: String,
+    pub blake3: String,
+    pub bytes: u64,
+}
+
+/// Totals and per-list counts (`spec/05` §6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompileStats {
+    /// Distinct names per scope (one name can carry several lists).
+    pub subtree_names: u64,
+    pub exact_names: u64,
+    pub subdomains_names: u64,
+    pub listsets: u64,
+    pub modrules: u64,
+    pub regexes: u64,
+    /// Rules removed by `$badfilter`.
+    pub badfiltered: u64,
+    /// Regexes the engine refused (size limits); listed in the compile report.
+    pub regex_rejected: u64,
+    /// Bytes of FSTs + list sets per distinct name (the `05` §3.1 ≤ 12 B target).
+    pub bytes_per_name: f64,
+    pub per_list: Vec<ListCompileStats>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListCompileStats {
+    pub id: u16,
+    /// Names, regexes, and modifier rules this list contributes (`telltale_list_entries`).
+    pub entries: u64,
+    /// Names no other compiled list has (§6 "unique contribution").
+    pub unique: u64,
+    pub invalid: u64,
+    pub unsupported: u64,
+}
+
+/// A rule kept outside the domain FSTs because of its modifiers (§3.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModRule {
+    pub list: u16,
+    pub line: u32,
+    pub scope: ScopeTag,
+    pub allow: bool,
+    pub important: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client: Vec<NegValue<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dnstype: Vec<NegValue<u16>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denyallow: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnsrewrite: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NegValue<T> {
+    pub value: T,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub negated: bool,
+}
+
+/// Serialized [`Scope`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScopeTag {
+    Subtree,
+    Exact,
+    Subdomains,
+}
+
+impl From<Scope> for ScopeTag {
+    fn from(s: Scope) -> Self {
+        match s {
+            Scope::Subtree => Self::Subtree,
+            Scope::Exact => Self::Exact,
+            Scope::Subdomains => Self::Subdomains,
+        }
+    }
+}
+
+/// A regex rule (§3.2). Patterns match the lowercase query name without the trailing dot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegexRule {
+    pub pattern: String,
+    pub list: u16,
+    pub line: u32,
+    pub allow: bool,
+    pub important: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dnstype: Vec<NegValue<u16>>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ModRules {
+    /// Sorted by key; `modrules.fst` maps each key to `start << 32 | count`.
+    pub(crate) rules: Vec<ModRule>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct Regexes {
+    pub(crate) rules: Vec<RegexRule>,
+}
+
+/// A loaded snapshot. FSTs are read into memory for now (mmap needs `unsafe`, which only
+/// `telltale-net` may use; ADR-018).
+#[derive(Debug)]
+pub struct Snapshot {
+    pub manifest: Manifest,
+    pub subtree: Map<Vec<u8>>,
+    pub exact: Map<Vec<u8>>,
+    pub subdomains: Map<Vec<u8>>,
+    pub listsets: ListSetTable,
+    pub modrules_index: Map<Vec<u8>>,
+    pub modrules: Vec<ModRule>,
+    pub regexes: Vec<RegexRule>,
+}
+
+/// One suffix of a query name that has an entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainHit {
+    pub scope: Scope,
+    /// The matching name (`example.com` for a hit on `ads.example.com`).
+    pub name: String,
+    pub listset: u32,
+}
+
+fn invalid(msg: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+impl Snapshot {
+    /// Loads `dir`, verifying every blob against the manifest's size and BLAKE3.
+    pub fn open(dir: &Path) -> io::Result<Self> {
+        let manifest: Manifest = serde_json::from_slice(&fs::read(dir.join(MANIFEST))?)
+            .map_err(|e| invalid(format!("manifest: {e}")))?;
+        if manifest.format != FORMAT {
+            return Err(invalid(format!(
+                "snapshot format {} (this build reads {FORMAT})",
+                manifest.format
+            )));
+        }
+        let read = |name: &str| -> io::Result<Vec<u8>> {
+            let data = fs::read(dir.join(name))?;
+            let blob = manifest
+                .blobs
+                .iter()
+                .find(|b| b.name == name)
+                .ok_or_else(|| invalid(format!("{name} missing from manifest")))?;
+            if data.len() as u64 != blob.bytes
+                || blake3::hash(&data).to_hex().as_str() != blob.blake3
+            {
+                return Err(invalid(format!(
+                    "{name}: content doesn't match the manifest"
+                )));
+            }
+            Ok(data)
+        };
+        let fst = |name: &str| -> io::Result<Map<Vec<u8>>> {
+            Map::new(read(name)?).map_err(|e| invalid(format!("{name}: {e}")))
+        };
+        let modrules: ModRules = serde_json::from_slice(&read(MODRULES)?)
+            .map_err(|e| invalid(format!("{MODRULES}: {e}")))?;
+        let regexes: Regexes =
+            serde_json::from_slice(&read(REGEX)?).map_err(|e| invalid(format!("{REGEX}: {e}")))?;
+        Ok(Self {
+            subtree: fst(SUBTREE_FST)?,
+            exact: fst(EXACT_FST)?,
+            subdomains: fst(SUBDOMAINS_FST)?,
+            listsets: ListSetTable::read(&read(LISTSETS)?)?,
+            modrules_index: fst(MODRULES_FST)?,
+            modrules: modrules.rules,
+            regexes: regexes.rules,
+            manifest,
+        })
+    }
+
+    /// Every suffix of `qname` with a domain entry, most specific last. Simple and allocating:
+    /// for tests and explain; the query path uses the matcher's walk (T2.4).
+    pub fn domain_hits(&self, qname: &str) -> Vec<DomainHit> {
+        let name = qname.trim_end_matches('.').to_ascii_lowercase();
+        let labels: Vec<&str> = name.split('.').collect();
+        let mut hits = Vec::new();
+        let mut key = String::new();
+        for depth in 1..=labels.len() {
+            key.push_str(labels[labels.len() - depth]);
+            key.push('.');
+            let full = depth == labels.len();
+            let suffix = labels[labels.len() - depth..].join(".");
+            let mut check = |map: &Map<Vec<u8>>, scope: Scope| {
+                if let Some(v) = map.get(key.as_bytes()) {
+                    hits.push(DomainHit {
+                        scope,
+                        name: suffix.clone(),
+                        listset: u32::try_from(v).unwrap_or(u32::MAX),
+                    });
+                }
+            };
+            check(&self.subtree, Scope::Subtree);
+            if full {
+                check(&self.exact, Scope::Exact);
+            } else {
+                check(&self.subdomains, Scope::Subdomains);
+            }
+        }
+        hits
+    }
+
+    /// Modifier rules attached to exactly `name` (any scope).
+    pub fn modrules_for(&self, name: &str) -> &[ModRule] {
+        let key = crate::compile::reversed_key(name);
+        self.modrules_index
+            .get(&key)
+            .and_then(|v| {
+                let start = usize::try_from(v >> 32).ok()?;
+                let count = usize::try_from(v & 0xffff_ffff).ok()?;
+                self.modrules.get(start..start + count)
+            })
+            .unwrap_or(&[])
+    }
+
+    /// The list name for an ID.
+    pub fn list_name(&self, id: u16) -> Option<&str> {
+        self.manifest
+            .lists
+            .get(usize::from(id))
+            .map(|l| l.name.as_str())
+    }
+}

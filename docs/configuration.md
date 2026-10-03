@@ -63,7 +63,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[record]]` | local records (A, AAAA, CNAME, PTR, TXT, MX, SRV; `*.` wildcards) | `docs/running.md` |
 | `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
 | `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), per-list refresh and size limit | `docs/running.md` |
-| `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit | `spec/05` §3.4 |
+| `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory | `spec/05` §3.4 |
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |

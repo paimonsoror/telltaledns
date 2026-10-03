@@ -265,7 +265,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let mut lists = Lists::start(&cfg);
     sources
         .lists
-        .store(lists.as_ref().map(|l| Arc::clone(&l.fetcher)));
+        .store(lists.as_ref().map(|l| Arc::clone(&l.shared)));
 
     let mut term = signal(SignalKind::terminate())?;
     let mut hup = signal(SignalKind::hangup())?;
@@ -339,7 +339,7 @@ fn reload(
         *lists = Lists::start(&new);
         sources
             .lists
-            .store(lists.as_ref().map(|l| Arc::clone(&l.fetcher)));
+            .store(lists.as_ref().map(|l| Arc::clone(&l.shared)));
     }
     let restart = restart_only_changes(current, &new);
     if !restart.is_empty() {

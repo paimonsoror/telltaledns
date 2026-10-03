@@ -26,6 +26,28 @@ const CTRL_WORDS: usize = 8;
 type CtrlBuf = [u64; CTRL_WORDS];
 const CTRL_LEN: usize = CTRL_WORDS * 8;
 
+/// Raises the calling thread's nice value to at least `nice` (lower priority); a thread
+/// that's already lower is left alone. On Linux, `setpriority(PRIO_PROCESS, tid)` applies to
+/// that one thread, and threads it spawns inherit the value.
+pub(crate) fn lower_thread_priority(nice: i32) -> io::Result<()> {
+    // SAFETY: SYS_gettid takes no arguments and cannot fail.
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+    let tid = libc::id_t::try_from(tid).map_err(io::Error::other)?;
+    // SAFETY: getpriority only reads its scalar arguments; `tid` is this thread's own ID.
+    let cur = unsafe { libc::getpriority(libc::PRIO_PROCESS as _, tid) };
+    let target = nice.clamp(-20, 19);
+    if cur >= target {
+        return Ok(());
+    }
+    // SAFETY: setpriority only reads its scalar arguments; `tid` is this thread's own ID.
+    let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS as _, tid, target) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 /// Enables destination-address reporting so replies can use the right source address.
 pub(crate) fn enable_pktinfo(sock: &impl AsRawFd, v6: bool) -> io::Result<()> {
     let one: libc::c_int = 1;
