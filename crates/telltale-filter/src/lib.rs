@@ -7,5 +7,6 @@
 
 pub mod compile;
 pub mod fetch;
+pub mod matcher;
 pub mod parse;
 pub mod snapshot;

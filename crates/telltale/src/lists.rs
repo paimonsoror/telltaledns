@@ -9,6 +9,7 @@ use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -17,12 +18,15 @@ use telltale_filter::compile::{CompileOptions, CompileReport, ListData, ListInpu
 use telltale_filter::fetch::{
     Client, FetchSettings, Fetcher, ListSpec, Outcome, Resolve, Store, SystemResolver,
 };
+use telltale_filter::matcher::{Lookup, Matcher, Overlay};
 use telltale_filter::parse::{ListOptions, parse_list};
-use telltale_filter::snapshot::{MANIFEST, Manifest};
+use telltale_filter::snapshot::{MANIFEST, Manifest, Snapshot};
 use telltale_upstream::Bootstrap;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
+
+use crate::pipeline::{FilterState, Pipeline};
 
 /// Resolves list hostnames like hostname upstreams do (UPS-009): through the system resolvers
 /// minus our own listeners. When the system resolver *is* this server (a Pi pointing
@@ -115,8 +119,9 @@ pub(crate) struct Lists {
 }
 
 impl Lists {
-    /// Starts the background fetcher if this node compiles lists and any are configured.
-    pub(crate) fn start(cfg: &Config) -> Option<Self> {
+    /// Starts the background fetcher and compiler if this node compiles lists and any are
+    /// configured. Compiled snapshots are published to `pipeline`'s filter.
+    pub(crate) fn start(cfg: &Config, pipeline: &Arc<Pipeline>) -> Option<Self> {
         if cfg.node.role == Role::Resolver || cfg.list.is_empty() {
             return None;
         }
@@ -148,6 +153,10 @@ impl Lists {
                 settings,
                 compile_rx,
                 changed,
+                Publisher {
+                    pipeline: Arc::clone(pipeline),
+                    generation: Arc::new(AtomicU64::new(0)),
+                },
             )),
         ];
         Some(Self {
@@ -315,18 +324,102 @@ fn compile_if_changed(
     Ok(Some((report, out)))
 }
 
-/// Recompiles whenever stored list content or the list configuration changes.
+/// Loads compiled snapshots into the pipeline's filter (FLT-004 atomic swap). A snapshot is
+/// served with the FST walk as soon as it's loaded, then again with the hash index once that
+/// is built (ADR-020), so neither a cold start nor a recompile waits for the index.
+#[derive(Clone)]
+struct Publisher {
+    pipeline: Arc<Pipeline>,
+    /// Bumped per publish; a slow index build for an older snapshot is discarded.
+    generation: Arc<AtomicU64>,
+}
+
+impl Publisher {
+    fn publish(&self, dir: PathBuf) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let this = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("telltale-load".into())
+            .spawn(move || this.load(&dir, generation));
+        if let Err(e) = spawned {
+            error!("cannot start the snapshot loader: {e}");
+        }
+    }
+
+    fn load(&self, dir: &Path, generation: u64) {
+        let t = std::time::Instant::now();
+        let snap = match Snapshot::open(dir) {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                error!(dir = %dir.display(), "cannot load filter snapshot; keeping the current filter: {e}");
+                return;
+            }
+        };
+        let version = snap.manifest.version;
+        let store = |m: Matcher| {
+            if self.generation.load(Ordering::SeqCst) == generation {
+                self.pipeline
+                    .filter
+                    .store(Some(Arc::new(FilterState::new(Arc::new(m)))));
+                true
+            } else {
+                false
+            }
+        };
+        let walk =
+            match Matcher::with_lookup(Some(Arc::clone(&snap)), Overlay::default(), Lookup::Walk) {
+                Ok(m) => m,
+                Err(e) => {
+                    error!(
+                        version,
+                        "cannot activate filter snapshot; keeping the current filter: {e}"
+                    );
+                    return;
+                }
+            };
+        if !store(walk) {
+            return; // a newer snapshot was published meanwhile
+        }
+        info!(
+            version,
+            seconds = t.elapsed().as_secs_f64(),
+            "filter active (building lookup index)"
+        );
+        // The index build is background work like compiling: never at the cost of queries.
+        let _ = telltale_net::lower_thread_priority(10);
+        let t = std::time::Instant::now();
+        if let Ok(m) = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed) {
+            #[allow(clippy::cast_precision_loss)] // MiB for a log line
+            let mib = m.index_bytes() as f64 / f64::from(1u32 << 20);
+            let lookup = m.lookup();
+            if store(m) {
+                info!(
+                    version,
+                    ?lookup,
+                    index_mib = format!("{mib:.1}"),
+                    seconds = t.elapsed().as_secs_f64(),
+                    "filter lookup index ready"
+                );
+            }
+        }
+    }
+}
+
+/// Recompiles whenever stored list content or the list configuration changes, and publishes
+/// every new snapshot to the pipeline.
 async fn compile_loop(
     shared: Arc<ListsShared>,
     settings: CompileSettings,
     mut specs: watch::Receiver<Arc<Vec<CompileSpec>>>,
     mut changed: watch::Receiver<u64>,
+    publisher: Publisher,
 ) {
     let store = shared.fetcher.store().clone();
-    // Report what's on disk right away, so metrics are meaningful before any compile.
+    // Serve the newest snapshot on disk right away (cold start, CLU-004), before any compile.
     if let Some((_, dir)) = snapshot_versions(&settings.snapshots).last()
         && let Some(manifest) = read_manifest(dir)
     {
+        publisher.publish(dir.clone());
         *shared
             .compiled
             .lock()
@@ -355,6 +448,7 @@ async fn compile_loop(
         };
         match result {
             Ok(Ok(Some((report, dir)))) => {
+                publisher.publish(dir.clone());
                 let st = &report.manifest.stats;
                 info!(
                     version = report.manifest.version,

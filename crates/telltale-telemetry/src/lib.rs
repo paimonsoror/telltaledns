@@ -30,6 +30,8 @@ pub enum Status {
     Local,
     /// Special name (localhost, canary, ANY, private PTR, ...).
     Special,
+    /// Blocked by a filter list (FLT-003).
+    Blocked,
     /// Refused by access control.
     Refused,
     RateLimited,
@@ -42,12 +44,13 @@ pub enum Status {
 }
 
 impl Status {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Cached,
         Self::Forwarded,
         Self::Stale,
         Self::Local,
         Self::Special,
+        Self::Blocked,
         Self::Refused,
         Self::RateLimited,
         Self::Malformed,
@@ -61,6 +64,7 @@ impl Status {
             Self::Stale => "stale",
             Self::Local => "local",
             Self::Special => "special",
+            Self::Blocked => "blocked",
             Self::Refused => "refused",
             Self::RateLimited => "rate_limited",
             Self::Malformed => "malformed",

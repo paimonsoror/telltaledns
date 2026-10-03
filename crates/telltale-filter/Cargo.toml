@@ -38,9 +38,11 @@ tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-uti
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 tracing = "0.1.44"
 webpki-roots = "1.0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = { version = "0.14.0", default-features = false }
 
 [dev-dependencies]
+allocation-counter = "0.8.1"
 insta = "1.49.0"
 rcgen = "0.14.10"
 tempfile = "3.27.0"

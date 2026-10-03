@@ -118,6 +118,18 @@ pub(crate) fn render(src: &Sources) -> String {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
     }
+    if let Some(f) = src.pipeline.filter.load_full() {
+        w.family(
+            "telltale_filter_lookup_index_bytes",
+            "gauge",
+            "Memory of the query-time hash index (0 while the FST walk serves lookups).",
+        )
+        .sample(
+            "telltale_filter_lookup_index_bytes",
+            &[],
+            f.matcher.index_bytes(),
+        );
+    }
     render_listeners(&mut w, src);
     w.family("telltale_local_records", "gauge", "Local records loaded.")
         .sample("telltale_local_records", &[], state.policy.local.len());

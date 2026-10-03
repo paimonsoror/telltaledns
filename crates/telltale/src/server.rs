@@ -262,7 +262,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
 
     // REQ: FLT-004 — lists download in the background once DNS is up (rule 5: DNS never
     // waits for, or depends on, a list).
-    let mut lists = Lists::start(&cfg);
+    let mut lists = Lists::start(&cfg, &pipeline);
     sources
         .lists
         .store(lists.as_ref().map(|l| Arc::clone(&l.shared)));
@@ -305,7 +305,7 @@ fn reload(
     current: &mut Config,
     listeners: &mut Listeners,
     health: &mut JoinHandle<()>,
-    pipeline: &Pipeline,
+    pipeline: &Arc<Pipeline>,
     sources: &http::Sources,
     lists: &mut Option<Lists>,
 ) {
@@ -336,7 +336,7 @@ fn reload(
     if let Some(l) = lists {
         l.reload(&new);
     } else {
-        *lists = Lists::start(&new);
+        *lists = Lists::start(&new, pipeline);
         sources
             .lists
             .store(lists.as_ref().map(|l| Arc::clone(&l.shared)));

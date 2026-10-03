@@ -7,12 +7,14 @@
 //! The synchronous part (`handle`) runs on hot-path threads: a cache hit is answered without
 //! allocating. Anything that needs I/O becomes a deferred future driven by the runtime.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
 use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
+use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
 use telltale_policy::{LocalData, RateLimiter, Special};
 use telltale_proto::{
@@ -84,6 +86,38 @@ impl Policy {
     }
 }
 
+/// The active filter (`spec/03` §3 step 6): a matcher plus which lists apply.
+#[derive(Debug)]
+pub(crate) struct FilterState {
+    pub(crate) matcher: Arc<Matcher>,
+    /// Lists every client gets until groups exist (T2.5): all lists in the snapshot.
+    pub(crate) mask: ListMask,
+    /// EDE text per list ID, built once so blocking doesn't allocate.
+    pub(crate) reasons: Vec<String>,
+}
+
+impl FilterState {
+    pub(crate) fn new(matcher: Arc<Matcher>) -> Self {
+        let names: Vec<String> = matcher
+            .snapshot()
+            .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default();
+        Self {
+            mask: ListMask::all(names.len()),
+            reasons: names
+                .iter()
+                .map(|n| format!("blocked by list {n}"))
+                .collect(),
+            matcher,
+        }
+    }
+}
+
+thread_local! {
+    /// Per-thread regex caches for the matcher (allocated on first use and after swaps).
+    static FILTER_SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+}
+
 /// The part of the pipeline that a config reload replaces (OPS-009).
 #[derive(Debug)]
 pub(crate) struct Dynamic {
@@ -98,6 +132,8 @@ pub(crate) struct Pipeline {
     cache: Arc<Cache>,
     /// Routing and policy, swapped atomically on reload (OPS-009); readers never lock.
     state: ArcSwap<Dynamic>,
+    /// The filter, swapped atomically whenever a snapshot is compiled or indexed (FLT-004).
+    pub(crate) filter: ArcSwapOption<FilterState>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
@@ -124,6 +160,7 @@ impl Pipeline {
             settings,
             cache,
             state: ArcSwap::from_pointee(Dynamic { router, policy }),
+            filter: ArcSwapOption::empty(),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -202,6 +239,10 @@ impl Pipeline {
         {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
+        }
+        // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
+        if let Some(blocked) = self.filter_block(&q, meta, out, oc) {
+            return blocked;
         }
         self.resolve_or_defer(req, &q, special, meta, out, start, oc)
     }
@@ -349,6 +390,41 @@ impl Pipeline {
             b.finish(edns).ok()
         });
         ready(len.map(|l| self.finish(q, out, l, meta.transport)))
+    }
+
+    /// Answers a blocked query (NXDOMAIN + EDE 15 naming the list; block modes are T2.6), or
+    /// returns `None` to resolve normally. Allocation-free on the steady state.
+    fn filter_block(
+        &self,
+        q: &Query<'_>,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        oc: &mut Outcome,
+    ) -> Option<Response> {
+        let guard = self.filter.load();
+        let f = guard.as_ref()?;
+        let client = ClientCtx {
+            ip: meta.peer.ip(),
+            names: &[],
+        };
+        let decision = FILTER_SCRATCH.with(|s| {
+            f.matcher.decide(
+                q.qname.as_wire(),
+                q.qtype,
+                &client,
+                &f.mask,
+                &mut s.borrow_mut(),
+            )
+        });
+        let Decision::Block(a) = decision else {
+            return None;
+        };
+        oc.status = Status::Blocked;
+        let reason = f
+            .reasons
+            .get(usize::from(a.list))
+            .map_or("blocked", String::as_str);
+        Some(self.simple(q, out, rcode::NXDOMAIN, Some((ede::BLOCKED, reason)), meta))
     }
 
     /// RFC 6761 §6.3: `localhost` names resolve to loopback.
@@ -663,6 +739,65 @@ mod tests {
         match Handler(Arc::clone(p)).handle(req, &meta(), &mut out) {
             Response::Ready(len) => Some(summarize(&out[..len]).unwrap().rcode),
             _ => None,
+        }
+    }
+
+    /// Compiles `rules` into a snapshot and installs it as the pipeline's filter.
+    fn install_filter(p: &Pipeline, rules: &str, lookup: telltale_filter::matcher::Lookup) {
+        use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
+        use telltale_filter::matcher::Overlay;
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("snap");
+        let input = ListInput {
+            name: "ads".into(),
+            options: telltale_filter::parse::ListOptions::default(),
+            data: ListData::Bytes(rules.as_bytes().to_vec()),
+            source_hash: telltale_filter::fetch::content_hash(rules.as_bytes()),
+            size: rules.len() as u64,
+        };
+        compile(vec![input], &out, &CompileOptions::default()).unwrap();
+        let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
+        let m = Matcher::with_lookup(Some(snap), Overlay::default(), lookup).unwrap();
+        p.filter
+            .store(Some(Arc::new(FilterState::new(Arc::new(m)))));
+    }
+
+    #[test]
+    fn flt_003_blocked_names_get_nxdomain_with_ede() {
+        use telltale_filter::matcher::Lookup;
+        for lookup in [Lookup::Walk, Lookup::Indexed] {
+            let p = pipeline();
+            install_filter(&p, "||ads.example.com^\n@@||ok.ads.example.com^\n", lookup);
+            let mut out = [0u8; 4096];
+            let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
+                &query("x.ads.example.com", rtype::A, true),
+                &meta(),
+                &mut out,
+            ) else {
+                panic!("blocked queries are answered immediately");
+            };
+            let s = summarize(&out[..len]).unwrap();
+            assert_eq!(s.rcode, rcode::NXDOMAIN, "{lookup:?}");
+            let text = b"blocked by list ads";
+            assert!(
+                out[..len].windows(text.len()).any(|w| w == text),
+                "EDE 15 names the list"
+            );
+            // Not blocked: allowed by @@, or unlisted. No upstreams here, so they're REFUSED.
+            assert_eq!(
+                rcode_of(&p, &query("ok.ads.example.com", rtype::A, true)),
+                Some(rcode::REFUSED)
+            );
+            assert_eq!(
+                rcode_of(&p, &query("example.com", rtype::A, true)),
+                Some(rcode::REFUSED)
+            );
+            // Removing the filter stops blocking at once.
+            p.filter.store(None);
+            assert_eq!(
+                rcode_of(&p, &query("ads.example.com", rtype::A, true)),
+                Some(rcode::REFUSED)
+            );
         }
     }
 

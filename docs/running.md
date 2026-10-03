@@ -130,7 +130,7 @@ default_ttl = 300
 - `telltale config check` validates record values and reads the hosts files.
 
 ## Filter lists
-> **Status:** lists are downloaded, parsed, and compiled into a filter snapshot, but not enforced yet. Blocking arrives with the matcher (roadmap T2.4–T2.6).
+> **Status:** lists are downloaded, compiled, and **enforced**. For now every enabled list applies to every client (groups arrive with T2.5), and blocked names get NXDOMAIN with an Extended DNS Error naming the list (more block modes arrive with T2.6).
 
 ```toml
 [[list]]
@@ -221,7 +221,27 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 ```
 `unique` counts the names no other list has. A list with few unique names adds little beyond your other lists.
 
-Metrics: `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
+### Blocking
+A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:
+```
+$ dig @192.168.1.53 ads.example.com
+;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN
+; EDE: 15 (Blocked): (blocked by list hagezi-pro)
+```
+When rules disagree, the most important one wins:
+
+| Wins | Rule | Example |
+|---|---|---|
+| 1 | important allow | `@@\|\|cdn.example.com^$important` |
+| 2 | important block | `\|\|ads.example.com^$important` |
+| 3 | allow (allowlists, `@@` rules) | `@@\|\|cdn.example.com^`, or a `kind = "allow"` list |
+| 4 | block | everything else |
+
+Among rules of the same kind, the one reported is an exact-name rule first, then the longest matching domain, then a regex, then the list listed first in the config.
+
+Lookups take well under a microsecond: about 0.3 µs typically and under 1 µs at p99 on an x86 server with 2.6M blocked names. They use an in-memory index built from the snapshot (about 10 bytes per name, on top of the snapshot's 9). A new snapshot is served the moment it's loaded, and the index is swapped in about a second later, without pausing queries. Memory with HaGeZi Pro + TIF + OISD big + StevenBlack + AdGuard (2.7M names): about 85 MiB in total; HaGeZi Pro alone (227k names): about 10 MiB.
+
+Metrics: `telltale_queries_total{status="blocked"}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
 ```
 time() - telltale_list_last_success_timestamp_seconds > 172800
 ```

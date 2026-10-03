@@ -18,6 +18,7 @@ import hashlib
 import itertools
 import pathlib
 import random
+import re
 import sys
 
 # REQ: NFR-001 — corpora are reproducible from these seeds.
@@ -73,15 +74,24 @@ def miss_heavy(spec):
         yield f"m{n:x}{label(rng)}.{rng.choice(parents)} A"
 
 
+# A blocking rule's domain: hosts lines (`0.0.0.0 name`), plain names, `*.name`, and AdBlock
+# `||name^` / `|name^`. Exceptions (`@@`), regexes, modifiers, and cosmetic rules are skipped:
+# the corpus must contain only names the lists actually block.
+DOMAIN_RE = re.compile(r"^(?:\|\|?|\*\.)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+)\^?$")
+
+
 def blocked(spec, lists):
     files = sorted(lists.glob("*.txt")) if lists else []
     names = []
     for f in files:
         for line in f.read_text(errors="replace").splitlines():
-            line = line.strip()
-            if line and not line.startswith(("#", "!")):
-                # Accept plain-domain and hosts-format lines.
-                names.append(line.split()[-1])
+            line = line.strip().lower()
+            if not line or line.startswith(("#", "!", "@@", "[")):
+                continue
+            token = line.split()[-1] if " " in line or "\t" in line else line
+            m = DOMAIN_RE.match(token)
+            if m and not m.group(1).replace(".", "").isdigit():
+                names.append(m.group(1))
     if not names:
         sys.exit(f"blocked corpus needs domain lists (*.txt) in {lists}")
     rng = random.Random(spec["seed"])

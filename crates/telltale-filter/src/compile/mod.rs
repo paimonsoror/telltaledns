@@ -786,6 +786,8 @@ pub fn regex_builder() -> regex_automata::meta::Builder {
     b.syntax(regex_automata::util::syntax::Config::new().case_insensitive(true))
         .configure(
             regex_automata::meta::Config::new()
+                // Report every matching pattern, not just the leftmost-first one.
+                .match_kind(regex_automata::MatchKind::All)
                 .nfa_size_limit(Some(64 << 20))
                 .hybrid_cache_capacity(2 << 20),
         );

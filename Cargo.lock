@@ -1792,6 +1792,7 @@ dependencies = [
  "telltale-proto",
  "telltale-telemetry",
  "telltale-upstream",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
@@ -1833,6 +1834,7 @@ dependencies = [
 name = "telltale-filter"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "blake3",
  "bytes",
  "fst",
@@ -1858,6 +1860,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "webpki-roots",
+ "xxhash-rust",
  "zstd",
 ]
 
