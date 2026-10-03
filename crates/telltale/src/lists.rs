@@ -205,10 +205,19 @@ impl CompileSettings {
     fn from_config(cfg: &Config) -> Self {
         Self {
             snapshots: Path::new(cfg.node.data_dir.as_str()).join("snapshots"),
-            threads: usize::from(cfg.filter.compile_threads.max(1)),
+            threads: compile_threads(cfg.filter.compile_threads),
             memory: usize::try_from(cfg.filter.compile_memory.bytes()).unwrap_or(usize::MAX),
         }
     }
+}
+
+/// `0` = auto: half the available cores (cgroup-aware), between 1 and 4. Measured on a Pi 4:
+/// 2M names compile in 11.6 s on one thread, 6.4 s on two, 4.7 s on three (ADR-018).
+fn compile_threads(configured: u8) -> usize {
+    if configured > 0 {
+        return usize::from(configured);
+    }
+    (telltale_net::default_workers() / 2).clamp(1, 4)
 }
 
 /// Snapshot versions on disk with a manifest, ascending.

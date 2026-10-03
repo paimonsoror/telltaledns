@@ -441,8 +441,8 @@ pub struct FilterConfig {
     pub fetch_retries: u8,
     /// Downloads larger than this fail and the previous copy is kept.
     pub max_list_bytes: ByteSize,
-    /// Threads for compiling lists (they run at low CPU priority). One keeps a Pi's other
-    /// cores free for queries; raise it on a dedicated controller.
+    /// Threads for compiling lists (at low CPU priority). 0 = auto: half the cores, between
+    /// 1 and 4 (2 on a Pi 4, which compiles 2M names in about 6 s).
     pub compile_threads: u8,
     /// Memory for sorting list entries before spilling to disk (`spec/05` §3.4).
     pub compile_memory: ByteSize,
@@ -456,7 +456,7 @@ impl Default for FilterConfig {
             fetch_timeout_secs: 120,
             fetch_retries: 3,
             max_list_bytes: ByteSize::mib(64),
-            compile_threads: 1,
+            compile_threads: 0,
             compile_memory: ByteSize::mib(128),
         }
     }

@@ -320,8 +320,8 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
     if !(1024..=1 << 30).contains(&f.max_list_bytes.bytes()) {
         r.err("filter.max_list_bytes", "must be between 1KiB and 1GiB");
     }
-    if !(1..=64).contains(&f.compile_threads) {
-        r.err("filter.compile_threads", "must be between 1 and 64");
+    if f.compile_threads > 64 {
+        r.err("filter.compile_threads", "must be at most 64 (0 = auto)");
     }
     if f.compile_memory.bytes() < 16 << 20 {
         r.err("filter.compile_memory", "must be at least 16MiB");

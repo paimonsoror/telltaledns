@@ -153,7 +153,7 @@ fetch_concurrency = 4
 fetch_timeout_secs = 120                # per attempt, including the download
 fetch_retries = 3                       # network errors, HTTP 5xx, and 429 are retried with backoff
 max_list_bytes = "64MiB"                # per-list `max_bytes` overrides
-compile_threads = 1                     # lists compile at low priority on this many threads
+compile_threads = 0                     # 0 = auto (half the cores, 1-4); low CPU priority
 compile_memory = "128MiB"               # sort budget before spilling to disk
 ```
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
@@ -206,9 +206,9 @@ It exits non-zero if any list has invalid lines.
 ### Compiling
 Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match` changes, TelltaleDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
 
-- Compiling runs in the background at low CPU priority (nice 10), on `[filter] compile_threads` threads (default 1, which leaves a Pi's other cores to DNS). It never pauses or locks query handling.
+- Compiling runs in the background at low CPU priority (nice 10), on `[filter] compile_threads` threads. The default, `0`, means half the cores, between 1 and 4, so 2 on a Pi 4. It never pauses or locks query handling.
 - Memory stays bounded. List entries are sorted within `[filter] compile_memory` (default `"128MiB"`), and anything beyond that spills to temporary files in the snapshot directory. Each list's text is read only while it's being parsed.
-- Size: about 9 bytes per blocked name. HaGeZi Pro + HaGeZi TIF + OISD big + StevenBlack + the AdGuard DNS filter (2.7M names) compile to 25 MB, in about 4.5 s on a laptop core.
+- Size and speed: about 9 bytes per blocked name. On a Raspberry Pi 4, 2 million names compile in about 6.4 s with the default 2 threads (11.6 s on 1, 4.7 s on 3). A laptop does 2.7M names in about 2.7 s.
 
 ```sh
 telltale lists compile -c telltale.toml     # compile now and show per-list numbers

@@ -148,12 +148,14 @@ fn flt_003_modifier_rules_are_indexed() {
 }
 
 #[test]
-fn flt_004_spilling_produces_identical_snapshots() {
+fn flt_004_spilling_and_threads_produce_identical_snapshots() {
     let tmp = tempfile::tempdir().unwrap();
-    let big = (0..60_000).fold(String::new(), |mut s, i| {
+    let mut big = (0..60_000).fold(String::new(), |mut s, i| {
         let _ = writeln!(s, "n{i}.example{}.com", i % 97);
         s
     });
+    // Problem lines near the end, so their line numbers cross chunk boundaries.
+    big.push_str("not valid!\nexample.com##.ad\n");
     let lists = vec![
         input("big", ListKind::Block, &big),
         input(
@@ -187,8 +189,32 @@ fn flt_004_spilling_produces_identical_snapshots() {
             .map(|b| (b.name.clone(), b.blake3.clone()))
             .collect::<Vec<_>>()
     };
-    assert_eq!(blobs(&a), blobs(&b));
+    // One thread writes one FST per scope, two threads two shards each: different files,
+    // identical answers.
+    assert_eq!(a.manifest.fst_shards, 1);
+    assert_eq!(b.manifest.fst_shards, 2);
+    assert_eq!(blobs(&a).len() + 3, blobs(&b).len());
+    let (sa, sb) = (
+        Snapshot::open(&tmp.path().join("mem")).unwrap(),
+        Snapshot::open(&tmp.path().join("spill")).unwrap(),
+    );
+    for i in (0..60_000).step_by(997) {
+        let q = format!("x.n{i}.example{}.com", i % 97);
+        let (ha, hb) = (sa.domain_hits(&q), sb.domain_hits(&q));
+        assert_eq!(ha.len(), 1, "{q}");
+        assert_eq!(ha.len(), hb.len(), "{q}");
+        assert_eq!(
+            classes(&sa, ha[0].listset),
+            classes(&sb, hb[0].listset),
+            "{q}"
+        );
+    }
+    assert_eq!(a.manifest.stats.listsets, b.manifest.stats.listsets);
     assert_eq!(a.manifest.stats.subtree_names, 60_001);
+    // Chunked parsing (threads = 2 splits `big`) reports the same stats and line numbers.
+    assert_eq!(a.parse, b.parse);
+    let lines: Vec<u32> = b.parse[0].samples.iter().map(|s| s.line).collect();
+    assert_eq!(lines, vec![60_001, 60_002]);
     // No run files or partial directories left behind.
     let mut left: Vec<_> = fs::read_dir(tmp.path())
         .unwrap()
@@ -208,7 +234,7 @@ fn flt_003_snapshot_integrity_and_atomicity() {
         Err(CompileError::Exists(_))
     ));
     // A modified blob is refused.
-    let path = out.join(crate::snapshot::SUBTREE_FST);
+    let path = out.join(crate::snapshot::LISTSETS);
     let mut data = fs::read(&path).unwrap();
     let last = data.len() - 1;
     data[last] ^= 0xff;

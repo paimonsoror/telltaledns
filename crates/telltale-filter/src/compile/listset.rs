@@ -52,6 +52,10 @@ pub(crate) struct ListSetBuilder {
     entries: Vec<u64>,
     index: HashMap<Box<[u64]>, u32>,
     scratch: Vec<u64>,
+    /// The previous interned entry: sorted input repeats the same list set for long runs, so
+    /// a slice compare usually replaces a hash lookup.
+    last: Vec<u64>,
+    last_id: Option<u32>,
 }
 
 impl ListSetBuilder {
@@ -63,6 +67,8 @@ impl ListSetBuilder {
             entries: Vec::new(),
             index: HashMap::new(),
             scratch: vec![0; words * 4],
+            last: vec![0; words * 4],
+            last_id: None,
         }
     }
 
@@ -113,13 +119,22 @@ impl ListSetBuilder {
 
     /// Interns the current entry and returns its index.
     pub(crate) fn intern(&mut self) -> u32 {
-        if let Some(&id) = self.index.get(self.scratch.as_slice()) {
+        if let Some(id) = self.last_id
+            && self.last == self.scratch
+        {
             return id;
         }
-        let id = u32::try_from(self.index.len()).unwrap_or(u32::MAX);
-        self.entries.extend_from_slice(&self.scratch);
-        self.index
-            .insert(self.scratch.clone().into_boxed_slice(), id);
+        let id = if let Some(&id) = self.index.get(self.scratch.as_slice()) {
+            id
+        } else {
+            let id = u32::try_from(self.index.len()).unwrap_or(u32::MAX);
+            self.entries.extend_from_slice(&self.scratch);
+            self.index
+                .insert(self.scratch.clone().into_boxed_slice(), id);
+            id
+        };
+        self.last.copy_from_slice(&self.scratch);
+        self.last_id = Some(id);
         id
     }
 

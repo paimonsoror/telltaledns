@@ -7,12 +7,14 @@
 //! then renamed). Compilation runs on its own threads and shares nothing with the query path.
 
 pub(crate) mod listset;
+mod shard;
 mod sort;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fst::MapBuilder;
@@ -58,7 +60,8 @@ impl ListInput {
 
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
-    /// Parser threads (lists are spread across them by size).
+    /// Threads for parsing (large lists are split into line-aligned chunks) and for building
+    /// FST shards. 1 = everything on the calling thread.
     pub threads: usize,
     /// In-memory budget for sort records before spilling to disk (`05` §3.4: 128 MiB).
     pub memory_budget: usize,
@@ -124,12 +127,6 @@ fn push_reversed(name: &str, key: &mut Vec<u8>) {
     }
 }
 
-const SCOPES: [(Scope, &str); 3] = [
-    (Scope::Subtree, snapshot::SUBTREE_FST),
-    (Scope::Exact, snapshot::EXACT_FST),
-    (Scope::Subdomains, snapshot::SUBDOMAINS_FST),
-];
-
 fn scope_byte(s: Scope) -> u8 {
     match s {
         Scope::Subtree => 0,
@@ -148,6 +145,42 @@ fn is_plain(m: &Modifiers) -> bool {
     m.client.is_empty() && m.dnstype.is_empty() && m.denyallow.is_empty() && m.dnsrewrite.is_none()
 }
 
+fn neg_values<T: Clone>(v: &[crate::parse::Negatable<T>]) -> Vec<NegValue<T>> {
+    v.iter()
+        .map(|n| NegValue {
+            value: n.value.clone(),
+            negated: n.negated,
+        })
+        .collect()
+}
+
+fn mod_rule(list: u16, line: u32, scope: Scope, rule: &Rule) -> ModRule {
+    let m = &rule.modifiers;
+    ModRule {
+        list,
+        line,
+        scope: scope.into(),
+        allow: rule.action == Action::Allow,
+        important: m.important,
+        client: neg_values(&m.client),
+        dnstype: neg_values(&m.dnstype),
+        denyallow: m.denyallow.clone(),
+        dnsrewrite: m.dnsrewrite.clone(),
+    }
+}
+
+fn regex_rule(list: u16, line: u32, pattern: &str, invert: bool, rule: &Rule) -> RegexRule {
+    RegexRule {
+        pattern: pattern.to_owned(),
+        list,
+        line,
+        allow: rule.action == Action::Allow,
+        important: rule.modifiers.important,
+        invert,
+        dnstype: neg_values(&rule.modifiers.dnstype),
+    }
+}
+
 /// What one parser thread produced.
 struct Parsed {
     sorter_sources: Vec<sort::Source>,
@@ -160,12 +193,118 @@ struct Parsed {
     stats: Vec<(usize, ParseStats)>,
 }
 
-fn parse_bucket(
-    bucket: Vec<(usize, ListInput)>,
-    budget: usize,
-    tmp: &Path,
-    tag: &str,
-) -> io::Result<Parsed> {
+/// A piece of work for one parser thread: a whole list (read lazily) or a line-aligned chunk.
+struct Unit {
+    id: usize,
+    options: ListOptions,
+    size: u64,
+    source: UnitSource,
+}
+
+enum UnitSource {
+    Whole(ListInput),
+    Chunk {
+        data: Arc<Vec<u8>>,
+        start: usize,
+        end: usize,
+        /// Lines before `start`, added to the chunk's line numbers.
+        base_line: u32,
+    },
+}
+
+/// Splits lists into units and spreads them over `threads` buckets (largest first onto the
+/// least-loaded bucket). With one thread, every list stays whole and is read lazily. With
+/// more, lists larger than an even share are read up front and cut at line boundaries.
+fn plan(inputs: Vec<ListInput>, threads: usize) -> io::Result<Vec<Vec<Unit>>> {
+    let threads = threads.max(1);
+    let total: u64 = inputs.iter().map(|l| l.size).sum();
+    let share = (total / threads as u64).max(1 << 20);
+    let mut units = Vec::new();
+    for (id, input) in inputs.into_iter().enumerate() {
+        let options = input.options;
+        if threads == 1 || input.size <= share {
+            units.push(Unit {
+                id,
+                options,
+                size: input.size,
+                source: UnitSource::Whole(input),
+            });
+            continue;
+        }
+        let (data, _) = input.load()?;
+        let data = Arc::new(data);
+        let pieces = usize::try_from(data.len() as u64 / share + 1)
+            .unwrap_or(threads)
+            .min(threads);
+        let step = data.len() / pieces;
+        let mut start = 0;
+        let mut line = 0u32;
+        for p in 0..pieces {
+            let end = if p + 1 == pieces {
+                data.len()
+            } else {
+                // Cut after the next newline at or past the nominal boundary.
+                let nominal = (start + step).max(start);
+                data[nominal..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map_or(data.len(), |i| nominal + i + 1)
+            };
+            if end > start {
+                units.push(Unit {
+                    id,
+                    options,
+                    size: (end - start) as u64,
+                    source: UnitSource::Chunk {
+                        data: Arc::clone(&data),
+                        start,
+                        end,
+                        base_line: line,
+                    },
+                });
+                #[allow(clippy::naive_bytecount)] // once per chunk
+                let newlines = data[start..end].iter().filter(|&&b| b == b'\n').count();
+                line = line.saturating_add(u32::try_from(newlines).unwrap_or(u32::MAX));
+            }
+            start = end;
+        }
+    }
+    units.sort_by_key(|u| std::cmp::Reverse(u.size));
+    let mut buckets: Vec<(u64, Vec<Unit>)> = (0..threads).map(|_| (0, Vec::new())).collect();
+    for u in units {
+        if let Some(b) = buckets.iter_mut().min_by_key(|b| b.0) {
+            b.0 += u.size;
+            b.1.push(u);
+        }
+    }
+    Ok(buckets
+        .into_iter()
+        .map(|b| b.1)
+        .filter(|b| !b.is_empty())
+        .collect())
+}
+
+/// Adds one chunk's statistics into a list's totals.
+fn add_stats(into: &mut ParseStats, from: ParseStats) {
+    into.lines += from.lines;
+    into.blank += from.blank;
+    into.comments += from.comments;
+    into.ignored += from.ignored;
+    into.rules += from.rules;
+    into.invalid += from.invalid;
+    into.unsupported += from.unsupported;
+    into.samples.extend(from.samples);
+    into.samples.sort_by_key(|s| s.line);
+    // Keep the first 10 of each kind, as a single-threaded parse would.
+    let (mut inv, mut uns) = (0, 0);
+    into.samples.retain(|s| {
+        let n = if s.unsupported { &mut uns } else { &mut inv };
+        *n += 1;
+        *n <= 10
+    });
+}
+
+fn parse_bucket(bucket: Vec<Unit>, budget: usize, tmp: &Path, tag: &str) -> io::Result<Parsed> {
     let mut sorter = Sorter::new(budget, tmp, tag);
     let mut out = Parsed {
         sorter_sources: Vec::new(),
@@ -178,13 +317,29 @@ fn parse_bucket(
     };
     let mut key = Vec::with_capacity(256);
     let mut err: Option<io::Error> = None;
-    for (id, input) in bucket {
+    for unit in bucket {
+        let id = unit.id;
+        let options = unit.options;
         let list = u16::try_from(id).map_err(io::Error::other)?;
-        let (data, options) = input.load()?;
-        let stats = parse_list(&data, options, |line, mut rule| {
+        let (owned, chunk) = match unit.source {
+            UnitSource::Whole(input) => (Some(input.load()?.0), None),
+            UnitSource::Chunk {
+                data,
+                start,
+                end,
+                base_line,
+            } => (None, Some((data, start, end, base_line))),
+        };
+        let (text, base_line): (&[u8], u32) = match (&owned, &chunk) {
+            (Some(d), _) => (d, 0),
+            (None, Some((d, s, e, b))) => (&d[*s..*e], *b),
+            (None, None) => (&[], 0),
+        };
+        let mut stats = parse_list(text, options, |line, mut rule| {
             if err.is_some() {
                 return;
             }
+            let line = line.saturating_add(base_line);
             let badfilter = std::mem::take(&mut rule.modifiers.badfilter);
             match &rule.pattern {
                 Pattern::Domain { name, scope } if is_plain(&rule.modifiers) => {
@@ -202,60 +357,22 @@ fn parse_bucket(
                     out.bad_rules.insert(rule);
                 }
                 Pattern::Domain { name, scope } => {
-                    let m = &rule.modifiers;
-                    let neg = |v: &[crate::parse::Negatable<String>]| {
-                        v.iter()
-                            .map(|n| NegValue {
-                                value: n.value.clone(),
-                                negated: n.negated,
-                            })
-                            .collect()
-                    };
-                    let modrule = ModRule {
-                        list,
-                        line,
-                        scope: (*scope).into(),
-                        allow: rule.action == Action::Allow,
-                        important: m.important,
-                        client: neg(&m.client),
-                        dnstype: m
-                            .dnstype
-                            .iter()
-                            .map(|n| NegValue {
-                                value: n.value,
-                                negated: n.negated,
-                            })
-                            .collect(),
-                        denyallow: m.denyallow.clone(),
-                        dnsrewrite: m.dnsrewrite.clone(),
-                    };
+                    let modrule = mod_rule(list, line, *scope, &rule);
                     out.mods.push((reversed_key(name), modrule, rule));
                 }
                 Pattern::Regex { pattern, invert } => {
-                    let r = RegexRule {
-                        pattern: pattern.clone(),
-                        list,
-                        line,
-                        allow: rule.action == Action::Allow,
-                        important: rule.modifiers.important,
-                        invert: *invert,
-                        dnstype: rule
-                            .modifiers
-                            .dnstype
-                            .iter()
-                            .map(|n| NegValue {
-                                value: n.value,
-                                negated: n.negated,
-                            })
-                            .collect(),
-                    };
+                    let r = regex_rule(list, line, pattern, *invert, &rule);
                     out.regexes.push((r, rule));
                 }
             }
         });
-        drop(data);
+        drop(owned);
+        drop(chunk);
         if let Some(e) = err.take() {
             return Err(e);
+        }
+        for s in &mut stats.samples {
+            s.line = s.line.saturating_add(base_line);
         }
         out.stats.push((id, stats));
     }
@@ -264,27 +381,16 @@ fn parse_bucket(
     Ok(out)
 }
 
-/// Spreads lists over `threads` buckets, largest first onto the least-loaded bucket.
-fn buckets(inputs: Vec<ListInput>, threads: usize) -> Vec<Vec<(usize, ListInput)>> {
-    let n = threads.clamp(1, inputs.len().max(1));
-    let mut order: Vec<(usize, ListInput)> = inputs.into_iter().enumerate().collect();
-    order.sort_by_key(|(_, l)| std::cmp::Reverse(l.size));
-    let mut buckets: Vec<(u64, Vec<(usize, ListInput)>)> =
-        (0..n).map(|_| (0, Vec::new())).collect();
-    for item in order {
-        if let Some(b) = buckets.iter_mut().min_by_key(|b| b.0) {
-            b.0 += item.1.size;
-            b.1.push(item);
-        }
-    }
-    buckets.into_iter().map(|b| b.1).collect()
-}
-
 /// What the manifest and reports need after the inputs are consumed.
 struct ListMeta {
     name: String,
     source_hash: String,
     options: ListOptions,
+}
+
+/// One domain FST shard per compile thread (each worker builds one shard of every scope).
+fn fst_shards(threads: usize) -> usize {
+    threads.clamp(1, snapshot::MAX_FST_SHARDS)
 }
 
 /// Hard rule (`spec/05` §3.4): compiling never competes with queries for CPU.
@@ -346,7 +452,7 @@ fn build(
     let count = meta.len();
 
     // Steps 1–2: parse lists in parallel into sort runs.
-    let parsed = parse_all(buckets(inputs, opts.threads), count, dir, opts)?;
+    let parsed = parse_all(plan(inputs, opts.threads)?, count, dir, opts)?;
     timings.parse = started.elapsed();
 
     // Steps 3–4: merge into the scope FSTs and the list-set table.
@@ -365,6 +471,7 @@ fn build(
         &parsed.bad_domains,
         dir,
         count,
+        fst_shards(opts.threads),
         &mut per_list,
         &mut stats,
     )?;
@@ -384,7 +491,14 @@ fn build(
     timings.tables = t.elapsed();
 
     stats.per_list = per_list;
-    let manifest = write_manifest(dir, &meta, opts.version, names, stats)?;
+    let manifest = write_manifest(
+        dir,
+        &meta,
+        opts.version,
+        fst_shards(opts.threads),
+        names,
+        stats,
+    )?;
     timings.total = started.elapsed();
     Ok(CompileReport {
         manifest,
@@ -407,7 +521,7 @@ struct Combined {
 }
 
 fn parse_all(
-    groups: Vec<Vec<(usize, ListInput)>>,
+    groups: Vec<Vec<Unit>>,
     count: usize,
     dir: &Path,
     opts: &CompileOptions,
@@ -457,37 +571,29 @@ fn parse_all(
         }
         c.bad_rules.extend(p.bad_rules);
         for (id, st) in p.stats {
-            c.parse_stats[id] = st;
+            add_stats(&mut c.parse_stats[id], st);
         }
     }
     Ok(c)
 }
 
-type FstWriter = MapBuilder<BufWriter<File>>;
-
-/// Merges sorted records into the three scope FSTs and `listsets.bin`, applying
+/// Merges sorted records into the sharded scope FSTs and `listsets.bin`, applying
 /// `$badfilter`. Returns the distinct names per scope.
 fn merge_domains(
     sources: Vec<sort::Source>,
     bad_domains: &HashMap<Vec<u8>, u8>,
     dir: &Path,
     lists: usize,
+    shards: usize,
     per_list: &mut [ListCompileStats],
     stats: &mut CompileStats,
 ) -> Result<[u64; 3], CompileError> {
     let mut sets = ListSetBuilder::new(lists);
     let mut names = [0u64; 3];
-    let mut builders: Vec<FstWriter> = SCOPES
-        .iter()
-        .map(|(_, file)| -> Result<_, CompileError> {
-            Ok(MapBuilder::new(BufWriter::new(File::create(
-                dir.join(file),
-            )?))?)
-        })
-        .collect::<Result<_, CompileError>>()?;
+    let mut builders = shard::FstSink::new(dir, shards)?;
     let mut flush = |key: &[u8],
                      sets: &mut ListSetBuilder,
-                     builders: &mut [FstWriter]|
+                     builders: &mut shard::FstSink|
      -> Result<(), CompileError> {
         let (count, first) = sets.union_count();
         if count == 0 {
@@ -502,9 +608,9 @@ fn merge_domains(
         }
         let scope = usize::from(key[0]);
         names[scope] += 1;
-        builders[scope].insert(&key[1..], u64::from(id))?;
-        Ok(())
+        builders.insert(scope, &key[1..], id)
     };
+    let has_bad = !bad_domains.is_empty();
     let mut current: Vec<u8> = Vec::with_capacity(256);
     let mut badfiltered = 0u64;
     let mut merge_err: Option<CompileError> = None;
@@ -520,9 +626,10 @@ fn merge_domains(
             current.clear();
             current.extend_from_slice(&rec.key);
         }
-        if bad_domains
-            .get(rec.key.as_slice())
-            .is_some_and(|mask| mask & (1 << rec.class) != 0)
+        if has_bad
+            && bad_domains
+                .get(rec.key.as_slice())
+                .is_some_and(|mask| mask & (1 << rec.class) != 0)
         {
             badfiltered += 1;
         } else if let Some(class) = Class::from_u8(rec.class) {
@@ -536,9 +643,7 @@ fn merge_domains(
     if !current.is_empty() {
         flush(&current, &mut sets, &mut builders)?;
     }
-    for b in builders {
-        b.into_inner()?.flush()?;
-    }
+    builders.finish()?;
     stats.badfiltered = badfiltered;
     [
         stats.subtree_names,
@@ -609,27 +714,27 @@ fn write_manifest(
     dir: &Path,
     inputs: &[ListMeta],
     version: u64,
+    shards: usize,
     names: [u64; 3],
     mut stats: CompileStats,
 ) -> Result<Manifest, CompileError> {
     let mut blobs = Vec::new();
-    for name in snapshot::BLOBS {
-        let data = fs::read(dir.join(name))?;
+    for name in snapshot::blob_names(shards) {
+        let data = fs::read(dir.join(&name))?;
         blobs.push(Blob {
-            name: name.to_owned(),
+            name,
             blake3: blake3::hash(&data).to_hex().to_string(),
             bytes: data.len() as u64,
         });
     }
-    let filter_blobs = [
-        snapshot::SUBTREE_FST,
-        snapshot::EXACT_FST,
-        snapshot::SUBDOMAINS_FST,
-        snapshot::LISTSETS,
-    ];
     let filter_bytes: u64 = blobs
         .iter()
-        .filter(|b| filter_blobs.contains(&b.name.as_str()))
+        .filter(|b| {
+            b.name == snapshot::LISTSETS
+                || snapshot::SCOPE_NAMES
+                    .iter()
+                    .any(|s| b.name.starts_with(&format!("{s}-")))
+        })
         .map(|b| b.bytes)
         .sum();
     let total_names = names.iter().sum::<u64>();
@@ -644,6 +749,7 @@ fn write_manifest(
     let manifest = Manifest {
         format: snapshot::FORMAT,
         version,
+        fst_shards: u32::try_from(shards).unwrap_or(1),
         created: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),

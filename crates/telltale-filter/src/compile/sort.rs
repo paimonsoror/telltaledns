@@ -19,6 +19,9 @@ pub(crate) struct Record {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Item {
+    /// First 8 key bytes, big-endian and zero-padded: most comparisons end here. Keys never
+    /// contain NUL after the scope byte, so the padding sorts like "end of key".
+    prefix: u64,
     off: u32,
     len: u16,
     list: u16,
@@ -60,7 +63,11 @@ impl Sorter {
         }
         let off = u32::try_from(self.arena.len()).map_err(io::Error::other)?;
         self.arena.extend_from_slice(key);
+        let mut head = [0u8; 8];
+        let n = key.len().min(8);
+        head[..n].copy_from_slice(&key[..n]);
         self.items.push(Item {
+            prefix: u64::from_be_bytes(head),
             off,
             len,
             list,
@@ -73,8 +80,9 @@ impl Sorter {
         let arena = &self.arena;
         let key = |i: &Item| &arena[i.off as usize..i.off as usize + usize::from(i.len)];
         self.items.sort_unstable_by(|a, b| {
-            key(a)
-                .cmp(key(b))
+            a.prefix
+                .cmp(&b.prefix)
+                .then_with(|| key(a).cmp(key(b)))
                 .then(a.list.cmp(&b.list))
                 .then(a.class.cmp(&b.class))
         });

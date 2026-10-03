@@ -1,8 +1,12 @@
 //! Compiled filter snapshot: on-disk layout, manifest, and loading (`spec/05` §3, `02` §5).
 //!
 //! A snapshot directory holds:
-//! - `subtree.fst`, `exact.fst`, `subdomains.fst`: reversed-label keys (`com.example.ads.`)
-//!   → index into `listsets.bin`
+//! - `subtree-<n>.fst`, `exact-<n>.fst`, `subdomains-<n>.fst` (n < `fst_shards`):
+//!   reversed-label keys (`com.example.ads.`) → index into `listsets.bin`. A key's shard is a
+//!   stable hash of its first two labels ([`shard_of`]), so every suffix of a query name with
+//!   two or more labels lives in one shard and a lookup touches at most two shards per scope.
+//!   Shards let the compiler build FSTs in parallel; it makes one per compile thread, and the
+//!   manifest records how many.
 //! - `listsets.bin`: the interned [`ListSetTable`]
 //! - `modrules.fst` + `modrules.json`: rules with `$client`/`$dnstype`/`$denyallow`/
 //!   `$dnsrewrite` (key → range of rules, evaluated only on a hit, §3.3)
@@ -25,30 +29,63 @@ use crate::parse::Scope;
 /// Snapshot format; bump on incompatible layout changes.
 pub const FORMAT: u32 = 1;
 
-pub const SUBTREE_FST: &str = "subtree.fst";
-pub const EXACT_FST: &str = "exact.fst";
-pub const SUBDOMAINS_FST: &str = "subdomains.fst";
+/// Most FST shards per scope (one per compile thread).
+pub const MAX_FST_SHARDS: usize = 16;
+/// Scope names in FST file names, indexed like [`Scope`] order: subtree, exact, subdomains.
+pub const SCOPE_NAMES: [&str; 3] = ["subtree", "exact", "subdomains"];
+
+/// File name of one domain FST shard.
+pub fn domain_fst(scope: usize, shard: usize) -> String {
+    format!("{}-{shard}.fst", SCOPE_NAMES[scope])
+}
+
+/// The shard (of `shards`) of a reversed key, scope byte stripped: FNV-1a of the key up to
+/// the end of its second label (`com.example.` for `com.example.ads.`), or of the whole key
+/// if it has one label.
+pub fn shard_of(key: &[u8], shards: usize) -> usize {
+    if shards <= 1 {
+        return 0;
+    }
+    let mut dots = 0;
+    let mut end = key.len();
+    for (i, &b) in key.iter().enumerate() {
+        if b == b'.' {
+            dots += 1;
+            if dots == 2 {
+                end = i + 1;
+                break;
+            }
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in &key[..end] {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    usize::try_from(h % shards as u64).unwrap_or(0)
+}
+
 pub const LISTSETS: &str = "listsets.bin";
 pub const MODRULES_FST: &str = "modrules.fst";
 pub const MODRULES: &str = "modrules.json";
 pub const REGEX: &str = "regex.json";
 pub const MANIFEST: &str = "manifest.json";
 
-/// Every blob file, in manifest order.
-pub const BLOBS: [&str; 7] = [
-    SUBTREE_FST,
-    EXACT_FST,
-    SUBDOMAINS_FST,
-    LISTSETS,
-    MODRULES_FST,
-    MODRULES,
-    REGEX,
-];
+/// Every blob file, in manifest order, for a snapshot with `shards` FST shards.
+pub fn blob_names(shards: usize) -> Vec<String> {
+    let mut v: Vec<String> = (0..SCOPE_NAMES.len())
+        .flat_map(|scope| (0..shards).map(move |shard| domain_fst(scope, shard)))
+        .collect();
+    v.extend([LISTSETS, MODRULES_FST, MODRULES, REGEX].map(String::from));
+    v
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub format: u32,
     pub version: u64,
+    /// Domain FST shards per scope.
+    pub fst_shards: u32,
     /// Unix seconds.
     pub created: u64,
     /// List ID = index. Bit `i` of every list bitset refers to `lists[i]`.
@@ -179,9 +216,8 @@ pub(crate) struct Regexes {
 #[derive(Debug)]
 pub struct Snapshot {
     pub manifest: Manifest,
-    pub subtree: Map<Vec<u8>>,
-    pub exact: Map<Vec<u8>>,
-    pub subdomains: Map<Vec<u8>>,
+    /// Domain FSTs: `[scope][shard]`, scopes in [`SCOPE_NAMES`] order.
+    pub domains: [Vec<Map<Vec<u8>>>; 3],
     pub listsets: ListSetTable,
     pub modrules_index: Map<Vec<u8>>,
     pub modrules: Vec<ModRule>,
@@ -235,10 +271,18 @@ impl Snapshot {
             .map_err(|e| invalid(format!("{MODRULES}: {e}")))?;
         let regexes: Regexes =
             serde_json::from_slice(&read(REGEX)?).map_err(|e| invalid(format!("{REGEX}: {e}")))?;
+        let shards = manifest.fst_shards as usize;
+        if !(1..=MAX_FST_SHARDS).contains(&shards) {
+            return Err(invalid(format!("manifest: {shards} FST shards")));
+        }
+        let mut domains: [Vec<Map<Vec<u8>>>; 3] = Default::default();
+        for (scope, maps) in domains.iter_mut().enumerate() {
+            for shard in 0..shards {
+                maps.push(fst(&domain_fst(scope, shard))?);
+            }
+        }
         Ok(Self {
-            subtree: fst(SUBTREE_FST)?,
-            exact: fst(EXACT_FST)?,
-            subdomains: fst(SUBDOMAINS_FST)?,
+            domains,
             listsets: ListSetTable::read(&read(LISTSETS)?)?,
             modrules_index: fst(MODRULES_FST)?,
             modrules: modrules.rules,
@@ -259,8 +303,9 @@ impl Snapshot {
             key.push('.');
             let full = depth == labels.len();
             let suffix = labels[labels.len() - depth..].join(".");
-            let mut check = |map: &Map<Vec<u8>>, scope: Scope| {
-                if let Some(v) = map.get(key.as_bytes()) {
+            let shard = shard_of(key.as_bytes(), self.domains[0].len());
+            let mut check = |scope_idx: usize, scope: Scope| {
+                if let Some(v) = self.domains[scope_idx][shard].get(key.as_bytes()) {
                     hits.push(DomainHit {
                         scope,
                         name: suffix.clone(),
@@ -268,11 +313,11 @@ impl Snapshot {
                     });
                 }
             };
-            check(&self.subtree, Scope::Subtree);
+            check(0, Scope::Subtree);
             if full {
-                check(&self.exact, Scope::Exact);
+                check(1, Scope::Exact);
             } else {
-                check(&self.subdomains, Scope::Subdomains);
+                check(2, Scope::Subdomains);
             }
         }
         hits
@@ -297,5 +342,26 @@ impl Snapshot {
             .lists
             .get(usize::from(id))
             .map(|l| l.name.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flt_003_shards_follow_the_first_two_labels() {
+        let n = 4;
+        let s = shard_of(b"com.example.", n);
+        assert_eq!(shard_of(b"com.example.ads.", n), s);
+        assert_eq!(shard_of(b"com.example.a.b.c.", n), s);
+        assert!(shard_of(b"com.", n) < n);
+        assert_eq!(shard_of(b"com.example.ads.", 1), 0);
+        // Spread: 10k distinct registrable names fill every shard reasonably evenly.
+        let mut counts = [0usize; 4];
+        for i in 0..10_000 {
+            counts[shard_of(format!("com.name{i}.").as_bytes(), n)] += 1;
+        }
+        assert!(counts.iter().all(|&c| c > 2_000), "{counts:?}");
     }
 }
