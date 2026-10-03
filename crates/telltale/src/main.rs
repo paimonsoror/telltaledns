@@ -9,13 +9,16 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use telltale_cache::{Cache, CachePolicy};
 use telltale_config::{ListenProto, Loader};
 use telltale_net::{TcpConfig, TcpServer, UdpConfig, UdpListener};
+use telltale_upstream::Router;
 use tracing::{error, info, warn};
 
-use crate::pipeline::Pipeline;
+use crate::pipeline::{Handler, Pipeline, Settings};
 
 /// Default config file location (`spec/08` §3.4).
 const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
@@ -148,22 +151,65 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn cache_policy(c: &telltale_config::CacheConfig, workers: usize) -> CachePolicy {
+    CachePolicy {
+        max_bytes: usize::try_from(c.max_bytes.bytes()).unwrap_or(usize::MAX),
+        max_entries: c.max_entries as usize,
+        min_ttl: c.min_ttl,
+        max_ttl: c.max_ttl,
+        negative_ttl_max: c.negative_ttl_max,
+        servfail_ttl: c.servfail_ttl,
+        serve_stale: c.serve_stale,
+        stale_max_age: c.stale_max_age,
+        stale_answer_ttl: c.stale_answer_ttl,
+        prefetch: c.prefetch,
+        prefetch_threshold_pct: c.prefetch_threshold_pct,
+        prefetch_min_hits: c.prefetch_min_hits,
+        // spec/03 §4: power of two >= 4 × workers, at least 64.
+        shards: (workers * 4).max(64),
+    }
+}
+
 async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> {
-    let pipeline = Arc::new(Pipeline::default());
+    let router = match Router::from_config(cfg) {
+        Ok(r) => Arc::new(r),
+        Err(errors) => {
+            for e in &errors {
+                error!("upstreams: {e}");
+            }
+            return Err(io::Error::other("invalid upstream configuration"));
+        }
+    };
+    for up in router.upstreams() {
+        info!(name = %up.name, endpoint = %up.endpoint, "upstream");
+    }
+    let health = tokio::spawn(telltale_upstream::active_health_checks(
+        router.upstreams().to_vec(),
+        telltale_upstream::HEALTH_CHECK_INTERVAL,
+    ));
+    let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
+    let settings = Settings {
+        stale_answer_timeout: Duration::from_millis(u64::from(
+            cfg.cache.stale_answer_client_timeout_ms,
+        )),
+        ..Settings::default()
+    };
+    let handler = Arc::new(Handler(Pipeline::new(settings, cache, router)));
+    let rt = tokio::runtime::Handle::current();
     let mut udp = Vec::new();
     let mut tcp = Vec::new();
     for l in &cfg.listen {
         let ctx = |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
         match l.proto {
             ListenProto::Udp => {
-                let listener =
-                    UdpListener::spawn(&UdpConfig::new(l.addr, workers), &pipeline).map_err(ctx)?;
+                let listener = UdpListener::spawn(&UdpConfig::new(l.addr, workers), &handler, &rt)
+                    .map_err(ctx)?;
                 info!(addr = %listener.local_addr(), workers, "listening (udp)");
                 udp.push(listener);
             }
             ListenProto::Tcp => {
                 let server =
-                    TcpServer::bind(TcpConfig::new(l.addr), Arc::clone(&pipeline)).map_err(ctx)?;
+                    TcpServer::bind(TcpConfig::new(l.addr), Arc::clone(&handler)).map_err(ctx)?;
                 info!(addr = %server.local_addr(), "listening (tcp)");
                 tcp.push(server);
             }
@@ -185,6 +231,7 @@ async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> 
     for l in udp {
         l.shutdown();
     }
+    health.abort();
     Ok(())
 }
 

@@ -303,7 +303,7 @@ impl Cache {
         resp: &[u8],
         now: Instant,
     ) -> Result<(), Uncacheable> {
-        let prepared = entry::prepare(q, resp, &self.policy, now);
+        let prepared = entry::prepare(q, resp, Some(&self.policy), now);
         let mut guard = self.shard(key).lock();
         let shard = &mut *guard;
         match prepared {
@@ -318,6 +318,20 @@ impl Cache {
                 Err(why)
             }
         }
+    }
+
+    /// Renders an upstream answer to `q` for `client` without caching it (fresh ID, client's
+    /// question case, per-client OPT). Works for uncacheable answers too (REFUSED, TTL 0, ...).
+    /// Returns `None` if the answer doesn't match the question or `out` is too small.
+    pub fn render(
+        q: &Query<'_>,
+        resp: &[u8],
+        client: &Client<'_>,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let now = Instant::now();
+        let e = entry::prepare(q, resp, None, now).ok()?;
+        entry::write(&e, client, now, None, out)
     }
 
     /// Removes everything.

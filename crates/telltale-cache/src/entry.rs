@@ -58,14 +58,16 @@ pub enum Uncacheable {
 }
 
 /// Builds a cache entry for `resp`, which answered `q` (qname already normalized).
+/// With `policy = None` it only validates and normalizes (for rendering an uncacheable
+/// answer to the client); no TTL rules apply.
 pub(crate) fn prepare(
     q: &Query<'_>,
     resp: &[u8],
-    policy: &CachePolicy,
+    policy: Option<&CachePolicy>,
     now: Instant,
 ) -> Result<Entry, Uncacheable> {
     let s = summarize(resp).map_err(|_| Uncacheable::Malformed)?;
-    if s.header.flags.tc() {
+    if policy.is_some() && s.header.flags.tc() {
         return Err(Uncacheable::Truncated);
     }
     if s.header.qdcount != 1 {
@@ -90,7 +92,10 @@ pub(crate) fn prepare(
         return Err(Uncacheable::QuestionMismatch);
     }
 
-    // REQ: DNS-006 — TTL policy.
+    // REQ: DNS-006 — TTL policy. `None` policy = relaxed: render only, no caching rules.
+    let Some(policy) = policy else {
+        return finish(q, resp, &s, 0, u32::MAX, 0, question_end, now);
+    };
     let negative = s.rcode == rcode::NXDOMAIN || (s.rcode == rcode::NOERROR && s.answers == 0);
     let (ttl, cap) = match s.rcode {
         rcode::SERVFAIL => (policy.servfail_ttl, policy.servfail_ttl),
@@ -113,7 +118,21 @@ pub(crate) fn prepare(
     if ttl == 0 {
         return Err(Uncacheable::ZeroTtl);
     }
+    finish(q, resp, &s, ttl, cap, policy.min_ttl, question_end, now)
+}
 
+/// Strips OPT, collects TTL offsets, clamps TTLs into `[min_ttl, cap]`, and builds the entry.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    q: &Query<'_>,
+    resp: &[u8],
+    s: &telltale_proto::ResponseSummary,
+    ttl: u32,
+    cap: u32,
+    min_ttl: u32,
+    question_end: usize,
+    now: Instant,
+) -> Result<Entry, Uncacheable> {
     // Strip OPT (only if it's the last record) and collect TTL offsets.
     let mut end = resp.len();
     let mut arcount = s.header.arcount;
@@ -139,7 +158,7 @@ pub(crate) fn prepare(
     wire[10..12].copy_from_slice(&arcount.to_be_bytes());
     // Clamp each record's TTL into [min_ttl, cap] so clients never see more than we allow.
     for (&off, &t) in offsets.iter().zip(&ttls) {
-        let clamped = t.max(policy.min_ttl).min(cap);
+        let clamped = t.max(min_ttl).min(cap);
         set_ttls(&mut wire, &[off], clamped);
     }
     Ok(Entry {

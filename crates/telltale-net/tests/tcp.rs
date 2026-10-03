@@ -6,18 +6,17 @@
     clippy::unnecessary_wraps
 )]
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use telltale_net::{TcpConfig, TcpServer};
+use telltale_net::{RequestMeta, Response, TcpConfig, TcpServer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-fn echo(req: &[u8], _: SocketAddr, out: &mut [u8]) -> Option<usize> {
+fn echo(req: &[u8], _: &RequestMeta, out: &mut [u8]) -> Response {
     out[..req.len()].copy_from_slice(req);
     out[2] |= 0x80;
-    Some(req.len())
+    Response::Ready(req.len())
 }
 
 fn frame(id: u16) -> Vec<u8> {
@@ -54,6 +53,40 @@ async fn dns_001_tcp_pipelined_queries() {
         assert_eq!(u16::from_be_bytes([r[0], r[1]]), id);
         assert_eq!(r[2] & 0x80, 0x80);
     }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn dns_001_tcp_deferred_answers_are_written_out_of_order() {
+    // ID 1 is slow (simulated upstream), ID 2 is immediate: 2 must not wait behind 1.
+    let handler = |req: &[u8], _: &RequestMeta, out: &mut [u8]| -> Response {
+        if req[1] == 1 {
+            let mut owned = req.to_vec();
+            return Response::Deferred(Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                owned[2] |= 0x80;
+                Some(owned)
+            }));
+        }
+        echo(
+            req,
+            &RequestMeta {
+                peer: "0.0.0.0:0".parse().unwrap(),
+                local: None,
+                transport: telltale_net::Transport::Tcp,
+            },
+            out,
+        )
+    };
+    let server = TcpServer::bind(cfg(), Arc::new(handler)).unwrap();
+    let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
+    let mut batch = frame(1);
+    batch.extend(frame(2));
+    s.write_all(&batch).await.unwrap();
+    let first = read_frame(&mut s).await.unwrap();
+    let second = read_frame(&mut s).await.unwrap();
+    assert_eq!(first[1], 2, "fast answer first");
+    assert_eq!(second[1], 1, "slow answer still delivered");
     server.shutdown().await;
 }
 

@@ -1,8 +1,8 @@
 //! UDP DNS listener: one `SO_REUSEPORT` socket and one dedicated thread per worker.
 //!
 //! REQ: DNS-001; `spec/02` §3 — the fast path is synchronous per worker
-//! (`recvmmsg → handle batch → sendmmsg`) with no cross-thread contention. Work that must
-//! wait (cache misses) takes a [`Replier`] and answers later from any thread.
+//! (`recvmmsg → handle batch → sendmmsg`) with no cross-thread contention. Deferred answers
+//! (cache misses) run on the Tokio runtime and reply through the same socket.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -13,6 +13,8 @@ use std::time::Duration;
 
 use socket2::{Domain, Protocol, Socket, Type};
 
+use crate::handler::{QueryHandler, RequestMeta, Response, Transport};
+
 /// The local address a datagram arrived on (from `IP_PKTINFO`), used as the reply source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalAddr {
@@ -21,45 +23,14 @@ pub struct LocalAddr {
     pub ifindex: u32,
 }
 
-/// A received datagram.
-#[derive(Clone, Copy, Debug)]
-pub struct Datagram<'a> {
-    pub data: &'a [u8],
-    pub peer: SocketAddr,
-    /// Destination address of the packet, when bound to a wildcard address.
-    pub local: Option<LocalAddr>,
-}
-
-/// Handles datagrams on a worker thread. Implementations must not block.
-pub trait DatagramHandler: Send + Sync + 'static {
-    /// Writes an immediate reply into `out` and returns its length, or returns `None` to send
-    /// nothing now (dropped, or answered later through `replier`).
-    fn handle(&self, dgram: &Datagram<'_>, out: &mut [u8], replier: &Replier) -> Option<usize>;
-}
-
-impl<F> DatagramHandler for F
-where
-    F: Fn(&Datagram<'_>, &mut [u8]) -> Option<usize> + Send + Sync + 'static,
-{
-    fn handle(&self, dgram: &Datagram<'_>, out: &mut [u8], _: &Replier) -> Option<usize> {
-        self(dgram, out)
-    }
-}
-
 /// Sends deferred replies on a worker's socket from any thread.
 #[derive(Clone, Debug)]
-pub struct Replier {
+struct Replier {
     sock: Arc<Socket>,
 }
 
 impl Replier {
-    /// Sends `buf` to `peer`, using `local` as the source address when known.
-    pub fn send(
-        &self,
-        buf: &[u8],
-        peer: SocketAddr,
-        local: Option<LocalAddr>,
-    ) -> io::Result<usize> {
+    fn send(&self, buf: &[u8], peer: SocketAddr, local: Option<LocalAddr>) -> io::Result<usize> {
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::AsRawFd;
@@ -78,7 +49,10 @@ impl Replier {
 #[repr(align(64))]
 pub struct WorkerStats {
     pub received: AtomicU64,
+    /// Replies sent from the worker thread (immediate answers).
     pub replied: AtomicU64,
+    /// Replies sent later from the runtime (deferred answers).
+    pub deferred_replied: AtomicU64,
     pub send_errors: AtomicU64,
     /// Oversized, truncated, or unparseable-address datagrams.
     pub dropped: AtomicU64,
@@ -123,8 +97,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 impl UdpListener {
     /// Binds `cfg.workers` sockets to `cfg.addr` with `SO_REUSEPORT` and starts one thread per
-    /// socket. With port 0, the first socket picks the port and the rest share it.
-    pub fn spawn<H: DatagramHandler>(cfg: &UdpConfig, handler: &Arc<H>) -> io::Result<Self> {
+    /// socket. Deferred answers are driven on `rt`. With port 0, the first socket picks the
+    /// port and the rest share it.
+    pub fn spawn<H: QueryHandler>(
+        cfg: &UdpConfig,
+        handler: &Arc<H>,
+        rt: &tokio::runtime::Handle,
+    ) -> io::Result<Self> {
         let first = bind_socket(cfg.addr, cfg)?;
         let local_addr = first
             .local_addr()?
@@ -141,10 +120,17 @@ impl UdpListener {
             let sock = Arc::new(sock);
             let st = Arc::new(WorkerStats::default());
             stats.push(Arc::clone(&st));
-            let (stop, handler, batch) = (Arc::clone(&stop), Arc::clone(handler), cfg.batch);
+            let w = Worker {
+                sock,
+                handler: Arc::clone(handler),
+                stats: st,
+                stop: Arc::clone(&stop),
+                rt: rt.clone(),
+                batch: cfg.batch.max(1),
+            };
             let t = std::thread::Builder::new()
                 .name(format!("udp-{}-{i}", local_addr.port()))
-                .spawn(move || worker_loop(&sock, &*handler, &st, &stop, batch))?;
+                .spawn(move || w.run())?;
             threads.push(t);
         }
         Ok(Self {
@@ -191,97 +177,118 @@ fn bind_socket(addr: SocketAddr, cfg: &UdpConfig) -> io::Result<Socket> {
     Ok(sock)
 }
 
-#[cfg(target_os = "linux")]
-fn worker_loop(
-    sock: &Arc<Socket>,
-    handler: &dyn DatagramHandler,
-    st: &WorkerStats,
-    stop: &AtomicBool,
+struct Worker<H> {
+    sock: Arc<Socket>,
+    handler: Arc<H>,
+    stats: Arc<WorkerStats>,
+    stop: Arc<AtomicBool>,
+    rt: tokio::runtime::Handle,
     batch: usize,
-) {
-    use std::os::fd::AsRawFd;
-
-    use crate::sys::Batch;
-
-    let fd = sock.as_raw_fd();
-    let replier = Replier {
-        sock: Arc::clone(sock),
-    };
-    let mut b = Batch::new(batch.max(1));
-    while !stop.load(Ordering::Acquire) {
-        let n = match b.recv(fd) {
-            Ok(n) => n,
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                ) =>
-            {
-                continue;
-            }
-            Err(_) => {
-                st.dropped.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-        };
-        st.batches.fetch_add(1, Ordering::Relaxed);
-        st.received.fetch_add(n as u64, Ordering::Relaxed);
-        for i in 0..n {
-            let meta = b.rx_meta(i);
-            let Some(peer) = meta.peer.filter(|_| !meta.truncated) else {
-                st.dropped.fetch_add(1, Ordering::Relaxed);
-                continue;
-            };
-            let (data, tx) = b.rx_and_next_tx(i, meta.len);
-            let Some(tx) = tx else { break };
-            let dgram = Datagram {
-                data,
-                peer,
-                local: meta.local,
-            };
-            if let Some(len) = handler.handle(&dgram, tx, &replier) {
-                b.queue_tx(len, peer, meta.local);
-            }
-        }
-        let (sent, failed) = b.flush(fd);
-        st.replied.fetch_add(sent as u64, Ordering::Relaxed);
-        st.send_errors.fetch_add(failed as u64, Ordering::Relaxed);
-    }
 }
 
-/// Portable fallback (macOS etc., `spec/02` §3): one datagram at a time, no PKTINFO.
-#[cfg(not(target_os = "linux"))]
-fn worker_loop(
-    sock: &Arc<Socket>,
-    handler: &dyn DatagramHandler,
-    st: &WorkerStats,
-    stop: &AtomicBool,
-    _batch: usize,
-) {
-    let replier = Replier {
-        sock: Arc::clone(sock),
-    };
-    let Ok(clone) = sock.try_clone() else { return };
-    let udp: std::net::UdpSocket = clone.into();
-    let mut rx = [0u8; 4096];
-    let mut tx = [0u8; 4096];
-    while !stop.load(Ordering::Acquire) {
-        let Ok((len, peer)) = udp.recv_from(&mut rx) else {
-            continue;
+impl<H: QueryHandler> Worker<H> {
+    /// Hands a deferred answer to the runtime; it replies through this worker's socket.
+    fn defer(&self, fut: crate::handler::Deferred, peer: SocketAddr, local: Option<LocalAddr>) {
+        let replier = Replier {
+            sock: Arc::clone(&self.sock),
         };
-        st.received.fetch_add(1, Ordering::Relaxed);
-        let dgram = Datagram {
-            data: &rx[..len],
-            peer,
-            local: None,
-        };
-        if let Some(n) = handler.handle(&dgram, &mut tx, &replier) {
-            match udp.send_to(&tx[..n], peer) {
-                Ok(_) => st.replied.fetch_add(1, Ordering::Relaxed),
-                Err(_) => st.send_errors.fetch_add(1, Ordering::Relaxed),
+        let stats = Arc::clone(&self.stats);
+        self.rt.spawn(async move {
+            if let Some(buf) = fut.await {
+                match replier.send(&buf, peer, local) {
+                    Ok(_) => stats.deferred_replied.fetch_add(1, Ordering::Relaxed),
+                    Err(_) => stats.send_errors.fetch_add(1, Ordering::Relaxed),
+                };
+            }
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run(&self) {
+        use std::os::fd::AsRawFd;
+
+        use crate::sys::Batch;
+
+        let fd = self.sock.as_raw_fd();
+        let st = &*self.stats;
+        let mut b = Batch::new(self.batch);
+        while !self.stop.load(Ordering::Acquire) {
+            let n = match b.recv(fd) {
+                Ok(n) => n,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => {
+                    st.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
             };
+            st.batches.fetch_add(1, Ordering::Relaxed);
+            st.received.fetch_add(n as u64, Ordering::Relaxed);
+            for i in 0..n {
+                let rx = b.rx_meta(i);
+                let Some(peer) = rx.peer.filter(|_| !rx.truncated) else {
+                    st.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                let (data, tx) = b.rx_and_next_tx(i, rx.len);
+                let Some(tx) = tx else { break };
+                let meta = RequestMeta {
+                    peer,
+                    local: rx.local,
+                    transport: Transport::Udp,
+                };
+                match self.handler.handle(data, &meta, tx) {
+                    Response::Ready(len) => {
+                        b.queue_tx(len, peer, rx.local);
+                    }
+                    Response::Deferred(fut) => self.defer(fut, peer, rx.local),
+                    Response::Drop => {}
+                }
+            }
+            let (sent, failed) = b.flush(fd);
+            st.replied.fetch_add(sent as u64, Ordering::Relaxed);
+            st.send_errors.fetch_add(failed as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Portable fallback (macOS etc., `spec/02` §3): one datagram at a time, no PKTINFO.
+    #[cfg(not(target_os = "linux"))]
+    fn run(&self) {
+        let Ok(clone) = self.sock.try_clone() else {
+            return;
+        };
+        let udp: std::net::UdpSocket = clone.into();
+        let st = &*self.stats;
+        let mut rx = [0u8; 4096];
+        let mut tx = [0u8; 4096];
+        while !self.stop.load(Ordering::Acquire) {
+            let Ok((len, peer)) = udp.recv_from(&mut rx) else {
+                continue;
+            };
+            st.received.fetch_add(1, Ordering::Relaxed);
+            let meta = RequestMeta {
+                peer,
+                local: None,
+                transport: Transport::Udp,
+            };
+            match self.handler.handle(&rx[..len], &meta, &mut tx) {
+                Response::Ready(n) => {
+                    match udp.send_to(&tx[..n], peer) {
+                        Ok(_) => st.replied.fetch_add(1, Ordering::Relaxed),
+                        Err(_) => st.send_errors.fetch_add(1, Ordering::Relaxed),
+                    };
+                }
+                Response::Deferred(fut) => self.defer(fut, peer, None),
+                Response::Drop => {}
+            }
         }
     }
 }

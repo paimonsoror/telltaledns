@@ -1232,10 +1232,13 @@ name = "telltale"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "rand 0.10.3",
  "serde_json",
+ "telltale-cache",
  "telltale-config",
  "telltale-net",
  "telltale-proto",
+ "telltale-upstream",
  "tokio",
  "toml",
  "tracing",
@@ -1316,6 +1319,14 @@ version = "0.1.0"
 [[package]]
 name = "telltale-upstream"
 version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "rand 0.10.3",
+ "telltale-config",
+ "telltale-proto",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "tempfile"

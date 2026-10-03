@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use telltale_net::{Datagram, UdpConfig, UdpListener};
+use telltale_net::{RequestMeta, Response, UdpConfig, UdpListener};
 
 const GEN_THREADS: usize = 3;
 const SOCKETS_PER_THREAD: usize = 32;
@@ -45,15 +45,19 @@ fn calibrate(target_us: u64) -> u64 {
 }
 
 fn run(workers: usize, iters: u64, secs: u64) -> f64 {
-    let handler = move |d: &Datagram<'_>, out: &mut [u8]| -> Option<usize> {
-        let n = d.data.len().min(out.len());
-        out[..n].copy_from_slice(&d.data[..n]);
-        out[0] |= black_box(busy_work(iters, u64::from(d.data[1])) as u8);
-        Some(n)
+    let handler = move |req: &[u8], _: &RequestMeta, out: &mut [u8]| -> Response {
+        let n = req.len().min(out.len());
+        out[..n].copy_from_slice(&req[..n]);
+        out[0] |= black_box(busy_work(iters, u64::from(req[1])) as u8);
+        Response::Ready(n)
     };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     let listener = UdpListener::spawn(
         &UdpConfig::new("127.0.0.1:0".parse().unwrap(), workers),
         &Arc::new(handler),
+        rt.handle(),
     )
     .unwrap();
     let server = listener.local_addr();

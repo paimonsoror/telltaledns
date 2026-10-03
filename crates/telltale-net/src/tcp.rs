@@ -17,19 +17,15 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-/// Handles one DNS message received over a stream transport. Must not block.
-pub trait StreamHandler: Send + Sync + 'static {
-    /// Writes the response into `out` and returns its length, or `None` to send nothing.
-    fn handle(&self, req: &[u8], peer: SocketAddr, out: &mut [u8]) -> Option<usize>;
-}
+use crate::handler::{QueryHandler, RequestMeta, Response, Transport};
 
-impl<F> StreamHandler for F
-where
-    F: Fn(&[u8], SocketAddr, &mut [u8]) -> Option<usize> + Send + Sync + 'static,
-{
-    fn handle(&self, req: &[u8], peer: SocketAddr, out: &mut [u8]) -> Option<usize> {
-        self(req, peer, out)
-    }
+/// Prepends the RFC 7766 two-byte length.
+fn framed(msg: &[u8]) -> Option<Vec<u8>> {
+    let len = u16::try_from(msg.len()).ok()?;
+    let mut v = Vec::with_capacity(msg.len() + 2);
+    v.extend_from_slice(&len.to_be_bytes());
+    v.extend_from_slice(msg);
+    Some(v)
 }
 
 /// TCP listener settings.
@@ -86,7 +82,7 @@ thread_local! {
 
 impl TcpServer {
     /// Binds and starts accepting. Must be called from within a Tokio runtime.
-    pub fn bind<H: StreamHandler>(cfg: TcpConfig, handler: Arc<H>) -> io::Result<Self> {
+    pub fn bind<H: QueryHandler>(cfg: TcpConfig, handler: Arc<H>) -> io::Result<Self> {
         let sock = socket2::Socket::new(
             socket2::Domain::for_address(cfg.addr),
             socket2::Type::STREAM,
@@ -133,7 +129,7 @@ impl TcpServer {
     }
 }
 
-async fn accept_loop<H: StreamHandler>(
+async fn accept_loop<H: QueryHandler>(
     listener: TcpListener,
     cfg: TcpConfig,
     handler: Arc<H>,
@@ -177,16 +173,24 @@ async fn accept_loop<H: StreamHandler>(
     while conns.join_next().await.is_some() {}
 }
 
-async fn serve_conn<H: StreamHandler + ?Sized>(
+async fn serve_conn<H: QueryHandler + ?Sized>(
     stream: TcpStream,
     peer: SocketAddr,
     handler: &H,
     cfg: &TcpConfig,
     mut stop: watch::Receiver<bool>,
-    stats: &TcpStats,
+    stats: &Arc<TcpStats>,
 ) {
     let (mut rd, mut wr) = stream.into_split();
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(cfg.max_inflight.max(1));
+    let inflight = cfg.max_inflight.max(1);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(inflight);
+    // Caps queries being answered at once on this connection (RFC 7766 §6.2.1.2).
+    let slots = Arc::new(Semaphore::new(inflight));
+    let meta = RequestMeta {
+        peer,
+        local: None,
+        transport: Transport::Tcp,
+    };
     let writer = tokio::spawn(async move {
         while let Some(buf) = rx.recv().await {
             if wr.write_all(&buf).await.is_err() {
@@ -223,21 +227,50 @@ async fn serve_conn<H: StreamHandler + ?Sized>(
             break;
         }
         stats.queries.fetch_add(1, Ordering::Relaxed);
-        let reply = SCRATCH.with(|s| {
+        // Back-pressure: stop reading while `max_inflight` queries are unanswered.
+        let Ok(permit) = Arc::clone(&slots).acquire_owned().await else {
+            break;
+        };
+        let outcome = SCRATCH.with(|s| {
             let mut out = s.borrow_mut();
-            let len = handler.handle(&req, peer, &mut out[2..])?;
-            let len16 = u16::try_from(len).ok()?;
-            out[..2].copy_from_slice(&len16.to_be_bytes());
-            Some(out[..2 + len].to_vec())
+            match handler.handle(&req, &meta, &mut out[..]) {
+                Response::Ready(len) => Outcome::Now(framed(&out[..len])),
+                Response::Deferred(fut) => Outcome::Later(fut),
+                Response::Drop => Outcome::Now(None),
+            }
         });
-        if let Some(buf) = reply {
-            stats.replies.fetch_add(1, Ordering::Relaxed);
-            // Blocks when max_inflight responses are queued: natural back-pressure.
-            if tx.send(buf).await.is_err() {
-                break;
+        match outcome {
+            Outcome::Now(Some(buf)) => {
+                stats.replies.fetch_add(1, Ordering::Relaxed);
+                drop(permit);
+                if tx.send(buf).await.is_err() {
+                    break;
+                }
+            }
+            Outcome::Now(None) => drop(permit),
+            Outcome::Later(fut) => {
+                // Answered out of order whenever it completes (RFC 7766 §7).
+                let (tx, stats) = (tx.clone(), Arc::clone(stats));
+                tokio::spawn(async move {
+                    if let Some(buf) = fut.await.as_deref().and_then(framed)
+                        && tx.send(buf).await.is_ok()
+                    {
+                        stats.replies.fetch_add(1, Ordering::Relaxed);
+                    }
+                    drop(permit);
+                });
             }
         }
     }
+    // Wait for deferred answers still in flight, then close the writer.
+    let _ = slots
+        .acquire_many(u32::try_from(inflight).unwrap_or(u32::MAX))
+        .await;
     drop(tx);
     let _ = writer.await;
+}
+
+enum Outcome {
+    Now(Option<Vec<u8>>),
+    Later(crate::handler::Deferred),
 }

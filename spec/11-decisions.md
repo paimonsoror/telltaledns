@@ -79,3 +79,13 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - Deployed by a GitHub Actions Pages workflow on push to `main`.
 
 **Consequences:** Zero build dependencies and fast pages. The shared header/footer is duplicated across pages (acceptable at ~10 pages; revisit with a minimal generator past ~20). Pages must be enabled once in the repo settings (source: GitHub Actions).
+
+## ADR-013 — Hedged upstream attempts and a faster breaker trip (Proposed)
+**Context:** `spec/04` §4–5 retries the next upstream only after an attempt fails or times out (up to 400 ms), and opens a breaker only after ≥ 10 samples with > 50% errors. With one dead upstream that makes the first ~10 queries, and every exploration or half-open probe, wait a full timeout. That breaks T1.5's chaos criterion (p99 within 1.5× of healthy).
+**Decision:**
+- **Hedging:** if an attempt hasn't answered within its upstream's hedge delay (≈ 3 × EWMA + 10 ms, bounded to [20 ms, attempt timeout]; 100 ms before there is data), the next member starts in parallel. The first good answer wins.
+- **Must-hedge cases:** exploration picks (`fastest` ε), half-open probes, members whose last attempt failed, and last-resort unhealthy members all start immediately alongside the next member, so they never add client latency.
+- **Losers finish in the background** (detached, not aborted), so their real outcome (often a timeout) reaches the health tracker.
+- **Breaker:** 3 consecutive failures also open it (in addition to the window rule).
+
+**Consequences:** Measured in-process (debug build), one blackholed upstream out of two: 0 failures and p99 1.04–1.15× of baseline for failover, round_robin, fastest, and parallel. The cost is a few extra upstream queries while a member is degraded, and detached attempts holding a socket for up to one attempt timeout.

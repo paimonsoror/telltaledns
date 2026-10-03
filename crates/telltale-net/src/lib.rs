@@ -5,13 +5,15 @@
 //! REQ: NFR-003 — all `unsafe` lives in the private `sys` module (Linux syscalls), and every
 //! block carries a `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`).
 
+pub mod handler;
 #[cfg(target_os = "linux")]
 mod sys;
 pub mod tcp;
 pub mod udp;
 
-pub use tcp::{StreamHandler, TcpConfig, TcpServer, TcpStats};
-pub use udp::{Datagram, DatagramHandler, LocalAddr, Replier, UdpConfig, UdpListener, WorkerStats};
+pub use handler::{Deferred, QueryHandler, RequestMeta, Response, Transport};
+pub use tcp::{TcpConfig, TcpServer, TcpStats};
+pub use udp::{LocalAddr, UdpConfig, UdpListener, WorkerStats};
 
 /// Default worker count: available parallelism (which honors cgroup CPU quotas on Linux),
 /// per `spec/08` §3.3.
