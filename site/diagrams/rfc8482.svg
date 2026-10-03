@@ -1,0 +1,6 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>ANY gets one tiny HINFO record instead of a huge answer</title>
+<rect x="10" y="20" width="90" height="34" rx="8" class="svg-box"/><text x="55" y="41" text-anchor="middle" class="svg-mono">ANY?</text>
+<path d="M100 37 H140" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="140" y="20" width="170" height="34" rx="8" class="svg-ok" opacity=".8"/><text x="225" y="41" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">HINFO "RFC8482"</text>
+<rect x="140" y="70" width="170" height="64" rx="8" class="svg-box" stroke-dasharray="4 3"/><text x="225" y="98" text-anchor="middle" class="svg-sub">not sent: every record</text><text x="225" y="116" text-anchor="middle" class="svg-sub">(amplification risk)</text>
+</svg>

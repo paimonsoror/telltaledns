@@ -1,0 +1,7 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>Random ID and port; only exact matches are accepted</title>
+<rect x="10" y="18" width="130" height="34" rx="8" class="svg-box"/><text x="75" y="39" text-anchor="middle" class="svg-mono">ID 0x9f3a · :51873</text>
+<path d="M140 35 H180" class="svg-stroke-brand" stroke-width="2"/><rect x="180" y="18" width="130" height="34" rx="8" class="svg-box"/><text x="245" y="39" text-anchor="middle" class="svg-sub">upstream</text>
+<text x="20" y="82" class="svg-ok" font-size="13" font-weight="700">✓</text><text x="38" y="82" class="svg-sub">same ID + question + type → accepted</text>
+<text x="20" y="104" class="svg-accent" font-size="13" font-weight="700">✗</text><text x="38" y="104" class="svg-sub">anything else → ignored, keep waiting</text>
+<text x="20" y="126" class="svg-sub">Client EDNS options are never forwarded.</text>
+</svg>

@@ -9,3 +9,4 @@
 /fuzz/target/
 /fuzz/coverage/
 *.profraw
+/site/_site/

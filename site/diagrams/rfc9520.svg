@@ -1,0 +1,7 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>A failing domain is remembered for 5 seconds</title>
+<rect x="10" y="20" width="100" height="34" rx="8" class="svg-accent" opacity=".85"/><text x="60" y="41" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">SERVFAIL</text>
+<g class="svg-box"><rect x="130" y="24" width="26" height="26" rx="4"/><rect x="160" y="24" width="26" height="26" rx="4"/><rect x="190" y="24" width="26" height="26" rx="4"/><rect x="220" y="24" width="26" height="26" rx="4"/><rect x="250" y="24" width="26" height="26" rx="4"/></g>
+<text x="203" y="70" text-anchor="middle" class="svg-sub">5 s: retries answered locally</text>
+<text x="10" y="110" class="svg-sub">Stops a broken domain from turning into</text>
+<text x="10" y="128" class="svg-sub">a retry storm against upstreams.</text>
+</svg>

@@ -1,0 +1,9 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>Pipelined TCP: three queries sent at once, answers return as they finish</title>
+<text x="40" y="16" text-anchor="middle" class="svg-text">client</text><text x="280" y="16" text-anchor="middle" class="svg-text">TelltaleDNS</text>
+<path d="M40 24 V145 M280 24 V145" class="svg-ink" stroke-width="1"/>
+<g class="svg-stroke-brand" stroke-width="2"><path d="M40 34 L280 44"/><path d="M40 44 L280 54"/><path d="M40 54 L280 64"/></g>
+<text x="160" y="32" text-anchor="middle" class="svg-sub">Q1 Q2 Q3 (one write)</text>
+<path d="M280 80 L40 92" class="svg-stroke-ok" stroke-width="2"/><text x="160" y="80" text-anchor="middle" class="svg-sub">A2 (cached)</text>
+<path d="M280 100 L40 112" class="svg-stroke-ok" stroke-width="2"/><text x="160" y="100" text-anchor="middle" class="svg-sub">A3</text>
+<path d="M280 124 L40 136" class="svg-stroke-ok" stroke-width="2"/><text x="160" y="124" text-anchor="middle" class="svg-sub">A1 (slow upstream)</text>
+</svg>

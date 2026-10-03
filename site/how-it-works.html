@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How it works — TelltaleDNS</title>
+<meta name="description" content="TelltaleDNS architecture: the query pipeline, threading model, cache, hedged upstreams, and clustering.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="how-it-works">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Technical overview</p>
+  <h1>How a question is answered</h1>
+  <p class="lede">One synchronous, allocation-free fast path per CPU core. Anything that has to wait goes async.</p>
+  <figure class="figure">
+    <svg viewBox="0 0 1060 300" role="img">
+      <title>Query pipeline: receive, parse, policy, cache, upstream, respond</title>
+      <defs><marker id="p-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+      <g class="svg-stroke-brand" stroke-width="2" marker-end="url(#p-arrow)">
+        <path d="M150 90 H178"/><path d="M318 90 H346"/><path d="M486 90 H514"/><path d="M654 90 H682"/>
+      </g>
+      <g>
+        <rect x="10" y="40" width="140" height="100" rx="14" class="svg-box"/>
+        <text x="80" y="78" text-anchor="middle" class="svg-text">① Receive</text>
+        <text x="80" y="100" text-anchor="middle" class="svg-sub">recvmmsg batch</text>
+        <text x="80" y="118" text-anchor="middle" class="svg-sub">per-core socket</text>
+
+        <rect x="180" y="40" width="138" height="100" rx="14" class="svg-box"/>
+        <text x="249" y="78" text-anchor="middle" class="svg-text">② Parse</text>
+        <text x="249" y="100" text-anchor="middle" class="svg-sub">zero-copy, ~53 ns</text>
+        <text x="249" y="118" text-anchor="middle" class="svg-sub">malformed → FORMERR</text>
+
+        <rect x="348" y="40" width="138" height="100" rx="14" class="svg-box" stroke-dasharray="5 4"/>
+        <text x="417" y="78" text-anchor="middle" class="svg-text">③ Policy</text>
+        <text x="417" y="100" text-anchor="middle" class="svg-sub">client, group, filter</text>
+        <text x="417" y="118" text-anchor="middle" class="svg-sub">(next milestone)</text>
+
+        <rect x="516" y="40" width="138" height="100" rx="14" class="svg-brand"/>
+        <text x="585" y="78" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">④ Cache</text>
+        <text x="585" y="100" text-anchor="middle" fill="#e8eef6" font-size="12">hit ≈ 153 ns</text>
+        <text x="585" y="118" text-anchor="middle" fill="#e8eef6" font-size="12">0 allocations</text>
+
+        <rect x="684" y="40" width="160" height="100" rx="14" class="svg-box"/>
+        <text x="764" y="78" text-anchor="middle" class="svg-text">⑤ Upstream</text>
+        <text x="764" y="100" text-anchor="middle" class="svg-sub">hedged, deduplicated</text>
+        <text x="764" y="118" text-anchor="middle" class="svg-sub">UDP · TCP · DoT · DoH</text>
+
+        <rect x="900" y="40" width="150" height="100" rx="14" class="svg-box"/>
+        <text x="975" y="78" text-anchor="middle" class="svg-text">⑥ Respond</text>
+        <text x="975" y="100" text-anchor="middle" class="svg-sub">sendmmsg batch</text>
+        <text x="975" y="118" text-anchor="middle" class="svg-sub">TC=1 if too big</text>
+      </g>
+      <path d="M585 140 C585 192 950 192 950 144" class="svg-stroke-ok" stroke-width="2.5" marker-end="url(#p-arrow)"/>
+      <path d="M844 90 H898" class="svg-stroke-brand" stroke-width="2" marker-end="url(#p-arrow)"/>
+      <path d="M764 140 C764 205 1010 205 1010 144" class="svg-stroke-accent" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#p-arrow)"/>
+      <!-- legend -->
+      <path d="M20 246 H56" class="svg-stroke-ok" stroke-width="2.5"/>
+      <text x="66" y="250" class="svg-sub">fresh cache hit: answered on the worker thread, with no async work and no allocation</text>
+      <path d="M20 274 H56" class="svg-stroke-accent" stroke-width="2" stroke-dasharray="5 4"/>
+      <text x="66" y="278" class="svg-sub">upstreams slow or down: serve the expired answer (TTL 30 s, EDE 3) while the refresh continues</text>
+    </svg>
+  </figure>
+</section>
+
+<section>
+  <div class="two">
+    <div>
+      <p class="eyebrow">Threads</p>
+      <h2>Every core on its own</h2>
+      <p class="muted">Each worker thread owns a <code>SO_REUSEPORT</code> socket, so the kernel spreads clients across cores with no shared queue. Workers meet only at the cache, which is split into 64+ independently locked shards. Cache misses, TCP, DoT, and DoH run on a small async runtime.</p>
+      <p class="muted">Measured: <b>3.58×</b> throughput going from 1 to 4 workers.</p>
+    </div>
+    <figure class="figure">
+      <svg viewBox="0 0 460 280" role="img">
+        <title>Per-core UDP workers share a sharded cache; misses go to the async runtime</title>
+        <g>
+          <text x="10" y="22" class="svg-sub">kernel (SO_REUSEPORT hash)</text>
+          <rect x="10" y="30" width="440" height="22" rx="6" class="svg-box"/>
+        </g>
+        <g>
+          <rect x="10" y="76" width="100" height="48" rx="10" class="svg-brand"/><text x="60" y="105" text-anchor="middle" fill="#e8eef6" font-size="12" font-weight="700">worker 1</text>
+          <rect x="123" y="76" width="100" height="48" rx="10" class="svg-brand"/><text x="173" y="105" text-anchor="middle" fill="#e8eef6" font-size="12" font-weight="700">worker 2</text>
+          <rect x="236" y="76" width="100" height="48" rx="10" class="svg-brand"/><text x="286" y="105" text-anchor="middle" fill="#e8eef6" font-size="12" font-weight="700">worker 3</text>
+          <rect x="350" y="76" width="100" height="48" rx="10" class="svg-brand"/><text x="400" y="105" text-anchor="middle" fill="#e8eef6" font-size="12" font-weight="700">worker N</text>
+        </g>
+        <g class="svg-stroke-brand" stroke-width="1.5"><path d="M60 52 V76"/><path d="M173 52 V76"/><path d="M286 52 V76"/><path d="M400 52 V76"/>
+          <path d="M60 124 V150"/><path d="M173 124 V150"/><path d="M286 124 V150"/><path d="M400 124 V150"/></g>
+        <g>
+          <text x="10" y="146" class="svg-sub">cache shards</text>
+          <rect x="10" y="152" width="440" height="40" rx="8" class="svg-box"/>
+          <g class="svg-ok" opacity=".55">
+            <rect x="18" y="160" width="20" height="24" rx="3"/><rect x="44" y="160" width="20" height="24" rx="3"/><rect x="70" y="160" width="20" height="24" rx="3"/><rect x="96" y="160" width="20" height="24" rx="3"/>
+            <rect x="122" y="160" width="20" height="24" rx="3"/><rect x="148" y="160" width="20" height="24" rx="3"/><rect x="174" y="160" width="20" height="24" rx="3"/><rect x="200" y="160" width="20" height="24" rx="3"/>
+            <rect x="226" y="160" width="20" height="24" rx="3"/><rect x="252" y="160" width="20" height="24" rx="3"/><rect x="278" y="160" width="20" height="24" rx="3"/><rect x="304" y="160" width="20" height="24" rx="3"/>
+            <rect x="330" y="160" width="20" height="24" rx="3"/><rect x="356" y="160" width="20" height="24" rx="3"/><rect x="382" y="160" width="20" height="24" rx="3"/><rect x="408" y="160" width="34" height="24" rx="3"/>
+          </g>
+        </g>
+        <path d="M230 192 V222" class="svg-stroke-accent" stroke-width="2" stroke-dasharray="4 3"/>
+        <rect x="120" y="222" width="220" height="44" rx="10" class="svg-box"/>
+        <text x="230" y="244" text-anchor="middle" class="svg-text">async runtime (misses, TCP, TLS)</text>
+        <text x="230" y="260" text-anchor="middle" class="svg-sub">upstream pools · singleflight</text>
+      </svg>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <div class="two">
+    <figure class="figure">
+      <svg viewBox="0 0 460 250" role="img">
+        <title>A cache hit copies the stored reply and patches only ID, case, TTLs, and EDNS</title>
+        <text x="10" y="22" class="svg-sub">stored once (ID 0, no OPT, TTL offsets remembered)</text>
+        <g>
+          <rect x="10" y="32" width="54" height="34" rx="6" class="svg-accent" opacity=".85"/><text x="37" y="53" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">ID</text>
+          <rect x="66" y="32" width="70" height="34" rx="6" class="svg-box"/><text x="101" y="53" text-anchor="middle" class="svg-sub">flags</text>
+          <rect x="138" y="32" width="110" height="34" rx="6" class="svg-accent" opacity=".55"/><text x="193" y="53" text-anchor="middle" class="svg-sub">question</text>
+          <rect x="250" y="32" width="200" height="34" rx="6" class="svg-box"/><text x="350" y="53" text-anchor="middle" class="svg-sub">answers (TTL ▮ ▮)</text>
+        </g>
+        <path d="M230 72 V100" class="svg-stroke-brand" stroke-width="2"/>
+        <text x="240" y="92" class="svg-sub">memcpy</text>
+        <text x="10" y="122" class="svg-sub">per client, in place</text>
+        <g>
+          <rect x="10" y="130" width="54" height="34" rx="6" class="svg-accent"/><text x="37" y="151" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">their ID</text>
+          <rect x="66" y="130" width="70" height="34" rx="6" class="svg-box"/><text x="101" y="151" text-anchor="middle" class="svg-sub">RD, AD</text>
+          <rect x="138" y="130" width="110" height="34" rx="6" class="svg-accent" opacity=".8"/><text x="193" y="151" text-anchor="middle" fill="#fff" font-size="11">their CaSe</text>
+          <rect x="250" y="130" width="140" height="34" rx="6" class="svg-box"/><text x="320" y="151" text-anchor="middle" class="svg-sub">TTL − age</text>
+          <rect x="392" y="130" width="58" height="34" rx="6" class="svg-ok" opacity=".8"/><text x="421" y="151" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">OPT</text>
+        </g>
+        <text x="10" y="196" class="svg-sub">• Hash collision? The full name is compared, so it's a miss, never a wrong answer.</text>
+        <text x="10" y="216" class="svg-sub">• Eviction: S3-FIFO beats LRU by 4–11 points on Zipf traffic.</text>
+        <text x="10" y="236" class="svg-sub">• Negative answers (RFC 2308) and SERVFAIL (RFC 9520) are cached too.</text>
+      </svg>
+    </figure>
+    <div>
+      <p class="eyebrow">Cache</p>
+      <h2>Store the reply, patch the bytes</h2>
+      <p class="muted">Instead of decoding and re-encoding, TelltaleDNS keeps the upstream's reply as raw bytes and remembers where each TTL lives. A hit is a copy plus a handful of small writes.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="two">
+    <div>
+      <p class="eyebrow">Upstreams</p>
+      <h2>Hedged, not hopeful</h2>
+      <p class="muted">If an upstream hasn't answered within about 3× its usual time, the next one is asked <i>in parallel</i>. The first good answer wins. A server that fails three times in a row is benched, then probed again later, and probes never make a client wait.</p>
+      <p class="muted">With one of two upstreams completely dead: <b>0 failed queries</b>, and p99 within 1.04–1.15× of normal.</p>
+    </div>
+    <figure class="figure">
+      <svg viewBox="0 0 460 230" role="img">
+        <title>Timeline: upstream A is silent, B is asked after the hedge delay and answers</title>
+        <path d="M60 200 H450" class="svg-ink" stroke-width="1.5"/>
+        <text x="60" y="220" class="svg-sub">0 ms</text><text x="160" y="220" class="svg-sub">hedge</text><text x="410" y="220" class="svg-sub">timeout</text>
+        <text x="10" y="64" class="svg-text">A</text>
+        <rect x="60" y="48" width="380" height="24" rx="6" class="svg-box" stroke-dasharray="4 3"/>
+        <text x="250" y="65" text-anchor="middle" class="svg-sub">silent… (finishes in background → health marks it down)</text>
+        <text x="10" y="124" class="svg-text">B</text>
+        <rect x="160" y="108" width="60" height="24" rx="6" class="svg-ok"/>
+        <text x="230" y="125" class="svg-sub">answers ✓</text>
+        <path d="M160 40 V200" class="svg-stroke-accent" stroke-dasharray="3 3"/>
+        <path d="M220 140 V176" class="svg-stroke-ok" stroke-width="2"/>
+        <text x="226" y="172" class="svg-sub">client gets the answer here, not at the timeout</text>
+      </svg>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Coming next</p>
+  <h2>One cluster across a Pi and Kubernetes</h2>
+  <figure class="figure">
+    <svg viewBox="0 0 900 230" role="img">
+      <title>Planned hybrid cluster: a Raspberry Pi and Kubernetes pods, one management plane</title>
+      <rect x="20" y="30" width="300" height="170" rx="16" class="svg-box"/>
+      <text x="40" y="58" class="svg-text">🏠 Raspberry Pi</text>
+      <rect x="40" y="76" width="260" height="56" rx="10" class="svg-brand"/>
+      <text x="170" y="108" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">TelltaleDNS (all-in-one)</text>
+      <text x="40" y="160" class="svg-sub">local snapshot · keeps answering offline</text>
+      <rect x="560" y="30" width="320" height="170" rx="16" class="svg-box"/>
+      <text x="580" y="58" class="svg-text">☸️ Kubernetes</text>
+      <rect x="580" y="76" width="130" height="56" rx="10" class="svg-brand"/><text x="645" y="108" text-anchor="middle" fill="#e8eef6" font-size="12" font-weight="700">controller</text>
+      <rect x="722" y="76" width="66" height="56" rx="10" class="svg-brand" opacity=".85"/><text x="755" y="108" text-anchor="middle" fill="#e8eef6" font-size="11">resolver</text>
+      <rect x="796" y="76" width="66" height="56" rx="10" class="svg-brand" opacity=".85"/><text x="829" y="108" text-anchor="middle" fill="#e8eef6" font-size="11">resolver</text>
+      <text x="580" y="160" class="svg-sub">scales horizontally · real client IPs preserved</text>
+      <path d="M320 104 H560" class="svg-stroke-accent" stroke-width="2.5" stroke-dasharray="7 5"/>
+      <text x="440" y="94" text-anchor="middle" class="svg-sub">mTLS · signed config snapshots</text>
+      <text x="440" y="126" text-anchor="middle" class="svg-sub">manage &amp; analyze from either side</text>
+    </svg>
+    <figcaption>Planned (roadmap M5). DNS answering never depends on the cluster being healthy: every node serves from its last good snapshot.</figcaption>
+  </figure>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

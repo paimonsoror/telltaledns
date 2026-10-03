@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get started — TelltaleDNS</title>
+<meta name="description" content="What DNS is, why it matters, and how to run TelltaleDNS.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="start">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Start here</p>
+  <h1>DNS in one picture</h1>
+  <div class="two">
+    <figure class="figure">
+      <svg viewBox="0 0 460 250" role="img">
+        <title>Your device asks where a website lives; DNS answers with its address</title>
+        <defs><marker id="s-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+        <rect x="14" y="80" width="110" height="90" rx="14" class="svg-box"/>
+        <text x="69" y="120" text-anchor="middle" font-size="30">📱</text>
+        <text x="69" y="152" text-anchor="middle" class="svg-text">Your phone</text>
+        <rect x="300" y="80" width="146" height="90" rx="14" class="svg-brand"/>
+        <text x="373" y="120" text-anchor="middle" font-size="30">📖</text>
+        <text x="373" y="152" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">DNS (TelltaleDNS)</text>
+        <path d="M124 104 H298" class="svg-stroke-brand" stroke-width="2" marker-end="url(#s-arrow)"/>
+        <text x="211" y="94" text-anchor="middle" class="svg-sub">"Where is youtube.com?"</text>
+        <path d="M298 146 H124" class="svg-stroke-brand" stroke-width="2" marker-end="url(#s-arrow)"/>
+        <text x="211" y="166" text-anchor="middle" class="svg-sub">"At 142.250.72.14"</text>
+        <text x="230" y="222" text-anchor="middle" class="svg-sub">This happens before every website, app update, or video.</text>
+      </svg>
+    </figure>
+    <div>
+      <p class="lede">DNS is your network's phone book. Because <b>every</b> connection starts with a lookup, the DNS server is the one place that can see — and decide — what your devices talk to.</p>
+      <ul class="muted">
+        <li>Block ads and trackers for every device, even smart TVs.</li>
+        <li>Encrypt lookups so your ISP can't read them.</li>
+        <li>Spot the gadget that phones home at 3 a.m.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Quick start</p>
+  <h2>Three steps</h2>
+  <p><span class="badge"><span class="dot"></span> Preview: build from source today. One-command installs arrive with the deployment milestone.</span></p>
+  <div class="steps">
+    <div class="step">
+      <h3>Install</h3>
+      <div class="tabs">
+        <div role="tablist" aria-label="Install method">
+          <button role="tab" type="button">From source</button>
+          <button role="tab" type="button">Docker</button>
+          <button role="tab" type="button">Raspberry Pi</button>
+          <button role="tab" type="button">Kubernetes</button>
+        </div>
+        <div class="panel"><h3>From source (works today)</h3>
+<pre><code>git clone https://github.com/paimonsoror/telltaledns
+cd telltaledns
+cargo build --release
+./target/release/telltale --version</code></pre>
+        </div>
+        <div class="panel"><h3>Docker (coming soon)</h3>
+<pre><code># planned (roadmap M4)
+docker run -d --name telltale --network host \
+  -v ./data:/var/lib/telltale ghcr.io/paimonsoror/telltale:1</code></pre>
+        </div>
+        <div class="panel"><h3>Raspberry Pi (coming soon)</h3>
+<pre><code># planned (roadmap M4): same image, Docker Compose
+docker compose up -d</code></pre>
+        </div>
+        <div class="panel"><h3>Kubernetes (coming soon)</h3>
+<pre><code># planned (roadmap M4)
+helm install telltale oci://ghcr.io/paimonsoror/charts/telltale</code></pre>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <h3>Configure</h3>
+      <p class="muted">Save as <code>telltale.toml</code>. This uses encrypted upstreams.</p>
+<pre><code>[[upstream]]
+name = "cloudflare"
+url = "tls://1.1.1.1"
+tls_server_name = "cloudflare-dns.com"
+
+[[upstream]]
+name = "quad9"
+url = "https://dns.quad9.net/dns-query"
+bootstrap = ["9.9.9.9"]
+
+[[upstream_group]]
+name = "default"
+members = ["cloudflare", "quad9"]
+strategy = "fastest"</code></pre>
+    </div>
+    <div class="step">
+      <h3>Run and test</h3>
+<pre><code>sudo ./target/release/telltale run -c telltale.toml
+dig @127.0.0.1 example.com</code></pre>
+      <p class="muted">Then point your router's DHCP "DNS server" setting at this machine so every device uses it.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="two">
+    <figure class="figure">
+      <svg viewBox="0 0 440 200" role="img">
+        <title>Your router hands out TelltaleDNS as the DNS server to every device</title>
+        <defs><marker id="r-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+        <rect x="160" y="14" width="120" height="50" rx="12" class="svg-box"/>
+        <text x="220" y="44" text-anchor="middle" class="svg-text">📶 Router (DHCP)</text>
+        <g class="svg-stroke-brand" stroke-width="1.6" stroke-dasharray="4 4">
+          <path d="M190 64 L60 120"/><path d="M220 64 L220 120"/><path d="M250 64 L380 120"/>
+        </g>
+        <text x="40" y="140" class="svg-text">📱 💻</text><text x="200" y="140" class="svg-text">📺 🎮</text><text x="360" y="140" class="svg-text">📷 🔊</text>
+        <text x="220" y="180" text-anchor="middle" class="svg-sub">"Use 192.168.1.53 for DNS" → every device now asks TelltaleDNS</text>
+      </svg>
+    </figure>
+    <div>
+      <h2>Make it network-wide</h2>
+      <p class="muted">Most routers have a <b>DNS server</b> field under DHCP or LAN settings. Put TelltaleDNS's address there (and a second instance's, once clustering lands, for redundancy).</p>
+      <p><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">Full running guide →</a></p>
+    </div>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

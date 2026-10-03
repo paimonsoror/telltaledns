@@ -1,0 +1,8 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>Mixed-case question is echoed exactly, even from cache</title>
+<rect x="10" y="20" width="140" height="34" rx="8" class="svg-box"/><text x="80" y="41" text-anchor="middle" class="svg-mono">ExAmPlE.CoM?</text>
+<rect x="170" y="20" width="140" height="34" rx="8" class="svg-ok" opacity=".8"/><text x="240" y="41" text-anchor="middle" fill="#fff" font-size="12" font-family="monospace">ExAmPlE.CoM</text>
+<path d="M150 37 H170" class="svg-stroke-brand" stroke-width="2"/>
+<text x="10" y="86" class="svg-sub">The cache key uses the lowercase name;</text>
+<text x="10" y="104" class="svg-sub">the reply echoes the client's exact bytes</text>
+<text x="10" y="122" class="svg-sub">(0x20 anti-spoofing keeps working).</text>
+</svg>

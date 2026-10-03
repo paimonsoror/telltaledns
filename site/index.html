@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TelltaleDNS — see every question, answer on your terms</title>
+<meta name="description" content="A fast, lightweight DNS resolver that blocks ads and trackers, encrypts your lookups, and shows you exactly what every device on your network is doing. Runs on a Raspberry Pi, in Kubernetes, or both.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="index">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section class="hero">
+  <div>
+    <span class="badge"><span class="dot"></span> Early preview — resolving &amp; caching today, filtering next</span>
+    <h1>See every question.<br>Answer on your terms.</h1>
+    <p class="lede">Every app, TV, and gadget on your network starts with a DNS lookup. TelltaleDNS answers them in microseconds, blocks what you don't want, and shows you exactly who asked what.</p>
+    <div class="cta">
+      <a class="btn primary" href="start.html">Get started</a>
+      <a class="btn" href="how-it-works.html">How it works</a>
+    </div>
+  </div>
+
+  <figure class="figure" aria-label="Devices on your network ask TelltaleDNS; it answers, blocks trackers, and records every question">
+    <svg viewBox="0 0 520 330" role="img">
+      <title>Devices ask TelltaleDNS, which answers, blocks, and shows you everything</title>
+      <defs>
+        <marker id="h-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker>
+      </defs>
+      <!-- devices -->
+      <g>
+        <rect x="18" y="26" width="104" height="44" rx="10" class="svg-box"/><text x="70" y="53" text-anchor="middle" class="svg-text">📱 Phone</text>
+        <rect x="18" y="96" width="104" height="44" rx="10" class="svg-box"/><text x="70" y="123" text-anchor="middle" class="svg-text">💻 Laptop</text>
+        <rect x="18" y="166" width="104" height="44" rx="10" class="svg-box"/><text x="70" y="193" text-anchor="middle" class="svg-text">📺 Smart TV</text>
+        <rect x="18" y="236" width="104" height="44" rx="10" class="svg-box"/><text x="70" y="263" text-anchor="middle" class="svg-text">📷 Camera</text>
+      </g>
+      <g class="svg-stroke-brand" stroke-width="2" marker-end="url(#h-arrow)">
+        <path d="M122 48 C170 48 170 150 206 150"/><path d="M122 118 C160 118 170 158 206 158"/>
+        <path d="M122 188 C160 188 170 166 206 166"/><path d="M122 258 C170 258 170 174 206 174"/>
+      </g>
+      <!-- telltale node -->
+      <rect x="208" y="110" width="118" height="104" rx="16" class="svg-brand"/>
+      <rect x="236" y="124" width="4" height="72" rx="2" fill="#e8eef6"/>
+      <path class="yarn" d="M240 132 C256 128 268 138 290 131 L290 142 C268 149 256 139 240 144 Z" fill="#e4572e"/>
+      <path class="yarn" d="M240 152 C252 149 262 156 278 151 L278 159 C262 164 252 157 240 160 Z" fill="#1f9d55"/>
+      <text x="267" y="205" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">TelltaleDNS</text>
+      <!-- outcomes -->
+      <g stroke-width="2" fill="none">
+        <path d="M326 140 C370 140 370 70 404 70" class="svg-stroke-ok" marker-end="url(#h-arrow)"/>
+        <path d="M326 184 C370 184 370 250 404 250" class="svg-stroke-accent" stroke-dasharray="5 4"/>
+      </g>
+      <rect x="406" y="44" width="100" height="52" rx="10" class="svg-box"/>
+      <text x="456" y="66" text-anchor="middle" class="svg-text">🌍 Internet</text>
+      <text x="456" y="84" text-anchor="middle" class="svg-sub">encrypted</text>
+      <rect x="406" y="224" width="100" height="52" rx="10" class="svg-box"/>
+      <text x="456" y="246" text-anchor="middle" class="svg-text">🛑 Tracker</text>
+      <text x="456" y="264" text-anchor="middle" class="svg-sub">blocked</text>
+      <!-- insight callout -->
+      <rect x="196" y="250" width="150" height="62" rx="10" fill="none" class="svg-ink" stroke-dasharray="3 3"/>
+      <text x="271" y="272" text-anchor="middle" class="svg-sub">📺 TV asked 4,112 times</text>
+      <text x="271" y="290" text-anchor="middle" class="svg-sub">38% blocked · p99 1.2 ms</text>
+      <text x="271" y="306" text-anchor="middle" class="svg-sub" font-style="italic">(illustration)</text>
+    </svg>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">Why TelltaleDNS</p>
+  <h2>Four promises</h2>
+  <div class="grid">
+    <div class="card">
+      <h3><svg class="icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" class="svg-box"/><circle cx="20" cy="20" r="7" class="svg-stroke-brand" stroke-width="3"/><circle cx="20" cy="20" r="2.5" class="svg-brand"/></svg>See</h3>
+      <p>Every question is tied to a device, explained (why it was blocked or allowed), and timed step by step.</p>
+    </div>
+    <div class="card">
+      <h3><svg class="icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" class="svg-box"/><path d="M12 20 l6 6 l10 -12" class="svg-stroke-ok" stroke-width="3.5" stroke-linecap="round"/></svg>Decide</h3>
+      <p>Your rules, per device or group: block ads, trackers, or whole services, on a schedule if you like.</p>
+    </div>
+    <div class="card">
+      <h3><svg class="icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" class="svg-box"/><path d="M20 8 l10 4 v8 c0 7 -5 11 -10 13 c-5 -2 -10 -6 -10 -13 v-8 z" class="svg-stroke-brand" stroke-width="2.5"/></svg>Never fail</h3>
+      <p>Keeps answering from what it knows, even when upstream servers or its own control plane are down.</p>
+    </div>
+    <div class="card">
+      <h3><svg class="icon" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" class="svg-box"/><rect x="11" y="14" width="10" height="13" rx="2" class="svg-stroke-brand" stroke-width="2.5"/><path d="M24 27 l4 -13 l4 13 z" class="svg-stroke-accent" stroke-width="2.5"/></svg>Run anywhere</h3>
+      <p>The same tiny program on a $35 Raspberry Pi, in Kubernetes, or both at once as one system.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Compared</p>
+  <h2>The best of Pi-hole and Technitium, without the trade-offs</h2>
+  <p class="legend"><span><b class="y">✓</b> available now</span><span><b class="p">◐</b> partly / in progress</span><span><b class="n">○</b> on the roadmap</span><span>— not offered</span></p>
+  <div class="table-wrap">
+  <table class="compare">
+    <thead><tr><th></th><th>Pi-hole</th><th>Technitium</th><th class="us">TelltaleDNS</th></tr></thead>
+    <tbody>
+      <tr><td>Uses every CPU core</td><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
+      <tr><td>Encrypted DNS to the internet (DoT / DoH)</td><td>add-ons</td><td class="y">✓</td><td class="us y">✓</td></tr>
+      <tr><td>Keeps answering when upstreams fail (serve-stale)</td><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
+      <tr><td>Blocklists &amp; per-device groups</td><td class="y">✓</td><td class="y">✓</td><td class="us n">○</td></tr>
+      <tr><td>Encrypted DNS for your devices</td><td>—</td><td class="y">✓</td><td class="us n">○</td></tr>
+      <tr><td>Tiny memory footprint</td><td class="y">✓</td><td>—</td><td class="us p">◐</td></tr>
+      <tr><td>Per-question timing &amp; percentiles</td><td>—</td><td>—</td><td class="us n">○</td></tr>
+      <tr><td>One cluster across a Pi and Kubernetes</td><td>—</td><td>heavy</td><td class="us n">○</td></tr>
+      <tr><td>Prometheus / OpenTelemetry built in</td><td>—</td><td>—</td><td class="us n">○</td></tr>
+      <tr><td>Safe AI-agent management (MCP)</td><td>—</td><td>—</td><td class="us n">○</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="muted">Performance claims will only be published from the project's reproducible side-by-side benchmark. The full reasoning is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/EXECUTIVE-SUMMARY.md">executive summary</a>.</p>
+</section>
+
+<section>
+  <div class="two">
+    <div>
+      <p class="eyebrow">Fast by design</p>
+      <h2>Measured in nanoseconds</h2>
+      <p class="muted">Answers come from a cache that stores finished replies and only patches the parts that change. No garbage collector, no pauses, and every core works independently.</p>
+      <p><a href="how-it-works.html">See how a question is answered →</a></p>
+    </div>
+    <figure class="figure">
+      <svg viewBox="0 0 440 210" role="img">
+        <title>Micro-benchmark timings of the hot path</title>
+        <text x="0" y="18" class="svg-text">Time per operation (micro-benchmarks, x86, preview build)</text>
+        <g>
+          <text x="0" y="58" class="svg-sub">Copy + patch a cached answer</text>
+          <rect x="190" y="44" width="10" height="20" rx="4" class="svg-ok"/><text x="206" y="59" class="svg-mono">5 ns</text>
+          <text x="0" y="98" class="svg-sub">Read a question + fingerprint</text>
+          <rect x="190" y="84" width="50" height="20" rx="4" class="svg-brand"/><text x="246" y="99" class="svg-mono">53 ns</text>
+          <text x="0" y="138" class="svg-sub">Build a "blocked" answer</text>
+          <rect x="190" y="124" width="53" height="20" rx="4" class="svg-accent"/><text x="249" y="139" class="svg-mono">56 ns</text>
+          <text x="0" y="178" class="svg-sub">Full cache hit, end to end</text>
+          <rect x="190" y="164" width="150" height="20" rx="4" class="svg-brand" opacity=".75"/><text x="346" y="179" class="svg-mono">153 ns</text>
+        </g>
+      </svg>
+      <figcaption>Criterion micro-benchmarks from the repository. Not a full-system benchmark: those come with the comparison harness.</figcaption>
+    </figure>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

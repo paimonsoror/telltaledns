@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TelltaleDNS">
+  <!-- A mast with a telltale streaming in the wind: what DNS shows you about your network. -->
+  <rect width="64" height="64" rx="14" fill="#0b3a5b"/>
+  <rect x="17" y="10" width="4" height="44" rx="2" fill="#e8eef6"/>
+  <path d="M21 16 C31 13 39 19 49 15 L49 22 C39 26 31 20 21 23 Z" fill="#e4572e"/>
+  <path d="M21 28 C29 26 35 30 43 27 L43 32 C35 35 29 31 21 33 Z" fill="#1f9d55"/>
+  <circle cx="19" cy="54" r="5" fill="none" stroke="#e8eef6" stroke-width="3"/>
+</svg>

@@ -14,7 +14,7 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Never fail:** DNS keeps answering from its last good config, whatever happens to the control plane.
 - **Run anywhere:** the same artifact on a Pi, in a cluster, or both at once.
 
-**Status:** specification complete, implementation not started.
+**Status:** early preview. TelltaleDNS resolves and caches queries over UDP/TCP using plain or encrypted (DoT/DoH) upstreams, with failover and serve-stale. Filtering, telemetry, the UI, and clustering are next ([roadmap](spec/10-roadmap-and-tasks.md)). Project site: **https://paimonsoror.github.io/telltaledns/** · Running it: [`docs/running.md`](docs/running.md).
 
 | Read this | If you want |
 |---|---|

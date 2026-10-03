@@ -43,3 +43,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # REQ: DOC-004/005 — the site builds, links resolve, and Standards covers ticked tasks.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 site/build.py --check

@@ -1,0 +1,7 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>DNS message: header, question, answer, authority, additional</title>
+<rect x="10" y="10" width="300" height="26" rx="6" class="svg-brand"/><text x="160" y="28" text-anchor="middle" fill="#e8eef6" font-size="12" font-weight="700">Header · ID · flags · 4 counts (12 bytes)</text>
+<rect x="10" y="42" width="300" height="22" rx="6" class="svg-box"/><text x="160" y="57" text-anchor="middle" class="svg-sub">Question: name · type · class</text>
+<rect x="10" y="68" width="300" height="22" rx="6" class="svg-box"/><text x="160" y="83" text-anchor="middle" class="svg-sub">Answer records</text>
+<rect x="10" y="94" width="300" height="22" rx="6" class="svg-box"/><text x="160" y="109" text-anchor="middle" class="svg-sub">Authority records</text>
+<rect x="10" y="120" width="300" height="22" rx="6" class="svg-box"/><text x="160" y="135" text-anchor="middle" class="svg-sub">Additional records (incl. OPT)</text>
+</svg>
