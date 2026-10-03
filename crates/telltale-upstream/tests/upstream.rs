@@ -91,13 +91,7 @@ async fn fake(kind: Fake) -> SocketAddr {
 
 fn upstream(id: u16, addr: SocketAddr, weight: u32) -> Arc<Upstream> {
     let ep = Endpoint::parse(&format!("udp://{addr}")).unwrap();
-    Arc::new(Upstream::new(
-        id,
-        format!("u{id}"),
-        ep,
-        Duration::from_millis(400),
-        weight,
-    ))
+    Arc::new(Upstream::new(id, format!("u{id}"), ep, Duration::from_millis(400), weight).unwrap())
 }
 
 fn question(name: &str) -> Question {

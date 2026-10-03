@@ -209,7 +209,9 @@ pub struct Upstream {
     /// TLS SNI / certificate name override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_server_name: Option<SafeString>,
-    /// Pinned IPs used to resolve a hostname URL (UPS-009).
+    /// DNS servers used to resolve a hostname URL (UPS-009); default: the system resolvers
+    /// from /etc/resolv.conf, minus our own listeners. To pin the server address instead, put
+    /// the IP in the URL and set `tls_server_name`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bootstrap: Vec<IpAddr>,
     /// Weight for the `weighted` strategy.

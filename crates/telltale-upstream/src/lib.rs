@@ -10,19 +10,28 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+mod bootstrap;
+mod conn;
+mod doh;
 mod endpoint;
 mod group;
 pub mod health;
 mod router;
+mod tls;
 mod upstream;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub use bootstrap::Bootstrap;
 pub use endpoint::{Endpoint, Host, Protocol};
 pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};
-pub use upstream::{ExchangeError, Question, Upstream, encode_query, matches_query};
+pub use tls::TlsOptions;
+pub use upstream::{
+    ExchangeError, Question, Upstream, UpstreamOptions, encode_query, is_own_loop_tag,
+    matches_query, set_node_tag,
+};
 
 /// Total time budget per client query (`spec/02` §8.3).
 pub const DEFAULT_BUDGET: Duration = Duration::from_secs(2);

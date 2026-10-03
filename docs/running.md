@@ -1,6 +1,6 @@
 # Running TelltaleDNS
 
-> **Status:** early development. TelltaleDNS resolves queries over UDP and TCP through plain-DNS upstreams (`udp://`, `tcp://`), with caching, failover, and serve-stale. Encrypted upstreams (DoT/DoH), filtering, and the web UI arrive in the next milestones (`spec/10-roadmap-and-tasks.md`).
+> **Status:** early development. TelltaleDNS resolves queries over UDP and TCP through plain or encrypted upstreams (`udp://`, `tcp://`, `tls://` DoT, `https://` DoH over HTTP/2), with caching, failover, and serve-stale. Filtering and the web UI arrive in the next milestones (`spec/10-roadmap-and-tasks.md`).
 
 ## Start
 ```sh
@@ -34,7 +34,24 @@ strategy = "fastest"      # failover | round_robin | weighted | fastest | parall
 telltale run -c dev.toml
 dig @127.0.0.1 -p 5300 example.com
 ```
-Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. Upstreams must be IP addresses for now; hostnames (with bootstrap resolution) and `tls://` / `https://` come next. DoT, DoH, and DoQ *listeners* are accepted in config but skipped with a warning.
+Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, and DoQ *listeners* are accepted in config but skipped with a warning.
+
+## Encrypted upstreams
+```toml
+[[upstream]]
+name = "cloudflare-dot"
+url = "tls://1.1.1.1"                       # DNS over TLS, port 853
+tls_server_name = "cloudflare-dns.com"      # name on the certificate
+
+[[upstream]]
+name = "quad9-doh"
+url = "https://dns.quad9.net/dns-query"     # DNS over HTTPS (HTTP/2)
+bootstrap = ["9.9.9.9", "149.112.112.112"]  # how to look up dns.quad9.net itself
+```
+- Certificates are verified against the built-in Mozilla root set, so no CA files are needed, even in a minimal container. `tls_insecure_skip_verify = true` turns verification off (a warning is logged; don't use it on untrusted networks).
+- **Hostname upstreams** are looked up through `bootstrap` servers, or the system resolvers from `/etc/resolv.conf` when `bootstrap` is empty (never through TelltaleDNS itself), and the result is cached for its TTL. To skip the lookup, put the IP in the URL and set `tls_server_name`.
+- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection.
+- Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`, `http_version = "3"`.
 
 ## How a query is answered
 ```mermaid
@@ -52,6 +69,7 @@ flowchart LR
 - **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. Identical concurrent questions share one upstream request.
 - **Serve-stale:** if upstreams don't answer within 1.8 s (`[cache] stale_answer_client_timeout_ms`) and an expired answer is still in the cache (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer"), while the refresh continues in the background.
 - **Privacy:** queries to upstreams carry a fresh random ID and source port, and none of the client's EDNS options (no client subnet, cookies, or MAC addresses are forwarded).
+- **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever.
 
 ## Routing (conditional forwarding)
 ```toml

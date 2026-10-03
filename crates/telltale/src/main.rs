@@ -171,6 +171,8 @@ fn cache_policy(c: &telltale_config::CacheConfig, workers: usize) -> CachePolicy
 }
 
 async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> {
+    // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
+    telltale_upstream::set_node_tag(rand::random());
     let router = match Router::from_config(cfg) {
         Ok(r) => Arc::new(r),
         Err(errors) => {

@@ -7,12 +7,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use telltale_config::{Config, Strategy as CfgStrategy};
+use std::net::SocketAddr;
+
+use telltale_config::{Config, HttpVersion, Strategy as CfgStrategy};
 use telltale_proto::NameBuf;
 
-use crate::endpoint::Endpoint;
+use crate::bootstrap::Bootstrap;
+use crate::endpoint::{Endpoint, Host};
 use crate::group::{Group, Strategy};
-use crate::upstream::{Question, Upstream};
+use crate::tls::TlsOptions;
+use crate::upstream::{Question, Upstream, UpstreamOptions};
 
 #[derive(Debug)]
 struct Route {
@@ -40,36 +44,107 @@ pub struct Router {
 }
 
 impl Router {
-    /// Builds upstreams, groups, and routes. Unsupported upstreams are reported as errors.
+    /// Builds upstreams, groups, and routes with the built-in trust roots.
     pub fn from_config(cfg: &Config) -> Result<Self, Vec<String>> {
+        Self::from_config_with(cfg, &TlsOptions::default())
+    }
+
+    /// Like [`Router::from_config`] with extra TLS settings. Options that aren't implemented
+    /// yet are reported as errors rather than silently ignored.
+    pub fn from_config_with(cfg: &Config, tls: &TlsOptions) -> Result<Self, Vec<String>> {
         let mut errors = Vec::new();
-        let mut ups: HashMap<&str, Arc<Upstream>> = HashMap::new();
-        let mut upstreams = Vec::new();
-        for (i, u) in cfg.upstream.iter().enumerate() {
-            let id = u16::try_from(i + 1).unwrap_or(u16::MAX);
-            match Endpoint::parse(&u.url) {
-                Ok(ep) if ep.socket_addr().is_none() => errors.push(format!(
-                    "upstream `{}`: hostname URLs need bootstrap resolution, which arrives in the next release; use an IP address for now",
+        let (upstreams, ups) = build_upstreams(cfg, tls, &mut errors);
+        Self::assemble(cfg, upstreams, &ups, errors)
+    }
+}
+
+/// Builds every `[[upstream]]`; problems are appended to `errors`.
+fn build_upstreams<'c>(
+    cfg: &'c Config,
+    tls: &TlsOptions,
+    errors: &mut Vec<String>,
+) -> (Vec<Arc<Upstream>>, HashMap<&'c str, Arc<Upstream>>) {
+    let mut ups: HashMap<&str, Arc<Upstream>> = HashMap::new();
+    let mut upstreams = Vec::new();
+    // UPS-009: shared system bootstrap, never pointing at our own listeners.
+    let listen: Vec<_> = cfg.listen.iter().map(|l| l.addr).collect();
+    let mut system_bootstrap: Option<Arc<Bootstrap>> = None;
+    for (i, u) in cfg.upstream.iter().enumerate() {
+        let id = u16::try_from(i + 1).unwrap_or(u16::MAX);
+        let ep = match Endpoint::parse(&u.url) {
+            Ok(ep) => ep,
+            Err(e) => {
+                errors.push(format!("upstream `{}`: {e}", u.name));
+                continue;
+            }
+        };
+        for (set, what) in [
+            (!u.spki_pins.is_empty(), "spki_pins"),
+            (u.proxy.is_some(), "proxy"),
+            (u.ecs.as_deref().is_some_and(|e| e != "strip"), "ecs"),
+            (u.http_version == HttpVersion::H3, "http_version = \"3\""),
+        ] {
+            if set {
+                errors.push(format!(
+                    "upstream `{}`: `{what}` is not supported yet",
                     u.name
-                )),
-                Ok(ep) if !matches!(ep.protocol, crate::Protocol::Udp | crate::Protocol::Tcp) => errors.push(format!(
-                    "upstream `{}`: {} upstreams arrive in the next release; use udp:// or tcp:// for now",
-                    u.name, ep.protocol
-                )),
-                Ok(ep) => {
-                    let up = Arc::new(Upstream::new(
-                        id,
-                        u.name.as_str(),
-                        ep,
-                        Duration::from_millis(u64::from(u.timeout_ms)),
-                        u.weight,
-                    ));
-                    upstreams.push(Arc::clone(&up));
-                    ups.insert(u.name.as_str(), up);
-                }
-                Err(e) => errors.push(format!("upstream `{}`: {e}", u.name)),
+                ));
             }
         }
+        let bootstrap = match (&ep.host, u.bootstrap.is_empty()) {
+            (Host::Ip(_), _) => None,
+            (Host::Name(_), false) => Some(Arc::new(Bootstrap::new(
+                u.bootstrap
+                    .iter()
+                    .map(|ip| SocketAddr::new(*ip, 53))
+                    .collect(),
+            ))),
+            (Host::Name(_), true) => {
+                let bs =
+                    system_bootstrap.get_or_insert_with(|| Arc::new(Bootstrap::system(&listen)));
+                if bs.servers().is_empty() {
+                    errors.push(format!(
+                            "upstream `{}`: hostname URL but no bootstrap servers (set `bootstrap = [\"9.9.9.9\"]` or use an IP)",
+                            u.name
+                        ));
+                }
+                Some(Arc::clone(bs))
+            }
+        };
+        let opts = UpstreamOptions {
+            timeout: Duration::from_millis(u64::from(u.timeout_ms)),
+            weight: u.weight,
+            pool_size: usize::from(u.pool_size),
+            idle_timeout: Duration::from_millis(u64::from(u.idle_timeout_ms)),
+            tls_server_name: u.tls_server_name.as_ref().map(ToString::to_string),
+            tls_insecure_skip_verify: u.tls_insecure_skip_verify,
+            headers: u
+                .headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            bootstrap,
+        };
+        match Upstream::build(id, u.name.as_str(), ep, &opts, tls) {
+            Ok(up) => {
+                let up = Arc::new(up);
+                upstreams.push(Arc::clone(&up));
+                ups.insert(u.name.as_str(), up);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    (upstreams, ups)
+}
+
+impl Router {
+    /// Builds groups and routes over already-built upstreams.
+    fn assemble(
+        cfg: &Config,
+        upstreams: Vec<Arc<Upstream>>,
+        ups: &HashMap<&str, Arc<Upstream>>,
+        mut errors: Vec<String>,
+    ) -> Result<Self, Vec<String>> {
         let mut groups = Vec::new();
         let mut by_name = HashMap::new();
         for g in &cfg.upstream_group {

@@ -51,6 +51,8 @@ pub(crate) struct Pipeline {
     router: Arc<Router>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
+    /// Queries dropped because they carried our own loop tag.
+    loops: std::sync::atomic::AtomicU64,
     /// Per-process qname hash seed (keeps remote clients from precomputing collisions).
     seed: u64,
 }
@@ -67,6 +69,7 @@ impl Pipeline {
             router,
             flights: Singleflight::new(),
             seed: rand::random(),
+            loops: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -96,6 +99,21 @@ impl Pipeline {
                 return ready(badvers_from_raw(req, self.settings.edns_payload, out));
             }
         };
+        // `spec/04` §7: a query carrying our own loop tag means an upstream forwards back to
+        // us. Answering would recurse forever; drop it and make noise.
+        if telltale_upstream::is_own_loop_tag(&q) {
+            let n = self
+                .loops
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n.is_multiple_of(1000) {
+                tracing::error!(
+                    qname = %q.qname.display(),
+                    total = n + 1,
+                    "forwarding loop detected: an upstream sends our own queries back to us; check upstream configuration"
+                );
+            }
+            return Response::Drop;
+        }
         let question = Question::from_query(&q);
         let Some(sel) = self.router.select(&question, &[]) else {
             // No upstream group applies (none configured): we can't resolve this.
