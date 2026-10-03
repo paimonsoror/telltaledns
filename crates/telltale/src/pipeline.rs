@@ -114,6 +114,17 @@ impl Pipeline {
             }
             return Response::Drop;
         }
+        // REQ: DNS-019 — answer ANY with the RFC 8482 minimal response (no amplification).
+        if q.is_any() {
+            let edns = response_edns(&q, self.settings.edns_payload, None);
+            let len = ResponseBuilder::new(&q, out, rcode::NOERROR)
+                .ok()
+                .and_then(|mut b| {
+                    b.answer_any_refusal(3600).ok()?;
+                    b.finish(edns).ok()
+                });
+            return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
+        }
         let question = Question::from_query(&q);
         let Some(sel) = self.router.select(&question, &[]) else {
             // No upstream group applies (none configured): we can't resolve this.
@@ -323,5 +334,98 @@ pub(crate) struct Handler(pub(crate) Arc<Pipeline>);
 impl QueryHandler for Handler {
     fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
         self.0.handle_sync(req, meta, out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use telltale_cache::CachePolicy;
+    use telltale_proto::{NameBuf, build_query, rtype, summarize};
+
+    use super::*;
+
+    fn pipeline() -> Arc<Pipeline> {
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
+        Pipeline::new(Settings::default(), cache, Arc::new(Router::default()))
+    }
+
+    fn query(name: &str, qtype: u16, edns: bool) -> Vec<u8> {
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation(name).unwrap();
+        let e = edns.then(|| EdnsOut::new(1232));
+        let len = build_query(&mut buf, 9, &n, qtype, 1, true, e).unwrap();
+        buf[..len].to_vec()
+    }
+
+    fn meta() -> RequestMeta {
+        RequestMeta {
+            peer: "127.0.0.1:5353".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+        }
+    }
+
+    fn rcode_of(p: &Arc<Pipeline>, req: &[u8]) -> Option<u16> {
+        let mut out = [0u8; 4096];
+        match p.handle_sync(req, &meta(), &mut out) {
+            Response::Ready(len) => Some(summarize(&out[..len]).unwrap().rcode),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn dns_019_rejections_and_errors() {
+        let p = pipeline();
+        let q = query("example.com", rtype::A, true);
+        assert_eq!(rcode_of(&p, &q[..5]), None, "runt dropped");
+        let mut notify = q.clone();
+        notify[2] |= 4 << 3;
+        assert_eq!(rcode_of(&p, &notify), Some(rcode::NOTIMP));
+        let mut v1 = q.clone();
+        let n = v1.len();
+        v1[n - 11 + 6] = 1;
+        assert_eq!(rcode_of(&p, &v1), Some(rcode::BADVERS));
+    }
+
+    #[test]
+    fn dns_019_any_gets_minimal_answer_without_upstream() {
+        let p = pipeline();
+        let mut out = [0u8; 4096];
+        let Response::Ready(len) =
+            p.handle_sync(&query("example.com", rtype::ANY, false), &meta(), &mut out)
+        else {
+            panic!("ANY must be answered immediately");
+        };
+        let s = summarize(&out[..len]).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+    }
+
+    #[test]
+    fn no_upstreams_refuses_with_ede() {
+        let p = pipeline();
+        assert_eq!(
+            rcode_of(&p, &query("example.com", rtype::A, true)),
+            Some(rcode::REFUSED)
+        );
+    }
+
+    #[test]
+    fn loop_tagged_queries_are_dropped() {
+        telltale_upstream::set_node_tag(0xABCD);
+        let p = pipeline();
+        let q = telltale_upstream::Question {
+            name: NameBuf::from_presentation("example.com").unwrap(),
+            qtype: rtype::A,
+            qclass: 1,
+            dnssec_ok: false,
+            checking_disabled: false,
+        };
+        let mut buf = [0u8; 512];
+        let len = telltale_upstream::encode_query(&q, 1, &mut buf).unwrap();
+        let mut out = [0u8; 4096];
+        assert!(matches!(
+            p.handle_sync(&buf[..len], &meta(), &mut out),
+            Response::Drop
+        ));
     }
 }
