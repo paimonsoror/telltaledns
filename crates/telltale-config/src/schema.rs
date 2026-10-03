@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ByteSize, SafeString};
+use crate::types::{ByteSize, Cidr, SafeString};
 
 /// Current config schema version. Bump with a migration when the schema changes incompatibly.
 pub const CONFIG_VERSION: u32 = 1;
@@ -36,6 +36,12 @@ pub struct Config {
     pub record: Vec<LocalRecord>,
     /// Local data settings (hosts files, PTR generation).
     pub local: LocalConfig,
+    /// Who may query (refuse everyone else).
+    pub access: AccessConfig,
+    /// Per-client query rate limits (DNS-014).
+    pub ratelimit: RateLimitConfig,
+    /// Special-name handling (RFC 6761 etc.).
+    pub special: SpecialConfig,
     /// Response cache.
     pub cache: CacheConfig,
     /// Telemetry, query log, and metrics.
@@ -62,6 +68,9 @@ impl Default for Config {
             route: Vec::new(),
             record: Vec::new(),
             local: LocalConfig::default(),
+            access: AccessConfig::default(),
+            ratelimit: RateLimitConfig::default(),
+            special: SpecialConfig::default(),
             cache: CacheConfig::default(),
             telemetry: TelemetryConfig::default(),
         }
@@ -353,6 +362,105 @@ impl Default for LocalConfig {
             hosts_files: Vec::new(),
             auto_ptr: true,
             default_ttl: 300,
+        }
+    }
+}
+
+/// Who may use this resolver (`spec/08` §6: never an open resolver by default).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct AccessConfig {
+    /// Clients outside these networks get REFUSED. Default: private (RFC 1918), CGNAT /
+    /// Tailscale (100.64/10), ULA, link-local, and loopback.
+    pub allowed_networks: Vec<Cidr>,
+}
+
+impl Default for AccessConfig {
+    fn default() -> Self {
+        let nets = [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+            "169.254.0.0/16",
+            "127.0.0.0/8",
+            "fc00::/7",
+            "fe80::/10",
+            "::1/128",
+        ];
+        Self {
+            allowed_networks: nets.iter().filter_map(|n| Cidr::parse(n).ok()).collect(),
+        }
+    }
+}
+
+/// What to do with a rate-limited query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RateLimitAction {
+    #[default]
+    Refused,
+    Drop,
+}
+
+/// Per-client rate limiting (DNS-014).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct RateLimitConfig {
+    pub enabled: bool,
+    /// Queries allowed per `window_secs` per client (token bucket; bursts up to this).
+    pub queries: u32,
+    pub window_secs: u32,
+    pub action: RateLimitAction,
+    /// Clients never limited.
+    pub exempt: Vec<Cidr>,
+    /// Count IPv4 clients per /N (32 = per address).
+    pub ipv4_prefix: u8,
+    /// Count IPv6 clients per /N (64 groups a device's rotating privacy addresses).
+    pub ipv6_prefix: u8,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            queries: 1000,
+            window_secs: 60,
+            action: RateLimitAction::Refused,
+            exempt: ["127.0.0.0/8", "::1/128"]
+                .iter()
+                .filter_map(|n| Cidr::parse(n).ok())
+                .collect(),
+            ipv4_prefix: 32,
+            ipv6_prefix: 64,
+        }
+    }
+}
+
+/// Built-in handling of special names (`spec/03` §3 step 4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+// Independent on/off switches, one per rule; an enum set would only obscure the TOML.
+#[allow(clippy::struct_excessive_bools)]
+pub struct SpecialConfig {
+    /// `use-application-dns.net` → NXDOMAIN, so Firefox doesn't switch to its own DoH.
+    pub block_firefox_canary: bool,
+    /// `localhost` and `*.localhost` → `127.0.0.1` / `::1` (RFC 6761 §6.3).
+    pub localhost: bool,
+    /// Reverse lookups for private addresses → NXDOMAIN instead of asking public upstreams,
+    /// unless a local record or route covers them (Pi-hole "bogus-priv").
+    pub private_ptr_nxdomain: bool,
+    /// CHAOS-class `version.bind`, `id.server`, ... → REFUSED.
+    pub refuse_chaos: bool,
+}
+
+impl Default for SpecialConfig {
+    fn default() -> Self {
+        Self {
+            block_firefox_canary: true,
+            localhost: true,
+            private_ptr_nxdomain: true,
+            refuse_chaos: true,
         }
     }
 }

@@ -216,9 +216,125 @@ impl JsonSchema for ByteSize {
     }
 }
 
+/// An IP network (`192.168.0.0/16`, `fd00::/8`, or a bare address = host route).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cidr {
+    pub addr: std::net::IpAddr,
+    pub prefix: u8,
+}
+
+impl Cidr {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let (a, p) = match s.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (s, None),
+        };
+        let addr: std::net::IpAddr = a
+            .parse()
+            .map_err(|_| format!("`{s}` is not an IP network"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match p {
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|v| *v <= max)
+                .ok_or_else(|| format!("`{s}`: prefix must be 0–{max}"))?,
+            None => max,
+        };
+        Ok(Self { addr, prefix })
+    }
+
+    /// True if `ip` is inside this network (IPv4-mapped IPv6 addresses count as IPv4).
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        let ip = match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            IpAddr::V4(_) => ip,
+        };
+        match (self.addr, ip) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(n) & mask == u32::from(a) & mask
+            }
+            (IpAddr::V6(n), IpAddr::V6(a)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(n) & mask == u128::from(a) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Debug for Cidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for Cidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
+impl Serialize for Cidr {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Cidr {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Cidr::parse(&s).map_err(de::Error::custom)
+    }
+}
+
+impl JsonSchema for Cidr {
+    fn schema_name() -> Cow<'static, str> {
+        "Cidr".into()
+    }
+    fn inline_schema() -> bool {
+        true
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host)."
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_014_cidr_parse_and_contains() {
+        let n = Cidr::parse("192.168.0.0/16").unwrap();
+        assert!(n.contains("192.168.44.1".parse().unwrap()));
+        assert!(!n.contains("192.169.0.1".parse().unwrap()));
+        assert!(
+            n.contains("::ffff:192.168.1.1".parse().unwrap()),
+            "v4-mapped counts"
+        );
+        let v6 = Cidr::parse("fd00::/8").unwrap();
+        assert!(v6.contains("fd12::1".parse().unwrap()));
+        assert!(!v6.contains("10.0.0.1".parse().unwrap()));
+        assert!(
+            Cidr::parse("0.0.0.0/0")
+                .unwrap()
+                .contains("8.8.8.8".parse().unwrap())
+        );
+        assert_eq!(Cidr::parse("10.1.2.3").unwrap().prefix, 32);
+        assert!(Cidr::parse("10.0.0.0/33").is_err());
+        assert!(Cidr::parse("nope/8").is_err());
+    }
 
     #[test]
     fn ops_005_safe_string_rejects_control_chars() {

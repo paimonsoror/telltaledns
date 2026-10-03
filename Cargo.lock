@@ -1562,6 +1562,7 @@ dependencies = [
 name = "telltale-policy"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "telltale-config",
  "telltale-proto",
 ]

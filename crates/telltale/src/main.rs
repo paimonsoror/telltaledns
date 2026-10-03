@@ -19,7 +19,7 @@ use telltale_policy::LocalData;
 use telltale_upstream::Router;
 use tracing::{error, info, warn};
 
-use crate::pipeline::{Handler, Pipeline, Settings};
+use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 
 /// Default config file location (`spec/08` §3.4).
 const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
@@ -240,12 +240,8 @@ async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> 
     if !local.is_empty() {
         info!(records = local.len(), "local records loaded");
     }
-    let handler = Arc::new(Handler(Pipeline::new(
-        settings,
-        cache,
-        router,
-        Arc::new(local),
-    )));
+    let policy = Policy::from_config(cfg, local);
+    let handler = Arc::new(Handler(Pipeline::new(settings, cache, router, policy)));
     let rt = tokio::runtime::Handle::current();
     let mut udp = Vec::new();
     let mut tcp = Vec::new();

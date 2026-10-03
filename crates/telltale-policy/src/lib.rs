@@ -6,5 +6,18 @@
 #![forbid(unsafe_code)]
 
 pub mod local;
+pub mod ratelimit;
+pub mod special;
+
+use std::net::IpAddr;
+
+use telltale_config::Cidr;
 
 pub use local::{LoadReport, LocalData, reverse_name};
+pub use ratelimit::RateLimiter;
+pub use special::{Special, classify};
+
+/// True if `ip` may use the resolver (`spec/08` §6: refuse everyone outside these networks).
+pub fn is_allowed(networks: &[Cidr], ip: IpAddr) -> bool {
+    networks.iter().any(|n| n.contains(ip))
+}

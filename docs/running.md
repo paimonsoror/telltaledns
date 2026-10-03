@@ -108,6 +108,34 @@ default_ttl = 300
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `telltale config check` validates record values and reads the hosts files.
 
+## Who can query, and how often
+```toml
+[access]
+# Default: private ranges, CGNAT/Tailscale (100.64/10), link-local, loopback. Everyone else: REFUSED.
+allowed_networks = ["192.168.0.0/16", "fd00::/8", "127.0.0.0/8"]
+
+[ratelimit]
+queries = 1000          # per client per window (bursts allowed up to this)
+window_secs = 60
+action = "refused"      # or "drop"
+exempt = ["127.0.0.0/8", "::1/128"]
+ipv6_prefix = 64        # a device's rotating IPv6 privacy addresses share one budget
+```
+TelltaleDNS is never an open resolver by default. If you widen `allowed_networks` to everything, a warning is logged at startup.
+
+## Special names
+Handled before anything else (each can be turned off under `[special]`):
+
+| Name | Answer | Why |
+|---|---|---|
+| `localhost`, `*.localhost` | 127.0.0.1 / ::1 | RFC 6761 |
+| `*.invalid` | NXDOMAIN | RFC 6761 |
+| `use-application-dns.net` | NXDOMAIN | stops Firefox from silently switching to its own DoH (`block_firefox_canary`) |
+| CHAOS class (`version.bind`, …) | REFUSED | no fingerprinting (`refuse_chaos`) |
+| reverse lookups for private IPs | NXDOMAIN | never leaks your LAN layout to public resolvers, unless a local record or a `[[route]]` covers it (`private_ptr_nxdomain`) |
+
+`.local` names are passed through unchanged (many Active Directory domains use them; route them with `[[route]]`).
+
 ## Routing (conditional forwarding)
 ```toml
 [[upstream]]

@@ -62,5 +62,8 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[route]]` | conditional forwarding by domain suffix, client group, or query type | `spec/04` §1 |
 | `[[record]]` | local records (A, AAAA, CNAME, PTR, TXT, MX, SRV; `*.` wildcards) | `docs/running.md` |
 | `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
+| `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
+| `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
+| `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint | `spec/06` |

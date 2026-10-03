@@ -89,3 +89,18 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Breaker:** 3 consecutive failures also open it (in addition to the window rule).
 
 **Consequences:** Measured in-process (debug build), one blackholed upstream out of two: 0 failures and p99 1.04–1.15× of baseline for failover, round_robin, fastest, and parallel. The cost is a few extra upstream queries while a member is degraded, and detached attempts holding a socket for up to one attempt timeout.
+
+## ADR-014 — Access, rate-limit, and special-name defaults (Proposed)
+**Context:** DNS-014, DNS-019, `spec/03` §3 step 4, and `spec/08` §6 name these behaviors but leave several defaults open.
+**Decision:**
+- **Access:** queries from outside `[access] allowed_networks` get REFUSED + EDE 18. The default list is RFC 1918, 100.64/10 (CGNAT, Tailscale), 169.254/16, 127/8, fc00::/7, fe80::/10, and ::1. Pod/service CIDR auto-detection waits for the Helm work (T4.1). Allowing `0.0.0.0/0` triggers a startup warning.
+- **Rate limit:** token bucket of 1000 queries per 60 s per client (Pi-hole parity), with REFUSED + EDE 18 by default (or drop). IPv4 clients are counted per /32, IPv6 per /64 (a device's rotating privacy addresses share a bucket). Loopback is exempt.
+- **Special names:**
+  - `localhost`/`*.localhost` → 127.0.0.1 / ::1, authoritative (RFC 6761 §6.3).
+  - `*.invalid` → NXDOMAIN (RFC 6761 §6.4).
+  - `use-application-dns.net` → NXDOMAIN (Firefox DoH canary).
+  - All CHAOS-class queries → REFUSED.
+  - Reverse lookups for private ranges → NXDOMAIN unless a local record or an explicit `[[route]]` covers them (RFC 6303; Pi-hole `bogus-priv`).
+  - `.local` is **not** intercepted, because many AD domains use it; mDNS names never reach unicast DNS anyway.
+
+**Consequences:** Safe by default on a home network. Users exposing TelltaleDNS beyond RFC 1918 must widen `allowed_networks` deliberately. Each special-name rule can be turned off under `[special]`.

@@ -249,6 +249,29 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
         r.err("cache.max_bytes", "must be at least 1MiB");
     }
 
+    let rl = &cfg.ratelimit;
+    if rl.enabled && (rl.queries == 0 || rl.window_secs == 0) {
+        r.err(
+            "ratelimit",
+            "queries and window_secs must be at least 1 when enabled",
+        );
+    }
+    if rl.ipv4_prefix == 0 || rl.ipv4_prefix > 32 {
+        r.err("ratelimit.ipv4_prefix", "must be between 1 and 32");
+    }
+    if rl.ipv6_prefix == 0 || rl.ipv6_prefix > 128 {
+        r.err("ratelimit.ipv6_prefix", "must be between 1 and 128");
+    }
+    if cfg.access.allowed_networks.is_empty() {
+        r.err(
+            "access.allowed_networks",
+            "empty: nobody could query (use [\"0.0.0.0/0\", \"::/0\"] to allow everyone)",
+        );
+    }
+    if cfg.access.allowed_networks.iter().any(|n| n.prefix == 0) {
+        r.warn("access.allowed_networks: allows every address; TelltaleDNS is an open resolver if reachable from the internet");
+    }
+
     let t = &cfg.telemetry;
     if !t.ring_slots.is_power_of_two() || t.ring_slots < 1024 {
         r.err(

@@ -31,6 +31,8 @@ struct Route {
 pub struct Selection<'a> {
     pub group: &'a Arc<Group>,
     pub view: u16,
+    /// True if an explicit `[[route]]` matched (not just the default group).
+    pub routed: bool,
 }
 
 /// Routing table built from config.
@@ -263,6 +265,7 @@ impl Router {
         Some(Selection {
             group: &self.groups[idx],
             view: u16::try_from(idx).unwrap_or(u16::MAX),
+            routed: best.is_some(),
         })
     }
 

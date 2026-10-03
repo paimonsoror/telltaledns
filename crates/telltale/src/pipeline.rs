@@ -11,8 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
+use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
-use telltale_policy::LocalData;
+use telltale_policy::{LocalData, RateLimiter, Special};
 use telltale_proto::{
     EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
@@ -44,14 +45,51 @@ impl Default for Settings {
     }
 }
 
+/// Per-query policy inputs (`spec/03` §3 steps 2–5).
+#[derive(Debug, Default)]
+pub(crate) struct Policy {
+    /// Clients outside these networks are refused (08 §6).
+    pub(crate) allowed: Vec<Cidr>,
+    /// Per-client token buckets (DNS-014); `None` = disabled.
+    pub(crate) limiter: Option<RateLimiter>,
+    pub(crate) limit_action: RateLimitAction,
+    pub(crate) special: SpecialConfig,
+    /// Local records (DNS-010), answered before cache and upstreams.
+    pub(crate) local: Arc<LocalData>,
+}
+
+impl Policy {
+    pub(crate) fn from_config(cfg: &telltale_config::Config, local: LocalData) -> Self {
+        Self {
+            allowed: cfg.access.allowed_networks.clone(),
+            limiter: RateLimiter::new(&cfg.ratelimit),
+            limit_action: cfg.ratelimit.action,
+            special: cfg.special.clone(),
+            local: Arc::new(local),
+        }
+    }
+
+    /// Everything allowed, nothing limited (tests).
+    #[cfg(test)]
+    pub(crate) fn open() -> Self {
+        Self {
+            allowed: vec![
+                telltale_config::Cidr::parse("0.0.0.0/0").unwrap(),
+                telltale_config::Cidr::parse("::/0").unwrap(),
+            ],
+            ..Self::default()
+        }
+    }
+}
+
 /// Shared state for every query.
 #[derive(Debug)]
 pub(crate) struct Pipeline {
     settings: Settings,
     cache: Arc<Cache>,
     router: Arc<Router>,
-    /// Local records (DNS-010), answered before cache and upstreams.
-    local: Arc<LocalData>,
+    /// Access, rate limits, special names, local data (`spec/03` §3 steps 2–5).
+    policy: Policy,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Queries dropped because they carried our own loop tag.
@@ -68,14 +106,14 @@ impl Pipeline {
         settings: Settings,
         cache: Arc<Cache>,
         router: Arc<Router>,
-        local: Arc<LocalData>,
+        policy: Policy,
     ) -> Arc<Self> {
         Arc::new(Self {
             inflight: Arc::new(Semaphore::new(settings.max_inflight.max(1))),
             settings,
             cache,
             router,
-            local,
+            policy,
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -108,6 +146,31 @@ impl Pipeline {
                 return ready(badvers_from_raw(req, self.settings.edns_payload, out));
             }
         };
+        // 08 §6 — never an open resolver: refuse clients outside allowed_networks.
+        if !telltale_policy::is_allowed(&self.policy.allowed, meta.peer.ip()) {
+            return self.simple(
+                &q,
+                out,
+                rcode::REFUSED,
+                Some((ede::PROHIBITED, "client not allowed")),
+                meta,
+            );
+        }
+        // REQ: DNS-014 — per-client rate limit.
+        if let Some(rl) = &self.policy.limiter
+            && !rl.check(meta.peer.ip(), Instant::now())
+        {
+            return match self.policy.limit_action {
+                RateLimitAction::Drop => Response::Drop,
+                RateLimitAction::Refused => self.simple(
+                    &q,
+                    out,
+                    rcode::REFUSED,
+                    Some((ede::PROHIBITED, "rate limited")),
+                    meta,
+                ),
+            };
+        }
         // `spec/04` §7: a query carrying our own loop tag means an upstream forwards back to
         // us. Answering would recurse forever; drop it and make noise.
         if telltale_upstream::is_own_loop_tag(&q) {
@@ -134,15 +197,29 @@ impl Pipeline {
                 });
             return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
         }
+        // DNS-019 / RFC 6761 — special names (ADR-014).
+        let special = telltale_policy::classify(&q, &self.policy.special);
+        match special {
+            Some(Special::Refused) => return self.simple(&q, out, rcode::REFUSED, None, meta),
+            Some(Special::Nxdomain) => return self.simple(&q, out, rcode::NXDOMAIN, None, meta),
+            Some(Special::Localhost) => return self.localhost(&q, out, meta),
+            Some(Special::PrivatePtr) | None => {}
+        }
         // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
         if let Some(len) =
-            self.local
+            self.policy
+                .local
                 .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
         {
             return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
         let question = Question::from_query(&q);
-        let Some(sel) = self.router.select(&question, &[]) else {
+        let selection = self.router.select(&question, &[]);
+        // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303).
+        if special == Some(Special::PrivatePtr) && !selection.is_some_and(|s| s.routed) {
+            return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
+        }
+        let Some(sel) = selection else {
             // No upstream group applies (none configured): we can't resolve this.
             let edns = response_edns(
                 &q,
@@ -166,6 +243,49 @@ impl Pipeline {
             Lookup::Expired => self.defer(req, meta, key, sel.view, true),
             Lookup::Miss => self.defer(req, meta, key, sel.view, false),
         }
+    }
+
+    /// Answers with `rc` and no records; NXDOMAIN/NOERROR carry a synthetic SOA so clients can
+    /// cache the negative answer briefly.
+    fn simple(
+        &self,
+        q: &Query<'_>,
+        out: &mut [u8],
+        rc: u16,
+        ede: Option<(u16, &str)>,
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, ede);
+        let len = ResponseBuilder::new(q, out, rc).ok().and_then(|mut b| {
+            if rc == rcode::NXDOMAIN {
+                b.authoritative(true).authority_soa(300).ok()?;
+            }
+            b.finish(edns).ok()
+        });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
+    }
+
+    /// RFC 6761 §6.3: `localhost` names resolve to loopback.
+    fn localhost(&self, q: &Query<'_>, out: &mut [u8], meta: &RequestMeta) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let len = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                b.authoritative(true);
+                match q.qtype {
+                    telltale_proto::rtype::A => {
+                        b.answer_a(3600, std::net::Ipv4Addr::LOCALHOST).ok()?;
+                    }
+                    telltale_proto::rtype::AAAA => {
+                        b.answer_aaaa(3600, std::net::Ipv6Addr::LOCALHOST).ok()?;
+                    }
+                    _ => {
+                        b.authority_soa(3600).ok()?;
+                    }
+                }
+                b.finish(edns).ok()
+            });
+        ready(len.map(|l| self.finish(q, out, l, meta.transport)))
     }
 
     fn defer(
@@ -366,7 +486,7 @@ mod tests {
             Settings::default(),
             cache,
             Arc::new(Router::default()),
-            Arc::new(LocalData::default()),
+            Policy::open(),
         )
     }
 
@@ -448,5 +568,120 @@ mod tests {
             p.handle_sync(&buf[..len], &meta(), &mut out),
             Response::Drop
         ));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use telltale_cache::CachePolicy;
+    use telltale_config::{Cidr, RateLimitConfig};
+    use telltale_proto::{NameBuf, build_query, class, rtype, summarize};
+
+    use super::*;
+
+    fn pipeline(policy: Policy) -> Arc<Pipeline> {
+        let cache = Arc::new(Cache::new(CachePolicy::default()));
+        Pipeline::new(
+            Settings::default(),
+            cache,
+            Arc::new(Router::default()),
+            policy,
+        )
+    }
+
+    fn ask(
+        p: &Arc<Pipeline>,
+        peer: &str,
+        name: &str,
+        qtype: u16,
+        qclass: u16,
+    ) -> Option<(u16, u16)> {
+        let mut buf = [0u8; 512];
+        let n = NameBuf::from_presentation(name).unwrap();
+        let len = build_query(&mut buf, 3, &n, qtype, qclass, true, None).unwrap();
+        let meta = RequestMeta {
+            peer: peer.parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+        };
+        let mut out = [0u8; 4096];
+        match p.handle_sync(&buf[..len], &meta, &mut out) {
+            Response::Ready(l) => summarize(&out[..l]).ok().map(|s| (s.rcode, s.answers)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn access_control_refuses_outside_networks() {
+        let p = pipeline(Policy {
+            allowed: vec![Cidr::parse("192.168.0.0/16").unwrap()],
+            ..Policy::default()
+        });
+        assert_eq!(
+            ask(&p, "203.0.113.9:5353", "localhost", rtype::A, 1),
+            Some((rcode::REFUSED, 0))
+        );
+        assert_eq!(
+            ask(&p, "192.168.1.9:5353", "localhost", rtype::A, 1),
+            Some((rcode::NOERROR, 1))
+        );
+    }
+
+    #[test]
+    fn dns_014_rate_limited_clients_are_refused() {
+        let mut policy = Policy::open();
+        policy.limiter = RateLimiter::new(&RateLimitConfig {
+            queries: 3,
+            window_secs: 60,
+            exempt: Vec::new(),
+            ..RateLimitConfig::default()
+        });
+        let p = pipeline(policy);
+        for _ in 0..3 {
+            assert_eq!(
+                ask(&p, "10.0.0.5:1000", "localhost", rtype::A, 1)
+                    .unwrap()
+                    .0,
+                rcode::NOERROR
+            );
+        }
+        assert_eq!(
+            ask(&p, "10.0.0.5:1000", "localhost", rtype::A, 1)
+                .unwrap()
+                .0,
+            rcode::REFUSED
+        );
+        assert_eq!(
+            ask(&p, "10.0.0.6:1000", "localhost", rtype::A, 1)
+                .unwrap()
+                .0,
+            rcode::NOERROR
+        );
+    }
+
+    #[test]
+    fn dns_019_special_names_in_pipeline() {
+        let p = pipeline(Policy::open());
+        let peer = "10.0.0.1:53";
+        assert_eq!(
+            ask(&p, peer, "use-application-dns.net", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "x.invalid", rtype::A, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "app.localhost", rtype::AAAA, 1),
+            Some((rcode::NOERROR, 1))
+        );
+        assert_eq!(
+            ask(&p, peer, "version.bind", rtype::TXT, class::CH),
+            Some((rcode::REFUSED, 0))
+        );
+        assert_eq!(
+            ask(&p, peer, "4.3.168.192.in-addr.arpa", rtype::PTR, 1),
+            Some((rcode::NXDOMAIN, 0))
+        );
     }
 }
