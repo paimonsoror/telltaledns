@@ -18,11 +18,13 @@ http = "1.5.0"
 parking_lot = "0.12.5"
 rand = "0.10.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
 telltale-config = { version = "0.1.0", path = "../telltale-config" }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+toml = "1.1.6"
 webpki-roots = "1.0.9"
 
 [dev-dependencies]

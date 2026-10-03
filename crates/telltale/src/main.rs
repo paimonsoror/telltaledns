@@ -45,6 +45,35 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Built-in upstream presets (Cloudflare, Quad9, AdGuard, ...).
+    Presets {
+        #[command(subcommand)]
+        command: PresetsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PresetsCommand {
+    /// List the catalog.
+    List,
+    /// Print a preset as `[[upstream]]` entries plus a group, ready to paste into telltale.toml.
+    // REQ: UPS-004
+    Show {
+        /// Preset ID (see `telltale presets list`).
+        id: String,
+        /// Only these protocols (comma-separated): udp, tcp, tls, https.
+        #[arg(long, value_delimiter = ',')]
+        proto: Vec<String>,
+        /// Template values, e.g. `--param profile=abc123` for NextDNS.
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+        /// Leave out IPv6 addresses.
+        #[arg(long)]
+        no_ipv6: bool,
+        /// Group name (default: the preset ID; use "default" to make it the main group).
+        #[arg(long)]
+        group: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -72,6 +101,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Run { config } => run(config),
         Command::Config { command } => run_config(command),
+        Command::Presets { command } => run_presets(command),
     };
     match result {
         Ok(code) => code,
@@ -273,6 +303,88 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
                         eprintln!("error: {e}");
                     }
                     eprintln!("config invalid: {} error(s)", errors.len());
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
+}
+
+fn run_presets(cmd: PresetsCommand) -> io::Result<ExitCode> {
+    use telltale_upstream::Protocol;
+    use telltale_upstream::presets::{ExpandOptions, catalog, find};
+
+    let mut out = io::stdout().lock();
+    match cmd {
+        PresetsCommand::List => {
+            let presets = catalog().map_err(io::Error::other)?;
+            writeln!(
+                out,
+                "{:<20} {:<42} {:<8} {:<6} {:<4} PROTOCOLS",
+                "ID", "NAME", "FILTERS", "DNSSEC", "ECS"
+            )?;
+            for p in presets {
+                let yn = |b: bool| if b { "yes" } else { "no" };
+                let filtering = format!("{:?}", p.filtering).to_lowercase();
+                writeln!(
+                    out,
+                    "{:<20} {:<42} {:<8} {:<6} {:<4} {}",
+                    p.id,
+                    p.name,
+                    filtering,
+                    yn(p.dnssec),
+                    yn(p.ecs),
+                    p.protocols().join(",")
+                )?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PresetsCommand::Show {
+            id,
+            proto,
+            params,
+            no_ipv6,
+            group,
+        } => {
+            let Some(preset) = find(&id) else {
+                eprintln!("error: unknown preset `{id}` (see `telltale presets list`)");
+                return Ok(ExitCode::FAILURE);
+            };
+            let mut opts = ExpandOptions {
+                no_ipv6,
+                group,
+                ..ExpandOptions::default()
+            };
+            for p in &proto {
+                opts.protocols.push(match p.as_str() {
+                    "udp" => Protocol::Udp,
+                    "tcp" => Protocol::Tcp,
+                    "tls" | "dot" => Protocol::Tls,
+                    "https" | "doh" => Protocol::Https,
+                    other => {
+                        eprintln!("error: unknown protocol `{other}` (udp, tcp, tls, https)");
+                        return Ok(ExitCode::FAILURE);
+                    }
+                });
+            }
+            for kv in &params {
+                let Some((k, v)) = kv.split_once('=') else {
+                    eprintln!("error: --param expects KEY=VALUE, got `{kv}`");
+                    return Ok(ExitCode::FAILURE);
+                };
+                opts.params.insert(k.to_string(), v.to_string());
+            }
+            match preset.expand(&opts) {
+                Ok(exp) => {
+                    writeln!(out, "# {} — {}", preset.name, preset.homepage)?;
+                    for (url, why) in &exp.skipped {
+                        writeln!(out, "# skipped {url}: {why}")?;
+                    }
+                    write!(out, "{}", exp.to_toml().map_err(io::Error::other)?)?;
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
                     Ok(ExitCode::FAILURE)
                 }
             }

@@ -4,7 +4,7 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
 /// Upstream wire protocol.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Protocol {
     /// Plain DNS over UDP, with TCP fallback on truncation.
     Udp,

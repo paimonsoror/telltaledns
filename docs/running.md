@@ -36,6 +36,15 @@ dig @127.0.0.1 -p 5300 example.com
 ```
 Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, and DoQ *listeners* are accepted in config but skipped with a warning.
 
+## Upstream presets
+Instead of looking up addresses, start from a preset:
+```sh
+telltale presets list                                   # Cloudflare, Google, Quad9, AdGuard, Mullvad, Control D, NextDNS, ...
+telltale presets show quad9 --proto tls,https --group default >> telltale.toml
+telltale presets show nextdns --param profile=abc123    # templated presets need your account ID
+```
+`show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. DoQ (`quic://`) endpoints are listed but skipped until DoQ support lands.
+
 ## Encrypted upstreams
 ```toml
 [[upstream]]

@@ -1,0 +1,298 @@
+# TelltaleDNS upstream preset catalog (REQ: UPS-004, spec/04 §3).
+#
+# Data, not code: compiled into the binary and expanded into explicit [[upstream]] entries by
+# `telltale presets show <id>` (and later the UI), so a running config never depends on this file.
+#
+# Fields:
+#   id, name, homepage   identity
+#   sources              which incumbent offers it as a preset ("pihole", "technitium")
+#   filtering            none | malware | family | ads
+#   dnssec, ecs          whether the service validates DNSSEC / forwards EDNS Client Subnet
+#   params               placeholders used in URLs as {name} (e.g. a NextDNS profile ID)
+#   [[preset.endpoint]]  url (+ tls_server_name for IP-literal TLS endpoints)
+#
+# Addresses come from each provider's public documentation. The nightly online smoke test
+# (crates/telltale-upstream/tests/presets_online.rs) resolves example.com through every entry.
+
+# ---------------------------------------------------------------- Pi-hole presets (all of them)
+
+[[preset]]
+id = "google"
+name = "Google"
+homepage = "https://developers.google.com/speed/public-dns"
+sources = ["pihole", "technitium"]
+filtering = "none"
+dnssec = true
+ecs = true
+endpoint = [
+  { url = "udp://8.8.8.8" },
+  { url = "udp://8.8.4.4" },
+  { url = "udp://[2001:4860:4860::8888]" },
+  { url = "udp://[2001:4860:4860::8844]" },
+  { url = "tls://8.8.8.8", tls_server_name = "dns.google" },
+  { url = "tls://8.8.4.4", tls_server_name = "dns.google" },
+  { url = "https://dns.google/dns-query" },
+]
+
+[[preset]]
+id = "opendns"
+name = "OpenDNS (Cisco)"
+homepage = "https://www.opendns.com/"
+sources = ["pihole"]
+filtering = "malware"
+dnssec = true
+ecs = true
+endpoint = [
+  { url = "udp://208.67.222.222" },
+  { url = "udp://208.67.220.220" },
+  { url = "udp://[2620:119:35::35]" },
+  { url = "udp://[2620:119:53::53]" },
+  { url = "https://doh.opendns.com/dns-query" },
+]
+
+[[preset]]
+id = "level3"
+name = "Level3 (Lumen)"
+homepage = "https://www.lumen.com/"
+sources = ["pihole"]
+filtering = "none"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "udp://4.2.2.1" },
+  { url = "udp://4.2.2.2" },
+]
+
+[[preset]]
+id = "comodo"
+name = "Comodo Secure DNS"
+homepage = "https://www.comodo.com/secure-dns/"
+sources = ["pihole"]
+filtering = "malware"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "udp://8.26.56.26" },
+  { url = "udp://8.20.247.20" },
+]
+
+[[preset]]
+id = "quad9"
+name = "Quad9 (filtered, DNSSEC)"
+homepage = "https://quad9.net/"
+sources = ["pihole", "technitium"]
+filtering = "malware"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://9.9.9.9" },
+  { url = "udp://149.112.112.112" },
+  { url = "udp://[2620:fe::fe]" },
+  { url = "udp://[2620:fe::9]" },
+  { url = "tls://9.9.9.9", tls_server_name = "dns.quad9.net" },
+  { url = "tls://149.112.112.112", tls_server_name = "dns.quad9.net" },
+  { url = "https://dns.quad9.net/dns-query" },
+]
+
+[[preset]]
+id = "quad9-unfiltered"
+name = "Quad9 (unfiltered, no DNSSEC)"
+homepage = "https://quad9.net/"
+sources = ["pihole", "technitium"]
+filtering = "none"
+dnssec = false
+ecs = false
+endpoint = [
+  { url = "udp://9.9.9.10" },
+  { url = "udp://149.112.112.10" },
+  { url = "udp://[2620:fe::10]" },
+  { url = "udp://[2620:fe::fe:10]" },
+  { url = "tls://9.9.9.10", tls_server_name = "dns10.quad9.net" },
+  { url = "https://dns10.quad9.net/dns-query" },
+]
+
+[[preset]]
+id = "quad9-ecs"
+name = "Quad9 (filtered, ECS, DNSSEC)"
+homepage = "https://quad9.net/"
+sources = ["pihole", "technitium"]
+filtering = "malware"
+dnssec = true
+ecs = true
+endpoint = [
+  { url = "udp://9.9.9.11" },
+  { url = "udp://149.112.112.11" },
+  { url = "udp://[2620:fe::11]" },
+  { url = "udp://[2620:fe::fe:11]" },
+  { url = "tls://9.9.9.11", tls_server_name = "dns11.quad9.net" },
+  { url = "https://dns11.quad9.net/dns-query" },
+]
+
+[[preset]]
+id = "cloudflare"
+name = "Cloudflare (DNSSEC)"
+homepage = "https://one.one.one.one/"
+sources = ["pihole", "technitium"]
+filtering = "none"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://1.1.1.1" },
+  { url = "udp://1.0.0.1" },
+  { url = "udp://[2606:4700:4700::1111]" },
+  { url = "udp://[2606:4700:4700::1001]" },
+  { url = "tls://1.1.1.1", tls_server_name = "cloudflare-dns.com" },
+  { url = "tls://1.0.0.1", tls_server_name = "cloudflare-dns.com" },
+  { url = "https://cloudflare-dns.com/dns-query" },
+]
+
+# ------------------------------------------------- Encrypted resolvers common in Technitium setups
+
+[[preset]]
+id = "cloudflare-security"
+name = "Cloudflare for Families (malware)"
+homepage = "https://one.one.one.one/family/"
+sources = ["technitium"]
+filtering = "malware"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://1.1.1.2" },
+  { url = "udp://1.0.0.2" },
+  { url = "tls://1.1.1.2", tls_server_name = "security.cloudflare-dns.com" },
+  { url = "https://security.cloudflare-dns.com/dns-query" },
+]
+
+[[preset]]
+id = "cloudflare-family"
+name = "Cloudflare for Families (malware + adult)"
+homepage = "https://one.one.one.one/family/"
+sources = ["technitium"]
+filtering = "family"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://1.1.1.3" },
+  { url = "udp://1.0.0.3" },
+  { url = "tls://1.1.1.3", tls_server_name = "family.cloudflare-dns.com" },
+  { url = "https://family.cloudflare-dns.com/dns-query" },
+]
+
+[[preset]]
+id = "adguard"
+name = "AdGuard DNS (ads + trackers)"
+homepage = "https://adguard-dns.io/en/public-dns.html"
+sources = ["technitium"]
+filtering = "ads"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://94.140.14.14" },
+  { url = "udp://94.140.15.15" },
+  { url = "tls://94.140.14.14", tls_server_name = "dns.adguard-dns.com" },
+  { url = "https://dns.adguard-dns.com/dns-query" },
+  { url = "quic://dns.adguard-dns.com" },
+]
+
+[[preset]]
+id = "adguard-family"
+name = "AdGuard DNS Family"
+homepage = "https://adguard-dns.io/en/public-dns.html"
+sources = ["technitium"]
+filtering = "family"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://94.140.14.15" },
+  { url = "udp://94.140.15.16" },
+  { url = "tls://94.140.14.15", tls_server_name = "family.adguard-dns.com" },
+  { url = "https://family.adguard-dns.com/dns-query" },
+  { url = "quic://family.adguard-dns.com" },
+]
+
+[[preset]]
+id = "adguard-unfiltered"
+name = "AdGuard DNS (unfiltered)"
+homepage = "https://adguard-dns.io/en/public-dns.html"
+sources = ["technitium"]
+filtering = "none"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://94.140.14.140" },
+  { url = "udp://94.140.14.141" },
+  { url = "tls://94.140.14.140", tls_server_name = "unfiltered.adguard-dns.com" },
+  { url = "https://unfiltered.adguard-dns.com/dns-query" },
+  { url = "quic://unfiltered.adguard-dns.com" },
+]
+
+[[preset]]
+id = "mullvad"
+name = "Mullvad DNS (no filtering)"
+homepage = "https://mullvad.net/en/help/dns-over-https-and-dns-over-tls"
+sources = ["technitium"]
+filtering = "none"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "tls://194.242.2.2", tls_server_name = "dns.mullvad.net" },
+  { url = "https://dns.mullvad.net/dns-query" },
+]
+
+[[preset]]
+id = "mullvad-adblock"
+name = "Mullvad DNS (ads + trackers)"
+homepage = "https://mullvad.net/en/help/dns-over-https-and-dns-over-tls"
+sources = ["technitium"]
+filtering = "ads"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "tls://194.242.2.3", tls_server_name = "adblock.dns.mullvad.net" },
+  { url = "https://adblock.dns.mullvad.net/dns-query" },
+]
+
+[[preset]]
+id = "controld-free"
+name = "Control D (free, unfiltered)"
+homepage = "https://controld.com/free-dns"
+sources = ["technitium"]
+filtering = "none"
+dnssec = true
+ecs = false
+endpoint = [
+  { url = "udp://76.76.2.0" },
+  { url = "udp://76.76.10.0" },
+  { url = "tls://p0.freedns.controld.com" },
+  { url = "https://freedns.controld.com/p0" },
+]
+
+[[preset]]
+id = "controld"
+name = "Control D (your resolver)"
+homepage = "https://controld.com/"
+sources = ["technitium"]
+filtering = "ads"
+dnssec = true
+ecs = false
+params = ["resolver_id"]
+endpoint = [
+  { url = "tls://{resolver_id}.dns.controld.com" },
+  { url = "https://dns.controld.com/{resolver_id}" },
+  { url = "quic://{resolver_id}.dns.controld.com" },
+]
+
+[[preset]]
+id = "nextdns"
+name = "NextDNS (your profile)"
+homepage = "https://nextdns.io/"
+sources = ["technitium"]
+filtering = "ads"
+dnssec = true
+ecs = false
+params = ["profile"]
+endpoint = [
+  { url = "tls://{profile}.dns.nextdns.io" },
+  { url = "https://dns.nextdns.io/{profile}" },
+  { url = "quic://{profile}.dns.nextdns.io" },
+]

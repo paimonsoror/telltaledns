@@ -16,6 +16,7 @@ mod doh;
 mod endpoint;
 mod group;
 pub mod health;
+pub mod presets;
 mod router;
 mod tls;
 mod upstream;

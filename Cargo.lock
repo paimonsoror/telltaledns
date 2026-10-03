@@ -1595,11 +1595,13 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "rustls",
+ "serde",
  "telltale-config",
  "telltale-proto",
  "thiserror",
  "tokio",
  "tokio-rustls",
+ "toml",
  "webpki-roots",
 ]
 

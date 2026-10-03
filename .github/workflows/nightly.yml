@@ -1,0 +1,17 @@
+# Nightly online checks (things that depend on the internet and may be flaky).
+name: nightly
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  # REQ: UPS-004 / T1.6 AC — every preset endpoint resolves example.com.
+  presets-online:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Resolve example.com through every preset endpoint
+        run: cargo test -p telltale-upstream --test presets_online -- --ignored --nocapture
