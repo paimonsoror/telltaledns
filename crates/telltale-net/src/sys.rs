@@ -48,6 +48,78 @@ pub(crate) fn lower_thread_priority(nice: i32) -> io::Result<()> {
     }
 }
 
+/// Dumps the kernel neighbor table over rtnetlink (FLT-006). Parsing is safe code in
+/// `neigh`; this function only owns the socket.
+pub(crate) fn neighbor_dump() -> io::Result<Vec<crate::neigh::Neighbor>> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    // SAFETY: plain socket(2) call with constant arguments; the result is checked below.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a freshly created, valid descriptor that nothing else owns.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    // A dump never takes long; don't let a wedged kernel reply hang the refresher.
+    let tv = libc::timeval {
+        tv_sec: 2,
+        tv_usec: 0,
+    };
+    // SAFETY: `tv` is a valid timeval and the length matches its size.
+    let rc = unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            ptr::addr_of!(tv).cast(),
+            mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: sockaddr_nl is plain old data; all-zero is a valid value (pid 0 = the kernel).
+    let mut addr: libc::sockaddr_nl = unsafe { mem::zeroed() };
+    addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    let req = crate::neigh::dump_request(1);
+    // SAFETY: `req` and `addr` outlive the call; the lengths match the buffers.
+    let sent = unsafe {
+        libc::sendto(
+            sock.as_raw_fd(),
+            req.as_ptr().cast(),
+            req.len(),
+            0,
+            ptr::addr_of!(addr).cast(),
+            mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    if sent < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 32 * 1024];
+    loop {
+        // SAFETY: `buf` is a valid, writable buffer of the given length.
+        let n = unsafe { libc::recv(sock.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let n = usize::try_from(n).map_err(io::Error::other)?;
+        if n == 0 {
+            return Ok(out);
+        }
+        if crate::neigh::parse(&buf[..n], &mut out)? == crate::neigh::Chunk::Done {
+            return Ok(out);
+        }
+    }
+}
+
 /// Enables destination-address reporting so replies can use the right source address.
 pub(crate) fn enable_pktinfo(sock: &impl AsRawFd, v6: bool) -> io::Result<()> {
     let one: libc::c_int = 1;

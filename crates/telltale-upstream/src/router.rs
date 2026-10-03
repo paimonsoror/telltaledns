@@ -232,7 +232,16 @@ impl Router {
     }
 
     /// Picks the group for `q` asked by a client in `client_groups`.
-    pub fn select(&self, q: &Question, client_groups: &[&str]) -> Option<Selection<'_>> {
+    /// The upstream group behind a cache view from [`Router::select`].
+    pub fn group_by_view(&self, view: u16) -> Option<&Arc<Group>> {
+        self.groups.get(usize::from(view))
+    }
+
+    pub fn select<S: AsRef<str>>(
+        &self,
+        q: &Question,
+        client_groups: &[S],
+    ) -> Option<Selection<'_>> {
         let mut best: Option<(usize, usize)> = None; // (suffix label count, target)
         for r in &self.routes {
             if !r.qtypes.is_empty() && !r.qtypes.contains(&q.qtype) {
@@ -242,7 +251,7 @@ impl Router {
                 && !r
                     .client_groups
                     .iter()
-                    .any(|g| client_groups.contains(&g.as_str()))
+                    .any(|g| client_groups.iter().any(|c| c.as_ref() == g.as_str()))
             {
                 continue;
             }

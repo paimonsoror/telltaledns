@@ -100,6 +100,33 @@ fn build_dynamic(cfg: &Config) -> Result<(Arc<Router>, Policy), Vec<String>> {
     Ok((Arc::new(router), Policy::from_config(cfg, local)))
 }
 
+/// REQ: FLT-006 — keeps the IP → MAC map fresh while any client is identified by MAC.
+fn spawn_neighbor_refresh(pipeline: Arc<Pipeline>, every: Duration) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut warned = false;
+        loop {
+            if pipeline.current().policy.clients.uses_macs() {
+                match tokio::task::spawn_blocking(telltale_net::neighbors).await {
+                    Ok(Ok(n)) => {
+                        pipeline
+                            .neighbors
+                            .replace(n.into_iter().map(|x| (x.ip, x.mac)));
+                        warned = false;
+                    }
+                    Ok(Err(e)) if !warned => {
+                        warn!(
+                            "cannot read the neighbor table (MAC-based clients won't match): {e}"
+                        );
+                        warned = true;
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(every).await;
+        }
+    })
+}
+
 fn spawn_health_checks(router: &Router) -> JoinHandle<()> {
     tokio::spawn(telltale_upstream::active_health_checks(
         router.upstreams().to_vec(),
@@ -201,6 +228,11 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.filter != new.filter {
         v.push("[filter]");
     }
+    if old.clients.neighbor_table != new.clients.neighbor_table
+        || old.clients.neighbor_refresh_secs != new.clients.neighbor_refresh_secs
+    {
+        v.push("[clients] neighbor_table / neighbor_refresh_secs");
+    }
     v
 }
 
@@ -216,6 +248,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         io::Error::other("invalid configuration")
     })?;
     let mut health = spawn_health_checks(&router);
+    let neighbor_refresh = cfg
+        .clients
+        .neighbor_table
+        .then_some(Duration::from_secs(u64::from(
+            cfg.clients.neighbor_refresh_secs,
+        )));
     let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
     let settings = Settings {
         stale_answer_timeout: Duration::from_millis(u64::from(
@@ -257,6 +295,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         .map_err(|e| io::Error::new(e.kind(), format!("metrics {addr}: {e}")))?;
         info!(addr = %bound, "serving /metrics, /healthz, /readyz, /livez");
     }
+    let neighbors =
+        neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));
     // Every listener is bound: ready for traffic (OPS-006).
     ready.store(true, Ordering::Release);
 
@@ -292,6 +332,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         l.shutdown();
     }
     health.abort();
+    if let Some(n) = neighbors {
+        n.abort();
+    }
     if let Some(l) = lists {
         l.stop();
     }

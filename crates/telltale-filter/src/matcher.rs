@@ -74,12 +74,14 @@ impl ListMask {
     }
 }
 
-/// Who is asking, for `$client` rules.
+/// Who is asking, for `$client` rules (which name an IP, a CIDR, a device, or a client ID).
 #[derive(Debug, Clone, Copy)]
 pub struct ClientCtx<'a> {
     pub ip: IpAddr,
-    /// Names the client is known by (device name, hostname), lowercase.
-    pub names: &'a [&'a str],
+    /// The identified device's name (FLT-006), if it's a configured client.
+    pub name: Option<&'a str>,
+    /// The DoH/DoT client ID, if the query carried one.
+    pub client_id: Option<&'a str>,
 }
 
 /// Precedence tier (`spec/05` §1), best first.
@@ -194,7 +196,10 @@ impl ClientPred {
         match self {
             Self::Ip(ip) => *ip == c.ip,
             Self::Net(n) => n.contains(c.ip),
-            Self::Name(n) => c.names.iter().any(|x| x.eq_ignore_ascii_case(n)),
+            Self::Name(n) => [c.name, c.client_id]
+                .into_iter()
+                .flatten()
+                .any(|x| x.eq_ignore_ascii_case(n)),
         }
     }
 }

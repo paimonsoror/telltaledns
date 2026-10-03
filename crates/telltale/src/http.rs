@@ -118,6 +118,12 @@ pub(crate) fn render(src: &Sources) -> String {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
     }
+    w.family(
+        "telltale_neighbors",
+        "gauge",
+        "Entries in the IP-to-MAC neighbor table used to recognize clients.",
+    )
+    .sample("telltale_neighbors", &[], src.pipeline.neighbors.len());
     if let Some(f) = src.pipeline.filter.load_full() {
         w.family(
             "telltale_filter_lookup_index_bytes",

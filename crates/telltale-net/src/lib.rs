@@ -6,12 +6,14 @@
 //! block carries a `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`).
 
 pub mod handler;
+pub mod neigh;
 #[cfg(target_os = "linux")]
 mod sys;
 pub mod tcp;
 pub mod udp;
 
 pub use handler::{Deferred, QueryHandler, RequestMeta, Response, Transport};
+pub use neigh::{Neighbor, neighbors};
 pub use tcp::{TcpConfig, TcpServer, TcpStats};
 pub use udp::{LocalAddr, UdpConfig, UdpListener, WorkerStats};
 

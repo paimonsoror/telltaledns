@@ -129,7 +129,8 @@ fn main() {
     let mask = ListMask::all(lists);
     let client = ClientCtx {
         ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
-        names: &[],
+        name: None,
+        client_id: None,
     };
     let mut scratch = Scratch::default();
     for q in &queries {

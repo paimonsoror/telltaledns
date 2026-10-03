@@ -26,7 +26,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::pipeline::{FilterState, Pipeline};
+use crate::pipeline::Pipeline;
 
 /// Resolves list hostnames like hostname upstreams do (UPS-009): through the system resolvers
 /// minus our own listeners. When the system resolver *is* this server (a Pi pointing
@@ -358,9 +358,7 @@ impl Publisher {
         let version = snap.manifest.version;
         let store = |m: Matcher| {
             if self.generation.load(Ordering::SeqCst) == generation {
-                self.pipeline
-                    .filter
-                    .store(Some(Arc::new(FilterState::new(Arc::new(m)))));
+                self.pipeline.set_filter(Some(Arc::new(m)));
                 true
             } else {
                 false

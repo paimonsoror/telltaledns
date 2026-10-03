@@ -130,7 +130,7 @@ default_ttl = 300
 - `telltale config check` validates record values and reads the hosts files.
 
 ## Filter lists
-> **Status:** lists are downloaded, compiled, and **enforced**. For now every enabled list applies to every client (groups arrive with T2.5), and blocked names get NXDOMAIN with an Extended DNS Error naming the list (more block modes arrive with T2.6).
+> **Status:** lists are downloaded, compiled, and **enforced** per client group. Blocked names get NXDOMAIN with an Extended DNS Error naming the list (more block modes arrive with T2.6).
 
 ```toml
 [[list]]
@@ -245,6 +245,39 @@ Metrics: `telltale_queries_total{status="blocked"}`, `telltale_filter_lookup_ind
 ```
 time() - telltale_list_last_success_timestamp_seconds > 172800
 ```
+
+## Groups and devices
+Decide which lists apply to which devices:
+```toml
+[[group]]
+name = "kids"
+lists = ["hagezi-pro", "family-extra"]   # omit `lists` to use every list
+priority = 10                            # highest-priority group's settings win
+
+[[group]]
+name = "default"                         # optional: what unknown devices get
+lists = ["hagezi-pro"]                   # (without it, unknown devices get every list)
+
+[[client]]
+name = "Kids tablet"
+match = ["aa:bb:cc:dd:ee:01", "192.168.1.50", "id:kids-tablet"]
+groups = ["kids"]
+
+[[client]]
+name = "Office"
+match = ["10.0.5.0/24"]                  # groups default to ["default"]
+```
+- A device in several groups gets every list of all of them. Other settings, such as block mode (T2.6), come from its highest-priority group.
+- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT name `<id>.dns.example.com`, once those listeners land) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
+- **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. TelltaleDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`). That only sees real devices with host networking (as on a Pi). In a container's bridge network, every query appears to come from the gateway.
+- If your router forwards queries with dnsmasq's `add-mac`, trust it explicitly. Any device could send that option and impersonate another, so it's ignored by default:
+  ```toml
+  [clients]
+  trust_edns_mac_from = ["192.168.1.1/32"]
+  ```
+- `$client=` rules match the device's name (`$client='Kids tablet'`), its client ID, or its IP or CIDR.
+- `[[route]] match_group = ["kids"]` sends a group's queries to its own upstreams (for example, a family-filtering resolver).
+- Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
 
 ## Who can query, and how often
 ```toml

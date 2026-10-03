@@ -51,7 +51,8 @@ const CLIENT_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
 fn decide_full(m: &Matcher, name: &str, qtype: u16, names: &[&str], mask: &ListMask) -> String {
     let client = ClientCtx {
         ip: CLIENT_IP,
-        names,
+        name: names.first().copied(),
+        client_id: None,
     };
     let mut scratch = Scratch::default();
     match m.decide(&wire(name), qtype, &client, mask, &mut scratch) {
@@ -218,7 +219,8 @@ fn flt_001_modifier_rules() {
     // Negated client: the excluded address isn't blocked.
     let client = ClientCtx {
         ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 99)),
-        names: &[],
+        name: None,
+        client_id: None,
     };
     let mut scratch = Scratch::default();
     assert_eq!(

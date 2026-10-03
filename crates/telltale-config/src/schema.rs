@@ -38,6 +38,12 @@ pub struct Config {
     pub local: LocalConfig,
     /// Filter lists: blocklists and allowlists from URLs, files, or inline rules (`spec/05`).
     pub list: Vec<FilterList>,
+    /// Client groups (FLT-005). A `default` group (every list) exists even if not declared.
+    pub group: Vec<GroupConfig>,
+    /// Known devices and how to recognize them (FLT-006).
+    pub client: Vec<ClientConfig>,
+    /// Client identification settings.
+    pub clients: ClientsConfig,
     /// List download and compile settings.
     pub filter: FilterConfig,
     /// Who may query (refuse everyone else).
@@ -73,6 +79,9 @@ impl Default for Config {
             record: Vec::new(),
             local: LocalConfig::default(),
             list: Vec::new(),
+            group: Vec::new(),
+            client: Vec::new(),
+            clients: ClientsConfig::default(),
             filter: FilterConfig::default(),
             access: AccessConfig::default(),
             ratelimit: RateLimitConfig::default(),
@@ -368,6 +377,64 @@ impl Default for LocalConfig {
             hosts_files: Vec::new(),
             auto_ptr: true,
             default_ttl: 300,
+        }
+    }
+}
+
+/// A client group (FLT-005, `spec/05` §1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupConfig {
+    /// Unique name; `default` applies to clients that match nothing else.
+    pub name: SafeString,
+    /// Lists (by name) this group uses. Omitted = every enabled list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lists: Option<Vec<SafeString>>,
+    /// When a client is in several groups, the union of their lists applies and other
+    /// settings come from the highest-priority group.
+    #[serde(default)]
+    pub priority: i32,
+}
+
+/// A known device (FLT-006).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClientConfig {
+    /// Device name, shown everywhere and usable in `$client=` rules.
+    pub name: SafeString,
+    /// How to recognize it: an IP (`192.168.1.20`), a CIDR (`10.0.5.0/24`), a MAC
+    /// (`aa:bb:cc:dd:ee:ff`), or a client ID from DoH/DoT (`id:kids-tablet`).
+    #[serde(rename = "match")]
+    pub match_keys: Vec<SafeString>,
+    /// Groups it belongs to (default: `["default"]`).
+    #[serde(default = "default_client_groups")]
+    pub groups: Vec<SafeString>,
+}
+
+fn default_client_groups() -> Vec<SafeString> {
+    vec![SafeString::from("default")]
+}
+
+/// Client identification (`spec/03` §3 step 2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ClientsConfig {
+    /// Read the kernel neighbor table (ARP/NDP) to recognize clients by MAC. Needs host
+    /// networking to see real devices (inside a bridge network only the gateway shows up).
+    pub neighbor_table: bool,
+    /// How often the neighbor table is re-read.
+    pub neighbor_refresh_secs: u32,
+    /// Forwarders whose EDNS MAC option (dnsmasq `add-mac`) is trusted. Empty = ignore the
+    /// option: any client could send it and claim another device's identity.
+    pub trust_edns_mac_from: Vec<Cidr>,
+}
+
+impl Default for ClientsConfig {
+    fn default() -> Self {
+        Self {
+            neighbor_table: true,
+            neighbor_refresh_secs: 60,
+            trust_edns_mac_from: Vec::new(),
         }
     }
 }

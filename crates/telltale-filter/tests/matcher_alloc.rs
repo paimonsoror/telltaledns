@@ -70,7 +70,8 @@ fn nfr_002_filter_decisions_do_not_allocate() {
     let mask = ListMask::all(3);
     let client = ClientCtx {
         ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
-        names: &["laptop"],
+        name: Some("laptop"),
+        client_id: None,
     };
     for lookup in [Lookup::Walk, Lookup::Indexed] {
         let (overlay, _) = Overlay::build(&[(

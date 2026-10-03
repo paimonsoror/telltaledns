@@ -16,7 +16,7 @@ use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
 use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
-use telltale_policy::{LocalData, RateLimiter, Special};
+use telltale_policy::{ClientTable, Identity, LocalData, Neighbors, RateLimiter, Special};
 use telltale_proto::{
     EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
@@ -60,6 +60,8 @@ pub(crate) struct Policy {
     pub(crate) special: SpecialConfig,
     /// Local records (DNS-010), answered before cache and upstreams.
     pub(crate) local: Arc<LocalData>,
+    /// Groups and known clients (FLT-005, FLT-006).
+    pub(crate) clients: Arc<ClientTable>,
 }
 
 impl Policy {
@@ -70,6 +72,7 @@ impl Policy {
             limit_action: cfg.ratelimit.action,
             special: cfg.special.clone(),
             local: Arc::new(local),
+            clients: Arc::new(ClientTable::from_config(cfg)),
         }
     }
 
@@ -86,30 +89,80 @@ impl Policy {
     }
 }
 
-/// The active filter (`spec/03` §3 step 6): a matcher plus which lists apply.
+/// The active filter (`spec/03` §3 step 6): a matcher plus, per client, which lists apply.
 #[derive(Debug)]
 pub(crate) struct FilterState {
     pub(crate) matcher: Arc<Matcher>,
-    /// Lists every client gets until groups exist (T2.5): all lists in the snapshot.
-    pub(crate) mask: ListMask,
+    /// The client table the masks were computed for.
+    pub(crate) clients: Arc<ClientTable>,
+    /// Union of each configured client's groups' lists, by client index (FLT-005).
+    pub(crate) client_masks: Vec<ListMask>,
+    /// Lists for unknown clients (the `default` group).
+    pub(crate) default_mask: ListMask,
     /// EDE text per list ID, built once so blocking doesn't allocate.
     pub(crate) reasons: Vec<String>,
 }
 
 impl FilterState {
-    pub(crate) fn new(matcher: Arc<Matcher>) -> Self {
+    pub(crate) fn new(matcher: Arc<Matcher>, clients: Arc<ClientTable>) -> Self {
         let names: Vec<String> = matcher
             .snapshot()
             .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
             .unwrap_or_default();
+        // A group's lists → list IDs in this snapshot (a group naming a list that isn't
+        // compiled yet simply doesn't get it until it is).
+        let group_masks: Vec<ListMask> = clients
+            .groups()
+            .iter()
+            .map(|g| match &g.lists {
+                None => ListMask::all(names.len()),
+                Some(lists) => {
+                    let mut m = ListMask::default();
+                    for (i, n) in names.iter().enumerate() {
+                        if lists.iter().any(|l| **l == **n)
+                            && let Ok(id) = u16::try_from(i)
+                        {
+                            m.set(id);
+                        }
+                    }
+                    m
+                }
+            })
+            .collect();
+        let union = |groups: &[u16]| {
+            let mut m = ListMask::default();
+            for &g in groups {
+                if let Some(gm) = group_masks.get(usize::from(g)) {
+                    for i in 0..names.len() {
+                        let Ok(id) = u16::try_from(i) else { break };
+                        if gm.contains(id) {
+                            m.set(id);
+                        }
+                    }
+                }
+            }
+            m
+        };
+        let unknown = Identity {
+            client: None,
+            source: telltale_policy::IdSource::Default,
+        };
         Self {
-            mask: ListMask::all(names.len()),
+            client_masks: clients.clients().iter().map(|c| union(&c.groups)).collect(),
+            default_mask: union(clients.group_ids(unknown)),
             reasons: names
                 .iter()
                 .map(|n| format!("blocked by list {n}"))
                 .collect(),
+            clients,
             matcher,
         }
+    }
+
+    fn mask(&self, id: Identity) -> &ListMask {
+        id.client
+            .and_then(|c| self.client_masks.get(usize::from(c)))
+            .unwrap_or(&self.default_mask)
     }
 }
 
@@ -134,6 +187,10 @@ pub(crate) struct Pipeline {
     state: ArcSwap<Dynamic>,
     /// The filter, swapped atomically whenever a snapshot is compiled or indexed (FLT-004).
     pub(crate) filter: ArcSwapOption<FilterState>,
+    /// Serializes filter rebuilds (snapshot publish vs. config reload); never on the query path.
+    filter_lock: std::sync::Mutex<()>,
+    /// IP → MAC from the kernel neighbor table (FLT-006), refreshed by the server.
+    pub(crate) neighbors: Arc<Neighbors>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
@@ -161,6 +218,8 @@ impl Pipeline {
             cache,
             state: ArcSwap::from_pointee(Dynamic { router, policy }),
             filter: ArcSwapOption::empty(),
+            filter_lock: std::sync::Mutex::new(()),
+            neighbors: Arc::new(Neighbors::default()),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -171,6 +230,27 @@ impl Pipeline {
     /// started with; new queries see the new state immediately.
     pub(crate) fn reload(&self, router: Arc<Router>, policy: Policy) {
         self.state.store(Arc::new(Dynamic { router, policy }));
+        // Group/client changes re-derive the per-client list masks for the current snapshot.
+        self.set_filter(None);
+    }
+
+    /// Installs `matcher` (or, with `None`, re-installs the current one) with masks for the
+    /// current client table. Called when a snapshot is published and on reload.
+    pub(crate) fn set_filter(&self, matcher: Option<Arc<Matcher>>) {
+        let _serialized = self
+            .filter_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let matcher = match matcher {
+            Some(m) => m,
+            None => match self.filter.load_full() {
+                Some(f) => Arc::clone(&f.matcher),
+                None => return,
+            },
+        };
+        let clients = Arc::clone(&self.state.load().policy.clients);
+        self.filter
+            .store(Some(Arc::new(FilterState::new(matcher, clients))));
     }
 
     /// The current routing/policy state.
@@ -240,11 +320,21 @@ impl Pipeline {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
+        // REQ: FLT-006 — client identification (`spec/03` §3 step 2). Client IDs arrive with
+        // the DoH/DoT listeners (T4.5).
+        let edns_mac = q.edns.as_ref().and_then(telltale_proto::Edns::client_mac);
+        let ident = st
+            .policy
+            .clients
+            .identify(meta.peer.ip(), None, edns_mac, &self.neighbors);
         // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
-        if let Some(blocked) = self.filter_block(&q, meta, out, oc) {
+        if let Some(blocked) =
+            self.filter_block(&q, meta, out, oc, &st.policy.clients, ident, edns_mac)
+        {
             return blocked;
         }
-        self.resolve_or_defer(req, &q, special, meta, out, start, oc)
+        let groups = st.policy.clients.group_names(ident);
+        self.resolve_or_defer(req, &q, special, groups, meta, out, start, oc)
     }
 
     /// `spec/03` §3 steps 2–4: access, rate limit, loop tag, ANY, special names. Returns the
@@ -331,6 +421,7 @@ impl Pipeline {
         req: &[u8],
         q: &Query<'_>,
         special: Option<Special>,
+        groups: &[Box<str>],
         meta: &RequestMeta,
         out: &mut [u8],
         start: Instant,
@@ -339,7 +430,8 @@ impl Pipeline {
         let st = self.state.load();
         let q = *q;
         let question = Question::from_query(&q);
-        let selection = st.router.select(&question, &[]);
+        // REQ: FLT-005, UPS-007 — routes can match the client's groups.
+        let selection = st.router.select(&question, groups);
         // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303).
         if special == Some(Special::PrivatePtr) && !selection.is_some_and(|s| s.routed) {
             return self.simple(&q, out, rcode::NXDOMAIN, None, meta);
@@ -394,25 +486,38 @@ impl Pipeline {
 
     /// Answers a blocked query (NXDOMAIN + EDE 15 naming the list; block modes are T2.6), or
     /// returns `None` to resolve normally. Allocation-free on the steady state.
+    #[allow(clippy::too_many_arguments)]
     fn filter_block(
         &self,
         q: &Query<'_>,
         meta: &RequestMeta,
         out: &mut [u8],
         oc: &mut Outcome,
+        clients: &Arc<ClientTable>,
+        ident: Identity,
+        edns_mac: Option<[u8; 6]>,
     ) -> Option<Response> {
         let guard = self.filter.load();
         let f = guard.as_ref()?;
+        // The masks belong to the table the filter was built with; during a reload the two
+        // can differ for a moment, so identify against the filter's own table then.
+        let ident = if Arc::ptr_eq(&f.clients, clients) {
+            ident
+        } else {
+            f.clients
+                .identify(meta.peer.ip(), None, edns_mac, &self.neighbors)
+        };
         let client = ClientCtx {
             ip: meta.peer.ip(),
-            names: &[],
+            name: f.clients.client(ident).map(|c| &*c.name),
+            client_id: None,
         };
         let decision = FILTER_SCRATCH.with(|s| {
             f.matcher.decide(
                 q.qname.as_wire(),
                 q.qtype,
                 &client,
-                &f.mask,
+                f.mask(ident),
                 &mut s.borrow_mut(),
             )
         });
@@ -576,12 +681,8 @@ impl Pipeline {
         // A full Arc (not a borrowed guard): it's held across the upstream round trip.
         let st = self.state.load_full();
         let question = Question::from_query(q);
-        let group = Arc::clone(
-            st.router
-                .select(&question, &[])
-                .filter(|s| s.view == view)?
-                .group,
-        );
+        // The view chosen at selection time (by qname, qtype, and client groups) names the group.
+        let group = Arc::clone(st.router.group_by_view(view)?);
         let answer = group.resolve(question, self.settings.budget).await.ok()?;
         let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
         Some(answer.bytes.into())
@@ -758,8 +859,7 @@ mod tests {
         compile(vec![input], &out, &CompileOptions::default()).unwrap();
         let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
         let m = Matcher::with_lookup(Some(snap), Overlay::default(), lookup).unwrap();
-        p.filter
-            .store(Some(Arc::new(FilterState::new(Arc::new(m)))));
+        p.set_filter(Some(Arc::new(m)));
     }
 
     #[test]
@@ -799,6 +899,80 @@ mod tests {
                 Some(rcode::REFUSED)
             );
         }
+    }
+
+    #[test]
+    fn flt_005_groups_select_lists_per_client() {
+        use telltale_filter::matcher::Lookup;
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||x^"]
+
+[[group]]
+name = "default"
+lists = []
+
+[[group]]
+name = "kids"
+lists = ["ads"]
+
+[[client]]
+name = "tablet"
+match = ["10.0.0.5", "aa:bb:cc:dd:ee:01"]
+groups = ["kids"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        // The compiled snapshot names its one list "ads" (see install_filter).
+        install_filter(&p, "||ads.example.com^\n", Lookup::Indexed);
+        let ask = |peer: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+            };
+            match Handler(Arc::clone(&p)).handle(
+                &query("ads.example.com", rtype::A, true),
+                &meta,
+                &mut out,
+            ) {
+                Response::Ready(len) => summarize(&out[..len]).unwrap().rcode,
+                _ => u16::MAX,
+            }
+        };
+        assert_eq!(
+            ask("10.0.0.5:1000"),
+            rcode::NXDOMAIN,
+            "kids group has the list"
+        );
+        assert_eq!(
+            ask("10.0.0.9:1000"),
+            rcode::REFUSED,
+            "default group has no lists"
+        );
+        // Recognized by MAC from the neighbor table, at any address.
+        p.neighbors.replace([(
+            "10.0.0.77".parse().unwrap(),
+            [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01],
+        )]);
+        assert_eq!(ask("10.0.0.77:1000"), rcode::NXDOMAIN);
     }
 
     #[test]

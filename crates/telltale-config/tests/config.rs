@@ -313,3 +313,77 @@ fn flt_004_plain_http_list_warns() {
     assert_eq!(list_warnings.len(), 1, "{:?}", loaded.warnings);
     assert!(list_warnings[0].contains("list[0].url"));
 }
+
+#[test]
+fn flt_005_groups_and_clients() {
+    let loaded = load_str(
+        r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+
+[[list]]
+name = "adult"
+rules = ["||adult.example.com^"]
+
+[[group]]
+name = "kids"
+lists = ["ads", "adult"]
+priority = 10
+
+[[client]]
+name = "Kids Tablet"
+match = ["192.168.1.50", "AA-BB-CC-DD-EE-FF", "id:kids-tablet"]
+groups = ["kids"]
+
+[[client]]
+name = "office"
+match = ["10.0.5.0/24"]
+
+[clients]
+trust_edns_mac_from = ["192.168.1.1/32"]
+"#,
+    )
+    .unwrap();
+    let c = &loaded.config;
+    assert_eq!(c.group[0].priority, 10);
+    assert_eq!(c.client[1].groups[0].as_str(), "default");
+    assert_eq!(
+        telltale_config::MatchKey::parse("AA-BB-CC-DD-EE-FF").unwrap(),
+        telltale_config::MatchKey::Mac([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])
+    );
+    assert!(c.clients.neighbor_table);
+}
+
+#[test]
+fn flt_006_client_validation_errors() {
+    let errs = load_str(
+        r#"
+[[group]]
+name = "kids"
+lists = ["nope"]
+
+[[client]]
+name = "a"
+match = ["192.168.1.50", "zz:zz:zz:zz:zz:zz", "id:Bad_ID", "hello"]
+groups = ["ghosts"]
+
+[[client]]
+name = "A"
+match = ["192.168.1.50"]
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in [
+        "group[0].lists[0]",
+        "client[0].match[1]",
+        "client[0].match[2]",
+        "client[0].match[3]",
+        "client[0].groups[0]",
+        "client[1].name",
+        "client[1].match[0]",
+    ] {
+        assert!(p.contains(&want), "missing {want} in {p:?}");
+    }
+}

@@ -46,6 +46,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     let groups = groups(cfg, &upstreams, &mut r);
     routes(cfg, &groups, &mut r);
     lists(cfg, &mut r);
+    clients(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     r.warnings
 }
@@ -325,6 +326,123 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
     }
     if f.compile_memory.bytes() < 16 << 20 {
         r.err("filter.compile_memory", "must be at least 16MiB");
+    }
+}
+
+/// A client `match` key, parsed (FLT-006).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MatchKey {
+    Ip(std::net::IpAddr),
+    Cidr(crate::Cidr),
+    Mac([u8; 6]),
+    ClientId(String),
+}
+
+impl MatchKey {
+    /// Parses `192.168.1.20`, `10.0.5.0/24`, `aa:bb:cc:dd:ee:ff` (or `-` separated), or
+    /// `id:<client-id>` (1–63 of `a-z0-9-`, the DoH path / SNI label form).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if let Some(id) = s.strip_prefix("id:") {
+            let id = id.to_ascii_lowercase();
+            if id.is_empty()
+                || id.len() > 63
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            {
+                return Err(format!("client ID `{id}`: use 1-63 of a-z, 0-9, -"));
+            }
+            return Ok(Self::ClientId(id));
+        }
+        if let Ok(ip) = s.parse::<std::net::IpAddr>() {
+            return Ok(Self::Ip(ip));
+        }
+        if s.contains('/') {
+            return crate::Cidr::parse(s).map(Self::Cidr);
+        }
+        let parts: Vec<&str> = s.split([':', '-']).collect();
+        if parts.len() == 6 {
+            let mut mac = [0u8; 6];
+            for (i, p) in parts.iter().enumerate() {
+                mac[i] = u8::from_str_radix(p, 16)
+                    .ok()
+                    .filter(|_| p.len() == 2)
+                    .ok_or_else(|| format!("invalid MAC `{s}`"))?;
+            }
+            return Ok(Self::Mac(mac));
+        }
+        Err(format!("`{s}` is not an IP, CIDR, MAC, or id:<client-id>"))
+    }
+}
+
+// REQ: FLT-005, FLT-006 — groups, clients, identification.
+fn clients(cfg: &Config, r: &mut Report<'_>) {
+    let lists: HashSet<&str> = cfg.list.iter().map(|l| l.name.as_str()).collect();
+    let mut groups = HashSet::from(["default"]);
+    let mut declared = HashSet::new();
+    for (i, g) in cfg.group.iter().enumerate() {
+        let p = format!("group[{i}]");
+        if g.name.is_empty() {
+            r.err(format!("{p}.name"), "must not be empty");
+        } else if !declared.insert(g.name.as_str()) {
+            r.err(format!("{p}.name"), format!("duplicate group `{}`", g.name));
+        }
+        groups.insert(g.name.as_str());
+        for (j, l) in g.lists.iter().flatten().enumerate() {
+            if !lists.contains(l.as_str()) {
+                r.err(format!("{p}.lists[{j}]"), format!("unknown list `{l}`"));
+            }
+        }
+    }
+    let mut names = HashSet::new();
+    let mut keys: std::collections::HashMap<MatchKey, usize> = std::collections::HashMap::new();
+    for (i, c) in cfg.client.iter().enumerate() {
+        let p = format!("client[{i}]");
+        if c.name.is_empty() {
+            r.err(format!("{p}.name"), "must not be empty");
+        } else if !names.insert(c.name.to_ascii_lowercase()) {
+            r.err(
+                format!("{p}.name"),
+                format!("duplicate client `{}`", c.name),
+            );
+        }
+        if c.match_keys.is_empty() {
+            r.err(
+                format!("{p}.match"),
+                "needs at least one IP, CIDR, MAC, or id:",
+            );
+        }
+        for (j, k) in c.match_keys.iter().enumerate() {
+            match MatchKey::parse(k) {
+                Err(e) => r.err(format!("{p}.match[{j}]"), e),
+                Ok(key) => {
+                    if let Some(other) = keys.insert(key, i) {
+                        r.err(
+                            format!("{p}.match[{j}]"),
+                            format!("`{k}` already identifies client[{other}]"),
+                        );
+                    }
+                }
+            }
+        }
+        for (j, g) in c.groups.iter().enumerate() {
+            if !groups.contains(g.as_str()) {
+                r.err(format!("{p}.groups[{j}]"), format!("unknown group `{g}`"));
+            }
+        }
+    }
+    for (i, route) in cfg.route.iter().enumerate() {
+        for g in &route.match_group {
+            if !groups.contains(g.as_str()) {
+                r.warn(format!(
+                    "route[{i}].match_group: no group `{g}` is configured"
+                ));
+            }
+        }
+    }
+    if cfg.clients.neighbor_refresh_secs < 5 {
+        r.err("clients.neighbor_refresh_secs", "must be at least 5");
     }
 }
 
