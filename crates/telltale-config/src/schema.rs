@@ -741,7 +741,9 @@ pub enum TelemetryMode {
 #[serde(deny_unknown_fields, default)]
 pub struct TelemetryConfig {
     pub mode: TelemetryMode,
-    /// Per-worker event ring size (power of two).
+    /// Event ring size per producing thread, in events of ~128 bytes (power of two, at
+    /// least 1024). The default, 4096 (512 KiB), holds about 170 ms of a fully loaded
+    /// worker; a full ring drops events (counted), never queries (ADR-026).
     pub ring_slots: u32,
     pub qlog: QlogConfig,
     pub metrics: MetricsConfig,
@@ -751,7 +753,7 @@ impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             mode: TelemetryMode::Local,
-            ring_slots: 65_536,
+            ring_slots: 4096,
             qlog: QlogConfig::default(),
             metrics: MetricsConfig::default(),
         }

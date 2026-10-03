@@ -242,6 +242,24 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     v
 }
 
+/// The query pipeline for `cfg` (settings derived from config).
+fn build_pipeline(
+    cfg: &Config,
+    cache: Arc<Cache>,
+    router: Arc<Router>,
+    policy: Policy,
+) -> Arc<Pipeline> {
+    let settings = Settings {
+        stale_answer_timeout: Duration::from_millis(u64::from(
+            cfg.cache.stale_answer_client_timeout_ms,
+        )),
+        // `ring_slots` events of ~128 bytes (ADR-026).
+        ring_bytes: usize::try_from(cfg.telemetry.ring_slots).unwrap_or(4096) * 128,
+        ..Settings::default()
+    };
+    Pipeline::new(settings, cache, router, policy)
+}
+
 /// Runs until SIGTERM/SIGINT. SIGHUP reloads config from `files`.
 pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
@@ -261,13 +279,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             cfg.clients.neighbor_refresh_secs,
         )));
     let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
-    let settings = Settings {
-        stale_answer_timeout: Duration::from_millis(u64::from(
-            cfg.cache.stale_answer_client_timeout_ms,
-        )),
-        ..Settings::default()
-    };
-    let pipeline = Pipeline::new(settings, Arc::clone(&cache), router, policy);
+    let pipeline = build_pipeline(&cfg, Arc::clone(&cache), router, policy);
+    // REQ: OBS-002 — one aggregator thread drains the event rings (`spec/06` §2). It never
+    // touches the query path: a stalled aggregator only means dropped (counted) events.
+    let _aggregator = pipeline
+        .telemetry
+        .spawn_aggregator(Duration::from_millis(25))?;
     let mut listeners = Listeners {
         udp: Vec::new(),
         tcp: Vec::new(),

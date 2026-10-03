@@ -112,6 +112,7 @@ pub(crate) fn render(src: &Sources) -> String {
     render_process(&mut w, src);
     w.queries(&src.metrics.snapshot());
     render_cache(&mut w, &src.cache);
+    render_telemetry(&mut w, &src.pipeline.telemetry);
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
     if let Some(l) = src.lists.load_full() {
@@ -178,6 +179,35 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
             "Resident set size.",
         )
         .sample("telltale_resident_memory_bytes", &[], rss);
+    }
+}
+
+/// REQ: OBS-002 — event rings: emitted and dropped per producing thread.
+fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
+    let rings = hub.ring_stats();
+    w.family(
+        "telltale_telemetry_events_total",
+        "counter",
+        "Query and upstream events written to the event rings.",
+    );
+    for (ring, emitted, _) in &rings {
+        w.sample(
+            "telltale_telemetry_events_total",
+            &[("ring", ring.as_str())],
+            *emitted,
+        );
+    }
+    w.family(
+        "telltale_telemetry_dropped_total",
+        "counter",
+        "Events dropped because a ring was full (counters and histograms never drop).",
+    );
+    for (ring, _, dropped) in &rings {
+        w.sample(
+            "telltale_telemetry_dropped_total",
+            &[("ring", ring.as_str())],
+            *dropped,
+        );
     }
 }
 

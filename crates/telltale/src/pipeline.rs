@@ -25,7 +25,7 @@ use telltale_proto::{
     EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
 };
-use telltale_telemetry::{Metrics, Proto, Status};
+use telltale_telemetry::{Hub, Metrics, Proto, QueryEvent, Rule, RuleKind, Status, UpstreamEvent};
 use telltale_upstream::{Question, Router};
 use tokio::sync::Semaphore;
 
@@ -40,6 +40,8 @@ pub(crate) struct Settings {
     pub(crate) stale_answer_timeout: Duration,
     /// Max concurrent upstream resolutions; beyond it, serve stale or SERVFAIL (02 §8.4).
     pub(crate) max_inflight: usize,
+    /// Event ring bytes per producing thread (OBS-002, ADR-026).
+    pub(crate) ring_bytes: usize,
 }
 
 impl Default for Settings {
@@ -49,6 +51,7 @@ impl Default for Settings {
             budget: telltale_upstream::DEFAULT_BUDGET,
             stale_answer_timeout: Duration::from_millis(1800),
             max_inflight: 4096,
+            ring_bytes: 4096 * 128,
         }
     }
 }
@@ -235,6 +238,8 @@ pub(crate) struct Pipeline {
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
     pub(crate) metrics: Arc<Metrics>,
+    /// Per-query events and their aggregates (OBS-001, OBS-002, OBS-004).
+    pub(crate) telemetry: Arc<Hub>,
     /// Queries dropped because they carried our own loop tag.
     loops: std::sync::atomic::AtomicU64,
     /// Per-process qname hash seed (keeps remote clients from precomputing collisions).
@@ -256,6 +261,7 @@ impl Pipeline {
         Arc::new(Self {
             inflight: Arc::new(Semaphore::new(settings.max_inflight.max(1))),
             metrics: Arc::new(Metrics::new(telltale_net::default_workers() * 2 + 4)),
+            telemetry: Hub::new(settings.ring_bytes),
             settings,
             cache,
             state: ArcSwap::from_pointee(Dynamic { router, policy }),
@@ -393,6 +399,14 @@ impl Pipeline {
             .policy
             .clients
             .identify(who.peer, None, who.mac, &self.neighbors);
+        oc.client_ref = ident.client.map_or(0, |c| u32::from(c) + 1);
+        oc.group = st
+            .policy
+            .clients
+            .group_ids(ident)
+            .first()
+            .copied()
+            .unwrap_or(0);
         // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
         if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
             return blocked;
@@ -523,16 +537,17 @@ impl Pipeline {
                 }
                 oc.status = Status::Cached;
                 let len = match self.cname_block(&q, who, out, len) {
-                    Some(blocked) => {
+                    Some((blocked, list)) => {
                         oc.status = Status::Blocked;
+                        oc.rule = Some(cname_rule(list));
                         blocked
                     }
                     None => len,
                 };
                 Response::Ready(self.finish(&q, out, len, meta.transport))
             }
-            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, q.qtype, who),
-            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, q.qtype, who),
+            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, *oc, who),
+            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, *oc, who),
         }
     }
 
@@ -646,10 +661,17 @@ impl Pipeline {
         let guard = self.filter.load();
         let f = guard.as_ref()?;
         let (ident, decision) = self.decide_for(f, who, q.qname.as_wire(), q.qtype)?;
-        let Decision::Block(a) = decision else {
-            return None;
+        // REQ: FLT-013 — every block or allow decision is attributed in the event.
+        let a = match decision {
+            Decision::None => return None,
+            Decision::Allow(a) => {
+                oc.rule = Some(rule_of(&a, true));
+                return None;
+            }
+            Decision::Block(a) => a,
         };
         oc.status = Status::Blocked;
+        oc.rule = Some(rule_of(&a, false));
         let reason = f
             .reasons
             .get(usize::from(a.list))
@@ -661,7 +683,13 @@ impl Pipeline {
     /// REQ: FLT-007 — CNAME deep inspection: if any CNAME target in the answer is blocked for
     /// this client, replace the answer with the block answer and return its length. Runs on
     /// cache hits too, since cached answers are policy-neutral. Allocation-free.
-    fn cname_block(&self, q: &Query<'_>, who: Who, out: &mut [u8], len: usize) -> Option<usize> {
+    fn cname_block(
+        &self,
+        q: &Query<'_>,
+        who: Who,
+        out: &mut [u8],
+        len: usize,
+    ) -> Option<(usize, u16)> {
         let guard = self.filter.load();
         let f = guard.as_ref()?;
         let mut target = telltale_proto::NameBuf::default();
@@ -690,6 +718,7 @@ impl Pipeline {
             .get(usize::from(a.list))
             .map_or("blocked", String::as_str);
         self.block_answer(q, out, f.clients.primary_group(ident), reason)
+            .map(|len| (len, a.list))
     }
 
     /// FLT-007 for deferred (upstream or stale) answers: re-checks the final message.
@@ -700,22 +729,22 @@ impl Pipeline {
         transport: Transport,
         mut bytes: Vec<u8>,
         status: Status,
-    ) -> (Vec<u8>, Status) {
+    ) -> (Vec<u8>, Status, Option<u16>) {
         if !matches!(status, Status::Forwarded | Status::Stale) {
-            return (bytes, status);
+            return (bytes, status, None);
         }
         let Ok(q) = parse_query(req) else {
-            return (bytes, status);
+            return (bytes, status, None);
         };
         let len = bytes.len();
         bytes.resize(MAX_RESPONSE.max(len), 0);
-        if let Some(l) = self.cname_block(&q, who, &mut bytes, len) {
+        if let Some((l, list)) = self.cname_block(&q, who, &mut bytes, len) {
             let l = self.finish(&q, &mut bytes, l, transport);
             bytes.truncate(l);
-            (bytes, Status::Blocked)
+            (bytes, Status::Blocked, Some(list))
         } else {
             bytes.truncate(len);
-            (bytes, status)
+            (bytes, status, None)
         }
     }
 
@@ -751,26 +780,37 @@ impl Pipeline {
         view: u16,
         stale_ok: bool,
         start: Instant,
-        qtype: u16,
+        mut oc: Outcome,
         who: Who,
     ) -> Response {
         let this = Arc::clone(self);
         let req = req.to_vec();
         let transport = meta.transport;
+        let peer = meta.peer.ip();
         Response::Deferred(Box::pin(async move {
+            let waited = Instant::now();
             let answer = Arc::clone(&this)
                 .resolve_for_client(req.clone(), key, view, stale_ok, transport)
                 .await
                 .map(|(bytes, status)| {
                     this.deferred_cname_block(&req, who, transport, bytes, status)
                 });
+            let t_upstream = waited.elapsed();
             let (status, rcode) = match &answer {
-                Some((bytes, status)) => (*status, Some(response_rcode(bytes))),
+                Some((bytes, status, list)) => {
+                    if let Some(list) = list {
+                        oc.rule = Some(cname_rule(*list));
+                    }
+                    (*status, Some(response_rcode(bytes)))
+                }
                 None => (Status::Dropped, None),
             };
+            oc.status = status;
             this.metrics
-                .record(proto(transport), status, rcode, qtype, start.elapsed());
-            answer.map(|(bytes, _)| bytes)
+                .record(proto(transport), status, rcode, oc.qtype, start.elapsed());
+            let resp = answer.as_ref().map(|(bytes, _, _)| bytes.as_slice());
+            this.emit(peer, transport, &req, resp, &oc, start, t_upstream);
+            answer.map(|(bytes, _, _)| bytes)
         }))
     }
 
@@ -874,7 +914,21 @@ impl Pipeline {
         let question = Question::from_query(q);
         // The view chosen at selection time (by qname, qtype, and client groups) names the group.
         let group = Arc::clone(st.router.group_by_view(view)?);
-        let answer = group.resolve(question, self.settings.budget).await.ok()?;
+        let started = Instant::now();
+        let result = group.resolve(question, self.settings.budget).await;
+        // REQ: OBS-001 — one event per upstream exchange (prefetches and coalesced misses
+        // included), for per-upstream analytics.
+        let (upstream, attempts) = result
+            .as_ref()
+            .map_or((0, 0), |a| (a.upstream_id, a.attempts));
+        self.telemetry.emit_upstream(&UpstreamEvent {
+            ts_us: self.telemetry.ts_us(started),
+            upstream,
+            latency_us: micros(started.elapsed()),
+            ok: result.is_ok(),
+            attempts,
+        });
+        let answer = result.ok()?;
         let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
         Some(answer.bytes.into())
     }
@@ -946,6 +1000,79 @@ fn ready(len: Option<usize>) -> Response {
 pub(crate) struct Outcome {
     pub(crate) status: Status,
     pub(crate) qtype: u16,
+    /// Configured client index + 1 (0 = unknown) and primary group (OBS-001).
+    pub(crate) client_ref: u32,
+    pub(crate) group: u16,
+    /// The block or allow rule that decided (FLT-013).
+    pub(crate) rule: Option<Rule>,
+}
+
+fn rule_of(a: &telltale_filter::matcher::Attribution, allow: bool) -> Rule {
+    use telltale_filter::matcher::RuleRef;
+    Rule {
+        list: a.list,
+        kind: match a.rule {
+            RuleRef::Domain { .. } => RuleKind::Domain,
+            RuleRef::ModRule { .. } => RuleKind::Modifier,
+            RuleRef::Regex { .. } => RuleKind::Regex,
+        },
+        allow,
+    }
+}
+
+fn cname_rule(list: u16) -> Rule {
+    Rule {
+        list,
+        kind: RuleKind::Cname,
+        allow: false,
+    }
+}
+
+fn micros(d: Duration) -> u32 {
+    u32::try_from(d.as_micros()).unwrap_or(u32::MAX)
+}
+
+impl Pipeline {
+    /// REQ: OBS-001, OBS-002 — the query's event, into this thread's ring. Wait-free and
+    /// allocation-free (after the thread's first event); reads the name from the request.
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &self,
+        peer: std::net::IpAddr,
+        transport: Transport,
+        req: &[u8],
+        resp: Option<&[u8]>,
+        oc: &Outcome,
+        start: Instant,
+        t_upstream: Duration,
+    ) {
+        let (name, qclass) = telltale_telemetry::event::question(req);
+        let hdr = |i: usize| resp.and_then(|r| r.get(i)).copied().unwrap_or(0);
+        let ip = match peer {
+            std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+            std::net::IpAddr::V6(v6) => v6,
+        };
+        let ev = QueryEvent {
+            ts_us: self.telemetry.ts_us(start),
+            client_ip: ip.octets(),
+            client_ref: oc.client_ref,
+            group: oc.group,
+            qtype: oc.qtype,
+            qclass,
+            rcode: resp.map(|r| (response_rcode(r) & 0xFF) as u8),
+            status: oc.status,
+            proto: proto(transport),
+            flags: u16::from_be_bytes([hdr(2), hdr(3)]),
+            rule: oc.rule,
+            upstream: 0,
+            attempts: 0,
+            t_total_us: micros(start.elapsed()),
+            t_upstream_us: micros(t_upstream),
+            resp_size: resp.map_or(0, |r| u16::try_from(r.len()).unwrap_or(u16::MAX)),
+            answers: u16::from_be_bytes([hdr(6), hdr(7)]),
+        };
+        self.telemetry.emit_query(&ev, name);
+    }
 }
 
 fn proto(t: Transport) -> Proto {
@@ -970,6 +1097,9 @@ impl QueryHandler for Handler {
         let mut oc = Outcome {
             status: Status::Dropped,
             qtype: 0,
+            client_ref: 0,
+            group: 0,
+            rule: None,
         };
         let resp = self.0.handle_sync(req, meta, out, start, &mut oc);
         // REQ: OBS-002 — counters on the hot path: lock-free, allocation-free. Deferred answers
@@ -984,14 +1114,35 @@ impl QueryHandler for Handler {
                     oc.qtype,
                     start.elapsed(),
                 );
+                let resp = Some(&out[..*len]);
+                self.0.emit(
+                    meta.peer.ip(),
+                    meta.transport,
+                    req,
+                    resp,
+                    &oc,
+                    start,
+                    Duration::ZERO,
+                );
             }
-            Response::Drop => self.0.metrics.record(
-                proto(meta.transport),
-                oc.status,
-                None,
-                oc.qtype,
-                start.elapsed(),
-            ),
+            Response::Drop => {
+                self.0.metrics.record(
+                    proto(meta.transport),
+                    oc.status,
+                    None,
+                    oc.qtype,
+                    start.elapsed(),
+                );
+                self.0.emit(
+                    meta.peer.ip(),
+                    meta.transport,
+                    req,
+                    None,
+                    &oc,
+                    start,
+                    Duration::ZERO,
+                );
+            }
             Response::Deferred(_) => {}
         }
         resp
@@ -1375,6 +1526,74 @@ groups = ["kids"]
         }
         drop(p);
         rt.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    /// Every answered query leaves an event with its client, status, rule, and name.
+    #[test]
+    fn obs_001_queries_emit_attributed_events() {
+        use telltale_telemetry::event::Record;
+        let cfg = format!(
+            "{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n\
+             [[client]]\nname = \"tablet\"\nmatch = [\"10.0.0.5\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example.com^\n@@||ok.ads.example.com^\n");
+
+        // Blocked, from a configured client.
+        let _ = ask_from(&p, "10.0.0.5", "X.Ads.Example.com", rtype::A);
+        // Allowed by an allow rule: deferred to the upstream, so its event comes when the
+        // deferred answer completes (not driven in this test).
+        let _ = ask_from(&p, "10.0.0.9", "ok.ads.example.com", rtype::A);
+        // A cache hit.
+        let req = query("www.example.com", rtype::AAAA, false);
+        let pq = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&pq, &mut out, rcode::NOERROR).unwrap();
+        b.answer_aaaa(300, Ipv6Addr::LOCALHOST).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&pq), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&pq, view), &pq, &out[..len], Instant::now())
+            .unwrap();
+        let _ = ask_from(&p, "10.0.0.9", "www.example.com", rtype::AAAA);
+
+        let mut drainer = p.telemetry.drainer();
+        let mut got = Vec::new();
+        drainer.drain(|r| got.push(r));
+        let queries: Vec<_> = got
+            .iter()
+            .filter_map(|r| match r {
+                Record::Query(e, n) => Some((*e, n.dotted())),
+                Record::Upstream(_) => None,
+            })
+            .collect();
+        assert_eq!(queries.len(), 2, "{queries:?}");
+        let (blocked, name) = &queries[0];
+        assert_eq!(name, "x.ads.example.com", "lowercased");
+        assert_eq!(blocked.status, Status::Blocked);
+        assert_eq!(blocked.client_ref, 1, "tablet");
+        assert_eq!(
+            blocked.rule,
+            Some(Rule {
+                list: 0,
+                kind: RuleKind::Domain,
+                allow: false
+            })
+        );
+        assert_eq!(blocked.rcode, Some(0), "null IP answer");
+        assert_eq!(blocked.answers, 1);
+        assert_eq!(blocked.client_ip[10..], [0xff, 0xff, 10, 0, 0, 5]);
+        let (hit, name) = &queries[1];
+        assert_eq!(
+            (name.as_str(), hit.status),
+            ("www.example.com", Status::Cached)
+        );
+        assert_eq!((hit.qtype, hit.qclass, hit.client_ref), (rtype::AAAA, 1, 0));
+        assert!(hit.resp_size > 0 && hit.flags & 0x8000 != 0, "QR set");
     }
 
     #[test]

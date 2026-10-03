@@ -484,6 +484,70 @@ def metric(url, name):
     return float(m.group(1)) if m else None
 
 
+def metric_sum(url, name):
+    """Sum of every series of a (labeled) counter from /metrics, or None."""
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            body = r.read().decode()
+    except OSError:
+        return None
+    vals = re.findall(rf"^{name}(?:{{[^}}]*}})? ([0-9.e+-]+)$", body, re.M)
+    return sum(float(v) for v in vals) if vals else None
+
+
+def cmd_sustain(args):
+    """REQ: T3.1 AC — sustained fixed-rate load with telemetry on: the event drop counter must
+    stay 0 (OBS-002), no query may be lost, and every answered query must leave an event."""
+    if not shutil.which("dnsperf"):
+        sys.exit("dnsperf not found")
+    lists = sorted((HERE / "lists").glob("*.txt")) if args.corpus in ("blocked", "realistic-home") else []
+    path, digest = corpus.generate(args.corpus, HERE / "corpora", HERE / "lists")
+    tmp = tempfile.TemporaryDirectory(prefix="telltale-sustain-")
+    cfg = pathlib.Path(tmp.name) / "telltale.toml"
+    cfg.write_text(server_config(args.workers, tmp.name, f"udp://127.0.0.1:{STUB_PORT}", lists))
+    url = f"http://127.0.0.1:{METRICS_PORT}/metrics"
+    target = ("127.0.0.1", DNS_PORT)
+    common = dict(threads=args.threads, clients=args.clients, outstanding=args.outstanding)
+    stub = server = None
+    try:
+        stub = subprocess.Popen([sys.executable, str(HERE / "stub_upstream.py"), "--port", str(STUB_PORT)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        wait_port(STUB_PORT)
+        log = open(pathlib.Path(tmp.name) / "server.log", "w")
+        server = subprocess.Popen([str(args.bin), "run", "-c", str(cfg)], stdout=log, stderr=subprocess.STDOUT,
+                                  env=dict(os.environ, RUST_LOG="warn"))
+        wait_ready(f"http://127.0.0.1:{METRICS_PORT}/readyz", server)
+        if lists:
+            wait_filter(url, server)
+        dnsperf(target, path, 5, **common, max_qps=args.rate)  # warm the cache
+        before = (metric_sum(url, "telltale_telemetry_events_total") or 0,
+                  metric_sum(url, "telltale_telemetry_dropped_total") or 0,
+                  metric_sum(url, "telltale_queries_total") or 0)
+        run = parse_dnsperf(dnsperf(target, path, args.duration, **common, max_qps=args.rate))
+        time.sleep(0.5)  # let deferred answers and the aggregator catch up
+        after = (metric_sum(url, "telltale_telemetry_events_total") or 0,
+                 metric_sum(url, "telltale_telemetry_dropped_total") or 0,
+                 metric_sum(url, "telltale_queries_total") or 0)
+        stats = proc_stats(server.pid) or {}
+        if server.poll() is not None:
+            raise RuntimeError(f"server exited with {server.returncode}")
+    finally:
+        stop(server, "telltale")
+        stop(stub, "stub upstream")
+        tmp.cleanup()
+    events, dropped, queries = (a - b for a, b in zip(after, before))
+    summary = {"corpus": args.corpus, "corpus_sha256": digest, "rate": args.rate, "duration": args.duration,
+               "qps": run.get("qps"), "loss_pct": run.get("loss_pct"), "latency_us": run.get("latency_us"),
+               "queries": queries, "events": events, "dropped": dropped,
+               "rss_kib": stats.get("rss_kib"), "peak_rss_kib": stats.get("hwm_kib")}
+    print(json.dumps(summary), file=sys.stdout)
+    ok = dropped == 0 and (run.get("loss_pct") or 0) == 0 and events >= queries
+    print(f"sustained {run.get('qps', 0):.0f} qps for {args.duration} s: {queries:.0f} queries, "
+          f"{events:.0f} events (incl. upstream), {dropped:.0f} dropped, loss {run.get('loss_pct')}%; "
+          f"RSS {stats.get('rss_kib', 0) // 1024} MiB -> {'PASS' if ok else 'FAIL'}", file=sys.stderr)
+    return 0 if ok else 1
+
+
 def cmd_swap(args):
     """REQ: T2.7 AC — recompile and swap the filter during a realistic-home run: p99 must not
     regress by more than 10% and no query may fail. Each round runs the same fixed-rate load
@@ -641,6 +705,17 @@ def main():
     w.add_argument("--max-regression", type=float, default=10.0, help="allowed p99 regression (%%)")
     w.add_argument("--out", default=str(HERE / "results"))
     w.set_defaults(func=cmd_swap)
+
+    s = sub.add_parser("sustain", help="T3.1: fixed-rate load; telemetry must drop nothing")
+    s.add_argument("--bin", default=str(ROOT / "target/bench-fast/telltale"))
+    s.add_argument("--corpus", choices=sorted(corpus.CORPORA), default="cache-hot")
+    s.add_argument("--rate", type=int, default=100_000, help="fixed query rate (qps)")
+    s.add_argument("--duration", type=int, default=60, help="seconds")
+    s.add_argument("--workers", type=int, default=4)
+    s.add_argument("--threads", type=int, default=4)
+    s.add_argument("--clients", type=int, default=16)
+    s.add_argument("--outstanding", type=int, default=500)
+    s.set_defaults(func=cmd_sustain)
 
     c = sub.add_parser("compare", help="compare two results files")
     c.add_argument("base")

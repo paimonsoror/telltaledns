@@ -395,6 +395,17 @@ Main metrics:
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory.
 
+### Query events
+Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics; the query log and the API for reading them come in later releases.
+- Each thread writes events into its own buffer without waiting or locking, and a background thread collects them every 25 ms. If a buffer ever fills, events are dropped and counted, and DNS answers are never held back. Counters and the metrics above never drop.
+- `[telemetry] ring_slots` sets the buffer size per thread, in events of about 128 bytes (default `4096`, 512 KiB). That's about 170 ms of a fully loaded worker. Raise it if `telltale_telemetry_dropped_total` ever grows.
+- Collected so far, in memory: per-second counts for the last 15 minutes and per-minute counts for the last 48 hours; for the current and previous hour, the top domains, blocked domains, NXDOMAIN names, clients, and each recent client's top domains; and latency percentiles by path, query type, client, and upstream.
+
+| Metric | What it tells you |
+|---|---|
+| `telltale_telemetry_events_total{ring}` | events written, per thread |
+| `telltale_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
+
 ## Reload without restarting
 Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.

@@ -2,15 +2,29 @@
 //!
 //! Part of TelltaleDNS. See `spec/02-architecture.md` §2 and `spec/06`.
 //!
-//! This first slice (T1.9) is the counter/histogram core: every query bumps counters in a
-//! per-thread, cache-line-aligned slot with relaxed atomics (REQ: OBS-002 — the hot path never
-//! blocks on telemetry, and counters never drop), and [`Metrics::render`] sums the slots into the
-//! Prometheus text format (REQ: OBS-005).
+//! Two layers:
+//! - Counters (T1.9): every query bumps counters in a per-thread, cache-line-aligned slot
+//!   with relaxed atomics (REQ: OBS-002: the hot path never blocks on telemetry, and
+//!   counters never drop), summed into the Prometheus text format (REQ: OBS-005).
+//! - Events (T3.1): every transaction emits a [`event::QueryEvent`] into its thread's
+//!   wait-free ring ([`ring::Hub`]); one aggregator thread drains the rings into live windows,
+//!   Space-Saving top-K, and HDR histograms ([`agg::Aggregates`]). A full ring drops the
+//!   event and counts the drop (REQ: OBS-001, OBS-002, OBS-004).
 
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+pub mod agg;
+pub mod event;
+#[cfg(test)]
+mod events_tests;
 pub mod prom;
+pub mod ring;
+pub mod topk;
+
+pub use agg::Aggregates;
+pub use event::{QueryEvent, Rule, RuleKind, UpstreamEvent};
+pub use ring::{Aggregator, Hub};
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -72,6 +86,9 @@ impl Status {
             Self::Dropped => "dropped",
         }
     }
+    pub fn from_u8(v: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(v)).copied()
+    }
     /// Latency path this status belongs to (the histogram `path` label).
     pub const fn path(self) -> Path {
         match self {
@@ -116,6 +133,9 @@ pub enum Proto {
 
 impl Proto {
     pub const ALL: [Self; 2] = [Self::Udp, Self::Tcp];
+    pub fn from_u8(v: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(v)).copied()
+    }
     pub const fn label(self) -> &'static str {
         match self {
             Self::Udp => "udp",
@@ -145,9 +165,18 @@ pub const QTYPES: [(u16, &str); 12] = [
     (64, "SVCB"),
     (255, "ANY"),
 ];
-const N_QTYPE: usize = QTYPES.len() + 1;
-const N_RCODE: usize = 17; // 0..=15, then "other" (extended)
-const N_STATUS: usize = Status::ALL.len();
+/// Columns per breakdown: the `QTYPES` plus "other", RCODEs 0–15 plus "other", statuses.
+pub const N_QTYPE: usize = QTYPES.len() + 1;
+pub const N_RCODE: usize = 17; // 0..=15, then "other" (extended)
+pub const N_STATUS: usize = Status::ALL.len();
+
+/// Index of `qtype` in [`QTYPES`], or the "other" column.
+pub fn qtype_index(qtype: u16) -> usize {
+    QTYPES
+        .iter()
+        .position(|(t, _)| *t == qtype)
+        .unwrap_or(N_QTYPE - 1)
+}
 const N_PATH: usize = Path::ALL.len();
 const N_BUCKET: usize = BUCKETS_US.len() + 1; // + Inf
 
@@ -223,11 +252,7 @@ impl Metrics {
             let i = usize::from(rc).min(N_RCODE - 1);
             s.rcodes[i].fetch_add(1, Ordering::Relaxed);
         }
-        let q = QTYPES
-            .iter()
-            .position(|(t, _)| *t == qtype)
-            .unwrap_or(N_QTYPE - 1);
-        s.qtypes[q].fetch_add(1, Ordering::Relaxed);
+        s.qtypes[qtype_index(qtype)].fetch_add(1, Ordering::Relaxed);
         if status != Status::Dropped {
             let p = status.path() as usize;
             let us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);

@@ -43,6 +43,14 @@ python3 bench/bench.py swap --rounds 10 --rate 20000
 ```
 Run it on a machine with spare cores (the homelab, not the Pi). Quiet-window p99 varies a lot between rounds on a shared host, so use at least 8 rounds.
 
+## Sustained load with telemetry (T3.1)
+`bench.py sustain` runs one corpus at a fixed rate (`--rate`, default 100k qps) for `--duration` seconds (default 60). It passes only if `telltale_telemetry_dropped_total` doesn't move, no query is lost, and the event count covers every answered query. It prints a JSON summary (qps, latency, queries, events, drops, RSS) on stdout.
+
+```sh
+python3 bench/bench.py sustain --rate 100000 --duration 60
+```
+The load generator needs spare cores beyond the server's workers; run it on the homelab, not the Pi.
+
 ## Results JSON (schema 1)
 Top level: `mode`, `started`, `git` (rev, dirty), `host` (cpu, cores, arch, kernel), `tools`,
 `params`, `server` (version, workers, `ready_ms`, `idle_rss_kib`, `peak_rss_kib`), `runs[]`, and
