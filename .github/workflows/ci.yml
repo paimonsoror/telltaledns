@@ -44,6 +44,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  # REQ: NFR-001 — the harness runs end to end. Hosted runners are too noisy for the 5%
+  # regression gate (09 §2 needs a fixed machine), so this fails only on loss or errors.
+  bench-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y dnsperf
+      - run: make bench-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-smoke
+          path: bench/results/*.json
+          if-no-files-found: ignore
+
   # REQ: DOC-004/005 — the site builds, links resolve, and Standards covers ticked tasks.
   site:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-.PHONY: check fmt clippy test deny build bench-smoke bench-proto udp-scaling fuzz
+.PHONY: check fmt clippy test deny build bench-smoke bench-full bench-proto udp-scaling fuzz
 
 check: fmt clippy test deny
 
@@ -20,6 +20,10 @@ build:
 # REQ: NFR-001 — quick benchmark gate run before finishing hot-path tasks (AGENTS.md rule 4).
 bench-smoke:
 	./bench/run.sh smoke
+
+# Nightly / release set: every corpus with inputs present, 3 runs, 25-50-75% load points.
+bench-full:
+	./bench/run.sh full
 
 # Wire-layer micro-benchmarks (criterion).
 bench-proto:

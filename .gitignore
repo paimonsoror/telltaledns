@@ -2,6 +2,7 @@
 **/*.rs.bk
 /bench/results/
 /bench/lists/
+/bench/corpora/
 /ui/node_modules/
 /ui/dist/
 /fuzz/artifacts/
@@ -10,3 +11,4 @@
 /fuzz/coverage/
 *.profraw
 /site/_site/
+__pycache__/
