@@ -16,6 +16,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }
 clap = { version = "4.6.7", features = ["derive"] }
 rand = "0.10.3"
 serde_json = "1.0.151"
@@ -24,6 +25,7 @@ telltale-config.workspace = true
 telltale-net = { version = "0.1.0", path = "../telltale-net" }
 telltale-policy = { version = "0.1.0", path = "../telltale-policy" }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
+telltale-telemetry = { version = "0.1.0", path = "../telltale-telemetry" }
 telltale-upstream = { version = "0.1.0", path = "../telltale-upstream" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time"] }
 toml = "1.1.6"

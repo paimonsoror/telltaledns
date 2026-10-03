@@ -3,6 +3,7 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+mod http;
 mod pipeline;
 
 use std::io::{self, Write};
@@ -240,8 +241,11 @@ async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> 
     if !local.is_empty() {
         info!(records = local.len(), "local records loaded");
     }
+    let local_records = local.len();
     let policy = Policy::from_config(cfg, local);
-    let handler = Arc::new(Handler(Pipeline::new(settings, cache, router, policy)));
+    let pipeline = Pipeline::new(settings, Arc::clone(&cache), Arc::clone(&router), policy);
+    let metrics = Arc::clone(&pipeline.metrics);
+    let handler = Arc::new(Handler(pipeline));
     let rt = tokio::runtime::Handle::current();
     let mut udp = Vec::new();
     let mut tcp = Vec::new();
@@ -266,12 +270,32 @@ async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> 
         }
     }
 
+    // REQ: OBS-005, OPS-006 — metrics and health probes.
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sources = http::Sources {
+        metrics,
+        cache,
+        router: Arc::clone(&router),
+        udp: udp.iter().flat_map(|l| l.stats().iter().cloned()).collect(),
+        tcp: tcp.iter().map(TcpServer::stats_handle).collect(),
+        local_records,
+        ready: Arc::clone(&ready),
+        started: std::time::Instant::now(),
+        allowed: cfg.access.allowed_networks.clone(),
+    };
+    let stop_http = start_http(cfg, sources).await?;
+    // Every listener is bound: ready for traffic (OPS-006).
+    ready.store(true, std::sync::atomic::Ordering::Release);
+
     // REQ: OPS-007 (partial) — stop on SIGTERM/SIGINT. Full drain + reload arrive with T1.10.
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         _ = term.recv() => info!(signal = "SIGTERM", "shutting down"),
         _ = tokio::signal::ctrl_c() => info!(signal = "SIGINT", "shutting down"),
     }
+    // Not ready first, so load balancers stop sending new traffic while we drain.
+    ready.store(false, std::sync::atomic::Ordering::Release);
+    let _ = stop_http.send(());
     for s in tcp {
         s.shutdown().await;
     }
@@ -280,6 +304,24 @@ async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> 
     }
     health.abort();
     Ok(())
+}
+
+/// Starts the metrics/health listener if enabled; send on the returned channel to stop it.
+async fn start_http(
+    cfg: &telltale_config::Config,
+    sources: http::Sources,
+) -> io::Result<tokio::sync::oneshot::Sender<()>> {
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    if cfg.telemetry.metrics.enabled {
+        let addr = cfg.telemetry.metrics.listen;
+        let bound = http::serve(addr, Arc::new(sources), async {
+            let _ = stopped.await;
+        })
+        .await
+        .map_err(|e| io::Error::new(e.kind(), format!("metrics {addr}: {e}")))?;
+        info!(addr = %bound, "serving /metrics, /healthz, /readyz, /livez");
+    }
+    Ok(stop)
 }
 
 fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {

@@ -18,6 +18,7 @@ use telltale_proto::{
     EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
 };
+use telltale_telemetry::{Metrics, Proto, Status};
 use telltale_upstream::{Question, Router};
 use tokio::sync::Semaphore;
 
@@ -92,6 +93,8 @@ pub(crate) struct Pipeline {
     policy: Policy,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
+    /// Query counters and latency histograms (OBS-005).
+    pub(crate) metrics: Arc<Metrics>,
     /// Queries dropped because they carried our own loop tag.
     loops: std::sync::atomic::AtomicU64,
     /// Per-process qname hash seed (keeps remote clients from precomputing collisions).
@@ -110,6 +113,7 @@ impl Pipeline {
     ) -> Arc<Self> {
         Arc::new(Self {
             inflight: Arc::new(Semaphore::new(settings.max_inflight.max(1))),
+            metrics: Arc::new(Metrics::new(telltale_net::default_workers() * 2 + 4)),
             settings,
             cache,
             router,
@@ -136,31 +140,72 @@ impl Pipeline {
     }
 
     /// The synchronous stage: parse, then answer from cache or defer.
-    fn handle_sync(self: &Arc<Self>, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
+    fn handle_sync(
+        self: &Arc<Self>,
+        req: &[u8],
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        oc.status = Status::Malformed;
         let q = match parse_query(req) {
             Ok(q) => q,
-            Err(QueryError::Drop) => return Response::Drop,
+            Err(QueryError::Drop) => {
+                oc.status = Status::Dropped;
+                return Response::Drop;
+            }
             Err(QueryError::NotImp) => return ready(error_from_raw(req, rcode::NOTIMP, out)),
             Err(QueryError::FormErr(_)) => return ready(error_from_raw(req, rcode::FORMERR, out)),
             Err(QueryError::BadVers) => {
                 return ready(badvers_from_raw(req, self.settings.edns_payload, out));
             }
         };
+        oc.qtype = q.qtype;
+        let special = match self.pre_checks(&q, meta, out, start, oc) {
+            Ok(special) => special,
+            Err(early) => return early,
+        };
+        // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
+        if let Some(len) =
+            self.policy
+                .local
+                .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
+        {
+            oc.status = Status::Local;
+            return Response::Ready(self.finish(&q, out, len, meta.transport));
+        }
+        self.resolve_or_defer(req, &q, special, meta, out, start, oc)
+    }
+
+    /// `spec/03` §3 steps 2–4: access, rate limit, loop tag, ANY, special names. Returns the
+    /// special-name class to continue with, or the response to send right away.
+    fn pre_checks(
+        &self,
+        q: &Query<'_>,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Result<Option<Special>, Response> {
+        let q = *q;
+        oc.status = Status::Refused;
         // 08 §6 — never an open resolver: refuse clients outside allowed_networks.
         if !telltale_policy::is_allowed(&self.policy.allowed, meta.peer.ip()) {
-            return self.simple(
+            return Err(self.simple(
                 &q,
                 out,
                 rcode::REFUSED,
                 Some((ede::PROHIBITED, "client not allowed")),
                 meta,
-            );
+            ));
         }
         // REQ: DNS-014 — per-client rate limit.
         if let Some(rl) = &self.policy.limiter
-            && !rl.check(meta.peer.ip(), Instant::now())
+            && !rl.check(meta.peer.ip(), start)
         {
-            return match self.policy.limit_action {
+            oc.status = Status::RateLimited;
+            return Err(match self.policy.limit_action {
                 RateLimitAction::Drop => Response::Drop,
                 RateLimitAction::Refused => self.simple(
                     &q,
@@ -169,7 +214,7 @@ impl Pipeline {
                     Some((ede::PROHIBITED, "rate limited")),
                     meta,
                 ),
-            };
+            });
         }
         // `spec/04` §7: a query carrying our own loop tag means an upstream forwards back to
         // us. Answering would recurse forever; drop it and make noise.
@@ -184,8 +229,10 @@ impl Pipeline {
                     "forwarding loop detected: an upstream sends our own queries back to us; check upstream configuration"
                 );
             }
-            return Response::Drop;
+            oc.status = Status::Dropped;
+            return Err(Response::Drop);
         }
+        oc.status = Status::Special;
         // REQ: DNS-019 — answer ANY with the RFC 8482 minimal response (no amplification).
         if q.is_any() {
             let edns = response_edns(&q, self.settings.edns_payload, None);
@@ -195,24 +242,31 @@ impl Pipeline {
                     b.answer_any_refusal(3600).ok()?;
                     b.finish(edns).ok()
                 });
-            return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
+            return Err(ready(len.map(|l| self.finish(&q, out, l, meta.transport))));
         }
         // DNS-019 / RFC 6761 — special names (ADR-014).
         let special = telltale_policy::classify(&q, &self.policy.special);
         match special {
-            Some(Special::Refused) => return self.simple(&q, out, rcode::REFUSED, None, meta),
-            Some(Special::Nxdomain) => return self.simple(&q, out, rcode::NXDOMAIN, None, meta),
-            Some(Special::Localhost) => return self.localhost(&q, out, meta),
-            Some(Special::PrivatePtr) | None => {}
+            Some(Special::Refused) => Err(self.simple(&q, out, rcode::REFUSED, None, meta)),
+            Some(Special::Nxdomain) => Err(self.simple(&q, out, rcode::NXDOMAIN, None, meta)),
+            Some(Special::Localhost) => Err(self.localhost(&q, out, meta)),
+            other => Ok(other),
         }
-        // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
-        if let Some(len) =
-            self.policy
-                .local
-                .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
-        {
-            return Response::Ready(self.finish(&q, out, len, meta.transport));
-        }
+    }
+
+    /// Routing, private-PTR handling, cache lookup, and deferral to upstreams.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_or_defer(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        special: Option<Special>,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        let q = *q;
         let question = Question::from_query(&q);
         let selection = self.router.select(&question, &[]);
         // Private reverse lookups stay local unless a route explicitly forwards them (RFC 6303).
@@ -221,6 +275,7 @@ impl Pipeline {
         }
         let Some(sel) = selection else {
             // No upstream group applies (none configured): we can't resolve this.
+            oc.status = Status::Refused;
             let edns = response_edns(
                 &q,
                 self.settings.edns_payload,
@@ -233,15 +288,16 @@ impl Pipeline {
         };
         let key = self.key(&q, sel.view);
         let client = Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
-        match self.cache.get(&key, &q.qname, &client, Instant::now(), out) {
+        match self.cache.get(&key, &q.qname, &client, start, out) {
             Lookup::Hit { len, prefetch } => {
                 if prefetch {
                     self.prefetch(req, key, sel.view);
                 }
+                oc.status = Status::Cached;
                 Response::Ready(self.finish(&q, out, len, meta.transport))
             }
-            Lookup::Expired => self.defer(req, meta, key, sel.view, true),
-            Lookup::Miss => self.defer(req, meta, key, sel.view, false),
+            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, q.qtype),
+            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, q.qtype),
         }
     }
 
@@ -288,6 +344,7 @@ impl Pipeline {
         ready(len.map(|l| self.finish(q, out, l, meta.transport)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn defer(
         self: &Arc<Self>,
         req: &[u8],
@@ -295,13 +352,23 @@ impl Pipeline {
         key: CacheKey,
         view: u16,
         stale_ok: bool,
+        start: Instant,
+        qtype: u16,
     ) -> Response {
         let this = Arc::clone(self);
         let req = req.to_vec();
         let transport = meta.transport;
         Response::Deferred(Box::pin(async move {
-            this.resolve_for_client(req, key, view, stale_ok, transport)
-                .await
+            let answer = Arc::clone(&this)
+                .resolve_for_client(req, key, view, stale_ok, transport)
+                .await;
+            let (status, rcode) = match &answer {
+                Some((bytes, status)) => (*status, Some(response_rcode(bytes))),
+                None => (Status::Dropped, None),
+            };
+            this.metrics
+                .record(proto(transport), status, rcode, qtype, start.elapsed());
+            answer.map(|(bytes, _)| bytes)
         }))
     }
 
@@ -314,7 +381,7 @@ impl Pipeline {
         view: u16,
         stale_ok: bool,
         transport: Transport,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, Status)> {
         let q = parse_query(&req).ok()?;
         let mut out = vec![0u8; MAX_RESPONSE];
 
@@ -350,7 +417,7 @@ impl Pipeline {
                     Some(len) => {
                         let len = self.finish(&q, &mut out, len, transport);
                         out.truncate(len);
-                        Some(out)
+                        Some((out, Status::Forwarded))
                     }
                     None => self.fallback(
                         &q,
@@ -422,7 +489,7 @@ impl Pipeline {
         text: &str,
         out: &mut Vec<u8>,
         transport: Transport,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(Vec<u8>, Status)> {
         let mut len = None;
         if stale_ok {
             let edns = response_edns(q, self.settings.edns_payload, Some((ede::STALE_ANSWER, "")));
@@ -431,6 +498,11 @@ impl Pipeline {
                 .cache
                 .get_stale(&key, &q.qname, &client, Instant::now(), out);
         }
+        let status = if len.is_some() {
+            Status::Stale
+        } else {
+            Status::ServFail
+        };
         let len = if let Some(l) = len {
             l
         } else {
@@ -443,7 +515,7 @@ impl Pipeline {
         };
         let len = self.finish(q, out, len, transport);
         out.truncate(len);
-        Some(std::mem::take(out))
+        Some((std::mem::take(out), status))
     }
 
     /// Refreshes a hot entry in the background before it expires (DNS-008).
@@ -463,13 +535,60 @@ fn ready(len: Option<usize>) -> Response {
     len.map_or(Response::Drop, Response::Ready)
 }
 
+/// What the synchronous stage decided, for metrics.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Outcome {
+    pub(crate) status: Status,
+    pub(crate) qtype: u16,
+}
+
+fn proto(t: Transport) -> Proto {
+    match t {
+        Transport::Udp => Proto::Udp,
+        Transport::Tcp => Proto::Tcp,
+    }
+}
+
+/// RCODE of a response (low 4 bits; extended RCODEs are rare and counted via their low bits).
+fn response_rcode(msg: &[u8]) -> u16 {
+    msg.get(3).map_or(0, |b| u16::from(b & 0x0F))
+}
+
 /// `Arc<Pipeline>` is the handler every listener shares.
 #[derive(Debug, Clone)]
 pub(crate) struct Handler(pub(crate) Arc<Pipeline>);
 
 impl QueryHandler for Handler {
     fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
-        self.0.handle_sync(req, meta, out)
+        let start = Instant::now();
+        let mut oc = Outcome {
+            status: Status::Dropped,
+            qtype: 0,
+        };
+        let resp = self.0.handle_sync(req, meta, out, start, &mut oc);
+        // REQ: OBS-002 — counters on the hot path: lock-free, allocation-free. Deferred answers
+        // are recorded when their future completes.
+        match &resp {
+            Response::Ready(len) => {
+                let rc = response_rcode(&out[..*len]);
+                self.0.metrics.record(
+                    proto(meta.transport),
+                    oc.status,
+                    Some(rc),
+                    oc.qtype,
+                    start.elapsed(),
+                );
+            }
+            Response::Drop => self.0.metrics.record(
+                proto(meta.transport),
+                oc.status,
+                None,
+                oc.qtype,
+                start.elapsed(),
+            ),
+            Response::Deferred(_) => {}
+        }
+        resp
     }
 }
 
@@ -508,7 +627,7 @@ mod tests {
 
     fn rcode_of(p: &Arc<Pipeline>, req: &[u8]) -> Option<u16> {
         let mut out = [0u8; 4096];
-        match p.handle_sync(req, &meta(), &mut out) {
+        match Handler(Arc::clone(p)).handle(req, &meta(), &mut out) {
             Response::Ready(len) => Some(summarize(&out[..len]).unwrap().rcode),
             _ => None,
         }
@@ -532,9 +651,11 @@ mod tests {
     fn dns_019_any_gets_minimal_answer_without_upstream() {
         let p = pipeline();
         let mut out = [0u8; 4096];
-        let Response::Ready(len) =
-            p.handle_sync(&query("example.com", rtype::ANY, false), &meta(), &mut out)
-        else {
+        let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
+            &query("example.com", rtype::ANY, false),
+            &meta(),
+            &mut out,
+        ) else {
             panic!("ANY must be answered immediately");
         };
         let s = summarize(&out[..len]).unwrap();
@@ -565,7 +686,7 @@ mod tests {
         let len = telltale_upstream::encode_query(&q, 1, &mut buf).unwrap();
         let mut out = [0u8; 4096];
         assert!(matches!(
-            p.handle_sync(&buf[..len], &meta(), &mut out),
+            Handler(Arc::clone(&p)).handle(&buf[..len], &meta(), &mut out),
             Response::Drop
         ));
     }
@@ -605,7 +726,7 @@ mod policy_tests {
             transport: Transport::Udp,
         };
         let mut out = [0u8; 4096];
-        match p.handle_sync(&buf[..len], &meta, &mut out) {
+        match Handler(Arc::clone(p)).handle(&buf[..len], &meta, &mut out) {
             Response::Ready(l) => summarize(&out[..l]).ok().map(|s| (s.rcode, s.answers)),
             _ => None,
         }

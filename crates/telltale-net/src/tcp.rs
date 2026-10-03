@@ -122,6 +122,11 @@ impl TcpServer {
         &self.stats
     }
 
+    /// Shared handle to the counters (for exporters that outlive a borrow).
+    pub fn stats_handle(&self) -> Arc<TcpStats> {
+        Arc::clone(&self.stats)
+    }
+
     /// Stops accepting and closes connections after their current query.
     pub async fn shutdown(self) {
         let _ = self.stop.send(true);

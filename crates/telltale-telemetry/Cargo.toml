@@ -12,3 +12,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+allocation-counter = "0.8.1"

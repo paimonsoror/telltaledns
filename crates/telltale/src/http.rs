@@ -1,0 +1,356 @@
+//! HTTP endpoints for operators: Prometheus `/metrics` and health probes.
+//!
+//! REQ: OBS-005 (metrics; the core set for now), OPS-006 (`/healthz`, `/readyz`, `/livez`).
+//! The same `allowed_networks` that guard DNS guard this listener until API auth (M3) exists.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+
+use axum::Router as HttpRouter;
+use axum::extract::{ConnectInfo, State};
+use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use telltale_cache::Cache;
+use telltale_config::Cidr;
+use telltale_net::{TcpStats, WorkerStats};
+use telltale_telemetry::Metrics;
+use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
+use telltale_upstream::Router;
+use telltale_upstream::health::Breaker;
+
+/// Everything `/metrics` reads.
+#[derive(Debug)]
+pub(crate) struct Sources {
+    pub(crate) metrics: Arc<Metrics>,
+    pub(crate) cache: Arc<Cache>,
+    pub(crate) router: Arc<Router>,
+    pub(crate) udp: Vec<Arc<WorkerStats>>,
+    pub(crate) tcp: Vec<Arc<TcpStats>>,
+    pub(crate) local_records: usize,
+    /// Set once every listener is bound; cleared at the start of shutdown.
+    pub(crate) ready: Arc<AtomicBool>,
+    pub(crate) started: Instant,
+    pub(crate) allowed: Vec<Cidr>,
+}
+
+pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
+    HttpRouter::new()
+        .route("/metrics", get(metrics))
+        .route("/livez", get(|| async { "ok\n" }))
+        .route("/healthz", get(|| async { "ok\n" }))
+        .route("/readyz", get(readyz))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&src),
+            only_allowed,
+        ))
+        .with_state(src)
+}
+
+/// Serves until `shutdown` resolves.
+pub(crate) async fn serve(
+    addr: SocketAddr,
+    src: Arc<Sources>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<SocketAddr> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    let app = router(src).into_make_service_with_connect_info::<SocketAddr>();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await;
+    });
+    Ok(bound)
+}
+
+async fn only_allowed(
+    State(src): State<Arc<Sources>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if telltale_policy::is_allowed(&src.allowed, peer.ip()) {
+        next.run(req).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
+}
+
+async fn readyz(State(src): State<Arc<Sources>>) -> impl IntoResponse {
+    if src.ready.load(Ordering::Acquire) {
+        (StatusCode::OK, "ready\n")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
+    }
+}
+
+async fn metrics(State(src): State<Arc<Sources>>) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, CONTENT_TYPE)], render(&src))
+}
+
+/// Resident set size from /proc (Linux), for the footprint gates in `spec/00` §5.
+fn rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+pub(crate) fn render(src: &Sources) -> String {
+    let mut w = PromWriter::new();
+    render_process(&mut w, src);
+    w.queries(&src.metrics.snapshot());
+    render_cache(&mut w, &src.cache);
+    render_upstreams(&mut w, &src.router);
+    render_listeners(&mut w, src);
+    w.family("telltale_local_records", "gauge", "Local records loaded.")
+        .sample("telltale_local_records", &[], src.local_records);
+    w.finish()
+}
+
+fn render_process(w: &mut PromWriter, src: &Sources) {
+    w.family("telltale_build_info", "gauge", "Build information.")
+        .sample(
+            "telltale_build_info",
+            &[("version", env!("CARGO_PKG_VERSION"))],
+            1,
+        );
+    w.family("telltale_uptime_seconds", "gauge", "Seconds since start.")
+        .sample(
+            "telltale_uptime_seconds",
+            &[],
+            src.started.elapsed().as_secs(),
+        );
+    if let Some(rss) = rss_bytes() {
+        w.family(
+            "telltale_resident_memory_bytes",
+            "gauge",
+            "Resident set size.",
+        )
+        .sample("telltale_resident_memory_bytes", &[], rss);
+    }
+}
+
+fn render_cache(w: &mut PromWriter, cache: &Cache) {
+    let c = cache.stats();
+    for (name, kind, help, v) in [
+        (
+            "telltale_cache_hits_total",
+            "counter",
+            "Fresh cache hits.",
+            c.hits,
+        ),
+        (
+            "telltale_cache_misses_total",
+            "counter",
+            "Cache misses (including expired).",
+            c.misses,
+        ),
+        (
+            "telltale_cache_stale_served_total",
+            "counter",
+            "Expired answers served (RFC 8767).",
+            c.stale_served,
+        ),
+        (
+            "telltale_cache_inserts_total",
+            "counter",
+            "Answers stored.",
+            c.inserts,
+        ),
+        (
+            "telltale_cache_uncacheable_total",
+            "counter",
+            "Answers not stored (TTL 0, REFUSED, ...).",
+            c.uncacheable,
+        ),
+        (
+            "telltale_cache_evictions_total",
+            "counter",
+            "Entries evicted to stay within budget.",
+            c.evictions,
+        ),
+        (
+            "telltale_cache_entries",
+            "gauge",
+            "Entries in the cache.",
+            c.entries as u64,
+        ),
+        (
+            "telltale_cache_bytes",
+            "gauge",
+            "Approximate cache memory use.",
+            c.bytes as u64,
+        ),
+    ] {
+        w.family(name, kind, help).sample(name, &[], v);
+    }
+}
+
+/// REQ: OBS-011 (core): per-upstream health.
+fn render_upstreams(w: &mut PromWriter, router: &Router) {
+    let ups = router.upstreams();
+    let snaps: Vec<_> = ups
+        .iter()
+        .map(|u| (u.name.as_str(), u.health.snapshot()))
+        .collect();
+    w.family(
+        "telltale_upstream_requests_total",
+        "counter",
+        "Upstream attempts.",
+    );
+    for (name, s) in &snaps {
+        w.sample(
+            "telltale_upstream_requests_total",
+            &[("upstream", name)],
+            s.requests,
+        );
+    }
+    w.family(
+        "telltale_upstream_failures_total",
+        "counter",
+        "Failed upstream attempts (timeouts, errors, SERVFAIL/REFUSED).",
+    );
+    for (name, s) in &snaps {
+        w.sample(
+            "telltale_upstream_failures_total",
+            &[("upstream", name)],
+            s.failures,
+        );
+    }
+    w.family(
+        "telltale_upstream_breaker_state",
+        "gauge",
+        "Circuit breaker: 0 closed, 1 half-open, 2 open.",
+    );
+    for (name, s) in &snaps {
+        let v = match s.breaker {
+            Breaker::Closed => 0,
+            Breaker::HalfOpen => 1,
+            Breaker::Open => 2,
+        };
+        w.sample("telltale_upstream_breaker_state", &[("upstream", name)], v);
+    }
+    w.family(
+        "telltale_upstream_latency_ewma_seconds",
+        "gauge",
+        "Smoothed upstream latency.",
+    );
+    for (name, s) in &snaps {
+        if let Some(e) = s.ewma {
+            w.sample(
+                "telltale_upstream_latency_ewma_seconds",
+                &[("upstream", name)],
+                e.as_secs_f64(),
+            );
+        }
+    }
+}
+
+fn render_listeners(w: &mut PromWriter, src: &Sources) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let sum = |f: fn(&WorkerStats) -> u64| src.udp.iter().map(|s| f(s)).sum::<u64>();
+    for (name, help, v) in [
+        (
+            "telltale_udp_received_total",
+            "UDP datagrams received.",
+            sum(|s| s.received.load(Relaxed)),
+        ),
+        (
+            "telltale_udp_replied_total",
+            "UDP replies sent from worker threads.",
+            sum(|s| s.replied.load(Relaxed)),
+        ),
+        (
+            "telltale_udp_deferred_replied_total",
+            "UDP replies sent after an upstream round trip.",
+            sum(|s| s.deferred_replied.load(Relaxed)),
+        ),
+        (
+            "telltale_udp_send_errors_total",
+            "UDP send failures.",
+            sum(|s| s.send_errors.load(Relaxed)),
+        ),
+        (
+            "telltale_udp_dropped_total",
+            "Oversized or unreadable UDP datagrams.",
+            sum(|s| s.dropped.load(Relaxed)),
+        ),
+    ] {
+        w.family(name, "counter", help).sample(name, &[], v);
+    }
+    let tsum = |f: fn(&TcpStats) -> u64| src.tcp.iter().map(|s| f(s)).sum::<u64>();
+    for (name, help, v) in [
+        (
+            "telltale_tcp_connections_total",
+            "TCP connections accepted.",
+            tsum(|s| s.accepted.load(Relaxed)),
+        ),
+        (
+            "telltale_tcp_rejected_total",
+            "TCP connections refused at the cap.",
+            tsum(|s| s.rejected.load(Relaxed)),
+        ),
+        (
+            "telltale_tcp_idle_closed_total",
+            "TCP connections closed for idleness.",
+            tsum(|s| s.idle_closed.load(Relaxed)),
+        ),
+    ] {
+        w.family(name, "counter", help).sample(name, &[], v);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use telltale_cache::CachePolicy;
+    use telltale_telemetry::{Proto, Status};
+
+    use super::*;
+
+    #[test]
+    fn obs_005_render_includes_core_families() {
+        let metrics = Arc::new(Metrics::new(2));
+        metrics.record(
+            Proto::Udp,
+            Status::Cached,
+            Some(0),
+            1,
+            Duration::from_micros(80),
+        );
+        let src = Sources {
+            metrics,
+            cache: Arc::new(Cache::new(CachePolicy::default())),
+            router: Arc::new(Router::default()),
+            udp: Vec::new(),
+            tcp: Vec::new(),
+            local_records: 3,
+            ready: Arc::new(AtomicBool::new(true)),
+            started: Instant::now(),
+            allowed: Vec::new(),
+        };
+        let text = render(&src);
+        for family in [
+            "telltale_build_info",
+            "telltale_queries_total",
+            "telltale_query_duration_seconds",
+            "telltale_cache_hits_total",
+            "telltale_upstream_requests_total",
+            "telltale_udp_received_total",
+            "telltale_tcp_connections_total",
+        ] {
+            assert!(
+                text.contains(&format!("# TYPE {family} ")),
+                "missing {family}"
+            );
+        }
+        assert!(text.contains("telltale_queries_total{proto=\"udp\",status=\"cached\"} 1"));
+        assert!(text.contains("telltale_local_records 3"));
+    }
+}

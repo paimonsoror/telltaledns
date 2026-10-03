@@ -152,6 +152,32 @@ upstream_group = "lan"
 ```
 The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 
+## Monitoring
+An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`) serves:
+
+| Path | Use |
+|---|---|
+| `/metrics` | Prometheus scrape |
+| `/livez` | the process is alive (Kubernetes liveness) |
+| `/healthz` | the process is healthy |
+| `/readyz` | 200 once every DNS listener is bound, 503 while starting or shutting down (Kubernetes readiness) |
+
+Until API authentication lands, this listener answers only clients inside `[access] allowed_networks`.
+
+Main metrics:
+
+| Metric | What it tells you |
+|---|---|
+| `telltale_queries_total{proto,status}` | queries by outcome: `cached`, `forwarded`, `stale`, `local`, `special`, `refused`, `rate_limited`, `malformed`, `servfail`, `dropped` |
+| `telltale_query_duration_seconds{path}` | latency histogram per path (`cache`, `upstream`, `local`, `synthesized`) |
+| `telltale_responses_total{rcode}`, `telltale_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
+| `telltale_cache_*` | hits, misses, stale answers served, entries, bytes, evictions |
+| `telltale_upstream_requests_total`, `_failures_total`, `_breaker_state`, `_latency_ewma_seconds` | per-upstream health |
+| `telltale_udp_*`, `telltale_tcp_*` | listener counters |
+| `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
+
+Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory.
+
 ## Stop
 `SIGTERM` or `SIGINT` (Ctrl-C) stops the listeners and exits. Full connection draining and hot reload come later (OPS-007, OPS-009).
 
