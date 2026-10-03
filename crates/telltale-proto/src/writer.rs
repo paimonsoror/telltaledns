@@ -208,6 +208,18 @@ fn write_opt(w: &mut Writer<'_>, e: &EdnsOut<'_>, ext_rcode: u8) -> Result<(), B
     Ok(())
 }
 
+/// Appends an OPT record to the message in `buf[..len]` (which must not already have one),
+/// increments ARCOUNT, and returns the new length. Used on cache hits, where responses are
+/// stored without OPT and get one built for each client.
+pub fn append_opt(buf: &mut [u8], len: usize, edns: &EdnsOut<'_>) -> Result<usize, BufferTooSmall> {
+    let arcount = be16(buf, 10).ok_or(BufferTooSmall)?;
+    let mut w = Writer { buf, pos: len };
+    write_opt(&mut w, edns, 0)?;
+    let end = w.pos();
+    w.patch_u16(10, arcount.saturating_add(1))?;
+    Ok(end)
+}
+
 /// EDNS for our response to `q`: present only if the client used EDNS (RFC 6891 §7),
 /// echoing the DO bit.
 pub fn response_edns<'t>(

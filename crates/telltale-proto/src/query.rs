@@ -21,9 +21,9 @@ pub struct Query<'a> {
     pub edns: Option<Edns<'a>>,
 }
 
-impl Query<'_> {
+impl<'a> Query<'a> {
     /// The question section bytes exactly as the client sent them.
-    pub fn question_bytes(&self) -> &[u8] {
+    pub fn question_bytes(&self) -> &'a [u8] {
         &self.msg[HEADER_LEN..self.question_end]
     }
 

@@ -47,8 +47,8 @@ pub use record::{
     Record, RecordIter, ResponseSummary, Section, patch_ttls, records, set_ttls, summarize,
 };
 pub use writer::{
-    BufferTooSmall, ResponseBuilder, Writer, badvers_from_raw, error_from_raw, response_edns,
-    truncate_for_udp, ttl_at, udp_limit,
+    BufferTooSmall, ResponseBuilder, Writer, append_opt, badvers_from_raw, error_from_raw,
+    response_edns, truncate_for_udp, ttl_at, udp_limit,
 };
 
 /// Why a message (or part of it) could not be parsed.
