@@ -4,7 +4,9 @@
 //! stages plug in here as M1/M2 tasks land; until then every well-formed query is answered
 //! REFUSED with EDE 14 (Not Ready) so clients fail over to another resolver immediately.
 
-use telltale_net::{Datagram, DatagramHandler, Replier};
+use std::net::SocketAddr;
+
+use telltale_net::{Datagram, DatagramHandler, Replier, StreamHandler};
 use telltale_proto::{
     DEFAULT_EDNS_PAYLOAD, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
@@ -56,6 +58,12 @@ impl Pipeline {
 impl DatagramHandler for Pipeline {
     fn handle(&self, dgram: &Datagram<'_>, out: &mut [u8], _replier: &Replier) -> Option<usize> {
         Pipeline::handle(self, dgram.data, out, true)
+    }
+}
+
+impl StreamHandler for Pipeline {
+    fn handle(&self, req: &[u8], _peer: SocketAddr, out: &mut [u8]) -> Option<usize> {
+        Pipeline::handle(self, req, out, false)
     }
 }
 

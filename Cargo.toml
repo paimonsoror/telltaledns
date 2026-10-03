@@ -33,17 +33,6 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 [workspace.dependencies]
-telltale-proto = { path = "crates/telltale-proto" }
-telltale-net = { path = "crates/telltale-net" }
-telltale-cache = { path = "crates/telltale-cache" }
-telltale-filter = { path = "crates/telltale-filter" }
-telltale-policy = { path = "crates/telltale-policy" }
-telltale-upstream = { path = "crates/telltale-upstream" }
-telltale-recursor = { path = "crates/telltale-recursor" }
-telltale-telemetry = { path = "crates/telltale-telemetry" }
-telltale-store = { path = "crates/telltale-store" }
-telltale-cluster = { path = "crates/telltale-cluster" }
-telltale-api = { path = "crates/telltale-api" }
 telltale-config = { path = "crates/telltale-config" }
 
 # REQ: OPS-001 / 08 §2 — release profile for the static image binary.

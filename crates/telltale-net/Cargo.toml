@@ -28,3 +28,7 @@ missing_errors_doc = "allow"
 [dependencies]
 libc = "0.2.190"
 socket2 = { version = "0.6.5", features = ["all"] }
+tokio = { version = "1.53.1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

@@ -7,8 +7,10 @@
 
 #[cfg(target_os = "linux")]
 mod sys;
+pub mod tcp;
 pub mod udp;
 
+pub use tcp::{StreamHandler, TcpConfig, TcpServer, TcpStats};
 pub use udp::{Datagram, DatagramHandler, LocalAddr, Replier, UdpConfig, UdpListener, WorkerStats};
 
 /// Default worker count: available parallelism (which honors cgroup CPU quotas on Linux),

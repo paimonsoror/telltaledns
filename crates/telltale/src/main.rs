@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use telltale_config::{ListenProto, Loader};
-use telltale_net::{UdpConfig, UdpListener};
+use telltale_net::{TcpConfig, TcpServer, UdpConfig, UdpListener};
 use tracing::{error, info, warn};
 
 use crate::pipeline::Pipeline;
@@ -138,15 +138,34 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         "starting TelltaleDNS"
     );
 
+    // spec/02 §3: UDP has dedicated worker threads; everything else runs on Tokio.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("telltale-rt")
+        .build()?;
+    rt.block_on(serve(&cfg, workers))?;
+    info!("stopped");
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> {
     let pipeline = Arc::new(Pipeline::default());
-    let mut listeners = Vec::new();
+    let mut udp = Vec::new();
+    let mut tcp = Vec::new();
     for l in &cfg.listen {
+        let ctx = |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
         match l.proto {
             ListenProto::Udp => {
-                let listener = UdpListener::spawn(&UdpConfig::new(l.addr, workers), &pipeline)
-                    .map_err(|e| io::Error::new(e.kind(), format!("udp {}: {e}", l.addr)))?;
+                let listener =
+                    UdpListener::spawn(&UdpConfig::new(l.addr, workers), &pipeline).map_err(ctx)?;
                 info!(addr = %listener.local_addr(), workers, "listening (udp)");
-                listeners.push(listener);
+                udp.push(listener);
+            }
+            ListenProto::Tcp => {
+                let server =
+                    TcpServer::bind(TcpConfig::new(l.addr), Arc::clone(&pipeline)).map_err(ctx)?;
+                info!(addr = %server.local_addr(), "listening (tcp)");
+                tcp.push(server);
             }
             other => {
                 warn!(addr = %l.addr, proto = ?other, "listener type not implemented yet; skipping");
@@ -155,18 +174,18 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     }
 
     // REQ: OPS-007 (partial) — stop on SIGTERM/SIGINT. Full drain + reload arrive with T1.10.
-    let mut signals = signal_hook::iterator::Signals::new([
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGINT,
-    ])?;
-    if let Some(sig) = signals.forever().next() {
-        info!(signal = sig, "shutting down");
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = term.recv() => info!(signal = "SIGTERM", "shutting down"),
+        _ = tokio::signal::ctrl_c() => info!(signal = "SIGINT", "shutting down"),
     }
-    for l in listeners {
+    for s in tcp {
+        s.shutdown().await;
+    }
+    for l in udp {
         l.shutdown();
     }
-    info!("stopped");
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
