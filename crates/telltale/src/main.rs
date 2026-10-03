@@ -7,6 +7,7 @@ mod explain;
 mod http;
 mod lists;
 mod pipeline;
+mod qlog_cli;
 mod server;
 
 use std::io::{self, Write};
@@ -57,6 +58,12 @@ enum Command {
     Lists {
         #[command(subcommand)]
         command: ListsCommand,
+    },
+    /// Search the query log (newest first), offline from the data directory.
+    // REQ: OBS-003
+    Qlog {
+        #[command(subcommand)]
+        command: QlogCommand,
     },
     /// Explain how a query would be handled for a client: who the client is, its groups,
     /// every matching rule with its list line, the decision, and the upstream route.
@@ -124,6 +131,45 @@ enum ListsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum QlogCommand {
+    /// Find logged queries. Filters combine (AND); prints newest first.
+    Search {
+        /// Name to look for (a substring unless --match says otherwise).
+        name: Option<String>,
+        /// How to match the name: substring, exact, suffix (name or subdomain), glob, regex.
+        #[arg(long = "match", default_value = "substring")]
+        mode: String,
+        /// Client IP address.
+        #[arg(long)]
+        client: Option<std::net::IpAddr>,
+        /// Status: cached, forwarded, stale, local, special, blocked, refused, ... (repeatable).
+        #[arg(long)]
+        status: Vec<String>,
+        /// Query type, e.g. AAAA (repeatable).
+        #[arg(short = 't', long)]
+        qtype: Vec<String>,
+        /// Only the last N seconds.
+        #[arg(long)]
+        since: Option<u64>,
+        /// Only queries that took at least this many milliseconds.
+        #[arg(long = "min-ms")]
+        min_ms: Option<u32>,
+        /// Rows per page.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Continue after a previous page (printed at the end of each page).
+        #[arg(long)]
+        cursor: Option<String>,
+        /// JSON lines instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum PresetsCommand {
     /// List the catalog.
     List,
@@ -174,6 +220,46 @@ fn main() -> ExitCode {
         Command::Config { command } => run_config(command),
         Command::Presets { command } => run_presets(command),
         Command::Lists { command } => run_lists(command),
+        Command::Qlog {
+            command:
+                QlogCommand::Search {
+                    name,
+                    mode,
+                    client,
+                    status,
+                    qtype,
+                    since,
+                    min_ms,
+                    limit,
+                    cursor,
+                    json,
+                    config,
+                },
+        } => {
+            let args = qlog_cli::Args {
+                name,
+                mode,
+                client,
+                status,
+                qtype,
+                since_secs: since,
+                min_ms,
+                limit,
+                cursor,
+                json,
+            };
+            Ok(
+                server::load(&config_files(config)).map_or(ExitCode::FAILURE, |cfg| {
+                    match qlog_cli::run(&cfg, &args, &mut io::stdout().lock()) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }),
+            )
+        }
         Command::Explain {
             name,
             client,

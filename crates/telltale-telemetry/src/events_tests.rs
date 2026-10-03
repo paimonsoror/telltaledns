@@ -336,7 +336,9 @@ fn decoded(name: &str) -> event::Name {
 )]
 fn obs_002_no_drops_at_100k_events_per_second() {
     let hub = Hub::new(4096 * 128);
-    let aggregator = hub.spawn_aggregator(Duration::from_millis(25)).unwrap();
+    let aggregator = hub
+        .spawn_aggregator(Duration::from_millis(25), None)
+        .unwrap();
     let per_thread = 50_000u64; // 2 s at 25k/s
     let threads: Vec<_> = (0..4u8)
         .map(|t| {

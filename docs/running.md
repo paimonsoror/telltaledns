@@ -406,6 +406,30 @@ Besides counters, every query also produces a detailed **event**: the time, the 
 | `telltale_telemetry_events_total{ring}` | events written, per thread |
 | `telltale_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
 
+### Query log
+Every query event is also written to the **query log** on disk, in `<data_dir>/qlog/YYYY/MM/DD/HH-<node>-<part>.seg`: one file per hour, compressed by column, about 14 bytes per query (50 million queries take about 690 MB).
+```toml
+[telemetry.qlog]
+enabled = true
+retention_days = 30          # delete older hours
+retention_bytes = "2GiB"     # and the oldest hours beyond this total
+privacy_level = 0            # 0 full; 1 hide domains; 2 hide domains and clients; 3 no per-query log
+flush_interval_secs = 10     # write at least this often (a crash loses at most this much detail)
+fsync = false                # true: sync every write (slower on SD cards)
+```
+- Writes are sequential and batched, about one every 10 seconds on a quiet network, so it's gentle on SD cards. A slow or full disk never slows DNS: if the writer falls behind, rows are dropped and counted (`telltale_qlog_rows_dropped_total`).
+- `privacy_level = 1` stores each name as a hash, so identical names still group together but can't be read; `2` also drops client addresses; `3` keeps no per-query log at all (counters, top lists, and graphs still work).
+- Search it from the command line (the API comes later):
+  ```sh
+  telltale qlog search doubleclick -c telltale.toml                  # names containing "doubleclick"
+  telltale qlog search --client 192.168.1.50 --status blocked --since 3600
+  telltale qlog search '*.example.org' --match glob -t AAAA --json    # JSON lines
+  telltale qlog search --min-ms 500 --limit 20                      # slow queries
+  ```
+  Results come newest first; the last line prints a `--cursor` for the next page. `--match` is `substring` (default), `exact`, `suffix` (the name or anything below it), `glob`, or `regex`.
+- Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
+- Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
+
 ## Reload without restarting
 Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.

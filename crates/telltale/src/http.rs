@@ -42,6 +42,8 @@ pub(crate) struct Sources {
     pub(crate) allowed: Vec<Cidr>,
     /// The list fetcher and compiler, when this node handles lists.
     pub(crate) lists: ArcSwapOption<ListsShared>,
+    /// Query-log write counters, when the query log is on.
+    pub(crate) qlog: Option<Arc<telltale_store::qlog::Stats>>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -113,6 +115,9 @@ pub(crate) fn render(src: &Sources) -> String {
     w.queries(&src.metrics.snapshot());
     render_cache(&mut w, &src.cache);
     render_telemetry(&mut w, &src.pipeline.telemetry);
+    if let Some(q) = &src.qlog {
+        render_qlog(&mut w, q);
+    }
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
     if let Some(l) = src.lists.load_full() {
@@ -208,6 +213,41 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
             &[("ring", ring.as_str())],
             *dropped,
         );
+    }
+}
+
+/// REQ: OBS-003 — query-log writer health.
+fn render_qlog(w: &mut PromWriter, q: &telltale_store::qlog::Stats) {
+    use std::sync::atomic::Ordering::Relaxed;
+    for (name, help, v) in [
+        (
+            "telltale_qlog_rows_written_total",
+            "Query-log rows written to segments.",
+            &q.rows_written,
+        ),
+        (
+            "telltale_qlog_rows_dropped_total",
+            "Query-log rows dropped because the writer fell behind.",
+            &q.rows_dropped,
+        ),
+        (
+            "telltale_qlog_bytes_written_total",
+            "Query-log bytes written.",
+            &q.bytes_written,
+        ),
+        (
+            "telltale_qlog_segments_removed_total",
+            "Query-log segments removed by retention.",
+            &q.segments_removed,
+        ),
+        (
+            "telltale_qlog_write_errors_total",
+            "Query-log write errors.",
+            &q.write_errors,
+        ),
+    ] {
+        w.family(name, "counter", help)
+            .sample(name, &[], v.load(Relaxed));
     }
 }
 
@@ -513,6 +553,7 @@ mod tests {
             ready: Arc::new(AtomicBool::new(true)),
             started: Instant::now(),
             lists: ArcSwapOption::empty(),
+            qlog: None,
             allowed: Vec::new(),
         };
         let text = render(&src);

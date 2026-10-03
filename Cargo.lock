@@ -1813,6 +1813,7 @@ dependencies = [
  "telltale-net",
  "telltale-policy",
  "telltale-proto",
+ "telltale-store",
  "telltale-telemetry",
  "telltale-upstream",
  "tempfile",
@@ -1924,6 +1925,16 @@ version = "0.1.0"
 [[package]]
 name = "telltale-store"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "memchr",
+ "rand 0.10.3",
+ "regex-automata",
+ "telltale-telemetry",
+ "tempfile",
+ "xxhash-rust",
+ "zstd",
+]
 
 [[package]]
 name = "telltale-telemetry"

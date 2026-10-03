@@ -28,6 +28,7 @@ serde_json = "1.0.151"
 telltale-cache = { version = "0.1.0", path = "../telltale-cache" }
 telltale-config.workspace = true
 telltale-filter = { version = "0.1.0", path = "../telltale-filter" }
+telltale-store = { version = "0.1.0", path = "../telltale-store" }
 telltale-net = { version = "0.1.0", path = "../telltale-net" }
 telltale-policy = { version = "0.1.0", path = "../telltale-policy" }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }

@@ -242,6 +242,40 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     v
 }
 
+/// REQ: OBS-003 — the query-log writer, fed by the aggregator thread. A failure to start
+/// it is logged and DNS carries on without a query log (`spec/02` §8.5).
+fn query_log(
+    cfg: &Config,
+) -> (
+    Option<Box<dyn telltale_telemetry::ring::Sink>>,
+    Option<Arc<telltale_store::qlog::Stats>>,
+) {
+    let q = &cfg.telemetry.qlog;
+    if !q.enabled {
+        return (None, None);
+    }
+    let settings = telltale_store::qlog::Settings {
+        dir: std::path::Path::new(cfg.node.data_dir.as_str()).join("qlog"),
+        // Cluster node IDs come with membership (T5.x); a standalone node is 0.
+        node: 0,
+        privacy: q.privacy_level,
+        flush_interval: Duration::from_secs(u64::from(q.flush_interval_secs.max(1))),
+        fsync: q.fsync,
+        retention_days: q.retention_days,
+        retention_bytes: q.retention_bytes.bytes(),
+    };
+    match telltale_store::qlog::Builder::spawn(settings) {
+        Ok(b) => {
+            let stats = b.stats();
+            (Some(Box::new(b)), Some(stats))
+        }
+        Err(e) => {
+            warn!("query log disabled: cannot start its writer: {e}");
+            (None, None)
+        }
+    }
+}
+
 /// The query pipeline for `cfg` (settings derived from config).
 fn build_pipeline(
     cfg: &Config,
@@ -282,9 +316,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let pipeline = build_pipeline(&cfg, Arc::clone(&cache), router, policy);
     // REQ: OBS-002 — one aggregator thread drains the event rings (`spec/06` §2). It never
     // touches the query path: a stalled aggregator only means dropped (counted) events.
+    let (qlog, qlog_stats) = query_log(&cfg);
     let _aggregator = pipeline
         .telemetry
-        .spawn_aggregator(Duration::from_millis(25))?;
+        .spawn_aggregator(Duration::from_millis(25), qlog)?;
     let mut listeners = Listeners {
         udp: Vec::new(),
         tcp: Vec::new(),
@@ -307,6 +342,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
         lists: ArcSwapOption::empty(),
+        qlog: qlog_stats,
     });
     let (stop_http, http_stopped) = tokio::sync::oneshot::channel::<()>();
     if cfg.telemetry.metrics.enabled {

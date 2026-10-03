@@ -12,3 +12,16 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# REQ: OBS-003 — segment checksums (blake3) and per-column compression (zstd), as in
+# telltale-filter; regex-automata for regex/glob qname search (02 §7).
+blake3 = "1.8.7"
+# Substring search over dictionaries; bloom keys (both already in the tree via regex/filter).
+memchr = "2.8.3"
+regex-automata = "0.4.18"
+telltale-telemetry = { version = "0.1.0", path = "../telltale-telemetry" }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = { version = "0.14.0", default-features = false }
+
+[dev-dependencies]
+rand = "0.10.3"
+tempfile = "3.27.0"

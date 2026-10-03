@@ -204,6 +204,45 @@
 </section>
 
 <section>
+  <div class="two">
+    <div>
+      <p class="eyebrow">Query log</p>
+      <h2>Every query, searchable in a second</h2>
+      <p class="muted">Each answer leaves a record: device, name, outcome, the rule that decided, and timings. The records are stored as one compressed file per hour, about 14 bytes per query, written in large sequential batches that are kind to SD cards. If the disk falls behind, records are dropped and counted; answers never wait for the log.</p>
+      <p class="muted">A search looks at each hour's list of names before it touches any rows, and skips hours that can't match. On a Raspberry Pi 4, finding a rare name among 50 million queries from the last 30 days takes about 0.2 s. Searches run at the lowest CPU priority, so DNS always comes first.</p>
+    </div>
+    <figure class="figure">
+      <svg viewBox="0 0 460 250" role="img">
+        <title>Search: hours are skipped by a name filter, then only matching blocks and the needed columns are read</title>
+        <text x="10" y="20" class="svg-sub">search: needle.example.org, last 30 days</text>
+        <g>
+          <rect x="10" y="32" width="60" height="34" rx="6" class="svg-box" stroke-dasharray="4 3"/><text x="40" y="53" text-anchor="middle" class="svg-sub">09:00</text>
+          <rect x="76" y="32" width="60" height="34" rx="6" class="svg-box" stroke-dasharray="4 3"/><text x="106" y="53" text-anchor="middle" class="svg-sub">10:00</text>
+          <rect x="142" y="32" width="60" height="34" rx="6" class="svg-ok"/><text x="172" y="53" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">11:00</text>
+          <rect x="208" y="32" width="60" height="34" rx="6" class="svg-box" stroke-dasharray="4 3"/><text x="238" y="53" text-anchor="middle" class="svg-sub">12:00</text>
+          <text x="280" y="53" class="svg-sub">… 720 hours</text>
+        </g>
+        <text x="10" y="86" class="svg-sub">1 · each hour's name filter: "can't be here" → skipped unread</text>
+        <path d="M172 70 V100" class="svg-stroke-ok" stroke-width="2"/>
+        <g>
+          <rect x="10" y="104" width="100" height="30" rx="6" class="svg-accent" opacity=".55"/><text x="60" y="123" text-anchor="middle" class="svg-sub">names (dictionary)</text>
+          <rect x="116" y="104" width="44" height="30" rx="6" class="svg-box"/><text x="138" y="123" text-anchor="middle" class="svg-sub">time</text>
+          <rect x="164" y="104" width="44" height="30" rx="6" class="svg-ok" opacity=".8"/><text x="186" y="123" text-anchor="middle" fill="#fff" font-size="11">name</text>
+          <rect x="212" y="104" width="44" height="30" rx="6" class="svg-box"/><text x="234" y="123" text-anchor="middle" class="svg-sub">client</text>
+          <rect x="260" y="104" width="44" height="30" rx="6" class="svg-box"/><text x="282" y="123" text-anchor="middle" class="svg-sub">status</text>
+          <rect x="308" y="104" width="44" height="30" rx="6" class="svg-box"/><text x="330" y="123" text-anchor="middle" class="svg-sub">type</text>
+          <text x="360" y="123" class="svg-sub">… 19 columns</text>
+        </g>
+        <text x="10" y="156" class="svg-sub">2 · match names once per hour, then read only the columns the filter needs</text>
+        <text x="10" y="196" class="svg-sub">• 50M queries ≈ 690 MB; a crash loses at most the last 10 s of detail.</text>
+        <text x="10" y="216" class="svg-sub">• Kept 30 days and 2 GiB by default; four privacy levels, down to none.</text>
+        <text x="10" y="236" class="svg-sub">• Every block is checksummed; damaged files are skipped, never fatal.</text>
+      </svg>
+    </figure>
+  </div>
+</section>
+
+<section>
   <p class="eyebrow">Coming next</p>
   <h2>One cluster across a Pi and Kubernetes</h2>
   <figure class="figure">

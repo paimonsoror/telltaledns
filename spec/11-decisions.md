@@ -249,3 +249,37 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - Locally, 4 producers at 25k events/s each with the default ring and drain period: 0 drops (optimized build).
 
 **Consequences:** Full names in every event. About 2–8 MiB of rings depending on thread count, and bounded aggregate memory (windows ~1 MiB, top-K ~1 MiB, histograms ≤ ~7 MiB). If a host's aggregator can't keep up (a slow Pi under a flood), events drop and are counted, and DNS is unaffected.
+
+## ADR-027 — Query-log segment format and search (Proposed)
+**Context:** `spec/06` §4 defines the query log: hourly columnar segments, blocks of up to 8192 rows, per-column encodings with zstd, a block index with a 1 KiB bloom over name and client IDs, a segment dictionary, dictionary-first search, and a small search pool with "1 thread on Pi by default". T3.2's AC: a search over a 50M-row synthetic dataset in ≤ 2 s on a Pi 4, with the format fuzzed. Measuring against that AC changed several details.
+
+**Decision:**
+- **Files:** `qlog/YYYY/MM/DD/HH-<node>-<part>.seg`. A new part starts after a restart, after a dropped block (a later block must never reference dictionary entries only the dropped block introduced), or when the segment dictionary reaches 65,536 names or clients. The cap bounds the writer's memory under floods of unique names.
+- **Self-describing blocks:** each block carries the dictionary entries it introduces, so a segment still being written, or cut short by a crash, is readable by walking block headers. The footer (block index, name filter, trailer) is only a faster path, written when a part is finished.
+- **Encoding:** every column is a varint (or byte) stream compressed with zstd level 3; the spec's per-column delta/RLE/frame-of-reference encodings are left to zstd. Measured at 13.9–14.4 B/row (spec: 10–20). Rows are sorted by time within a block.
+- **Per-section length and checksum table in the block header**, so a search reads and verifies only the sections it needs: one positional read for one column, one read for several. Checksums are xxh3-64, which only detects corruption (nothing here is content-addressed). BLAKE3 over every section was a measurable share of a 30-day search on a Pi.
+- **Blooms keyed by content hashes, not dictionary IDs**, so blocks are ruled out before any dictionary is read. The spec's 1 KiB block bloom stays for clients and unfinished segments, but it can't rule out names: blocks hold thousands of distinct names, about 60% false positives. So each finished segment also gets a **name filter** in its footer (~10 bits and 7 probes per name, ~0.8% false positives). An exact-name search over 30 days skips about 99% of segments after one small read.
+- **Dictionary handling:** dictionaries are decompressed in bulk into one buffer and indexed in place (no allocation per name), read only when a name or client predicate needs them. Output rows resolve their few names sparsely, from just the dictionary blocks holding those IDs. Predicates run column at a time into a selection vector; the time column is skipped when a block lies inside the range.
+- **Search threads:** up to 4 (default `min(cores, 4)`), each at the lowest CPU priority via a thread-start hook (`SCHED_IDLE` in the server and CLI), so a search only uses CPU that DNS doesn't. This changes `06` §4's "1 thread on Pi by default": on one Pi core, substring and latency searches over 50M rows take ~5 s. A persistent pool claims segments newest first; results merge in order; the pool stops as soon as the page is full.
+- **Write path:** the builder runs on the aggregator thread (interning, privacy, rows; no I/O). A writer thread encodes, compresses, appends, writes footers, and runs retention every 10 minutes, fed by a bounded queue of 8 blocks. A full queue drops the block and counts it (`telltale_qlog_rows_dropped_total`). DNS never waits on the disk.
+- **Privacy levels** apply at write time: 1 stores names as a one-label hash, so identical names still group together; 2 also zeroes clients; 3 writes nothing. Per-group levels (`06` §4) wait for group-level config.
+- **Not yet:** `node` is 0 until cluster membership (T5.x); rows from several nodes in one hour aren't merged by time. SQLite rollup persistence (ADR-026) moves to T3.3 with the Prometheus/rollup work, which uses it, so `rusqlite` arrives with its first consumer.
+
+**Measured:**
+- Synthetic 50M rows over 720 hours: 40 Zipf clients, 20k Zipf domains plus 15% one-off tracking names (pessimistic: real homes have far fewer), 15.1M dictionary entries, 686 MiB.
+- **Pi 4** (Technitium in production on the same Pi, search at nice 10, 4 threads, page cache warm), second round:
+
+| Query | Time |
+|---|---|
+| exact rare name | 0.21 s |
+| rare substring | 1.78 s |
+| client + blocked, 1000 rows | 0.43 s |
+| type filter with no matches (full column scan) | 0.75 s |
+| latency ≥ 1 s (1000 rows across 590 segments) | 1.92 s |
+| newest rows, last 2 hours | 0.03 s |
+
+  **AC met with 4 idle-priority threads, with thin margins on the two heaviest queries.** On 1 thread the same two take ~5 s.
+- x86 (laptop, 4 threads): every query ≤ 0.9 s.
+- Fuzzing: `qlog_segment` (raw, checksum-repaired, and structure-aware modes), ~670k runs across three sessions, clean.
+
+**Consequences:** Interactive search stays within 2 s on a Pi for a month of a busy home's queries, without stealing CPU from DNS. Heavier work (a multi-month substring scan, or a much higher share of unique names) degrades linearly. If that matters, the next step is a cross-segment name index (one dictionary per day or week), not more threads.

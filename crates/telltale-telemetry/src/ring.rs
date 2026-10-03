@@ -168,21 +168,41 @@ impl Hub {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts the aggregator thread (`spec/06` §2): drains every ring each `period` and
-    /// folds the events into [`Hub::aggregates`]. Stops when the handle is dropped.
-    pub fn spawn_aggregator(self: &Arc<Self>, period: Duration) -> std::io::Result<Aggregator> {
+    /// Starts the aggregator thread (`spec/06` §2): drains every ring each `period`, folds
+    /// the events into [`Hub::aggregates`], and passes each to `sink` (the query log). Stops
+    /// when the handle is dropped; the sink is dropped on the thread after a final drain.
+    pub fn spawn_aggregator(
+        self: &Arc<Self>,
+        period: Duration,
+        mut sink: Option<Box<dyn Sink>>,
+    ) -> std::io::Result<Aggregator> {
         let stop = Arc::new(AtomicBool::new(false));
         let (hub, flag) = (Arc::clone(self), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("telltale-telemetry".into())
             .spawn(move || {
                 let mut drainer = hub.drainer();
-                while !flag.load(Ordering::Acquire) {
+                loop {
+                    let done = flag.load(Ordering::Acquire);
                     let t = Instant::now();
-                    hub.drain_once(&mut drainer);
+                    {
+                        let mut agg = hub.aggregates();
+                        drainer.drain(|r| {
+                            agg.record(&r);
+                            if let Some(s) = sink.as_mut() {
+                                s.record(&r);
+                            }
+                        });
+                    }
+                    if let Some(s) = sink.as_mut() {
+                        s.tick(Instant::now());
+                    }
+                    if done {
+                        break;
+                    }
                     std::thread::sleep(period.saturating_sub(t.elapsed()));
                 }
-                hub.drain_once(&mut drainer);
+                drop(sink);
             })?;
         Ok(Aggregator {
             stop,
@@ -204,6 +224,14 @@ impl Hub {
             scratch: Vec::new(),
         }
     }
+}
+
+/// Receives every drained record on the aggregator thread (the query log's write path).
+/// Must not block for long: it runs between ring drains.
+pub trait Sink: Send {
+    fn record(&mut self, r: &Record);
+    /// Called after every drain, for time-based work such as flushing aged blocks.
+    fn tick(&mut self, _now: Instant) {}
 }
 
 /// Stops and joins the aggregator thread when dropped.

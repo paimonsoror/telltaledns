@@ -18,6 +18,8 @@ hickory-proto = { version = "0.26", default-features = false, features = ["std"]
 telltale-config = { path = "../crates/telltale-config" }
 telltale-filter = { path = "../crates/telltale-filter" }
 regex-syntax = "0.8"
+telltale-store = { path = "../crates/telltale-store" }
+telltale-telemetry = { path = "../crates/telltale-telemetry" }
 
 [[bin]]
 name = "parse_query"
@@ -43,6 +45,13 @@ bench = false
 [[bin]]
 name = "parse_list"
 path = "fuzz_targets/parse_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qlog_segment"
+path = "fuzz_targets/qlog_segment.rs"
 test = false
 doc = false
 bench = false
