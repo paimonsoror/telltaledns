@@ -30,10 +30,18 @@ Requires `dnsperf` (DNS-OARC, `apt install dnsperf`) and Python 3.10+ (standard 
 | `cache-hot` | ready | 10k names, Zipf s=1.0, 62% A / 30% AAAA / 8% HTTPS |
 | `miss-heavy` | ready | unique names, each sent once at a fixed 2000 qps (upstream path latency) |
 | `blocked` | needs lists | names sampled from `bench/lists/*.txt` (plain or hosts format) |
-| `realistic-home` | T2.x | needs blocking and real-distribution mixes |
+| `realistic-home` | needs lists | home mix: Zipf cache-hot names, blocked names, and unique misses |
 
 `bench/lists/` holds the fixed blocklist snapshot (HaGeZi Pro + OISD big + StevenBlack). It's a
 downloaded artifact, not in git.
+
+## Swap under load (T2.7)
+`bench.py swap` checks that a filter recompile doesn't disturb queries. It starts the server with the lists in `bench/lists/*.txt` plus a small `swap.txt`, then runs the `realistic-home` corpus at a fixed rate (`--rate`, default 20k qps) in pairs of windows: a quiet one, and one where a recompile is triggered `--at` seconds in. The order alternates each round to cancel drift. `--trigger list` (default) rewrites `swap.txt` and sends `SIGUSR1`; `--trigger reload` adds an inline list and sends `SIGHUP`. It fails if the median p99 over rounds rises more than `--max-regression` (10%), or on any lost query, SERVFAIL, or server exit. The server log is saved as `swap-server.log` in `--out`. `--compile-threads` overrides `[filter] compile_threads`.
+
+```sh
+python3 bench/bench.py swap --rounds 10 --rate 20000
+```
+Run it on a machine with spare cores (the homelab, not the Pi). Quiet-window p99 varies a lot between rounds on a shared host, so use at least 8 rounds.
 
 ## Results JSON (schema 1)
 Top level: `mode`, `started`, `git` (rev, dirty), `host` (cpu, cores, arch, kernel), `tools`,

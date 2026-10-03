@@ -74,12 +74,18 @@ fn cache_policy(c: &telltale_config::CacheConfig, workers: usize) -> CachePolicy
 }
 
 /// Builds everything a reload can replace: upstreams/routes and policy (incl. local records).
-fn build_dynamic(cfg: &Config) -> Result<(Arc<Router>, Policy), Vec<String>> {
-    let router = Router::from_config(cfg).map_err(|errs| {
-        errs.into_iter()
-            .map(|e| format!("upstreams: {e}"))
-            .collect::<Vec<_>>()
-    })?;
+fn build_dynamic(
+    cfg: &Config,
+    reuse: Option<Arc<Router>>,
+) -> Result<(Arc<Router>, Policy), Vec<String>> {
+    let router = match reuse {
+        Some(r) => r,
+        None => Arc::new(Router::from_config(cfg).map_err(|errs| {
+            errs.into_iter()
+                .map(|e| format!("upstreams: {e}"))
+                .collect::<Vec<_>>()
+        })?),
+    };
     let (local, report) = LocalData::from_config(cfg);
     for w in &report.warnings {
         warn!("local records: {w}");
@@ -97,7 +103,7 @@ fn build_dynamic(cfg: &Config) -> Result<(Arc<Router>, Policy), Vec<String>> {
     if !local.is_empty() {
         info!(records = local.len(), "local records loaded");
     }
-    Ok((Arc::new(router), Policy::from_config(cfg, local)))
+    Ok((router, Policy::from_config(cfg, local)))
 }
 
 /// REQ: FLT-006 — keeps the IP → MAC map fresh while any client is identified by MAC.
@@ -241,7 +247,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
     telltale_upstream::set_node_tag(rand::random());
     let workers = workers(&cfg);
-    let (router, policy) = build_dynamic(&cfg).map_err(|errs| {
+    let (router, policy) = build_dynamic(&cfg, None).map_err(|errs| {
         for e in &errs {
             error!("{e}");
         }
@@ -309,12 +315,21 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
 
     let mut term = signal(SignalKind::terminate())?;
     let mut hup = signal(SignalKind::hangup())?;
+    let mut usr1 = signal(SignalKind::user_defined1())?;
     let mut current = cfg;
     loop {
         tokio::select! {
             _ = term.recv() => { info!(signal = "SIGTERM", "shutting down"); break; }
             _ = tokio::signal::ctrl_c() => { info!(signal = "SIGINT", "shutting down"); break; }
             _ = hup.recv() => reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists),
+            _ = usr1.recv() => {
+                // REQ: FLT-004 — refresh every list now (like `pihole -g`); the compiler
+                // runs if anything changed.
+                if let Some(l) = &lists {
+                    info!(signal = "SIGUSR1", "refreshing lists");
+                    l.shared.fetcher.request_refresh();
+                }
+            }
         }
     }
 
@@ -357,7 +372,14 @@ fn reload(
         error!("reload failed: configuration invalid; still serving the previous configuration");
         return;
     };
-    let (router, policy) = match build_dynamic(&new) {
+    // Unchanged upstream config keeps the running router: its health state, pooled
+    // connections, and bootstrap cache survive the reload (T2.7).
+    let same_upstreams = current.upstream == new.upstream
+        && current.upstream_group == new.upstream_group
+        && current.route == new.route
+        && current.listen == new.listen;
+    let reuse = same_upstreams.then(|| Arc::clone(&pipeline.current().router));
+    let (router, policy) = match build_dynamic(&new, reuse) {
         Ok(v) => v,
         Err(errs) => {
             for e in &errs {
@@ -370,8 +392,10 @@ fn reload(
     if let Err(e) = listeners.apply(&new.listen) {
         error!("reload: {e}; listeners unchanged where binding failed");
     }
-    health.abort();
-    *health = spawn_health_checks(&router);
+    if !same_upstreams {
+        health.abort();
+        *health = spawn_health_checks(&router);
+    }
     pipeline.reload(router, policy);
     let (u, t) = listeners.stats();
     sources.udp.store(Arc::new(u));

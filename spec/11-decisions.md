@@ -193,3 +193,17 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Pause:** global and per group, until a deadline, keyed by group name so it survives reloads. A client is paused when its highest-priority group is (consistent with block settings coming from that group). The fast path costs one atomic load when nothing is paused. The control surface is the API (T3.4).
 
 **Consequences:** Block behavior matches the owner's current resolvers by default and is tunable per group. CNAME cloaking (trackers behind first-party CNAMEs) is caught, for cached answers too, at the cost of a records walk on answers that have CNAMEs.
+
+## ADR-023 — Background work under load: priorities, thread counts, and deferred frees (Proposed)
+**Context:** T2.7 requires a recompile during the `realistic-home` run to raise p99 by at most 10%, with zero errors. ADR-018 ran compiles at nice 10 on half the cores (1–4) and left this measurement to T2.7. On the homelab (Ryzen 5 5500U, 6 cores / 12 threads, 2.7M names, 20k qps, `bench.py swap`), the first measurement showed large p99 spikes, and a long run crashed the server.
+
+**Decision:**
+- **Priority:** background threads (compile, index build, snapshot load, retire) use `SCHED_IDLE` on Linux instead of nice 10, through `telltale_net::background_thread()`. Nice 10 still received a share of CPU while workers were runnable.
+- **Thread count:** `[filter] compile_threads = 0` (auto) now means half the cores (1–4) only while nothing is filtering yet. Once a snapshot has been published, a recompile (list refresh, reload) uses **one** thread. An explicit number applies to every compile. Even at idle priority, parallel compile threads compete with query workers for SMT siblings, memory bandwidth, and cache. On the homelab, 4 threads compiled in 2.1 s and raised p99 by 143%. One thread took 5.9 s and raised it by 7.5%, and the confirmation run with defaults measured −17.7% (within run-to-run noise). A refresh's result isn't waited for, so a slower compile costs nothing visible. ADR-018's first-compile timing, and with it T2.3's Pi gate, is unchanged.
+- **Deferred frees:** swapped-out filter and routing state is dropped on a short-lived background thread after 2 s, so freeing tens of MB never lands on a worker mid-query.
+- **No blocking work on runtime workers:** hashing, checking, and compressing a downloaded list runs on `spawn_blocking`. A reload with unchanged upstream config reuses the running router (health state, pooled connections, bootstrap cache).
+- **`SIGUSR1`** refreshes every list now (FLT-004), and the bench uses it to trigger a list-driven recompile.
+
+**Found while measuring:** prefetch (DNS-008) called `tokio::spawn` from the cache-hit path on UDP worker threads, which have no runtime context. The resulting panic killed the server once a hot entry reached the prefetch threshold. Prefetch now spawns on a runtime handle captured when the pipeline is built (regression test `dns_008_prefetch_from_a_non_runtime_thread`).
+
+**Consequences:** A list refresh on a Pi 4 takes about 11.6 s for 2M names (1 thread) instead of 6.4 s, while the first compile keeps 2 threads. Users who prefer faster refreshes over latency can set `compile_threads`. The p99 measurement is noisy on a shared host: quiet-window p99 alone varied from 65 to 847 µs between rounds, so `bench.py swap` gates on the median over rounds with alternating order.

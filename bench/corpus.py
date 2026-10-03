@@ -26,6 +26,9 @@ CORPORA = {
     "cache-hot": {"seed": 0x7E11, "names": 10_000, "zipf_s": 1.0, "queries": 200_000},
     "miss-heavy": {"seed": 0x7E12, "queries": 500_000},
     "blocked": {"seed": 0x7E13, "queries": 200_000},
+    # ~65% repeated popular names (cache hits), ~20% blocklisted, ~15% unique misses (09 §2).
+    "realistic-home": {"seed": 0x7E14, "popular": 5_000, "trackers": 2_000, "queries": 300_000,
+                       "mix": (0.65, 0.20)},
 }
 
 TLDS = [("com", 60), ("net", 12), ("org", 8), ("io", 5), ("de", 5), ("co.uk", 4), ("app", 3), ("tv", 3)]
@@ -80,7 +83,7 @@ def miss_heavy(spec):
 DOMAIN_RE = re.compile(r"^(?:\|\|?|\*\.)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+)\^?$")
 
 
-def blocked(spec, lists):
+def blocked_names(lists):
     files = sorted(lists.glob("*.txt")) if lists else []
     names = []
     for f in files:
@@ -92,6 +95,11 @@ def blocked(spec, lists):
             m = DOMAIN_RE.match(token)
             if m and not m.group(1).replace(".", "").isdigit():
                 names.append(m.group(1))
+    return names
+
+
+def blocked(spec, lists):
+    names = blocked_names(lists)
     if not names:
         sys.exit(f"blocked corpus needs domain lists (*.txt) in {lists}")
     rng = random.Random(spec["seed"])
@@ -99,9 +107,43 @@ def blocked(spec, lists):
         yield f"{rng.choice(names)} A"
 
 
+def zipf_picker(rng, items, s=1.0):
+    cdf = list(itertools.accumulate(1.0 / (k ** s) for k in range(1, len(items) + 1)))
+    total = cdf[-1]
+    return lambda: items[bisect.bisect_left(cdf, rng.random() * total)]
+
+
+def realistic_home(spec, lists):
+    rng = random.Random(spec["seed"])
+    trackers_pool = blocked_names(lists)
+    if not trackers_pool:
+        sys.exit(f"realistic-home needs domain lists (*.txt) in {lists}")
+    popular = list(dict.fromkeys(domain(rng) for _ in range(spec["popular"] * 2)))[: spec["popular"]]
+    popular = [(n, qtype(rng)) for n in popular]
+    trackers = rng.sample(trackers_pool, min(spec["trackers"], len(trackers_pool)))
+    pick_popular = zipf_picker(rng, popular)
+    pick_tracker = zipf_picker(rng, trackers)
+    p_popular, p_blocked = spec["mix"]
+    for n in range(spec["queries"]):
+        r = rng.random()
+        if r < p_popular:
+            name, t = pick_popular()
+            yield f"{name} {t}"
+        elif r < p_popular + p_blocked:
+            yield f"{pick_tracker()} {rng.choice(['A', 'A', 'AAAA'])}"
+        else:
+            yield f"u{n:x}.{label(rng)}.{weighted(rng, TLDS)} A"
+
+
 def generate(name, out_dir, lists=None):
     spec = CORPORA[name]
-    gen = blocked(spec, lists) if name == "blocked" else {"cache-hot": cache_hot, "miss-heavy": miss_heavy}[name](spec)
+    gens = {
+        "cache-hot": lambda: cache_hot(spec),
+        "miss-heavy": lambda: miss_heavy(spec),
+        "blocked": lambda: blocked(spec, lists),
+        "realistic-home": lambda: realistic_home(spec, lists),
+    }
+    gen = gens[name]()
     path = out_dir / f"{name}.txt"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = ("\n".join(gen) + "\n").encode()

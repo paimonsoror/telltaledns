@@ -201,7 +201,11 @@ impl Lists {
 #[derive(Debug, Clone)]
 struct CompileSettings {
     snapshots: PathBuf,
+    /// Threads when nothing is filtering yet: blocking should start as soon as possible.
     threads: usize,
+    /// Threads while a snapshot is already serving (list refresh, reload): nobody waits for
+    /// the result, but every query competes with it for cores and memory bandwidth (T2.7).
+    live_threads: usize,
     memory: usize,
 }
 
@@ -215,6 +219,7 @@ impl CompileSettings {
         Self {
             snapshots: Path::new(cfg.node.data_dir.as_str()).join("snapshots"),
             threads: compile_threads(cfg.filter.compile_threads),
+            live_threads: live_compile_threads(cfg.filter.compile_threads),
             memory: usize::try_from(cfg.filter.compile_memory.bytes()).unwrap_or(usize::MAX),
         }
     }
@@ -227,6 +232,16 @@ fn compile_threads(configured: u8) -> usize {
         return usize::from(configured);
     }
     (telltale_net::default_workers() / 2).clamp(1, 4)
+}
+
+/// `0` = auto: one thread for a recompile under a serving snapshot. Measured on the homelab
+/// (12 threads, 20k qps `realistic-home`, 2.7M names): 4 threads compile in 2.1 s and raise
+/// p99 by 143%; one thread takes 5.9 s and raises it by 7.5% (ADR-023).
+fn live_compile_threads(configured: u8) -> usize {
+    if configured > 0 {
+        return usize::from(configured);
+    }
+    1
 }
 
 /// Snapshot versions on disk with a manifest, ascending.
@@ -384,7 +399,7 @@ impl Publisher {
             "filter active (building lookup index)"
         );
         // The index build is background work like compiling: never at the cost of queries.
-        let _ = telltale_net::lower_thread_priority(10);
+        telltale_net::background_thread();
         let t = std::time::Instant::now();
         if let Ok(m) = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed) {
             #[allow(clippy::cast_precision_loss)] // MiB for a log line
@@ -429,7 +444,11 @@ async fn compile_loop(
     loop {
         let current = Arc::clone(&specs.borrow_and_update());
         changed.borrow_and_update();
-        let (store2, settings2) = (store.clone(), settings.clone());
+        let (store2, mut settings2) = (store.clone(), settings.clone());
+        // REQ: FLT-004 — a snapshot is (being) served: compile gently, off the query cores.
+        if publisher.generation.load(Ordering::SeqCst) > 0 {
+            settings2.threads = settings.live_threads;
+        }
         // A dedicated thread, not tokio's blocking pool: compiling lowers its thread's
         // priority, and pool threads are reused for other work.
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -651,4 +670,17 @@ pub(crate) fn check(
         clean &= stats.invalid == 0;
     }
     Ok(clean)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flt_004_recompile_under_a_serving_snapshot_uses_one_thread_by_default() {
+        assert_eq!(live_compile_threads(0), 1);
+        assert!((1..=4).contains(&compile_threads(0)));
+        // An explicit setting applies to every compile.
+        assert_eq!((compile_threads(3), live_compile_threads(3)), (3, 3));
+    }
 }

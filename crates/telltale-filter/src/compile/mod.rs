@@ -395,8 +395,8 @@ fn fst_shards(threads: usize) -> usize {
 
 /// Hard rule (`spec/05` §3.4): compiling never competes with queries for CPU.
 fn lower_priority() {
-    // Best effort; failing to renice (e.g. a restricted container) isn't an error.
-    let _ = telltale_net::lower_thread_priority(10);
+    // Best effort: background scheduling, else a lower priority (ADR-023).
+    telltale_net::background_thread();
 }
 
 /// Compiles `inputs` into a new snapshot directory `out` (which must not exist).

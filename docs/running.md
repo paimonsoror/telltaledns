@@ -153,7 +153,7 @@ fetch_concurrency = 4
 fetch_timeout_secs = 120                # per attempt, including the download
 fetch_retries = 3                       # network errors, HTTP 5xx, and 429 are retried with backoff
 max_list_bytes = "64MiB"                # per-list `max_bytes` overrides
-compile_threads = 0                     # 0 = auto (half the cores, 1-4); low CPU priority
+compile_threads = 0                     # 0 = auto (first compile: half the cores, 1-4; recompiles: 1)
 compile_memory = "128MiB"               # sort budget before spilling to disk
 ```
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
@@ -162,6 +162,7 @@ compile_memory = "128MiB"               # sort budget before spilling to disk
 - List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
 - Adding, removing, or editing lists applies on reload (`SIGHUP`). `[filter]` changes need a restart.
+- To refresh every list now instead of waiting for `refresh_secs` (like `pihole -g`), send `SIGUSR1` (`kill -USR1 <pid>`, or `docker kill -s USR1 telltale`). Unchanged lists cost one conditional request each, and the filter is recompiled only if something changed.
 
 Fetch now, outside the server (same config and data directory):
 ```sh
@@ -206,9 +207,10 @@ It exits non-zero if any list has invalid lines.
 ### Compiling
 Whenever a list's content changes, a list is added or removed, or a list's `kind`/`match` changes, TelltaleDNS compiles every enabled list into a new **filter snapshot** in `<data_dir>/snapshots/<version>/`. The three newest snapshots are kept. A restart with unchanged lists reuses the newest snapshot instead of compiling again, and a failed compile keeps the previous one.
 
-- Compiling runs in the background at low CPU priority (nice 10), on `[filter] compile_threads` threads. The default, `0`, means half the cores, between 1 and 4, so 2 on a Pi 4. It never pauses or locks query handling.
+- Compiling runs in the background at the lowest CPU priority (`SCHED_IDLE` on Linux), and never pauses or locks query handling. The new snapshot replaces the old one atomically: queries in flight finish with the old one, and the old one is freed on a background thread.
+- Thread count, `[filter] compile_threads`: the default, `0`, uses half the cores (between 1 and 4, so 2 on a Pi 4) when nothing is filtering yet, so blocking starts quickly on a first start. Once a filter is serving, a recompile (list refresh, reload) uses **one** thread: it takes longer, but nobody waits for it, and more threads compete with queries for cores and memory bandwidth even at the lowest priority. Set a number to use it for every compile.
 - Memory stays bounded. List entries are sorted within `[filter] compile_memory` (default `"128MiB"`), and anything beyond that spills to temporary files in the snapshot directory. Each list's text is read only while it's being parsed.
-- Size and speed: about 9 bytes per blocked name. On a Raspberry Pi 4, 2 million names compile in about 6.4 s with the default 2 threads (11.6 s on 1, 4.7 s on 3). A laptop does 2.7M names in about 2.7 s.
+- Size and speed: about 9 bytes per blocked name. On a Raspberry Pi 4, 2 million names compile in about 6.4 s on 2 threads (the default first compile), 11.6 s on 1 (the default recompile), and 4.7 s on 3. A laptop does 2.7M names in about 2.7 s.
 
 ```sh
 telltale lists compile -c telltale.toml     # compile now and show per-list numbers

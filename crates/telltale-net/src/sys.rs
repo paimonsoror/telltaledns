@@ -48,6 +48,20 @@ pub(crate) fn lower_thread_priority(nice: i32) -> io::Result<()> {
     }
 }
 
+/// Moves the calling thread to `SCHED_IDLE`: it runs only when a CPU would otherwise be
+/// idle and is preempted as soon as a normal thread (a DNS worker) wakes.
+pub(crate) fn idle_thread() -> io::Result<()> {
+    // SAFETY: `sched_param` is plain old data; zero is the only valid priority for SCHED_IDLE.
+    let param: libc::sched_param = unsafe { mem::zeroed() };
+    // SAFETY: pid 0 = the calling thread; `param` is valid for the duration of the call.
+    let rc = unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &raw const param) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 /// Dumps the kernel neighbor table over rtnetlink (FLT-006). Parsing is safe code in
 /// `neigh`; this function only owns the socket.
 pub(crate) fn neighbor_dump() -> io::Result<Vec<crate::neigh::Neighbor>> {

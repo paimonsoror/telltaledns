@@ -116,6 +116,21 @@ pub(crate) struct Who {
     pub(crate) mac: Option<[u8; 6]>,
 }
 
+/// Drops a swapped-out value on a background thread after a grace period (T2.7). Readers
+/// hold short-lived guards, so after the pause this is the last reference, and freeing a
+/// large snapshot (tens of MB of FST and index) never lands on a DNS worker mid-query.
+fn retire<T: Send + 'static>(old: T) {
+    let spawned = std::thread::Builder::new()
+        .name("telltale-retire".into())
+        .spawn(move || {
+            telltale_net::background_thread();
+            std::thread::sleep(Duration::from_secs(2));
+            drop(old);
+        });
+    // If no thread can be started, the value is dropped here (correct, just not deferred).
+    drop(spawned);
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -224,6 +239,8 @@ pub(crate) struct Pipeline {
     loops: std::sync::atomic::AtomicU64,
     /// Per-process qname hash seed (keeps remote clients from precomputing collisions).
     seed: u64,
+    /// The runtime background work (prefetch) is spawned on; `None` when built outside one.
+    rt: Option<tokio::runtime::Handle>,
 }
 
 /// Largest response we build for a deferred answer (TCP may carry up to 64 KiB).
@@ -249,13 +266,14 @@ impl Pipeline {
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
+            rt: tokio::runtime::Handle::try_current().ok(),
         })
     }
 
     /// Swaps in new routing/policy (OPS-009). In-flight queries finish with the state they
     /// started with; new queries see the new state immediately.
     pub(crate) fn reload(&self, router: Arc<Router>, policy: Policy) {
-        self.state.store(Arc::new(Dynamic { router, policy }));
+        retire(self.state.swap(Arc::new(Dynamic { router, policy })));
         // Group/client changes re-derive the per-client list masks for the current snapshot.
         self.set_filter(None);
     }
@@ -275,8 +293,10 @@ impl Pipeline {
             },
         };
         let clients = Arc::clone(&self.state.load().policy.clients);
-        self.filter
-            .store(Some(Arc::new(FilterState::new(matcher, clients))));
+        retire(
+            self.filter
+                .swap(Some(Arc::new(FilterState::new(matcher, clients)))),
+        );
     }
 
     /// The current routing/policy state.
@@ -887,9 +907,14 @@ impl Pipeline {
         let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
             return;
         };
+        // The cache-hit path runs on dedicated UDP worker threads with no ambient runtime:
+        // spawn on the handle captured at construction, never `tokio::spawn` (it panics).
+        let Some(rt) = &self.rt else {
+            return;
+        };
         let this = Arc::clone(self);
         let req = req.to_vec();
-        tokio::spawn(async move {
+        rt.spawn(async move {
             let _ = this.resolve_shared(req, key, view, permit).await;
         });
     }
@@ -1296,6 +1321,43 @@ groups = ["kids"]
             contains(&fine, &[203, 0, 113, 9]),
             "unlisted chain is served from cache"
         );
+    }
+
+    /// UDP workers are plain threads with no tokio context; a prefetch-eligible cache hit
+    /// there used to `tokio::spawn` and panic, killing the server.
+    #[test]
+    fn dns_008_prefetch_from_a_non_runtime_thread() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let p = rt.block_on(async { pipeline_with(UPSTREAM, "||unrelated.example^\n") });
+        let req = query("hot.example.com", rtype::A, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        b.answer_a(100, Ipv4Addr::new(203, 0, 113, 7)).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        // 95% of the TTL gone: past the prefetch threshold.
+        let stored = Instant::now().checked_sub(Duration::from_secs(95)).unwrap();
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], stored)
+            .unwrap();
+        // This test thread is outside the runtime, like a UDP worker.
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        for _ in 0..5 {
+            let a = ask_from(&p, "10.0.0.1", "hot.example.com", rtype::A);
+            assert!(contains(&a, &[203, 0, 113, 7]), "served from cache");
+        }
+        drop(p);
+        rt.shutdown_timeout(Duration::from_secs(1));
     }
 
     #[test]

@@ -249,14 +249,28 @@ impl Fetcher {
                 data,
                 etag,
                 last_modified,
-            }) => self
-                .accept_body(&spec.name, &mut meta, same_source, &data, now)
-                .map_or_else(Outcome::Failed, |outcome| {
-                    meta.source.clone_from(&key);
-                    meta.etag = etag;
-                    meta.last_modified = last_modified;
-                    outcome
-                }),
+            }) => {
+                // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
+                // never on a runtime worker, which also carries upstream answers (T2.7).
+                let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
+                let processed = tokio::task::spawn_blocking(move || {
+                    let r = accept_body(&store, &name, &mut m, same_source, &data, now);
+                    (r, m)
+                })
+                .await;
+                match processed {
+                    Ok((r, m)) => {
+                        meta = m;
+                        r.map_or_else(Outcome::Failed, |outcome| {
+                            meta.source.clone_from(&key);
+                            meta.etag = etag;
+                            meta.last_modified = last_modified;
+                            outcome
+                        })
+                    }
+                    Err(e) => Outcome::Failed(format!("processing the list failed: {e}")),
+                }
+            }
             Err(e) => Outcome::Failed(e),
         };
 
@@ -292,31 +306,6 @@ impl Fetcher {
         }
         self.put_meta(&spec.name, meta);
         outcome
-    }
-
-    /// Checks a downloaded body and stores it if it differs from the stored copy. Updates the
-    /// content fields of `meta`; the caller sets source and validators on success.
-    fn accept_body(
-        &self,
-        name: &str,
-        meta: &mut ListMeta,
-        same_source: bool,
-        data: &[u8],
-        now: u64,
-    ) -> Result<Outcome, String> {
-        sanity_check(data)?;
-        let hash = content_hash(data);
-        if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
-            return Ok(Outcome::Unchanged);
-        }
-        self.store
-            .save_source(name, data)
-            .map_err(|e| format!("cannot store source: {e}"))?;
-        meta.content_hash = Some(hash);
-        meta.bytes = data.len() as u64;
-        meta.lines = count_lines(data);
-        meta.last_changed = Some(now);
-        Ok(Outcome::Updated)
     }
 
     /// One URL download with retries and backoff.
@@ -428,6 +417,31 @@ impl Fetcher {
         }
         !removed.is_empty()
     }
+}
+
+/// Checks a downloaded body and stores it if it differs from the stored copy. Updates the
+/// content fields of `meta`; the caller sets source and validators on success. Blocking.
+fn accept_body(
+    store: &Store,
+    name: &str,
+    meta: &mut ListMeta,
+    same_source: bool,
+    data: &[u8],
+    now: u64,
+) -> Result<Outcome, String> {
+    sanity_check(data)?;
+    let hash = content_hash(data);
+    if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
+        return Ok(Outcome::Unchanged);
+    }
+    store
+        .save_source(name, data)
+        .map_err(|e| format!("cannot store source: {e}"))?;
+    meta.content_hash = Some(hash);
+    meta.bytes = data.len() as u64;
+    meta.lines = count_lines(data);
+    meta.last_changed = Some(now);
+    Ok(Outcome::Updated)
 }
 
 /// When a list should next be refreshed (unix seconds).

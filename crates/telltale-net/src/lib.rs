@@ -32,6 +32,19 @@ pub fn lower_thread_priority(nice: i32) -> std::io::Result<()> {
     }
 }
 
+/// Makes the calling thread background-only, for work that must never delay a query (list
+/// compilation, index builds; `spec/05` §3.4): `SCHED_IDLE` on Linux, so it only uses CPU
+/// nobody else wants and yields the moment a worker wakes. Falls back to nice 19 where
+/// `SCHED_IDLE` isn't allowed. Best effort: a no-op off Linux.
+pub fn background_thread() {
+    #[cfg(target_os = "linux")]
+    {
+        if sys::idle_thread().is_err() {
+            let _ = sys::lower_thread_priority(19);
+        }
+    }
+}
+
 /// Default worker count: available parallelism (which honors cgroup CPU quotas on Linux),
 /// per `spec/08` §3.3.
 pub fn default_workers() -> usize {
