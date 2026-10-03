@@ -63,7 +63,7 @@ service:
 # Pi: compose.yaml
 services:
   telltale:
-    image: ghcr.io/OWNER/telltale:1
+    image: ghcr.io/paimonsoror/telltale:1
     network_mode: host                 # real client IPs + MACs, no NAT
     restart: unless-stopped
     cap_add: [NET_BIND_SERVICE]
