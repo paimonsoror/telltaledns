@@ -16,6 +16,11 @@ use telltale_config::Loader;
 use telltale_policy::LocalData;
 use tracing::info;
 
+// REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
+// allocator, which roughly halved cache-hit throughput in the bench harness.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Default config file location (`spec/08` §3.4).
 const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
 

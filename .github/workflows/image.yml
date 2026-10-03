@@ -1,0 +1,57 @@
+# REQ: OPS-001 / T0.4 — multi-arch FROM-scratch image, size gate, QEMU smoke, `edge` on main.
+name: image
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/telltale
+  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build all platforms (OCI layout)
+        run: |
+          docker buildx build --platform "$PLATFORMS" \
+            --build-arg VERSION=edge --build-arg REVISION="$GITHUB_SHA" \
+            --cache-from type=gha --cache-to type=gha,mode=max \
+            --output type=oci,dest=image.tar .
+
+      - name: Size gate (≤ 15 MiB compressed per arch)
+        run: python3 deploy/image/size.py --oci image.tar
+
+      # The build stage is cross-compiled, so these loads come from cache; only running the
+      # arm images uses QEMU (T0.4 AC: runs on arm64 under QEMU).
+      - name: Smoke test each platform
+        run: |
+          sudo apt-get update && sudo apt-get install -y dnsutils
+          for p in ${PLATFORMS//,/ }; do
+            tag="telltale:smoke-${p//\//-}"
+            docker buildx build --platform "$p" --cache-from type=gha --load -t "$tag" .
+            deploy/image/smoke.sh "$tag" "$p"
+          done
+
+      - name: Push edge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx build --platform "$PLATFORMS" \
+            --build-arg VERSION=edge --build-arg REVISION="$GITHUB_SHA" \
+            --cache-from type=gha \
+            -t "$IMAGE:edge" -t "$IMAGE:sha-${GITHUB_SHA::7}" --push .
+          python3 deploy/image/size.py --remote "$IMAGE:edge"

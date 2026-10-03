@@ -65,10 +65,13 @@ cd telltaledns
 cargo build --release
 ./target/release/telltale --version</code></pre>
         </div>
-        <div class="panel"><h3>Docker (coming soon)</h3>
-<pre><code># planned (roadmap M4)
-docker run -d --name telltale --network host \
-  -v ./data:/var/lib/telltale ghcr.io/paimonsoror/telltale:1</code></pre>
+        <div class="panel"><h3>Docker (preview: <code>edge</code>, built from main)</h3>
+<pre><code>docker run -d --name telltale --read-only --cap-drop ALL \
+  -p 53:53/udp -p 53:53/tcp -p 9153:9153 \
+  -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
+  -v telltale-data:/var/lib/telltale \
+  ghcr.io/paimonsoror/telltale:edge</code></pre>
+        <p class="muted">amd64, arm64 and arm/v7; about 3 MiB; runs as a non-root user.</p>
         </div>
         <div class="panel"><h3>Raspberry Pi (coming soon)</h3>
 <pre><code># planned (roadmap M4): same image, Docker Compose

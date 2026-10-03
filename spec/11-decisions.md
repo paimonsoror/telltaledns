@@ -104,3 +104,16 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
   - `.local` is **not** intercepted, because many AD domains use it; mDNS names never reach unicast DNS anyway.
 
 **Consequences:** Safe by default on a home network. Users exposing TelltaleDNS beyond RFC 1918 must widen `allowed_networks` deliberately. Each special-name rule can be turned off under `[special]`.
+
+## ADR-015 — Image build, allocator tuning, and port 53 for non-root host networking (Proposed)
+**Context:** OPS-001 and `spec/08` §2 require a static musl image that runs as 65532. T0.4 turned up three things the spec leaves open:
+1. Compiling arm64/armv7 under QEMU with fat LTO takes hours on CI runners.
+2. musl's allocator roughly halved cache-hit throughput in the bench harness (≈100–125k vs ≈190–210k qps for glibc). With mimalloc, transparent huge pages (THP; `madvise` mode on WSL and many distros) raised idle RSS from ≈6 MiB to ≈22 MiB, over the 20 MiB gate.
+3. Docker doesn't give added capabilities to a non-root user (no ambient capabilities). The `spec/08` §3 Pi compose example (`network_mode: host` + `user: 65532` + `cap_add: [NET_BIND_SERVICE]`) therefore gets `EACCES` binding :53. With bridge networking, Docker sets `net.ipv4.ip_unprivileged_port_start=0` inside the container, so :53 works there with every capability dropped. Kubernetes pods get the same with containerd ≥ 2.0, or with the safe sysctl `net.ipv4.ip_unprivileged_port_start` in the pod securityContext.
+
+**Decision:**
+- The build stage runs on `$BUILDPLATFORM` and cross-compiles with `cargo zigbuild` (pinned zig 0.15.2 and cargo-zigbuild 0.23.4, checksums verified). Only the smoke test runs under QEMU.
+- `mimalloc` is the global allocator (as `02` §3 already says), built with `no_thp`.
+- The image keeps `USER 65532:65532`, with no file capabilities: file caps break exec when the capability is dropped and are ignored under `no_new_privs` (`allowPrivilegeEscalation: false`). For host networking on a Pi, the docs recommend the host sysctl `net.ipv4.ip_unprivileged_port_start=53` (one line in `/etc/sysctl.d/`), which keeps the container non-root. The fallback is `user: "0:0"` with `cap_drop: [ALL]` + `cap_add: [NET_BIND_SERVICE]`. The Helm chart (T4.1) sets the pod sysctl.
+
+**Consequences:** CI image builds take minutes, not hours. musl matches glibc throughput, and idle RSS stays ≈6 MiB. The `spec/08` §3 compose example must change before the compose bundle ships (T4.3); the owner chooses between the sysctl and the root-with-one-capability fallback as the documented default.

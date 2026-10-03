@@ -1,0 +1,14 @@
+# Keep the build context to sources only (target/ alone is several GiB).
+target/
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+bench/results/
+bench/corpora/
+bench/lists/
+site/_site/
+ui/node_modules/
+ui/dist/
+.git/
+**/*Zone.Identifier
+**/__pycache__/

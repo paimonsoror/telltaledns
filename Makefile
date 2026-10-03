@@ -1,4 +1,4 @@
-.PHONY: check fmt clippy test deny build bench-smoke bench-full bench-proto udp-scaling fuzz
+.PHONY: check fmt clippy test deny build bench-smoke bench-full image image-all bench-proto udp-scaling fuzz
 
 check: fmt clippy test deny
 
@@ -24,6 +24,16 @@ bench-smoke:
 # Nightly / release set: every corpus with inputs present, 3 runs, 25-50-75% load points.
 bench-full:
 	./bench/run.sh full
+
+# REQ: OPS-001 — host-arch image, then the hardened smoke test (read-only, caps dropped, non-root).
+image:
+	docker buildx build --load -t telltale:dev .
+	deploy/image/smoke.sh telltale:dev
+
+# All three platforms into an OCI tarball, then the 15 MiB-per-arch size gate.
+image-all:
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --output type=oci,dest=target/telltale-oci.tar .
+	python3 deploy/image/size.py --oci target/telltale-oci.tar
 
 # Wire-layer micro-benchmarks (criterion).
 bench-proto:
