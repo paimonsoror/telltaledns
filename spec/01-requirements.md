@@ -75,6 +75,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | OBS-007 | P1 | dnstap output (Frame Streams over Unix socket or TCP). |
 | OBS-008 | P0 | Live query tail over WebSocket/SSE with server-side filters. |
 | OBS-009 | P1 | Analytics: first-seen domains per client, NXDOMAIN-storm detection, high-entropy/DGA-likelihood scoring, query-rate anomaly per client, list effectiveness (hits per list, dead lists, overlap). |
+| OBS-013 | P1 | Per-device behavior baselines and anomaly alerts, deterministic and explainable: query-rate spikes per client, abnormal volume to one domain from one client, drift from a device's learned domain set (e.g. an IoT device contacting many new domains), and periodic phone-home/beaconing. Alert-only by default; never blocks on its own (`06` §7.1, ADR-019). |
 | OBS-010 | P1 | Event sinks: JSON-lines file, syslog (RFC 5424), HTTP webhook (batched), and alert rules (threshold → webhook/ntfy/email). |
 | OBS-011 | P0 | Upstream health dashboard data: per-upstream p50/p95/p99 latency, error/timeout rates, breaker state, share of traffic. |
 | OBS-012 | P0 | Cluster-wide (federated) analytics: every dashboard and query-log search can scope to one node, a set of nodes, or the whole cluster (see `12`). |

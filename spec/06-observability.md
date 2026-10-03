@@ -104,14 +104,24 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 | First-seen domains | Per-client cuckoo filter of eTLD+1 seen in the last 30 days (bounded memory, ~1–2 B/entry) | "New domains this hour" feed per client; optional alert |
 | NXDOMAIN storm | Per-client sliding window; alert if NXDOMAIN rate > X/min and > Y% of queries | Malware/misconfig indicator |
 | DGA likelihood | Shannon entropy + consonant-run + bigram log-likelihood (bigram table shipped as data) on the left-most significant label; scored off the hot path for first-seen names only | Score 0–1 stored on the event; "suspicious domains" view |
-| Rate anomaly | EWMA + MAD of per-client qpm vs. same-hour-of-week baseline | Spike alerts |
-| Beaconing (P2) | Periodicity of per-(client, domain) inter-arrival times | Possible C2 / telemetry beacons |
+| Rate anomaly | EWMA + MAD of per-client qpm vs. same-hour-of-week baseline | Spike alerts (OBS-013) |
+| Per-domain volume anomaly | Per client, top-K eTLD+1 by query count (Space-Saving) with an EWMA + MAD baseline per tracked pair; also flags names re-queried far faster than their TTL allows | "TV → telemetry.vendor.example: 4,100 q/h, baseline 120 ± 40" (OBS-013) |
+| Behavior drift | Per-client learned domain set (the cuckoo filter above) + daily count of new eTLD+1 vs. that device's own baseline; share of queries to domains outside its set | "Smart plug contacted 37 new domains today (usual: 0–1)" (OBS-013) |
+| Beaconing | Per-(client, eTLD+1) inter-arrival histogram over log-spaced bins; flags a dominant period with low jitter that persists across ≥ N windows | Phone-home / C2 candidates with period and regularity (OBS-013) |
 | List effectiveness | Hits per list, unique contribution, overlap matrix | Prune recommendations |
 | Upstream health | HDR per upstream; breaker history | SLO view, "fastest upstream for you" |
 | Latency explainer | Stage breakdown percentiles | "Where does time go?" chart (cache vs upstream vs DNSSEC) |
 | Cache efficiency | Hit ratio, stale-served, prefetch success, eviction reasons | Sizing recommendations |
 
+### 7.1 Anomaly engine rules (OBS-013, ADR-019)
+- **Deterministic:** fixed-math streaming statistics only (counts, EWMA, median absolute deviation, histogram periodicity); no trained models. Time comes from event timestamps, never the wall clock, so replaying the same events yields the same alerts. Golden tests replay recorded fixtures.
+- **Explainable:** every finding carries its evidence: metric, observed value, baseline (center ± spread), threshold, window, and sample query-log links. The UI and `find_anomalies` (MCP) show the numbers, not just a score.
+- **Learn first:** each device needs a minimum learning period (default 7 days) before it can alert; new devices only appear in the "new client" feed until then. Baselines adapt slowly (EWMA half-life of days), so a sustained change becomes the new normal unless it was alerted on and left unacknowledged.
+- **Bounded and off the hot path:** runs in the telemetry aggregator on QueryEvents, never in workers; per-client state is fixed-size (top-K, sketches, cuckoo filter); memory is capped globally, and the coldest clients' state is evicted first and counted.
+- **Alert-only:** findings go to the anomalies view, alert rules (§8), and MCP. Acting on one (e.g. moving a device to a "quarantine" group) is always an explicit, audited user or agent action through the plan/apply flow; the engine itself never blocks.
+- **Tunable, with per-device opt-out:** sensitivity per group (low / normal / high maps to MAD multipliers), allowlists for known-chatty domains (OS connectivity checks, NTP), mute per device or finding. Honors the client's privacy level: at levels that hide domains, findings show eTLD+1 only, or counts only.
+
 **Client naming:** sources merged in priority order: user-assigned name → DHCP lease (own DHCP or an imported dnsmasq/ISC/Kea lease file, or the UniFi/OPNsense API as a P2 integration) → reverse PTR via the conditional-forwarding upstream → mDNS/NetBIOS (P2) → IP. MAC vendor lookup via a shipped OUI table.
 
 ## 8. Alerts (OBS-010)
-Rule examples: upstream breaker open > 1 min; node missing from cluster > 2 min; snapshot lag > 3 versions; NXDOMAIN storm; new client seen; list fetch failing for > 48 h; qlog disk > 90% of budget. Destinations: webhook, ntfy, Gotify, SMTP, Slack-compatible webhook. Alerts are evaluated on the primary only, using federated data.
+Rule examples: upstream breaker open > 1 min; node missing from cluster > 2 min; snapshot lag > 3 versions; NXDOMAIN storm; new client seen; device anomaly (OBS-013: rate spike, domain volume, drift, beaconing); list fetch failing for > 48 h; qlog disk > 90% of budget. Destinations: webhook, ntfy, Gotify, SMTP, Slack-compatible webhook. Alerts are evaluated on the primary only, using federated data.

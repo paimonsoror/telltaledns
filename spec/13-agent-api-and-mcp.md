@@ -39,7 +39,7 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `latency_breakdown` | Percentiles by stage / upstream / client / qtype |
 | `upstream_health` | Per-upstream health, breaker history, latency percentiles |
 | `list_effectiveness` | Hits, unique contribution, overlap, dead lists |
-| `find_anomalies` | New domains, NXDOMAIN storms, DGA-suspicious names, rate anomalies, over a window |
+| `find_anomalies` | New domains, NXDOMAIN storms, DGA-suspicious names, rate anomalies, per-domain volume anomalies, behavior drift, beaconing (OBS-013), with evidence, over a window |
 | `cluster_status` | Members, roles, epochs, lag, versions, primary reachability |
 | `get_config` | Config section (secrets redacted) + current version |
 | `test_resolution` | Resolve a name through a given upstream/group *without* caching or logging, to diagnose |
