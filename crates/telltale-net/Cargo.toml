@@ -26,3 +26,5 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 
 [dependencies]
+libc = "0.2.190"
+socket2 = { version = "0.6.5", features = ["all"] }

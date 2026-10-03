@@ -3,12 +3,22 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+mod pipeline;
+
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use telltale_config::Loader;
+use telltale_config::{ListenProto, Loader};
+use telltale_net::{UdpConfig, UdpListener};
+use tracing::{error, info, warn};
+
+use crate::pipeline::Pipeline;
+
+/// Default config file location (`spec/08` §3.4).
+const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
 
 /// TelltaleDNS — see every question, answer on your terms.
 #[derive(Debug, Parser)]
@@ -20,6 +30,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the resolver.
+    Run {
+        /// Config files, later ones overriding earlier ones. Defaults to `$TELLTALE_CONFIG`,
+        /// then `/etc/telltale/telltale.toml` if it exists, else built-in defaults.
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
     /// Inspect and validate configuration.
     Config {
         #[command(subcommand)]
@@ -50,6 +67,7 @@ enum ConfigCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Run { config } => run(config),
         Command::Config { command } => run_config(command),
     };
     match result {
@@ -59,6 +77,96 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn init_logging() {
+    let level = std::env::var("TELLTALE_LOG")
+        .ok()
+        .and_then(|v| v.parse::<tracing::level_filters::LevelFilter>().ok())
+        .unwrap_or(tracing::level_filters::LevelFilter::INFO);
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_target(false)
+        .with_ansi(io::IsTerminal::is_terminal(&io::stderr()))
+        .with_writer(io::stderr)
+        .init();
+}
+
+fn config_files(cli: Vec<PathBuf>) -> Vec<PathBuf> {
+    if !cli.is_empty() {
+        return cli;
+    }
+    if let Ok(p) = std::env::var("TELLTALE_CONFIG") {
+        return vec![PathBuf::from(p)];
+    }
+    if Path::new(DEFAULT_CONFIG).exists() {
+        return vec![PathBuf::from(DEFAULT_CONFIG)];
+    }
+    Vec::new()
+}
+
+fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
+    init_logging();
+    let files = config_files(config);
+    let loaded = match files
+        .iter()
+        .fold(Loader::new(), Loader::file)
+        .process_env()
+        .load()
+    {
+        Ok(l) => l,
+        Err(errors) => {
+            for e in &errors {
+                error!("config: {e}");
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    for w in &loaded.warnings {
+        warn!("config: {w}");
+    }
+    let cfg = loaded.config;
+    let workers = match cfg.node.workers {
+        0 => telltale_net::default_workers(),
+        n => usize::from(n),
+    };
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        role = ?cfg.node.role,
+        workers,
+        config = ?files,
+        "starting TelltaleDNS"
+    );
+
+    let pipeline = Arc::new(Pipeline::default());
+    let mut listeners = Vec::new();
+    for l in &cfg.listen {
+        match l.proto {
+            ListenProto::Udp => {
+                let listener = UdpListener::spawn(&UdpConfig::new(l.addr, workers), &pipeline)
+                    .map_err(|e| io::Error::new(e.kind(), format!("udp {}: {e}", l.addr)))?;
+                info!(addr = %listener.local_addr(), workers, "listening (udp)");
+                listeners.push(listener);
+            }
+            other => {
+                warn!(addr = %l.addr, proto = ?other, "listener type not implemented yet; skipping");
+            }
+        }
+    }
+
+    // REQ: OPS-007 (partial) — stop on SIGTERM/SIGINT. Full drain + reload arrive with T1.10.
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+    ])?;
+    if let Some(sig) = signals.forever().next() {
+        info!(signal = sig, "shutting down");
+    }
+    for l in listeners {
+        l.shutdown();
+    }
+    info!("stopped");
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {

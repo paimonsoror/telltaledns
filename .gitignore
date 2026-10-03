@@ -6,4 +6,6 @@
 /ui/dist/
 /fuzz/artifacts/
 /fuzz/corpus/
+/fuzz/target/
+/fuzz/coverage/
 *.profraw
