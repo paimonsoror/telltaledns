@@ -116,6 +116,29 @@ impl<'b> ResponseBuilder<'b> {
         self.w.u16(rdlen)
     }
 
+    /// Adds an answer with pre-encoded `rdata`, owned by `owner` (or the question name when
+    /// `None`, written as a compression pointer). Used for local records (DNS-010).
+    pub fn answer_rdata(
+        &mut self,
+        owner: Option<&NameBuf>,
+        rtype: u16,
+        ttl: u32,
+        rdata: &[u8],
+    ) -> Result<&mut Self, BufferTooSmall> {
+        let rdlen = u16::try_from(rdata.len()).map_err(|_| BufferTooSmall)?;
+        match owner {
+            Some(n) => self.w.bytes(n.as_wire())?,
+            None => self.w.u16(PTR_QNAME)?,
+        }
+        self.w.u16(rtype)?;
+        self.w.u16(class::IN)?;
+        self.w.u32(ttl)?;
+        self.w.u16(rdlen)?;
+        self.w.bytes(rdata)?;
+        self.counts[0] += 1;
+        Ok(self)
+    }
+
     /// Adds an `A` answer owned by the question name.
     pub fn answer_a(&mut self, ttl: u32, ip: Ipv4Addr) -> Result<&mut Self, BufferTooSmall> {
         self.rr_header(rtype::A, ttl, 4)?;

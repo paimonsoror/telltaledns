@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 use telltale_cache::{Cache, CachePolicy};
 use telltale_config::{ListenProto, Loader};
 use telltale_net::{TcpConfig, TcpServer, UdpConfig, UdpListener};
+use telltale_policy::LocalData;
 use telltale_upstream::Router;
 use tracing::{error, info, warn};
 
@@ -226,7 +227,25 @@ async fn serve(cfg: &telltale_config::Config, workers: usize) -> io::Result<()> 
         )),
         ..Settings::default()
     };
-    let handler = Arc::new(Handler(Pipeline::new(settings, cache, router)));
+    let (local, report) = LocalData::from_config(cfg);
+    for w in &report.warnings {
+        warn!("local records: {w}");
+    }
+    if !report.errors.is_empty() {
+        for e in &report.errors {
+            error!("local records: {e}");
+        }
+        return Err(io::Error::other("invalid local records"));
+    }
+    if !local.is_empty() {
+        info!(records = local.len(), "local records loaded");
+    }
+    let handler = Arc::new(Handler(Pipeline::new(
+        settings,
+        cache,
+        router,
+        Arc::new(local),
+    )));
     let rt = tokio::runtime::Handle::current();
     let mut udp = Vec::new();
     let mut tcp = Vec::new();
@@ -289,6 +308,18 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
                 Ok(cfg) => {
                     for w in &cfg.warnings {
                         eprintln!("warning: {w}");
+                    }
+                    // Record values and hosts files are checked too (DNS-010).
+                    let (_, report) = LocalData::from_config(&cfg.config);
+                    for w in &report.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    if !report.errors.is_empty() {
+                        for e in &report.errors {
+                            eprintln!("error: {e}");
+                        }
+                        eprintln!("config invalid: {} error(s)", report.errors.len());
+                        return Ok(ExitCode::FAILURE);
                     }
                     if print {
                         let text = toml::to_string(&cfg.config).map_err(io::Error::other)?;

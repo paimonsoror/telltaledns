@@ -1505,6 +1505,7 @@ dependencies = [
  "telltale-cache",
  "telltale-config",
  "telltale-net",
+ "telltale-policy",
  "telltale-proto",
  "telltale-upstream",
  "tokio",
@@ -1560,6 +1561,10 @@ dependencies = [
 [[package]]
 name = "telltale-policy"
 version = "0.1.0"
+dependencies = [
+ "telltale-config",
+ "telltale-proto",
+]
 
 [[package]]
 name = "telltale-proto"

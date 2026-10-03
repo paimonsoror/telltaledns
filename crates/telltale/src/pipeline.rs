@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
+use telltale_policy::LocalData;
 use telltale_proto::{
     EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
@@ -49,6 +50,8 @@ pub(crate) struct Pipeline {
     settings: Settings,
     cache: Arc<Cache>,
     router: Arc<Router>,
+    /// Local records (DNS-010), answered before cache and upstreams.
+    local: Arc<LocalData>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Queries dropped because they carried our own loop tag.
@@ -61,12 +64,18 @@ pub(crate) struct Pipeline {
 const MAX_RESPONSE: usize = u16::MAX as usize;
 
 impl Pipeline {
-    pub(crate) fn new(settings: Settings, cache: Arc<Cache>, router: Arc<Router>) -> Arc<Self> {
+    pub(crate) fn new(
+        settings: Settings,
+        cache: Arc<Cache>,
+        router: Arc<Router>,
+        local: Arc<LocalData>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             inflight: Arc::new(Semaphore::new(settings.max_inflight.max(1))),
             settings,
             cache,
             router,
+            local,
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -124,6 +133,13 @@ impl Pipeline {
                     b.finish(edns).ok()
                 });
             return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
+        }
+        // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
+        if let Some(len) =
+            self.local
+                .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
+        {
+            return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
         let question = Question::from_query(&q);
         let Some(sel) = self.router.select(&question, &[]) else {
@@ -346,7 +362,12 @@ mod tests {
 
     fn pipeline() -> Arc<Pipeline> {
         let cache = Arc::new(Cache::new(CachePolicy::default()));
-        Pipeline::new(Settings::default(), cache, Arc::new(Router::default()))
+        Pipeline::new(
+            Settings::default(),
+            cache,
+            Arc::new(Router::default()),
+            Arc::new(LocalData::default()),
+        )
     }
 
     fn query(name: &str, qtype: u16, edns: bool) -> Vec<u8> {

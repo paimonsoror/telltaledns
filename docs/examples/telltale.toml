@@ -71,3 +71,12 @@ privacy_level = 0
 
 [telemetry.metrics]
 listen = "0.0.0.0:9153"
+
+# Local names, answered authoritatively.
+[[record]]
+name = "nas.home.arpa"
+type = "A"
+value = "192.168.1.10"
+
+[local]
+auto_ptr = true

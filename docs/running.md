@@ -80,6 +80,34 @@ flowchart LR
 - **Privacy:** queries to upstreams carry a fresh random ID and source port, and none of the client's EDNS options (no client subnet, cookies, or MAC addresses are forwarded).
 - **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever.
 
+## Local records
+Names on your network, answered by TelltaleDNS itself (authoritatively, before cache and upstreams):
+```toml
+[[record]]
+name = "nas.home.arpa"
+type = "A"                      # A, AAAA, CNAME, PTR, TXT, MX, SRV
+value = "192.168.1.10"
+
+[[record]]
+name = "*.dev.home.arpa"        # wildcard: every name below dev.home.arpa
+type = "A"
+value = "192.168.1.20"
+
+[[record]]
+name = "_sip._udp.home.arpa"
+type = "SRV"
+value = "0 5 5060 pbx.home.arpa" # priority weight port target (MX: "preference exchange")
+
+[local]
+hosts_files = ["/etc/telltale/hosts"]   # "IP name [alias...]" lines
+auto_ptr = true                          # reverse lookups for every A/AAAA (default)
+default_ttl = 300
+```
+- A name with no record of the requested type gets an empty authoritative answer (NODATA). Names that aren't local go to the upstreams as usual.
+- CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
+- Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
+- `telltale config check` validates record values and reads the hosts files.
+
 ## Routing (conditional forwarding)
 ```toml
 [[upstream]]

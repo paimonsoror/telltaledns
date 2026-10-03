@@ -12,3 +12,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+telltale-config = { version = "0.1.0", path = "../telltale-config" }
+telltale-proto = { version = "0.1.0", path = "../telltale-proto" }

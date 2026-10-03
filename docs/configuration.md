@@ -60,5 +60,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[upstream]]` | upstream resolvers; the URL scheme picks the protocol | `spec/04` |
 | `[[upstream_group]]` | named sets of upstreams with a strategy (`failover`, `round_robin`, `weighted`, `fastest`, `parallel`). Queries that match no route use the group named `default` | `spec/04` §4 |
 | `[[route]]` | conditional forwarding by domain suffix, client group, or query type | `spec/04` §1 |
+| `[[record]]` | local records (A, AAAA, CNAME, PTR, TXT, MX, SRV; `*.` wildcards) | `docs/running.md` |
+| `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint | `spec/06` |

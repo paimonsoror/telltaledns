@@ -32,6 +32,10 @@ pub struct Config {
     pub upstream_group: Vec<UpstreamGroup>,
     /// Per-domain / per-group / per-qtype routing to upstream groups.
     pub route: Vec<Route>,
+    /// Local DNS records answered authoritatively (DNS-010).
+    pub record: Vec<LocalRecord>,
+    /// Local data settings (hosts files, PTR generation).
+    pub local: LocalConfig,
     /// Response cache.
     pub cache: CacheConfig,
     /// Telemetry, query log, and metrics.
@@ -56,6 +60,8 @@ impl Default for Config {
             upstream: Vec::new(),
             upstream_group: Vec::new(),
             route: Vec::new(),
+            record: Vec::new(),
+            local: LocalConfig::default(),
             cache: CacheConfig::default(),
             telemetry: TelemetryConfig::default(),
         }
@@ -310,6 +316,45 @@ pub struct Route {
     /// Add a DNSSEC negative trust anchor for the suffixes (local zones are usually unsigned).
     #[serde(default)]
     pub dnssec_nta: bool,
+}
+
+/// A local DNS record (DNS-010). Value formats by type:
+/// `A`/`AAAA`: an address; `CNAME`/`PTR`: a domain name; `TXT`: text;
+/// `MX`: `"<preference> <exchange>"`; `SRV`: `"<priority> <weight> <port> <target>"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LocalRecord {
+    /// Owner name; a leading `*.` makes it a wildcard for names below it.
+    pub name: SafeString,
+    /// `A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX`, or `SRV`.
+    #[serde(rename = "type")]
+    pub rtype: SafeString,
+    pub value: SafeString,
+    /// TTL in seconds (default: `[local] default_ttl`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u32>,
+}
+
+/// Local data settings (`spec/03` §3 step 5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct LocalConfig {
+    /// Hosts files (`IP name [alias...]` per line) to import as A/AAAA records.
+    pub hosts_files: Vec<SafeString>,
+    /// Generate PTR records for every local A/AAAA record.
+    pub auto_ptr: bool,
+    /// TTL for local records without their own.
+    pub default_ttl: u32,
+}
+
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self {
+            hosts_files: Vec::new(),
+            auto_ptr: true,
+            default_ttl: 300,
+        }
+    }
 }
 
 /// Cache settings (`spec/03` §4).
