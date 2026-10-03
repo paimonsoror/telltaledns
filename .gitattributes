@@ -1,0 +1,2 @@
+# List fixtures are byte-exact test inputs (CRLF, BOM, trailing spaces).
+crates/telltale-filter/tests/fixtures/** -text

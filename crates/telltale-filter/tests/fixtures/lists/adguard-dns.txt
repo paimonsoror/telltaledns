@@ -1,0 +1,49 @@
+! Synthetic list in AdGuard DNS filtering syntax, exercising modifiers, exceptions, regex,
+! and the browser/cosmetic rules that DNS filtering must skip.
+! Written for TelltaleDNS tests; not copied from any published list.
+! Homepage: https://example.com/dns-filter
+
+! --- basic and exception rules
+||ads.example.com^
+@@||safe.ads.example.com^
+@@|exact-allow.example.com^
+||analytics.example.net^$important
+@@||checkout.example.net^$important
+example-caret.org^
+*.wild.example.com
+.dot-prefixed.example.com^
+
+! --- modifiers
+||ipv6-only.example.com^$dnstype=AAAA
+||not-https.example.com^$dnstype=~HTTPS|~SVCB
+||kids.example.org^$client=192.168.1.0/24|'Kids tablet'
+||everyone-but-admin.example.org^$client=~10.0.0.2
+||example.edu^$denyallow=mail.example.edu|login.example.edu
+||rewritten.example.com^$dnsrewrite=NOERROR;A;192.0.2.1
+||ads.example.com^$badfilter
+||combined.example.com^$important,dnstype=A|AAAA
+
+! --- regex rules
+/^ad[0-9]+\.example\.(com|net)$/
+/^track-[a-z]+\./$dnstype=A
+@@/^allowed[0-9]*\.example\.com$/
+
+! --- valid syntax DNS filtering ignores (counted as unsupported)
+||ads.example.com/banner.js
+||popups.example.com^$third-party
+||script.example.com^$script,domain=example.org
+||tagged.example.com^$ctag=device_tv
+example.com##.ad-banner
+example.com#@#.sponsored
+example.com#?#div:has(> .ad)
+example.com#$#body { overflow: auto !important; }
+example.com$$script[data-ad]
+||wild*card.example.com^
+/banner/ads/
+
+! --- malformed
+||^
+||bad name.example.com^
+||ads.example.com^$dnstype=NOPE
+@@||allow-denyallow.example.com^$denyallow=x.example.com
+/^(unclosed/

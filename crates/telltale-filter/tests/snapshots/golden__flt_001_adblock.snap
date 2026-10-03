@@ -1,0 +1,14 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"adblock.txt\", ListOptions :: default())"
+---
+L8   block subtree ads.example.com
+L9   block subtree tracker.example.net
+L10  block subtree telemetry.example.org
+L11  block subtree metrics.example.com
+L12  block exact exact-only.example.com
+L13  block subtree xyz
+L14  block subtree example-tld-wide.test
+L16  block subtree last.example.com
+
+lines=16 rules=8 blank=0 comments=8 ignored=0 unsupported=0 invalid=0

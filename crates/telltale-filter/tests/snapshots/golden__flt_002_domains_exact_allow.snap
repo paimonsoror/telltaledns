@@ -1,0 +1,19 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"domains.txt\",\nListOptions { kind: ListKind::Allow, match_mode: ListMatch::Exact })"
+---
+L5   allow exact ads.example.com
+L6   allow exact tracker.example.net
+L7   allow exact telemetry.example.org
+L8   allow exact cdn-ads.example.co.uk
+L9   allow exact _srv-tracker.example.com
+L10  allow exact com.example
+L11  allow exact 1-2-3.example.com
+L12  allow exact 123.example
+L15  allow exact spaced.example.com
+L16  allow exact crlf.example.com
+
+lines=20 rules=10 blank=2 comments=5 ignored=0 unsupported=1 invalid=2
+L18  invalid: unexpected whitespace <- "not a domain"
+L19  invalid: unexpected whitespace <- "under score!.example.com"
+L20  unsupported: IP address without a name <- "192.0.2.10"

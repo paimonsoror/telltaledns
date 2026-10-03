@@ -15,6 +15,9 @@ members = ["."]
 libfuzzer-sys = "0.4"
 telltale-proto = { path = "../crates/telltale-proto" }
 hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
+telltale-config = { path = "../crates/telltale-config" }
+telltale-filter = { path = "../crates/telltale-filter" }
+regex-syntax = "0.8"
 
 [[bin]]
 name = "parse_query"
@@ -33,6 +36,13 @@ bench = false
 [[bin]]
 name = "differential"
 path = "fuzz_targets/differential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_list"
+path = "fuzz_targets/parse_list.rs"
 test = false
 doc = false
 bench = false

@@ -15,3 +15,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Resolve example.com through every preset endpoint
         run: cargo test -p telltale-upstream --test presets_online -- --ignored --nocapture
+
+  # REQ: FLT-001 / ADR-017 — real published lists parse with < 0.1% invalid lines.
+  lists-online:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Download and parse published lists
+        run: cargo test -p telltale-filter --test lists_online -- --ignored --nocapture

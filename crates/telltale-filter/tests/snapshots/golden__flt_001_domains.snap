@@ -1,0 +1,19 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"domains.txt\", ListOptions :: default())"
+---
+L5   block subtree ads.example.com
+L6   block subtree tracker.example.net
+L7   block subtree telemetry.example.org
+L8   block subtree cdn-ads.example.co.uk
+L9   block subtree _srv-tracker.example.com
+L10  block subtree com.example
+L11  block subtree 1-2-3.example.com
+L12  block subtree 123.example
+L15  block subtree spaced.example.com
+L16  block subtree crlf.example.com
+
+lines=20 rules=10 blank=2 comments=5 ignored=0 unsupported=1 invalid=2
+L18  invalid: unexpected whitespace <- "not a domain"
+L19  invalid: unexpected whitespace <- "under score!.example.com"
+L20  unsupported: IP address without a name <- "192.0.2.10"

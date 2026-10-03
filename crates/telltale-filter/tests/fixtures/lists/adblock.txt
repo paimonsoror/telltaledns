@@ -1,0 +1,16 @@
+[Adblock Plus]
+! Synthetic AdBlock-syntax DNS list (the "adblock" format of HaGeZi/OISD-style lists).
+! Written for TelltaleDNS tests; not copied from any published list.
+! Title: Example DNS blocklist
+! Expires: 1 day
+! Version: 2026.1003.0000
+!
+||ads.example.com^
+||tracker.example.net^
+||Telemetry.Example.ORG^
+||metrics.example.com^|
+|exact-only.example.com^
+||xyz^
+||example-tld-wide.test^
+! comments between rules
+||last.example.com^

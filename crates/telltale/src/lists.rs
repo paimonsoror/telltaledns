@@ -14,6 +14,7 @@ use telltale_config::{Config, Role};
 use telltale_filter::fetch::{
     Client, FetchSettings, Fetcher, ListSpec, Outcome, Resolve, Store, SystemResolver,
 };
+use telltale_filter::parse::{ListOptions, parse_list};
 use telltale_upstream::Bootstrap;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -169,4 +170,65 @@ pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool
     }
     writeln!(out, "stored in {}", fetcher.store().dir().display()).map_err(|e| e.to_string())?;
     Ok(all_ok)
+}
+
+/// `telltale lists check`: parse stored sources and report (FLT-001, `spec/05` §6 stats).
+pub(crate) fn check(
+    cfg: &Config,
+    only: &[String],
+    print_rules: bool,
+    out: &mut dyn Write,
+) -> Result<bool, String> {
+    let data_dir = Path::new(cfg.node.data_dir.as_str());
+    let store = Store::open(data_dir).map_err(|e| format!("{}/lists: {e}", data_dir.display()))?;
+    let io = |e: std::io::Error| e.to_string();
+    let mut clean = true;
+    for list in &cfg.list {
+        if !only.is_empty() && !only.iter().any(|n| n == list.name.as_str()) {
+            continue;
+        }
+        let name = list.name.as_str();
+        let Ok(data) = store.read_source(name) else {
+            writeln!(
+                out,
+                "{name}: not downloaded yet (run `telltale lists fetch`)"
+            )
+            .map_err(io)?;
+            continue;
+        };
+        let opts = ListOptions {
+            kind: list.kind,
+            match_mode: list.match_mode,
+        };
+        let mut rules = Vec::new();
+        let stats = parse_list(&data, opts, |line, rule| {
+            if print_rules {
+                rules.push(format!("  L{line} {rule}"));
+            }
+        });
+        writeln!(
+            out,
+            "{name}: {} lines, {} rules, {} comments, {} ignored, {} unsupported, {} invalid",
+            stats.lines,
+            stats.rules,
+            stats.comments,
+            stats.ignored,
+            stats.unsupported,
+            stats.invalid
+        )
+        .map_err(io)?;
+        for r in &rules {
+            writeln!(out, "{r}").map_err(io)?;
+        }
+        for s in &stats.samples {
+            let kind = if s.unsupported {
+                "unsupported"
+            } else {
+                "invalid"
+            };
+            writeln!(out, "  L{} {kind}: {}: {}", s.line, s.reason, s.text).map_err(io)?;
+        }
+        clean &= stats.invalid == 0;
+    }
+    Ok(clean)
 }

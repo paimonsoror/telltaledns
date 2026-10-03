@@ -284,23 +284,5 @@ impl Router {
 
 /// Parses `A`, `aaaa`, `PTR`, ..., or `TYPE65`.
 pub fn parse_qtype(s: &str) -> Option<u16> {
-    use telltale_proto::rtype;
-    let up = s.trim().to_ascii_uppercase();
-    Some(match up.as_str() {
-        "A" => rtype::A,
-        "NS" => rtype::NS,
-        "CNAME" => rtype::CNAME,
-        "SOA" => rtype::SOA,
-        "PTR" => rtype::PTR,
-        "MX" => rtype::MX,
-        "TXT" => rtype::TXT,
-        "AAAA" => rtype::AAAA,
-        "SRV" => rtype::SRV,
-        "DS" => rtype::DS,
-        "DNSKEY" => rtype::DNSKEY,
-        "SVCB" => rtype::SVCB,
-        "HTTPS" => rtype::HTTPS,
-        "ANY" => rtype::ANY,
-        other => other.strip_prefix("TYPE")?.parse().ok()?,
-    })
+    telltale_proto::rtype::from_name(s)
 }

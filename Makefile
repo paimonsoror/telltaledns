@@ -46,6 +46,6 @@ udp-scaling:
 # REQ: NFR-004 — fuzz every target for FUZZ_SECS seconds (needs nightly + cargo-fuzz).
 FUZZ_SECS ?= 600
 fuzz:
-	cd fuzz && for t in parse_query parse_response differential; do \
+	cd fuzz && for t in parse_query parse_response differential parse_list; do \
 		cargo +nightly fuzz run $$t -- -max_total_time=$(FUZZ_SECS) -max_len=1500 || exit 1; \
 	done

@@ -1,0 +1,8 @@
+# Synthetic wildcard list (the "wildcard domains" format: *.domain blocks subdomains only).
+# Written for TelltaleDNS tests; not copied from any published list.
+*.ads.example.com
+*.tracker.example.net
+*.Example.ORG
+*.*.example.com
+ads*.example.com
+plain.example.com

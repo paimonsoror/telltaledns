@@ -131,3 +131,15 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Change signal:** a `watch` counter bumps only when stored content changes or a list is removed. The compiler (T2.3) subscribes to it.
 
 **Consequences:** One small request per list per day once lists are cached. A broken upstream list or a captive portal never empties a blocklist. Gzip transfer and per-list custom headers/auth are left for later (P1) if users need them.
+
+## ADR-017 — List parsing rules and synthetic golden fixtures (Proposed)
+**Context:** FLT-001 and `spec/05` §2 list the syntaxes, but not how to tell them apart line by line or what to do with near-misses. `spec/09` §1 asks for golden tests on vendored copies of StevenBlack, HaGeZi Pro, OISD small, an AdGuard DNS filter, and Pi-hole regex samples. Several of those are GPL-licensed data (HaGeZi, AdGuard), which shouldn't be committed into an Apache-2.0/MIT repository.
+
+**Decision:**
+- **Per-line detection,** in order: blank/comment → cosmetic/HTML (`##`, `#@#`, `#?#`, `#$#`, `#%#`, `$$`, unsupported) → hosts (first token is an IP, zone IDs allowed) → AdBlock (`@@`, `|`, `||`, `/regex/`, or `name^[$mods]`) → Pi-hole regex (any regex metacharacter, `;querytype=`, `;invert`) → `*.name`/`.name` → plain name. Inline ` # comments` are stripped outside AdBlock lines.
+- **Semantics for open cases:** `name^` without `||` = `||name^` (subtree). Leading `.name` = subdomains only, like `*.name` (the narrower reading of AdBlock's suffix match). In an allow-kind list, every non-exception rule allows. Explicit AdBlock anchors (`||`, `|`) beat the list's `match` mode.
+- **Unsupported, not invalid** (counted, skipped): cosmetic rules, URL paths and `/regex/` containing `/`, wildcards inside names, IP rules (`||192.0.2.1^`, which belong to the response IP filter, FLT-015), unknown modifiers, and Pi-hole `;reply=`. A rule with any unsupported modifier is skipped entirely, never applied without it.
+- **Invalid:** malformed names (empty or long labels, characters outside `[a-z0-9_-]` after IDNA), unknown query types, empty `$client`, negated `$denyallow`, `$denyallow` on allow rules, regexes that `regex-syntax` rejects (including backreferences and lookaround), and regexes over 1024 characters. Hyphens at label edges are accepted (DNS allows them).
+- **Fixtures:** the committed golden fixtures are synthetic files that reproduce each format's real shape (headers, boilerplate, modifiers, malformed lines). The real lists are exercised by an ignored, network-dependent test (`tests/lists_online.rs`) that requires < 0.1% invalid lines; it currently reports 0 invalid lines on StevenBlack, HaGeZi Pro (adblock, wildcard, domains), OISD (small, big) and the AdGuard DNS filter.
+
+**Consequences:** Real lists parse without spurious errors, and browser-only rules never widen DNS blocking. The golden tests stay license-clean. Real-list drift is caught by the online test rather than by snapshot diffs.

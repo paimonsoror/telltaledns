@@ -1,0 +1,40 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"adguard-dns.txt\", ListOptions :: default())"
+---
+L7   block subtree ads.example.com
+L8   allow subtree safe.ads.example.com
+L9   allow exact exact-allow.example.com
+L10  block subtree analytics.example.net $important
+L11  allow subtree checkout.example.net $important
+L12  block subtree example-caret.org
+L13  block subdomains wild.example.com
+L14  block subdomains dot-prefixed.example.com
+L17  block subtree ipv6-only.example.com $dnstype=AAAA
+L18  block subtree not-https.example.com $dnstype=~HTTPS|~SVCB
+L19  block subtree kids.example.org $client='192.168.1.0/24'|'Kids tablet'
+L20  block subtree everyone-but-admin.example.org $client=~'10.0.0.2'
+L21  block subtree example.edu $denyallow=mail.example.edu|login.example.edu
+L22  block subtree rewritten.example.com $dnsrewrite=NOERROR;A;192.0.2.1
+L23  block subtree ads.example.com $badfilter
+L24  block subtree combined.example.com $important,dnstype=A|AAAA
+L27  block regex /^ad[0-9]+\.example\.(com|net)$/
+L28  block regex /^track-[a-z]+\./ $dnstype=A
+L29  allow regex /^allowed[0-9]*\.example\.com$/
+
+lines=49 rules=19 blank=5 comments=9 ignored=0 unsupported=11 invalid=5
+L32  unsupported: URL rule (DNS filtering sees names only) <- "||ads.example.com/banner.js"
+L33  unsupported: modifier $third-party is not supported <- "||popups.example.com^$third-party"
+L34  unsupported: modifier $script is not supported <- "||script.example.com^$script,domain=example.org"
+L35  unsupported: modifier $ctag is not supported <- "||tagged.example.com^$ctag=device_tv"
+L36  unsupported: cosmetic or HTML filtering rule <- "example.com##.ad-banner"
+L37  unsupported: cosmetic or HTML filtering rule <- "example.com#@#.sponsored"
+L38  unsupported: cosmetic or HTML filtering rule <- "example.com#?#div:has(> .ad)"
+L39  unsupported: cosmetic or HTML filtering rule <- "example.com#$#body { overflow: auto !important; }"
+L40  unsupported: cosmetic or HTML filtering rule <- "example.com$$script[data-ad]"
+L41  unsupported: wildcard inside a name <- "||wild*card.example.com^"
+L45  invalid: rule without a name <- "||^"
+L46  invalid: invalid character in name <- "||bad name.example.com^"
+L47  invalid: unknown query type `NOPE` <- "||ads.example.com^$dnstype=NOPE"
+L48  invalid: $denyallow only applies to blocking rules <- "@@||allow-denyallow.example.com^$denyallow=x.example.com"
+L49  invalid: regex: unclosed group <- "/^(unclosed/"

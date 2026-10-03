@@ -130,7 +130,7 @@ default_ttl = 300
 - `telltale config check` validates record values and reads the hosts files.
 
 ## Filter lists
-> **Status:** lists are downloaded and stored, but not enforced yet. Blocking arrives with the list compiler and matcher (roadmap T2.2–T2.6).
+> **Status:** lists are downloaded, stored, and parsed (`telltale lists check`), but not enforced yet. Blocking arrives with the list compiler and matcher (roadmap T2.3–T2.6).
 
 ```toml
 [[list]]
@@ -168,6 +168,39 @@ telltale lists fetch -c telltale.toml
 # hagezi-pro               updated         5049934     227434
 # manual                   unchanged            39          2
 ```
+### List syntax
+Every common format works, and formats can be mixed in one list:
+
+| Line | Meaning |
+|---|---|
+| `0.0.0.0 ads.example.com` (any IP, several names allowed) | hosts file: block `ads.example.com` (`localhost` and similar lines are skipped) |
+| `ads.example.com` | the name and everything below it (or only the name, with `match = "exact"`) |
+| `*.example.com` or `.example.com` | everything below `example.com`, but not `example.com` itself |
+| `\|\|ads.example.com^` | AdBlock: the name and everything below it |
+| `\|ads.example.com^` | AdBlock: only the name |
+| `@@\|\|cdn.example.com^` | exception: allow, even in a blocklist |
+| `\|\|ads.example.com^$important` | wins over ordinary allow rules |
+| `\|\|example.com^$dnstype=AAAA\|~A` | only for these query types (`~` excludes) |
+| `\|\|example.com^$client=192.168.1.0/24\|'Kids tablet'` | only for these clients (`~` excludes) |
+| `\|\|example.com^$denyallow=mail.example.com` | block `example.com` except these names below it |
+| `\|\|ads.example.com^$badfilter` | cancels the same rule without `$badfilter` |
+| `/^ad[0-9]+\./` | AdBlock regex |
+| `(^\|\.)doubleclick\.net$` | Pi-hole regex; add `;querytype=A,AAAA` (or `=!A` to exclude) or `;invert` |
+| `# ...`, `! ...`, `[Adblock Plus 2.0]` | comments |
+
+Names are lowercased, internationalized names are converted to punycode, and a trailing dot is ignored. Regexes match the lowercase query name and can't use backreferences or lookaround: the regex engine runs in linear time, so a pattern can't stall a query.
+
+Rules that only make sense in a browser are counted as *unsupported* and skipped, not treated as errors: cosmetic rules (`##`), URL paths (`||example.com/ads.js`), wildcards inside names (`ads*.example.com`), IP rules (`||192.0.2.1^`, which filter answers rather than names), and modifiers such as `$third-party` or `$ctag`. A rule with a modifier TelltaleDNS doesn't support is skipped entirely. Applying it without the modifier would block more than the list author intended.
+
+See what a list contains and which lines were skipped:
+```sh
+telltale lists check -c telltale.toml
+# adguard-dns: 179561 lines, 177414 rules, 1658 comments, 0 ignored, 489 unsupported, 0 invalid
+#   L79 unsupported: IP address rule (response IP filtering): ||194.63.143.96^
+telltale lists check -c telltale.toml --list manual --rules   # every rule in canonical form
+```
+It exits non-zero if any list has invalid lines.
+
 Metrics: `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
 ```
 time() - telltale_list_last_success_timestamp_seconds > 172800

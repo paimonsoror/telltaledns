@@ -1,0 +1,35 @@
+# Synthetic hosts-format list in the style of unified hosts files (StevenBlack-like).
+# Written for TelltaleDNS tests; not copied from any published list.
+#
+# Title: Example unified hosts
+# Date: 03 October 2026 00:00:00 (UTC)
+# Number of unique domains: 9
+# ===============================================================
+
+127.0.0.1 localhost
+127.0.0.1 localhost.localdomain
+127.0.0.1 local
+255.255.255.255 broadcasthost
+::1 localhost
+::1 ip6-localhost ip6-loopback
+fe80::1%lo0 localhost
+ff00::0 ip6-localnet
+ff02::1 ip6-allnodes
+0.0.0.0 0.0.0.0
+
+# [ad networks]
+0.0.0.0 ads.example.com
+0.0.0.0 banner.ads.example.com
+0.0.0.0 Pixel.Example.NET
+0.0.0.0 metrics.example.org # inline comment
+127.0.0.1	tabbed.example.org
+0.0.0.0 multi-one.example.com multi-two.example.com
+0.0.0.0 trailing-dot.example.com.
+0.0.0.0 xn--bcher-kva.example
+0.0.0.0 bücher-tracker.example
+
+# malformed entries real lists sometimes carry
+0.0.0.0 bad_char!.example.com
+0.0.0.0 -.example.com
+0.0.0.0
+0.0.0.0 ..

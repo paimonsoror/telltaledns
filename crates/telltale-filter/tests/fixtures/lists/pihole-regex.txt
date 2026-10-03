@@ -1,0 +1,19 @@
+# Synthetic Pi-hole regex list (one regex per line, with Pi-hole's ;querytype= and ;invert
+# options). Written for TelltaleDNS tests; not copied from any published list.
+(^|\.)ads\.example\.com$
+^ad([sxv]?[0-9]*|[0-9]+)[_.-]
+^(.+[_.-])?telemetry[_.-]
+^track(er|ing)?[0-9]*\.example\.(com|net|org)$
+^[a-z0-9]{32}\.example\.net$
+^abc\.example\.com$;querytype=AAAA
+^metrics\.;querytype=A,AAAA
+^ipv4-only\.example\.com$;querytype=!A
+^(.*\.)?allowed\.example\.com$;invert
+^semi;colon\.example\.com$
+^reply\.example\.com$;reply=nxdomain
+
+# rejected: the linear-time engine has no backreferences or lookaround
+^(ab)\1\.example\.com$
+^(?!good).*\.example\.com$
+^unclosed(group
+^x$;querytype=WRONG

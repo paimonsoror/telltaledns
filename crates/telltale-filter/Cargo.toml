@@ -12,7 +12,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# REQ: FLT-004 — list fetcher: HTTP/1.1 over rustls (same stack as the DoH upstream), zstd
+# REQ: FLT-001 — parsers: idna (punycode), regex-syntax (validate patterns the regex engine
+# will accept). FLT-004 — list fetcher: HTTP/1.1 over rustls (same stack as the DoH upstream), zstd
 # for stored sources (02 §7), BLAKE3 content hashes (02 §5).
 blake3 = "1.8.7"
 bytes = "1.12.1"
@@ -20,11 +21,14 @@ http = "1.5.0"
 http-body-util = "0.1.5"
 hyper = { version = "1.11.1", default-features = false, features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+idna = "1.1.0"
 rand = "0.10.3"
+regex-syntax = "0.8.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 telltale-config.workspace = true
+telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync", "fs"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
@@ -33,6 +37,7 @@ webpki-roots = "1.0.9"
 zstd = { version = "0.14.0", default-features = false }
 
 [dev-dependencies]
+insta = "1.49.0"
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

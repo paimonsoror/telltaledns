@@ -1,0 +1,20 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"hosts.txt\", ListOptions :: default())"
+---
+L21  block subtree ads.example.com
+L22  block subtree banner.ads.example.com
+L23  block subtree pixel.example.net
+L24  block subtree metrics.example.org
+L25  block subtree tabbed.example.org
+L26  block subtree multi-one.example.com
+L26  block subtree multi-two.example.com
+L27  block subtree trailing-dot.example.com
+L28  block subtree xn--bcher-kva.example
+L29  block subtree xn--bcher-tracker-wob.example
+L33  block subtree -.example.com
+
+lines=35 rules=11 blank=3 comments=9 ignored=10 unsupported=1 invalid=2
+L32  invalid: `bad_char!.example.com`: invalid character in name <- "0.0.0.0 bad_char!.example.com"
+L34  unsupported: IP address without a name <- "0.0.0.0"
+L35  invalid: `..`: empty label <- "0.0.0.0 .."

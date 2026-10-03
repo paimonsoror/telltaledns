@@ -22,6 +22,36 @@ pub mod rtype {
     pub const SVCB: u16 = 64;
     pub const HTTPS: u16 = 65;
     pub const ANY: u16 = 255;
+    pub const CAA: u16 = 257;
+
+    /// Parses a type mnemonic (`AAAA`, case-insensitive) or the RFC 3597 `TYPEnnn` form.
+    /// Off the hot path: config, routes, and list modifiers.
+    pub fn from_name(s: &str) -> Option<u16> {
+        let up = s.trim().to_ascii_uppercase();
+        Some(match up.as_str() {
+            "A" => A,
+            "NS" => NS,
+            "CNAME" => CNAME,
+            "SOA" => SOA,
+            "PTR" => PTR,
+            "HINFO" => HINFO,
+            "MX" => MX,
+            "TXT" => TXT,
+            "AAAA" => AAAA,
+            "SRV" => SRV,
+            "DNAME" => DNAME,
+            "DS" => DS,
+            "RRSIG" => RRSIG,
+            "NSEC" => NSEC,
+            "DNSKEY" => DNSKEY,
+            "NSEC3" => NSEC3,
+            "SVCB" => SVCB,
+            "HTTPS" => HTTPS,
+            "ANY" => ANY,
+            "CAA" => CAA,
+            other => other.strip_prefix("TYPE")?.parse().ok()?,
+        })
+    }
 }
 
 /// Classes.

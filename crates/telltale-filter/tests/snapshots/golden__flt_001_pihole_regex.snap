@@ -1,0 +1,21 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"pihole-regex.txt\", ListOptions :: default())"
+---
+L3   block regex /(^|\.)ads\.example\.com$/
+L4   block regex /^ad([sxv]?[0-9]*|[0-9]+)[_.-]/
+L5   block regex /^(.+[_.-])?telemetry[_.-]/
+L6   block regex /^track(er|ing)?[0-9]*\.example\.(com|net|org)$/
+L7   block regex /^[a-z0-9]{32}\.example\.net$/
+L8   block regex /^abc\.example\.com$/ $dnstype=AAAA
+L9   block regex /^metrics\./ $dnstype=A|AAAA
+L10  block regex /^ipv4-only\.example\.com$/ $dnstype=~A
+L11  block regex-invert /^(.*\.)?allowed\.example\.com$/
+L12  block regex /^semi;colon\.example\.com$/
+
+lines=19 rules=10 blank=1 comments=3 ignored=0 unsupported=1 invalid=4
+L13  unsupported: Pi-hole regex option `;reply` is not supported <- "^reply\\.example\\.com$;reply=nxdomain"
+L16  invalid: regex: backreferences are not supported <- "^(ab)\\1\\.example\\.com$"
+L17  invalid: regex: look-around, including look-ahead and look-behind, is not supported <- "^(?!good).*\\.example\\.com$"
+L18  invalid: regex: unclosed group <- "^unclosed(group"
+L19  invalid: unknown query type `WRONG` <- "^x$;querytype=WRONG"

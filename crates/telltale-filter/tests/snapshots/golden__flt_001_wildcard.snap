@@ -1,0 +1,12 @@
+---
+source: crates/telltale-filter/tests/golden.rs
+expression: "dump(\"wildcard.txt\", ListOptions :: default())"
+---
+L3   block subdomains ads.example.com
+L4   block subdomains tracker.example.net
+L5   block subdomains example.org
+L8   block subtree plain.example.com
+
+lines=8 rules=4 blank=0 comments=2 ignored=0 unsupported=2 invalid=0
+L6   unsupported: wildcard inside a name <- "*.*.example.com"
+L7   unsupported: wildcard inside a name <- "ads*.example.com"

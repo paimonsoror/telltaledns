@@ -1,0 +1,20 @@
+# Synthetic plain-domain list (the "domains" format of HaGeZi/OISD-style lists).
+# Written for TelltaleDNS tests; not copied from any published list.
+# Entries match the domain and all subdomains unless the list sets match = "exact".
+
+ads.example.com
+tracker.example.net
+TELEMETRY.example.org
+cdn-ads.example.co.uk
+_srv-tracker.example.com
+com.example
+1-2-3.example.com
+123.example
+
+# leading/trailing whitespace and CRLF are tolerated
+   spaced.example.com
+crlf.example.com
+# junk
+not a domain
+under score!.example.com
+192.0.2.10
