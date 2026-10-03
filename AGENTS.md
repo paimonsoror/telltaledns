@@ -14,7 +14,7 @@ You are building **TelltaleDNS**, a filtering, encrypted, observable, clustered 
 6. **Clean room.** Do not copy code from Pi-hole (EUPL-1.2), Technitium (GPL-3.0), AdGuard Home (GPL-3.0), or any copyleft source. Using their *public docs/RFCs/data formats* (e.g., reading Pi-hole's `gravity.db` schema for the importer) is fine. Permissively licensed crates are fine after a `cargo-deny` check.
 7. **Safety.** `unsafe` is only allowed in `telltale-net`, and each use needs a `// SAFETY:` justification. No `unwrap()`/`expect()` on runtime paths.
 8. **Dependencies.** Prefer the crates listed in `02 §7`. Adding a new runtime dependency requires a one-line justification in the PR and must not push the image past 15 MiB.
-9. **Done means:** the acceptance criteria pass in CI; clippy is clean; docs updated (`docs/` user docs for any user-visible behavior); OpenAPI regenerated if the API changed; the roadmap checkbox is ticked.
+9. **Done means:** the acceptance criteria pass in CI; clippy is clean; docs updated (`docs/` user docs for any user-visible behavior, and the matching `site/` page once the site exists, DOC-006); OpenAPI regenerated if the API changed; the roadmap checkbox is ticked.
 
 ## Repository layout (target)
 ```
@@ -28,6 +28,7 @@ deploy/grafana/        # dashboards
 presets/               # upstreams.toml, safesearch.toml, services/*.toml, oui.txt, bigrams.bin
 bench/                 # harness, corpora, compare/
 docs/                  # user docs + analysis
+site/                  # GitHub Pages project site (ADR-012)
 spec/                  # this specification
 ```
 

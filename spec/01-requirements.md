@@ -123,6 +123,17 @@ AGT-001..012 are defined in `13 §2`. Summary: agent-ready OpenAPI (P0); dry-run
 | OPS-008 | P1 | Optional DHCPv4 server (Linux/Pi installs only), with leases feeding client naming. |
 | OPS-009 | P0 | Config hot-reload without dropping queries (SIGHUP, API, or snapshot from the primary). |
 
+## Project site and documentation (DOC) — see `11` ADR-012
+Requested by the owner on 2026-10-02. A GitHub Pages site that introduces the project to two audiences. Guiding rule: **visual first**. Every page leads with a diagram, screenshot, or animation, and prose stays short.
+| ID | Pri | Requirement |
+|---|---|---|
+| DOC-001 | P0 | Project site on GitHub Pages, deployed from `main` by CI. Static HTML/CSS with inline SVG; works without JavaScript (JS only enhances); light/dark themes; mobile-friendly. |
+| DOC-002 | P0 | **"Start here" track (non-technical):** what TelltaleDNS is and why it beats Pi-hole/Technitium (visual comparison), a 3-step quick start per platform (Raspberry Pi, Docker, Kubernetes), and what you'll see (dashboard screenshots once the UI exists). No jargon without a tooltip or glossary link. |
+| DOC-003 | P0 | **Technical track:** architecture (data/control plane, threading, query pipeline with per-stage timing), clustering/HA topology and failover, performance methodology with published harness numbers only (`09 §3` rule), configuration reference (from the JSON Schema), API/MCP overview. |
+| DOC-004 | P0 | **Standards page:** every RFC TelltaleDNS implements, each with its support status (supported / partial / planned, tied to requirement IDs), a one-line summary, and a diagram of the behavior it adds (e.g., packet layout for EDNS/EDE, sequence diagrams for TCP pipelining, serve-stale, DNSSEC chain of trust). Status comes from one data file so the page can't drift from the code. |
+| DOC-005 | P1 | Site quality gates in CI: HTML validation, broken-link check, accessibility (WCAG 2.1 AA via axe), page weight ≤ 500 KiB per page excluding screenshots. |
+| DOC-006 | P1 | Each task that changes user-visible behavior updates the relevant site page in the same PR (extends AGENTS.md "Done means"). |
+
 ## Non-functional (NFR)
 | ID | Pri | Requirement |
 |---|---|---|

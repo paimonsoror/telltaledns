@@ -69,3 +69,13 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 
 Workspace crates set `publish = false`, so the short prefix can't collide on crates.io.
 **Consequences:** Short, typeable identifiers. If crates are ever published or the registry name is taken, switch the published names to `telltaledns-*` without renaming internal crates. *Owner to confirm:* short `telltale` form vs. `telltaledns` everywhere.
+
+## ADR-012 — Project site: hand-written static HTML + inline SVG on GitHub Pages (Proposed)
+**Context:** The owner wants a GitHub Pages site for two audiences (non-technical and deeply technical), visual-first, including a standards page with diagrams per RFC (DOC-001..006). The project values a lightweight footprint and minimal tooling.
+**Decision:**
+- A `site/` directory of plain HTML pages, one shared CSS file, and inline SVG diagrams (hand-authored, or exported from Mermaid/Excalidraw sources committed beside them). No site generator and no Node build.
+- A tiny optional JS file only for the theme toggle and tabs; every page works without it.
+- The Standards page table is generated from `site/data/standards.json` at deploy time by a small script in the Pages workflow, which also fails if a ticked roadmap task cites an RFC missing from the file.
+- Deployed by a GitHub Actions Pages workflow on push to `main`.
+
+**Consequences:** Zero build dependencies and fast pages. The shared header/footer is duplicated across pages (acceptable at ~10 pages; revisit with a minimal generator past ~20). Pages must be enabled once in the repo settings (source: GitHub Actions).
