@@ -352,7 +352,11 @@ def cmd_run(args):
             if lists:
                 filter_s = round(wait_filter(f"http://127.0.0.1:{METRICS_PORT}/metrics", server) - ready_at, 1)
                 print(f"filter ready {filter_s}s after start ({len(lists)} lists)", file=sys.stderr)
-            time.sleep(1.0)  # let worker threads settle before sampling idle RSS
+            # Let worker threads settle before sampling idle RSS. With lists, also wait out the
+            # 2 s grace before swapped-out matchers are freed (ADR-023) and the allocator's
+            # purge of the compile's memory: sampled earlier, a transient compile peak
+            # (~110 MiB on the homelab) passed for idle RSS.
+            time.sleep(6.0 if lists else 1.0)
             idle = proc_stats(server.pid) or {}
             result["server"] = {
                 "bin": str(binary),
