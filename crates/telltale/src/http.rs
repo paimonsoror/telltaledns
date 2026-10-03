@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::Router as HttpRouter;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{StatusCode, header};
@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use telltale_cache::Cache;
 use telltale_config::Cidr;
+use telltale_filter::fetch::{Fetcher, ListMeta};
 use telltale_net::{TcpStats, WorkerStats};
 use telltale_telemetry::Metrics;
 use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
@@ -37,6 +38,8 @@ pub(crate) struct Sources {
     pub(crate) ready: Arc<AtomicBool>,
     pub(crate) started: Instant,
     pub(crate) allowed: Vec<Cidr>,
+    /// The list fetcher, when this node downloads lists.
+    pub(crate) lists: ArcSwapOption<Fetcher>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -109,6 +112,9 @@ pub(crate) fn render(src: &Sources) -> String {
     render_cache(&mut w, &src.cache);
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
+    if let Some(f) = src.lists.load_full() {
+        render_lists(&mut w, &f);
+    }
     render_listeners(&mut w, src);
     w.family("telltale_local_records", "gauge", "Local records loaded.")
         .sample("telltale_local_records", &[], state.policy.local.len());
@@ -191,6 +197,53 @@ fn render_cache(w: &mut PromWriter, cache: &Cache) {
         ),
     ] {
         w.family(name, kind, help).sample(name, &[], v);
+    }
+}
+
+/// Name, type, help, and value of one per-list gauge.
+type ListGauge = (
+    &'static str,
+    &'static str,
+    &'static str,
+    fn(&ListMeta) -> Option<u64>,
+);
+
+/// REQ: FLT-004, `spec/06` §6 alert "list fetch failing for > 48 h": per-list fetch state.
+fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
+    let status = fetcher.status();
+    let families: [ListGauge; 4] = [
+        (
+            "telltale_list_source_bytes",
+            "gauge",
+            "Size of the stored list source.",
+            |m| m.has_content().then_some(m.bytes),
+        ),
+        (
+            "telltale_list_last_success_timestamp_seconds",
+            "gauge",
+            "When the list was last confirmed current (download, 304, or unchanged file).",
+            |m| m.last_success,
+        ),
+        (
+            "telltale_list_last_change_timestamp_seconds",
+            "gauge",
+            "When the list content last changed.",
+            |m| m.last_changed,
+        ),
+        (
+            "telltale_list_fetch_consecutive_failures",
+            "gauge",
+            "Failed refreshes since the last success (0 = healthy).",
+            |m| Some(u64::from(m.consecutive_failures)),
+        ),
+    ];
+    for (name, kind, help, value) in families {
+        w.family(name, kind, help);
+        for (list, meta) in &status {
+            if let Some(v) = value(meta) {
+                w.sample(name, &[("list", list)], v);
+            }
+        }
     }
 }
 
@@ -343,6 +396,7 @@ mod tests {
             tcp: ArcSwap::from_pointee(Vec::new()),
             ready: Arc::new(AtomicBool::new(true)),
             started: Instant::now(),
+            lists: ArcSwapOption::empty(),
             allowed: Vec::new(),
         };
         let text = render(&src);

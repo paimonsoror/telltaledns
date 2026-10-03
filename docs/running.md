@@ -129,6 +129,50 @@ default_ttl = 300
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `telltale config check` validates record values and reads the hosts files.
 
+## Filter lists
+> **Status:** lists are downloaded and stored, but not enforced yet. Blocking arrives with the list compiler and matcher (roadmap T2.2–T2.6).
+
+```toml
+[[list]]
+name = "hagezi-pro"                     # ID: lowercase letters, digits, - and _
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+
+[[list]]
+name = "family-allow"
+kind = "allow"                          # block (default) or allow
+match = "exact"                         # subtree (default: the name and everything below it) or exact
+path = "/etc/telltale/allow.txt"        # a local file, re-read on every refresh
+
+[[list]]
+name = "manual"
+rules = ["||ads.example.com^", "@@||cdn.example.com^"]
+
+[filter]
+refresh_secs = 86400                    # every 24 h (per-list `refresh_secs` overrides; minimum 900)
+fetch_concurrency = 4
+fetch_timeout_secs = 120                # per attempt, including the download
+fetch_retries = 3                       # network errors, HTTP 5xx, and 429 are retried with backoff
+max_list_bytes = "64MiB"                # per-list `max_bytes` overrides
+```
+- **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
+- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected, such as an empty body or an HTML page from a captive portal.
+- Lists are stored compressed in `<data_dir>/lists/` (`<name>.src.zst` plus `<name>.meta.json`). Removing a list from the config deletes its files; `enabled = false` keeps them.
+- List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
+- Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
+- Adding, removing, or editing lists applies on reload (`SIGHUP`). `[filter]` changes need a restart.
+
+Fetch now, outside the server (same config and data directory):
+```sh
+telltale lists fetch -c telltale.toml
+# list                     result            bytes      lines  note
+# hagezi-pro               updated         5049934     227434
+# manual                   unchanged            39          2
+```
+Metrics: `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
+```
+time() - telltale_list_last_success_timestamp_seconds > 172800
+```
+
 ## Who can query, and how often
 ```toml
 [access]

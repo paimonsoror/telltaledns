@@ -56,6 +56,16 @@ match_suffix = ["corp.example.com", "168.192.in-addr.arpa"]
 upstream_group = "ad-only"
 dnssec_nta = true
 
+# Filter lists (downloaded in the background; see docs/running.md).
+[[list]]
+name = "hagezi-pro"
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+
+[[list]]
+name = "manual-allow"
+kind = "allow"
+rules = ["@@||cdn.example.com^"]
+
 [cache]
 max_bytes = "32MiB"
 max_ttl = 86400

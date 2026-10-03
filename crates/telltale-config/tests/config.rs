@@ -210,3 +210,106 @@ fn ops_005_json_schema_rejects_unknown_fields() {
     );
     assert!(schema["properties"]["cache"].is_object());
 }
+
+#[test]
+fn flt_004_lists_parse_with_defaults() {
+    let loaded = load_str(
+        r#"
+[[list]]
+name = "hagezi-pro"
+url = "https://example.com/pro.txt"
+
+[[list]]
+name = "my_allow"
+kind = "allow"
+match = "exact"
+rules = ["good.example.com"]
+
+[[list]]
+name = "local-file"
+path = "/etc/telltale/block.txt"
+enabled = false
+refresh_secs = 3600
+max_bytes = "1MiB"
+
+[filter]
+fetch_concurrency = 2
+"#,
+    )
+    .unwrap();
+    let c = &loaded.config;
+    assert_eq!(c.list.len(), 3);
+    assert_eq!(c.list[0].kind, telltale_config::ListKind::Block);
+    assert_eq!(c.list[0].match_mode, telltale_config::ListMatch::Subtree);
+    assert!(c.list[0].enabled);
+    assert_eq!(c.list[1].kind, telltale_config::ListKind::Allow);
+    assert_eq!(c.list[1].match_mode, telltale_config::ListMatch::Exact);
+    assert!(!c.list[2].enabled);
+    assert_eq!(c.list[2].max_bytes, Some(ByteSize::mib(1)));
+    assert_eq!(c.filter.fetch_concurrency, 2);
+    assert_eq!(c.filter.refresh_secs, 86_400);
+    assert_eq!(c.filter.max_list_bytes, ByteSize::mib(64));
+    assert!(
+        !loaded.warnings.iter().any(|w| w.contains("list")),
+        "{:?}",
+        loaded.warnings
+    );
+}
+
+#[test]
+fn flt_004_list_validation_errors_have_paths() {
+    let errs = load_str(
+        r#"
+[[list]]
+name = "Bad Name"
+url = "https://example.com/a.txt"
+
+[[list]]
+name = "two-sources"
+url = "https://example.com/b.txt"
+path = "/tmp/b.txt"
+
+[[list]]
+name = "no-source"
+
+[[list]]
+name = "ftp"
+url = "ftp://example.com/c.txt"
+
+[[list]]
+name = "ftp"
+url = "https://example.com/d.txt"
+refresh_secs = 60
+
+[filter]
+fetch_concurrency = 0
+max_list_bytes = "10B"
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in [
+        "list[0].name",
+        "list[1]",
+        "list[2]",
+        "list[3].url",
+        "list[4].name",
+        "list[4].refresh_secs",
+        "filter.fetch_concurrency",
+        "filter.max_list_bytes",
+    ] {
+        assert!(p.contains(&want), "missing {want} in {p:?}");
+    }
+}
+
+#[test]
+fn flt_004_plain_http_list_warns() {
+    let loaded = load_str("[[list]]\nname = \"a\"\nurl = \"http://example.com/a.txt\"\n").unwrap();
+    let list_warnings: Vec<_> = loaded
+        .warnings
+        .iter()
+        .filter(|w| w.contains("list["))
+        .collect();
+    assert_eq!(list_warnings.len(), 1, "{:?}", loaded.warnings);
+    assert!(list_warnings[0].contains("list[0].url"));
+}

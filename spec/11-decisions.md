@@ -117,3 +117,17 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - The image keeps `USER 65532:65532`, with no file capabilities: file caps break exec when the capability is dropped and are ignored under `no_new_privs` (`allowPrivilegeEscalation: false`). For host networking on a Pi, the docs recommend the host sysctl `net.ipv4.ip_unprivileged_port_start=53` (one line in `/etc/sysctl.d/`), which keeps the container non-root. The fallback is `user: "0:0"` with `cap_drop: [ALL]` + `cap_add: [NET_BIND_SERVICE]`. The Helm chart (T4.1) sets the pod sysctl.
 
 **Consequences:** CI image builds take minutes, not hours. musl matches glibc throughput, and idle RSS stays ≈6 MiB. The `spec/08` §3 compose example must change before the compose bundle ships (T4.3); the owner chooses between the sysctl and the root-with-one-capability fallback as the documented default.
+
+## ADR-016 — List fetcher behavior and configuration (Proposed)
+**Context:** FLT-004 and `spec/05` §3.4 step 1 define the fetcher's duties (conditional GETs, size caps, retries, stored sources) but not its configuration, scheduling, name resolution, or edge cases. T2.1 needed answers.
+
+**Decision:**
+- **Config:** `[[list]]` entries with a stable `name` (`[a-z0-9_-]{1,64}`, used in file names, metrics, and the API) and exactly one source: `url` (https; http allowed with a warning), `path`, or inline `rules`. Plus `kind` (`block`/`allow`), `match` (`subtree`/`exact`, FLT-002), `enabled`, and per-list `refresh_secs`/`max_bytes`. `[filter]` holds the defaults: refresh 24 h (minimum 15 min), concurrency 4, 120 s per attempt, 3 retries, 64 MiB. At most 1024 lists (the `05` §3.1 bitset width).
+- **Location:** the fetcher lives in `telltale-filter::fetch` and runs only on `all`/`controller` nodes, starting after the DNS listeners are bound. HTTP/1.1 over rustls with the built-in Mozilla roots, one connection per download, `Accept-Encoding: identity` so the size cap is exact.
+- **Retries:** network errors, timeouts, 5xx, 408, and 429 are retried with 2 s × 4ⁿ backoff (±25% jitter, capped at 60 s); other 4xx, oversize bodies, and bad redirects are not. Between refreshes, a failing list is retried after 5 min, doubling to 1 h (never later than its normal refresh).
+- **Sanity:** an empty body or an HTML page (`<!doctype html`/`<html` at the start) counts as a failure, so captive portals and error pages served with 200 never replace a good list. Identical content (same BLAKE3) is "unchanged" even without validators.
+- **Storage:** `lists/<name>.src.zst` (zstd level 3) plus `<name>.meta.json`, each written to a temp file and renamed into place. Inline rules are stored too, so the compiler and explain treat every source the same. Lists removed from the config are deleted; disabled lists keep their files.
+- **Name resolution:** the system resolvers minus our own listeners (as UPS-009), falling back to the OS resolver, which may be TelltaleDNS itself. A download is an HTTP client, not a forwarder, so this can't loop.
+- **Change signal:** a `watch` counter bumps only when stored content changes or a list is removed. The compiler (T2.3) subscribes to it.
+
+**Consequences:** One small request per list per day once lists are cached. A broken upstream list or a captive portal never empties a blocklist. Gzip transfer and per-list custom headers/auth are left for later (P1) if users need them.

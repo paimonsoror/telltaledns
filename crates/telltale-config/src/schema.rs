@@ -36,6 +36,10 @@ pub struct Config {
     pub record: Vec<LocalRecord>,
     /// Local data settings (hosts files, PTR generation).
     pub local: LocalConfig,
+    /// Filter lists: blocklists and allowlists from URLs, files, or inline rules (`spec/05`).
+    pub list: Vec<FilterList>,
+    /// List download and compile settings.
+    pub filter: FilterConfig,
     /// Who may query (refuse everyone else).
     pub access: AccessConfig,
     /// Per-client query rate limits (DNS-014).
@@ -68,6 +72,8 @@ impl Default for Config {
             route: Vec::new(),
             record: Vec::new(),
             local: LocalConfig::default(),
+            list: Vec::new(),
+            filter: FilterConfig::default(),
             access: AccessConfig::default(),
             ratelimit: RateLimitConfig::default(),
             special: SpecialConfig::default(),
@@ -362,6 +368,89 @@ impl Default for LocalConfig {
             hosts_files: Vec::new(),
             auto_ptr: true,
             default_ttl: 300,
+        }
+    }
+}
+
+/// Whether a list's rules block or allow (`spec/05` §1). Exception rules (@@) allow regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ListKind {
+    #[default]
+    Block,
+    Allow,
+}
+
+/// How plain domain entries match (FLT-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ListMatch {
+    /// The domain and every name below it (Technitium semantics).
+    #[default]
+    Subtree,
+    /// Only the exact name (Pi-hole "exact" lists).
+    Exact,
+}
+
+/// A filter list (`spec/05` §1). Exactly one source: `url`, `path`, or `rules`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FilterList {
+    /// Stable ID: lowercase letters, digits, `-` and `_`, at most 64 characters. Used in file
+    /// names, metrics, and the API, so renaming a list re-downloads it.
+    pub name: SafeString,
+    /// `https://` (or `http://`) source, refreshed every `refresh_secs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<SafeString>,
+    /// Local file, re-read on every refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<SafeString>,
+    /// Inline rules, one per entry, in any supported syntax.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<SafeString>,
+    #[serde(default)]
+    pub kind: ListKind,
+    /// `subtree` (default) or `exact`.
+    #[serde(default, rename = "match")]
+    pub match_mode: ListMatch,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Overrides `[filter] refresh_secs` for this list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_secs: Option<u32>,
+    /// Overrides `[filter] max_list_bytes` for this list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<ByteSize>,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+/// List download settings (`spec/05` §3.4, FLT-004).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct FilterConfig {
+    /// How often URL and file lists are refreshed (default 24 h, minimum 15 min).
+    pub refresh_secs: u32,
+    /// Lists downloaded at the same time.
+    pub fetch_concurrency: u8,
+    /// Time limit for one download attempt, including the body.
+    pub fetch_timeout_secs: u32,
+    /// Extra attempts after a failed download (network errors, HTTP 5xx, 429).
+    pub fetch_retries: u8,
+    /// Downloads larger than this fail and the previous copy is kept.
+    pub max_list_bytes: ByteSize,
+}
+
+impl Default for FilterConfig {
+    fn default() -> Self {
+        Self {
+            refresh_secs: 86_400,
+            fetch_concurrency: 4,
+            fetch_timeout_secs: 120,
+            fetch_retries: 3,
+            max_list_bytes: ByteSize::mib(64),
         }
     }
 }

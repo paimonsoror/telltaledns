@@ -2,6 +2,7 @@
 //!
 //! REQ: OPS-007 (drain on shutdown), OPS-009 (reload without dropping queries).
 
+use crate::lists::Lists;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use telltale_cache::{Cache, CachePolicy};
 use telltale_config::{Config, ListenProto, Listener, Loader};
 use telltale_net::{TcpConfig, TcpServer, UdpConfig, UdpListener};
@@ -197,6 +198,9 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.node != new.node {
         v.push("[node]");
     }
+    if old.filter != new.filter {
+        v.push("[filter]");
+    }
     v
 }
 
@@ -241,6 +245,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         ready: Arc::clone(&ready),
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
+        lists: ArcSwapOption::empty(),
     });
     let (stop_http, http_stopped) = tokio::sync::oneshot::channel::<()>();
     if cfg.telemetry.metrics.enabled {
@@ -255,6 +260,13 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // Every listener is bound: ready for traffic (OPS-006).
     ready.store(true, Ordering::Release);
 
+    // REQ: FLT-004 — lists download in the background once DNS is up (rule 5: DNS never
+    // waits for, or depends on, a list).
+    let mut lists = Lists::start(&cfg);
+    sources
+        .lists
+        .store(lists.as_ref().map(|l| Arc::clone(&l.fetcher)));
+
     let mut term = signal(SignalKind::terminate())?;
     let mut hup = signal(SignalKind::hangup())?;
     let mut current = cfg;
@@ -262,7 +274,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         tokio::select! {
             _ = term.recv() => { info!(signal = "SIGTERM", "shutting down"); break; }
             _ = tokio::signal::ctrl_c() => { info!(signal = "SIGINT", "shutting down"); break; }
-            _ = hup.recv() => reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources),
+            _ = hup.recv() => reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists),
         }
     }
 
@@ -280,6 +292,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         l.shutdown();
     }
     health.abort();
+    if let Some(l) = lists {
+        l.stop();
+    }
     Ok(())
 }
 
@@ -292,6 +307,7 @@ fn reload(
     health: &mut JoinHandle<()>,
     pipeline: &Pipeline,
     sources: &http::Sources,
+    lists: &mut Option<Lists>,
 ) {
     info!(signal = "SIGHUP", "reloading configuration");
     let Some(new) = load(files) else {
@@ -317,6 +333,14 @@ fn reload(
     let (u, t) = listeners.stats();
     sources.udp.store(Arc::new(u));
     sources.tcp.store(Arc::new(t));
+    if let Some(l) = lists {
+        l.reload(&new);
+    } else {
+        *lists = Lists::start(&new);
+        sources
+            .lists
+            .store(lists.as_ref().map(|l| Arc::clone(&l.fetcher)));
+    }
     let restart = restart_only_changes(current, &new);
     if !restart.is_empty() {
         warn!(sections = ?restart, "these changes take effect after a restart");

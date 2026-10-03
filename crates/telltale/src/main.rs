@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod http;
+mod lists;
 mod pipeline;
 mod server;
 
@@ -50,6 +51,23 @@ enum Command {
     Presets {
         #[command(subcommand)]
         command: PresetsCommand,
+    },
+    /// Filter lists (blocklists and allowlists).
+    Lists {
+        #[command(subcommand)]
+        command: ListsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ListsCommand {
+    /// Download every enabled list now and store it in `<data_dir>/lists`, as the running
+    /// server would. Exits non-zero if any list failed.
+    // REQ: FLT-004
+    Fetch {
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
     },
 }
 
@@ -103,6 +121,7 @@ fn main() -> ExitCode {
         Command::Run { config } => run(config),
         Command::Config { command } => run_config(command),
         Command::Presets { command } => run_presets(command),
+        Command::Lists { command } => run_lists(command),
     };
     match result {
         Ok(code) => code,
@@ -161,6 +180,28 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     rt.block_on(server::serve(files, cfg))?;
     info!("stopped");
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {
+    match cmd {
+        ListsCommand::Fetch { config } => {
+            init_logging();
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return Ok(ExitCode::FAILURE);
+            };
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            match rt.block_on(lists::fetch_once(&cfg, &mut io::stdout().lock())) {
+                Ok(true) => Ok(ExitCode::SUCCESS),
+                Ok(false) => Ok(ExitCode::FAILURE),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+    }
 }
 
 fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {

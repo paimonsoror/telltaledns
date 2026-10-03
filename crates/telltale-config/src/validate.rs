@@ -45,6 +45,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     let upstreams = upstreams(cfg, &mut r);
     let groups = groups(cfg, &upstreams, &mut r);
     routes(cfg, &groups, &mut r);
+    lists(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     r.warnings
 }
@@ -234,6 +235,90 @@ fn routes(cfg: &Config, groups: &HashSet<&str>, r: &mut Report<'_>) {
                 );
             }
         }
+    }
+}
+
+/// Most lists one snapshot can hold: list-ID bitsets are 1024 bits wide (`spec/05` §3.1).
+pub const MAX_LISTS: usize = 1024;
+
+/// A list name is a file-name-safe ID.
+pub fn valid_list_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+// REQ: FLT-004 — list sources and fetch limits.
+fn lists(cfg: &Config, r: &mut Report<'_>) {
+    if cfg.list.len() > MAX_LISTS {
+        r.err("list", format!("at most {MAX_LISTS} lists are supported"));
+    }
+    let mut names = HashSet::new();
+    for (i, l) in cfg.list.iter().enumerate() {
+        let p = format!("list[{i}]");
+        let name = l.name.as_str();
+        if !valid_list_name(name) {
+            r.err(
+                format!("{p}.name"),
+                "use 1-64 lowercase letters, digits, `-` or `_`",
+            );
+        } else if !names.insert(name) {
+            r.err(format!("{p}.name"), format!("duplicate list name `{name}`"));
+        }
+        let sources = usize::from(l.url.is_some())
+            + usize::from(l.path.is_some())
+            + usize::from(!l.rules.is_empty());
+        if sources != 1 {
+            r.err(&p, "set exactly one of `url`, `path`, or `rules`");
+        }
+        if let Some(url) = &l.url {
+            match url.split_once("://") {
+                Some(("https", rest)) if !rest.is_empty() => {}
+                Some(("http", rest)) if !rest.is_empty() => r.warn(format!(
+                    "{p}.url: plain http can be tampered with in transit; prefer https"
+                )),
+                _ => r.err(
+                    format!("{p}.url"),
+                    "must start with `https://` or `http://`",
+                ),
+            }
+        }
+        if let Some(path) = &l.path
+            && path.is_empty()
+        {
+            r.err(format!("{p}.path"), "must not be empty");
+        }
+        if let Some(s) = l.refresh_secs
+            && s < 900
+        {
+            r.err(
+                format!("{p}.refresh_secs"),
+                "must be at least 900 (15 minutes)",
+            );
+        }
+        if let Some(b) = l.max_bytes
+            && !(1024..=1 << 30).contains(&b.bytes())
+        {
+            r.err(format!("{p}.max_bytes"), "must be between 1KiB and 1GiB");
+        }
+    }
+    let f = &cfg.filter;
+    if f.refresh_secs < 900 {
+        r.err("filter.refresh_secs", "must be at least 900 (15 minutes)");
+    }
+    if !(1..=16).contains(&f.fetch_concurrency) {
+        r.err("filter.fetch_concurrency", "must be between 1 and 16");
+    }
+    if f.fetch_timeout_secs < 5 {
+        r.err("filter.fetch_timeout_secs", "must be at least 5");
+    }
+    if f.fetch_retries > 10 {
+        r.err("filter.fetch_retries", "must be at most 10");
+    }
+    if !(1024..=1 << 30).contains(&f.max_list_bytes.bytes()) {
+        r.err("filter.max_list_bytes", "must be between 1KiB and 1GiB");
     }
 }
 
