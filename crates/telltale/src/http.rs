@@ -118,6 +118,22 @@ pub(crate) fn render(src: &Sources) -> String {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
     }
+    // REQ: FLT-009 — active pauses (group="*" = everyone).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    w.family(
+        "telltale_filter_paused_until_seconds",
+        "gauge",
+        "Unix time when a pause of blocking ends, per group (\"*\" = everyone).",
+    );
+    for (group, until) in src.pipeline.pause.active(now) {
+        w.sample(
+            "telltale_filter_paused_until_seconds",
+            &[("group", group.as_deref().unwrap_or("*"))],
+            until,
+        );
+    }
     w.family(
         "telltale_neighbors",
         "gauge",

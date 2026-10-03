@@ -183,3 +183,13 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Deferred:** hostname-based matching (DHCP leases / rDNS, FLT-006), client IDs until the DoH/DoT listeners (T4.5), and per-group block mode, pause, and schedules (T2.6, FLT-009/010).
 
 **Consequences:** Pi-hole-style per-device filtering, with MAC identification that survives DHCP and IPv6 privacy addresses on host-networked installs. Identification costs a few hash lookups per query and allocates nothing.
+
+## ADR-022 — Block answers, CNAME inspection, and pause semantics (Proposed)
+**Context:** FLT-007/008/009 list the block modes, CNAME deep inspection, and pause, but not the default mode, the TTL, how CNAME inspection meets the policy-neutral cache (`spec/03` §4), or what pausing means for a device in several groups.
+
+**Decision:**
+- **Block answers per group** (`block_mode`, `block_ips`, `block_ttl`, `ede`, `ede_text`), taken from the client's highest-priority group. Default `null_ip` (A → 0.0.0.0, AAAA → ::, other types → NODATA), matching Pi-hole and Technitium (the owner's current setup); TTL 60 s; EDE 15 with the list name. NXDOMAIN and NODATA answers carry an SOA with the block TTL; block answers are authoritative except REFUSED. This changes T2.4's interim NXDOMAIN default.
+- **CNAME inspection** runs wherever an answer leaves the server: cache hits, fresh upstream answers, and stale answers. The cache stays policy-neutral and the check is per client. It walks the answer section's CNAME records without allocating; the first blocked target replaces the whole answer with the client's block answer, with EDE text `CNAME target blocked by list …`.
+- **Pause:** global and per group, until a deadline, keyed by group name so it survives reloads. A client is paused when its highest-priority group is (consistent with block settings coming from that group). The fast path costs one atomic load when nothing is paused. The control surface is the API (T3.4).
+
+**Consequences:** Block behavior matches the owner's current resolvers by default and is tunable per group. CNAME cloaking (trackers behind first-party CNAMEs) is caught, for cached answers too, at the cost of a records walk on answers that have CNAMEs.

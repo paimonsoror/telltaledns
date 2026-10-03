@@ -8,15 +8,19 @@
 //! allocating. Anything that needs I/O becomes a deferred future driven by the runtime.
 
 use std::cell::RefCell;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use telltale_cache::{Cache, CacheKey, Client, Flight, Lookup, Singleflight};
+use telltale_config::BlockMode;
 use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
-use telltale_policy::{ClientTable, Identity, LocalData, Neighbors, RateLimiter, Special};
+use telltale_policy::{
+    ClientTable, Group, Identity, LocalData, Neighbors, Pause, RateLimiter, Special,
+};
 use telltale_proto::{
     EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
     parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
@@ -101,6 +105,21 @@ pub(crate) struct FilterState {
     pub(crate) default_mask: ListMask,
     /// EDE text per list ID, built once so blocking doesn't allocate.
     pub(crate) reasons: Vec<String>,
+    /// The same for blocks found through a CNAME target (FLT-007).
+    pub(crate) cname_reasons: Vec<String>,
+}
+
+/// Who sent a query, as far as identification needs (carried into deferred answers).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Who {
+    pub(crate) peer: IpAddr,
+    pub(crate) mac: Option<[u8; 6]>,
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl FilterState {
@@ -154,6 +173,10 @@ impl FilterState {
                 .iter()
                 .map(|n| format!("blocked by list {n}"))
                 .collect(),
+            cname_reasons: names
+                .iter()
+                .map(|n| format!("CNAME target blocked by list {n}"))
+                .collect(),
             clients,
             matcher,
         }
@@ -191,6 +214,8 @@ pub(crate) struct Pipeline {
     filter_lock: std::sync::Mutex<()>,
     /// IP → MAC from the kernel neighbor table (FLT-006), refreshed by the server.
     pub(crate) neighbors: Arc<Neighbors>,
+    /// Blocking paused globally or per group (FLT-009). Kept across reloads.
+    pub(crate) pause: Pause,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
@@ -220,6 +245,7 @@ impl Pipeline {
             filter: ArcSwapOption::empty(),
             filter_lock: std::sync::Mutex::new(()),
             neighbors: Arc::new(Neighbors::default()),
+            pause: Pause::default(),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -322,19 +348,20 @@ impl Pipeline {
         }
         // REQ: FLT-006 — client identification (`spec/03` §3 step 2). Client IDs arrive with
         // the DoH/DoT listeners (T4.5).
-        let edns_mac = q.edns.as_ref().and_then(telltale_proto::Edns::client_mac);
+        let who = Who {
+            peer: meta.peer.ip(),
+            mac: q.edns.as_ref().and_then(telltale_proto::Edns::client_mac),
+        };
         let ident = st
             .policy
             .clients
-            .identify(meta.peer.ip(), None, edns_mac, &self.neighbors);
+            .identify(who.peer, None, who.mac, &self.neighbors);
         // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
-        if let Some(blocked) =
-            self.filter_block(&q, meta, out, oc, &st.policy.clients, ident, edns_mac)
-        {
+        if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
             return blocked;
         }
         let groups = st.policy.clients.group_names(ident);
-        self.resolve_or_defer(req, &q, special, groups, meta, out, start, oc)
+        self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
     }
 
     /// `spec/03` §3 steps 2–4: access, rate limit, loop tag, ANY, special names. Returns the
@@ -422,6 +449,7 @@ impl Pipeline {
         q: &Query<'_>,
         special: Option<Special>,
         groups: &[Box<str>],
+        who: Who,
         meta: &RequestMeta,
         out: &mut [u8],
         start: Instant,
@@ -457,10 +485,17 @@ impl Pipeline {
                     self.prefetch(req, key, sel.view);
                 }
                 oc.status = Status::Cached;
+                let len = match self.cname_block(&q, who, out, len) {
+                    Some(blocked) => {
+                        oc.status = Status::Blocked;
+                        blocked
+                    }
+                    None => len,
+                };
                 Response::Ready(self.finish(&q, out, len, meta.transport))
             }
-            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, q.qtype),
-            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, q.qtype),
+            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, q.qtype, who),
+            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, q.qtype, who),
         }
     }
 
@@ -486,41 +521,94 @@ impl Pipeline {
 
     /// Answers a blocked query (NXDOMAIN + EDE 15 naming the list; block modes are T2.6), or
     /// returns `None` to resolve normally. Allocation-free on the steady state.
-    #[allow(clippy::too_many_arguments)]
+    /// Runs the client's filter on `name` (wire format). `None` when there's no filter or
+    /// blocking is paused for the client's group (FLT-009).
+    fn decide_for(
+        &self,
+        f: &FilterState,
+        who: Who,
+        name: &[u8],
+        qtype: u16,
+    ) -> Option<(Identity, Decision)> {
+        let ident = f.clients.identify(who.peer, None, who.mac, &self.neighbors);
+        let group = f.clients.primary_group(ident);
+        if self.pause.is_paused(&group.name, unix_now) {
+            return None;
+        }
+        let client = ClientCtx {
+            ip: who.peer,
+            name: f.clients.client(ident).map(|c| &*c.name),
+            client_id: None,
+        };
+        let decision = FILTER_SCRATCH.with(|s| {
+            f.matcher
+                .decide(name, qtype, &client, f.mask(ident), &mut s.borrow_mut())
+        });
+        Some((ident, decision))
+    }
+
+    /// Builds the block answer for the client's group (FLT-008): null IP, NXDOMAIN, NODATA,
+    /// REFUSED, or custom IPs, always with EDE 15/17 and (unless turned off) the list.
+    fn block_answer(
+        &self,
+        q: &Query<'_>,
+        out: &mut [u8],
+        group: &Group,
+        reason: &str,
+    ) -> Option<usize> {
+        let b = &group.block;
+        let text = if b.ede_text { reason } else { "" };
+        let edns = response_edns(q, self.settings.edns_payload, Some((b.ede_code, text)));
+        let rc = match b.mode {
+            BlockMode::Nxdomain => rcode::NXDOMAIN,
+            BlockMode::Refused => rcode::REFUSED,
+            BlockMode::NullIp | BlockMode::Nodata | BlockMode::CustomIp => rcode::NOERROR,
+        };
+        let mut r = ResponseBuilder::new(q, out, rc).ok()?;
+        if b.mode != BlockMode::Refused {
+            r.authoritative(true);
+        }
+        let (v4, v6): (&[Ipv4Addr], &[Ipv6Addr]) = match b.mode {
+            BlockMode::NullIp => (&[Ipv4Addr::UNSPECIFIED], &[Ipv6Addr::UNSPECIFIED]),
+            BlockMode::CustomIp => (&b.v4, &b.v6),
+            _ => (&[], &[]),
+        };
+        let mut answered = false;
+        match q.qtype {
+            telltale_proto::rtype::A => {
+                for ip in v4 {
+                    r.answer_a(b.ttl, *ip).ok()?;
+                    answered = true;
+                }
+            }
+            telltale_proto::rtype::AAAA => {
+                for ip in v6 {
+                    r.answer_aaaa(b.ttl, *ip).ok()?;
+                    answered = true;
+                }
+            }
+            _ => {}
+        }
+        // NXDOMAIN and NODATA carry an SOA so clients cache the block for `ttl`.
+        if !answered && b.mode != BlockMode::Refused {
+            r.authority_soa(b.ttl).ok()?;
+        }
+        r.finish(edns).ok()
+    }
+
+    /// REQ: FLT-003, FLT-008 — answers a blocked query, or returns `None` to resolve normally.
+    /// Allocation-free on the steady state.
     fn filter_block(
         &self,
         q: &Query<'_>,
         meta: &RequestMeta,
         out: &mut [u8],
         oc: &mut Outcome,
-        clients: &Arc<ClientTable>,
-        ident: Identity,
-        edns_mac: Option<[u8; 6]>,
+        who: Who,
     ) -> Option<Response> {
         let guard = self.filter.load();
         let f = guard.as_ref()?;
-        // The masks belong to the table the filter was built with; during a reload the two
-        // can differ for a moment, so identify against the filter's own table then.
-        let ident = if Arc::ptr_eq(&f.clients, clients) {
-            ident
-        } else {
-            f.clients
-                .identify(meta.peer.ip(), None, edns_mac, &self.neighbors)
-        };
-        let client = ClientCtx {
-            ip: meta.peer.ip(),
-            name: f.clients.client(ident).map(|c| &*c.name),
-            client_id: None,
-        };
-        let decision = FILTER_SCRATCH.with(|s| {
-            f.matcher.decide(
-                q.qname.as_wire(),
-                q.qtype,
-                &client,
-                f.mask(ident),
-                &mut s.borrow_mut(),
-            )
-        });
+        let (ident, decision) = self.decide_for(f, who, q.qname.as_wire(), q.qtype)?;
         let Decision::Block(a) = decision else {
             return None;
         };
@@ -529,7 +617,69 @@ impl Pipeline {
             .reasons
             .get(usize::from(a.list))
             .map_or("blocked", String::as_str);
-        Some(self.simple(q, out, rcode::NXDOMAIN, Some((ede::BLOCKED, reason)), meta))
+        let len = self.block_answer(q, out, f.clients.primary_group(ident), reason);
+        Some(ready(len.map(|l| self.finish(q, out, l, meta.transport))))
+    }
+
+    /// REQ: FLT-007 — CNAME deep inspection: if any CNAME target in the answer is blocked for
+    /// this client, replace the answer with the block answer and return its length. Runs on
+    /// cache hits too, since cached answers are policy-neutral. Allocation-free.
+    fn cname_block(&self, q: &Query<'_>, who: Who, out: &mut [u8], len: usize) -> Option<usize> {
+        let guard = self.filter.load();
+        let f = guard.as_ref()?;
+        let mut target = telltale_proto::NameBuf::default();
+        let mut hit = None;
+        for r in telltale_proto::records(out.get(..len)?).ok()?.flatten() {
+            if r.section != telltale_proto::Section::Answer
+                || r.rtype != telltale_proto::rtype::CNAME
+            {
+                continue;
+            }
+            if telltale_proto::read_name(&out[..len], r.rdata_off, &mut target).is_err() {
+                continue;
+            }
+            match self.decide_for(f, who, target.as_wire(), q.qtype) {
+                None => return None, // paused (or no filter): nothing to inspect
+                Some((ident, Decision::Block(a))) => {
+                    hit = Some((ident, a));
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+        let (ident, a) = hit?;
+        let reason = f
+            .cname_reasons
+            .get(usize::from(a.list))
+            .map_or("blocked", String::as_str);
+        self.block_answer(q, out, f.clients.primary_group(ident), reason)
+    }
+
+    /// FLT-007 for deferred (upstream or stale) answers: re-checks the final message.
+    fn deferred_cname_block(
+        &self,
+        req: &[u8],
+        who: Who,
+        transport: Transport,
+        mut bytes: Vec<u8>,
+        status: Status,
+    ) -> (Vec<u8>, Status) {
+        if !matches!(status, Status::Forwarded | Status::Stale) {
+            return (bytes, status);
+        }
+        let Ok(q) = parse_query(req) else {
+            return (bytes, status);
+        };
+        let len = bytes.len();
+        bytes.resize(MAX_RESPONSE.max(len), 0);
+        if let Some(l) = self.cname_block(&q, who, &mut bytes, len) {
+            let l = self.finish(&q, &mut bytes, l, transport);
+            bytes.truncate(l);
+            (bytes, Status::Blocked)
+        } else {
+            bytes.truncate(len);
+            (bytes, status)
+        }
     }
 
     /// RFC 6761 §6.3: `localhost` names resolve to loopback.
@@ -565,14 +715,18 @@ impl Pipeline {
         stale_ok: bool,
         start: Instant,
         qtype: u16,
+        who: Who,
     ) -> Response {
         let this = Arc::clone(self);
         let req = req.to_vec();
         let transport = meta.transport;
         Response::Deferred(Box::pin(async move {
             let answer = Arc::clone(&this)
-                .resolve_for_client(req, key, view, stale_ok, transport)
-                .await;
+                .resolve_for_client(req.clone(), key, view, stale_ok, transport)
+                .await
+                .map(|(bytes, status)| {
+                    this.deferred_cname_block(&req, who, transport, bytes, status)
+                });
             let (status, rcode) = match &answer {
                 Some((bytes, status)) => (*status, Some(response_rcode(bytes))),
                 None => (Status::Dropped, None),
@@ -863,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn flt_003_blocked_names_get_nxdomain_with_ede() {
+    fn flt_008_blocked_names_get_null_ip_with_ede() {
         use telltale_filter::matcher::Lookup;
         for lookup in [Lookup::Walk, Lookup::Indexed] {
             let p = pipeline();
@@ -877,7 +1031,8 @@ mod tests {
                 panic!("blocked queries are answered immediately");
             };
             let s = summarize(&out[..len]).unwrap();
-            assert_eq!(s.rcode, rcode::NXDOMAIN, "{lookup:?}");
+            // Default block mode: null IP (0.0.0.0 for A).
+            assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1), "{lookup:?}");
             let text = b"blocked by list ads";
             assert!(
                 out[..len].windows(text.len()).any(|w| w == text),
@@ -919,6 +1074,7 @@ lists = []
 [[group]]
 name = "kids"
 lists = ["ads"]
+block_mode = "nxdomain"
 
 [[client]]
 name = "tablet"
@@ -973,6 +1129,193 @@ groups = ["kids"]
             [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01],
         )]);
         assert_eq!(ask("10.0.0.77:1000"), rcode::NXDOMAIN);
+    }
+
+    /// A pipeline with the given config's clients/groups, a never-contacted upstream (so the
+    /// cache path runs), and `rules` installed as list "ads".
+    fn pipeline_with(cfg_toml: &str, rules: &str) -> Arc<Pipeline> {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let router = Router::from_config(&cfg).unwrap();
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(router),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        install_filter(&p, rules, telltale_filter::matcher::Lookup::Indexed);
+        p
+    }
+
+    fn ask_from(p: &Arc<Pipeline>, peer: &str, name: &str, qtype: u16) -> Vec<u8> {
+        let mut out = [0u8; 4096];
+        let meta = RequestMeta {
+            peer: format!("{peer}:1000").parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+        };
+        match Handler(Arc::clone(p)).handle(&query(name, qtype, true), &meta, &mut out) {
+            Response::Ready(len) => out[..len].to_vec(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn contains(msg: &[u8], needle: &[u8]) -> bool {
+        msg.windows(needle.len()).any(|w| w == needle)
+    }
+
+    const UPSTREAM: &str = "[[upstream]]\nname = \"u\"\nurl = \"udp://127.0.0.1:9\"\n[[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n";
+
+    #[test]
+    fn flt_008_block_modes_per_group() {
+        let cfg = format!(
+            r#"{UPSTREAM}
+[[list]]
+name = "ads"
+rules = ["||x^"]
+[[group]]
+name = "nx"
+block_mode = "nxdomain"
+[[group]]
+name = "nodata"
+block_mode = "nodata"
+[[group]]
+name = "refused"
+block_mode = "refused"
+[[group]]
+name = "custom"
+block_mode = "custom_ip"
+block_ips = ["192.0.2.7", "fd00::7"]
+block_ttl = 300
+[[group]]
+name = "kids"
+ede = "filtered"
+ede_text = false
+[[client]]
+name = "a"
+match = ["10.0.0.1"]
+groups = ["nx"]
+[[client]]
+name = "b"
+match = ["10.0.0.2"]
+groups = ["nodata"]
+[[client]]
+name = "c"
+match = ["10.0.0.3"]
+groups = ["refused"]
+[[client]]
+name = "d"
+match = ["10.0.0.4"]
+groups = ["custom"]
+[[client]]
+name = "e"
+match = ["10.0.0.5"]
+groups = ["kids"]
+"#
+        );
+        let p = pipeline_with(&cfg, "||ads.example.com^\n");
+        let sum = |m: &[u8]| {
+            let s = summarize(m).unwrap();
+            (s.rcode, s.answers)
+        };
+        let name = "ads.example.com";
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.1", name, rtype::A)),
+            (rcode::NXDOMAIN, 0)
+        );
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.2", name, rtype::A)),
+            (rcode::NOERROR, 0)
+        );
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.3", name, rtype::A)),
+            (rcode::REFUSED, 0)
+        );
+        let a = ask_from(&p, "10.0.0.4", name, rtype::A);
+        assert_eq!(sum(&a), (rcode::NOERROR, 1));
+        assert!(contains(&a, &[192, 0, 2, 7]));
+        let aaaa = ask_from(&p, "10.0.0.4", name, rtype::AAAA);
+        assert!(contains(
+            &aaaa,
+            &"fd00::7".parse::<Ipv6Addr>().unwrap().octets()
+        ));
+        assert_eq!(
+            sum(&ask_from(&p, "10.0.0.4", name, rtype::TXT)),
+            (rcode::NOERROR, 0)
+        );
+        // Null IP (default mode) with EDE 17 and no list text: option 15, length 2, code 17.
+        let e = ask_from(&p, "10.0.0.5", name, rtype::AAAA);
+        assert_eq!(sum(&e), (rcode::NOERROR, 1));
+        assert!(contains(&e, &[0, 15, 0, 2, 0, 17]));
+        assert!(!contains(&e, b"blocked by list"));
+    }
+
+    #[test]
+    fn flt_007_cname_targets_are_inspected_on_cache_hits() {
+        let cfg = format!("{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n");
+        let p = pipeline_with(&cfg, "||tracker.ads.example.com^\n");
+        // Cache an answer for www.example.com that CNAMEs into a blocked name.
+        let cache_answer = |qname: &str, target: &str| {
+            let req = query(qname, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_cname(300, &NameBuf::from_presentation(target).unwrap())
+                .unwrap();
+            b.answer_a(300, Ipv4Addr::new(203, 0, 113, 9)).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_answer("www.example.com", "tracker.ads.example.com");
+        cache_answer("cdn.example.com", "edge.example.net");
+        let blocked = ask_from(&p, "10.0.0.1", "www.example.com", rtype::A);
+        let s = summarize(&blocked).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+        assert!(
+            contains(&blocked, &[0, 0, 0, 0]),
+            "null IP replaces the answer"
+        );
+        assert!(contains(&blocked, b"CNAME target blocked by list ads"));
+        let fine = ask_from(&p, "10.0.0.1", "cdn.example.com", rtype::A);
+        assert!(
+            contains(&fine, &[203, 0, 113, 9]),
+            "unlisted chain is served from cache"
+        );
+    }
+
+    #[test]
+    fn flt_009_pause_global_and_per_group() {
+        let cfg = format!("{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n");
+        let p = pipeline_with(&cfg, "||ads.example.com^\n");
+        let blocked = |p: &Arc<Pipeline>| {
+            let m = ask_from(p, "10.0.0.1", "ads.example.com", rtype::A);
+            // Unblocked queries go upstream (deferred), so no immediate answer.
+            !m.is_empty() && contains(&m, b"blocked by list ads")
+        };
+        assert!(blocked(&p));
+        p.pause.pause_all(unix_now() + 600);
+        assert!(!blocked(&p), "global pause");
+        p.pause.pause_all(0);
+        assert!(blocked(&p));
+        p.pause.pause_group("default", unix_now() + 600);
+        assert!(!blocked(&p), "the client's group is paused");
+        p.pause.pause_group("default", unix_now() - 1);
+        assert!(blocked(&p), "an expired pause resumes on its own");
     }
 
     #[test]

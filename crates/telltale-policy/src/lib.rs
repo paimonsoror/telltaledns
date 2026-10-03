@@ -14,7 +14,7 @@ use std::net::IpAddr;
 
 use telltale_config::Cidr;
 
-pub use clients::{Client, ClientTable, Group, IdSource, Identity, Neighbors};
+pub use clients::{BlockPolicy, Client, ClientTable, Group, IdSource, Identity, Neighbors, Pause};
 pub use local::{LoadReport, LocalData, reverse_name};
 pub use ratelimit::RateLimiter;
 pub use special::{Special, classify};

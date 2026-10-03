@@ -130,7 +130,7 @@ default_ttl = 300
 - `telltale config check` validates record values and reads the hosts files.
 
 ## Filter lists
-> **Status:** lists are downloaded, compiled, and **enforced** per client group. Blocked names get NXDOMAIN with an Extended DNS Error naming the list (more block modes arrive with T2.6).
+> **Status:** lists are downloaded, compiled, and **enforced** per client group, including names reached through a CNAME.
 
 ```toml
 [[list]]
@@ -225,9 +225,27 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:
 ```
 $ dig @192.168.1.53 ads.example.com
-;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR
 ; EDE: 15 (Blocked): (blocked by list hagezi-pro)
+ads.example.com.   60   IN   A   0.0.0.0
 ```
+How blocked names are answered is set per group (the client's highest-priority group decides):
+
+```toml
+[[group]]
+name = "kids"
+block_mode = "null_ip"      # default: A → 0.0.0.0, AAAA → ::, other types → no records
+                            # or "nxdomain", "nodata", "refused", "custom_ip"
+block_ips = ["192.168.1.2", "fd00::2"]   # for "custom_ip", e.g. a "blocked" page
+block_ttl = 60              # how long clients may cache the block
+ede = "filtered"            # "blocked" (EDE 15, default) or "filtered" (EDE 17: parental controls)
+ede_text = true             # name the list in the EDE text (set false to hide list names)
+```
+`null_ip` is the default, as in Pi-hole and Technitium. Apps treat it as "unreachable" and give up quickly, while NXDOMAIN makes some apps retry or fall back to another resolver.
+
+**CNAME inspection:** if an answer leads through a CNAME to a blocked name (`www.microsoft.com` → `…edgekey.net` → `….akamaiedge.net`), the answer is replaced with the client's block answer, with EDE text `CNAME target blocked by list …`. This also applies to answers served from the cache, which is shared by every group, so one group's policy never leaks into another's.
+
+**Pause:** blocking can be paused for everyone or for one group, for a set time, and resumes on its own. The control is part of the API (milestone M3); the metric `telltale_filter_paused_until_seconds{group}` shows active pauses.
 When rules disagree, the most important one wins:
 
 | Wins | Rule | Example |
@@ -241,7 +259,7 @@ Among rules of the same kind, the one reported is an exact-name rule first, then
 
 Lookups take well under a microsecond: about 0.3 µs typically and under 1 µs at p99 on an x86 server with 2.6M blocked names. They use an in-memory index built from the snapshot (about 10 bytes per name, on top of the snapshot's 9). A new snapshot is served the moment it's loaded, and the index is swapped in about a second later, without pausing queries. Memory with HaGeZi Pro + TIF + OISD big + StevenBlack + AdGuard (2.7M names): about 85 MiB in total; HaGeZi Pro alone (227k names): about 10 MiB.
 
-Metrics: `telltale_queries_total{status="blocked"}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
+Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `telltale_filter_paused_until_seconds{group}`, `telltale_filter_lookup_index_bytes` (0 while the index is being built), `telltale_filter_snapshot_version`, `telltale_filter_rules`, `telltale_filter_compile_seconds`, `telltale_list_entries{list}`, `telltale_list_source_bytes`, `telltale_list_last_success_timestamp_seconds`, `telltale_list_last_change_timestamp_seconds`, and `telltale_list_fetch_consecutive_failures`, each labeled `{list}`. To alert on a list that has failed for two days:
 ```
 time() - telltale_list_last_success_timestamp_seconds > 172800
 ```

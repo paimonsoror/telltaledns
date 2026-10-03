@@ -394,6 +394,22 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
                 r.err(format!("{p}.lists[{j}]"), format!("unknown list `{l}`"));
             }
         }
+        // REQ: FLT-008
+        match (g.block_mode, g.block_ips.is_empty()) {
+            (crate::BlockMode::CustomIp, true) => {
+                r.err(
+                    format!("{p}.block_ips"),
+                    "required for block_mode = \"custom_ip\"",
+                );
+            }
+            (crate::BlockMode::CustomIp, false) | (_, true) => {}
+            (_, false) => r.warn(format!(
+                "{p}.block_ips: only used with block_mode = \"custom_ip\""
+            )),
+        }
+        if g.block_ttl > 86_400 {
+            r.err(format!("{p}.block_ttl"), "must be at most 86400");
+        }
     }
     let mut names = HashSet::new();
     let mut keys: std::collections::HashMap<MatchKey, usize> = std::collections::HashMap::new();

@@ -6,11 +6,12 @@
 //! config, so identifying a client allocates nothing.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
-use telltale_config::{Cidr, Config, MatchKey};
+use telltale_config::{BlockMode, Cidr, Config, EdeKind, GroupConfig, MatchKey};
 
 /// A client group (FLT-005).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,118 @@ pub struct Group {
     /// List names; `None` = every enabled list.
     pub lists: Option<Vec<Box<str>>>,
     pub priority: i32,
+    pub block: BlockPolicy,
+}
+
+/// How a group's blocked queries are answered (FLT-008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockPolicy {
+    pub mode: BlockMode,
+    pub v4: Vec<Ipv4Addr>,
+    pub v6: Vec<Ipv6Addr>,
+    pub ttl: u32,
+    /// RFC 8914 code: 15 (Blocked) or 17 (Filtered).
+    pub ede_code: u16,
+    /// Name the list in the EDE text.
+    pub ede_text: bool,
+}
+
+impl Default for BlockPolicy {
+    fn default() -> Self {
+        Self {
+            mode: BlockMode::NullIp,
+            v4: Vec::new(),
+            v6: Vec::new(),
+            ttl: 60,
+            ede_code: telltale_proto::ede::BLOCKED,
+            ede_text: true,
+        }
+    }
+}
+
+impl BlockPolicy {
+    fn from_config(g: &GroupConfig) -> Self {
+        Self {
+            mode: g.block_mode,
+            v4: g
+                .block_ips
+                .iter()
+                .filter_map(|ip| match ip {
+                    IpAddr::V4(v) => Some(*v),
+                    IpAddr::V6(_) => None,
+                })
+                .collect(),
+            v6: g
+                .block_ips
+                .iter()
+                .filter_map(|ip| match ip {
+                    IpAddr::V6(v) => Some(*v),
+                    IpAddr::V4(_) => None,
+                })
+                .collect(),
+            ttl: g.block_ttl,
+            ede_code: match g.ede {
+                EdeKind::Blocked => telltale_proto::ede::BLOCKED,
+                EdeKind::Filtered => telltale_proto::ede::FILTERED,
+            },
+            ede_text: g.ede_text,
+        }
+    }
+}
+
+/// Pause state (FLT-009): blocking off globally or for a group until a deadline (unix
+/// seconds). Kept by name, so pauses survive config reloads. Reading it costs one atomic load
+/// when nothing is paused.
+#[derive(Debug, Default)]
+pub struct Pause {
+    global_until: AtomicU64,
+    any_group: AtomicBool,
+    groups: ArcSwap<HashMap<Box<str>, u64>>,
+}
+
+impl Pause {
+    /// Pauses blocking for everyone until `until` (unix seconds); 0 resumes.
+    pub fn pause_all(&self, until: u64) {
+        self.global_until.store(until, Ordering::Release);
+    }
+
+    /// Pauses one group until `until`; 0 resumes it.
+    pub fn pause_group(&self, group: &str, until: u64) {
+        let mut map = (**self.groups.load()).clone();
+        if until == 0 {
+            map.remove(group);
+        } else {
+            map.insert(group.into(), until);
+        }
+        self.any_group.store(!map.is_empty(), Ordering::Release);
+        self.groups.store(Arc::new(map));
+    }
+
+    /// Is blocking paused for a client whose settings come from `group` at `now`?
+    pub fn is_paused(&self, group: &str, now: impl Fn() -> u64) -> bool {
+        let global = self.global_until.load(Ordering::Acquire);
+        let any = self.any_group.load(Ordering::Acquire);
+        if global == 0 && !any {
+            return false;
+        }
+        let now = now();
+        global > now || (any && self.groups.load().get(group).is_some_and(|&u| u > now))
+    }
+
+    /// Active pauses: (`None` = global, group) → deadline. For metrics and the API.
+    pub fn active(&self, now: u64) -> Vec<(Option<Box<str>>, u64)> {
+        let mut v = Vec::new();
+        let g = self.global_until.load(Ordering::Acquire);
+        if g > now {
+            v.push((None, g));
+        }
+        for (name, &until) in self.groups.load().iter() {
+            if until > now {
+                v.push((Some(name.clone()), until));
+            }
+        }
+        v
+    }
 }
 
 /// A configured device.
@@ -114,6 +227,7 @@ impl ClientTable {
                     .as_ref()
                     .map(|l| l.iter().map(|n| n.as_str().into()).collect()),
                 priority: g.priority,
+                block: BlockPolicy::from_config(g),
             })
             .collect();
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
@@ -123,6 +237,7 @@ impl ClientTable {
                 name: "default".into(),
                 lists: None,
                 priority: i32::MIN,
+                block: BlockPolicy::default(),
             });
             groups.len() - 1
         };
@@ -383,6 +498,24 @@ trust_edns_mac_from = ["192.168.1.1/32"]
             ("-".into(), IdSource::Default)
         );
         assert!(t.uses_macs());
+    }
+
+    #[test]
+    fn flt_009_pause_global_and_per_group() {
+        let p = Pause::default();
+        let now = || 1000;
+        assert!(!p.is_paused("kids", now));
+        p.pause_group("kids", 1600);
+        assert!(p.is_paused("kids", now));
+        assert!(!p.is_paused("default", now));
+        assert!(!p.is_paused("kids", || 1600), "expires");
+        p.pause_all(2000);
+        assert!(p.is_paused("default", now));
+        assert_eq!(p.active(1000).len(), 2);
+        p.pause_all(0);
+        p.pause_group("kids", 0);
+        assert!(!p.is_paused("kids", now));
+        assert_eq!(p.active(0), vec![]);
     }
 
     #[test]

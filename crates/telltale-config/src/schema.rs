@@ -394,6 +394,49 @@ pub struct GroupConfig {
     /// settings come from the highest-priority group.
     #[serde(default)]
     pub priority: i32,
+    /// How blocked queries are answered (FLT-008).
+    #[serde(default)]
+    pub block_mode: BlockMode,
+    /// Addresses for `block_mode = "custom_ip"` (IPv4 for A, IPv6 for AAAA).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_ips: Vec<IpAddr>,
+    /// TTL of block answers (and of the SOA that lets clients cache a negative block).
+    #[serde(default = "default_block_ttl")]
+    pub block_ttl: u32,
+    /// Extended DNS Error on block answers: `blocked` (15) or `filtered` (17, RFC 8914: at
+    /// the client's request, e.g. parental controls).
+    #[serde(default)]
+    pub ede: EdeKind,
+    /// Include which list blocked the name in the EDE text.
+    #[serde(default = "default_true")]
+    pub ede_text: bool,
+}
+
+const fn default_block_ttl() -> u32 {
+    60
+}
+
+/// Block response (FLT-008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockMode {
+    /// A → 0.0.0.0, AAAA → ::, anything else → NODATA (Pi-hole and Technitium default).
+    #[default]
+    NullIp,
+    Nxdomain,
+    Nodata,
+    Refused,
+    /// A/AAAA → `block_ips` (e.g. a "blocked" landing page); other types → NODATA.
+    CustomIp,
+}
+
+/// EDE code on block answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum EdeKind {
+    #[default]
+    Blocked,
+    Filtered,
 }
 
 /// A known device (FLT-006).

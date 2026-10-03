@@ -387,3 +387,36 @@ match = ["192.168.1.50"]
         assert!(p.contains(&want), "missing {want} in {p:?}");
     }
 }
+
+#[test]
+fn flt_008_block_modes() {
+    let loaded = load_str(
+        r#"
+[[group]]
+name = "kids"
+block_mode = "custom_ip"
+block_ips = ["192.168.1.2", "fd00::2"]
+block_ttl = 300
+ede = "filtered"
+ede_text = false
+
+[[group]]
+name = "default"
+block_mode = "nxdomain"
+"#,
+    )
+    .unwrap();
+    let g = &loaded.config.group;
+    assert_eq!(g[0].block_mode, telltale_config::BlockMode::CustomIp);
+    assert_eq!(g[0].block_ips.len(), 2);
+    assert_eq!(g[0].ede, telltale_config::EdeKind::Filtered);
+    assert!(!g[0].ede_text);
+    assert_eq!(g[1].block_mode, telltale_config::BlockMode::Nxdomain);
+    assert_eq!(g[1].block_ttl, 60);
+    assert!(g[1].ede_text);
+
+    let errs = load_str("[[group]]\nname = \"x\"\nblock_mode = \"custom_ip\"\n").unwrap_err();
+    assert_eq!(paths(&errs), vec!["group[0].block_ips"]);
+    let errs = load_str("[[group]]\nname = \"x\"\nblock_mode = \"sinkhole\"\n").unwrap_err();
+    assert_eq!(errs[0].path, "group[0].block_mode");
+}
