@@ -150,3 +150,16 @@ footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; justify-content: space
   .yarn { transform-origin: 0 0; animation: flutter 3.2s ease-in-out infinite; }
   @keyframes flutter { 0%,100% { transform: skewY(0deg) scaleX(1); } 50% { transform: skewY(-4deg) scaleX(.96); } }
 }
+/* T4.6: install guides and the configuration reference */
+.toc { columns: 2; gap: 28px; }
+.guide > li { margin: .7em 0; }
+.guide pre { margin: .5em 0; }
+.faq dt { font-weight: 700; margin-top: 1em; }
+.faq dd { margin: .3em 0 0; color: var(--ink-2); }
+.table-wrap { overflow-x: auto; }
+.cfg table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.cfg th, .cfg td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.cfg td:nth-child(2), .cfg td:nth-child(3) { white-space: nowrap; }
+.cfg h3 code { font-size: 1.05em; }
+.cfg { margin: 28px 0; }
+@media (max-width: 700px) { .toc { columns: 1; } .cfg td:nth-child(2), .cfg td:nth-child(3) { white-space: normal; } }

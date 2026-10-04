@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration — TelltaleDNS</title>
+<meta name="description" content="Every telltale.toml setting with its type, default, and meaning, generated from the configuration schema.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="config">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Reference</p>
+  <h1>Configuration</h1>
+  <p class="lede">Every setting in <code>telltale.toml</code>, generated from the same schema the binary validates against, so it can't drift from the code.</p>
+  <ul>
+    <li>Every key is optional: anything you leave out uses the default shown here.</li>
+    <li><code>[name]</code> is a table (set once); <code>[[name]]</code> is a list of tables (repeat it for each entry).</li>
+    <li>Check a file before using it: <code>telltale config check telltale.toml</code>. Unknown keys are errors, with the path to the mistake.</li>
+    <li>Editor completion: <code>telltale config schema &gt; telltale.schema.json</code> and point your TOML extension at it.</li>
+    <li>Environment variables override the file: <code>TELLTALE_CACHE_MAX_TTL=3600</code> sets <code>[cache] max_ttl</code>.</li>
+    <li>Changes apply on reload (<code>SIGHUP</code>) without dropping queries, except <code>[node]</code>, <code>[cache]</code>, <code>[telemetry]</code>, and <code>[filter]</code>, which need a restart.</li>
+  </ul>
+  <p class="muted">Sections: <!-- @config-toc --></p>
+</section>
+
+<section class="reference">
+<!-- @config-reference -->
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

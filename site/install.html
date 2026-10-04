@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install — TelltaleDNS</title>
+<meta name="description" content="Step-by-step installs: Raspberry Pi with Docker Compose or systemd, Docker, and Kubernetes with Helm, plus the hybrid Pi and Kubernetes topology.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="install">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Deployment guides</p>
+  <h1>Install TelltaleDNS</h1>
+  <p class="lede">Pick where it runs. Every path ends the same way: your router hands out TelltaleDNS as the DNS server, and every device on the network uses it, with its own address visible.</p>
+  <ul class="toc">
+    <li><a href="#pi">Raspberry Pi (Docker Compose)</a> — the recommended home setup</li>
+    <li><a href="#native">Raspberry Pi or Linux (native, systemd)</a></li>
+    <li><a href="#k8s">Kubernetes (Helm)</a></li>
+    <li><a href="#hybrid">A Pi and Kubernetes together</a></li>
+    <li><a href="#router">Point your network at it</a> · <a href="#trouble">Troubleshooting</a></li>
+  </ul>
+</section>
+
+<section id="pi">
+  <p class="eyebrow">Guide 1 · about 10 minutes</p>
+  <h2>Raspberry Pi with Docker Compose</h2>
+  <figure class="figure">
+    <svg viewBox="0 0 900 230" role="img">
+      <title>Devices ask the Pi; the Pi answers from its cache or asks an encrypted upstream</title>
+      <defs><marker id="i-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+      <rect x="20" y="30" width="190" height="170" rx="16" class="svg-box"/>
+      <text x="115" y="62" text-anchor="middle" class="svg-text">Your devices</text>
+      <text x="115" y="104" text-anchor="middle" font-size="28">📱 💻 📺</text>
+      <text x="115" y="140" text-anchor="middle" class="svg-sub">get the Pi as DNS</text>
+      <text x="115" y="158" text-anchor="middle" class="svg-sub">from the router (DHCP)</text>
+      <path d="M210 115 H340" class="svg-stroke-brand" stroke-width="2" marker-end="url(#i-arrow)"/>
+      <text x="275" y="104" text-anchor="middle" class="svg-sub">port 53</text>
+      <rect x="342" y="30" width="230" height="170" rx="16" class="svg-brand"/>
+      <text x="457" y="62" text-anchor="middle" fill="#e8eef6" font-weight="700">🍓 Raspberry Pi</text>
+      <text x="457" y="98" text-anchor="middle" fill="#e8eef6" font-size="13">TelltaleDNS container</text>
+      <text x="457" y="120" text-anchor="middle" fill="#e8eef6" font-size="12">host network · read-only</text>
+      <text x="457" y="142" text-anchor="middle" fill="#e8eef6" font-size="12">blocklists · cache · query log</text>
+      <text x="457" y="176" text-anchor="middle" fill="#e8eef6" font-size="12">UI on :8053</text>
+      <path d="M572 115 H700" class="svg-stroke-accent" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#i-arrow)"/>
+      <text x="636" y="104" text-anchor="middle" class="svg-sub">DNS over TLS</text>
+      <rect x="702" y="60" width="178" height="110" rx="16" class="svg-box"/>
+      <text x="791" y="104" text-anchor="middle" class="svg-text">Cloudflare / Quad9</text>
+      <text x="791" y="128" text-anchor="middle" class="svg-sub">only for names not cached</text>
+    </svg>
+    <figcaption>Host networking is what lets TelltaleDNS see each device's own address (and MAC), so per-device statistics and rules work.</figcaption>
+  </figure>
+  <ol class="guide">
+    <li><b>Prepare the Pi.</b> Raspberry Pi OS (64-bit recommended) on a Pi 3, 4, 5, or Zero 2 W, with a fixed address (set a DHCP reservation in your router), and Docker:
+<pre><code>curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER    # log out and back in</code></pre></li>
+    <li><b>Free port 53.</b> If Pi-hole or another DNS server runs on the Pi, stop it. Check: <code>sudo ss -ulpn 'sport = :53'</code> should print nothing.</li>
+    <li><b>Download the bundle and start it.</b>
+<pre><code>mkdir ~/telltale && cd ~/telltale
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+docker compose up -d
+docker compose ps        # STATUS shows "healthy" within a minute</code></pre></li>
+    <li><b>Test it from another computer</b> (replace the address with your Pi's):
+<pre><code>dig @192.168.1.2 example.com          # an address: it resolves
+dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works</code></pre>
+      On Windows: <code>nslookup example.com 192.168.1.2</code>.</li>
+    <li><b>Create the admin account.</b> Print the one-time setup token and open the UI at <code>http://&lt;pi&gt;:8053/</code>:
+<pre><code>docker compose exec telltale telltale auth setup-token</code></pre></li>
+    <li><b>Point your network at it:</b> <a href="#router">see below</a>.</li>
+  </ol>
+  <p class="muted">Updating: <code>docker compose pull &amp;&amp; docker compose up -d</code>. Editing the config: change <code>telltale.toml</code>, then <code>docker compose kill -s HUP</code> applies it without dropping a query. On an SD card, the starter config keeps the query log for 7 days; a USB SSD is better for longer history.</p>
+</section>
+
+<section id="native">
+  <p class="eyebrow">Guide 2</p>
+  <h2>Raspberry Pi or Linux, native</h2>
+  <p>No Docker: a single static binary as a sandboxed systemd service. The installer checks the release's signature and checksum before installing anything, so read it, then run it:</p>
+<pre><code>curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+less install.sh
+sudo sh install.sh --edge          # without --edge: the latest tagged release
+sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre>
+  <ul>
+    <li>It creates a <code>telltale</code> user, writes the starter config to <code>/etc/telltale/telltale.toml</code> (never overwriting yours), and keeps data in <code>/var/lib/telltale</code>.</li>
+    <li>If systemd-resolved holds port 53 (Ubuntu, some Debian setups), it asks to turn the stub listener off.</li>
+    <li>Updates: <code>sudo telltale self-update --restart</code> (add <code>--channel edge</code> if you installed with <code>--edge</code>). The previous binary is kept as <code>telltale.old</code>.</li>
+    <li>Logs: <code>journalctl -u telltale -f</code>. Reload after editing the config: <code>sudo systemctl reload telltale</code>.</li>
+  </ul>
+</section>
+
+<section id="k8s">
+  <p class="eyebrow">Guide 3</p>
+  <h2>Kubernetes with Helm</h2>
+  <figure class="figure">
+    <svg viewBox="0 0 900 220" role="img">
+      <title>Devices reach a LoadBalancer IP; externalTrafficPolicy Local keeps their addresses on the way to the pod</title>
+      <defs><marker id="k-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+      <rect x="20" y="50" width="170" height="120" rx="16" class="svg-box"/>
+      <text x="105" y="96" text-anchor="middle" font-size="26">📱 💻</text>
+      <text x="105" y="130" text-anchor="middle" class="svg-text">Devices</text>
+      <path d="M190 110 H320" class="svg-stroke-brand" stroke-width="2" marker-end="url(#k-arrow)"/>
+      <text x="255" y="98" text-anchor="middle" class="svg-sub">53 · 853 · 443</text>
+      <rect x="322" y="50" width="220" height="120" rx="16" class="svg-box"/>
+      <text x="432" y="88" text-anchor="middle" class="svg-text">LoadBalancer IP</text>
+      <text x="432" y="112" text-anchor="middle" class="svg-sub">MetalLB / Cilium / kube-vip</text>
+      <text x="432" y="134" text-anchor="middle" class="svg-sub">externalTrafficPolicy: Local</text>
+      <path d="M542 110 H672" class="svg-stroke-ok" stroke-width="2.5" marker-end="url(#k-arrow)"/>
+      <text x="607" y="98" text-anchor="middle" class="svg-sub">client IP kept</text>
+      <rect x="674" y="40" width="206" height="140" rx="16" class="svg-brand"/>
+      <text x="777" y="78" text-anchor="middle" fill="#e8eef6" font-weight="700">☸️ TelltaleDNS pod</text>
+      <text x="777" y="104" text-anchor="middle" fill="#e8eef6" font-size="12">StatefulSet + volume</text>
+      <text x="777" y="126" text-anchor="middle" fill="#e8eef6" font-size="12">UI via Ingress</text>
+      <text x="777" y="148" text-anchor="middle" fill="#e8eef6" font-size="12">ServiceMonitor · alerts</text>
+    </svg>
+  </figure>
+<pre><code>git clone https://github.com/paimonsoror/telltaledns
+helm install telltale telltaledns/deploy/helm/telltale -n telltale --create-namespace \
+  --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
+kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: your DNS server address
+kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token \
+  -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml</code></pre>
+  <ul>
+    <li><b>Keep <code>externalTrafficPolicy: Local</code></b> (the default): with <code>Cluster</code>, every query looks like it came from a node, and TelltaleDNS shows a "client IPs appear masked" banner.</li>
+    <li>Your settings go in <code>config:</code> (TOML, the same keys as the <a href="config.html">configuration reference</a>); secrets come from existing Secrets.</li>
+    <li>Encrypted DNS for phones: <code>encrypted.dot.enabled</code> / <code>encrypted.doh.enabled</code> with a cert-manager certificate.</li>
+    <li>Monitoring: <code>serviceMonitor.enabled</code>, <code>prometheusRule.enabled</code>, <code>grafanaDashboard.enabled</code>.</li>
+  </ul>
+</section>
+
+<section id="hybrid">
+  <p class="eyebrow">Planned · roadmap M5</p>
+  <h2>A Pi and Kubernetes, one cluster</h2>
+  <figure class="figure">
+    <svg viewBox="0 0 900 200" role="img">
+      <title>A Pi and Kubernetes pods share one configuration; either side can be managed</title>
+      <rect x="20" y="30" width="300" height="140" rx="16" class="svg-box"/>
+      <text x="170" y="62" text-anchor="middle" class="svg-text">🍓 Pi (Compose or native)</text>
+      <text x="170" y="96" text-anchor="middle" class="svg-sub">answers on its own if the link drops</text>
+      <text x="170" y="120" text-anchor="middle" class="svg-sub">second DNS server in DHCP</text>
+      <rect x="580" y="30" width="300" height="140" rx="16" class="svg-box"/>
+      <text x="730" y="62" text-anchor="middle" class="svg-text">☸️ Kubernetes (Helm)</text>
+      <text x="730" y="96" text-anchor="middle" class="svg-sub">primary DNS server</text>
+      <text x="730" y="120" text-anchor="middle" class="svg-sub">UI, history, alerts</text>
+      <path d="M320 100 H580" class="svg-stroke-accent" stroke-width="2.5" stroke-dasharray="7 5"/>
+      <text x="450" y="90" text-anchor="middle" class="svg-sub">mTLS · signed config</text>
+      <text x="450" y="118" text-anchor="middle" class="svg-sub">one management plane</text>
+    </svg>
+    <figcaption>Until clustering lands, run both and give DHCP two DNS servers: each answers independently, with its own configuration.</figcaption>
+  </figure>
+</section>
+
+<section id="router">
+  <p class="eyebrow">Last step</p>
+  <h2>Point your network at it</h2>
+  <ol class="guide">
+    <li>In your router's DHCP (LAN) settings, set the <b>DNS server</b> to TelltaleDNS's address (the Pi, or the LoadBalancer IP). If there's a second field, use a second TelltaleDNS, or leave it empty: a public resolver there lets devices skip your blocking.</li>
+    <li>Renew leases: reconnect Wi-Fi, or wait for leases to expire (often a day).</li>
+    <li>Open the dashboard: devices appear under <b>Clients</b> with their own addresses. Give them names and groups there.</li>
+  </ol>
+  <p class="muted">Don't point the router's <i>own</i> upstream DNS at TelltaleDNS while devices use the router: every query would then come from the router, and TelltaleDNS would say client IPs appear masked.</p>
+</section>
+
+<section id="trouble">
+  <p class="eyebrow">If something's off</p>
+  <h2>Troubleshooting</h2>
+  <dl class="faq">
+    <dt>"address already in use" on port 53</dt>
+    <dd>Another DNS server runs there: Pi-hole, dnsmasq, or systemd-resolved's stub (<code>sudo ss -ulpn 'sport = :53'</code> names it). Stop it, or for systemd-resolved add <code>DNSStubListener=no</code> under <code>[Resolve]</code> in <code>/etc/systemd/resolved.conf.d/telltale.conf</code> and restart it.</dd>
+    <dt>A site is broken</dt>
+    <dd>Find it in the <b>Query log</b> and press <b>Why?</b>: it names the list and line that blocked it. Then add an allow rule for it (an <code>@@||name^</code> line in a list, or an allowlist).</dd>
+    <dt>Every query shows the same address</dt>
+    <dd>Something in between rewrites addresses: a router forwarding DNS, Docker without host networking, or Kubernetes with <code>externalTrafficPolicy: Cluster</code>. The UI's banner says which address; the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips">client IP guide</a> has the fixes.</dd>
+    <dt>Lost the setup token</dt>
+    <dd><code>telltale auth setup-token</code> prints it again until the first admin exists.</dd>
+  </dl>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

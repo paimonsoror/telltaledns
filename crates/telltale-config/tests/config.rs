@@ -420,3 +420,21 @@ block_mode = "nxdomain"
     let errs = load_str("[[group]]\nname = \"x\"\nblock_mode = \"sinkhole\"\n").unwrap_err();
     assert_eq!(errs[0].path, "group[0].block_mode");
 }
+
+/// REQ: DOC-002/003 (T4.6) — the site's configuration reference is rendered from
+/// docs/config-schema.json; this keeps it identical to `telltale config schema`.
+/// Regenerate with `UPDATE_SCHEMA=1 cargo test -p telltale-config doc_002_committed_schema`.
+#[test]
+fn doc_002_committed_schema_matches_the_code() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-schema.json");
+    let doc = serde_json::to_string_pretty(&telltale_config::json_schema()).unwrap() + "\n";
+    if std::env::var_os("UPDATE_SCHEMA").is_some() {
+        std::fs::write(&path, &doc).unwrap();
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        committed == doc,
+        "docs/config-schema.json is out of date: run UPDATE_SCHEMA=1 cargo test -p telltale-config doc_002_committed_schema"
+    );
+}

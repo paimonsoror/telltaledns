@@ -21,7 +21,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "how-it-works.html", "standards.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "standards.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -73,6 +73,157 @@ def render_standards(page, data):
     page = page.replace("<!-- @standards-rows -->", "\n".join(rows))
     page = page.replace("<!-- @standards-cards -->", "\n".join(cards))
     return page
+
+
+# REQ: DOC-002/003 (T4.6) — the configuration reference, rendered from the JSON Schema the
+# binary prints (`telltale config schema`), committed as docs/config-schema.json and kept
+# current by a test in telltale-config. Sections follow the order of a typical config.
+CONFIG_ORDER = [
+    "config_version", "node", "listen", "upstream", "upstream_group", "route", "list", "filter",
+    "group", "client", "clients", "record", "local", "access", "ratelimit", "special", "cache",
+    "telemetry", "api", "auth", "cluster",
+]
+
+
+def _resolve(s, defs):
+    """Follows $ref / single allOf / Option (anyOf with null); returns (schema, ref name)."""
+    name = None
+    for _ in range(8):
+        if "$ref" in s:
+            name = s["$ref"].split("/")[-1]
+            s = dict(defs[name], **{k: v for k, v in s.items() if k != "$ref"})
+        elif "allOf" in s and len(s["allOf"]) == 1:
+            s = dict(s["allOf"][0], **{k: v for k, v in s.items() if k != "allOf"})
+        elif "anyOf" in s and any(x.get("type") == "null" for x in s["anyOf"]):
+            rest = [x for x in s["anyOf"] if x.get("type") != "null"]
+            s = dict(rest[0], **{k: v for k, v in s.items() if k != "anyOf"}) if len(rest) == 1 else s
+            if len(rest) != 1:
+                break
+        else:
+            break
+    return s, name
+
+
+def _enum_values(s):
+    if "enum" in s:
+        return [str(v) for v in s["enum"]]
+    alts = s.get("oneOf") or s.get("anyOf") or []
+    vals = []
+    for a in alts:
+        if "const" in a:
+            vals.append(str(a["const"]))
+        elif "enum" in a:
+            vals += [str(v) for v in a["enum"]]
+        else:
+            return None
+    return vals or None
+
+
+def _type_label(s, defs):
+    s, name = _resolve(s, defs)
+    vals = _enum_values(s)
+    if vals:
+        return " | ".join('"{}"'.format(v) for v in vals)
+    t = s.get("type")
+    if isinstance(t, list):
+        t = [x for x in t if x != "null"]
+        t = t[0] if len(t) == 1 else "/".join(t)
+    if t == "array":
+        return "list of " + _type_label(s.get("items", {}), defs)
+    if t == "object" and name:
+        return name
+    if t:
+        return {"integer": "integer", "string": "string", "boolean": "true/false", "number": "number"}.get(t, t)
+    alts = s.get("oneOf") or s.get("anyOf")
+    if alts:
+        kinds = sorted({a.get("type", "?") for a in alts})
+        if kinds == ["integer", "string"]:
+            return "size (bytes or \"32MiB\")"
+        return " or ".join(kinds)
+    return name or "value"
+
+
+def _toml(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return json.dumps(v)
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml(x) for x in v) + "]" if len(json.dumps(v)) < 60 else "[…]"
+    if v is None:
+        return "(none)"
+    return "{…}"
+
+
+def _is_table(s, defs):
+    r, _ = _resolve(s, defs)
+    return r.get("type") == "object" and "properties" in r
+
+
+def _section(path, s, defs, array, out):
+    s, _ = _resolve(s, defs)
+    if s.get("type") == "array":
+        s, _ = _resolve(s.get("items", {}), defs)
+        array = True
+    head = "[[{}]]".format(path) if array else "[{}]".format(path)
+    anchor = "cfg-" + path.replace(".", "-")
+    out.append('<section class="cfg" id="{}"><h3><a href="#{}"><code>{}</code></a></h3>'.format(anchor, anchor, head))
+    desc = s.get("description", "")
+    if desc:
+        out.append("<p>{}</p>".format(_md(desc)))
+    rows, nested = [], []
+    for key, p in sorted(s.get("properties", {}).items()):
+        r, _ = _resolve(p, defs)
+        if _is_table(p, defs) or (r.get("type") == "array" and _is_table(r.get("items", {}), defs) and key not in ("rules",)):
+            nested.append((key, p))
+            continue
+        d = p.get("default", r.get("default"))
+        rows.append(
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                html.escape(key),
+                html.escape(_type_label(p, defs)),
+                "<code>{}</code>".format(html.escape(_toml(d))) if "default" in p or "default" in r else "",
+                _md(p.get("description", r.get("description", ""))),
+            )
+        )
+    if rows:
+        out.append('<div class="table-wrap"><table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead><tbody>')
+        out += rows
+        out.append("</tbody></table></div>")
+    out.append("</section>")
+    for key, p in nested:
+        _section(path + "." + key, p, defs, False, out)
+
+
+def _md(text):
+    """Backticks → <code>, the rest escaped; one paragraph."""
+    parts = text.replace("\n", " ").split("`")
+    return "".join("<code>{}</code>".format(html.escape(x)) if i % 2 else html.escape(x) for i, x in enumerate(parts))
+
+
+def render_config(page, schema):
+    defs = schema.get("$defs", {})
+    props = schema["properties"]
+    order = [k for k in CONFIG_ORDER if k in props] + sorted(k for k in props if k not in CONFIG_ORDER)
+    out, toc = [], []
+    scalars = [k for k in order if not _is_table(props[k], defs) and _resolve(props[k], defs)[0].get("type") != "array"]
+    if scalars:
+        out.append('<section class="cfg" id="cfg-top"><h3><a href="#cfg-top">Top level</a></h3><div class="table-wrap"><table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Meaning</th></tr></thead><tbody>')
+        for k in scalars:
+            p = props[k]
+            out.append("<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                k, html.escape(_type_label(p, defs)), "<code>{}</code>".format(html.escape(_toml(p["default"]))) if "default" in p else "", _md(p.get("description", ""))))
+        out.append("</tbody></table></div></section>")
+    for k in order:
+        if k in scalars:
+            continue
+        array = _resolve(props[k], defs)[0].get("type") == "array"
+        toc.append('<a href="#cfg-{}"><code>{}</code></a>'.format(k, ("[[{}]]" if array else "[{}]").format(k)))
+        _section(k, props[k], defs, array, out)
+    page = page.replace("<!-- @config-toc -->", " · ".join(toc))
+    return page.replace("<!-- @config-reference -->", "\n".join(out))
 
 
 def expand_ids(text):
@@ -151,6 +302,8 @@ def main():
         slug = name[:-5]
         h = header.replace('data-page="{}"'.format(slug), 'data-page="{}" aria-current="page"'.format(slug))
         page = page.replace("<!-- @header -->", h).replace("<!-- @footer -->", footer)
+        if name == "config.html":
+            page = render_config(page, json.loads(read(os.path.join(ROOT, "docs", "config-schema.json"))))
         if name == "standards.html":
             page = render_standards(page, data)
         if "<!-- @" in page:

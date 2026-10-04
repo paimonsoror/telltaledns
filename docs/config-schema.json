@@ -1,0 +1,1668 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "Root of `telltale.toml`.",
+  "type": "object",
+  "properties": {
+    "access": {
+      "description": "Who may query (refuse everyone else).",
+      "$ref": "#/$defs/AccessConfig",
+      "default": {
+        "allowed_networks": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "100.64.0.0/10",
+          "169.254.0.0/16",
+          "127.0.0.0/8",
+          "fc00::/7",
+          "fe80::/10",
+          "::1/128"
+        ]
+      }
+    },
+    "api": {
+      "description": "The REST API (and, later, the web UI).",
+      "$ref": "#/$defs/ApiConfig",
+      "default": {
+        "enabled": true,
+        "listen": "0.0.0.0:8053",
+        "trusted_proxies": []
+      }
+    },
+    "auth": {
+      "description": "Sign-in: sessions, HTTP Basic, two-factor policy (API-003).",
+      "$ref": "#/$defs/AuthConfig",
+      "default": {
+        "allow_insecure_basic": false,
+        "oidc": {
+          "allowed_admin_networks": [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+            "169.254.0.0/16",
+            "127.0.0.0/8",
+            "fc00::/7",
+            "fe80::/10",
+            "::1/128"
+          ],
+          "disable_local_login": false,
+          "provider": [],
+          "public_url": ""
+        },
+        "session_idle_hours": 24,
+        "session_ttl_hours": 168,
+        "totp_required_roles": []
+      }
+    },
+    "cache": {
+      "description": "Response cache.",
+      "$ref": "#/$defs/CacheConfig",
+      "default": {
+        "max_bytes": "32MiB",
+        "max_entries": 0,
+        "max_ttl": 86400,
+        "min_ttl": 0,
+        "negative_ttl_max": 3600,
+        "persist": false,
+        "prefetch": true,
+        "prefetch_min_hits": 3,
+        "prefetch_threshold_pct": 10,
+        "serve_stale": true,
+        "servfail_ttl": 5,
+        "stale_answer_client_timeout_ms": 1800,
+        "stale_answer_ttl": 30,
+        "stale_max_age": 86400
+      }
+    },
+    "client": {
+      "description": "Known devices and how to recognize them (FLT-006).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ClientConfig"
+      }
+    },
+    "clients": {
+      "description": "Client identification settings.",
+      "$ref": "#/$defs/ClientsConfig",
+      "default": {
+        "infrastructure": [],
+        "neighbor_refresh_secs": 60,
+        "neighbor_table": true,
+        "trust_edns_mac_from": []
+      }
+    },
+    "cluster": {
+      "description": "Cluster identity (full cluster settings arrive with M5).",
+      "$ref": "#/$defs/ClusterConfig",
+      "default": {
+        "eligible": true,
+        "name": "telltale",
+        "site": "default"
+      }
+    },
+    "config_version": {
+      "description": "Schema version of this file (currently 1).",
+      "type": "integer",
+      "format": "uint32",
+      "default": 1,
+      "minimum": 0
+    },
+    "filter": {
+      "description": "List download and compile settings.",
+      "$ref": "#/$defs/FilterConfig",
+      "default": {
+        "compile_memory": "128MiB",
+        "compile_threads": 0,
+        "fetch_concurrency": 4,
+        "fetch_retries": 3,
+        "fetch_timeout_secs": 120,
+        "max_list_bytes": "64MiB",
+        "refresh_secs": 86400
+      }
+    },
+    "group": {
+      "description": "Client groups (FLT-005). A `default` group (every list) exists even if not declared.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GroupConfig"
+      }
+    },
+    "list": {
+      "description": "Filter lists: blocklists and allowlists from URLs, files, or inline rules (`spec/05`).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FilterList"
+      }
+    },
+    "listen": {
+      "description": "DNS listeners. Setting `[[listen]]` replaces the defaults entirely.",
+      "type": "array",
+      "default": [
+        {
+          "addr": "0.0.0.0:53",
+          "proto": "udp",
+          "proxy_protocol": false
+        },
+        {
+          "addr": "0.0.0.0:53",
+          "proto": "tcp",
+          "proxy_protocol": false
+        },
+        {
+          "addr": "[::]:53",
+          "proto": "udp",
+          "proxy_protocol": false
+        },
+        {
+          "addr": "[::]:53",
+          "proto": "tcp",
+          "proxy_protocol": false
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/Listener"
+      }
+    },
+    "local": {
+      "description": "Local data settings (hosts files, PTR generation).",
+      "$ref": "#/$defs/LocalConfig",
+      "default": {
+        "auto_ptr": true,
+        "default_ttl": 300,
+        "hosts_files": []
+      }
+    },
+    "node": {
+      "description": "This node's role and local settings.",
+      "$ref": "#/$defs/NodeConfig",
+      "default": {
+        "data_dir": "/var/lib/telltale",
+        "name": "",
+        "role": "all",
+        "workers": 0
+      }
+    },
+    "ratelimit": {
+      "description": "Per-client query rate limits (DNS-014).",
+      "$ref": "#/$defs/RateLimitConfig",
+      "default": {
+        "action": "refused",
+        "enabled": true,
+        "exempt": [
+          "127.0.0.0/8",
+          "::1/128"
+        ],
+        "ipv4_prefix": 32,
+        "ipv6_prefix": 64,
+        "queries": 1000,
+        "window_secs": 60
+      }
+    },
+    "record": {
+      "description": "Local DNS records answered authoritatively (DNS-010).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/LocalRecord"
+      }
+    },
+    "route": {
+      "description": "Per-domain / per-group / per-qtype routing to upstream groups.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Route"
+      }
+    },
+    "special": {
+      "description": "Special-name handling (RFC 6761 etc.).",
+      "$ref": "#/$defs/SpecialConfig",
+      "default": {
+        "block_firefox_canary": true,
+        "localhost": true,
+        "private_ptr_nxdomain": true,
+        "refuse_chaos": true
+      }
+    },
+    "telemetry": {
+      "description": "Telemetry, query log, and metrics.",
+      "$ref": "#/$defs/TelemetryConfig",
+      "default": {
+        "metrics": {
+          "enabled": true,
+          "listen": "0.0.0.0:9153",
+          "per_client": false,
+          "per_client_cap": 100
+        },
+        "mode": "local",
+        "qlog": {
+          "enabled": true,
+          "flush_interval_secs": 10,
+          "fsync": false,
+          "privacy_level": 0,
+          "retention_bytes": "2GiB",
+          "retention_days": 30
+        },
+        "ring_slots": 4096
+      }
+    },
+    "upstream": {
+      "description": "Upstream resolvers.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Upstream"
+      }
+    },
+    "upstream_group": {
+      "description": "Named groups of upstreams with a selection strategy.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/UpstreamGroup"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AccessConfig": {
+      "description": "Who may use this resolver (`spec/08` §6: never an open resolver by default).",
+      "type": "object",
+      "properties": {
+        "allowed_networks": {
+          "description": "Clients outside these networks get REFUSED. Default: private (RFC 1918), CGNAT /\nTailscale (100.64/10), ULA, link-local, and loopback.",
+          "type": "array",
+          "default": [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+            "169.254.0.0/16",
+            "127.0.0.0/8",
+            "fc00::/7",
+            "fe80::/10",
+            "::1/128"
+          ],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApiConfig": {
+      "description": "REST API listener (API-001). It also serves `/metrics` (signed in) and the health probes,\nonly to clients in `[access] allowed_networks` (ADR-029).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "listen": {
+          "description": "Where the API listens (default `0.0.0.0:8053`).",
+          "type": "string",
+          "default": "0.0.0.0:8053"
+        },
+        "trusted_proxies": {
+          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log). Default:\nnone (the connection's address is the client).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuthConfig": {
+      "description": "Sign-in settings (API-003, `spec/08` §6). Users, sessions, and tokens live in\n`<data_dir>/state.db`. The first admin comes from the one-time setup token (in the log\nand `<data_dir>/setup-token`) or from `TELLTALE_BOOTSTRAP_ADMIN_USER` with\n`TELLTALE_BOOTSTRAP_ADMIN_PASSWORD` or `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.",
+      "type": "object",
+      "properties": {
+        "allow_insecure_basic": {
+          "description": "Accept HTTP Basic over plain HTTP. Off: Basic only behind HTTPS (a proxy that sends\n`X-Forwarded-Proto: https`).",
+          "type": "boolean",
+          "default": false
+        },
+        "oidc": {
+          "description": "Sign-in through `OpenID Connect` providers (Keycloak, Authentik, ...; API-004).",
+          "$ref": "#/$defs/OidcConfig",
+          "default": {
+            "allowed_admin_networks": [
+              "10.0.0.0/8",
+              "172.16.0.0/12",
+              "192.168.0.0/16",
+              "100.64.0.0/10",
+              "169.254.0.0/16",
+              "127.0.0.0/8",
+              "fc00::/7",
+              "fe80::/10",
+              "::1/128"
+            ],
+            "disable_local_login": false,
+            "provider": [],
+            "public_url": ""
+          }
+        },
+        "session_idle_hours": {
+          "description": "... or after this long unused (default 24).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 24,
+          "minimum": 0
+        },
+        "session_ttl_hours": {
+          "description": "A UI session ends this long after sign-in (default 168 = 7 days).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 168,
+          "minimum": 0
+        },
+        "totp_required_roles": {
+          "description": "Roles that must use two-factor sign-in (TOTP), e.g. `[\"admin\"]`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UserRole"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "BlockMode": {
+      "description": "Block response (FLT-008).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "nxdomain",
+            "nodata",
+            "refused"
+          ]
+        },
+        {
+          "description": "A → 0.0.0.0, AAAA → ::, anything else → NODATA (Pi-hole and Technitium default).",
+          "type": "string",
+          "const": "null_ip"
+        },
+        {
+          "description": "A/AAAA → `block_ips` (e.g. a \"blocked\" landing page); other types → NODATA.",
+          "type": "string",
+          "const": "custom_ip"
+        }
+      ]
+    },
+    "CacheConfig": {
+      "description": "Cache settings (`spec/03` §4).",
+      "type": "object",
+      "properties": {
+        "max_bytes": {
+          "description": "Memory budget for cached responses.",
+          "default": "32MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "max_entries": {
+          "description": "Optional cap on entry count (0 = limited by bytes only).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "max_ttl": {
+          "description": "Maximum TTL served, seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 86400,
+          "minimum": 0
+        },
+        "min_ttl": {
+          "description": "Minimum TTL served, seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "negative_ttl_max": {
+          "description": "Cap for negative-answer TTLs, seconds (RFC 2308).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 3600,
+          "minimum": 0
+        },
+        "persist": {
+          "description": "Dump the cache on shutdown and reload it on start (DNS-009).",
+          "type": "boolean",
+          "default": false
+        },
+        "prefetch": {
+          "description": "Refresh hot entries before they expire (DNS-008).",
+          "type": "boolean",
+          "default": true
+        },
+        "prefetch_min_hits": {
+          "description": "Minimum hits before an entry is prefetched.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 3,
+          "minimum": 0
+        },
+        "prefetch_threshold_pct": {
+          "description": "Prefetch when remaining TTL drops below this percentage.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 10,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "serve_stale": {
+          "description": "Serve expired answers when upstreams fail (RFC 8767, DNS-007).",
+          "type": "boolean",
+          "default": true
+        },
+        "servfail_ttl": {
+          "description": "How long SERVFAIL is cached, seconds (RFC 9520).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 5,
+          "minimum": 0
+        },
+        "stale_answer_client_timeout_ms": {
+          "description": "Answer from stale data if upstreams haven't replied within this many ms.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1800,
+          "minimum": 0
+        },
+        "stale_answer_ttl": {
+          "description": "TTL on stale answers, seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "stale_max_age": {
+          "description": "How long expired entries are kept for serve-stale, seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 86400,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClientConfig": {
+      "description": "A known device (FLT-006).",
+      "type": "object",
+      "properties": {
+        "groups": {
+          "description": "Groups it belongs to (default: `[\"default\"]`).",
+          "type": "array",
+          "default": [
+            "default"
+          ],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "match": {
+          "description": "How to recognize it: an IP (`192.168.1.20`), a CIDR (`10.0.5.0/24`), a MAC\n(`aa:bb:cc:dd:ee:ff`), or a client ID from DoH/DoT (`id:kids-tablet`).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "name": {
+          "description": "Device name, shown everywhere and usable in `$client=` rules.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "match"
+      ]
+    },
+    "ClientsConfig": {
+      "description": "Client identification (`spec/03` §3 step 2).",
+      "type": "object",
+      "properties": {
+        "infrastructure": {
+          "description": "Addresses that are infrastructure, not devices: Kubernetes node and pod networks, a\nDocker bridge, a forwarding router. When > 90% of queries come from ≤ 3 of them, the\nUI warns that client IPs appear masked (OPS-003). Loopback, this host's default\ngateways, and `TELLTALE_NODE_IPS` (set by the Helm chart) are always included.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
+        "neighbor_refresh_secs": {
+          "description": "How often the neighbor table is re-read.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "neighbor_table": {
+          "description": "Read the kernel neighbor table (ARP/NDP) to recognize clients by MAC. Needs host\nnetworking to see real devices (inside a bridge network only the gateway shows up).",
+          "type": "boolean",
+          "default": true
+        },
+        "trust_edns_mac_from": {
+          "description": "Forwarders whose EDNS MAC option (dnsmasq `add-mac`) is trusted. Empty = ignore the\noption: any client could send it and claim another device's identity.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClusterConfig": {
+      "type": "object",
+      "properties": {
+        "eligible": {
+          "description": "Whether this node may become the cluster primary.",
+          "type": "boolean",
+          "default": true
+        },
+        "name": {
+          "description": "Cluster name.",
+          "type": "string",
+          "default": "telltale",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "site": {
+          "description": "Site label used to group nodes in the UI (e.g. `home-pi`, `k8s`).",
+          "type": "string",
+          "default": "default",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EdeKind": {
+      "description": "EDE code on block answers.",
+      "type": "string",
+      "enum": [
+        "blocked",
+        "filtered"
+      ]
+    },
+    "FilterConfig": {
+      "description": "List download settings (`spec/05` §3.4, FLT-004).",
+      "type": "object",
+      "properties": {
+        "compile_memory": {
+          "description": "Memory for sorting list entries before spilling to disk (`spec/05` §3.4).",
+          "default": "128MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "compile_threads": {
+          "description": "Threads for compiling lists (at low CPU priority). 0 = auto: half the cores, between\n1 and 4 (2 on a Pi 4, which compiles 2M names in about 6 s).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "fetch_concurrency": {
+          "description": "Lists downloaded at the same time.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 4,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "fetch_retries": {
+          "description": "Extra attempts after a failed download (network errors, HTTP 5xx, 429).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 3,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "fetch_timeout_secs": {
+          "description": "Time limit for one download attempt, including the body.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 120,
+          "minimum": 0
+        },
+        "max_list_bytes": {
+          "description": "Downloads larger than this fail and the previous copy is kept.",
+          "default": "64MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "refresh_secs": {
+          "description": "How often URL and file lists are refreshed (default 24 h, minimum 15 min).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 86400,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "FilterList": {
+      "description": "A filter list (`spec/05` §1). Exactly one source: `url`, `path`, or `rules`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "kind": {
+          "$ref": "#/$defs/ListKind",
+          "default": "block"
+        },
+        "match": {
+          "description": "`subtree` (default) or `exact`.",
+          "$ref": "#/$defs/ListMatch",
+          "default": "subtree"
+        },
+        "max_bytes": {
+          "description": "Overrides `[filter] max_list_bytes` for this list.",
+          "anyOf": [
+            {
+              "description": "Byte count: an integer, or a string with a unit such as \"32MiB\".",
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "Stable ID: lowercase letters, digits, `-` and `_`, at most 64 characters. Used in file\nnames, metrics, and the API, so renaming a list re-downloads it.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "path": {
+          "description": "Local file, re-read on every refresh.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "refresh_secs": {
+          "description": "Overrides `[filter] refresh_secs` for this list.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "rules": {
+          "description": "Inline rules, one per entry, in any supported syntax.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "url": {
+          "description": "`https://` (or `http://`) source, refreshed every `refresh_secs`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "GroupConfig": {
+      "description": "A client group (FLT-005, `spec/05` §1).",
+      "type": "object",
+      "properties": {
+        "block_ips": {
+          "description": "Addresses for `block_mode = \"custom_ip\"` (IPv4 for A, IPv6 for AAAA).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "ip"
+          }
+        },
+        "block_mode": {
+          "description": "How blocked queries are answered (FLT-008).",
+          "$ref": "#/$defs/BlockMode",
+          "default": "null_ip"
+        },
+        "block_ttl": {
+          "description": "TTL of block answers (and of the SOA that lets clients cache a negative block).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "ede": {
+          "description": "Extended DNS Error on block answers: `blocked` (15) or `filtered` (17, RFC 8914: at\nthe client's request, e.g. parental controls).",
+          "$ref": "#/$defs/EdeKind",
+          "default": "blocked"
+        },
+        "ede_text": {
+          "description": "Include which list blocked the name in the EDE text.",
+          "type": "boolean",
+          "default": true
+        },
+        "lists": {
+          "description": "Lists (by name) this group uses. Omitted = every enabled list.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "name": {
+          "description": "Unique name; `default` applies to clients that match nothing else.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "priority": {
+          "description": "When a client is in several groups, the union of their lists applies and other\nsettings come from the highest-priority group.",
+          "type": "integer",
+          "format": "int32",
+          "default": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "HttpVersion": {
+      "description": "DoH HTTP version preference.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "2",
+            "3"
+          ]
+        },
+        {
+          "description": "Try HTTP/3 via Alt-Svc and fall back to HTTP/2.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
+    "ListKind": {
+      "description": "Whether a list's rules block or allow (`spec/05` §1). Exception rules (@@) allow regardless.",
+      "type": "string",
+      "enum": [
+        "block",
+        "allow"
+      ]
+    },
+    "ListMatch": {
+      "description": "How plain domain entries match (FLT-002).",
+      "oneOf": [
+        {
+          "description": "The domain and every name below it (Technitium semantics).",
+          "type": "string",
+          "const": "subtree"
+        },
+        {
+          "description": "Only the exact name (Pi-hole \"exact\" lists).",
+          "type": "string",
+          "const": "exact"
+        }
+      ]
+    },
+    "ListenProto": {
+      "description": "Listener protocol (DNS-001..004).",
+      "type": "string",
+      "enum": [
+        "udp",
+        "tcp",
+        "dot",
+        "doh",
+        "doh3",
+        "doq"
+      ]
+    },
+    "Listener": {
+      "type": "object",
+      "properties": {
+        "addr": {
+          "description": "Address and port to bind.",
+          "type": "string"
+        },
+        "path": {
+          "description": "URL path for DoH (default `/dns-query`; `/dns-query/{client-id}` also matches).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "proto": {
+          "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`.",
+          "$ref": "#/$defs/ListenProto"
+        },
+        "proxy_protocol": {
+          "description": "Accept PROXY protocol v2 (TCP-based listeners only).",
+          "type": "boolean",
+          "default": false
+        },
+        "tls": {
+          "description": "Certificate and key (required for dot/doh/doh3/doq; reloaded on change).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TlsFiles"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "proto",
+        "addr"
+      ]
+    },
+    "LocalConfig": {
+      "description": "Local data settings (`spec/03` §3 step 5).",
+      "type": "object",
+      "properties": {
+        "auto_ptr": {
+          "description": "Generate PTR records for every local A/AAAA record.",
+          "type": "boolean",
+          "default": true
+        },
+        "default_ttl": {
+          "description": "TTL for local records without their own.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "hosts_files": {
+          "description": "Hosts files (`IP name [alias...]` per line) to import as A/AAAA records.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "LocalRecord": {
+      "description": "A local DNS record (DNS-010). Value formats by type:\n`A`/`AAAA`: an address; `CNAME`/`PTR`: a domain name; `TXT`: text;\n`MX`: `\"<preference> <exchange>\"`; `SRV`: `\"<priority> <weight> <port> <target>\"`.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Owner name; a leading `*.` makes it a wildcard for names below it.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "ttl": {
+          "description": "TTL in seconds (default: `[local] default_ttl`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "type": {
+          "description": "`A`, `AAAA`, `CNAME`, `PTR`, `TXT`, `MX`, or `SRV`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "value"
+      ]
+    },
+    "MetricsConfig": {
+      "description": "Prometheus endpoint (OBS-005).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "listen": {
+          "type": "string",
+          "default": "0.0.0.0:9153"
+        },
+        "per_client": {
+          "description": "Export per-client series (high cardinality; capped).",
+          "type": "boolean",
+          "default": false
+        },
+        "per_client_cap": {
+          "description": "At most this many clients get their own series (default 100); the rest are \"other\".",
+          "type": "integer",
+          "format": "uint32",
+          "default": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "NodeConfig": {
+      "type": "object",
+      "properties": {
+        "data_dir": {
+          "description": "The only writable directory (snapshots, state.db, query log).",
+          "type": "string",
+          "default": "/var/lib/telltale",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "name": {
+          "description": "Node name; empty means the hostname.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "role": {
+          "description": "Process role.",
+          "$ref": "#/$defs/Role",
+          "default": "all"
+        },
+        "workers": {
+          "description": "UDP worker threads; 0 means `min(cgroup CPU limit, cores)`.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 0,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "OidcConfig": {
+      "description": "`OpenID Connect` sign-in (API-004, `spec/08` §6, ADR-034). Each provider gets a \"Sign in\nwith ...\" button; users are created on first sign-in and their role comes from a claim\n(groups) at every sign-in. Changes need a restart.",
+      "type": "object",
+      "properties": {
+        "allowed_admin_networks": {
+          "description": "Where break-glass admin sign-in is allowed. Default: private networks and loopback.",
+          "type": "array",
+          "default": [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+            "169.254.0.0/16",
+            "127.0.0.0/8",
+            "fc00::/7",
+            "fe80::/10",
+            "::1/128"
+          ],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
+        "disable_local_login": {
+          "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down).",
+          "type": "boolean",
+          "default": false
+        },
+        "provider": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OidcProvider"
+          }
+        },
+        "public_url": {
+          "description": "Where people open the UI, e.g. `https://dns.example.com` or `http://192.168.1.2:8053`.\nEach provider's redirect URI is `<public_url>/api/v1/auth/oidc/<id>/callback`, and\nafter sign-out the provider returns to `<public_url>/`; register both with it.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OidcProvider": {
+      "description": "One `OpenID Connect` provider.",
+      "type": "object",
+      "properties": {
+        "client_id": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "client_secret": {
+          "description": "The client secret, or ...",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "client_secret_file": {
+          "description": "... a file holding it (a mounted Kubernetes Secret). Neither: a public client (PKCE).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "default_role": {
+          "description": "Role for users whose groups match no rule. Unset: they can't sign in.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "groups_claim": {
+          "description": "Claim listing the user's groups or roles (`groups`, `roles`,\n`realm_access.roles`). Default `groups`.",
+          "type": "string",
+          "default": "groups",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "id": {
+          "description": "Short ID used in URLs: lowercase letters, digits, and `-` (`keycloak`, `authentik`).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "issuer": {
+          "description": "Issuer URL (discovery is `<issuer>/.well-known/openid-configuration`).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "name": {
+          "description": "Button label (\"Sign in with ...\"). Default: the ID.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "require_verified_email": {
+          "description": "Refuse users whose provider says their email isn't verified.",
+          "type": "boolean",
+          "default": false
+        },
+        "role": {
+          "description": "Group → role rules; a user gets the highest role any of their groups maps to.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OidcRoleRule"
+          }
+        },
+        "scopes": {
+          "description": "Scopes to request. Default: `openid`, `profile`, `email`.",
+          "type": "array",
+          "default": [
+            "openid",
+            "profile",
+            "email"
+          ],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "username_claim": {
+          "description": "Claim that becomes the TelltaleDNS username (dotted paths reach into objects).\nDefault `preferred_username`; falls back to `email`, then `sub`.",
+          "type": "string",
+          "default": "preferred_username",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "issuer",
+        "client_id"
+      ]
+    },
+    "OidcRoleRule": {
+      "description": "Users in `group` get `role`.",
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "role": {
+          "$ref": "#/$defs/UserRole"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "group",
+        "role"
+      ]
+    },
+    "QlogConfig": {
+      "description": "Query-log store (`spec/06` §4).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "flush_interval_secs": {
+          "description": "Flush the in-progress block after this many seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        },
+        "fsync": {
+          "description": "fsync each block flush.",
+          "type": "boolean",
+          "default": false
+        },
+        "privacy_level": {
+          "description": "0 full; 1 hide domains; 2 hide domains + clients; 3 aggregates only.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 0,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "retention_bytes": {
+          "description": "Delete oldest segments beyond this total size.",
+          "default": "2GiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "retention_days": {
+          "description": "Delete segments older than this many days.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "RateLimitAction": {
+      "description": "What to do with a rate-limited query.",
+      "type": "string",
+      "enum": [
+        "refused",
+        "drop"
+      ]
+    },
+    "RateLimitConfig": {
+      "description": "Per-client rate limiting (DNS-014).",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/RateLimitAction",
+          "default": "refused"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "exempt": {
+          "description": "Clients never limited.",
+          "type": "array",
+          "default": [
+            "127.0.0.0/8",
+            "::1/128"
+          ],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
+        "ipv4_prefix": {
+          "description": "Count IPv4 clients per /N (32 = per address).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 32,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "ipv6_prefix": {
+          "description": "Count IPv6 clients per /N (64 groups a device's rotating privacy addresses).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 64,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "queries": {
+          "description": "Queries allowed per `window_secs` per client (token bucket; bursts up to this).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1000,
+          "minimum": 0
+        },
+        "window_secs": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Role": {
+      "description": "Process role (`spec/02` §1).",
+      "oneOf": [
+        {
+          "description": "Resolver + controller in one process (Pi / single node).",
+          "type": "string",
+          "const": "all"
+        },
+        {
+          "description": "Data plane only.",
+          "type": "string",
+          "const": "resolver"
+        },
+        {
+          "description": "Control plane only.",
+          "type": "string",
+          "const": "controller"
+        }
+      ]
+    },
+    "Route": {
+      "description": "Conditional forwarding / routing rule (UPS-007, DNS-017).",
+      "type": "object",
+      "properties": {
+        "dnssec_nta": {
+          "description": "Add a DNSSEC negative trust anchor for the suffixes (local zones are usually unsigned).",
+          "type": "boolean",
+          "default": false
+        },
+        "match_group": {
+          "description": "Client group names this route applies to (empty = all).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "match_qtype": {
+          "description": "Query types this route applies to, e.g. `[\"PTR\"]` (empty = all).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "match_suffix": {
+          "description": "Domain suffixes (subtree match), e.g. `corp.example.com`, `168.192.in-addr.arpa`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "upstream_group": {
+          "description": "Target upstream group.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "upstream_group"
+      ]
+    },
+    "SpecialConfig": {
+      "description": "Built-in handling of special names (`spec/03` §3 step 4).",
+      "type": "object",
+      "properties": {
+        "block_firefox_canary": {
+          "description": "`use-application-dns.net` → NXDOMAIN, so Firefox doesn't switch to its own DoH.",
+          "type": "boolean",
+          "default": true
+        },
+        "localhost": {
+          "description": "`localhost` and `*.localhost` → `127.0.0.1` / `::1` (RFC 6761 §6.3).",
+          "type": "boolean",
+          "default": true
+        },
+        "private_ptr_nxdomain": {
+          "description": "Reverse lookups for private addresses → NXDOMAIN instead of asking public upstreams,\nunless a local record or route covers them (Pi-hole \"bogus-priv\").",
+          "type": "boolean",
+          "default": true
+        },
+        "refuse_chaos": {
+          "description": "CHAOS-class `version.bind`, `id.server`, ... → REFUSED.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Strategy": {
+      "description": "Upstream selection strategy (UPS-005).",
+      "type": "string",
+      "enum": [
+        "failover",
+        "round_robin",
+        "weighted",
+        "fastest",
+        "parallel"
+      ]
+    },
+    "TelemetryConfig": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "$ref": "#/$defs/MetricsConfig",
+          "default": {
+            "enabled": true,
+            "listen": "0.0.0.0:9153",
+            "per_client": false,
+            "per_client_cap": 100
+          }
+        },
+        "mode": {
+          "$ref": "#/$defs/TelemetryMode",
+          "default": "local"
+        },
+        "qlog": {
+          "$ref": "#/$defs/QlogConfig",
+          "default": {
+            "enabled": true,
+            "flush_interval_secs": 10,
+            "fsync": false,
+            "privacy_level": 0,
+            "retention_bytes": "2GiB",
+            "retention_days": 30
+          }
+        },
+        "ring_slots": {
+          "description": "Event ring size per producing thread, in events of ~128 bytes (power of two, at\nleast 1024). The default, 4096 (512 KiB), holds about 170 ms of a fully loaded\nworker; a full ring drops events (counted), never queries (ADR-026).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 4096,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "TelemetryMode": {
+      "description": "Where detailed query events go (`spec/12` CLU-007).",
+      "oneOf": [
+        {
+          "description": "Keep the query log on this node.",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "Ship events to the controller (store-and-forward); good for SD-card nodes.",
+          "type": "string",
+          "const": "ship"
+        }
+      ]
+    },
+    "TlsFiles": {
+      "type": "object",
+      "properties": {
+        "cert": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cert",
+        "key"
+      ]
+    },
+    "Upstream": {
+      "description": "One upstream resolver (`spec/04` §1–2).",
+      "type": "object",
+      "properties": {
+        "bootstrap": {
+          "description": "DNS servers used to resolve a hostname URL (UPS-009); default: the system resolvers\nfrom /etc/resolv.conf, minus our own listeners. To pin the server address instead, put\nthe IP in the URL and set `tls_server_name`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "ip"
+          }
+        },
+        "ecs": {
+          "description": "ECS handling: `strip` (default), `pass`, or a CIDR to substitute (P1).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "headers": {
+          "description": "Extra HTTP headers for DoH (e.g. an auth token).",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]*$": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+            }
+          }
+        },
+        "http_version": {
+          "description": "DoH HTTP version: `\"auto\"`, `\"2\"`, or `\"3\"`.",
+          "$ref": "#/$defs/HttpVersion",
+          "default": "auto"
+        },
+        "idle_timeout_ms": {
+          "description": "Idle connection timeout in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30000,
+          "minimum": 0
+        },
+        "labels": {
+          "description": "Free-form labels.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "name": {
+          "description": "Unique name referenced by upstream groups.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "pool_size": {
+          "description": "Max pooled connections for TCP/DoT/DoH.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 4,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "proxy": {
+          "description": "`socks5://host:port` or `http://host:port` proxy (P1).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "spki_pins": {
+          "description": "Base64 SHA-256 SPKI pins.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "timeout_ms": {
+          "description": "Per-attempt timeout in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 400,
+          "minimum": 0
+        },
+        "tls_insecure_skip_verify": {
+          "description": "Disable certificate verification (dangerous; logs a warning).",
+          "type": "boolean",
+          "default": false
+        },
+        "tls_server_name": {
+          "description": "TLS SNI / certificate name override.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "url": {
+          "description": "Scheme selects the protocol: `udp://`, `tcp://`, `tls://`, `https://`, `h3://`,\n`quic://`, `sdns://`, `recursive://`, `unix://`, `exec://`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "weight": {
+          "description": "Weight for the `weighted` strategy.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "url"
+      ]
+    },
+    "UpstreamGroup": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "description": "Upstream names, in priority order for `failover`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "name": {
+          "description": "Unique group name. Queries that match no route use the group named `default`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "parallel_fanout": {
+          "description": "How many members to race (strategy `parallel` only).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 2,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "strategy": {
+          "$ref": "#/$defs/Strategy",
+          "default": "failover"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "members"
+      ]
+    },
+    "UserRole": {
+      "description": "What a user may do (`spec/08` §6).",
+      "oneOf": [
+        {
+          "description": "Dashboards and the query log.",
+          "type": "string",
+          "const": "viewer"
+        },
+        {
+          "description": "Viewer, plus pause, cache flush, and managing lists, clients, and groups.",
+          "type": "string",
+          "const": "operator"
+        },
+        {
+          "description": "Everything.",
+          "type": "string",
+          "const": "admin"
+        }
+      ]
+    }
+  }
+}

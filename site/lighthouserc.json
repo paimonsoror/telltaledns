@@ -2,8 +2,8 @@
   "ci": {
     "collect": {
       "staticDistDir": "site/_site",
-      "url": ["/index.html", "/start.html", "/how-it-works.html", "/standards.html"],
-      "numberOfRuns": 1
+      "url": ["/index.html", "/start.html", "/install.html", "/how-it-works.html", "/config.html", "/standards.html"],
+      "numberOfRuns": 3
     },
     "assert": {
       "assertions": {
