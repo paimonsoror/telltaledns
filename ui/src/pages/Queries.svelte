@@ -3,7 +3,6 @@
   // cursor, a stage-timing bar per row, and "Why?" (explain, FLT-013) in a drawer.
   import { api, type S } from '../lib/api';
   import { route, navigate } from '../lib/router.svelte';
-  import { poll } from '../lib/poll';
   import { logDate, logTime, ms, num } from '../lib/format';
   import Drawer from '../lib/components/Drawer.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -81,11 +80,54 @@
     }
   }
 
+  // REQ: OBS-008 — Live: the server streams matching queries (SSE); rows are added in
+  // batches every 250 ms and the newest MAX_LIVE are kept.
+  const MAX_LIVE = 500;
+  let skipped = $state(0);
+  let liveState = $state<'connecting' | 'open' | 'retrying'>('connecting');
+
+  function streamParams(): string {
+    const q = query();
+    const p = new URLSearchParams();
+    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'minLatencyMs']) if (q[k]) p.set(k, q[k]);
+    return p.toString();
+  }
+
   $effect(() => {
     void route.params.toString();
-    if (live) return poll(() => load(false), 3000);
-    void load(false);
+    if (!live) {
+      void load(false);
+      return;
+    }
+    rows = [];
+    cursor = undefined;
+    scanned = null;
+    skipped = 0;
+    error = null;
+    liveState = 'connecting';
+    const qs = streamParams();
+    const es = new EventSource(`/api/v1/queries/stream${qs ? `?${qs}` : ''}`);
+    let pending: S['QueryRow'][] = [];
+    es.addEventListener('query', (m) => {
+      pending.push(JSON.parse((m as MessageEvent).data) as S['QueryRow']);
+    });
+    es.addEventListener('dropped', (m) => {
+      skipped += (JSON.parse((m as MessageEvent).data) as S['TailDropped']).dropped;
+    });
+    es.onopen = () => (liveState = 'open');
+    es.onerror = () => (liveState = 'retrying');
+    const flush = setInterval(() => {
+      if (pending.length === 0) return;
+      rows = [...pending.reverse(), ...rows].slice(0, MAX_LIVE);
+      pending = [];
+    }, 250);
+    return () => {
+      es.close();
+      clearInterval(flush);
+    };
   });
+
+  const liveIgnores = $derived(live && (route.params.has('rcode') || route.params.has('from')));
 
   function search(e?: SubmitEvent) {
     e?.preventDefault();
@@ -138,10 +180,14 @@
 <div class="page">
   <div class="page-head">
     <h1>Query log</h1>
-    <label class="row small">
-      <input type="checkbox" bind:checked={live} /> Auto-refresh
+    <label class="row small live-toggle">
+      <input type="checkbox" bind:checked={live} /> Live
+      {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveState === 'open' ? 'streaming' : liveState}</span>{/if}
     </label>
   </div>
+  {#if liveIgnores}
+    <div class="notice warn small">The live view ignores the Rcode and Since filters; it shows new queries as they happen.</div>
+  {/if}
 
   <form class="card filters" onsubmit={search}>
     <div class="fields">
@@ -230,10 +276,14 @@
     {/if}
     <div class="row foot">
       <span class="muted small">
-        {num(rows.length)} rows{#if scanned}{` · searched ${num(scanned.blocksRead)} of ${num(scanned.blocksTotal)} blocks in ${num(scanned.segments)} hourly files`}{/if}
+        {#if live}
+          {`${num(rows.length)} live rows (newest ${MAX_LIVE} kept)`}{#if skipped}{` · ${num(skipped)} matching queries skipped to keep up`}{/if}
+        {:else}
+          {num(rows.length)} rows{#if scanned}{` · searched ${num(scanned.blocksRead)} of ${num(scanned.blocksTotal)} blocks in ${num(scanned.segments)} hourly files`}{/if}
+        {/if}
       </span>
       <span class="spacer"></span>
-      {#if cursor}
+      {#if cursor && !live}
         <button onclick={() => load(true)} disabled={loading}>{loading ? 'Loading…' : 'Older'}</button>
       {/if}
     </div>

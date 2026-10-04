@@ -94,6 +94,40 @@ impl Backend for Fake {
             scanned: ScanStats::default(),
         })
     }
+    fn tail(
+        &self,
+        p: &crate::model::TailParams,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::model::TailItem>, Problem> {
+        if p.status.as_deref() == Some("off") {
+            return Err(Problem::unavailable("the live tail is off"));
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(crate::model::TailItem::Query(Box::new(QueryRow {
+            time: "2026-10-04T12:00:00.000Z".into(),
+            ts_unix_micros: 1_791_072_000_000_000,
+            client: "192.168.1.20".into(),
+            client_name: Some("tablet".into()),
+            group: Some("kids".into()),
+            name: "ads.example.com".into(),
+            qtype: "A".into(),
+            status: "blocked".into(),
+            rcode: Some("NOERROR".into()),
+            proto: "udp".into(),
+            list: Some("ads".into()),
+            rule: Some("domain".into()),
+            total_ms: 0.1,
+            upstream_ms: 0.0,
+            response_bytes: 60,
+            answers: 1,
+        })))
+        .unwrap();
+        tx.try_send(crate::model::TailItem::Dropped(crate::model::TailDropped {
+            dropped: 7,
+            reason: "rate".into(),
+        }))
+        .unwrap();
+        Ok(rx) // the sender drops here, so the stream ends after these two
+    }
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         if p.name.is_empty() {
             return Err(Problem::invalid("`name` is empty"));
@@ -300,7 +334,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 24);
+    assert_eq!(paths.len(), 25);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -668,4 +702,46 @@ async fn api_005_ui_is_served_with_security_headers() {
     }
     let (s, _, _) = send(&app, Request::post("/").body(Body::empty()).unwrap()).await;
     assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// OBS-008: the live tail is Server-Sent Events with `query` and `dropped` events, signed in.
+#[tokio::test]
+async fn obs_008_live_tail_streams_server_sent_events() {
+    let (app, _) = app();
+    let (s, _, _) = send(
+        &app,
+        Request::get("/api/v1/queries/stream")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let req = Request::get("/api/v1/queries/stream?status=blocked")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/event-stream");
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("event: query\n"), "{text}");
+    assert!(text.contains("id: 1791072000000000\n"), "{text}");
+    assert!(text.contains("\"name\":\"ads.example.com\""), "{text}");
+    assert!(
+        text.contains("event: dropped\ndata: {\"dropped\":7,\"reason\":\"rate\"}"),
+        "{text}"
+    );
+    let (s, _, v) = get(&app, "/api/v1/queries/stream?rate=0").await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_parameter"))
+    );
+    let (s, _, v) = get(&app, "/api/v1/queries/stream?status=off").await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable"))
+    );
 }

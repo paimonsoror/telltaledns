@@ -2149,6 +2149,7 @@ dependencies = [
  "axum",
  "base64",
  "blake3",
+ "futures-util",
  "rand 0.10.3",
  "rust-embed",
  "serde",

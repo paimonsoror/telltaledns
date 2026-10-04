@@ -132,7 +132,7 @@ ui/
   `let x = $state<T | null>(null)` (the generic form; the annotated form narrows wrongly).
 - Data loading: in `$effect`, either one-shot `api.x().then(...).catch(e => error = e)` or
   `return poll(load, ms)` for live pages (dashboard 15 s, 5 s at the 15-min range; lists 15 s;
-  upstreams 10 s; query log 3 s only when "Auto-refresh" is on).
+  upstreams 10 s). The query log's **Live** toggle uses `EventSource` on `GET /api/v1/queries/stream` (SSE) with the same filters: rows are buffered and flushed every 250 ms, the newest 500 kept; `dropped` events add to a "skipped" count.
 - Errors: every page shows `<ErrorNote {error} />`; `ApiError` carries `code`, `detail`, `hint`.
 - Pages that read URL params must re-sync form state in an `$effect` on `route.params`
   (navigating between `#/queries?...` URLs does **not** remount the page; see `Queries.svelte`).
@@ -195,7 +195,7 @@ JSON is camelCase; units are in field names (`totalMs`, `ttlSeconds`, `*UnixSeco
 | **Setup** (gate when `setupRequired`) | `GET /auth/status`, `POST /auth/setup` | token + admin username + password ×2 | Plain; could explain where to find the token for Docker/K8s/Pi installs. |
 | **Sign in** (gate) | `POST /auth/login` (401 `totp_required` → code step; recovery code alternative) | 1–2 step form | Fine; lockout (429) message is just the API detail. |
 | **Dashboard** `#/` | `stats/summary`, `stats/timeseries` (second/minute/hour steps), `stats/top` ×3, `upstreams`, `stats/latency?by=stage|path` | range segmented control (15 min, 1 h, 24 h, 48 h, 7 d, 30 d); 6 KPI tiles; stacked "Queries by status" chart; "Where time goes" table; upstream share bars with breaker badge; "Upstream exchanges" chart; Top domains/blocked/clients lists linking into the query log | Biggest design opportunity. KPI tiles lack trend/sparkline and comparison to the previous period. "Where time goes" is a raw table (spec wants a stage breakdown chart). Upstream panel could show latency sparklines. Top lists' counts are "this hour" while the range control suggests otherwise (label it more clearly). Missing "nodes up" tile (cluster arrives later; don't fake it). |
-| **Query log** `#/queries` | `GET /queries` (filters: `name`+`match`, `client`, `status` csv, `qtype`, `rcode`, `minLatencyMs`, `from`; cursor paging 100 rows), `GET /explain` | filter form + status chips (in URL), table with time/client/name/type/status+rcode/rule/time-taken bar, **Why?** drawer, "Older" pager, Auto-refresh toggle | Spec wants a virtualized table and a live tail (SSE arrives in T3.7; polling for now). Row density and scanning could improve (sticky header, hover row, copy-name action, clearer rule column). Filters take a lot of vertical space on phones (consider a collapsible filter bar with chips summarizing active filters). |
+| **Query log** `#/queries` | `GET /queries/stream` (Live), `GET /queries` (filters: `name`+`match`, `client`, `status` csv, `qtype`, `rcode`, `minLatencyMs`, `from`; cursor paging 100 rows), `GET /explain` | filter form + status chips (in URL), table with time/client/name/type/status+rcode/rule/time-taken bar, **Why?** drawer, "Older" pager, **Live** toggle (SSE stream, status badge, skipped count) | Spec wants a virtualized table. **Live** (SSE) exists: consider a pause button and a "new rows" indicator when scrolled down. Row density and scanning could improve (sticky header, hover row, copy-name action, clearer rule column). Filters take a lot of vertical space on phones (consider a collapsible filter bar with chips summarizing active filters). |
 | **Explain** `#/explain` | `GET /explain?name&client&qtype` | form + `ExplainView` | Could link from anywhere a domain appears. |
 | **Clients** `#/clients` | `GET /clients`, `stats/top?kind=clients&limit=100` | "Seen this hour" + configured devices | Spec wants per-client profile pages (traffic, top domains via `stats/top?kind=domains&client=IP`, latency): this is buildable now with existing API. |
 | **Groups** `#/groups` | `GET /groups` | table | Read-only until the config API exists. |
@@ -217,6 +217,7 @@ text, labels, or roles below breaks CI.
   Note: in Settings → Users, the add-user inputs are `aria-label="Username"` / `"Password"`.
 - **Buttons:** `Create admin and sign in`, `Sign in`, `Sign out`, `Table` (chart toggle),
   `Why?`, the status chip `local` (exact), `Explain`, `Create token`, `Revoke`, `Add` (exact),
+  the `Live` checkbox (label) with its status badge `.live-toggle .badge` showing `streaming`,
   `Menu` (mobile nav).
 - **Links:** top-list entries are links whose name is the domain (`ads.e2e.test`); nav link
   `Dashboard`.
@@ -286,7 +287,7 @@ by `api.ts` on every non-GET; tokens are shown once).
 
 **Out of scope for the UI agent** (needs backend work first; list them as requests instead):
 editing lists/groups/upstreams/local records and allow/block quick actions (configuration API),
-live tail (SSE, T3.7), OIDC sign-in (T3.6), audit log (T3.8), cluster page and scope selector
+OIDC sign-in (T3.6), audit log (T3.8), cluster page and scope selector
 (M5), analytics (new domains, DGA, anomalies), per-upstream time series, past-hour top lists.
 
 ---

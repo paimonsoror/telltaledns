@@ -300,6 +300,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/queries/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live query stream.
+         * @description Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
+         *     fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
+         *     skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
+         *     connection open. Filters are applied on the server. In a browser:
+         *     `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
+         *     in). Honors the query-log privacy level; at most 16 streams per node.
+         */
+        get: operations["queries_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/latency": {
         parameters: {
             query?: never;
@@ -1103,6 +1128,16 @@ export interface components {
              */
             version: string;
         };
+        /** @description Sent as an SSE `dropped` event when matching queries weren't delivered. */
+        TailDropped: {
+            /**
+             * Format: int64
+             * @description How many matching queries were skipped since the last report.
+             */
+            dropped: number;
+            /** @description `rate`: over this subscriber's `rate`; `lag`: the subscriber fell behind. */
+            reason: string;
+        };
         /** @description Counts for one time bucket. */
         TimeBucket: {
             /** @description By query type (`A`, `AAAA`, ..., `other`). */
@@ -1629,6 +1664,66 @@ export interface operations {
                 };
             };
             /** @description The query log is off. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    queries_stream: {
+        parameters: {
+            query?: {
+                /** @description Name to look for; see `match`. */
+                name?: string;
+                /** @description How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`). */
+                match?: components["schemas"]["NameMatch"];
+                /** @description Client IP address. */
+                client?: string;
+                /** @description The client's group (its highest-priority group). */
+                group?: string;
+                /** @description Statuses, comma-separated (`blocked,forwarded`). */
+                status?: string;
+                /** @description Query types, comma-separated (`A,AAAA`). */
+                qtype?: string;
+                /** @description Upstream ID (from `GET /upstreams`). */
+                upstream?: number;
+                /** @description Only queries that took at least this long. */
+                minLatencyMs?: number;
+                /**
+                 * @description Most events per second sent to this subscriber (1–2000, default 500). The rest are
+                 *     counted and reported in `dropped` events.
+                 */
+                rate?: number;
+                /** @description `cluster` (default) or `node:local`. */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `text/event-stream` of `query` (QueryRow) and `dropped` (TailDropped) events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             503: {
                 headers: {
                     [name: string]: unknown;

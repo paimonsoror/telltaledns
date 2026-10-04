@@ -131,6 +131,15 @@ impl std::fmt::Debug for Name {
 }
 
 impl Name {
+    /// A name from wire format (truncated to `MAX_NAME` bytes).
+    pub fn from_wire(wire: &[u8]) -> Self {
+        let mut n = Self::default();
+        let len = wire.len().min(MAX_NAME);
+        n.bytes[..len].copy_from_slice(&wire[..len]);
+        n.len = u8::try_from(len).unwrap_or(u8::MAX);
+        n
+    }
+
     /// Wire format (labels with length bytes, ending in the root), or empty if unknown.
     pub fn as_wire(&self) -> &[u8] {
         &self.bytes[..usize::from(self.len)]

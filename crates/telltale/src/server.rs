@@ -372,9 +372,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // touches the query path: a stalled aggregator only means dropped (counted) events.
     let (qlog, qlog_stats) = query_log(&cfg);
     set_client_metrics(&cfg, &pipeline);
+    // REQ: OBS-008 — the live tail is fed by the same aggregator pass as the query log.
+    let tail = crate::tail::Tail::new(cfg.telemetry.qlog.privacy_level);
+    let sink = crate::tail::combine(qlog, tail.as_deref());
     let _aggregator = pipeline
         .telemetry
-        .spawn_aggregator(Duration::from_millis(25), qlog)?;
+        .spawn_aggregator(Duration::from_millis(25), sink)?;
     let mut listeners = Listeners {
         udp: Vec::new(),
         tcp: Vec::new(),
@@ -406,6 +409,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
         rollups: rollups.clone(),
+        tail,
     });
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     start_http(&cfg, &sources, &http_stopped).await?;

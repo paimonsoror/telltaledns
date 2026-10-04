@@ -48,6 +48,8 @@ pub(crate) struct Sources {
     pub(crate) config: ArcSwap<telltale_config::Config>,
     /// Minute/hour/day rollups on disk (spec/06 §3), when they could be opened.
     pub(crate) rollups: Option<Arc<telltale_store::rollup::Rollups>>,
+    /// The live tail (OBS-008), unless the privacy level forbids it.
+    pub(crate) tail: Option<Arc<crate::tail::Tail>>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -704,6 +706,7 @@ mod tests {
             qlog: None,
             config: ArcSwap::from_pointee(telltale_config::Config::default()),
             rollups: None,
+            tail: None,
             allowed: Vec::new(),
         };
         let text = render(&src);

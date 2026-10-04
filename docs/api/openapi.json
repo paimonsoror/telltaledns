@@ -599,6 +599,144 @@
         }
       }
     },
+    "/api/v1/queries/stream": {
+      "get": {
+        "tags": [
+          "queries"
+        ],
+        "summary": "Live query stream.",
+        "description": "Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same\nfields as GET /queries), `event: dropped` a `TailDropped` when matching queries were\nskipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the\nconnection open. Filters are applied on the server. In a browser:\n`new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it\nin). Honors the query-log privacy level; at most 16 streams per node.",
+        "operationId": "queries_stream",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Name to look for; see `match`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "match",
+            "in": "query",
+            "description": "How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameMatch"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Client IP address.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "The client's group (its highest-priority group).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Statuses, comma-separated (`blocked,forwarded`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qtype",
+            "in": "query",
+            "description": "Query types, comma-separated (`A,AAAA`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "upstream",
+            "in": "query",
+            "description": "Upstream ID (from `GET /upstreams`).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "minLatencyMs",
+            "in": "query",
+            "description": "Only queries that took at least this long.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "rate",
+            "in": "query",
+            "description": "Most events per second sent to this subscriber (1–2000, default 500). The rest are\ncounted and reported in `dropped` events.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`text/event-stream` of `query` (QueryRow) and `dropped` (TailDropped) events.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/latency": {
       "get": {
         "tags": [
@@ -2844,6 +2982,26 @@
             "type": "string",
             "description": "TelltaleDNS version.",
             "example": "0.1.0"
+          }
+        }
+      },
+      "TailDropped": {
+        "type": "object",
+        "description": "Sent as an SSE `dropped` event when matching queries weren't delivered.",
+        "required": [
+          "dropped",
+          "reason"
+        ],
+        "properties": {
+          "dropped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many matching queries were skipped since the last report.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "`rate`: over this subscriber's `rate`; `lag`: the subscriber fell behind."
           }
         }
       },

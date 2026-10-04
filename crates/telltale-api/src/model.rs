@@ -511,3 +511,51 @@ pub struct UpstreamInfo {
 pub struct Items<T> {
     pub items: Vec<T>,
 }
+
+/// Query parameters for `GET /queries/stream` (OBS-008). Filters combine with AND and are
+/// applied on the server, before the rate cap.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
+pub struct TailParams {
+    /// Name to look for; see `match`.
+    pub name: Option<String>,
+    /// How to match `name`: `substring` (default), `exact`, `suffix`, or `glob` (`*`, `?`).
+    #[serde(rename = "match")]
+    #[param(rename = "match")]
+    pub name_match: Option<NameMatch>,
+    /// Client IP address.
+    pub client: Option<String>,
+    /// The client's group (its highest-priority group).
+    pub group: Option<String>,
+    /// Statuses, comma-separated (`blocked,forwarded`).
+    pub status: Option<String>,
+    /// Query types, comma-separated (`A,AAAA`).
+    pub qtype: Option<String>,
+    /// Upstream ID (from `GET /upstreams`).
+    pub upstream: Option<u16>,
+    /// Only queries that took at least this long.
+    pub min_latency_ms: Option<u32>,
+    /// Most events per second sent to this subscriber (1–2000, default 500). The rest are
+    /// counted and reported in `dropped` events.
+    pub rate: Option<u32>,
+    /// `cluster` (default) or `node:local`.
+    pub scope: Option<String>,
+}
+
+/// Sent as an SSE `dropped` event when matching queries weren't delivered.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TailDropped {
+    /// How many matching queries were skipped since the last report.
+    pub dropped: u64,
+    /// `rate`: over this subscriber's `rate`; `lag`: the subscriber fell behind.
+    pub reason: String,
+}
+
+/// What a live tail delivers.
+#[derive(Debug, Clone)]
+pub enum TailItem {
+    Query(Box<QueryRow>),
+    Dropped(TailDropped),
+}

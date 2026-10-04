@@ -398,6 +398,76 @@ impl Backend for ApiBackend {
         rows
     }
 
+    // REQ: OBS-008 — live tail: filter, rate-cap, and format on a per-subscriber task.
+    fn tail(
+        &self,
+        p: &telltale_api::model::TailParams,
+    ) -> Result<tokio::sync::mpsc::Receiver<telltale_api::model::TailItem>, Problem> {
+        let tail = self.src.tail.as_ref().ok_or_else(|| {
+            Problem::unavailable("the live tail is off: the query-log privacy level is 3")
+                .hint("Lower [telemetry.qlog] privacy_level to see live queries.")
+        })?;
+        let policy = &self.src.pipeline.current().policy;
+        let groups: Vec<String> = policy
+            .clients
+            .groups()
+            .iter()
+            .map(|g| g.name.to_string())
+            .collect();
+        let clients: Vec<String> = policy
+            .clients
+            .clients()
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect();
+        let filter = crate::tail::Filter::parse(p, &groups)?;
+        let (events, slot) = tail.subscribe().ok_or_else(|| {
+            Problem::unavailable(format!(
+                "too many live tails on this node (at most {})",
+                crate::tail::MAX_SUBSCRIBERS
+            ))
+            .hint("Close another live view, or use GET /queries.")
+        })?;
+        let lists = self.list_names();
+        Ok(crate::tail::spawn_subscriber(
+            events,
+            slot,
+            filter,
+            move |t| {
+                let e = &t.ev;
+                QueryRow {
+                    time: format_us(e.ts_us),
+                    ts_unix_micros: e.ts_us,
+                    client: telltale_telemetry::agg::client_text(e.client_ip),
+                    client_name: e
+                        .client_ref
+                        .checked_sub(1)
+                        .and_then(|i| clients.get(i as usize))
+                        .cloned(),
+                    group: groups.get(usize::from(e.group)).cloned(),
+                    name: telltale_telemetry::event::dotted(&t.name),
+                    qtype: qtype_name(e.qtype),
+                    status: e.status.label().to_owned(),
+                    rcode: e.rcode.map(rcode_name),
+                    proto: e.proto.label().to_owned(),
+                    list: e.rule.map(|x| {
+                        lists
+                            .get(usize::from(x.list))
+                            .cloned()
+                            .unwrap_or_else(|| format!("#{}", x.list))
+                    }),
+                    rule: e
+                        .rule
+                        .map(|x| if x.allow { "allow" } else { x.kind.label() }.to_owned()),
+                    total_ms: ms(u64::from(e.t_total_us)),
+                    upstream_ms: ms(u64::from(e.t_upstream_us)),
+                    response_bytes: e.resp_size,
+                    answers: e.answers,
+                }
+            },
+        ))
+    }
+
     fn queries(
         &self,
         q: &QueryParams,

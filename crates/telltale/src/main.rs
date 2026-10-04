@@ -12,6 +12,7 @@ mod pipeline;
 mod qlog_cli;
 mod rollups;
 mod server;
+mod tail;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

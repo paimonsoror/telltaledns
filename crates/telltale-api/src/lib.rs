@@ -29,8 +29,8 @@ use crate::model::{
     ClientInfo, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
     ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, Items, LatencyBy, LatencyParams,
     LatencyRow, ListInfo, NameMatch, QueryPage, QueryParams, QueryRow, ScanStats, Step, Summary,
-    SummaryParams, SystemInfo, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams,
-    UpstreamInfo,
+    SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams,
+    TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -46,6 +46,15 @@ pub trait Backend: Send + Sync + 'static {
     fn system_info(&self) -> SystemInfo;
     /// Buckets with start in `[from_s, to_s)`, oldest first.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket>;
+    /// Live queries matching `p` as they happen (REQ: OBS-008). The stream ends when the
+    /// receiver is dropped. `Err` when the tail is unavailable (privacy level 3, too many
+    /// subscribers) or a filter is invalid.
+    fn tail(&self, p: &TailParams) -> Result<tokio::sync::mpsc::Receiver<TailItem>, Problem> {
+        let _ = p;
+        Err(Problem::unavailable(
+            "the live tail isn't available on this node",
+        ))
+    }
     /// Heaviest items, heaviest first; `client` narrows `domains` to one client.
     fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem>;
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
@@ -78,6 +87,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/stats/top", get(stats_top))
         .route("/api/v1/stats/latency", get(stats_latency))
         .route("/api/v1/queries", get(queries))
+        .route("/api/v1/queries/stream", get(queries_stream))
         .route("/api/v1/explain", get(explain))
         .route("/api/v1/lists", get(lists))
         .route("/api/v1/groups", get(groups))
@@ -128,6 +138,7 @@ async fn fallback(
     ),
     paths(
         system_info, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
         auth::routes::get_me, auth::routes::change_password, auth::routes::totp_setup,
@@ -137,6 +148,7 @@ async fn fallback(
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
@@ -329,6 +341,46 @@ async fn stats_timeseries(
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
     let items = blocking(move || Ok(b.timeseries(step, from, to))).await?;
     Ok(Json(Items { items }))
+}
+
+/// Live query stream.
+///
+/// Server-Sent Events, newest as they happen: `event: query` carries a `QueryRow` (same
+/// fields as GET /queries), `event: dropped` a `TailDropped` when matching queries were
+/// skipped (over `rate`, or this client fell behind), and a comment every 15 s keeps the
+/// connection open. Filters are applied on the server. In a browser:
+/// `new EventSource('/api/v1/queries/stream?status=blocked')` (the session cookie signs it
+/// in). Honors the query-log privacy level; at most 16 streams per node.
+#[utoipa::path(get, path = "/api/v1/queries/stream", tag = "queries", params(TailParams),
+    responses(
+        (status = 200, description = "`text/event-stream` of `query` (QueryRow) and `dropped` (TailDropped) events.",
+            content_type = "text/event-stream", body = String),
+        (status = 400, body = Problem),
+        (status = 503, body = Problem)))]
+async fn queries_stream(
+    State(b): State<Shared>,
+    Query(p): Query<TailParams>,
+) -> Result<Response, Problem> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    check_scope(p.scope.as_deref())?;
+    if p.rate.is_some_and(|r| !(1..=2000).contains(&r)) {
+        return Err(Problem::invalid("`rate`: 1 to 2000 events per second"));
+    }
+    let rx = b.tail(&p)?;
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        let event = match rx.recv().await? {
+            TailItem::Query(q) => Event::default()
+                .event("query")
+                .id(q.ts_unix_micros.to_string())
+                .json_data(&q),
+            TailItem::Dropped(d) => Event::default().event("dropped").json_data(&d),
+        }
+        .unwrap_or_else(|_| Event::default().comment("encode error"));
+        Some((Ok::<_, std::convert::Infallible>(event), rx))
+    });
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+        .into_response())
 }
 
 /// Top domains, blocked domains, NXDOMAIN names, or clients.

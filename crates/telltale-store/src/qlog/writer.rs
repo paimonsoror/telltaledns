@@ -280,7 +280,7 @@ impl telltale_telemetry::ring::Sink for Builder {
 
 /// Privacy level 1+: the name is replaced by a one-label hash, so the same name still groups
 /// together but can't be read (`spec/06` §4 privacy levels).
-fn hidden_name(name: &[u8]) -> Box<[u8]> {
+pub fn hidden_name(name: &[u8]) -> Box<[u8]> {
     let h = blake3::hash(name);
     let mut label = String::from("h");
     for b in &h.as_bytes()[..8] {

@@ -90,6 +90,22 @@ test('query log finds the blocked query and explains it', async () => {
   }).toPass({ timeout: 20_000 });
 });
 
+test('live view streams new queries', async () => {
+  await page.goto('/#/queries?status=blocked');
+  await page.getByLabel('Live').check();
+  await expect(page.locator('.live-toggle .badge')).toHaveText('streaming');
+  await expect(page.locator('table.log tbody tr')).toHaveCount(0);
+  await expect(async () => {
+    expect(await query('live.ads.e2e.test')).toBe(0);
+    await expect(page.locator('table.log tbody tr').first()).toContainText('live.ads.e2e.test', { timeout: 1500 });
+  }).toPass({ timeout: 15_000 });
+  // Server-side filter: a local answer doesn't match status=blocked.
+  expect(await query('nas.e2e.test')).toBe(0);
+  await page.waitForTimeout(800);
+  await expect(page.locator('table.log tbody tr', { hasText: 'nas.e2e.test' })).toHaveCount(0);
+  await page.getByLabel('Live').uncheck();
+});
+
 test('explain page', async () => {
   await page.goto('/#/explain?name=nas.e2e.test&client=127.0.0.1');
   await expect(page.locator('.explain')).toContainText('local');
