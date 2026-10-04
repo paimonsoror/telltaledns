@@ -28,7 +28,8 @@ rand = "0.10.3"
 # SHA-256 for self-update (already in the tree through rustls).
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+# float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 telltale-api = { version = "0.1.0", path = "../telltale-api" }
 telltale-cache = { version = "0.1.0", path = "../telltale-cache" }
 telltale-config.workspace = true

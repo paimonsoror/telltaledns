@@ -128,8 +128,12 @@ impl Sink for Fanout {
 }
 
 /// The aggregator's sink: the query log, the live tail, both, or neither.
-pub(crate) fn combine(qlog: Option<Box<dyn Sink>>, tail: Option<&Tail>) -> Option<Box<dyn Sink>> {
-    let mut sinks: Vec<Box<dyn Sink>> = qlog.into_iter().collect();
+pub(crate) fn combine(
+    qlog: Option<Box<dyn Sink>>,
+    tail: Option<&Tail>,
+    extra: Option<Box<dyn Sink>>,
+) -> Option<Box<dyn Sink>> {
+    let mut sinks: Vec<Box<dyn Sink>> = qlog.into_iter().chain(extra).collect();
     if let Some(t) = tail {
         sinks.push(Box::new(t.sink()));
     }

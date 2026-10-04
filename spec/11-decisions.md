@@ -484,3 +484,16 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Applying** reuses the reload path; a forward change rebuilds the upstream router (health state of unchanged upstreams is rebuilt too, as on any upstream change).
 
 **Consequences:** The UI covers the common cases without the config file. Hosts files stay file-only. The MCP tools for these writes come with T6.6 / M7.
+
+## ADR-043 — Anomaly engine v1: concrete detectors, thresholds, and persistence (Proposed)
+**Context:** T3.13 implements OBS-013 under ADR-019 and `spec/06` §7.1, which fix the principles (deterministic, explainable, learn first, bounded, alert-only) but not the statistics, thresholds, or how state survives restarts.
+
+**Decision:**
+- **Statistics:** exponentially weighted mean and mean absolute deviation (MAD-style) per baseline, `f32`, plain IEEE arithmetic only (no `exp`/`ln`), FNV-1a hashing, ordered maps, event-time windows (an hour closes when an event from a later hour arrives). Findings are byte-identical across runs and architectures (a golden file checked on x86-64 and arm64 in CI).
+- **Detectors and bars** (sensitivity `normal` = 6 × spread; `low` 8, `high` 4): rate spike per hour of day (≥ 300/h, ≥ 2× usual, > usual + k·spread; spread ≥ max(10, 25% of usual)); domain volume per tracked (device, eTLD+1) pair (≥ 200/h, ≥ 3× usual, pair tracked ≥ 24 h; spread ≥ max(5, 25%)); drift (≥ 20 new registrable domains a day, > usual + k·spread; day one isn't part of the baseline); beacon (≥ 10 gaps of 30 s–1 h with σ ≤ max(5% of the period, 2 s) for 4 consecutive hours, only when the pair wasn't periodic during learning, which keeps TTL-driven refreshes quiet). A rate spike that domain findings explain (≥ 50% of the excess) is reported only as those. Alerted windows don't update their baseline.
+- **eTLD+1** is approximated without the Public Suffix List: the last two labels, or three under common second-level suffixes (`co.uk`, `com.au`, ...); reverse names are skipped.
+- **Bounds:** 16 tracked pairs, 128 learned fingerprints, 24 hourly baselines per device (≤ 4 KiB, tested); 1024 devices by default, least recently seen evicted (counted).
+- **Persistence:** the whole engine as JSON in `<data_dir>/anomaly.json`, written hourly and on shutdown (temp file + rename); `float_roundtrip` keeps reloads bit-exact. Unreadable state just restarts learning.
+- **Surfaces:** `GET /api/v1/analytics/anomalies?since=`, the Anomalies page, `telltale_anomalies_total{kind}` with a chart alert (`TelltaleDNSDeviceAnomaly`, info), and later the `find_anomalies` MCP tool (T6.6). Off at privacy level 3.
+
+**Deferred:** the TTL-violation flag (events don't carry answer TTLs yet), per-group sensitivity, mute/acknowledge, and the alert-rule engine's own destinations (OBS-010).

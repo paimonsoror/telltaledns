@@ -45,6 +45,16 @@
       "docs": "why-was-it-blocked-explain"
     },
     {
+      "id": "anomalies",
+      "title": "When a device behaves differently",
+      "term": "Anomaly detection",
+      "summary": "TelltaleDNS learns each device's usual behavior over its first week, then points out spikes in queries, heavy traffic to one domain, a burst of brand-new domains, or a regular phone-home, with the numbers behind each.",
+      "when": "A smart plug, TV, or camera starts acting oddly, or you want to know what changed on your network.",
+      "example": "Living room TV → vendor.example: 4,100 queries in an hour; usually 119 ± 30.",
+      "caution": "Findings never block anything. Some are harmless (an app update, a new streaming service); open the device's queries before acting.",
+      "docs": "device-anomalies"
+    },
+    {
       "id": "devices",
       "title": "Name your devices",
       "term": "Clients",

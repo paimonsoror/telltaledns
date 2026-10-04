@@ -233,6 +233,13 @@
       "description": "Telemetry, query log, and metrics.",
       "$ref": "#/$defs/TelemetryConfig",
       "default": {
+        "anomaly": {
+          "enabled": true,
+          "ignore_domains": [],
+          "learning_days": 7,
+          "max_clients": 1024,
+          "sensitivity": "normal"
+        },
         "metrics": {
           "enabled": true,
           "listen": "0.0.0.0:9153",
@@ -295,6 +302,65 @@
         }
       },
       "additionalProperties": false
+    },
+    "AnomalyConfig": {
+      "description": "Device anomaly detection (OBS-013, ADR-019): rate spikes, heavy volume to one domain,\ndrift to many new domains, and regular phone-home beacons, each against the device's own\nlearned baseline. Findings never block anything.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "ignore_domains": {
+          "description": "Registrable domains never reported (e.g. connectivity checks you expect).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "learning_days": {
+          "description": "Days a device is watched before it can raise a finding.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 7,
+          "minimum": 0
+        },
+        "max_clients": {
+          "description": "Devices with state; the least recently seen are evicted first.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1024,
+          "minimum": 0
+        },
+        "sensitivity": {
+          "$ref": "#/$defs/AnomalySensitivity",
+          "default": "normal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AnomalySensitivity": {
+      "description": "How readily the anomaly engine reports (`spec/06` §7.1).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "normal"
+          ]
+        },
+        {
+          "description": "Only large departures from a device's baseline.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Smaller departures too (more findings, more false alarms).",
+          "type": "string",
+          "const": "high"
+        }
+      ]
     },
     "ApiConfig": {
       "description": "REST API listener (API-001). It also serves `/metrics` (signed in) and the health probes,\nonly to clients in `[access] allowed_networks` (ADR-029).",
@@ -1423,6 +1489,17 @@
     "TelemetryConfig": {
       "type": "object",
       "properties": {
+        "anomaly": {
+          "description": "Per-device anomaly detection (OBS-013): alert-only, deterministic, explainable.",
+          "$ref": "#/$defs/AnomalyConfig",
+          "default": {
+            "enabled": true,
+            "ignore_domains": [],
+            "learning_days": 7,
+            "max_clients": 1024,
+            "sensitivity": "normal"
+          }
+        },
         "metrics": {
           "$ref": "#/$defs/MetricsConfig",
           "default": {

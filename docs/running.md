@@ -97,7 +97,7 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
 - **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
-- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
+- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853) and `encrypted.doh.enabled` (443) add DoT and DoH to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
 - One replica (`mode: allInOne`, a StatefulSet with a volume for lists, the query log, and users). Several resolver replicas (`scaled`, `daemonSet`) arrive with clustering.
@@ -532,6 +532,23 @@ fsync = false                # true: sync every write (slower on SD cards)
   Results come newest first; the last line prints a `--cursor` for the next page. `--match` is `substring` (default), `exact`, `suffix` (the name or anything below it), `glob`, or `regex`.
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
+
+## Device anomalies
+TelltaleDNS learns how each device usually behaves and points out when that changes (the **Anomalies** page, `GET /api/v1/analytics/anomalies`, and the metric `telltale_anomalies_total{kind}`):
+- **Many more queries than usual** (`rate_spike`): this hour's queries against the device's usual count for this hour of the day.
+- **Unusual traffic to one domain** (`domain_volume`): queries to one registrable domain in an hour against that device's usual volume for it. A spike one domain explains is reported once, as this.
+- **Many new domains** (`drift`): registrable domains the device has never contacted, per day, against its usual number of new ones.
+- **Regular phone-home** (`beacon`): a domain queried at a regular interval (low jitter) for at least 4 hours, when it wasn't periodic while the device was being learned.
+
+Every finding shows its evidence (what was seen, the usual value ± spread, the threshold, the window). Devices are quiet for their first `learning_days` (7) while their baseline forms; an alerted spike doesn't become the new normal. Findings never block anything: act on them yourself (look at the device's queries, move it to a stricter group).
+```toml
+[telemetry.anomaly]
+enabled = true
+learning_days = 7
+sensitivity = "normal"         # low | normal | high
+ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity checks)
+```
+The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level = 3` (names aren't kept). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
 ## Web UI
 Open `http://<server>:8053/` in a browser. On first start it asks for the setup token (see [Users and sign-in](#users-and-sign-in)) and creates the first admin.

@@ -73,6 +73,11 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: Most queries on {{ "{{" }} $labels.instance {{ "}}" }} come from infrastructure addresses, so per-device analytics and rules can't tell devices apart (see docs: Seeing real client IPs).
+        - alert: TelltaleDNSDeviceAnomaly
+          expr: sum by (instance, kind) (increase(telltale_anomalies_total{job="{{ include "telltale.fullname" . }}-metrics"}[1h])) > 0
+          labels: { severity: info }
+          annotations:
+            summary: A device on {{ "{{" }} $labels.instance {{ "}}" }} behaves unusually ({{ "{{" }} $labels.kind {{ "}}" }}); see Anomalies in the web UI for the evidence.
 ---
 {{- end }}
 {{- if .Values.grafanaDashboard.enabled }}

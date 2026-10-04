@@ -692,3 +692,39 @@ pub struct ConfigChange {
     /// Configuration warnings after the change.
     pub warnings: Vec<String>,
 }
+
+/// `GET /analytics/anomalies` parameters.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AnomalyParams {
+    /// Only findings whose window started after this (RFC 3339 or relative, default `-7d`).
+    pub since: Option<String>,
+}
+
+/// A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AnomalyFinding {
+    /// `rate_spike`, `domain_volume`, `drift`, or `beacon`.
+    #[schema(example = "domain_volume")]
+    pub kind: String,
+    /// The device's address, and its name when known.
+    pub client: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    /// The registrable domain, for domain findings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "vendor.example")]
+    pub domain: Option<String>,
+    /// The window examined (RFC 3339 start, and length in seconds).
+    pub window_start: String,
+    pub window_seconds: u32,
+    /// What was seen, the device's usual value (± spread), and the bar it crossed.
+    pub observed: f64,
+    pub baseline: f64,
+    pub spread: f64,
+    pub threshold: f64,
+    /// The finding in words, with the numbers.
+    #[schema(example = "4100 queries in an hour; usually 119 ± 30")]
+    pub detail: String,
+}

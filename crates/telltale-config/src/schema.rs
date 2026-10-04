@@ -759,6 +759,8 @@ pub struct TelemetryConfig {
     pub ring_slots: u32,
     pub qlog: QlogConfig,
     pub metrics: MetricsConfig,
+    /// Per-device anomaly detection (OBS-013): alert-only, deterministic, explainable.
+    pub anomaly: AnomalyConfig,
 }
 
 impl Default for TelemetryConfig {
@@ -768,6 +770,47 @@ impl Default for TelemetryConfig {
             ring_slots: 4096,
             qlog: QlogConfig::default(),
             metrics: MetricsConfig::default(),
+            anomaly: AnomalyConfig::default(),
+        }
+    }
+}
+
+/// How readily the anomaly engine reports (`spec/06` §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AnomalySensitivity {
+    /// Only large departures from a device's baseline.
+    Low,
+    #[default]
+    Normal,
+    /// Smaller departures too (more findings, more false alarms).
+    High,
+}
+
+/// Device anomaly detection (OBS-013, ADR-019): rate spikes, heavy volume to one domain,
+/// drift to many new domains, and regular phone-home beacons, each against the device's own
+/// learned baseline. Findings never block anything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct AnomalyConfig {
+    pub enabled: bool,
+    /// Days a device is watched before it can raise a finding.
+    pub learning_days: u32,
+    pub sensitivity: AnomalySensitivity,
+    /// Devices with state; the least recently seen are evicted first.
+    pub max_clients: u32,
+    /// Registrable domains never reported (e.g. connectivity checks you expect).
+    pub ignore_domains: Vec<SafeString>,
+}
+
+impl Default for AnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            learning_days: 7,
+            sensitivity: AnomalySensitivity::Normal,
+            max_clients: 1024,
+            ignore_domains: Vec::new(),
         }
     }
 }

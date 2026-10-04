@@ -71,6 +71,6 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
-| `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint | `spec/06` |
+| `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint, device anomaly detection (`[telemetry.anomaly]`) | `spec/06`, OBS-013 |
 | `[api]` | REST API listener (also serves `/metrics` and health probes) | `spec/07`, ADR-028 |
 | `[auth]` | session lifetimes, HTTP Basic over plain HTTP, roles that must use two-factor sign-in; `[auth.oidc]` sign-in providers (Keycloak, Authentik, ...) with group-to-role rules and break-glass | `docs/running.md`, ADR-029 |

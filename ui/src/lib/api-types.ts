@@ -4,6 +4,29 @@
  */
 
 export interface paths {
+    "/api/v1/analytics/anomalies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).
+         * @description Each finding compares a device with its own learned baseline (after a learning period,
+         *     7 days by default) and carries the evidence: observed value, usual value ± spread, the
+         *     threshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.
+         *     Newest first.
+         */
+        get: operations["anomalies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -773,6 +796,42 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it. */
+        AnomalyFinding: {
+            /** Format: double */
+            baseline: number;
+            /** @description The device's address, and its name when known. */
+            client: string;
+            clientName?: string | null;
+            /**
+             * @description The finding in words, with the numbers.
+             * @example 4100 queries in an hour; usually 119 ± 30
+             */
+            detail: string;
+            /**
+             * @description The registrable domain, for domain findings.
+             * @example vendor.example
+             */
+            domain?: string | null;
+            /**
+             * @description `rate_spike`, `domain_volume`, `drift`, or `beacon`.
+             * @example domain_volume
+             */
+            kind: string;
+            /**
+             * Format: double
+             * @description What was seen, the device's usual value (± spread), and the bar it crossed.
+             */
+            observed: number;
+            /** Format: double */
+            spread: number;
+            /** Format: double */
+            threshold: number;
+            /** Format: int32 */
+            windowSeconds: number;
+            /** @description The window examined (RFC 3339 start, and length in seconds). */
+            windowStart: string;
+        };
         /** @description One audit-log entry. */
         AuditInfo: {
             /**
@@ -1044,6 +1103,44 @@ export interface components {
          * @enum {string}
          */
         Hour: "current" | "previous";
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_AnomalyFinding: {
+            items: {
+                /** Format: double */
+                baseline: number;
+                /** @description The device's address, and its name when known. */
+                client: string;
+                clientName?: string | null;
+                /**
+                 * @description The finding in words, with the numbers.
+                 * @example 4100 queries in an hour; usually 119 ± 30
+                 */
+                detail: string;
+                /**
+                 * @description The registrable domain, for domain findings.
+                 * @example vendor.example
+                 */
+                domain?: string | null;
+                /**
+                 * @description `rate_spike`, `domain_volume`, `drift`, or `beacon`.
+                 * @example domain_volume
+                 */
+                kind: string;
+                /**
+                 * Format: double
+                 * @description What was seen, the device's usual value (± spread), and the bar it crossed.
+                 */
+                observed: number;
+                /** Format: double */
+                spread: number;
+                /** Format: double */
+                threshold: number;
+                /** Format: int32 */
+                windowSeconds: number;
+                /** @description The window examined (RFC 3339 start, and length in seconds). */
+                windowStart: string;
+            }[];
+        };
         /** @description A list wrapper used by every collection endpoint. */
         Items_ClientInfo: {
             items: {
@@ -1715,6 +1812,36 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    anomalies: {
+        parameters: {
+            query?: {
+                /** @description Only findings whose window started after this (RFC 3339 or relative, default `-7d`). */
+                since?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_AnomalyFinding"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     audit_log: {
         parameters: {
             query?: {

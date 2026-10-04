@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agg;
+pub mod anomaly;
 pub mod event;
 #[cfg(test)]
 mod events_tests;

@@ -121,6 +121,7 @@ test('lists, groups, clients, upstreams, local DNS render', async () => {
     ['/#/clients', '127.0.0.1'],
     ['/#/upstreams', 'nowhere'],
     ['/#/local-dns', 'nas.e2e.test'],
+    ['/#/anomalies', 'Nothing unusual'],
   ]) {
     await page.goto(path);
     await expect(page.locator('main')).toContainText(text);

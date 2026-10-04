@@ -27,12 +27,13 @@ use axum::routing::get;
 use utoipa::OpenApi;
 
 use crate::model::{
-    ClientChange, ClientInfo, ClientInput, ConfigChange, ExplainBlock, ExplainClient,
-    ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo,
-    ForwardInput, GroupInfo, Hour, Items, LatencyBy, LatencyParams, LatencyRow, ListInfo,
-    LocalName, MaskedClients, NameMatch, QueryPage, QueryParams, QueryRow, RecordInput,
-    RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem,
-    TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ConfigChange,
+    ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams, ExplainRoute,
+    ExplainRule, Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items, LatencyBy,
+    LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, QueryPage,
+    QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams,
+    SystemInfo, TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind,
+    TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -74,6 +75,11 @@ pub trait Backend: Send + Sync + 'static {
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
     /// The configuration version (bumped by every change made through the API; ADR-040).
+    /// Device anomaly findings whose window started at or after `since_s`, newest first.
+    fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
+        let _ = since_s;
+        Vec::new()
+    }
     /// Names TelltaleDNS answers itself (files and API), by name.
     fn local_names(&self) -> Vec<LocalName> {
         Vec::new()
@@ -168,6 +174,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/lists", get(lists))
         .route("/api/v1/groups", get(groups))
         .route("/api/v1/clients", get(clients))
+        .route("/api/v1/analytics/anomalies", get(anomalies))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/forwards", get(forwards))
         .route("/api/v1/upstreams", get(upstreams))
@@ -230,14 +237,14 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, config_api::put_records, config_api::delete_records,
+        local_names, forwards, anomalies, config_api::put_records, config_api::delete_records,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -590,6 +597,31 @@ async fn clients(State(b): State<Shared>) -> impl IntoResponse {
         [(axum::http::header::ETAG, etag)],
         Json(Items { items: b.clients() }),
     )
+}
+
+/// Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).
+///
+/// Each finding compares a device with its own learned baseline (after a learning period,
+/// 7 days by default) and carries the evidence: observed value, usual value ± spread, the
+/// threshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.
+/// Newest first.
+#[utoipa::path(get, path = "/api/v1/analytics/anomalies", tag = "stats",
+    params(AnomalyParams),
+    responses((status = 200, body = Items<AnomalyFinding>), (status = 400, body = Problem)))]
+async fn anomalies(
+    State(b): State<Shared>,
+    Query(p): Query<AnomalyParams>,
+) -> Result<Json<Items<AnomalyFinding>>, Problem> {
+    let now = b.now_unix_seconds();
+    let since = time_param(
+        p.since.as_deref(),
+        now.saturating_sub(7 * 86_400),
+        now,
+        "since",
+    )?;
+    Ok(Json(Items {
+        items: b.anomalies(since),
+    }))
 }
 
 /// Names on my network: the names TelltaleDNS answers itself.

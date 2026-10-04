@@ -14,6 +14,7 @@
   import Queries from './pages/Queries.svelte';
   import Explain from './pages/Explain.svelte';
   import Clients from './pages/Clients.svelte';
+  import Anomalies from './pages/Anomalies.svelte';
   import Groups from './pages/Groups.svelte';
   import Lists from './pages/Lists.svelte';
   import Upstreams from './pages/Upstreams.svelte';
@@ -25,6 +26,7 @@
     { path: '/queries', label: 'Query log', page: Queries },
     { path: '/explain', label: 'Explain', page: Explain },
     { path: '/clients', label: 'Clients', page: Clients },
+    { path: '/anomalies', label: 'Anomalies', page: Anomalies },
     { path: '/groups', label: 'Groups', page: Groups },
     { path: '/lists', label: 'Lists', page: Lists },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams },

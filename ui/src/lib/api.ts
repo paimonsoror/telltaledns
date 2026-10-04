@@ -120,6 +120,7 @@ export const api = {
   lists: () => get<S['Items_ListInfo']>('/lists'),
   groups: () => get<S['Items_GroupInfo']>('/groups'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
+  anomalies: (since = '-7d') => get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since }),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),

@@ -3103,6 +3103,8 @@ dependencies = [
  "allocation-counter",
  "hdrhistogram",
  "rtrb",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

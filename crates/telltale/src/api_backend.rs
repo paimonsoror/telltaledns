@@ -734,6 +734,30 @@ impl Backend for ApiBackend {
             .unwrap_or(0)
     }
 
+    // REQ: OBS-013 — device anomalies with evidence.
+    fn anomalies(&self, since_s: u64) -> Vec<telltale_api::model::AnomalyFinding> {
+        let Some(a) = &self.src.anomalies else {
+            return Vec::new();
+        };
+        a.findings()
+            .into_iter()
+            .filter(|f| f.window_start_s >= since_s)
+            .map(|f| telltale_api::model::AnomalyFinding {
+                kind: f.kind.label().to_owned(),
+                client: telltale_telemetry::agg::client_text(f.client),
+                client_name: device_name(&self.src, f.client),
+                domain: f.domain,
+                window_start: format_us(f.window_start_s.saturating_mul(1_000_000)),
+                window_seconds: f.window_s,
+                observed: f.observed,
+                baseline: f.baseline,
+                spread: f.spread,
+                threshold: f.threshold,
+                detail: f.detail,
+            })
+            .collect()
+    }
+
     // REQ: API-011 — names on my network and domains sent elsewhere (ADR-042).
     fn local_names(&self) -> Vec<LocalName> {
         self.list_local_names()

@@ -53,6 +53,8 @@ pub(crate) struct Sources {
     pub(crate) rollups: Option<Arc<telltale_store::rollup::Rollups>>,
     /// The live tail (OBS-008), unless the privacy level forbids it.
     pub(crate) tail: Option<Arc<crate::tail::Tail>>,
+    /// The device anomaly engine (OBS-013), unless disabled.
+    pub(crate) anomalies: Option<Arc<crate::anomaly::Anomalies>>,
     /// Sign-in and the audit log, once the API listener has opened `state.db`.
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
     /// Masked-client-IP detector state (OPS-003).
@@ -211,6 +213,30 @@ pub(crate) fn render(src: &Sources) -> String {
         "Entries in the IP-to-MAC neighbor table used to recognize clients.",
     )
     .sample("telltale_neighbors", &[], src.pipeline.neighbors.len());
+    // REQ: OBS-013 — device anomaly findings (alert rules count their increase).
+    if let Some(a) = &src.anomalies {
+        let (totals, devices, evicted) = a.counters();
+        w.family(
+            "telltale_anomalies_total",
+            "counter",
+            "Device anomaly findings by kind (rate_spike, domain_volume, drift, beacon).",
+        );
+        for (k, n) in totals {
+            w.sample("telltale_anomalies_total", &[("kind", k.label())], n);
+        }
+        w.family(
+            "telltale_anomaly_devices",
+            "gauge",
+            "Devices the anomaly engine keeps baselines for.",
+        )
+        .sample("telltale_anomaly_devices", &[], devices);
+        w.family(
+            "telltale_anomaly_evicted_total",
+            "counter",
+            "Devices whose anomaly baselines were dropped to stay within max_clients.",
+        )
+        .sample("telltale_anomaly_evicted_total", &[], evicted);
+    }
     w.family(
         "telltale_client_ips_masked",
         "gauge",
@@ -785,6 +811,7 @@ mod tests {
             file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
             rollups: None,
             tail: None,
+            anomalies: None,
             auth: std::sync::OnceLock::new(),
             masking: crate::masking::Detector::default(),
             reload: tokio::sync::mpsc::channel(1).0,

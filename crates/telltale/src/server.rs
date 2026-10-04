@@ -488,7 +488,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     set_client_metrics(&cfg, &pipeline);
     // REQ: OBS-008 — the live tail is fed by the same aggregator pass as the query log.
     let tail = crate::tail::Tail::new(cfg.telemetry.qlog.privacy_level);
-    let sink = crate::tail::combine(qlog, tail.as_deref());
+    // REQ: OBS-013 — the anomaly engine rides the same aggregator pass (off the query path).
+    let anomalies = crate::anomaly::Anomalies::start(&cfg);
+    let anomaly_sink = anomalies
+        .as_ref()
+        .map(|a| Box::new(a.sink()) as Box<dyn telltale_telemetry::ring::Sink>);
+    let sink = crate::tail::combine(qlog, tail.as_deref(), anomaly_sink);
     let _aggregator = pipeline
         .telemetry
         .spawn_aggregator(Duration::from_millis(25), sink)?;
@@ -525,6 +530,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
         rollups: rollups.clone(),
         tail,
+        anomalies: anomalies.clone(),
         auth: std::sync::OnceLock::new(),
         masking: crate::masking::Detector::default(),
         reload: reload_tx,
@@ -660,6 +666,9 @@ async fn reload(
     // API changes are audited by the API with their author.
     if !from_api {
         audit_reload(sources, files, current, &new);
+    }
+    if let Some(a) = &sources.anomalies {
+        a.reconfigure(&new);
     }
     sources.config.store(Arc::new(new.clone()));
     sources.file_config.store(Arc::new(file));

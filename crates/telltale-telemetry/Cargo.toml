@@ -14,6 +14,9 @@ workspace = true
 [dependencies]
 hdrhistogram = { version = "7.6.0", default-features = false }
 rtrb = "0.4.0"
+# Anomaly-engine state persists across restarts (OBS-013); already in the tree.
+serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 allocation-counter = "0.8.1"
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }

@@ -9,6 +9,47 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/analytics/anomalies": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).",
+        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.\nNewest first.",
+        "operationId": "anomalies",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only findings whose window started after this (RFC 3339 or relative, default `-7d`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_AnomalyFinding"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -2026,6 +2067,77 @@
   },
   "components": {
     "schemas": {
+      "AnomalyFinding": {
+        "type": "object",
+        "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
+        "required": [
+          "kind",
+          "client",
+          "windowStart",
+          "windowSeconds",
+          "observed",
+          "baseline",
+          "spread",
+          "threshold",
+          "detail"
+        ],
+        "properties": {
+          "baseline": {
+            "type": "number",
+            "format": "double"
+          },
+          "client": {
+            "type": "string",
+            "description": "The device's address, and its name when known."
+          },
+          "clientName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "description": "The finding in words, with the numbers.",
+            "example": "4100 queries in an hour; usually 119 ± 30"
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registrable domain, for domain findings.",
+            "example": "vendor.example"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rate_spike`, `domain_volume`, `drift`, or `beacon`.",
+            "example": "domain_volume"
+          },
+          "observed": {
+            "type": "number",
+            "format": "double",
+            "description": "What was seen, the device's usual value (± spread), and the bar it crossed."
+          },
+          "spread": {
+            "type": "number",
+            "format": "double"
+          },
+          "threshold": {
+            "type": "number",
+            "format": "double"
+          },
+          "windowSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "windowStart": {
+            "type": "string",
+            "description": "The window examined (RFC 3339 start, and length in seconds)."
+          }
+        }
+      },
       "AuditInfo": {
         "type": "object",
         "description": "One audit-log entry.",
@@ -2800,6 +2912,89 @@
           "current",
           "previous"
         ]
+      },
+      "Items_AnomalyFinding": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
+              "required": [
+                "kind",
+                "client",
+                "windowStart",
+                "windowSeconds",
+                "observed",
+                "baseline",
+                "spread",
+                "threshold",
+                "detail"
+              ],
+              "properties": {
+                "baseline": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "client": {
+                  "type": "string",
+                  "description": "The device's address, and its name when known."
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "The finding in words, with the numbers.",
+                  "example": "4100 queries in an hour; usually 119 ± 30"
+                },
+                "domain": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The registrable domain, for domain findings.",
+                  "example": "vendor.example"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`rate_spike`, `domain_volume`, `drift`, or `beacon`.",
+                  "example": "domain_volume"
+                },
+                "observed": {
+                  "type": "number",
+                  "format": "double",
+                  "description": "What was seen, the device's usual value (± spread), and the bar it crossed."
+                },
+                "spread": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "threshold": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "windowSeconds": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "windowStart": {
+                  "type": "string",
+                  "description": "The window examined (RFC 3339 start, and length in seconds)."
+                }
+              }
+            }
+          }
+        }
       },
       "Items_ClientInfo": {
         "type": "object",
