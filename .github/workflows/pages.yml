@@ -1,5 +1,8 @@
 # REQ: DOC-001, DOC-005 — build, check, and deploy the project site (ADR-012).
 # One-time setup: Settings → Pages → Build and deployment → Source: "GitHub Actions".
+# If the source is "Deploy from a branch", GitHub also runs its own "pages build and deployment"
+# (Jekyll over the README) on every push, and whichever deploy finishes last is what's live:
+# the site then turns into a plain README page after commits that don't touch site/.
 name: pages
 on:
   push:
