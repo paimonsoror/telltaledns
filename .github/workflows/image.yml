@@ -124,6 +124,10 @@ jobs:
   release:
     needs: image
     if: github.event_name == 'push'
+    # Two pushes in a row replaced `edge` at once, and one got a 403; the newer one wins.
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: write

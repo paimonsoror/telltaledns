@@ -208,9 +208,16 @@ test('api_010 name a device from the dashboard', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/');
   const widget = page.locator('section.card', { hasText: 'Top clients' });
+  // A slow form load must not wipe what was typed (CI flake on 2026-10-04): delay it.
+  const slow = '**/api/v1/clients';
+  await page.route(slow, async (r) => {
+    await new Promise((done) => setTimeout(done, 800));
+    await r.continue();
+  });
   await widget.getByRole('button', { name: '127.0.0.1' }).click();
   await page.getByRole('menuitem', { name: 'Name this device…' }).click();
   await page.getByLabel('Name', { exact: true }).fill('Test laptop');
+  await page.unroute(slow);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('status')).toContainText('Saved');
   await page.keyboard.press('Escape');

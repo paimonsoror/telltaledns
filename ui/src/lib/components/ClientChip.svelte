@@ -25,6 +25,8 @@
   let newName = $state('');
   let chosen = $state<string[]>([]);
   let busy = $state(false);
+  // The form appears only once its data is in, so a slow load can't wipe what was typed.
+  let loading = $state(false);
   let error = $state('');
   let done = $state('');
 
@@ -47,6 +49,7 @@
     editing = mode;
     error = '';
     done = '';
+    loading = true;
     try {
       const [c, g] = await Promise.all([api.clients(), api.groups()]);
       groups = g.items;
@@ -55,6 +58,8 @@
       chosen = existing ? [...existing.groups] : ['default'];
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
     }
   }
 
@@ -117,7 +122,9 @@
 
 {#if editing}
   <Drawer title={editing === 'name' ? 'Name this device' : 'Add to a group'} onclose={() => (editing = null)}>
-    {#if existing && existing.source === 'file'}
+    {#if loading}
+      <p class="muted" role="status" aria-live="polite">Loading…</p>
+    {:else if existing && existing.source === 'file'}
       <p class="notice">
         <b>{existing.name}</b> is defined in the configuration file, so it's changed there, not here.
       </p>
