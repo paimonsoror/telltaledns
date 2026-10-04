@@ -1,0 +1,2089 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TelltaleDNS API",
+    "description": "Read and control a TelltaleDNS resolver. JSON is camelCase; field names carry units (`totalMs`, `ttlSeconds`). Errors are RFC 9457 problem+json with a stable `code` and a `hint`. Time parameters take RFC 3339 or a relative offset (`-24h`). Collections page with `cursor`/`limit`. Analytics calls take `scope` (`cluster` or `node:local`; both mean this node until clustering is available).",
+    "license": {
+      "name": "Apache-2.0 OR MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/clients": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Configured clients (devices) and how they're recognized.",
+        "description": "Each device's name, the IPs, CIDRs, MACs, or client IDs that identify it, and its groups in\npriority order (the first group's settings apply). Unknown devices use the `default` group.",
+        "operationId": "clients",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ClientInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/explain": {
+      "get": {
+        "tags": [
+          "queries"
+        ],
+        "summary": "Explain a decision.",
+        "description": "Why `name` is or isn't blocked for a client: how the client is identified, its groups,\nevery matching rule in every list (with the list line), which rule decides, and where the\nquery would be forwarded. Example: `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20`.",
+        "operationId": "explain",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "The name to explain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "ads.example.com"
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "The client's IP address. Default: 127.0.0.1.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qtype",
+            "in": "query",
+            "description": "Query type. Default: `A`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mac",
+            "in": "query",
+            "description": "The client's MAC address (default: from the neighbor table).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Explanation"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Client groups, their lists, block mode, and pause state.",
+        "description": "Groups decide which lists apply to a device and how blocked queries are answered. `lists`\nnull means every enabled list; `pausedUntilUnixSeconds` is set while blocking is paused.",
+        "operationId": "groups",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_GroupInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lists": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Filter lists and their download state.",
+        "description": "Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,\n`pending`) and last error, size, and how many names it contributes to the active snapshot.",
+        "operationId": "lists",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ListInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/queries": {
+      "get": {
+        "tags": [
+          "queries"
+        ],
+        "summary": "Search the query log.",
+        "description": "Newest first. Filters combine with AND: name (substring by default; `match=exact|suffix|\nglob|regex`), client, status, query type, response code, upstream, minimum latency, and\ntime range. Pass `nextCursor` back as `cursor` for older rows. Example:\n`GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.",
+        "operationId": "queries",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Name to look for; see `match`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "match",
+            "in": "query",
+            "description": "How to match `name`. Default: `substring`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/NameMatch"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Client IP address.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Statuses, comma-separated (`blocked,forwarded`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "qtype",
+            "in": "query",
+            "description": "Query types, comma-separated (`A,AAAA`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rcode",
+            "in": "query",
+            "description": "Response codes, comma-separated (`NXDOMAIN,SERVFAIL`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "upstream",
+            "in": "query",
+            "description": "Upstream ID.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "minLatencyMs",
+            "in": "query",
+            "description": "Only queries that took at least this long.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start: RFC 3339 or relative (`-1h`). Default: no limit.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End. Default: now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page (1–1000, default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Continue after a previous page (`nextCursor` from it).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The query log is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats/latency": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Latency percentiles.",
+        "description": "By answer path and transport, query type, upstream server, or the upstream stage, for the\ncurrent or previous hour, in milliseconds (HDR histograms, 2 significant digits).",
+        "operationId": "stats_latency",
+        "parameters": [
+          {
+            "name": "by",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/LatencyBy"
+            }
+          },
+          {
+            "name": "hour",
+            "in": "query",
+            "description": "Default: `current`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Hour"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_LatencyRow"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats/summary": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Totals over a time range.",
+        "description": "Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts\nfrom the minute series (the last 48 hours), plus this hour's active clients and latency\npercentiles by answer path. Example: `GET /api/v1/stats/summary?from=-24h`.",
+        "operationId": "stats_summary",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start: RFC 3339 or relative (`-24h`). Default: 24 hours ago (at most 48 hours back).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End. Default: now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Summary"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats/timeseries": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Query counts over time.",
+        "description": "Buckets by status, query type, and response code, plus upstream exchanges. `step=second`\ncovers the last 15 minutes, `step=minute` the last 48 hours. Example:\n`GET /api/v1/stats/timeseries?from=-1h&step=minute`.",
+        "operationId": "stats_timeseries",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start: RFC 3339 or relative (`-1h`). Default: 1 hour ago (minute steps) or 5 minutes\nago (second steps).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End: RFC 3339 or relative. Default: now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "Bucket size. Default: `minute`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Step"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_TimeBucket"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats/top": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Top domains, blocked domains, NXDOMAIN names, or clients.",
+        "description": "Ranked by a Space-Saving sketch per hour: `count` is an upper bound and `errorBound` how\nfar it may be over. Example: `GET /api/v1/stats/top?kind=blocked&limit=10`. With\n`kind=domains&client=192.168.1.20`, one client's top domains (recently active clients only).",
+        "operationId": "stats_top",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TopKind"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Items to return (1–100, default 10).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "hour",
+            "in": "query",
+            "description": "Default: `current`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Hour"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Only this client's domains (an IP address; `kind=domains` only).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_TopItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/info": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Node and build information.",
+        "description": "Version, role, uptime, listeners, whether the query log is on, and the active filter\nsnapshot. Cheap; suitable for health dashboards.",
+        "operationId": "system_info",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/upstreams": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Upstream servers with health and latency.",
+        "description": "Every upstream with its stable ID, endpoint, groups, circuit-breaker state (`closed` means\nhealthy), request and failure counts, and smoothed answer time in milliseconds.",
+        "operationId": "upstreams",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_UpstreamInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ClientInfo": {
+        "type": "object",
+        "description": "A configured client (device).",
+        "required": [
+          "name",
+          "match",
+          "groups"
+        ],
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Highest priority first."
+          },
+          "match": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "Code": {
+        "type": "string",
+        "description": "Stable error codes.",
+        "enum": [
+          "invalid_parameter",
+          "not_found",
+          "unsupported_scope",
+          "unavailable",
+          "internal"
+        ]
+      },
+      "ExplainBlock": {
+        "type": "object",
+        "required": [
+          "list",
+          "mode",
+          "ttlSeconds",
+          "edeCode"
+        ],
+        "properties": {
+          "edeCode": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "list": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "description": "`null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`."
+          },
+          "ttlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ExplainClient": {
+        "type": "object",
+        "required": [
+          "ip",
+          "identifiedBy",
+          "groups"
+        ],
+        "properties": {
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configured device it was recognized as."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Highest priority first."
+          },
+          "identifiedBy": {
+            "type": "string",
+            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `ip`, `cidr`, or `default`."
+          },
+          "ip": {
+            "type": "string"
+          },
+          "mac": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExplainFilter": {
+        "type": "object",
+        "required": [
+          "rules",
+          "notes"
+        ],
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExplainRule"
+            }
+          },
+          "snapshot": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ExplainLine": {
+        "type": "object",
+        "required": [
+          "line",
+          "text"
+        ],
+        "properties": {
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ExplainRoute": {
+        "type": "object",
+        "required": [
+          "group",
+          "routed"
+        ],
+        "properties": {
+          "group": {
+            "type": "string",
+            "description": "Upstream group."
+          },
+          "routed": {
+            "type": "boolean",
+            "description": "An explicit route matched (not just the default group)."
+          }
+        }
+      },
+      "ExplainRule": {
+        "type": "object",
+        "required": [
+          "list",
+          "tier",
+          "kind",
+          "enabled",
+          "winner",
+          "lines"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "The client's groups use this list."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`domain`, `modifier`, or `regex`."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExplainLine"
+            },
+            "description": "Where the rule is in the list."
+          },
+          "list": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listed name that matched."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`subtree`, `exact`, or `subdomains`."
+          },
+          "tier": {
+            "type": "string",
+            "description": "`important_allow`, `important_block`, `allow`, or `block`."
+          },
+          "winner": {
+            "type": "boolean",
+            "description": "This rule decides the query."
+          }
+        }
+      },
+      "Explanation": {
+        "type": "object",
+        "description": "Why a name is or isn't blocked for a client, and where it would go (FLT-013).",
+        "required": [
+          "name",
+          "qtype",
+          "client",
+          "outcome",
+          "summary",
+          "notes"
+        ],
+        "properties": {
+          "block": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExplainBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "client": {
+            "$ref": "#/components/schemas/ExplainClient"
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExplainFilter",
+                "description": "Every matching rule in precedence order; absent until a filter is loaded."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`refused`, `special`, `local`, `blocked`, `allowed`, or `resolved`."
+          },
+          "pausedUntilUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Blocking is paused for this client until then (Unix seconds).",
+            "minimum": 0
+          },
+          "qtype": {
+            "type": "string"
+          },
+          "route": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExplainRoute",
+                "description": "Where a forwarded query goes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "description": "One sentence for people."
+          }
+        }
+      },
+      "GroupInfo": {
+        "type": "object",
+        "description": "A client group.",
+        "required": [
+          "name",
+          "priority",
+          "blockMode",
+          "blockTtlSeconds"
+        ],
+        "properties": {
+          "blockMode": {
+            "type": "string",
+            "description": "`null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`."
+          },
+          "blockTtlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "lists": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Lists this group uses; null means every enabled list."
+          },
+          "name": {
+            "type": "string"
+          },
+          "pausedUntilUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Blocking is paused for this group until then (Unix seconds).",
+            "minimum": 0
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "Hour": {
+        "type": "string",
+        "description": "Which hour a top-K or latency call reads.",
+        "enum": [
+          "current",
+          "previous"
+        ]
+      },
+      "Items_ClientInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A configured client (device).",
+              "required": [
+                "name",
+                "match",
+                "groups"
+              ],
+              "properties": {
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Highest priority first."
+                },
+                "match": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by."
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_GroupInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A client group.",
+              "required": [
+                "name",
+                "priority",
+                "blockMode",
+                "blockTtlSeconds"
+              ],
+              "properties": {
+                "blockMode": {
+                  "type": "string",
+                  "description": "`null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`."
+                },
+                "blockTtlSeconds": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "lists": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Lists this group uses; null means every enabled list."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "pausedUntilUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "Blocking is paused for this group until then (Unix seconds).",
+                  "minimum": 0
+                },
+                "priority": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_LatencyRow": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Latency percentiles for one key (HDR histogram, 2 significant digits).",
+              "required": [
+                "key",
+                "count",
+                "p50Ms",
+                "p90Ms",
+                "p99Ms",
+                "p999Ms",
+                "maxMs"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "key": {
+                  "type": "string",
+                  "description": "What the row is for (`cache/udp`, `AAAA`, `quad9-tls-1`, `upstream`)."
+                },
+                "maxMs": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "p50Ms": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "p90Ms": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "p999Ms": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "p99Ms": {
+                  "type": "number",
+                  "format": "double"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_ListInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A filter list and its download state.",
+              "required": [
+                "name",
+                "kind",
+                "enabled",
+                "source",
+                "state",
+                "bytes",
+                "lines",
+                "entries"
+              ],
+              "properties": {
+                "bytes": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "entries": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Names this list contributes to the active snapshot.",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`block` or `allow`."
+                },
+                "lastChangedUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "lastCheckedUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "lines": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "description": "URL, file path, or `inline`."
+                },
+                "state": {
+                  "type": "string",
+                  "description": "`ok`, `failed`, or `pending` (not downloaded yet)."
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_TimeBucket": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Counts for one time bucket.",
+              "required": [
+                "startUnixSeconds",
+                "total",
+                "byStatus",
+                "byQtype",
+                "byRcode",
+                "upstreamQueries",
+                "upstreamFailures"
+              ],
+              "properties": {
+                "byQtype": {
+                  "type": "object",
+                  "description": "By query type (`A`, `AAAA`, ..., `other`).",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "byRcode": {
+                  "type": "object",
+                  "description": "By response code (`NOERROR`, `NXDOMAIN`, ...).",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "byStatus": {
+                  "type": "object",
+                  "description": "By status (`cached`, `forwarded`, `blocked`, ...).",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "startUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Bucket start, Unix seconds.",
+                  "minimum": 0
+                },
+                "total": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Queries in the bucket.",
+                  "minimum": 0
+                },
+                "upstreamFailures": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "upstreamQueries": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Upstream exchanges, and how many failed.",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_TopItem": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One ranked item. Counts come from a Space-Saving sketch: the true count lies in\n`[count - errorBound, count]`.",
+              "required": [
+                "key",
+                "count",
+                "errorBound"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "errorBound": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "key": {
+                  "type": "string",
+                  "description": "Domain name or client address."
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The configured device name, for clients that have one."
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_UpstreamInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An upstream server and its health.",
+              "required": [
+                "id",
+                "name",
+                "endpoint",
+                "groups",
+                "breaker",
+                "requests",
+                "failures",
+                "latencyEwmaMs"
+              ],
+              "properties": {
+                "breaker": {
+                  "type": "string",
+                  "description": "Circuit breaker: `closed` (healthy), `open` (benched), or `half_open` (probing)."
+                },
+                "endpoint": {
+                  "type": "string",
+                  "description": "`udp://…`, `tls://…`, `https://…`."
+                },
+                "failures": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Groups it belongs to."
+                },
+                "id": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Stable ID (config order, from 1); query rows and latency rows refer to it.",
+                  "minimum": 0
+                },
+                "latencyEwmaMs": {
+                  "type": "number",
+                  "format": "double",
+                  "description": "Smoothed answer time."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "requests": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "LatencyBy": {
+        "type": "string",
+        "description": "What `GET /stats/latency` groups by.",
+        "enum": [
+          "path",
+          "qtype",
+          "upstream",
+          "stage"
+        ]
+      },
+      "LatencyRow": {
+        "type": "object",
+        "description": "Latency percentiles for one key (HDR histogram, 2 significant digits).",
+        "required": [
+          "key",
+          "count",
+          "p50Ms",
+          "p90Ms",
+          "p99Ms",
+          "p999Ms",
+          "maxMs"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string",
+            "description": "What the row is for (`cache/udp`, `AAAA`, `quad9-tls-1`, `upstream`)."
+          },
+          "maxMs": {
+            "type": "number",
+            "format": "double"
+          },
+          "p50Ms": {
+            "type": "number",
+            "format": "double"
+          },
+          "p90Ms": {
+            "type": "number",
+            "format": "double"
+          },
+          "p999Ms": {
+            "type": "number",
+            "format": "double"
+          },
+          "p99Ms": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ListInfo": {
+        "type": "object",
+        "description": "A filter list and its download state.",
+        "required": [
+          "name",
+          "kind",
+          "enabled",
+          "source",
+          "state",
+          "bytes",
+          "lines",
+          "entries"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Names this list contributes to the active snapshot.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "`block` or `allow`."
+          },
+          "lastChangedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "lastCheckedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "URL, file path, or `inline`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`ok`, `failed`, or `pending` (not downloaded yet)."
+          }
+        }
+      },
+      "NameMatch": {
+        "type": "string",
+        "description": "How `name` in [`QueryParams`] is matched.",
+        "enum": [
+          "substring",
+          "exact",
+          "suffix",
+          "glob",
+          "regex"
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An API error.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/Code",
+            "description": "Stable machine-readable code."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What went wrong in this request."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What to do about it."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "HTTP status code.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Short, human-readable summary of the problem type."
+          },
+          "type": {
+            "type": "string",
+            "description": "URI identifying the problem type."
+          }
+        },
+        "example": {
+          "code": "invalid_parameter",
+          "detail": "`from`: `yesterday`: expected RFC 3339 time (2026-10-03T12:00:00Z) or a relative offset (-24h)",
+          "hint": "Use a relative offset such as -24h, or RFC 3339 such as 2026-10-03T00:00:00Z.",
+          "status": 400,
+          "title": "Invalid parameter",
+          "type": "https://telltaledns.dev/problems/invalid_parameter"
+        }
+      },
+      "QueryPage": {
+        "type": "object",
+        "description": "A page of query-log rows, newest first.",
+        "required": [
+          "items",
+          "scanned"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryRow"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` to get older rows; absent when there are none."
+          },
+          "scanned": {
+            "$ref": "#/components/schemas/ScanStats",
+            "description": "How much of the log this page looked at."
+          }
+        }
+      },
+      "QueryRow": {
+        "type": "object",
+        "description": "One logged query.",
+        "required": [
+          "time",
+          "tsUnixMicros",
+          "client",
+          "name",
+          "qtype",
+          "status",
+          "proto",
+          "totalMs",
+          "upstreamMs",
+          "responseBytes",
+          "answers"
+        ],
+        "properties": {
+          "answers": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "client": {
+            "type": "string",
+            "description": "Client address."
+          },
+          "clientName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configured device name, when known."
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's primary group."
+          },
+          "list": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The list whose rule blocked or allowed the query."
+          },
+          "name": {
+            "type": "string"
+          },
+          "proto": {
+            "type": "string"
+          },
+          "qtype": {
+            "type": "string"
+          },
+          "rcode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Response code, or null when nothing was sent."
+          },
+          "responseBytes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rule": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`domain`, `modifier`, `regex`, `cname`, or `allow`."
+          },
+          "status": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "description": "When the query arrived (RFC 3339, milliseconds)."
+          },
+          "totalMs": {
+            "type": "number",
+            "format": "double"
+          },
+          "tsUnixMicros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upstreamMs": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ScanStats": {
+        "type": "object",
+        "required": [
+          "segments",
+          "blocksRead",
+          "blocksTotal",
+          "rowsScanned"
+        ],
+        "properties": {
+          "blocksRead": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "blocksTotal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rowsScanned": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "segments": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Step": {
+        "type": "string",
+        "description": "Time-bucket size for [`TimeseriesParams`].",
+        "enum": [
+          "second",
+          "minute"
+        ]
+      },
+      "Summary": {
+        "type": "object",
+        "description": "Totals over a time range.",
+        "required": [
+          "fromUnixSeconds",
+          "toUnixSeconds",
+          "queries",
+          "blocked",
+          "blockedPercent",
+          "cached",
+          "cacheHitPercent",
+          "forwarded",
+          "nxdomain",
+          "servfail",
+          "activeClients",
+          "latency"
+        ],
+        "properties": {
+          "activeClients": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct clients seen this hour.",
+            "minimum": 0
+          },
+          "blocked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "blockedPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "Blocked share of all queries, 0–100."
+          },
+          "cacheHitPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "Cache share of answered queries that weren't blocked or local, 0–100."
+          },
+          "cached": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answered from cache (fresh or stale).",
+            "minimum": 0
+          },
+          "forwarded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "fromUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "latency": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LatencyRow"
+            },
+            "description": "Latency percentiles this hour, by answer path (`cache`, `upstream`, ...)."
+          },
+          "nxdomain": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "servfail": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "toUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SystemInfo": {
+        "type": "object",
+        "description": "Node and build information.",
+        "required": [
+          "version",
+          "node",
+          "role",
+          "uptimeSeconds",
+          "startedAt",
+          "listeners",
+          "queryLog",
+          "filterNames"
+        ],
+        "properties": {
+          "filterNames": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Blocked names in the active snapshot.",
+            "minimum": 0
+          },
+          "filterSnapshot": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Version of the active filter snapshot, if one is loaded.",
+            "minimum": 0
+          },
+          "listeners": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "DNS listeners, as `proto://addr`."
+          },
+          "node": {
+            "type": "string",
+            "description": "Node name."
+          },
+          "queryLog": {
+            "type": "boolean",
+            "description": "Whether the per-query log is being written."
+          },
+          "role": {
+            "type": "string",
+            "description": "Process role: `all`, `resolver`, or `controller`."
+          },
+          "startedAt": {
+            "type": "string",
+            "description": "When the process started (RFC 3339)."
+          },
+          "uptimeSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "version": {
+            "type": "string",
+            "description": "TelltaleDNS version.",
+            "example": "0.1.0"
+          }
+        }
+      },
+      "TimeBucket": {
+        "type": "object",
+        "description": "Counts for one time bucket.",
+        "required": [
+          "startUnixSeconds",
+          "total",
+          "byStatus",
+          "byQtype",
+          "byRcode",
+          "upstreamQueries",
+          "upstreamFailures"
+        ],
+        "properties": {
+          "byQtype": {
+            "type": "object",
+            "description": "By query type (`A`, `AAAA`, ..., `other`).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "byRcode": {
+            "type": "object",
+            "description": "By response code (`NOERROR`, `NXDOMAIN`, ...).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "byStatus": {
+            "type": "object",
+            "description": "By status (`cached`, `forwarded`, `blocked`, ...).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "startUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bucket start, Unix seconds.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Queries in the bucket.",
+            "minimum": 0
+          },
+          "upstreamFailures": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "upstreamQueries": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Upstream exchanges, and how many failed.",
+            "minimum": 0
+          }
+        }
+      },
+      "TopItem": {
+        "type": "object",
+        "description": "One ranked item. Counts come from a Space-Saving sketch: the true count lies in\n`[count - errorBound, count]`.",
+        "required": [
+          "key",
+          "count",
+          "errorBound"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errorBound": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "key": {
+            "type": "string",
+            "description": "Domain name or client address."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configured device name, for clients that have one."
+          }
+        }
+      },
+      "TopKind": {
+        "type": "string",
+        "description": "What a top-K list ranks.",
+        "enum": [
+          "domains",
+          "blocked",
+          "nxdomain",
+          "clients"
+        ]
+      },
+      "UpstreamInfo": {
+        "type": "object",
+        "description": "An upstream server and its health.",
+        "required": [
+          "id",
+          "name",
+          "endpoint",
+          "groups",
+          "breaker",
+          "requests",
+          "failures",
+          "latencyEwmaMs"
+        ],
+        "properties": {
+          "breaker": {
+            "type": "string",
+            "description": "Circuit breaker: `closed` (healthy), `open` (benched), or `half_open` (probing)."
+          },
+          "endpoint": {
+            "type": "string",
+            "description": "`udp://…`, `tls://…`, `https://…`."
+          },
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups it belongs to."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Stable ID (config order, from 1); query rows and latency rows refer to it.",
+            "minimum": 0
+          },
+          "latencyEwmaMs": {
+            "type": "number",
+            "format": "double",
+            "description": "Smoothed answer time."
+          },
+          "name": {
+            "type": "string"
+          },
+          "requests": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "Node information."
+    },
+    {
+      "name": "stats",
+      "description": "Live counters, top lists, and latency percentiles from memory (the last 48 hours at minute resolution, 15 minutes at second resolution)."
+    },
+    {
+      "name": "queries",
+      "description": "The query log and explanations of decisions."
+    },
+    {
+      "name": "config",
+      "description": "Lists, groups, clients, and upstreams as running."
+    }
+  ]
+}

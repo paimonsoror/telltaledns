@@ -75,6 +75,6 @@ COPY --from=build --chown=65532:65532 /out/var/lib/telltale /var/lib/telltale
 USER 65532:65532
 # The only writable path; run with a read-only root filesystem (spec/08 §2).
 VOLUME ["/var/lib/telltale"]
-EXPOSE 53/udp 53/tcp 9153/tcp
+EXPOSE 53/udp 53/tcp 8053/tcp 9153/tcp
 ENTRYPOINT ["/usr/local/bin/telltale"]
 CMD ["run"]

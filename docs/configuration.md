@@ -72,3 +72,4 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint | `spec/06` |
+| `[api]` | REST API listener (also serves `/metrics` and health probes) | `spec/07`, ADR-028 |

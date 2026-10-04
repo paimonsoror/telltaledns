@@ -56,6 +56,8 @@ pub struct Config {
     pub cache: CacheConfig,
     /// Telemetry, query log, and metrics.
     pub telemetry: TelemetryConfig,
+    /// The REST API (and, later, the web UI).
+    pub api: ApiConfig,
 }
 
 impl Default for Config {
@@ -88,6 +90,7 @@ impl Default for Config {
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
             telemetry: TelemetryConfig::default(),
+            api: ApiConfig::default(),
         }
     }
 }
@@ -786,6 +789,25 @@ impl Default for QlogConfig {
             privacy_level: 0,
             fsync: false,
             flush_interval_secs: 10,
+        }
+    }
+}
+
+/// REST API listener (API-001). It also serves `/metrics` and the health probes. Until
+/// authentication lands (T3.5) it answers only clients in `[access] allowed_networks`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ApiConfig {
+    pub enabled: bool,
+    /// Where the API listens (default `0.0.0.0:8053`).
+    pub listen: SocketAddr,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
         }
     }
 }

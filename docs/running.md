@@ -430,6 +430,33 @@ fsync = false                # true: sync every write (slower on SD cards)
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
+## API
+A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:
+```toml
+[api]
+enabled = true
+listen = "0.0.0.0:8053"
+```
+- The full description is at `/api/v1/openapi.json` (OpenAPI 3.1), so any OpenAPI tool or AI agent can explore it. The same document is in the repository as `docs/api/openapi.json`.
+- Until logins arrive (next release), the API answers only clients inside `[access] allowed_networks`, and it can only read: nothing can be changed through it yet.
+- Times take RFC 3339 (`2026-10-03T12:00:00Z`) or a relative offset (`-24h`, `-15m`). Lists come back as `{"items": [...]}`; the query log pages with `nextCursor` → `cursor`. Errors are `application/problem+json` with a stable `code` and a `hint` saying what to change.
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/v1/system/info` | version, node, uptime, listeners, query log on/off, active filter snapshot |
+| `GET /api/v1/stats/summary?from=-24h` | queries, blocked %, cache hit %, NXDOMAIN/SERVFAIL, active clients, latency by path |
+| `GET /api/v1/stats/timeseries?step=minute&from=-1h` | counts per second or minute by status, type, and response code |
+| `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains) |
+| `GET /api/v1/stats/latency?by=upstream` | percentiles by `path`, `qtype`, `upstream`, or `stage` |
+| `GET /api/v1/queries?name=ads&status=blocked&from=-1h` | the query log, newest first (filters: `name` + `match`, `client`, `status`, `qtype`, `rcode`, `upstream`, `minLatencyMs`, `from`, `to`) |
+| `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20` | why a name is or isn't blocked for a device ([explain](#why-was-it-blocked-explain)) |
+| `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health |
+
+```sh
+curl -s 'http://dns.lan:8053/api/v1/stats/top?kind=blocked&limit=5'
+curl -s 'http://dns.lan:8053/api/v1/queries?client=192.168.1.20&limit=20'
+```
+
 ## Reload without restarting
 Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):
 - The whole config is validated first. If anything is wrong, the errors are logged and the **previous configuration keeps serving**.

@@ -44,6 +44,8 @@ pub(crate) struct Sources {
     pub(crate) lists: ArcSwapOption<ListsShared>,
     /// Query-log write counters, when the query log is on.
     pub(crate) qlog: Option<Arc<telltale_store::qlog::Stats>>,
+    /// The running configuration (replaced on reload), for the API.
+    pub(crate) config: ArcSwap<telltale_config::Config>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -59,15 +61,29 @@ pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
         .with_state(src)
 }
 
-/// Serves until `shutdown` resolves.
+/// The API listener's app: `/api/v1/*` plus the same `/metrics` and probes (REQ: API-001,
+/// `spec/06` §5). Until authentication (T3.5), only `allowed_networks` may call it.
+pub(crate) fn api_router(src: Arc<Sources>) -> HttpRouter {
+    let backend = Arc::new(crate::api_backend::ApiBackend {
+        src: Arc::clone(&src),
+    });
+    telltale_api::router(backend)
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&src),
+            only_allowed,
+        ))
+        .merge(router(src))
+}
+
+/// Serves `app` until `shutdown` resolves.
 pub(crate) async fn serve(
     addr: SocketAddr,
-    src: Arc<Sources>,
+    app: HttpRouter,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<SocketAddr> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
-    let app = router(src).into_make_service_with_connect_info::<SocketAddr>();
+    let app = app.into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move {
         let _ = axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
@@ -554,6 +570,7 @@ mod tests {
             started: Instant::now(),
             lists: ArcSwapOption::empty(),
             qlog: None,
+            config: ArcSwap::from_pointee(telltale_config::Config::default()),
             allowed: Vec::new(),
         };
         let text = render(&src);

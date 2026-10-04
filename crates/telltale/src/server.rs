@@ -294,6 +294,35 @@ fn build_pipeline(
     Pipeline::new(settings, cache, router, policy)
 }
 
+/// Starts the metrics and API listeners; both stop when `stop` turns true.
+async fn start_http(
+    cfg: &Config,
+    sources: &Arc<http::Sources>,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> io::Result<()> {
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|s| *s).await;
+    };
+    if cfg.telemetry.metrics.enabled {
+        let addr = cfg.telemetry.metrics.listen;
+        let app = http::router(Arc::clone(sources));
+        let bound = http::serve(addr, app, stopped(stop.clone()))
+            .await
+            .map_err(|e| io::Error::new(e.kind(), format!("metrics {addr}: {e}")))?;
+        info!(addr = %bound, "serving /metrics, /healthz, /readyz, /livez");
+    }
+    // REQ: API-001 — the REST API (and its OpenAPI document) on its own listener.
+    if cfg.api.enabled {
+        let addr = cfg.api.listen;
+        let app = http::api_router(Arc::clone(sources));
+        let bound = http::serve(addr, app, stopped(stop.clone()))
+            .await
+            .map_err(|e| io::Error::new(e.kind(), format!("api {addr}: {e}")))?;
+        info!(addr = %bound, "serving the API at /api/v1 (OpenAPI: /api/v1/openapi.json)");
+    }
+    Ok(())
+}
+
 /// Runs until SIGTERM/SIGINT. SIGHUP reloads config from `files`.
 pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
@@ -343,17 +372,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         allowed: cfg.access.allowed_networks.clone(),
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
+        config: ArcSwap::from_pointee(cfg.clone()),
     });
-    let (stop_http, http_stopped) = tokio::sync::oneshot::channel::<()>();
-    if cfg.telemetry.metrics.enabled {
-        let addr = cfg.telemetry.metrics.listen;
-        let bound = http::serve(addr, Arc::clone(&sources), async {
-            let _ = http_stopped.await;
-        })
-        .await
-        .map_err(|e| io::Error::new(e.kind(), format!("metrics {addr}: {e}")))?;
-        info!(addr = %bound, "serving /metrics, /healthz, /readyz, /livez");
-    }
+    let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
+    start_http(&cfg, &sources, &http_stopped).await?;
     let neighbors =
         neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));
     // Every listener is bound: ready for traffic (OPS-006).
@@ -389,7 +411,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OPS-007 — not ready first (load balancers stop sending), stop taking new TCP
     // connections, let in-flight upstream lookups finish (bounded), then stop UDP workers.
     ready.store(false, Ordering::Release);
-    let _ = stop_http.send(());
+    let _ = stop_http.send(true);
     for (_, s) in listeners.tcp.drain(..) {
         s.shutdown().await;
     }
@@ -465,6 +487,7 @@ fn reload(
     if !restart.is_empty() {
         warn!(sections = ?restart, "these changes take effect after a restart");
     }
+    sources.config.store(Arc::new(new.clone()));
     *current = new;
     info!("configuration reloaded");
 }

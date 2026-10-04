@@ -283,3 +283,16 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - Fuzzing: `qlog_segment` (raw, checksum-repaired, and structure-aware modes), ~670k runs across three sessions, clean.
 
 **Consequences:** Interactive search stays within 2 s on a Pi for a month of a busy home's queries, without stealing CPU from DNS. Heavier work (a multi-month substring scan, or a much higher share of unique names) degrades linearly. If that matters, the next step is a cross-segment name index (one dictionary per day or week), not more threads.
+
+## ADR-028 — API listener, crate boundary, and the read-only first slice (Proposed)
+**Context:** `spec/07` defines the API conventions and resource map but no listener: `06` §5 says only that `/metrics` is "also on the API port". T3.4 (API-001, API-002) is the skeleton, and the owner asked for a UI next for testing, which needs an API. API-003 (auth) is T3.5.
+
+**Decision:**
+- **Listener:** a new `[api]` section (`enabled = true`, `listen = "0.0.0.0:8053"`) on its own TCP listener, also serving `/metrics` and `/livez`, `/healthz`, `/readyz` (`06` §5). Port 8053 avoids 53/80/443, Pi-hole's 80, and Technitium's 5380/53443 (the owner runs Technitium on the same Pi). The metrics listener (9153) stays for scrapers.
+- **Crate boundary:** `telltale-api` owns routes, request/response types, problem+json, time parsing, and the OpenAPI document. It reaches the server only through a `Backend` trait implemented by the binary (`api_backend.rs`) over the state that already exists for `/metrics`, the pipeline, the aggregates, the query log, and list status. So the API never depends on pipeline internals, and the trait is the seam a cluster proxy (federated scope) plugs into later.
+- **OpenAPI:** `utoipa` 6 generates OpenAPI 3.1 from the handlers. Doc comments become summaries and descriptions, and a test fails if any operation lacks either (AGT-001). `docs/api/openapi.json` is committed, and a test fails when it drifts (`07` §1); regenerate with `UPDATE_OPENAPI=1`.
+- **Conventions:** camelCase JSON with units in field names; `{"items": [...]}` for collections; cursor pagination on the query log (other collections are small and unpaged for now); `from`/`to` as RFC 3339 or relative offsets; errors as RFC 9457 problem+json with a stable `code` enum and a `hint`; `scope` accepted on analytics calls, where `cluster` and `node:local` mean this node and anything else is a 400 `unsupported_scope` until clustering.
+- **Read-only until auth:** T3.4 ships GET endpoints only (system info, stats summary/timeseries/top/latency, query log, explain, lists, groups, clients, upstreams). Mutations, with dry-run and idempotency keys (AGT-002/003), come with T3.5 so nothing can be changed without authentication. Until then the listener answers only `[access] allowed_networks`, like `/metrics`.
+- **Roadmap order:** at the owner's request (2026-10-04: "we will want a UI to help with testing"), T3.5 and T3.9 come next. T3.3 (Prometheus set, Grafana, SQLite rollups) moves after T3.9; none of the UI depends on it, since the dashboard reads the in-memory windows.
+
+**Consequences:** The UI and agents have a documented, typed surface now. Every later endpoint follows the same pattern (types and doc comments in `telltale-api`, data from `Backend`).
