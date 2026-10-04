@@ -6,6 +6,8 @@
   import { href } from '../router.svelte';
   import { session } from '../session.svelte';
   import Drawer from './Drawer.svelte';
+  import HelpButton from './HelpButton.svelte';
+  import ChangePreview from './ChangePreview.svelte';
 
   let {
     ip,
@@ -129,12 +131,21 @@
           Name
           <input name="device-name" bind:value={newName} placeholder="Living room TV" maxlength="64" required />
         </label>
+        <HelpButton id="device-name" />
         <fieldset>
-          <legend>Groups <span class="muted small">(first one's settings apply)</span></legend>
+          <legend>Groups <span class="muted small">(first one's settings apply)</span><HelpButton id="device-groups" /></legend>
           {#each groups as g (g.name)}
             <label class="check"><input type="checkbox" checked={chosen.includes(g.name)} onchange={() => toggle(g.name)} /> {g.name}</label>
           {/each}
         </fieldset>
+        {#if newName.trim()}
+          <ChangePreview
+            highlight="blocked"
+            device={newName.trim()}
+            name="any site"
+            sentence={`Queries from ${ip} will show “${newName.trim()}”, past ones included, and get the lists of ${chosen.length ? chosen.join(', ') : 'default'}.`}
+          />
+        {/if}
         {#if error}<p class="notice bad" role="alert">{error}</p>{/if}
         {#if done}<p class="notice ok" role="status">{done}</p>{/if}
         <div class="row">

@@ -5,6 +5,8 @@
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
+  import { currentMode } from '../lib/mode.svelte';
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let latency = $state<S['LatencyRow'][]>([]);
@@ -24,32 +26,33 @@
   );
 
   const byKey = $derived(new Map(latency.map((r) => [r.key, r])));
+  const advanced = $derived(currentMode() === 'advanced');
 </script>
 
 <div class="page">
-  <h1>Upstreams</h1>
+  <h1>Upstreams<HelpButton id="upstreams" /></h1>
   <ErrorNote {error} />
   <section class="card">
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Upstream</th><th>Groups</th><th>Health</th><th class="num">Requests</th><th class="num">Failures</th>
-            <th class="num">Smoothed</th><th class="num">p50</th><th class="num">p99</th>
+            <th>Upstream</th><th>Groups</th><th>Health<HelpButton id="upstream-health" /></th><th class="num">Requests</th><th class="num">Failures</th>
+            {#if advanced}<th class="num">Smoothed</th>{/if}<th class="num">p50</th>{#if advanced}<th class="num">p99</th>{/if}
           </tr>
         </thead>
         <tbody>
           {#each upstreams as u (u.id)}
             {@const l = byKey.get(u.name)}
             <tr>
-              <td><strong>{u.name}</strong><div class="muted small mono">{u.endpoint}</div></td>
+              <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
               <td><StatusBadge value={u.breaker} /></td>
               <td class="num">{num(u.requests)}</td>
               <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span></td>
-              <td class="num">{ms(u.latencyEwmaMs)}</td>
+              {#if advanced}<td class="num">{ms(u.latencyEwmaMs)}</td>{/if}
               <td class="num">{ms(l?.p50Ms)}</td>
-              <td class="num">{ms(l?.p99Ms)}</td>
+              {#if advanced}<td class="num">{ms(l?.p99Ms)}</td>{/if}
             </tr>
           {/each}
         </tbody>
@@ -59,5 +62,9 @@
   <p class="muted small">
     Health: <strong>closed</strong> = healthy, <strong>open</strong> = benched after failures,
     <strong>half_open</strong> = being probed. Percentiles cover this hour.
+  </p>
+  <p class="muted small">
+    To send one domain to a different server (a work network, your router), add a <code>[[route]]</code>
+    to the configuration.<HelpButton id="routes" />
   </p>
 </div>

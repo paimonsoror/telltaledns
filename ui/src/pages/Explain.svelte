@@ -4,6 +4,7 @@
   import { route, navigate } from '../lib/router.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import ExplainView from '../lib/components/ExplainView.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
 
   let name = $state(route.params.get('name') ?? '');
   let client = $state(route.params.get('client') ?? '');
@@ -36,7 +37,7 @@
 </script>
 
 <div class="page">
-  <h1>Explain</h1>
+  <h1>Explain<HelpButton id="explain" /></h1>
   <form class="card row" onsubmit={submit}>
     <label class="field grow">Name
       <input name="name" required placeholder="ads.example.com" bind:value={name} />

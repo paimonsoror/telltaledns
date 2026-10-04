@@ -17,6 +17,8 @@ WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY ui/ ./
+# The help glossary (API-011) is shared with the site and imported from docs/help/.
+COPY docs/help/topics.json /docs/help/topics.json
 RUN npm run build
 
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS build

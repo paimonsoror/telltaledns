@@ -7,6 +7,7 @@
   import { session } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let seen = $state<S['TopItem'][]>([]);
@@ -35,7 +36,7 @@
 </script>
 
 <div class="page">
-  <h1>Clients</h1>
+  <h1>Clients<HelpButton id="devices" /></h1>
   <ErrorNote {error} />
   <div class="grid-2">
     <section class="card">

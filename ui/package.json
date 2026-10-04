@@ -8,6 +8,7 @@
     "build": "vite build && node scripts/postbuild.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "types": "openapi-typescript ../docs/api/openapi.json -o src/lib/api-types.ts",
+    "check:help": "node scripts/check-help.mjs",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

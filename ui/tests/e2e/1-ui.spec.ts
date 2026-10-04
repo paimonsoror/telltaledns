@@ -109,7 +109,7 @@ test('live view streams new queries', async () => {
 test('explain page', async () => {
   await page.goto('/#/explain?name=nas.e2e.test&client=127.0.0.1');
   await expect(page.locator('.explain')).toContainText('local');
-  await page.getByLabel('Name').fill('ads.e2e.test');
+  await page.getByRole('textbox', { name: 'Name' }).fill('ads.e2e.test');
   await page.getByRole('button', { name: 'Explain' }).click();
   await expect(page.locator('.explain')).toContainText('blocked');
 });
@@ -143,8 +143,8 @@ test('API tokens: created once, usable, revocable', async ({ request }) => {
 
 test('admins add users; viewers see less', async () => {
   await page.goto('/#/settings?tab=users');
-  await page.getByLabel('Username').fill(VIEWER.user);
-  await page.getByLabel('Password').fill(VIEWER.pass);
+  await page.getByLabel('Username', { exact: true }).fill(VIEWER.user);
+  await page.getByLabel('Password', { exact: true }).fill(VIEWER.pass);
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(page.locator('main table')).toContainText(VIEWER.user);
   // REQ: API-006 — the change is in the audit log, and the chain verifies.
@@ -273,4 +273,31 @@ test('api_010 device API: dry run, versions, idempotency', async () => {
   expect((await r.delete('/api/v1/clients/Renamed%20laptop', { headers: h() })).status()).toBe(200);
   const after = (await (await r.get('/api/v1/queries?client=127.0.0.1&limit=1')).json()).items[0];
   expect(after.clientName).toBeUndefined();
+});
+
+// REQ: API-011 (T3.11 AC) — a novice opens a "?" panel and sees its diagram; Explain draws the
+// decision; Simple hides detail that Advanced shows.
+test('api_011 help panels, diagrams, and simple/advanced', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/lists');
+  await page.getByRole('button', { name: 'Help: Block or allow whole categories of sites' }).click();
+  const panel = page.getByTestId('help-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('When you');
+  await expect(panel.getByRole('img')).toHaveAttribute('aria-label', /blocks it/);
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+
+  await page.goto('/#/explain?name=ads.e2e.test&client=127.0.0.1');
+  await expect(page.getByTestId('explain-flow').getByRole('img')).toHaveAttribute('aria-label', /blocks it.*\(list e2e-block\)/);
+
+  // Simple (the default) hides each list's source; Advanced shows it, and is remembered.
+  await page.goto('/#/lists');
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(page.locator('main')).not.toContainText('Lines');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await expect(page.locator('main')).toContainText('Lines');
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Advanced', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
 });

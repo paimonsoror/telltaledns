@@ -100,6 +100,8 @@ jobs:
       - name: API types match the OpenAPI document
         run: npm run types && git diff --exit-code src/lib/api-types.ts
       - run: npm run check
+      # REQ: API-011 — every "?" in the UI has a glossary topic and every topic is used.
+      - run: npm run check:help
       - name: Build (fails over the size budget)
         run: npm run build
       - uses: dtolnay/rust-toolchain@1.99.0

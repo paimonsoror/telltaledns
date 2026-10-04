@@ -1,0 +1,289 @@
+{
+  "$comment": "REQ: API-011, ADR-036 — the glossary behind every \"?\" in the web UI and the site's glossary page. Fields: id, title (the outcome), term (the DNS name for it), summary (one sentence), when, example, caution, diagram (a path through the query flow to highlight: cache, local, blocked, route, upstream, refused), docs (anchor in docs/running.md), general (true: not tied to one setting). CI checks that every id used in the UI exists here and every non-general topic is used.",
+  "topics": [
+    {
+      "id": "how-it-works",
+      "title": "How TelltaleDNS answers a question",
+      "term": "DNS resolution",
+      "summary": "Every device asks TelltaleDNS where a name (like youtube.com) lives; it answers from memory, from your own names, with a block, or by asking a public DNS server.",
+      "when": "Read this first: every other setting changes one step of this path.",
+      "example": "Your TV asks for ads.example.com: it's on a blocklist, so TelltaleDNS answers \"nowhere\" and the ad never loads.",
+      "caution": "Devices only use TelltaleDNS if your router hands out its address as the DNS server.",
+      "diagram": "upstream",
+      "docs": "how-a-query-is-answered",
+      "general": true
+    },
+    {
+      "id": "query-log",
+      "title": "See every question your devices ask",
+      "term": "Query log",
+      "summary": "A searchable history of each lookup: which device asked, for what, and what happened (answered, blocked, from memory).",
+      "when": "A site or app is broken, or you want to know what a device talks to.",
+      "example": "Filter by the smart plug's address to see it contacting a dozen servers every hour.",
+      "caution": "The log shows names, not page contents. How long it's kept is set by [telemetry.qlog] retention_days.",
+      "docs": "query-log"
+    },
+    {
+      "id": "live-view",
+      "title": "Watch questions as they happen",
+      "term": "Live tail",
+      "summary": "New queries appear here the moment they're answered, with the same filters as the log.",
+      "when": "Reproducing a problem: open the app on the device and watch what it asks for.",
+      "example": "Start the live view filtered to your phone, open an app, and see each name it looks up.",
+      "caution": "Very busy networks show a sample (it says how many it skipped) so the page keeps up.",
+      "docs": "query-log"
+    },
+    {
+      "id": "explain",
+      "title": "Why was this blocked (or not)?",
+      "term": "Explain",
+      "summary": "Shows the exact path a question would take for one device: which group it's in, every rule that matches with its list and line, and where the answer comes from.",
+      "when": "Something is blocked that shouldn't be, or the other way round.",
+      "example": "Explain ads.example.com for 192.168.1.20: blocked by hagezi-pro line 7102, because the device is in the kids group.",
+      "caution": "It explains how the query would be handled now; lists may have changed since a logged query.",
+      "diagram": "blocked",
+      "docs": "why-was-it-blocked-explain"
+    },
+    {
+      "id": "devices",
+      "title": "Name your devices",
+      "term": "Clients",
+      "summary": "Give an address (or a MAC, or a client ID) a name so every view shows \"Living room TV\" instead of 192.168.1.42, and put it in groups.",
+      "when": "You see an address you don't recognize, or want different rules for one device.",
+      "example": "Name 192.168.1.42 \"Living room TV\" and add it to the kids group: its history relabels at once.",
+      "caution": "Addresses can change when a device reconnects; match by MAC for devices that don't keep their address (a DHCP reservation also works).",
+      "docs": "naming-devices-in-the-ui"
+    },
+    {
+      "id": "device-name",
+      "title": "The device's name",
+      "term": "Client name",
+      "summary": "Shown everywhere instead of the address, including on past queries, and usable in rules ($client='Kids tablet').",
+      "when": "Always: a name you'll recognize in a month.",
+      "example": "\"Kids tablet\", \"Office printer\", \"Ring doorbell\".",
+      "caution": "Names must be unique; renaming keeps the device's groups.",
+      "docs": "naming-devices-in-the-ui"
+    },
+    {
+      "id": "device-groups",
+      "title": "Which rules this device gets",
+      "term": "Group membership",
+      "summary": "A device gets every blocklist of every group it's in; other settings (like how blocks are answered) come from its first group.",
+      "when": "Some devices need stricter or looser rules than the rest.",
+      "example": "Kids' tablets in a kids group with an extra adult-content list; a work laptop in an allowlist-heavy group.",
+      "caution": "Devices in no group use the default group.",
+      "diagram": "blocked",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "groups",
+      "title": "Sets of rules for sets of devices",
+      "term": "Groups",
+      "summary": "A group picks which block and allow lists apply, and can send its devices to their own DNS servers.",
+      "when": "Different people in the house need different filtering.",
+      "example": "default: ads and trackers; kids: also adult content and gambling, with safe search.",
+      "caution": "The highest-priority group's settings win when a device is in several.",
+      "diagram": "blocked",
+      "docs": "groups-and-devices"
+    },
+    {
+      "id": "lists",
+      "title": "Block or allow whole categories of sites",
+      "term": "Filter lists (blocklists and allowlists)",
+      "summary": "Lists of names, maintained by others or by you, that TelltaleDNS blocks (or always allows), refreshed automatically.",
+      "when": "You want ads, trackers, malware, or adult sites blocked for every device at once.",
+      "example": "HaGeZi Pro blocks about 150,000 ad and tracker names; an allowlist keeps your bank's analytics working.",
+      "caution": "Bigger isn't better: very aggressive lists break sites. Start with one balanced list.",
+      "diagram": "blocked",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-kind",
+      "title": "Block list or allow list",
+      "term": "List kind",
+      "summary": "A block list stops names from resolving; an allow list makes names always work, even if a block list has them.",
+      "when": "Use an allow list to fix a site a block list breaks.",
+      "example": "Allow cdn.example.com when a block list's rule for example.com breaks your streaming app.",
+      "caution": "Allow lists beat block lists, so an overly broad allow rule lets ads back in.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "list-refresh",
+      "title": "How lists stay current",
+      "term": "List refresh",
+      "summary": "Lists are downloaded again on a schedule (daily by default); a failed download keeps the last good copy.",
+      "when": "A list shows an error or an old update time.",
+      "example": "A list maintainer's site is down: TelltaleDNS keeps blocking with yesterday's copy and retries later.",
+      "caution": "Each list is stored compressed in the data directory; very large lists take memory while compiling.",
+      "docs": "filter-lists"
+    },
+    {
+      "id": "upstreams",
+      "title": "Where answers come from",
+      "term": "Upstreams (forwarders)",
+      "summary": "The public DNS servers TelltaleDNS asks for names it doesn't know yet, ideally encrypted so your ISP can't read them.",
+      "when": "Choosing privacy (Quad9, Cloudflare) or filtering (family resolvers) at the source.",
+      "example": "DNS over TLS to Cloudflare and Quad9, using whichever answers faster.",
+      "caution": "Every upstream you add sees the names you look up. The breaker benches a failing server automatically.",
+      "diagram": "upstream",
+      "docs": "upstream-presets"
+    },
+    {
+      "id": "upstream-health",
+      "title": "Is each server healthy?",
+      "term": "Circuit breaker",
+      "summary": "Closed means healthy; open means TelltaleDNS stopped asking it after failures and will test it again soon.",
+      "when": "Lookups are slow or failing.",
+      "example": "An ISP outage opens the breaker for one server; the others keep answering.",
+      "caution": "If every server's breaker is open, only cached and local answers work.",
+      "diagram": "upstream",
+      "docs": "encrypted-upstreams"
+    },
+    {
+      "id": "routes",
+      "title": "Send a domain to another server",
+      "term": "Conditional forwarding (routes)",
+      "summary": "Questions for one domain go to a specific server instead of the public ones, such as your work network's or your router's.",
+      "when": "Names like nas.home or corp.example only exist on another server.",
+      "example": "Send everything under corp.example to 10.0.0.53 so work names resolve at home over the VPN.",
+      "caution": "That server sees those questions; private reverse lookups never leave your network by default.",
+      "diagram": "route",
+      "docs": "routing-conditional-forwarding"
+    },
+    {
+      "id": "local-dns",
+      "title": "Names on my network",
+      "term": "Local records (zone)",
+      "summary": "Names TelltaleDNS answers itself, like nas.home.arpa → 192.168.1.10, so you type a name instead of an address.",
+      "when": "You run a NAS, printer, or server at home and want a name for it.",
+      "example": "nas.home.arpa → 192.168.1.10, and a wildcard *.dev.home.arpa → 192.168.1.20.",
+      "caution": "Use home.arpa (made for this) or a domain you own, not an invented .local or .lan name that might clash.",
+      "diagram": "local",
+      "docs": "local-records"
+    },
+    {
+      "id": "cache",
+      "title": "Answers from memory",
+      "term": "Cache",
+      "summary": "Recent answers are kept for as long as the name's owner allows (its TTL), so repeat questions are answered in microseconds.",
+      "when": "Always on; it's why most lookups never leave your network.",
+      "example": "The tenth device asking for youtube.com gets the answer from memory.",
+      "caution": "Changing a name's address elsewhere takes up to its TTL to show here (flush the cache to force it).",
+      "diagram": "cache",
+      "docs": "how-a-query-is-answered"
+    },
+    {
+      "id": "access",
+      "title": "Who may ask",
+      "term": "Access control",
+      "summary": "Only private networks may query TelltaleDNS by default; everyone else is refused.",
+      "when": "Exposing TelltaleDNS beyond your home network.",
+      "example": "Add your VPN's range so phones on the VPN can use it.",
+      "caution": "Never allow the whole internet: open resolvers are abused for attacks.",
+      "diagram": "refused",
+      "docs": "who-can-query-and-how-often",
+      "general": true
+    },
+    {
+      "id": "account",
+      "title": "Your sign-in",
+      "term": "Account and password",
+      "summary": "Change your password; at least 10 characters, and a passphrase is easiest.",
+      "when": "First sign-in, or if a password may have leaked.",
+      "example": "correct-horse-battery-staple style passphrases are long and memorable.",
+      "caution": "Changing it signs out your other sessions.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "two-factor",
+      "title": "A second step when signing in",
+      "term": "Two-factor authentication (TOTP)",
+      "summary": "After your password, a 6-digit code from an authenticator app; recovery codes get you in if the phone is lost.",
+      "when": "Anyone who can change settings should turn it on.",
+      "example": "Scan the QR code with any authenticator app, enter the code, and keep the recovery codes somewhere safe.",
+      "caution": "Lose both the phone and the recovery codes and an admin must reset it for you.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "api-tokens",
+      "title": "Keys for scripts and dashboards",
+      "term": "API tokens",
+      "summary": "A secret for Homepage, Grafana, scripts, or AI agents to use the API without your password; revoke it any time.",
+      "when": "Connecting another tool to TelltaleDNS.",
+      "example": "A read token for a Homepage widget, valid for a year.",
+      "caution": "Give each tool its own token with the smallest scope; the token is shown once.",
+      "docs": "api"
+    },
+    {
+      "id": "token-scope",
+      "title": "What a token may do",
+      "term": "Token scope",
+      "summary": "read can look, write can also change settings like device names, admin can manage users; never more than its owner's role.",
+      "when": "Creating a token.",
+      "example": "Dashboards need read; a script that names devices needs write.",
+      "caution": "An admin token can create users: keep those rare and short-lived.",
+      "docs": "api"
+    },
+    {
+      "id": "users",
+      "title": "Who can sign in",
+      "term": "Users and roles",
+      "summary": "viewer can look, operator can also change everyday settings (devices, pauses), admin can manage users and security.",
+      "when": "Giving family members or colleagues access.",
+      "example": "A teenager as viewer to see what's blocked; a partner as operator to name new devices.",
+      "caution": "Keep at least two admins, or set up break-glass access, so you can't lock yourself out.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "http-basic",
+      "title": "Username and password for tools",
+      "term": "HTTP Basic authentication",
+      "summary": "Lets tools like Prometheus send a username and password with each request instead of a token.",
+      "when": "A tool can't send a bearer token.",
+      "example": "A Prometheus scrape job with basic_auth.",
+      "caution": "Only over HTTPS: on plain HTTP anyone on the network path can read the password.",
+      "docs": "users-and-sign-in"
+    },
+    {
+      "id": "audit-log",
+      "title": "Who changed what, when",
+      "term": "Audit log",
+      "summary": "Every change (users, tokens, sign-ins, device names, reloads) with who made it, from where, and why; chained so tampering shows.",
+      "when": "Something changed and you want to know who did it.",
+      "example": "client.put Living room TV by alex from 192.168.1.20.",
+      "caution": "\"Verify chain\" proves nothing was edited or removed since it was written.",
+      "docs": "audit-log"
+    },
+    {
+      "id": "system",
+      "title": "This server",
+      "term": "System information",
+      "summary": "Version, uptime, the addresses TelltaleDNS listens on, and whether the blocklists are loaded.",
+      "when": "Checking an upgrade, or why something isn't listening.",
+      "example": "udp://0.0.0.0:53 and dot://0.0.0.0:853 listeners, filter snapshot 12 with 2.7 million names.",
+      "caution": "Changes to listeners take effect on reload without dropping queries.",
+      "docs": "web-ui"
+    },
+    {
+      "id": "masked-clients",
+      "title": "Seeing real devices",
+      "term": "Client IP preservation",
+      "summary": "TelltaleDNS needs each query's real sender to tell devices apart; a router, Docker bridge, or Kubernetes setting can hide them behind one address.",
+      "when": "The banner says client IPs appear masked, or every query shows the same address.",
+      "example": "Hand out TelltaleDNS's address in DHCP instead of the router's, or use host networking for Docker.",
+      "caution": "Until it's fixed, per-device rules and statistics see only the one address.",
+      "docs": "seeing-real-client-ips",
+      "general": true
+    },
+    {
+      "id": "simple-advanced",
+      "title": "Simple or Advanced view",
+      "term": "Detail level",
+      "summary": "Simple shows what most homes need; Advanced adds the technical detail (raw rules, record types, protocol specifics). Your choice is remembered for you.",
+      "when": "Switch to Advanced when you're troubleshooting or know DNS well.",
+      "example": "Simple shows each list's name and size; Advanced adds its URL, format, and rule counts.",
+      "caution": "Simple only hides detail; it never hides something that changes how queries are answered.",
+      "general": true
+    }
+  ]
+}

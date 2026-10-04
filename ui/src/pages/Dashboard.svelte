@@ -10,6 +10,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
 
   const ranges = [
     { id: '15m', label: '15 min', from: '-15m', step: 'second' as const, summary: '-15m', secs: 900 },
@@ -130,7 +131,7 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Dashboard</h1>
+    <h1>Dashboard<HelpButton id="how-it-works" /></h1>
     <div class="seg" role="group" aria-label="Time range">
       {#each ranges as r (r.id)}
         <button aria-pressed={range.id === r.id} onclick={() => (range = r)}>{r.label}</button>
@@ -153,7 +154,7 @@
 
   <div class="grid-2">
     <section class="card">
-      <h2>Where time goes <span class="muted small">(this hour)</span></h2>
+      <h2>Where time goes <span class="muted small">(this hour)</span><HelpButton id="cache" /></h2>
       {#if byPath.length + stages.length === 0}
         <p class="empty">No answers yet this hour.</p>
       {:else}

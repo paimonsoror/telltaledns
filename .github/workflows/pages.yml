@@ -7,7 +7,7 @@ name: pages
 on:
   push:
     branches: [main]
-    paths: ["site/**", "docs/config-schema.json", "spec/10-roadmap-and-tasks.md", "spec/01-requirements.md", ".github/workflows/pages.yml"]
+    paths: ["site/**", "docs/config-schema.json", "docs/help/**", "spec/10-roadmap-and-tasks.md", "spec/01-requirements.md", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

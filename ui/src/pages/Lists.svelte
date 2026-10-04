@@ -5,6 +5,8 @@
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
+  import { currentMode } from '../lib/mode.svelte';
 
   let lists = $state<S['ListInfo'][]>([]);
   let info = $state<S['SystemInfo'] | null>(null);
@@ -22,11 +24,12 @@
       }
     }, 15000),
   );
+  const advanced = $derived(currentMode() === 'advanced');
 </script>
 
 <div class="page">
   <div class="page-head">
-    <h1>Lists</h1>
+    <h1>Lists<HelpButton id="lists" /></h1>
     {#if info}
       <span class="muted">
         {num(info.filterNames)} blocked names in snapshot {info.filterSnapshot ?? '–'}
@@ -41,21 +44,23 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>List</th><th>Kind</th><th>State</th><th class="num">Names used</th><th class="num">Lines</th><th class="num">Size</th><th>Checked</th><th>Changed</th></tr>
+            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th></tr>
           </thead>
           <tbody>
             {#each lists as l (l.name)}
               <tr class:off={!l.enabled}>
                 <td>
                   <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}
-                  <div class="muted small src">{l.source}</div>
+                  {#if advanced}<div class="muted small src">{l.source}</div>{/if}
                   {#if l.error}<div class="small err">{l.error}</div>{/if}
                 </td>
                 <td><span class="badge {l.kind === 'allow' ? 'ok' : 'bad'}">{l.kind}</span></td>
                 <td><StatusBadge value={l.state} /></td>
                 <td class="num">{num(l.entries)}</td>
-                <td class="num">{num(l.lines)}</td>
-                <td class="num">{bytes(l.bytes)}</td>
+                {#if advanced}
+                  <td class="num">{num(l.lines)}</td>
+                  <td class="num">{bytes(l.bytes)}</td>
+                {/if}
                 <td class="small">{ago(l.lastCheckedUnixSeconds)}</td>
                 <td class="small">{ago(l.lastChangedUnixSeconds)}</td>
               </tr>

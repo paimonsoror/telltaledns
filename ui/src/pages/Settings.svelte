@@ -6,6 +6,7 @@
   import { route, navigate } from '../lib/router.svelte';
   import { ago, dateTime, duration } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
 
   const tabs = $derived(
     [
@@ -236,7 +237,7 @@
   {#if tab === 'account' && session.user}
     <div class="grid-2">
       <section class="card">
-        <h2>Account</h2>
+        <h2>Account<HelpButton id="account" /></h2>
         <p><strong>{session.user.username}</strong> · <span class="badge">{session.user.role}</span></p>
         <form class="stack" onsubmit={changePassword}>
           <h3>Change password</h3>
@@ -253,7 +254,7 @@
       </section>
 
       <section class="card stack-card">
-        <h2>Two-factor sign-in</h2>
+        <h2>Two-factor sign-in<HelpButton id="two-factor" /></h2>
         <ErrorNote error={totpError} />
         {#if recovery.length}
           <div class="notice warn">
@@ -289,7 +290,7 @@
     </div>
   {:else if tab === 'tokens'}
     <section class="card">
-      <h2>API tokens</h2>
+      <h2>API tokens<HelpButton id="api-tokens" /></h2>
       <p class="muted">
         For scripts, dashboards, and AI agents: send <code>Authorization: Bearer &lt;token&gt;</code>.
         A token never has more rights than you.
@@ -308,6 +309,7 @@
           <option value="90">90 days</option>
           <option value="365">1 year</option>
         </select>
+        <HelpButton id="token-scope" />
         <button class="primary" type="submit">Create token</button>
       </form>
       <ErrorNote error={tokenError} />
@@ -341,7 +343,7 @@
     </section>
   {:else if tab === 'users' && can('admin')}
     <section class="card">
-      <h2>Users</h2>
+      <h2>Users<HelpButton id="users" /></h2>
       <ErrorNote error={userError} />
       <div class="table-wrap">
         <table>
@@ -387,7 +389,7 @@
             <option value="operator">operator</option>
             <option value="admin">admin</option>
           </select>
-          <label class="row small"><input type="checkbox" bind:checked={nu.allowBasicApi} /> HTTP Basic</label>
+          <label class="row small"><input type="checkbox" bind:checked={nu.allowBasicApi} /> HTTP Basic</label><HelpButton id="http-basic" />
           <button class="primary" type="submit">Add</button>
         </div>
         <p class="muted small">Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.</p>
@@ -396,7 +398,7 @@
   {:else if tab === 'audit' && can('admin')}
     <section class="card">
       <div class="card-head">
-        <h2>Audit log</h2>
+        <h2>Audit log<HelpButton id="audit-log" /></h2>
         <div class="row">
           <select aria-label="Action" bind:value={auditAction} onchange={() => loadAudit()}>
             <option value="">All changes</option>
@@ -454,7 +456,7 @@
     </section>
   {:else if tab === 'system'}
     <section class="card">
-      <h2>System</h2>
+      <h2>System<HelpButton id="system" /></h2>
       {#if info}
         <dl class="sys">
           <dt>Version</dt><dd>{info.version}</dd>

@@ -171,3 +171,7 @@ footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; justify-content: space
 .shots figure { margin: 0; }
 .shots img { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); box-shadow: var(--shadow); }
 .shots figcaption { font-size: 14px; color: var(--ink-2); margin-top: 6px; }
+/* T3.11: glossary */
+.terms { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.term h3 { flex-wrap: wrap; }
+.term p { margin: .4em 0 0; }

@@ -9,6 +9,7 @@
   import ExplainView from '../lib/components/ExplainView.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
+  import HelpButton from '../lib/components/HelpButton.svelte';
 
   const STATUSES = ['blocked', 'cached', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
@@ -186,9 +187,9 @@
 
 <div class="page">
   <div class="page-head">
-    <h1>Query log</h1>
+    <h1>Query log<HelpButton id="query-log" /></h1>
     <label class="row small live-toggle">
-      <input type="checkbox" bind:checked={live} /> Live
+      <input type="checkbox" bind:checked={live} /> Live<HelpButton id="live-view" />
       {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveState === 'open' ? 'streaming' : liveState}</span>{/if}
     </label>
   </div>

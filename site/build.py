@@ -21,7 +21,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "performance.html", "standards.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "glossary.html", "performance.html", "standards.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -291,6 +291,38 @@ def render_bench(page):
     return page.replace("<!-- @bench -->", "\n".join(out)), files
 
 
+# REQ: API-011, DOC-006 (T3.11) — the glossary page, from the same file as the UI's "?" panels.
+FLOW_TEXT = {
+    "cache": "answered from memory",
+    "local": "answered with your own names",
+    "blocked": "blocked",
+    "route": "sent to the server you chose for that domain",
+    "upstream": "sent to a public DNS server",
+    "refused": "refused",
+}
+
+
+def render_glossary(page):
+    data = json.loads(read(os.path.join(ROOT, "docs", "help", "topics.json")))
+    out = []
+    for t in sorted(data["topics"], key=lambda t: t["title"].lower()):
+        docs = (
+            ' <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#{}">Docs</a>'.format(t["docs"])
+            if t.get("docs") else ""
+        )
+        path = ' <span class="pill supported">{}</span>'.format(FLOW_TEXT[t["diagram"]]) if t.get("diagram") else ""
+        out.append(
+            '<article class="card term" id="{id}"><h3><a href="#{id}">{title}</a>{path}</h3>'
+            '<p class="muted small">{term}</p><p>{summary}</p>'
+            "<p><b>When:</b> {when}</p><p><b>Example:</b> {example}</p><p><b>Careful:</b> {caution}{docs}</p></article>".format(
+                id=html.escape(t["id"]), title=html.escape(t["title"]), term=html.escape(t["term"]),
+                summary=html.escape(t["summary"]), when=html.escape(t["when"]), example=html.escape(t["example"]),
+                caution=html.escape(t["caution"]), docs=docs, path=path,
+            )
+        )
+    return page.replace("<!-- @glossary -->", "\n".join(out))
+
+
 def expand_ids(text):
     """'UPS-001, 005, 006' -> {'UPS-001','UPS-005','UPS-006'}"""
     ids = set()
@@ -369,6 +401,8 @@ def main():
         page = page.replace("<!-- @header -->", h).replace("<!-- @footer -->", footer)
         if name == "config.html":
             page = render_config(page, json.loads(read(os.path.join(ROOT, "docs", "config-schema.json"))))
+        if name == "glossary.html":
+            page = render_glossary(page)
         if name == "performance.html":
             page, bench_files = render_bench(page)
             os.makedirs(os.path.join(out, "data", "bench"), exist_ok=True)

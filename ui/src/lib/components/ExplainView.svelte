@@ -3,6 +3,8 @@
   import type { S } from '../api';
   import { dateTime } from '../format';
   import StatusBadge from './StatusBadge.svelte';
+  import FlowDiagram from './FlowDiagram.svelte';
+  import type { FlowPath } from '../help';
 
   let { x }: { x: S['Explanation'] } = $props();
 
@@ -12,6 +14,28 @@
     allow: 'allow',
     block: 'block',
   };
+
+  // REQ: API-011 — the decision as a diagram: which way this query goes.
+  const path = $derived<FlowPath>(
+    x.outcome === 'refused'
+      ? 'refused'
+      : x.outcome === 'blocked'
+        ? 'blocked'
+        : x.outcome === 'local' || x.outcome === 'special'
+          ? 'local'
+          : x.route?.routed
+            ? 'route'
+            : 'upstream',
+  );
+  const detail = $derived(
+    x.outcome === 'blocked' && x.block
+      ? `list ${x.block.list}`
+      : x.outcome === 'special'
+        ? 'a special-use name TelltaleDNS answers itself'
+        : x.route
+          ? `upstream group ${x.route.group}`
+          : '',
+  );
 </script>
 
 <div class="explain">
@@ -24,6 +48,10 @@
       <div class="muted small">Blocking is paused for this client until {dateTime(x.pausedUntilUnixSeconds)}.</div>
     {/if}
   </div>
+
+  <section class="card" data-testid="explain-flow">
+    <FlowDiagram highlight={path} device={x.client.device ?? x.client.ip} name={x.name} {detail} />
+  </section>
 
   <section class="card">
     <h3>Client</h3>

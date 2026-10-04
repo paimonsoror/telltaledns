@@ -107,6 +107,8 @@ ui/
       session.svelte.ts      # $state session: loaded, setupRequired, user; refreshSession, signedIn, signOut, can(role)
       router.svelte.ts       # hash router: route.path, route.params (URLSearchParams); href(), navigate()
       poll.ts                # poll(fn, ms): runs while the tab is visible; returns stop()
+      help.ts                # topic(id), docsUrl(): the glossary in docs/help/topics.json (shared with the site)
+      mode.svelte.ts         # Simple/Advanced per user (localStorage); currentMode(), setMode(), loadMode()
       format.ts              # num, short, pct, ms (µs/ms/s), bytes, duration, ago, clock, dateTime, logTime
       components/
         Chart.svelte         # uPlot wrapper: stacked option, responsive width, theme-aware, Table toggle
@@ -116,6 +118,9 @@ ui/
         StatusBadge.svelte   # status/rcode/state → toned badge
         ExplainView.svelte   # renders an Explanation (client, block, matching rules ★, route)
         ClientChip.svelte    # a device address/name anywhere: menu "Name this device…", "Add to group…", "Show queries" (API-010)
+        HelpButton.svelte    # "?" beside a setting → side panel from docs/help/topics.json (API-011); data-help=<id>
+        FlowDiagram.svelte   # inline-SVG query path (cache/local/blocked/route/upstream/refused), text equivalent in aria-label + caption
+        ChangePreview.svelte # "What this will do" sentence + FlowDiagram before saving a change
         Logo.svelte
     pages/
       AuthShell.svelte, Login.svelte, Setup.svelte
@@ -377,3 +382,8 @@ pre-filled.
 
 Order of work: glossary + `HelpPanel` + `FlowDiagram` → Explain view diagram → retrofit the
 read-only pages → editing pages (T3.12) built around them.
+
+### Help topics and Simple/Advanced (T3.11)
+- Every "?" is `<HelpButton id="…" />`; its id must exist in `docs/help/topics.json`, and every topic not marked `general` must be used somewhere. `npm run check:help` enforces both in CI. Add or edit topics there, never inline help text in components.
+- Simple is the default and only hides detail (columns, endpoints, raw sources). Never hide something that changes behavior behind Advanced.
+- Diagrams use `FlowDiagram` (no chart or diagram libraries; CSP forbids inline styles, so color comes from classes and CSS variables).

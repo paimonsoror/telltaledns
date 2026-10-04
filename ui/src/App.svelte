@@ -6,6 +6,8 @@
   import { route, href } from './lib/router.svelte';
   import { poll } from './lib/poll';
   import Logo from './lib/components/Logo.svelte';
+  import HelpButton from './lib/components/HelpButton.svelte';
+  import { currentMode, loadMode, setMode } from './lib/mode.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
   import Dashboard from './pages/Dashboard.svelte';
@@ -57,6 +59,12 @@
 
   void refreshSession();
 
+  // Each user has their own Simple/Advanced choice.
+  $effect(() => {
+    void session.user?.username;
+    loadMode();
+  });
+
   $effect(() => {
     if (session.user) {
       // Refreshed every minute: the masked-client-IP banner (OPS-003) can come and go.
@@ -88,6 +96,11 @@
       <a class="brand" href="#/"><Logo /> <span>TelltaleDNS</span></a>
       {#if info}<span class="node muted small">{info.node}</span>{/if}
       <span class="spacer"></span>
+      <span class="mode small" role="group" aria-label="Detail level">
+        <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple</button>
+        <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced</button>
+        <HelpButton id="simple-advanced" />
+      </span>
       <button class="link small" onclick={() => (theme = nextTheme)} title="Theme">Theme: {theme}</button>
       <span class="who small">{session.user.username} <span class="badge">{session.user.role}</span></span>
       <button class="small" onclick={signOut}>Sign out</button>
@@ -96,6 +109,11 @@
       {#each pages as p (p.path)}
         <a href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined}>{p.label}</a>
       {/each}
+      <!-- On phones the header has no room: the detail level lives in the menu. -->
+      <span class="mode mode-nav small" role="group" aria-label="Detail level (menu)">
+        <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple view</button>
+        <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced view</button>
+      </span>
     </nav>
     <main class="content">
       {#if info && !info.queryLog}
@@ -108,7 +126,7 @@
           {m.sharePercent}% of the last {m.queries} queries came from {m.sources.join(', ')}, which look like
           infrastructure (a Kubernetes node, a Docker bridge, or a router forwarding DNS) rather than devices.
           Per-device statistics and rules see those addresses instead of your devices.
-          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a>
+          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a><HelpButton id="masked-clients" />
         </div>
       {/if}
       {#key current.path}
@@ -196,6 +214,18 @@
     padding: 20px;
     min-width: 0;
   }
+  .mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .mode-nav {
+    display: none;
+  }
+  .mode button[aria-pressed="true"] {
+    font-weight: 700;
+    text-decoration: underline;
+  }
   .banner {
     margin-bottom: 16px;
   }
@@ -216,6 +246,7 @@
       display: inline-block;
     }
     .node,
+    .top .mode,
     .who {
       display: none;
     }
@@ -228,6 +259,11 @@
       width: min(260px, 80vw);
       z-index: 15;
       box-shadow: var(--shadow);
+    }
+    .mode-nav {
+      display: flex;
+      margin-top: 12px;
+      padding: 0 12px;
     }
     .layout.open .side {
       display: flex;

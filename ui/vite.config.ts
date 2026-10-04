@@ -19,5 +19,7 @@ export default defineConfig({
   },
   server: {
     proxy: { '/api': api, '/metrics': api },
+    // The help glossary lives in docs/help/ (shared with the site).
+    fs: { allow: ['..'] },
   },
 });

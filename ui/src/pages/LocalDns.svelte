@@ -1,7 +1,9 @@
-<script lang="ts"></script>
+<script lang="ts">
+  import HelpButton from '../lib/components/HelpButton.svelte';
+</script>
 
 <div class="page">
-  <h1>Local DNS</h1>
+  <h1>Local DNS<HelpButton id="local-dns" /></h1>
   <div class="notice">
     <p>
       Local records (A, AAAA, CNAME, PTR, TXT, MX, SRV, wildcards) and hosts files are set in the
