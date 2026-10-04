@@ -1,0 +1,33 @@
+TelltaleDNS is starting ({{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}).
+
+DNS:
+{{- if .Values.hostNetwork }}
+  Port 53 on the node's address (host network): clients and MAC addresses are seen as they are.
+{{- else if eq .Values.service.dns.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "telltale.fullname" . }}-dns   # EXTERNAL-IP, port 53 UDP+TCP
+{{- else }}
+  Service {{ include "telltale.fullname" . }}-dns ({{ .Values.service.dns.type }}), port {{ .Values.service.dns.port }}.
+{{- end }}
+{{- if and (not .Values.hostNetwork) (ne .Values.service.dns.type "ClusterIP") (eq .Values.service.dns.externalTrafficPolicy "Cluster") }}
+
+WARNING: service.dns.externalTrafficPolicy is Cluster. Queries will appear to come from node
+addresses, so per-device blocking, the query log, and client statistics can't tell devices
+apart. Use Local (the default) or hostNetwork: true.
+{{- end }}
+
+Web UI and API:
+{{- if .Values.ingress.enabled }}
+  https://{{ .Values.ingress.host }}/
+{{- else if eq .Values.service.api.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "telltale.fullname" . }}-api   # http://EXTERNAL-IP:{{ .Values.service.api.port }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "telltale.fullname" . }}-api {{ .Values.service.api.port }}
+  then open http://127.0.0.1:{{ .Values.service.api.port }}/
+{{- end }}
+
+First admin:
+{{- if .Values.auth.bootstrapAdmin.existingSecret }}
+  Created from Secret {{ .Values.auth.bootstrapAdmin.existingSecret }} on first start.
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} exec {{ include "telltale.fullname" . }}-0 -- /usr/local/bin/telltale auth setup-token -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml
+{{- end }}

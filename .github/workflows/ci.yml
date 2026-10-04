@@ -145,3 +145,34 @@ jobs:
           name: playwright-report-oidc
           path: ui/playwright-report
           if-no-files-found: ignore
+
+  # REQ: OPS-002, OPS-003 — T4.1 AC: chart-testing lint and install on kind (amd64) and k3d
+  # (arm64), plus DNS through a LoadBalancer with the client's address in the query log.
+  helm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, tool: kind }
+          - { runner: ubuntu-24.04-arm, tool: k3d }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: helm/chart-testing-action@v2.7.0
+      - run: ct lint --config ct.yaml --all
+      - name: Install kind
+        if: matrix.tool == 'kind'
+        uses: helm/kind-action@v1
+        with: { install_only: true }
+      - name: Install k3d
+        if: matrix.tool == 'k3d'
+        run: curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+      - run: sudo apt-get update && sudo apt-get install -y dnsutils
+      - name: DNS through a LoadBalancer; client IP in the query log
+        run: KEEP=1 E2E_KUBECONFIG="$RUNNER_TEMP/kubeconfig" TOOL=${{ matrix.tool }} bash deploy/helm/e2e.sh
+      - name: ct install (every ci/*-values.yaml)
+        run: KUBECONFIG="$RUNNER_TEMP/kubeconfig" ct install --config ct.yaml --all

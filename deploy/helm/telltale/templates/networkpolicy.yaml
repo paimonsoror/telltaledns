@@ -1,0 +1,42 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+# REQ: OPS-002, spec/08 §3.3 — only the listed networks may query, reach the UI/API, or
+# scrape; egress stays open (upstreams, list downloads, sign-in providers).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "telltale.fullname" . }}
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "telltale.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: dns-udp, protocol: UDP }
+        - { port: dns-tcp, protocol: TCP }
+      {{- with $np.dnsFrom }}
+      from:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      {{- end }}
+    - ports:
+        - { port: api, protocol: TCP }
+      {{- with $np.apiFrom }}
+      from:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      {{- end }}
+    - ports:
+        - { port: metrics, protocol: TCP }
+      {{- with $np.metricsFrom }}
+      from:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      {{- end }}
+{{- end }}

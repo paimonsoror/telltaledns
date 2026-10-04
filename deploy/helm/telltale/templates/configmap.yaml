@@ -1,0 +1,33 @@
+{{- if ne .Values.mode "allInOne" }}
+{{- fail "mode: only allInOne is available until clustering (M5)" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "telltale.fullname" . }}
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+data:
+  # Set by the chart (ports and paths the templates rely on).
+  00-chart.toml: |
+    config_version = 1
+
+    [node]
+    data_dir = "/var/lib/telltale"
+
+    [[listen]]
+    proto = "udp"
+    addr = "0.0.0.0:{{ include "telltale.dnsPort" . }}"
+
+    [[listen]]
+    proto = "tcp"
+    addr = "0.0.0.0:{{ include "telltale.dnsPort" . }}"
+
+    [telemetry.metrics]
+    listen = "0.0.0.0:{{ .Values.service.metrics.port }}"
+
+    [api]
+    listen = "0.0.0.0:{{ .Values.service.api.port }}"
+  # From values.config (later files override earlier ones).
+  10-values.toml: |
+    {{- .Values.config | nindent 4 }}

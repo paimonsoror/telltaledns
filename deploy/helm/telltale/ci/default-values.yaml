@@ -1,0 +1,8 @@
+# chart-testing: the defaults, minus the LoadBalancers (no LB in a bare kind cluster) and
+# the Prometheus Operator objects (no CRDs there).
+image:
+  tag: edge
+  pullPolicy: Always
+service:
+  dns:
+    type: ClusterIP

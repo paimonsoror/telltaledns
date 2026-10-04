@@ -1,0 +1,89 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "telltale.fullname" . }}
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "telltale.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/part: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+---
+{{- end }}
+{{- if .Values.prometheusRule.enabled }}
+# REQ: OBS-005, spec/06 §8 — default alerts on the exported metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "telltale.fullname" . }}
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: telltale
+      rules:
+        - alert: TelltaleDNSDown
+          expr: up{job="{{ include "telltale.fullname" . }}-metrics"} == 0
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: TelltaleDNS {{ "{{" }} $labels.instance {{ "}}" }} is not being scraped (down or unreachable).
+        - alert: TelltaleDNSAllUpstreamsDown
+          expr: min by (instance) (telltale_upstream_breaker_state{job="{{ include "telltale.fullname" . }}-metrics"}) == 2
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: Every upstream's circuit breaker is open on {{ "{{" }} $labels.instance {{ "}}" }}; only cached and local answers work.
+        - alert: TelltaleDNSHighServfail
+          expr: |
+            sum by (instance) (rate(telltale_responses_total{job="{{ include "telltale.fullname" . }}-metrics", rcode="SERVFAIL"}[5m]))
+              / sum by (instance) (rate(telltale_responses_total{job="{{ include "telltale.fullname" . }}-metrics"}[5m])) > 0.05
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: More than 5% of answers are SERVFAIL on {{ "{{" }} $labels.instance {{ "}}" }}.
+        - alert: TelltaleDNSListStale
+          expr: time() - telltale_list_last_success_timestamp_seconds{job="{{ include "telltale.fullname" . }}-metrics"} > 172800
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: Filter list {{ "{{" }} $labels.list {{ "}}" }} hasn't refreshed in over 48 hours.
+        - alert: TelltaleDNSTelemetryDropping
+          expr: sum by (instance) (rate(telltale_telemetry_dropped_total{job="{{ include "telltale.fullname" . }}-metrics"}[10m])) > 0
+          for: 30m
+          labels: { severity: info }
+          annotations:
+            summary: Analytics are dropping events on {{ "{{" }} $labels.instance {{ "}}" }} (answers are unaffected); raise [telemetry] ring_slots.
+---
+{{- end }}
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "telltale.fullname" . }}-dashboard
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  telltale-dashboard.json: |-
+{{ .Files.Get "files/telltale-dashboard.json" | indent 4 }}
+{{- end }}

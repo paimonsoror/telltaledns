@@ -12,6 +12,8 @@ import pathlib
 import sys
 
 OUT = pathlib.Path(__file__).with_name("telltale-dashboard.json")
+# The Helm chart ships the same file (grafanaDashboard.enabled).
+CHART_COPY = pathlib.Path(__file__).parents[1] / "helm/telltale/files/telltale-dashboard.json"
 SEL = 'job=~"$job", instance=~"$instance"'
 DS = {"type": "prometheus", "uid": "${datasource}"}
 
@@ -272,9 +274,12 @@ dashboard = {
 
 text = json.dumps(dashboard, indent=2) + "\n"
 if "--check" in sys.argv:
-    if not OUT.exists() or OUT.read_text() != text:
-        sys.exit(f"{OUT} is stale: run python3 deploy/grafana/build.py")
-    print(f"{OUT.name} OK ({len(panels)} panels)")
+    for out in (OUT, CHART_COPY):
+        if not out.exists() or out.read_text() != text:
+            sys.exit(f"{out} is stale: run python3 deploy/grafana/build.py")
+    print(f"{OUT.name} OK ({len(panels)} panels, chart copy too)")
 else:
-    OUT.write_text(text)
-    print(f"wrote {OUT} ({len(panels)} panels)")
+    for out in (OUT, CHART_COPY):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+    print(f"wrote {OUT} and the chart copy ({len(panels)} panels)")

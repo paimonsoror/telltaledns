@@ -1,0 +1,160 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "telltale.fullname" . }}
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+spec:
+  # allInOne: one replica (its users, query log, and lists live on its volume).
+  replicas: 1
+  serviceName: {{ include "telltale.fullname" . }}-metrics
+  selector:
+    matchLabels:
+      {{- include "telltale.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "telltale.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: telltale
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "-c", "/etc/telltale/00-chart.toml", "-c", "/etc/telltale/10-values.toml"]
+          securityContext:
+            {{- if .Values.hostNetwork }}
+            # Binding 53 on the host needs root; it keeps only NET_BIND_SERVICE.
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE]
+            {{- else }}
+            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- end }}
+          env:
+            - name: TELLTALE_LOG
+              value: info
+            {{- with .Values.auth.bootstrapAdmin.existingSecret }}
+            - name: TELLTALE_BOOTSTRAP_ADMIN_USER
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.usernameKey }} }
+            - name: TELLTALE_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.passwordKey }}, optional: true }
+            - name: TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: {{ $.Values.auth.bootstrapAdmin.passwordHashKey }}, optional: true }
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: dns-udp
+              containerPort: {{ include "telltale.dnsPort" . }}
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: {{ include "telltale.dnsPort" . }}
+              protocol: TCP
+            - name: api
+              containerPort: {{ .Values.service.api.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.service.metrics.port }}
+              protocol: TCP
+          # REQ: OPS-006 — ready once every listener is bound; lists load in the background.
+          startupProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /livez, port: metrics }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/telltale
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/telltale
+            {{- range .Values.secretMounts }}
+            - name: secret-{{ .name }}
+              mountPath: /etc/telltale-secrets/{{ .name }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "telltale.fullname" . }}
+        {{- range .Values.secretMounts }}
+        - name: secret-{{ .name }}
+          secret:
+            secretName: {{ .secretName }}
+            optional: {{ .optional | default false }}
+        {{- end }}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "telltale.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

@@ -1,0 +1,148 @@
+# TelltaleDNS Helm chart (REQ: OPS-002, OPS-003, spec/08 §3, ADR-035).
+
+# Shape. `allInOne`: one StatefulSet (resolver, API, UI, query log). `scaled` (controller +
+# resolver replicas) and `daemonSet` (host-network resolvers) need clustering (milestone M5)
+# and are refused until then.
+mode: allInOne
+
+image:
+  repository: ghcr.io/paimonsoror/telltale
+  # Default: the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Extra telltale.toml, merged after the settings the chart controls (listeners, data_dir,
+# metrics and API addresses). See docs/configuration.md.
+config: |
+  [node]
+  # workers = 0  # auto: CPU limit or cores
+
+# Bind DNS on the node's network directly (port 53): real client IPs and MAC addresses, no
+# NAT, no LoadBalancer needed. Binding 53 on the host needs root with only NET_BIND_SERVICE
+# (all other capabilities dropped). On k3s this is fine (CoreDNS listens on cluster IPs only);
+# stop systemd-resolved's stub listener on the node first.
+hostNetwork: false
+
+# Container port for DNS when not on the host network (the Service maps 53 to it).
+dnsPort: 5353
+
+service:
+  dns:
+    # One Service with both UDP and TCP 53.
+    type: LoadBalancer
+    port: 53
+    # Local keeps client source IPs (per-device filtering and the query log need them).
+    # Cluster masks them behind node IPs: NOTES.txt warns.
+    externalTrafficPolicy: Local
+    loadBalancerIP: ""
+    loadBalancerClass: ""
+    # e.g. metallb.universe.tf/loadBalancerIPs, io.cilium/lb-ipam-ips, kube-vip.io/loadbalancerIPs
+    annotations: {}
+  api:
+    # The web UI and REST API. ClusterIP plus `ingress`, or LoadBalancer on the LAN.
+    type: ClusterIP
+    port: 8053
+    externalTrafficPolicy: Local
+    loadBalancerIP: ""
+    annotations: {}
+  metrics:
+    port: 9153
+
+# The UI and API behind an Ingress (TLS). Also set [api] trusted_proxies in `config` to the
+# ingress's source network so sign-in lockouts and the audit log see client addresses.
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  # e.g. with cert-manager: annotations: {cert-manager.io/cluster-issuer: letsencrypt}
+  tls:
+    secretName: ""
+
+persistence:
+  # Filter snapshots, downloaded lists, the query log, rollups, users (state.db).
+  enabled: true
+  size: 2Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 96Mi
+  limits:
+    cpu: "2"
+    # Steady state ~35 MiB with typical lists; compiling large lists peaks near 110 MiB.
+    memory: 512Mi
+
+auth:
+  # Create the first admin from a Secret instead of the setup token. Keys: `username` and
+  # `password` or `password-hash` (an Argon2id hash from `telltale auth hash-password`).
+  bootstrapAdmin:
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+    passwordHashKey: password-hash
+
+# Secrets mounted read-only at /etc/telltale-secrets/<name>, e.g. an OIDC client secret
+# (point client_secret_file at /etc/telltale-secrets/oidc/client_secret). `optional: true`
+# lets the pod start without the Secret.
+secretMounts: []
+#  - name: oidc
+#    secretName: telltale-oidc
+#    optional: true
+
+extraEnv: []
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Default alerts: down, upstreams down, SERVFAIL rate, stale lists, dropped telemetry.
+prometheusRule:
+  enabled: false
+  labels: {}
+
+# The Grafana dashboard as a ConfigMap for the Grafana sidecar.
+grafanaDashboard:
+  enabled: false
+  labels:
+    grafana_dashboard: "1"
+  annotations: {}
+
+networkPolicy:
+  enabled: false
+  # CIDRs allowed to query DNS / reach the UI+API / scrape metrics. Empty: anyone.
+  dnsFrom: []
+  apiFrom: []
+  metricsFrom: []
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+# Draining: readiness turns off first, then TCP and in-flight upstream queries finish.
+terminationGracePeriodSeconds: 30
+
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]

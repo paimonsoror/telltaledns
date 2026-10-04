@@ -1,0 +1,80 @@
+{{- $dns := .Values.service.dns }}
+# REQ: OPS-003 — one Service with UDP and TCP 53; externalTrafficPolicy Local keeps client IPs.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "telltale.fullname" . }}-dns
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+  {{- with $dns.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $dns.type }}
+  {{- if ne $dns.type "ClusterIP" }}
+  externalTrafficPolicy: {{ $dns.externalTrafficPolicy }}
+  {{- end }}
+  {{- with $dns.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with $dns.loadBalancerClass }}
+  loadBalancerClass: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "telltale.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: dns-udp
+      port: {{ $dns.port }}
+      targetPort: dns-udp
+      protocol: UDP
+    - name: dns-tcp
+      port: {{ $dns.port }}
+      targetPort: dns-tcp
+      protocol: TCP
+---
+{{- $api := .Values.service.api }}
+# The web UI and REST API.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "telltale.fullname" . }}-api
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+  {{- with $api.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $api.type }}
+  {{- if ne $api.type "ClusterIP" }}
+  externalTrafficPolicy: {{ $api.externalTrafficPolicy }}
+  {{- end }}
+  {{- with $api.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "telltale.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ $api.port }}
+      targetPort: api
+      protocol: TCP
+---
+# Prometheus and probes (in-cluster only).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "telltale.fullname" . }}-metrics
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+    app.kubernetes.io/part: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "telltale.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.service.metrics.port }}
+      targetPort: metrics
+      protocol: TCP

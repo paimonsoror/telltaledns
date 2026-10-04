@@ -384,3 +384,18 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Deferred:** back-channel logout, multiple redirect URIs per node (cluster nodes share `public_url` for now), OAuth for agents (AGT, P1).
 
 **Consequences:** Homes and labs with an identity provider sign in with it; local passwords become optional. Each provider must be registered with the exact redirect URI.
+
+## ADR-035 — Helm chart: allInOne first, client-IP proof in CI (Proposed)
+**Context:** T4.1 / OPS-002/003 asks for `allInOne`, `scaled`, and `daemonSet` shapes, Services with `externalTrafficPolicy: Local`, PDB, HPA, probes, NetworkPolicy, ServiceMonitor, cert-manager, `existingSecret` everywhere; AC: `ct install` on kind and k3d arm64, DNS via the LB, and client IPs preserved in the query log in an e2e test. Clustering (M5) doesn't exist yet.
+
+**Decision:**
+- **Shapes:** only `allInOne` (one StatefulSet with a volume) until M5. `scaled` and `daemonSet` need a controller to distribute filter snapshots and share users/sessions; without it every replica would compile its own lists and keep its own sign-in state, so sign-in would break across replicas. `values.schema.json` refuses the other modes with that reason. HPA and PDB belong to `scaled` and come with it (a PDB on one replica only blocks node drains).
+- **Ports:** in the pod's own network the container listens on 5353 and the Service maps 53 → 5353 (no capability needed). `hostNetwork: true` binds 53 on the node, which needs root: the container then runs as UID 0 with every capability dropped except `NET_BIND_SERVICE`, read-only root, no privilege escalation (Kubernetes doesn't grant ambient capabilities to non-root users).
+- **Services:** one DNS Service with UDP and TCP 53 (mixed protocols, k8s ≥ 1.26), `externalTrafficPolicy: Local` by default, LB annotations passed through; `NOTES.txt` warns on `Cluster`. A separate API Service (ClusterIP by default; LoadBalancer or Ingress optional) and a ClusterIP metrics Service for the ServiceMonitor.
+- **Probes:** startup and readiness on `/readyz` (listeners bound), liveness on `/livez`. No `preStop` sleep: the image has no shell, and the binary already drains on SIGTERM (readiness off first, OPS-007).
+- **Secrets:** bootstrap admin from an existing Secret (env vars), any Secret mounted read-only under `/etc/telltale-secrets/<name>` (optional mounts let the pod start without them).
+- **Monitoring:** ServiceMonitor, a PrometheusRule with five default alerts, and the Grafana dashboard ConfigMap (the same JSON as `deploy/grafana/`, kept identical by `build.py --check`).
+- **cert-manager:** only through the Ingress (annotations); a DoT/DoH `Certificate` comes with those listeners (T4.5).
+- **Proof:** `deploy/helm/e2e.sh` creates a kind or k3d cluster with MetalLB, installs the chart, queries through the LoadBalancer from the host (UDP and TCP), and asserts the query log recorded the host's own address on the cluster network, not a node or pod address. CI runs it on kind (amd64) and k3d (arm64), then `ct install` with `ci/*-values.yaml`. The script uses a private kubeconfig (it never changes the caller's current context) and gives k3d its own pod/service ranges so it also runs on a host that is itself a k3s node. Also verified on the owner's homelab (k3s + Cilium LB IPAM): real LAN clients appear with their own addresses.
+
+**Consequences:** One-replica deployments are production-ready on any LoadBalancer implementation; HA within Kubernetes waits for clustering.

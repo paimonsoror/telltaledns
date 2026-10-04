@@ -1,0 +1,22 @@
+# chart-testing: ingress, NetworkPolicy, secret mounts (optional, absent), no persistence.
+image:
+  tag: edge
+  pullPolicy: Always
+service:
+  dns:
+    type: NodePort
+persistence:
+  enabled: false
+ingress:
+  enabled: true
+  host: telltale.example.test
+networkPolicy:
+  enabled: true
+  dnsFrom: ["10.0.0.0/8", "192.168.0.0/16"]
+secretMounts:
+  - name: oidc
+    secretName: telltale-oidc-missing
+    optional: true
+config: |
+  [api]
+  trusted_proxies = ["10.0.0.0/8"]
