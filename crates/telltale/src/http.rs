@@ -52,6 +52,21 @@ pub(crate) struct Sources {
     pub(crate) tail: Option<Arc<crate::tail::Tail>>,
     /// Sign-in and the audit log, once the API listener has opened `state.db`.
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
+    /// Masked-client-IP detector state (OPS-003).
+    pub(crate) masking: crate::masking::Detector,
+}
+
+impl Sources {
+    /// REQ: OPS-003 — whether client IPs appear masked in the latest 10-minute window.
+    pub(crate) fn masked_clients(&self) -> Option<crate::masking::Masked> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let window = self.pipeline.telemetry.aggregates().recent_clients(now);
+        let cfg = self.config.load();
+        self.masking
+            .check(window.as_ref(), &cfg.clients.infrastructure)
+    }
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -190,6 +205,16 @@ pub(crate) fn render(src: &Sources) -> String {
         "Entries in the IP-to-MAC neighbor table used to recognize clients.",
     )
     .sample("telltale_neighbors", &[], src.pipeline.neighbors.len());
+    w.family(
+        "telltale_client_ips_masked",
+        "gauge",
+        "1 when > 90% of the last 10 minutes' queries came from ≤ 3 infrastructure addresses.",
+    )
+    .sample(
+        "telltale_client_ips_masked",
+        &[],
+        u8::from(src.masked_clients().is_some()),
+    );
     if let Some(f) = src.pipeline.filter.load_full() {
         w.family(
             "telltale_filter_lookup_index_bytes",
@@ -680,8 +705,7 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn obs_005_render_includes_core_families() {
+    fn sources() -> Sources {
         let metrics = Arc::new(Metrics::new(2));
         metrics.record(
             Proto::Udp,
@@ -691,7 +715,7 @@ mod tests {
             Duration::from_micros(80),
         );
         let cache = Arc::new(Cache::new(CachePolicy::default()));
-        let src = Sources {
+        Sources {
             metrics,
             cache: Arc::clone(&cache),
             pipeline: crate::pipeline::Pipeline::new(
@@ -710,8 +734,14 @@ mod tests {
             rollups: None,
             tail: None,
             auth: std::sync::OnceLock::new(),
+            masking: crate::masking::Detector::default(),
             allowed: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn obs_005_render_includes_core_families() {
+        let src = sources();
         let text = render(&src);
         for family in [
             "telltale_build_info",
@@ -729,5 +759,49 @@ mod tests {
         }
         assert!(text.contains("telltale_queries_total{proto=\"udp\",status=\"cached\"} 1"));
         assert!(text.contains("telltale_local_records 0"));
+    }
+
+    #[test]
+    fn ops_003_masked_client_ips_reach_metrics_and_api() {
+        use telltale_telemetry::event::{Name, Record};
+        let src = sources();
+        assert!(render(&src).contains("telltale_client_ips_masked 0"));
+        let now_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros())
+            .try_into()
+            .unwrap_or(0);
+        let event = |last: u8| telltale_telemetry::QueryEvent {
+            ts_us: now_us,
+            client_ip: std::net::Ipv4Addr::new(127, 0, 0, last)
+                .to_ipv6_mapped()
+                .octets(),
+            client_ref: 0,
+            group: 0,
+            qtype: 1,
+            qclass: 1,
+            rcode: Some(0),
+            status: Status::Forwarded,
+            proto: Proto::Udp,
+            flags: 0x8180,
+            rule: None,
+            upstream: 1,
+            attempts: 1,
+            t_total_us: 100,
+            t_upstream_us: 90,
+            resp_size: 60,
+            answers: 1,
+        };
+        {
+            let mut agg = src.pipeline.telemetry.aggregates();
+            for _ in 0..140 {
+                agg.record(&Record::Query(event(1), Name::default()));
+            }
+            agg.record(&Record::Query(event(2), Name::default()));
+        }
+        assert!(render(&src).contains("telltale_client_ips_masked 1"));
+        let m = src.masked_clients().unwrap();
+        assert_eq!((m.share_percent, m.queries), (100, 141));
+        assert_eq!(m.sources, ["127.0.0.1", "127.0.0.2"]);
     }
 }

@@ -28,9 +28,9 @@ use utoipa::OpenApi;
 use crate::model::{
     ClientInfo, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
     ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, Items, LatencyBy, LatencyParams,
-    LatencyRow, ListInfo, NameMatch, QueryPage, QueryParams, QueryRow, ScanStats, Step, Summary,
-    SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams,
-    TopItem, TopKind, TopParams, UpstreamInfo,
+    LatencyRow, ListInfo, MaskedClients, NameMatch, QueryPage, QueryParams, QueryRow, ScanStats,
+    Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket,
+    TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -149,7 +149,7 @@ async fn fallback(
         auth::routes::oidc_callback
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, UpstreamInfo, Step, TopKind,

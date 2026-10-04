@@ -476,6 +476,11 @@ pub struct ClientsConfig {
     /// Forwarders whose EDNS MAC option (dnsmasq `add-mac`) is trusted. Empty = ignore the
     /// option: any client could send it and claim another device's identity.
     pub trust_edns_mac_from: Vec<Cidr>,
+    /// Addresses that are infrastructure, not devices: Kubernetes node and pod networks, a
+    /// Docker bridge, a forwarding router. When > 90% of queries come from ≤ 3 of them, the
+    /// UI warns that client IPs appear masked (OPS-003). Loopback, this host's default
+    /// gateways, and `TELLTALE_NODE_IPS` (set by the Helm chart) are always included.
+    pub infrastructure: Vec<Cidr>,
 }
 
 impl Default for ClientsConfig {
@@ -484,6 +489,7 @@ impl Default for ClientsConfig {
             neighbor_table: true,
             neighbor_refresh_secs: 60,
             trust_edns_mac_from: Vec::new(),
+            infrastructure: Vec::new(),
         }
     }
 }

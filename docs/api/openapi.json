@@ -2863,6 +2863,45 @@
           }
         }
       },
+      "MaskedClients": {
+        "type": "object",
+        "description": "Evidence that client IPs appear masked.",
+        "required": [
+          "sharePercent",
+          "sources",
+          "queries",
+          "windowStart"
+        ],
+        "properties": {
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries in the 10-minute window examined.",
+            "minimum": 0
+          },
+          "sharePercent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Share of the window's queries sent by `sources`, in percent (> 90).",
+            "example": 97,
+            "minimum": 0
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The infrastructure addresses that sent them, heaviest first (at most 3).",
+            "example": [
+              "10.42.0.1"
+            ]
+          },
+          "windowStart": {
+            "type": "string",
+            "description": "Start of that window (RFC 3339)."
+          }
+        }
+      },
       "Me": {
         "type": "object",
         "description": "The signed-in user.",
@@ -3338,6 +3377,17 @@
           "filterNames"
         ],
         "properties": {
+          "clientIpsMasked": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MaskedClients",
+                "description": "Present when client IPs appear masked (OPS-003): most recent queries come from a few\ninfrastructure addresses (a Kubernetes node, a Docker bridge, a forwarding router),\nso per-device statistics and rules see those instead of devices."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "filterNames": {
             "type": "integer",
             "format": "int64",

@@ -77,9 +77,11 @@ cargo build --release
 <pre><code># planned (roadmap M4): same image, Docker Compose
 docker compose up -d</code></pre>
         </div>
-        <div class="panel"><h3>Kubernetes (coming soon)</h3>
-<pre><code># planned (roadmap M4)
-helm install telltale oci://ghcr.io/paimonsoror/charts/telltale</code></pre>
+        <div class="panel"><h3>Kubernetes (Helm, one replica)</h3>
+<pre><code>git clone https://github.com/paimonsoror/telltaledns
+helm install telltale telltaledns/deploy/helm/telltale -n telltale --create-namespace
+kubectl -n telltale get svc telltale-dns   # EXTERNAL-IP: hand this out in DHCP</code></pre>
+        <p class="muted">One LoadBalancer for UDP and TCP 53 with <code>externalTrafficPolicy: Local</code>, so every device shows up with its own address. If something hides them anyway (a node, a Docker bridge, a router forwarding DNS), the UI says "client IPs appear masked" and links to the fix.</p>
         </div>
       </div>
     </div>

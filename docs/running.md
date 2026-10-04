@@ -69,11 +69,25 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).
 - **Configuration**: `config:` is merged after the chart's own settings (listeners, data directory, ports): upstreams, lists, groups, `[auth.oidc]`, everything in `docs/configuration.md`.
 - **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
-- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
+- **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - One replica (`mode: allInOne`, a StatefulSet with a volume for lists, the query log, and users). Several resolver replicas (`scaled`, `daemonSet`) arrive with clustering.
 
-## Upstream presetsInstead of looking up addresses, start from a preset:
+## Seeing real client IPs
+Per-device statistics, groups, and rules need each query's real sender. TelltaleDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `telltale_client_ips_masked` is 1, and the log says so once.
+
+Infrastructure addresses are loopback, this host's default gateways (a Docker bridge or a Kubernetes pod's gateway; on the LAN, a router), the node addresses the Helm chart passes in `TELLTALE_NODE_IPS`, and any networks in `[clients] infrastructure`:
+```toml
+[clients]
+infrastructure = ["10.42.0.0/16"]   # e.g. your cluster's pod network
+```
+Common causes and fixes:
+- **Kubernetes, `externalTrafficPolicy: Cluster`**: the node rewrites the sender. Use `Local` (the chart's default) or `hostNetwork: true`.
+- **Docker with a userland proxy** (IPv6 or `127.0.0.1` port publishing): run with `network_mode: host`, or publish on the LAN address.
+- **A router that forwards DNS** (its own resolver points at TelltaleDNS and clients use the router): hand out TelltaleDNS's address in DHCP instead. If you can't, enable the router's EDNS MAC option (dnsmasq `add-mac`) and list the router in `[clients] trust_edns_mac_from` so devices are recognized by MAC.
+
+## Upstream presets
+Instead of looking up addresses, start from a preset:
 ```sh
 telltale presets list                                   # Cloudflare, Google, Quad9, AdGuard, Mullvad, Control D, NextDNS, ...
 telltale presets show quad9 --proto tls,https --group default >> telltale.toml

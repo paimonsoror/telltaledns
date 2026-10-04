@@ -27,6 +27,7 @@ const RESERVED: &[&str] = &[
     "BOOTSTRAP_ADMIN_USER",
     "BOOTSTRAP_ADMIN_PASSWORD",
     "BOOTSTRAP_ADMIN_PASSWORD_HASH",
+    "NODE_IPS",
 ];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.

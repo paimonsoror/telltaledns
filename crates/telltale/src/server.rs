@@ -409,6 +409,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         rollups: rollups.clone(),
         tail,
         auth: std::sync::OnceLock::new(),
+        masking: crate::masking::Detector::default(),
     });
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     start_http(&cfg, &sources, &http_stopped).await?;

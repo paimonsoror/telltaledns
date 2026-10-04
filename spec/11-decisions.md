@@ -413,3 +413,14 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Experts keep everything.** Config files, API, and CLI expose the full model; the UI never becomes the only way to do something.
 
 **Consequences:** More UI content to write and keep current (one glossary file, checked in CI). The editing pages (T3.12 and later) are designed around this from the start; the read-only pages get help panels and diagrams in T3.11.
+
+## ADR-037 — Masked-client-IP detector: what counts as infrastructure (Proposed)
+**Context:** OPS-003 / `spec/08` §3.2: "the resolver detects when > 90% of queries come from ≤ 3 IPs inside the pod/node CIDRs and raises a UI banner". A pod doesn't know the pod or node CIDRs, and on a homelab the node network *is* the LAN, so "inside the node CIDR" would also match real devices.
+
+**Decision:**
+- **Window:** the aggregator keeps per-client counts for fixed 10-minute windows (≤ 256 clients each, off the query path). The detector reads the last complete window (or the current one before the first completes). At least 100 queries are needed to judge.
+- **Infrastructure** = loopback; this host's default gateways from `/proc/net/route` and `/proc/net/ipv6_route` (inside a container that's the Docker bridge or the pod's gateway, where SNAT'd traffic appears; on a host network it's the LAN router, which matters when the router forwards everyone's DNS); node addresses in `TELLTALE_NODE_IPS` (the chart sets it from `status.hostIP`); and `[clients] infrastructure` networks for anything else (pod networks, other nodes).
+- **Rule:** masked when the ≤ 3 heaviest clients that are infrastructure sent > 90% of the window's queries. A household whose traffic is dominated by a few real devices is never flagged, because they aren't infrastructure (conservative: a missed warning costs less than a false one).
+- **Surfaces:** `clientIpsMasked` in `GET /api/v1/system/info` (share, sources, queries, window start), a UI banner linking to the docs (refreshed every minute), the gauge `telltale_client_ips_masked` with a chart alert after 30 minutes, and one log line per change. Evaluated only on API calls and scrapes.
+
+**Consequences:** Multi-node clusters with `externalTrafficPolicy: Cluster` SNAT to *other* nodes' addresses, which are only recognized when listed in `[clients] infrastructure` (the chart's install notes already warn on `Cluster`).

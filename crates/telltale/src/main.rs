@@ -8,6 +8,7 @@ mod auth_setup;
 mod explain;
 mod http;
 mod lists;
+mod masking;
 mod pipeline;
 mod qlog_cli;
 mod rollups;

@@ -13,6 +13,7 @@ DNS:
 WARNING: service.dns.externalTrafficPolicy is Cluster. Queries will appear to come from node
 addresses, so per-device blocking, the query log, and client statistics can't tell devices
 apart. Use Local (the default) or hostNetwork: true.
+TelltaleDNS also checks at runtime and shows a "client IPs appear masked" banner in the UI.
 {{- end }}
 
 Web UI and API:

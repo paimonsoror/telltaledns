@@ -65,7 +65,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), per-list refresh and size limit | `docs/running.md` |
 | `[[group]]` | client groups: which lists apply, priority | `docs/running.md` |
 | `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`), groups | `docs/running.md` |
-| `[clients]` | neighbor table on/off and refresh interval; which forwarders' EDNS MAC to trust | FLT-006 |
+| `[clients]` | neighbor table on/off and refresh interval; which forwarders' EDNS MAC to trust; `infrastructure` networks for the masked-client-IP check | FLT-006, OPS-003 |
 | `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory | `spec/05` §3.4 |
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |

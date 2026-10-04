@@ -278,6 +278,14 @@ impl Backend for ApiBackend {
                 let st = &s.manifest.stats;
                 st.subtree_names + st.exact_names + st.subdomains_names
             }),
+            client_ips_masked: self.src.masked_clients().map(|m| {
+                telltale_api::model::MaskedClients {
+                    share_percent: m.share_percent,
+                    sources: m.sources,
+                    queries: m.queries,
+                    window_start: format_us(m.window_start_s.saturating_mul(1_000_000)),
+                }
+            }),
         }
     }
 

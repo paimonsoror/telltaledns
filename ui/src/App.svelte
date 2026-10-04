@@ -4,6 +4,7 @@
   import { api, type S } from './lib/api';
   import { session, refreshSession, signOut } from './lib/session.svelte';
   import { route, href } from './lib/router.svelte';
+  import { poll } from './lib/poll';
   import Logo from './lib/components/Logo.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
@@ -58,7 +59,8 @@
 
   $effect(() => {
     if (session.user) {
-      api.info().then((i) => (info = i)).catch(() => {});
+      // Refreshed every minute: the masked-client-IP banner (OPS-003) can come and go.
+      return poll(() => api.info().then((i) => (info = i)), 60_000);
     }
   });
 
@@ -98,6 +100,16 @@
     <main class="content">
       {#if info && !info.queryLog}
         <div class="notice warn banner">The query log is off on this node: the query log and "Why?" from history are unavailable.</div>
+      {/if}
+      {#if info?.clientIpsMasked}
+        {@const m = info.clientIpsMasked}
+        <div class="notice warn banner" data-testid="masked-banner">
+          <strong>Client IPs appear masked.</strong>
+          {m.sharePercent}% of the last {m.queries} queries came from {m.sources.join(', ')}, which look like
+          infrastructure (a Kubernetes node, a Docker bridge, or a router forwarding DNS) rather than devices.
+          Per-device statistics and rules see those addresses instead of your devices.
+          <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a>
+        </div>
       {/if}
       {#key current.path}
         <current.page />

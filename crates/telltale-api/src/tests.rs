@@ -30,6 +30,7 @@ impl Backend for Fake {
             query_log: true,
             filter_snapshot: Some(3),
             filter_names: 42,
+            client_ips_masked: None,
         }
     }
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {

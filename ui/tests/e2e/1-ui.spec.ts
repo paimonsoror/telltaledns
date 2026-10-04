@@ -1,6 +1,6 @@
 // REQ: API-003, API-005 — the UI end to end against a real server: first-run setup, the
 // dashboard, the query log and "Why?", explain, tokens, users and roles, sign-out/in, and a
-// phone-width layout. Any CSP violation or page error fails the suite.
+// phone-width layout, and the masked-client-IP banner. Any CSP violation or page error fails the suite.
 import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -181,4 +181,22 @@ test('works at phone width (360 px)', async () => {
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+// REQ: OPS-003 — every e2e query comes from 127.0.0.1 (infrastructure), so 100+ of them
+// make client IPs look masked: the banner says so and links to the fix.
+test('ops_003 masked client IPs raise a banner', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await Promise.all(Array.from({ length: 120 }, (_, i) => query(`m${i}.nas.e2e.test`).catch(() => -1)));
+  await expect
+    .poll(async () => (await (await page.request.get('/api/v1/system/info')).json()).clientIpsMasked?.sources ?? [], {
+      timeout: 20_000,
+    })
+    .toContain('127.0.0.1');
+  await expect(async () => {
+    await page.reload();
+    await expect(page.getByTestId('masked-banner')).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(page.getByTestId('masked-banner')).toContainText('127.0.0.1');
+  await expect(page.getByRole('link', { name: 'How to fix it' })).toHaveAttribute('href', /seeing-real-client-ips/);
 });

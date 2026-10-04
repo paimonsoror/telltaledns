@@ -8,6 +8,7 @@ use hdrhistogram::Histogram;
 
 use crate::event::{Name, QueryEvent, Record, UpstreamEvent};
 use crate::export::Exported;
+use crate::recent::{ClientWindow, RecentClients};
 use crate::topk::{SpaceSaving, Top};
 use crate::{N_QTYPE, N_RCODE, N_STATUS, Path, Proto, Status, qtype_index};
 
@@ -300,6 +301,8 @@ pub struct Aggregates {
     pub latest_s: u64,
     /// Cumulative series for Prometheus (OBS-005).
     pub exported: Exported,
+    /// Per-client counts in 10-minute windows (OPS-003).
+    recent: RecentClients,
 }
 
 impl Default for Aggregates {
@@ -325,6 +328,7 @@ impl Aggregates {
             seq: 0,
             latest_s: 0,
             exported: Exported::default(),
+            recent: RecentClients::default(),
         }
     }
 
@@ -346,6 +350,7 @@ impl Aggregates {
         match r {
             Record::Query(e, name) => {
                 self.exported.add_query(e);
+                self.recent.add(e.client_ip, ts_s);
                 for series in [&mut self.seconds, &mut self.minutes] {
                     if let Some(c) = series.at(ts_s) {
                         c.add_query(e);
@@ -432,6 +437,11 @@ impl Aggregates {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Who sent the queries in the latest 10-minute window (REQ: OPS-003).
+    pub fn recent_clients(&self, now_s: u64) -> Option<ClientWindow> {
+        self.recent.latest(now_s)
     }
 
     /// Start (Unix seconds) of the last complete hour kept in memory, if any.

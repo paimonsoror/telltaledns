@@ -64,6 +64,10 @@ spec:
           env:
             - name: TELLTALE_LOG
               value: info
+            # REQ: OPS-003 — node addresses count as infrastructure for the masked-client-IP check.
+            - name: TELLTALE_NODE_IPS
+              valueFrom:
+                fieldRef: { fieldPath: status.hostIP }
             {{- with .Values.auth.bootstrapAdmin.existingSecret }}
             - name: TELLTALE_BOOTSTRAP_ADMIN_USER
               valueFrom:

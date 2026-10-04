@@ -20,6 +20,7 @@ pub mod event;
 mod events_tests;
 pub mod export;
 pub mod prom;
+pub mod recent;
 pub mod ring;
 pub mod topk;
 

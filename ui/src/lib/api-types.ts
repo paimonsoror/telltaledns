@@ -1083,6 +1083,29 @@ export interface components {
             /** @description Send the browser here to also sign out at the provider. */
             logoutUrl?: string | null;
         };
+        /** @description Evidence that client IPs appear masked. */
+        MaskedClients: {
+            /**
+             * Format: int64
+             * @description Queries in the 10-minute window examined.
+             */
+            queries: number;
+            /**
+             * Format: int32
+             * @description Share of the window's queries sent by `sources`, in percent (> 90).
+             * @example 97
+             */
+            sharePercent: number;
+            /**
+             * @description The infrastructure addresses that sent them, heaviest first (at most 3).
+             * @example [
+             *       "10.42.0.1"
+             *     ]
+             */
+            sources: string[];
+            /** @description Start of that window (RFC 3339). */
+            windowStart: string;
+        };
         /** @description The signed-in user. */
         Me: {
             allowBasicApi: boolean;
@@ -1263,6 +1286,7 @@ export interface components {
         };
         /** @description Node and build information. */
         SystemInfo: {
+            clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
             /**
              * Format: int64
              * @description Blocked names in the active snapshot.

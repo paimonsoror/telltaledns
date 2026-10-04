@@ -8,6 +8,14 @@ for (const theme of ['light', 'dark'] as const) {
   test(`screenshots (${theme})`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: theme });
     await page.setViewportSize({ width: 1280, height: 860 });
+    // Every e2e query comes from 127.0.0.1, which reads as masked client IPs (OPS-003); keep
+    // that banner out of the pictures.
+    await page.route('**/api/v1/system/info', async (route) => {
+      const res = await route.fetch();
+      const info = await res.json();
+      delete info.clientIpsMasked;
+      await route.fulfill({ response: res, json: info });
+    });
     await page.goto('/');
     await page.getByLabel('Username').fill('admin');
     await page.getByLabel('Password').fill('correct horse battery');

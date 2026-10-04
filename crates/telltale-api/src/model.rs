@@ -28,6 +28,26 @@ pub struct SystemInfo {
     pub filter_snapshot: Option<u64>,
     /// Blocked names in the active snapshot.
     pub filter_names: u64,
+    /// Present when client IPs appear masked (OPS-003): most recent queries come from a few
+    /// infrastructure addresses (a Kubernetes node, a Docker bridge, a forwarding router),
+    /// so per-device statistics and rules see those instead of devices.
+    pub client_ips_masked: Option<MaskedClients>,
+}
+
+/// Evidence that client IPs appear masked.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskedClients {
+    /// Share of the window's queries sent by `sources`, in percent (> 90).
+    #[schema(example = 97)]
+    pub share_percent: u32,
+    /// The infrastructure addresses that sent them, heaviest first (at most 3).
+    #[schema(example = json!(["10.42.0.1"]))]
+    pub sources: Vec<String>,
+    /// Queries in the 10-minute window examined.
+    pub queries: u64,
+    /// Start of that window (RFC 3339).
+    pub window_start: String,
 }
 
 /// Time-bucket size for [`TimeseriesParams`].
