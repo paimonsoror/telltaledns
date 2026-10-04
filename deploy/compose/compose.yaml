@@ -1,0 +1,39 @@
+# TelltaleDNS on a Raspberry Pi (or any Linux box) with Docker Compose (REQ: OPS-004, spec/08 §3.4).
+#
+#   docker compose up -d
+#   docker compose exec telltale telltale auth setup-token   # then open http://<pi>:8053/
+#
+# Host networking: queries keep the real client addresses and the neighbor table shows
+# MAC addresses, so per-device statistics and rules work. Nothing else may use port 53 on
+# the host (see README.md for systemd-resolved).
+name: telltale
+services:
+  telltale:
+    image: ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-edge}
+    command: ["run", "-c", "/etc/telltale/telltale.toml"]
+    network_mode: host
+    restart: unless-stopped
+    # Port 53 needs NET_BIND_SERVICE: run as root with only that capability. To run as the
+    # image's unprivileged user instead, set the host sysctl net.ipv4.ip_unprivileged_port_start=53
+    # (README.md) and uncomment `user`.
+    user: "0:0"
+    # user: "65532:65532"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    volumes:
+      - ./telltale.toml:/etc/telltale/telltale.toml:ro
+      # Lists, the query log, users. Docker creates ./data owned by root; when switching to the
+      # unprivileged user, first run `sudo chown -R 65532:65532 data`.
+      - ./data:/var/lib/telltale
+    environment:
+      TELLTALE_LOG: info
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/telltale", "health", "--url", "http://127.0.0.1:8053/readyz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

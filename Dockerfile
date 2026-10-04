@@ -72,6 +72,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     printf 'root:x:0:0:root:/:/sbin/nologin\ntelltale:x:65532:65532:telltale:/var/lib/telltale:/sbin/nologin\n' > /out/etc/passwd; \
     printf 'root:x:0:\ntelltale:x:65532:\n' > /out/etc/group
 
+# REQ: OPS-004 — just the static binary, for release assets and native installs:
+#   docker buildx build --platform linux/arm64 --target bin --output type=local,dest=out .
+FROM scratch AS bin
+COPY --from=build /out/usr/local/bin/telltale /telltale
+
 FROM scratch
 ARG VERSION=dev
 ARG REVISION=unknown

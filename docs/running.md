@@ -57,6 +57,34 @@ docker run -d --name telltale --restart unless-stopped \
 
 Build it yourself with `docker buildx build -t telltale:dev .` (add `--platform linux/amd64,linux/arm64,linux/arm/v7` for all three). The build cross-compiles, so it doesn't need QEMU.
 
+## Raspberry Pi and Linux
+Two ways, both with real client addresses (host networking) and port 53 without running as a full root process. Pi 3, 4, 5, and Zero 2 W are supported (64-bit or 32-bit OS); ARMv6 boards (Pi 1, Zero W) aren't.
+
+**Docker Compose (recommended):** `deploy/compose/` has `compose.yaml` and a starter `telltale.toml` (encrypted upstreams, one balanced blocklist, a 7-day query log).
+```sh
+mkdir telltale && cd telltale
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+docker compose up -d
+docker compose exec telltale telltale auth setup-token     # then open http://<pi>:8053/
+```
+The container uses the host network, a read-only root filesystem, and only `NET_BIND_SERVICE`, as root inside the container by default. To run it as the image's unprivileged user, set `net.ipv4.ip_unprivileged_port_start=53` on the host (`echo net.ipv4.ip_unprivileged_port_start=53 | sudo tee /etc/sysctl.d/50-telltale.conf && sudo sysctl --system`) and switch `user:` in `compose.yaml`. Updates: `docker compose pull && docker compose up -d`. Reload the config without a restart: `docker compose kill -s HUP`.
+
+**Native (systemd):** `deploy/systemd/install.sh` downloads the static binary for your CPU, checks the release signature (minisign) and its SHA-256, creates a `telltale` system user, installs a sandboxed systemd unit (`ProtectSystem=strict`, only `CAP_NET_BIND_SERVICE`, `MemoryMax=256M`) and the starter config (an existing `/etc/telltale/telltale.toml` is kept), then starts the service and waits until it's ready.
+```sh
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+less install.sh                     # read before running as root
+sudo sh install.sh --edge           # builds from main; without --edge: the latest tagged release
+sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
+```
+Re-running it upgrades the binary in place. `sudo telltale self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `telltale.old`. In containers it refuses (pull a new image instead).
+
+**Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` offers to turn it off (`--disable-resolved-stub` does it without asking: the machine then resolves through TelltaleDNS); for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
+
+**Small Pis and SD cards:** the query log writes continuously; keep `[telemetry.qlog] retention_days` short (the starter config uses 7) or put `/var/lib/telltale` on a USB SSD. On a Pi Zero 2 W (512 MB) also set `[node] workers = 2` and `[cache] max_bytes = "16MiB"`, and prefer smaller blocklists.
+
+Then point your router's DHCP DNS server setting at the Pi's address so every device uses it.
+
 ## Kubernetes (Helm)
 The chart is in `deploy/helm/telltale` (k8s 1.26+, amd64 and arm64):
 ```sh

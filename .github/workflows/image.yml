@@ -1,8 +1,11 @@
 # REQ: OPS-001 / T0.4 — multi-arch FROM-scratch image, size gate, QEMU smoke, `edge` on main.
+# REQ: OPS-004 / T4.3 — the same build's static binaries, signed, as GitHub release assets:
+# the `edge` prerelease follows main; a `v*` tag publishes a release and versioned image tags.
 name: image
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -25,10 +28,16 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      - name: Version
+        id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else echo "version=edge" >> "$GITHUB_OUTPUT"; fi
+
       - name: Build all platforms (OCI layout)
         run: |
           docker buildx build --platform "$PLATFORMS" \
-            --build-arg VERSION=edge --build-arg REVISION="$GITHUB_SHA" \
+            --build-arg VERSION=${{ steps.v.outputs.version }} --build-arg REVISION="$GITHUB_SHA" \
             --cache-from type=gha --cache-to type=gha,mode=max \
             --output type=oci,dest=image.tar .
 
@@ -46,6 +55,24 @@ jobs:
             deploy/image/smoke.sh "$tag" "$p"
           done
 
+      - name: Release binaries (from the same cached build)
+        run: |
+          docker buildx build --platform "$PLATFORMS" --target bin --cache-from type=gha \
+            --output type=local,dest=bin .
+          mkdir dist
+          cp bin/linux_amd64/telltale dist/telltale-x86_64-linux
+          cp bin/linux_arm64/telltale dist/telltale-aarch64-linux
+          cp bin/linux_arm_v7/telltale dist/telltale-armv7-linux
+          chmod 755 dist/*
+          dist/telltale-x86_64-linux --version
+          (cd dist && sha256sum telltale-* > SHA256SUMS && cat SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+          retention-days: 7
+
       - name: Push edge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
@@ -55,3 +82,65 @@ jobs:
             --cache-from type=gha \
             -t "$IMAGE:edge" -t "$IMAGE:sha-${GITHUB_SHA::7}" --push .
           python3 deploy/image/size.py --remote "$IMAGE:edge"
+
+      - name: Push release tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          tags=(-t "$IMAGE:$v")
+          if [[ "$v" != *-* ]]; then   # no pre-release suffix: also X.Y, X, and latest
+            tags+=(-t "$IMAGE:${v%.*}" -t "$IMAGE:${v%%.*}" -t "$IMAGE:latest")
+          fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx build --platform "$PLATFORMS" \
+            --build-arg VERSION="$v" --build-arg REVISION="$GITHUB_SHA" \
+            --cache-from type=gha "${tags[@]}" --push .
+
+  # Signs SHA256SUMS with the release key (secret MINISIGN_SECRET_KEY; public half in
+  # deploy/release/telltale-release.pub and built into `telltale self-update`) and publishes.
+  release:
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist
+      - name: Sign
+        id: sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::warning title=release not published::Add the MINISIGN_SECRET_KEY repository secret to publish signed binaries (install.sh and self-update refuse unsigned ones)."
+            echo "signed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/release.key"
+          minisign -S -s "$RUNNER_TEMP/release.key" -m dist/SHA256SUMS \
+            -t "telltale ${GITHUB_REF_NAME} ${GITHUB_SHA}"
+          rm "$RUNNER_TEMP/release.key"
+          minisign -V -p deploy/release/telltale-release.pub -m dist/SHA256SUMS
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - name: Publish edge prerelease
+        if: steps.sign.outputs.signed == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete edge --yes --cleanup-tag 2>/dev/null || true
+          gh release create edge dist/* --prerelease --target "$GITHUB_SHA" \
+            --title "edge (main @ ${GITHUB_SHA::7})" \
+            --notes "Built from main at ${GITHUB_SHA}. Not a stable release: install with \`install.sh --edge\` or \`telltale self-update --channel edge\`."
+      - name: Publish release
+        if: steps.sign.outputs.signed == 'true' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""; [[ "$GITHUB_REF_NAME" == *-* ]] && pre="--prerelease"
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes $pre \
+            || gh release upload "$GITHUB_REF_NAME" dist/* --clobber

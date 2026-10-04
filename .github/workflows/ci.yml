@@ -187,3 +187,27 @@ jobs:
         run: KEEP=1 E2E_KUBECONFIG="$RUNNER_TEMP/kubeconfig" TOOL=${{ matrix.tool }} bash deploy/helm/e2e.sh
       - name: ct install (every ci/*-values.yaml)
         run: KUBECONFIG="$RUNNER_TEMP/kubeconfig" ct install --config ct.yaml --all
+
+  # REQ: OPS-004 — the Pi/Linux paths end to end on a disposable runner: the Compose bundle
+  # (host network, healthcheck, hardening) and install.sh + the systemd unit (signed fake
+  # release, DNS on port 53, upgrade in place, tampered releases refused).
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --profile bench-fast -p telltale
+      - name: Compose bundle
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils minisign
+          mkdir ctx && cp target/bench-fast/telltale ctx/
+          printf '%s\n' 'FROM ubuntu:24.04' \
+            'COPY telltale /usr/local/bin/telltale' \
+            'RUN mkdir -p /var/lib/telltale /etc/telltale && chown 65532:65532 /var/lib/telltale' \
+            'ENTRYPOINT ["/usr/local/bin/telltale"]' 'CMD ["run"]' > ctx/Dockerfile
+          docker build -q -t telltale:ci ctx
+          deploy/compose/e2e.sh telltale:ci
+      - name: install.sh + systemd unit
+        run: sudo deploy/systemd/e2e.sh target/bench-fast/telltale

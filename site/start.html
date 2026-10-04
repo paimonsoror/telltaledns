@@ -73,9 +73,16 @@ cargo build --release
   ghcr.io/paimonsoror/telltale:edge</code></pre>
         <p class="muted">amd64, arm64 and arm/v7; about 3 MiB; runs as a non-root user.</p>
         </div>
-        <div class="panel"><h3>Raspberry Pi (coming soon)</h3>
-<pre><code># planned (roadmap M4): same image, Docker Compose
-docker compose up -d</code></pre>
+        <div class="panel"><h3>Raspberry Pi (Docker Compose or native)</h3>
+<pre><code># Docker Compose: host network, so every device shows up as itself
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+docker compose up -d
+
+# or native, as a sandboxed systemd service (read the script first)
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
+sudo sh install.sh --edge</code></pre>
+        <p class="muted">Pi 3, 4, 5, and Zero 2 W. The installer checks the release signature and checksum before it installs anything; <code>telltale self-update</code> does the same later.</p>
         </div>
         <div class="panel"><h3>Kubernetes (Helm, one replica)</h3>
 <pre><code>git clone https://github.com/paimonsoror/telltaledns

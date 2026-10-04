@@ -22,7 +22,11 @@ clap = { version = "4.6.7", features = ["derive"] }
 # REQ: 02 §3 — mimalloc (musl's allocator halves cache-hit throughput). no_thp: with THP on,
 # mimalloc's huge pages tripled idle RSS (22 MiB vs 6 MiB), breaking the 20 MiB gate (00 §5).
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }
+# REQ: OPS-004 — self-update verifies minisign signatures (tiny, no dependencies).
+minisign-verify = "0.2"
 rand = "0.10.3"
+# SHA-256 for self-update (already in the tree through rustls).
+ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 telltale-api = { version = "0.1.0", path = "../telltale-api" }
@@ -42,3 +46,4 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["io-util"] }

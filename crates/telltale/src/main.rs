@@ -12,6 +12,7 @@ mod masking;
 mod pipeline;
 mod qlog_cli;
 mod rollups;
+mod selfupdate;
 mod server;
 mod tail;
 
@@ -105,6 +106,26 @@ enum Command {
         /// Config files (same defaults as `telltale run`).
         #[arg(short, long = "config")]
         config: Vec<PathBuf>,
+    },
+    /// Exit 0 if the server answers 200 at `url` (a container healthcheck without a shell).
+    // REQ: OPS-004, OPS-006
+    Health {
+        #[arg(long, default_value = "http://127.0.0.1:8053/readyz")]
+        url: String,
+    },
+    /// Update this binary to the latest release (native installs; containers pull a new
+    /// image). Verifies the release signature and checksum before replacing anything.
+    // REQ: OPS-004
+    SelfUpdate {
+        /// Which releases to follow.
+        #[arg(long, value_enum, default_value = "stable")]
+        channel: selfupdate::Channel,
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+        /// Restart the `telltale` systemd service after updating.
+        #[arg(long)]
+        restart: bool,
     },
 }
 
@@ -332,6 +353,18 @@ fn main() -> ExitCode {
             json,
             config,
         )),
+        Command::SelfUpdate {
+            channel,
+            check,
+            restart,
+        } => Ok(run_self_update(channel, check, restart)),
+        Command::Health { url } => Ok(match health(&url) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("unhealthy: {e}");
+                ExitCode::FAILURE
+            }
+        }),
     };
     match result {
         Ok(code) => code,
@@ -340,6 +373,75 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// GETs a plain-HTTP `url` with a 3-second budget; Ok on status 200.
+fn health(url: &str) -> Result<(), String> {
+    use std::io::Read;
+    use std::net::ToSocketAddrs;
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("only http:// URLs are supported")?;
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let addr = authority
+        .to_socket_addrs()
+        .map_err(|e| format!("{authority}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{authority}: no address"))?;
+    let timeout = std::time::Duration::from_secs(3);
+    let mut s = std::net::TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    s.set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    write!(
+        s,
+        "GET /{path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|e| e.to_string())?;
+    let mut head = [0u8; 12];
+    s.read_exact(&mut head).map_err(|e| e.to_string())?;
+    match &head[9..12] {
+        b"200" => Ok(()),
+        code => Err(format!("status {}", String::from_utf8_lossy(code))),
+    }
+}
+
+fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> ExitCode {
+    let opts = selfupdate::Options {
+        channel,
+        check,
+        restart,
+        base_url: None,
+        exe: None,
+    };
+    let msg = match selfupdate::run(&opts) {
+        Ok(selfupdate::Outcome::UpToDate) => {
+            format!("TelltaleDNS is up to date ({channel:?} channel).")
+        }
+        Ok(selfupdate::Outcome::Available { sha256 }) => {
+            format!(
+                "An update is available ({channel:?} channel, sha256 {sha256}).\n\
+                 Install it with: telltale self-update --restart"
+            )
+        }
+        Ok(selfupdate::Outcome::Updated { previous }) => {
+            let mut m = format!(
+                "Updated. The previous binary is kept at {}.",
+                previous.display()
+            );
+            if !restart {
+                m.push_str("\nRestart the service to use it: systemctl restart telltale");
+            }
+            m
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = writeln!(io::stdout().lock(), "{msg}");
+    ExitCode::SUCCESS
 }
 
 fn init_logging() {
