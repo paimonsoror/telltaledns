@@ -96,6 +96,29 @@ jobs:
             --build-arg VERSION="$v" --build-arg REVISION="$GITHUB_SHA" \
             --cache-from type=gha "${tags[@]}" --push .
 
+  # REQ: OPS-002 — the Helm chart as an OCI artifact, so others install it without cloning:
+  # `helm install telltale oci://ghcr.io/<owner>/charts/telltale --version <v>`. Main
+  # publishes `<chart version>-edge.<run>` (appVersion edge); a `v*` tag publishes that version.
+  chart:
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Package and push
+        run: |
+          base=$(awk '/^version:/ {print $2}' deploy/helm/telltale/Chart.yaml)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; app="$v"
+          else v="${base}-edge.${GITHUB_RUN_NUMBER}"; app=edge; fi
+          helm package deploy/helm/telltale --version "$v" --app-version "$app" -d out
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "out/telltale-$v.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          echo "::notice title=chart published::oci://ghcr.io/${{ github.repository_owner }}/charts/telltale --version $v"
+
   # Signs SHA256SUMS with the release key (secret MINISIGN_SECRET_KEY; public half in
   # deploy/release/telltale-release.pub and built into `telltale self-update`) and publishes.
   release:

@@ -86,9 +86,12 @@ Re-running it upgrades the binary in place. `sudo telltale self-update --restart
 Then point your router's DHCP DNS server setting at the Pi's address so every device uses it.
 
 ## Kubernetes (Helm)
-The chart is in `deploy/helm/telltale` (k8s 1.26+, amd64 and arm64):
+The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
+Use a release version, or `0.1.0-edge.<n>` builds that follow `main`. Its source is in
+`deploy/helm/telltale`, and `helm install telltale deploy/helm/telltale` from a checkout works too:
 ```sh
-helm install telltale deploy/helm/telltale -n telltale --create-namespace \
+helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --version <version> \
+  -n telltale --create-namespace \
   --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
 kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (DHCP) here
 ```

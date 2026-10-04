@@ -117,8 +117,8 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>
       <text x="777" y="148" text-anchor="middle" fill="#e8eef6" font-size="12">ServiceMonitor · alerts</text>
     </svg>
   </figure>
-<pre><code>git clone https://github.com/paimonsoror/telltaledns
-helm install telltale telltaledns/deploy/helm/telltale -n telltale --create-namespace \
+<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; \
+  -n telltale --create-namespace \
   --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
 kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: your DNS server address
 kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token \
