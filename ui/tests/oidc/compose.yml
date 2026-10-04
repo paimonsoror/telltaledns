@@ -1,0 +1,72 @@
+# Identity providers for the OIDC end-to-end tests (REQ: API-004, T3.6 AC):
+#   docker compose -f ui/tests/oidc/compose.yml up -d --wait
+#   OIDC_E2E=keycloak,authentik npm --prefix ui run test:e2e
+# Test-only credentials; never expose these containers.
+name: telltale-oidc-test
+
+x-authentik: &authentik
+  image: ghcr.io/goauthentik/server:2025.10.1
+  environment:
+    AUTHENTIK_SECRET_KEY: telltale-e2e-only-secret-key-0123456789abcdefghijkl
+    AUTHENTIK_BOOTSTRAP_PASSWORD: telltale-e2e-admin
+    AUTHENTIK_BOOTSTRAP_EMAIL: admin@example.test
+    AUTHENTIK_POSTGRESQL__HOST: authentik-db
+    AUTHENTIK_POSTGRESQL__USER: authentik
+    AUTHENTIK_POSTGRESQL__NAME: authentik
+    AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+    AUTHENTIK_REDIS__HOST: authentik-redis
+    AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+    AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+    AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
+  volumes:
+    - ./authentik-blueprint.yaml:/blueprints/custom/telltale.yaml:ro
+  depends_on:
+    authentik-db:
+      condition: service_healthy
+    authentik-redis:
+      condition: service_started
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start-dev", "--import-realm", "--http-port=8080", "--health-enabled=true"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: telltale-e2e-admin
+    volumes:
+      - ./keycloak-realm.json:/opt/keycloak/data/import/telltale.json:ro
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  authentik-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: authentik
+      POSTGRES_DB: authentik
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  authentik-redis:
+    image: redis:7-alpine
+
+  authentik-server:
+    <<: *authentik
+    command: server
+    ports: ["9000:9000"]
+    healthcheck:
+      test: ["CMD-SHELL", "ak healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  authentik-worker:
+    <<: *authentik
+    command: worker

@@ -67,6 +67,73 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
     if a.allow_insecure_basic {
         r.warn("auth.allow_insecure_basic: passwords sent with HTTP Basic cross the network in the clear");
     }
+    oidc(&a.oidc, r);
+}
+
+// REQ: API-004
+fn oidc(o: &crate::OidcConfig, r: &mut Report<'_>) {
+    let url = o.public_url.as_str();
+    if !o.provider.is_empty() {
+        let ok = (url.starts_with("https://") || url.starts_with("http://"))
+            && url.split_once("://").is_some_and(|(_, rest)| {
+                !rest.is_empty() && !rest.trim_end_matches('/').contains('/')
+            });
+        if !ok {
+            r.err(
+                "auth.oidc.public_url",
+                "required with providers: the address people open the UI at, like https://dns.example.com (no path)",
+            );
+        } else if url.starts_with("http://") {
+            r.warn("auth.oidc.public_url: plain HTTP; providers may refuse http redirect URIs except for localhost");
+        }
+    }
+    if o.disable_local_login && o.provider.is_empty() {
+        r.err(
+            "auth.oidc.disable_local_login",
+            "needs at least one [[auth.oidc.provider]]: otherwise only break-glass admins could sign in",
+        );
+    }
+    let mut ids = HashSet::new();
+    for (n, p) in o.provider.iter().enumerate() {
+        let at = format!("auth.oidc.provider[{n}]");
+        let id = p.id.as_str();
+        if id.is_empty()
+            || id.len() > 32
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            r.err(format!("{at}.id"), "1-32 lowercase letters, digits, or -");
+        }
+        if !ids.insert(id) {
+            r.err(format!("{at}.id"), format!("duplicate provider `{id}`"));
+        }
+        let issuer = p.issuer.as_str();
+        if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
+            r.err(format!("{at}.issuer"), "must be an http(s) URL");
+        } else if issuer.starts_with("http://") {
+            r.warn(format!(
+                "{at}.issuer: plain HTTP is only safe for local testing"
+            ));
+        }
+        if p.client_id.is_empty() {
+            r.err(format!("{at}.client_id"), "must not be empty");
+        }
+        if p.client_secret.is_some() && p.client_secret_file.is_some() {
+            r.err(
+                format!("{at}.client_secret_file"),
+                "set client_secret or client_secret_file, not both",
+            );
+        }
+        if !p.scopes.iter().any(|s| s.as_str() == "openid") {
+            r.err(format!("{at}.scopes"), "must include `openid`");
+        }
+        if p.role.is_empty() && p.default_role.is_none() {
+            r.warn(format!(
+                "{at}: no [[...role]] rules and no default_role: nobody can sign in with `{id}`"
+            ));
+        }
+    }
 }
 
 fn node(cfg: &Config, r: &mut Report<'_>) {

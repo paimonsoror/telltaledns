@@ -831,6 +831,8 @@ pub struct AuthConfig {
     pub allow_insecure_basic: bool,
     /// Roles that must use two-factor sign-in (TOTP), e.g. `["admin"]`.
     pub totp_required_roles: Vec<UserRole>,
+    /// Sign-in through `OpenID Connect` providers (Keycloak, Authentik, ...; API-004).
+    pub oidc: OidcConfig,
 }
 
 impl Default for AuthConfig {
@@ -840,8 +842,101 @@ impl Default for AuthConfig {
             session_idle_hours: 24,
             allow_insecure_basic: false,
             totp_required_roles: Vec::new(),
+            oidc: OidcConfig::default(),
         }
     }
+}
+
+/// `OpenID Connect` sign-in (API-004, `spec/08` §6, ADR-034). Each provider gets a "Sign in
+/// with ..." button; users are created on first sign-in and their role comes from a claim
+/// (groups) at every sign-in. Changes need a restart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct OidcConfig {
+    /// Where people open the UI, e.g. `https://dns.example.com` or `http://192.168.1.2:8053`.
+    /// Each provider's redirect URI is `<public_url>/api/v1/auth/oidc/<id>/callback`, and
+    /// after sign-out the provider returns to `<public_url>/`; register both with it.
+    pub public_url: SafeString,
+    /// Turn off password sign-in (and HTTP Basic) except for admins signing in from
+    /// `allowed_admin_networks` (break-glass, for when the provider is down).
+    pub disable_local_login: bool,
+    /// Where break-glass admin sign-in is allowed. Default: private networks and loopback.
+    pub allowed_admin_networks: Vec<Cidr>,
+    pub provider: Vec<OidcProvider>,
+}
+
+impl Default for OidcConfig {
+    fn default() -> Self {
+        Self {
+            public_url: SafeString::default(),
+            disable_local_login: false,
+            allowed_admin_networks: AccessConfig::default().allowed_networks,
+            provider: Vec::new(),
+        }
+    }
+}
+
+/// One `OpenID Connect` provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OidcProvider {
+    /// Short ID used in URLs: lowercase letters, digits, and `-` (`keycloak`, `authentik`).
+    pub id: SafeString,
+    /// Button label ("Sign in with ..."). Default: the ID.
+    #[serde(default)]
+    pub name: SafeString,
+    /// Issuer URL (discovery is `<issuer>/.well-known/openid-configuration`).
+    pub issuer: SafeString,
+    pub client_id: SafeString,
+    /// The client secret, or ...
+    #[serde(default)]
+    pub client_secret: Option<SafeString>,
+    /// ... a file holding it (a mounted Kubernetes Secret). Neither: a public client (PKCE).
+    #[serde(default)]
+    pub client_secret_file: Option<SafeString>,
+    /// Scopes to request. Default: `openid`, `profile`, `email`.
+    #[serde(default = "default_oidc_scopes")]
+    pub scopes: Vec<SafeString>,
+    /// Claim that becomes the TelltaleDNS username (dotted paths reach into objects).
+    /// Default `preferred_username`; falls back to `email`, then `sub`.
+    #[serde(default = "default_username_claim")]
+    pub username_claim: SafeString,
+    /// Claim listing the user's groups or roles (`groups`, `roles`,
+    /// `realm_access.roles`). Default `groups`.
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: SafeString,
+    /// Group → role rules; a user gets the highest role any of their groups maps to.
+    #[serde(default)]
+    pub role: Vec<OidcRoleRule>,
+    /// Role for users whose groups match no rule. Unset: they can't sign in.
+    #[serde(default)]
+    pub default_role: Option<UserRole>,
+    /// Refuse users whose provider says their email isn't verified.
+    #[serde(default)]
+    pub require_verified_email: bool,
+}
+
+/// Users in `group` get `role`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OidcRoleRule {
+    pub group: SafeString,
+    pub role: UserRole,
+}
+
+fn default_oidc_scopes() -> Vec<SafeString> {
+    ["openid", "profile", "email"]
+        .into_iter()
+        .map(SafeString::from)
+        .collect()
+}
+
+fn default_username_claim() -> SafeString {
+    SafeString::from("preferred_username")
+}
+
+fn default_groups_claim() -> SafeString {
+    SafeString::from("groups")
 }
 
 /// What a user may do (`spec/08` §6).

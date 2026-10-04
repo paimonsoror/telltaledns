@@ -5,6 +5,14 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 (rsa, "Marvin attack"): timing side channel in RSA private-key
+    # operations (PKCS#1 v1.5 decryption, signing). `rsa` arrives through `openidconnect`
+    # (OIDC sign-in, API-004), where TelltaleDNS only *verifies* ID-token signatures with the
+    # provider's public keys: it holds no RSA private key to leak. No fixed version exists
+    # yet. Revisit when one does (ADR-034).
+    { id = "RUSTSEC-2023-0071", reason = "rsa is used for public-key signature verification only (OIDC ID tokens); no private keys" },
+]
 
 [licenses]
 version = 2

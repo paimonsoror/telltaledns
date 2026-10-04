@@ -526,6 +526,36 @@ allow_insecure_basic = false
 
 Users, sessions, and tokens are kept in `<data_dir>/state.db` (SQLite). If it can't be opened, the API stays off and DNS keeps answering.
 
+**Sign in with Keycloak, Authentik, or another OpenID Connect provider.** Each provider gets a "Sign in with ..." button. People are created in TelltaleDNS the first time they sign in, and their role comes from their groups at every sign-in:
+```toml
+[auth.oidc]
+public_url = "https://dns.example.com"     # where people open the UI
+
+[[auth.oidc.provider]]
+id = "authentik"                           # used in URLs
+name = "Authentik"                         # the button label
+issuer = "https://auth.example.com/application/o/telltale/"
+client_id = "telltale"
+client_secret_file = "/run/secrets/oidc"   # or client_secret = "..."
+groups_claim = "groups"                    # Keycloak realm roles: "realm_access.roles"
+
+[[auth.oidc.provider.role]]
+group = "dns-admins"
+role = "admin"
+
+[[auth.oidc.provider.role]]
+group = "family"
+role = "viewer"
+```
+At the provider, create a confidential client with the redirect URI `<public_url>/api/v1/auth/oidc/<id>/callback` (here `https://dns.example.com/api/v1/auth/oidc/authentik/callback`) and allow `<public_url>/` after sign-out. Make sure the ID token carries the groups: Authentik's `profile` scope includes `groups`; in Keycloak add a "Group Membership" mapper (full group path off) to the client.
+
+- Someone in several mapped groups gets the highest role; someone in none can't sign in unless you set `default_role`. `require_verified_email = true` refuses addresses the provider hasn't verified.
+- The username comes from `preferred_username` (or `username_claim`). TelltaleDNS never attaches a provider account to an existing local user: if the name is taken, the new account is called `name@provider`.
+- Signing out also signs out at the provider (Keycloak asks "Do you want to log out?"; Authentik shows its own "logged out" page).
+- Provider accounts have no TelltaleDNS password; they can still create API tokens.
+- `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks` (private networks by default): a break-glass way in when the provider is down.
+- The provider is only contacted while signing in; sessions are local afterwards. Changes to `[auth.oidc]` need a restart.
+
 **Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 
 Entries can't be edited or deleted, and each is chained to the previous one with a BLAKE3 hash, so tampering with the database is detectable:

@@ -8,6 +8,9 @@ export const session = $state({
   error: '',
   setupRequired: false,
   user: null as S['Me'] | null,
+  /** Sign-in providers (OIDC) and whether the password form is offered here. */
+  oidc: [] as S['OidcButton'][],
+  localLogin: true,
 });
 
 export async function refreshSession() {
@@ -15,6 +18,8 @@ export async function refreshSession() {
     const s = await api.status();
     session.setupRequired = s.setupRequired;
     session.user = s.user ?? null;
+    session.oidc = s.oidc;
+    session.localLogin = s.localLogin;
     setCsrf(s.csrfToken ?? undefined);
     session.error = '';
   } catch (e) {
@@ -32,12 +37,15 @@ export function signedIn(r: S['LoginResponse']) {
 }
 
 export async function signOut() {
+  let next: string | undefined;
   try {
-    await api.logout();
+    // REQ: API-004 — OIDC sessions also sign out at the provider.
+    next = (await api.logout())?.logoutUrl ?? undefined;
   } finally {
     setCsrf(undefined);
     session.user = null;
   }
+  if (next) location.href = next;
 }
 
 whenSignedOut(() => {

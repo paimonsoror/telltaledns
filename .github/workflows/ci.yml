@@ -103,3 +103,45 @@ jobs:
           name: playwright-report
           path: ui/playwright-report
           if-no-files-found: ignore
+
+  # REQ: API-004 — T3.6 AC: sign in through real Keycloak and Authentik (ui/tests/oidc/).
+  oidc:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start Keycloak and Authentik
+        run: docker compose -f tests/oidc/compose.yml up -d --wait --wait-timeout 300
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p telltale
+        working-directory: .
+      - run: npx playwright install --with-deps --only-shell chromium
+      - name: Wait for Authentik to apply its blueprint
+        run: |
+          for i in $(seq 60); do
+            curl -sf -o /dev/null http://127.0.0.1:9000/application/o/telltale/.well-known/openid-configuration && exit 0
+            sleep 5
+          done
+          exit 1
+      - run: npm run test:e2e
+        env:
+          OIDC_E2E: keycloak,authentik
+      - name: Provider logs
+        if: failure()
+        run: docker compose -f tests/oidc/compose.yml logs --tail 200
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-oidc
+          path: ui/playwright-report
+          if-no-files-found: ignore

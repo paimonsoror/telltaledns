@@ -145,7 +145,8 @@ async fn fallback(
         auth::routes::totp_enable, auth::routes::totp_disable, auth::routes::list_tokens,
         auth::routes::create_token, auth::routes::delete_token, auth::routes::list_users,
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
-        auth::routes::audit_log, auth::routes::audit_verify
+        auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
+        auth::routes::oidc_callback
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
@@ -158,7 +159,8 @@ async fn fallback(
         auth::routes::TotpCode, auth::routes::PasswordConfirm, auth::routes::RecoveryCodes,
         auth::routes::TokenInfo, auth::routes::CreateToken, auth::routes::NewToken,
         auth::routes::UserInfo, auth::routes::CreateUser, auth::routes::UpdateUser,
-        auth::routes::AuditInfo, auth::routes::AuditPage, auth::routes::AuditVerify
+        auth::routes::AuditInfo, auth::routes::AuditPage, auth::routes::AuditVerify,
+        auth::routes::OidcButton, auth::routes::LogoutResult
     )),
     modifiers(&Security),
     security(("session" = []), ("bearer" = []), ("basic" = [])),

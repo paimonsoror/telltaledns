@@ -69,7 +69,17 @@ const MIGRATIONS: &[&str] = &[
         BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
     CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit
         BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;",
+    // 3: OIDC sign-in (T3.6, API-004): users linked to a provider's subject; which provider
+    // a session came from (for sign-out at the provider).
+    "ALTER TABLE users ADD COLUMN oidc_provider TEXT;
+    ALTER TABLE users ADD COLUMN oidc_subject TEXT;
+    CREATE UNIQUE INDEX users_oidc ON users(oidc_provider, oidc_subject)
+        WHERE oidc_subject IS NOT NULL;
+    ALTER TABLE sessions ADD COLUMN oidc_provider TEXT;",
 ];
+
+/// Stored for OIDC users: no password matches it (they sign in at their provider).
+pub const NO_PASSWORD: &str = "!oidc";
 
 pub mod audit;
 pub use audit::{AuditEntry, NewAudit, Verify};
@@ -92,6 +102,8 @@ pub struct User {
     pub disabled: bool,
     pub created: u64,
     pub password_changed: u64,
+    /// The OIDC provider this user signs in with (no local password), if any.
+    pub oidc_provider: Option<String>,
 }
 
 /// A session row (the session ID itself is never stored, only its hash).
@@ -102,6 +114,8 @@ pub struct Session {
     pub created: u64,
     pub expires: u64,
     pub last_seen: u64,
+    /// The OIDC provider this session came from, if any.
+    pub oidc_provider: Option<String>,
 }
 
 /// An API token row (the secret is never stored, only its hash).
@@ -240,7 +254,7 @@ impl State {
     }
 
     const USER_COLS: &'static str = "id, username, password_hash, role, totp_secret, totp_enabled, \
-        totp_last_step, allow_basic_api, disabled, created, password_changed";
+        totp_last_step, allow_basic_api, disabled, created, password_changed, oidc_provider";
 
     fn row_user(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         Ok(User {
@@ -255,7 +269,43 @@ impl State {
             disabled: r.get(8)?,
             created: u(r.get(9)?),
             password_changed: u(r.get(10)?),
+            oidc_provider: r.get(11)?,
         })
+    }
+
+    /// The user linked to an OIDC provider's subject.
+    pub fn user_by_oidc(&self, provider: &str, subject: &str) -> Result<Option<User>> {
+        self.with(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {} FROM users WHERE oidc_provider = ?1 AND oidc_subject = ?2",
+                    Self::USER_COLS
+                ),
+                [provider, subject],
+                Self::row_user,
+            )
+            .optional()
+        })
+    }
+
+    /// Creates a user who signs in through `provider` (no usable password).
+    pub fn create_oidc_user(
+        &self,
+        username: &str,
+        role: &str,
+        provider: &str,
+        subject: &str,
+        now: u64,
+    ) -> Result<User> {
+        let user = self.create_user(username, NO_PASSWORD, role, false, now)?;
+        self.with(|c| {
+            c.execute(
+                "UPDATE users SET oidc_provider = ?2, oidc_subject = ?3 WHERE id = ?1",
+                params![user.id, provider, subject],
+            )
+        })?;
+        self.user(user.id)?
+            .ok_or(StateError::Db(rusqlite::Error::QueryReturnedNoRows))
     }
 
     pub fn user(&self, id: i64) -> Result<Option<User>> {
@@ -411,7 +461,7 @@ impl State {
     pub fn session(&self, id_hash: &[u8]) -> Result<Option<Session>> {
         self.with(|c| {
             c.query_row(
-                "SELECT user_id, csrf, created, expires, last_seen FROM sessions WHERE id_hash = ?1",
+                "SELECT user_id, csrf, created, expires, last_seen, oidc_provider FROM sessions WHERE id_hash = ?1",
                 [id_hash],
                 |r| {
                     Ok(Session {
@@ -420,10 +470,22 @@ impl State {
                         created: u(r.get(2)?),
                         expires: u(r.get(3)?),
                         last_seen: u(r.get(4)?),
+                        oidc_provider: r.get(5)?,
                     })
                 },
             )
             .optional()
+        })
+    }
+
+    /// Marks a session as started through an OIDC provider.
+    pub fn set_session_provider(&self, id_hash: &[u8], provider: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE sessions SET oidc_provider = ?2 WHERE id_hash = ?1",
+                params![id_hash, provider],
+            )
+            .map(|_| ())
         })
     }
 

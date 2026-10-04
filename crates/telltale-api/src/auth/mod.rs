@@ -7,6 +7,7 @@
 //! First run: no default password, a one-time setup token creates the first admin.
 
 pub mod crypto;
+pub mod oidc;
 pub mod routes;
 
 use std::collections::HashMap;
@@ -149,6 +150,34 @@ pub struct Settings {
     /// Where the first-run setup token is kept (`<data_dir>/setup-token`); deleted once
     /// setup is done.
     pub setup_token_file: Option<std::path::PathBuf>,
+    /// OIDC only: password sign-in and HTTP Basic just for admins from `admin_networks`
+    /// (break-glass, API-004).
+    pub disable_local_login: bool,
+    /// `(network, prefix length)`.
+    pub admin_networks: Vec<(IpAddr, u8)>,
+}
+
+/// `ip` is inside `net/len` (IPv4-mapped IPv6 addresses match IPv4 networks).
+pub fn in_network(ip: IpAddr, net: IpAddr, len: u8) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 @ IpAddr::V4(_) => v4,
+    };
+    match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            let m = u32::MAX
+                .checked_shl(32 - u32::from(len.min(32)))
+                .unwrap_or(0);
+            u32::from(a) & m == u32::from(n) & m
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            let m = u128::MAX
+                .checked_shl(128 - u32::from(len.min(128)))
+                .unwrap_or(0);
+            u128::from(a) & m == u128::from(n) & m
+        }
+        _ => false,
+    }
 }
 
 impl Default for Settings {
@@ -159,6 +188,8 @@ impl Default for Settings {
             allow_insecure_basic: false,
             totp_required_roles: Vec::new(),
             setup_token_file: None,
+            disable_local_login: false,
+            admin_networks: Vec::new(),
         }
     }
 }
@@ -188,6 +219,8 @@ pub struct Auth {
     /// Verified Basic credentials: hash → (user ID, expiry), so scrapes don't pay Argon2.
     basic_cache: Mutex<HashMap<Vec<u8>, (i64, u64)>>,
     basic_salt: [u8; 16],
+    /// OIDC providers, when configured (API-004).
+    oidc: std::sync::OnceLock<Arc<oidc::Oidc>>,
 }
 
 #[allow(clippy::needless_pass_by_value)] // used as `map_err(db)`
@@ -241,6 +274,8 @@ pub struct Presented<'a> {
     pub basic: Option<(String, String)>,
     /// The request arrived over HTTPS (directly or via a proxy that said so).
     pub https: bool,
+    /// The client's address (break-glass checks for HTTP Basic).
+    pub remote: Option<IpAddr>,
 }
 
 impl Auth {
@@ -252,6 +287,7 @@ impl Auth {
             failures: Mutex::new(HashMap::new()),
             basic_cache: Mutex::new(HashMap::new()),
             basic_salt: rand::random(),
+            oidc: std::sync::OnceLock::new(),
         }
     }
 
@@ -261,6 +297,31 @@ impl Auth {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// Attaches OIDC providers (once, at startup).
+    pub fn set_oidc(&self, o: oidc::Oidc) {
+        let _ = self.oidc.set(Arc::new(o));
+    }
+
+    pub fn oidc(&self) -> Option<&Arc<oidc::Oidc>> {
+        self.oidc.get()
+    }
+
+    /// Password sign-in (and HTTP Basic) may be tried from `ip`: always, unless local
+    /// sign-in is off, then only from the break-glass admin networks.
+    pub fn local_login_allowed(&self, ip: IpAddr) -> bool {
+        !self.settings.disable_local_login
+            || self
+                .settings
+                .admin_networks
+                .iter()
+                .any(|(n, l)| in_network(ip, *n, *l))
+    }
+
+    fn local_login_refused() -> Problem {
+        Problem::new(Code::Forbidden, "password sign-in is off on this server")
+            .hint("Use your sign-in provider. Admins can still sign in with a password from the break-glass networks.")
     }
 
     /// True while no user exists (the UI shows the setup screen).
@@ -457,6 +518,10 @@ impl Auth {
         remote: IpAddr,
         now: u64,
     ) -> Result<User, Problem> {
+        // REQ: API-004 — with local sign-in off, only break-glass admins get this far.
+        if !self.local_login_allowed(remote) {
+            return Err(Self::local_login_refused());
+        }
         let ukey = format!("u:{}", username.to_lowercase());
         let akey = format!("a:{remote}");
         if let Some(wait) = self.locked(&ukey, now).max(self.locked(&akey, now)) {
@@ -482,6 +547,9 @@ impl Auth {
             ));
         };
         let role = Role::parse(&user.role).unwrap_or(Role::Viewer);
+        if self.settings.disable_local_login && role != Role::Admin {
+            return Err(Self::local_login_refused());
+        }
         let must_totp = user.totp_enabled || self.settings.totp_required_roles.contains(&role);
         if must_totp {
             self.second_factor(&user, totp, recovery, now)
@@ -582,7 +650,16 @@ impl Auth {
             return self.by_token(t, now).map(Some);
         }
         if let Some((user, pass)) = &p.basic {
-            return self.by_basic(user, pass, p.https, now).map(Some);
+            if self.settings.disable_local_login
+                && !p.remote.is_some_and(|ip| self.local_login_allowed(ip))
+            {
+                return Err(Self::local_login_refused());
+            }
+            let who = self.by_basic(user, pass, p.https, now)?;
+            if self.settings.disable_local_login && who.role != Role::Admin {
+                return Err(Self::local_login_refused());
+            }
+            return Ok(Some(who));
         }
         match p.session {
             Some(c) => self.by_session(c, now),

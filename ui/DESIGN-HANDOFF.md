@@ -193,7 +193,7 @@ JSON is camelCase; units are in field names (`totalMs`, `ttlSeconds`, `*UnixSeco
 | Page (route) | API calls | What it shows now | Known weaknesses / ideas |
 |---|---|---|---|
 | **Setup** (gate when `setupRequired`) | `GET /auth/status`, `POST /auth/setup` | token + admin username + password ×2 | Plain; could explain where to find the token for Docker/K8s/Pi installs. |
-| **Sign in** (gate) | `POST /auth/login` (401 `totp_required` → code step; recovery code alternative) | 1–2 step form | Fine; lockout (429) message is just the API detail. |
+| **Sign in** (gate) | `GET /auth/status` (`oidc` buttons, `localLogin`), `POST /auth/login` (401 `totp_required` → code step; recovery code alternative), `/auth/oidc/{id}/start` links | provider buttons, then the 1–2 step password form | Fine; lockout (429) message is just the API detail. |
 | **Dashboard** `#/` | `stats/summary`, `stats/timeseries` (second/minute/hour steps), `stats/top` ×3, `upstreams`, `stats/latency?by=stage|path` | range segmented control (15 min, 1 h, 24 h, 48 h, 7 d, 30 d); 6 KPI tiles; stacked "Queries by status" chart; "Where time goes" table; upstream share bars with breaker badge; "Upstream exchanges" chart; Top domains/blocked/clients lists linking into the query log | Biggest design opportunity. KPI tiles lack trend/sparkline and comparison to the previous period. "Where time goes" is a raw table (spec wants a stage breakdown chart). Upstream panel could show latency sparklines. Top lists' counts are "this hour" while the range control suggests otherwise (label it more clearly). Missing "nodes up" tile (cluster arrives later; don't fake it). |
 | **Query log** `#/queries` | `GET /queries/stream` (Live), `GET /queries` (filters: `name`+`match`, `client`, `status` csv, `qtype`, `rcode`, `minLatencyMs`, `from`; cursor paging 100 rows), `GET /explain` | filter form + status chips (in URL), table with time/client/name/type/status+rcode/rule/time-taken bar, **Why?** drawer, "Older" pager, **Live** toggle (SSE stream, status badge, skipped count) | Spec wants a virtualized table. **Live** (SSE) exists: consider a pause button and a "new rows" indicator when scrolled down. Row density and scanning could improve (sticky header, hover row, copy-name action, clearer rule column). Filters take a lot of vertical space on phones (consider a collapsible filter bar with chips summarizing active filters). |
 | **Explain** `#/explain` | `GET /explain?name&client&qtype` | form + `ExplainView` | Could link from anywhere a domain appears. |
@@ -221,6 +221,7 @@ text, labels, or roles below breaks CI.
   `Menu` (mobile nav).
 - **Links:** top-list entries are links whose name is the domain (`ads.e2e.test`); nav link
   `Dashboard`.
+- **Sign-in providers:** links named `Sign in with <name>` (`.providers .provider`), the provider error `.provider-error` (role `alert`) shown from `#/?loginError=...`; the password form is hidden when `localLogin` is false. `tests/e2e/3-oidc.spec.ts` runs against real Keycloak/Authentik (`OIDC_E2E`).
 - **Audit tab:** `tab` named `Audit log` (admins only; absent for viewers), rows `table.audit tbody tr` containing the action (`user.create`) and target, button `Verify chain`, result `.verify-result` containing `Chain intact`.
 - **Roles:** `dialog` (the Why? drawer; Escape closes it), `alert` (ErrorNote; must contain the
   API's `wrong username or password`), `tab` with `aria-selected` for `Account`, `API tokens`,
@@ -288,7 +289,7 @@ by `api.ts` on every non-GET; tokens are shown once).
 
 **Out of scope for the UI agent** (needs backend work first; list them as requests instead):
 editing lists/groups/upstreams/local records and allow/block quick actions (configuration API),
-OIDC sign-in (T3.6), cluster page and scope selector
+ cluster page and scope selector
 (M5), analytics (new domains, DGA, anomalies), per-upstream time series, past-hour top lists.
 
 ---

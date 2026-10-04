@@ -175,6 +175,16 @@
         "description": "Ends this session and clears the cookie. With a token or Basic, does nothing but succeed.",
         "operationId": "logout",
         "responses": {
+          "200": {
+            "description": "Signed out of an OIDC session: send the browser to `logoutUrl` to sign out at the provider too.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResult"
+                }
+              }
+            }
+          },
           "204": {
             "description": "Signed out."
           }
@@ -195,6 +205,118 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/oidc/{id}/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "OIDC redirect URI.",
+        "description": "The provider returns here with `code` and `state`. Validates both, exchanges the code,\nverifies the ID token, maps groups to a role (creating the user on first sign-in), sets\nthe session cookie, and redirects to the UI. Failures redirect to `/#/?loginError=...`.\nRegister `<public_url>/api/v1/auth/oidc/{id}/callback` with the provider.",
+        "operationId": "oidc_callback",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Provider ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Set instead of `code` when the user cancelled or the provider refused.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Signed in (to the UI), or back to sign-in with `loginError`."
+          }
+        }
+      }
+    },
+    "/api/v1/auth/oidc/{id}/start": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start signing in with an OIDC provider.",
+        "description": "Redirects the browser to the provider (Authorization Code + PKCE). The provider sends it\nback to `/api/v1/auth/oidc/{id}/callback`, which signs in and returns to `returnTo`.\nBrowsers only: link a \"Sign in with ...\" button here.",
+        "operationId": "oidc_start",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Provider ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "returnTo",
+            "in": "query",
+            "description": "UI route to return to after sign-in (`/#/queries`). Default `/#/`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To the provider's sign-in page."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -1546,7 +1668,9 @@
         "description": "Whether setup is needed and who is signed in (public).",
         "required": [
           "setupRequired",
-          "authenticated"
+          "authenticated",
+          "localLogin",
+          "oidc"
         ],
         "properties": {
           "authenticated": {
@@ -1558,6 +1682,17 @@
               "null"
             ],
             "description": "For session sign-ins: send as `X-CSRF-Token` on changes."
+          },
+          "localLogin": {
+            "type": "boolean",
+            "description": "Password sign-in is offered to this client (off with `disable_local_login`, except\nfrom the break-glass admin networks)."
+          },
+          "oidc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OidcButton"
+            },
+            "description": "OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`."
           },
           "setupRequired": {
             "type": "boolean",
@@ -2643,6 +2778,13 @@
                   "type": "integer",
                   "format": "int64"
                 },
+                "oidcProvider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The sign-in provider for users created by OIDC sign-in (they have no password here)."
+                },
                 "role": {
                   "$ref": "#/components/schemas/Role"
                 },
@@ -2705,6 +2847,19 @@
           },
           "user": {
             "$ref": "#/components/schemas/Me"
+          }
+        }
+      },
+      "LogoutResult": {
+        "type": "object",
+        "description": "Sign-out result for OIDC sessions.",
+        "properties": {
+          "logoutUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Send the browser here to also sign out at the provider."
           }
         }
       },
@@ -2774,6 +2929,23 @@
           "token": {
             "type": "string",
             "description": "The token, shown only now: send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "OidcButton": {
+        "type": "object",
+        "description": "A \"Sign in with ...\" button.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Label."
           }
         }
       },
@@ -3543,6 +3715,13 @@
           "id": {
             "type": "integer",
             "format": "int64"
+          },
+          "oidcProvider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sign-in provider for users created by OIDC sign-in (they have no password here)."
           },
           "role": {
             "$ref": "#/components/schemas/Role"

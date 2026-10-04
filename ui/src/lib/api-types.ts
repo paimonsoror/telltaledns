@@ -113,6 +113,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/oidc/{id}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * OIDC redirect URI.
+         * @description The provider returns here with `code` and `state`. Validates both, exchanges the code,
+         *     verifies the ID token, maps groups to a role (creating the user on first sign-in), sets
+         *     the session cookie, and redirects to the UI. Failures redirect to `/#/?loginError=...`.
+         *     Register `<public_url>/api/v1/auth/oidc/{id}/callback` with the provider.
+         */
+        get: operations["oidc_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/oidc/{id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Start signing in with an OIDC provider.
+         * @description Redirects the browser to the provider (Authorization Code + PKCE). The provider sends it
+         *     back to `/api/v1/auth/oidc/{id}/callback`, which signs in and returns to `returnTo`.
+         *     Browsers only: link a "Sign in with ..." button here.
+         */
+        get: operations["oidc_start"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/password": {
         parameters: {
             query?: never;
@@ -658,6 +703,13 @@ export interface components {
             authenticated: boolean;
             /** @description For session sign-ins: send as `X-CSRF-Token` on changes. */
             csrfToken?: string | null;
+            /**
+             * @description Password sign-in is offered to this client (off with `disable_local_login`, except
+             *     from the break-glass admin networks).
+             */
+            localLogin: boolean;
+            /** @description OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`. */
+            oidc: components["schemas"]["OidcButton"][];
             /** @description No user exists yet: create the first admin with the setup token. */
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
@@ -1004,6 +1056,8 @@ export interface components {
                 disabled: boolean;
                 /** Format: int64 */
                 id: number;
+                /** @description The sign-in provider for users created by OIDC sign-in (they have no password here). */
+                oidcProvider?: string | null;
                 role: components["schemas"]["Role"];
                 totpEnabled: boolean;
                 username: string;
@@ -1023,6 +1077,11 @@ export interface components {
             /** Format: int64 */
             expiresUnixSeconds: number;
             user: components["schemas"]["Me"];
+        };
+        /** @description Sign-out result for OIDC sessions. */
+        LogoutResult: {
+            /** @description Send the browser here to also sign out at the provider. */
+            logoutUrl?: string | null;
         };
         /** @description The signed-in user. */
         Me: {
@@ -1050,6 +1109,12 @@ export interface components {
             info: components["schemas"]["TokenInfo"];
             /** @description The token, shown only now: send as `Authorization: Bearer <token>`. */
             token: string;
+        };
+        /** @description A "Sign in with ..." button. */
+        OidcButton: {
+            id: string;
+            /** @description Label. */
+            name: string;
         };
         PasswordChange: {
             currentPassword: string;
@@ -1347,6 +1412,8 @@ export interface components {
             disabled: boolean;
             /** Format: int64 */
             id: number;
+            /** @description The sign-in provider for users created by OIDC sign-in (they have no password here). */
+            oidcProvider?: string | null;
             role: components["schemas"]["Role"];
             totpEnabled: boolean;
             username: string;
@@ -1479,6 +1546,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Signed out of an OIDC session: send the browser to `logoutUrl` to sign out at the provider too. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogoutResult"];
+                };
+            };
             /** @description Signed out. */
             204: {
                 headers: {
@@ -1503,6 +1579,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Me"];
+                };
+            };
+        };
+    };
+    oidc_callback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                /** @description Set instead of `code` when the user cancelled or the provider refused. */
+                error?: string;
+                error_description?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Provider ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed in (to the UI), or back to sign-in with `loginError`. */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    oidc_start: {
+        parameters: {
+            query?: {
+                /** @description UI route to return to after sign-in (`/#/queries`). Default `/#/`. */
+                returnTo?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Provider ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description To the provider's sign-in page. */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

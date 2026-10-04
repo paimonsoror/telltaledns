@@ -30,17 +30,90 @@ fn settings(cfg: &Config) -> Settings {
         session_ttl_secs: u64::from(a.session_ttl_hours) * 3600,
         session_idle_secs: u64::from(a.session_idle_hours) * 3600,
         allow_insecure_basic: a.allow_insecure_basic,
-        totp_required_roles: a
-            .totp_required_roles
-            .iter()
-            .map(|r| match r {
-                UserRole::Viewer => Role::Viewer,
-                UserRole::Operator => Role::Operator,
-                UserRole::Admin => Role::Admin,
-            })
-            .collect(),
+        totp_required_roles: a.totp_required_roles.iter().map(|r| role(*r)).collect(),
         setup_token_file: Some(data_dir(cfg).join(SETUP_TOKEN_FILE)),
+        disable_local_login: a.oidc.disable_local_login,
+        admin_networks: a
+            .oidc
+            .allowed_admin_networks
+            .iter()
+            .map(|c| (c.addr, c.prefix))
+            .collect(),
     }
+}
+
+fn role(r: UserRole) -> Role {
+    match r {
+        UserRole::Viewer => Role::Viewer,
+        UserRole::Operator => Role::Operator,
+        UserRole::Admin => Role::Admin,
+    }
+}
+
+/// REQ: API-004 — OIDC providers from `[auth.oidc]`, reaching them with the same HTTPS client
+/// as list downloads (system resolver, Mozilla roots, no redirects, 1 MiB, 15 s).
+fn oidc(cfg: &Config) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
+    use telltale_api::auth::oidc::{Fetch, Oidc, OidcSettings, ProviderSettings};
+    let o = &cfg.auth.oidc;
+    if o.provider.is_empty() {
+        return Ok(None);
+    }
+    let mut providers = Vec::new();
+    for p in &o.provider {
+        let client_secret = match (&p.client_secret, &p.client_secret_file) {
+            (Some(s), _) => Some(s.to_string()),
+            (None, Some(f)) => Some(
+                std::fs::read_to_string(f.as_str())
+                    .map_err(|e| io::Error::other(format!("{}: {e}", f.as_str())))?
+                    .trim()
+                    .to_owned(),
+            ),
+            (None, None) => None,
+        };
+        providers.push(ProviderSettings {
+            id: p.id.to_string(),
+            name: if p.name.is_empty() {
+                p.id.to_string()
+            } else {
+                p.name.to_string()
+            },
+            issuer: p.issuer.to_string(),
+            client_id: p.client_id.to_string(),
+            client_secret,
+            scopes: p.scopes.iter().map(ToString::to_string).collect(),
+            username_claim: p.username_claim.to_string(),
+            groups_claim: p.groups_claim.to_string(),
+            roles: p
+                .role
+                .iter()
+                .map(|r| (r.group.to_string(), role(r.role)))
+                .collect(),
+            default_role: p.default_role.map(role),
+            require_verified_email: p.require_verified_email,
+        });
+    }
+    let client =
+        telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])
+            .map_err(io::Error::other)?;
+    let fetch: Fetch = Arc::new(move |req| {
+        let client = client.clone();
+        Box::pin(async move {
+            match tokio::time::timeout(Duration::from_secs(15), client.request(req, 1 << 20)).await
+            {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(e)) => Err(e.message),
+                Err(_) => Err("timed out".to_owned()),
+            }
+        })
+    });
+    info!(providers = providers.len(), "OIDC sign-in enabled");
+    Ok(Some(Oidc::new(
+        OidcSettings {
+            public_url: o.public_url.to_string(),
+            providers,
+        },
+        fetch,
+    )))
 }
 
 fn open_state(cfg: &Config) -> io::Result<State> {
@@ -66,6 +139,9 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
 pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
+    if let Some(o) = oidc(cfg)? {
+        auth.set_oidc(o);
+    }
     bootstrap_from_env(&auth);
     let setup = auth
         .setup_required()

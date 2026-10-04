@@ -109,6 +109,7 @@ pub async fn authenticate(
 ) -> Response {
     let headers = req.headers().clone();
     let https = is_https(&headers);
+    let ip = remote(req.extensions());
     let (session, bearer, basic) = presented(&headers);
     let result = blocking(move || {
         let p = Presented {
@@ -116,6 +117,7 @@ pub async fn authenticate(
             bearer: bearer.as_deref(),
             basic,
             https,
+            remote: Some(ip),
         };
         auth.authenticate(&p, now())
     })
@@ -223,6 +225,48 @@ pub struct AuthStatus {
     /// For session sign-ins: send as `X-CSRF-Token` on changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub csrf_token: Option<String>,
+    /// Password sign-in is offered to this client (off with `disable_local_login`, except
+    /// from the break-glass admin networks).
+    pub local_login: bool,
+    /// OIDC providers: send the browser to `GET /api/v1/auth/oidc/{id}/start`.
+    pub oidc: Vec<OidcButton>,
+}
+
+/// A "Sign in with ..." button.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct OidcButton {
+    pub id: String,
+    /// Label.
+    pub name: String,
+}
+
+/// `GET /auth/oidc/{id}/start` parameters.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
+pub struct OidcStart {
+    /// UI route to return to after sign-in (`/#/queries`). Default `/#/`.
+    pub return_to: Option<String>,
+}
+
+/// What the provider sends back to `GET /auth/oidc/{id}/callback`.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct OidcCallback {
+    pub code: Option<String>,
+    pub state: Option<String>,
+    /// Set instead of `code` when the user cancelled or the provider refused.
+    pub error: Option<String>,
+    pub error_description: Option<String>,
+}
+
+/// Sign-out result for OIDC sessions.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LogoutResult {
+    /// Send the browser here to also sign out at the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logout_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -332,6 +376,9 @@ pub struct UserInfo {
     pub totp_enabled: bool,
     pub allow_basic_api: bool,
     pub created_unix_seconds: u64,
+    /// The sign-in provider for users created by OIDC sign-in (they have no password here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -371,6 +418,7 @@ fn user_info(u: &User) -> UserInfo {
         totp_enabled: u.totp_enabled,
         allow_basic_api: u.allow_basic_api,
         created_unix_seconds: u.created,
+        oidc_provider: u.oidc_provider.clone(),
     }
 }
 
@@ -418,6 +466,8 @@ pub fn public(auth: AuthState) -> Router {
         .route("/api/v1/auth/status", get(status))
         .route("/api/v1/auth/setup", post(setup))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/oidc/{id}/start", get(oidc_start))
+        .route("/api/v1/auth/oidc/{id}/callback", get(oidc_callback))
         .with_state(auth)
 }
 
@@ -603,9 +653,11 @@ pub(crate) async fn audit_verify(
 pub(crate) async fn status(
     State(auth): State<AuthState>,
     headers: HeaderMap,
+    req_ext: axum::http::Extensions,
 ) -> Result<Json<AuthStatus>, Problem> {
     let (session, bearer, basic) = presented(&headers);
     let https = is_https(&headers);
+    let ip = remote(&req_ext);
     blocking(move || {
         let setup_required = auth.setup_required()?;
         let p = Presented {
@@ -613,6 +665,7 @@ pub(crate) async fn status(
             bearer: bearer.as_deref(),
             basic,
             https,
+            remote: Some(ip),
         };
         let who = auth.authenticate(&p, now()).ok().flatten();
         let (user, csrf) = match &who {
@@ -626,11 +679,19 @@ pub(crate) async fn status(
             }
             None => (None, None),
         };
+        let oidc = auth.oidc().map_or_else(Vec::new, |o| {
+            o.providers()
+                .into_iter()
+                .map(|(id, name)| OidcButton { id, name })
+                .collect()
+        });
         Ok(Json(AuthStatus {
             setup_required,
             authenticated: user.is_some(),
             user,
             csrf_token: csrf,
+            local_login: auth.local_login_allowed(ip),
+            oidc,
         }))
     })
     .await
@@ -728,20 +789,158 @@ pub(crate) async fn login(
 ///
 /// Ends this session and clears the cookie. With a token or Basic, does nothing but succeed.
 #[utoipa::path(post, path = "/api/v1/auth/logout", tag = "auth",
-    responses((status = 204, description = "Signed out.")))]
+    responses((status = 204, description = "Signed out."),
+        (status = 200, body = LogoutResult, description = "Signed out of an OIDC session: send the browser to `logoutUrl` to sign out at the provider too.")))]
 pub(crate) async fn logout(
     State(auth): State<AuthState>,
     req_ext: axum::http::Extensions,
 ) -> Result<Response, Problem> {
     let p = principal(&req_ext)?;
-    if let Via::Session { id_hash, .. } = p.via {
-        blocking(move || auth.end_session(&id_hash)).await?;
+    let Via::Session { id_hash, .. } = p.via else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let logout_url = blocking(move || {
+        let provider = auth
+            .state()
+            .session(&id_hash)
+            .map_err(db)?
+            .and_then(|s| s.oidc_provider);
+        auth.end_session(&id_hash)?;
+        Ok(provider.and_then(|id| auth.oidc()?.logout_url(&id)))
+    })
+    .await?;
+    let cookie = [(header::SET_COOKIE, clear_cookie())];
+    Ok(match logout_url {
+        // REQ: API-004 — RP-initiated logout: the UI sends the browser on to the provider.
+        Some(url) => (
+            cookie,
+            Json(LogoutResult {
+                logout_url: Some(url),
+            }),
+        )
+            .into_response(),
+        None => (StatusCode::NO_CONTENT, cookie).into_response(),
+    })
+}
+
+fn flow_cookie(value: &str, max_age: u64, https: bool) -> HeaderValue {
+    let secure = if https { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{}={value}; Path=/api/v1/auth/oidc; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
+        super::oidc::FLOW_COOKIE
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static(""))
+}
+
+fn to_ui(path: &str) -> Response {
+    let mut r = StatusCode::FOUND.into_response();
+    if let Ok(v) = HeaderValue::from_str(path) {
+        r.headers_mut().insert(header::LOCATION, v);
     }
-    Ok((
-        StatusCode::NO_CONTENT,
-        [(header::SET_COOKIE, clear_cookie())],
-    )
-        .into_response())
+    r
+}
+
+/// Where a failed sign-in lands: the sign-in page with the reason.
+fn login_error(message: &str) -> Response {
+    let enc: String = message
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    to_ui(&format!("/#/?loginError={enc}"))
+}
+
+/// Start signing in with an OIDC provider.
+///
+/// Redirects the browser to the provider (Authorization Code + PKCE). The provider sends it
+/// back to `/api/v1/auth/oidc/{id}/callback`, which signs in and returns to `returnTo`.
+/// Browsers only: link a "Sign in with ..." button here.
+#[utoipa::path(get, path = "/api/v1/auth/oidc/{id}/start", tag = "auth",
+    params(("id" = String, Path, description = "Provider ID"), OidcStart),
+    responses((status = 302, description = "To the provider's sign-in page."),
+        (status = 404, body = Problem), (status = 503, body = Problem)))]
+pub(crate) async fn oidc_start(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<OidcStart>,
+) -> Response {
+    let Some(oidc) = auth.oidc().cloned() else {
+        return login_error("sign-in providers aren't configured");
+    };
+    let back = super::oidc::safe_return(q.return_to.as_deref());
+    match oidc.start(&id, &back).await {
+        Ok(s) => {
+            let mut r = to_ui(&s.redirect);
+            r.headers_mut().insert(
+                header::SET_COOKIE,
+                flow_cookie(&s.browser, 600, is_https(&headers)),
+            );
+            r
+        }
+        Err(p) => login_error(&p.detail),
+    }
+}
+
+/// OIDC redirect URI.
+///
+/// The provider returns here with `code` and `state`. Validates both, exchanges the code,
+/// verifies the ID token, maps groups to a role (creating the user on first sign-in), sets
+/// the session cookie, and redirects to the UI. Failures redirect to `/#/?loginError=...`.
+/// Register `<public_url>/api/v1/auth/oidc/{id}/callback` with the provider.
+#[utoipa::path(get, path = "/api/v1/auth/oidc/{id}/callback", tag = "auth",
+    params(("id" = String, Path, description = "Provider ID"), OidcCallback),
+    responses((status = 302, description = "Signed in (to the UI), or back to sign-in with `loginError`.")))]
+pub(crate) async fn oidc_callback(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<OidcCallback>,
+) -> Response {
+    let Some(oidc) = auth.oidc().cloned() else {
+        return login_error("sign-in providers aren't configured");
+    };
+    if let Some(e) = &q.error {
+        let why = q.error_description.as_deref().unwrap_or(e);
+        return login_error(&format!("the sign-in provider said: {why}"));
+    }
+    let (Some(code), Some(state)) = (q.code.as_deref(), q.state.as_deref()) else {
+        return login_error("the provider's answer was incomplete");
+    };
+    let browser = cookie(&headers, super::oidc::FLOW_COOKIE).map(str::to_owned);
+    let (who, back) = match oidc.finish(&id, code, state, browser.as_deref()).await {
+        Ok(v) => v,
+        Err(p) => return login_error(&p.detail),
+    };
+    let ip = remote(&req_ext);
+    let https = is_https(&headers);
+    let ttl = auth.settings().session_ttl_secs;
+    let pid = id.clone();
+    let signed_in = blocking(move || {
+        let user = auth.oidc_user(&oidc, &pid, &who, ip, now())?;
+        let sess = auth.start_session(&user, ip, now())?;
+        auth.state()
+            .set_session_provider(&crypto::secret_hash(&sess.cookie), &pid)
+            .map_err(db)?;
+        Ok(sess)
+    })
+    .await;
+    match signed_in {
+        Ok(sess) => {
+            let mut r = to_ui(&back);
+            let h = r.headers_mut();
+            h.append(header::SET_COOKIE, session_cookie(&sess, ttl, https));
+            h.append(header::SET_COOKIE, flow_cookie("", 0, https));
+            r
+        }
+        Err(p) => login_error(&p.detail),
+    }
 }
 
 /// Who am I.

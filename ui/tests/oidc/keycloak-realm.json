@@ -1,0 +1,68 @@
+{
+  "realm": "telltale",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [{ "name": "dns-admins" }, { "name": "family" }],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "alice-password", "temporary": false }],
+      "groups": ["/dns-admins"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.test",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Family",
+      "credentials": [{ "type": "password", "value": "bob-password", "temporary": false }],
+      "groups": ["/family"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@example.test",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Nogroup",
+      "credentials": [{ "type": "password", "value": "carol-password", "temporary": false }]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "telltale",
+      "name": "TelltaleDNS",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "telltale-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:18054/*", "http://localhost:18054/*"],
+      "webOrigins": ["+"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://127.0.0.1:18054/*##http://localhost:18054/*",
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ]
+}

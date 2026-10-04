@@ -273,6 +273,71 @@ impl Client {
         }))
     }
 
+    /// Sends one request as is (no redirects followed: OAuth endpoints must not redirect)
+    /// and returns the whole response, failing past `max_bytes`. Used by OIDC sign-in
+    /// (API-004) for discovery, keys, and the token exchange. The caller applies a timeout.
+    pub async fn request(
+        &self,
+        req: http::Request<Vec<u8>>,
+        max_bytes: u64,
+    ) -> Result<http::Response<Vec<u8>>, HttpError> {
+        let (parts, body) = req.into_parts();
+        let uri = parts.uri.clone();
+        let https = match uri.scheme_str() {
+            Some("https") => true,
+            Some("http") => false,
+            other => {
+                return Err(HttpError::fatal(format!(
+                    "unsupported scheme {}",
+                    other.unwrap_or("(none)")
+                )));
+            }
+        };
+        let host = uri
+            .host()
+            .ok_or_else(|| HttpError::fatal("URL has no host"))?;
+        let bare_host = host.trim_start_matches('[').trim_end_matches(']');
+        let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
+        let tcp = self.connect(bare_host, port).await?;
+        let path = uri.path_and_query().map_or("/", |p| p.as_str());
+        let authority = uri.authority().map_or(host, |a| a.as_str()).to_owned();
+        let mut out = Request::builder().method(parts.method).uri(path);
+        for (k, v) in &parts.headers {
+            out = out.header(k, v);
+        }
+        let req = out
+            .header(HOST, authority)
+            .header(USER_AGENT, &self.user_agent)
+            .body(http_body_util::Full::new(Bytes::from(body)))
+            .map_err(|e| HttpError::fatal(format!("bad request: {e}")))?;
+        let resp = if https {
+            let name = ServerName::try_from(bare_host.to_owned())
+                .map_err(|e| HttpError::fatal(format!("invalid TLS name {bare_host}: {e}")))?;
+            let tls = self
+                .tls
+                .connect(name, tcp)
+                .await
+                .map_err(|e| HttpError::retry(format!("TLS with {bare_host}: {e}")))?;
+            send(TokioIo::new(tls), req).await?
+        } else {
+            send(TokioIo::new(tcp), req).await?
+        };
+        let (parts, mut body) = resp.into_parts();
+        let mut data = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|e| HttpError::retry(format!("reading body: {e}")))?;
+            if let Some(chunk) = frame.data_ref() {
+                if data.len() as u64 + chunk.len() as u64 > max_bytes {
+                    return Err(HttpError::fatal(format!(
+                        "response larger than {max_bytes} bytes"
+                    )));
+                }
+                data.extend_from_slice(chunk);
+            }
+        }
+        Ok(http::Response::from_parts(parts, data))
+    }
+
     async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, HttpError> {
         let ips = match host.parse::<IpAddr>() {
             Ok(ip) => vec![ip],
@@ -303,12 +368,15 @@ enum Step {
     Redirect(String),
 }
 
-async fn send<I>(
+async fn send<I, B>(
     io: I,
-    req: Request<Empty<Bytes>>,
+    req: Request<B>,
 ) -> Result<http::Response<hyper::body::Incoming>, HttpError>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    B: hyper::body::Body + Send + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await

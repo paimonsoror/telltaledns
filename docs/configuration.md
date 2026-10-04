@@ -73,4 +73,4 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint | `spec/06` |
 | `[api]` | REST API listener (also serves `/metrics` and health probes) | `spec/07`, ADR-028 |
-| `[auth]` | session lifetimes, HTTP Basic over plain HTTP, roles that must use two-factor sign-in | `docs/running.md`, ADR-029 |
+| `[auth]` | session lifetimes, HTTP Basic over plain HTTP, roles that must use two-factor sign-in; `[auth.oidc]` sign-in providers (Keycloak, Authentik, ...) with group-to-role rules and break-glass | `docs/running.md`, ADR-029 |

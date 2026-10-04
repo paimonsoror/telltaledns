@@ -349,7 +349,10 @@
           <tbody>
             {#each users as u (u.id)}
               <tr>
-                <td><strong>{u.username}</strong>{#if u.id === session.user?.id} <span class="muted small">(you)</span>{/if}</td>
+                <td>
+                  <strong>{u.username}</strong>{#if u.id === session.user?.id} <span class="muted small">(you)</span>{/if}
+                  {#if u.oidcProvider}<div class="muted small">signs in with {u.oidcProvider}</div>{/if}
+                </td>
                 <td>
                   <select aria-label={`Role of ${u.username}`} value={u.role} onchange={(e) => patchUser(u, { role: e.currentTarget.value as S['Role'] })}>
                     <option value="viewer">viewer</option>
