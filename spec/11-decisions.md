@@ -354,3 +354,16 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **UI:** the query log's "Auto-refresh" polling becomes **Live** (EventSource with the page's filters; rows flushed every 250 ms; newest 500 kept; skipped count shown). Rcode and time filters don't apply to a live view and the page says so.
 
 **Consequences:** "Watch it happen" works in the UI, from `curl -N`, and for agents. Subscriber tasks share the async runtime with upstream I/O, which is why the cap, the subscriber limit, and allocation-free filtering matter; if a home ever needs more, move subscribers to a dedicated thread.
+
+## ADR-033 — Audit log: what, where, and how it is chained (Proposed)
+**Context:** API-006 asks for an audit log of every config change (who, when, diff), replicated cluster-wide; `08` §6 makes it append-only and hash-chained; AGT-005 asks for agent attribution and a reason. Today the only mutations are sign-in administration and config reloads (config editing through the API comes later).
+
+**Decision:**
+- **Storage:** an `audit` table in `state.db` (migration 2): `seq`, `ts`, `actor`, `actor_kind` (`session`, `token`, `basic`, `system`), `remote`, `action`, `target`, `detail` (JSON), `reason`, `prev_hash`, `hash`. `hash = BLAKE3("telltale-audit-v1" ‖ prev_hash ‖ seq ‖ ts ‖ each field with a presence byte and length)`, genesis `prev_hash` = 32 zero bytes. SQLite triggers abort UPDATE and DELETE. Verification recomputes every hash and link and also checks that `seq` has no gaps; truncation at the end is caught by comparing the head hash with a copy kept elsewhere (documented).
+- **What is recorded now:** `user.create|update|delete`, `user.password`, `user.totp.enable|disable`, `token.create|revoke`, `auth.login` (successful sign-ins), `auth.lockout` (the first lock of a username or address, not every failed attempt, so a password-guessing run can't flood the log), first-admin creation by setup token or bootstrap environment, and `config.reload` (the dotted paths of changed settings, never values: configs may hold secrets). Updates record `{field: {from, to}}`; passwords and secrets appear only as `"changed"`.
+- **Attribution:** sessions and Basic record the username; API tokens record `token:<name> (owner: <user>)` (AGT-005); an optional `X-Telltale-Reason` header (trimmed to 500 characters) is stored as the reason (required for agents once plan/apply exists).
+- **Failure handling:** the change happens first and the entry is appended after; if the append fails, the error is logged rather than undoing the change (the audit store is the same SQLite file, so this is rare). Moving to "write the entry in the same transaction" comes with the config-edit API, where it matters most.
+- **Access:** admins only (`GET /api/v1/audit` with cursor paging and action-prefix/actor filters; `GET /api/v1/audit/verify`), the UI's Settings → Audit log, and `telltale audit list|verify` offline. No retention: entries are small and the log is append-only by design.
+- **Deferred:** cluster replication (M5, with the config change log), MCP client name/version in entries (with the MCP server), signed head checkpoints.
+
+**Consequences:** Sign-in administration and reloads are accountable now, and every future mutation endpoint gets auditing by calling `Auth::record` with a diff.

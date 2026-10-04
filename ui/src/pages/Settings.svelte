@@ -11,7 +11,7 @@
     [
       { id: 'account', label: 'Account' },
       { id: 'tokens', label: 'API tokens' },
-      ...(can('admin') ? [{ id: 'users', label: 'Users' }] : []),
+      ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
       { id: 'system', label: 'System' },
     ],
   );
@@ -176,12 +176,51 @@
     return false;
   }
 
+  // ---- audit log (REQ: API-006)
+  let audit = $state<S['AuditInfo'][]>([]);
+  let auditCursor = $state<string | undefined>();
+  let auditAction = $state('');
+  let auditError = $state<unknown>(null);
+  let verified = $state<S['AuditVerify'] | null>(null);
+  async function loadAudit(more = false) {
+    auditError = null;
+    try {
+      const page = await api.audit({ action: auditAction || undefined, cursor: more ? auditCursor : undefined, limit: 100 });
+      audit = more ? [...audit, ...page.items] : page.items;
+      auditCursor = page.nextCursor ?? undefined;
+    } catch (err) {
+      auditError = err;
+    }
+  }
+  async function verifyAudit() {
+    auditError = null;
+    try {
+      verified = await api.auditVerify();
+    } catch (err) {
+      auditError = err;
+    }
+  }
+  function summary(e: S['AuditInfo']): string {
+    const d = (e.detail ?? {}) as Record<string, unknown>;
+    return Object.entries(d)
+      .filter(([, v]) => v !== null && v !== undefined)
+      .map(([k, v]) => {
+        if (v && typeof v === 'object' && 'from' in v && 'to' in v) {
+          const c = v as { from: unknown; to: unknown };
+          return `${k}: ${String(c.from)} → ${String(c.to)}`;
+        }
+        return `${k}: ${Array.isArray(v) ? v.join(', ') : typeof v === 'object' ? JSON.stringify(v) : String(v)}`;
+      })
+      .join(' · ');
+  }
+
   // ---- system
   let info = $state<S['SystemInfo'] | null>(null);
 
   $effect(() => {
     if (tab === 'tokens') void loadTokens();
     if (tab === 'users' && can('admin')) void loadUsers();
+    if (tab === 'audit' && can('admin')) void loadAudit();
     if (tab === 'system') api.info().then((i) => (info = i)).catch(() => {});
   });
 </script>
@@ -351,6 +390,65 @@
         <p class="muted small">Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.</p>
       </form>
     </section>
+  {:else if tab === 'audit' && can('admin')}
+    <section class="card">
+      <div class="card-head">
+        <h2>Audit log</h2>
+        <div class="row">
+          <select aria-label="Action" bind:value={auditAction} onchange={() => loadAudit()}>
+            <option value="">All changes</option>
+            <option value="user.">Users</option>
+            <option value="token.">API tokens</option>
+            <option value="auth.">Sign-ins and lockouts</option>
+            <option value="config.">Configuration</option>
+          </select>
+          <button onclick={verifyAudit}>Verify chain</button>
+        </div>
+      </div>
+      <p class="muted small">
+        Every change to users, passwords, two-factor sign-in, and API tokens, plus sign-ins, lockouts, and configuration
+        reloads. Entries can't be edited, and each one is chained to the one before it, so tampering is detectable.
+      </p>
+      {#if verified}
+        <div class="notice {verified.ok ? 'ok' : 'bad'} verify-result" role="status">
+          {#if verified.ok}
+            Chain intact: {verified.entries} entries. Head <code class="mono">{verified.headHash.slice(0, 16)}…</code>
+          {:else}
+            <strong>Chain broken at entry {verified.firstBadSeq}</strong>: the log was changed outside TelltaleDNS.
+          {/if}
+        </div>
+      {/if}
+      <ErrorNote error={auditError} />
+      {#if audit.length === 0}
+        <p class="empty">No entries.</p>
+      {:else}
+        <div class="table-wrap">
+          <table class="audit">
+            <thead><tr><th class="num">#</th><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead>
+            <tbody>
+              {#each audit as e (e.seq)}
+                <tr>
+                  <td class="num muted">{e.seq}</td>
+                  <td class="small nowrap" title={e.time}>{dateTime(e.tsUnixSeconds)}</td>
+                  <td>
+                    {e.actor} <span class="badge">{e.actorKind}</span>
+                    {#if e.remote}<div class="muted small mono">{e.remote}</div>{/if}
+                  </td>
+                  <td><code>{e.action}</code><div class="small">{e.target}</div></td>
+                  <td class="small">
+                    {summary(e)}
+                    {#if e.reason}<div class="muted">Reason: {e.reason}</div>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#if auditCursor}
+          <div class="row foot"><span class="spacer"></span><button onclick={() => loadAudit(true)}>Older</button></div>
+        {/if}
+      {/if}
+    </section>
   {:else if tab === 'system'}
     <section class="card">
       <h2>System</h2>
@@ -417,6 +515,15 @@
   }
   .add-user {
     margin-top: 16px;
+  }
+  .verify-result {
+    margin: 8px 0;
+  }
+  .nowrap {
+    white-space: nowrap;
+  }
+  .foot {
+    margin-top: 10px;
   }
   .sys {
     display: grid;

@@ -147,7 +147,13 @@ test('admins add users; viewers see less', async () => {
   await page.getByLabel('Password').fill(VIEWER.pass);
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(page.locator('main table')).toContainText(VIEWER.user);
-
+  // REQ: API-006 — the change is in the audit log, and the chain verifies.
+  await page.getByRole('tab', { name: 'Audit log' }).click();
+  await expect(page.locator('table.audit tbody tr').first()).toContainText('user.create');
+  await expect(page.locator('table.audit tbody tr').first()).toContainText(VIEWER.user);
+  await page.getByRole('button', { name: 'Verify chain' }).click();
+  await expect(page.locator('.verify-result')).toContainText('Chain intact');
+  await page.getByRole('tab', { name: 'Users' }).click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await signIn(VIEWER.user, 'wrong password!!');
@@ -158,6 +164,7 @@ test('admins add users; viewers see less', async () => {
   await expect(page.getByRole('tab', { name: 'Account' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tab', { name: 'API tokens' })).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Users' })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Audit log' })).toHaveCount(0);
   expect((await page.request.get('/api/v1/users')).status()).toBe(403);
   await page.getByRole('button', { name: 'Sign out' }).click();
   await page.goto('/');

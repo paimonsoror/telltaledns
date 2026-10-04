@@ -63,6 +63,11 @@ enum Command {
         #[command(subcommand)]
         command: ListsCommand,
     },
+    /// The audit log of changes (users, tokens, sign-ins, reloads): list and verify.
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
     /// Sign-in administration: the first-run setup token, password hashes.
     Auth {
         #[command(subcommand)]
@@ -115,6 +120,29 @@ enum AuthCommand {
     /// Read a password from stdin and print its Argon2id hash, for
     /// `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
     HashPassword,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuditCommand {
+    /// Check the audit log's hash chain; exits non-zero if an entry was changed or removed.
+    // REQ: API-006
+    Verify {
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Print audit entries, newest first.
+    List {
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+        /// How many.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+        /// Only this action or prefix (`user.`, `config.reload`).
+        #[arg(long)]
+        action: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -285,6 +313,7 @@ fn main() -> ExitCode {
             )
         }
         Command::Auth { command } => Ok(run_auth(command)),
+        Command::Audit { command } => Ok(run_audit(command)),
         Command::Explain {
             name,
             client,
@@ -423,6 +452,33 @@ fn run_auth(command: AuthCommand) -> ExitCode {
             auth_setup::print_setup_token(&cfg)
         }
         AuthCommand::HashPassword => auth_setup::hash_password(),
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_audit(command: AuditCommand) -> ExitCode {
+    let (config, verify, limit, action) = match command {
+        AuditCommand::Verify { config } => (config, true, 0, None),
+        AuditCommand::List {
+            config,
+            limit,
+            action,
+        } => (config, false, limit, action),
+    };
+    let Some(cfg) = server::load(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    let done = if verify {
+        auth_setup::verify_audit(&cfg)
+    } else {
+        auth_setup::list_audit(&cfg, limit, action.as_deref())
     };
     match done {
         Ok(true) => ExitCode::SUCCESS,

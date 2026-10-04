@@ -147,6 +147,48 @@ pub(crate) fn print_setup_token(cfg: &Config) -> io::Result<bool> {
     }
 }
 
+/// `telltale audit verify`: checks the hash chain (REQ: API-006). `Ok(false)` if broken.
+pub(crate) fn verify_audit(cfg: &Config) -> io::Result<bool> {
+    let v = open_state(cfg)?
+        .audit_verify()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let mut out = io::stdout().lock();
+    match v.first_bad {
+        None => writeln!(
+            out,
+            "ok: {} entries, head {}",
+            v.entries,
+            crypto::hex(&v.head)
+        )?,
+        Some(seq) => writeln!(
+            out,
+            "BROKEN at entry {seq} of {}: the audit log was changed outside TelltaleDNS",
+            v.entries
+        )?,
+    }
+    Ok(v.first_bad.is_none())
+}
+
+/// `telltale audit list`: newest first.
+pub(crate) fn list_audit(cfg: &Config, limit: usize, action: Option<&str>) -> io::Result<bool> {
+    let rows = open_state(cfg)?
+        .audit_page(None, limit, action, None)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let mut out = io::stdout().lock();
+    for e in rows {
+        let when = telltale_api::time::format_us(e.ts.saturating_mul(1_000_000));
+        let reason = e
+            .reason
+            .map(|r| format!("  reason: {r}"))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "{:>6}  {when}  {} ({})  {}  {}  {}{reason}",
+            e.seq, e.actor, e.actor_kind, e.action, e.target, e.detail
+        )?;
+    }
+    Ok(true)
+}
 /// `telltale auth hash-password`: reads a password from stdin, prints an Argon2id PHC hash
 /// for `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
 pub(crate) fn hash_password() -> io::Result<bool> {

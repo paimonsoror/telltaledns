@@ -2158,6 +2158,7 @@ dependencies = [
  "tokio",
  "totp-rs",
  "tower",
+ "tracing",
  "utoipa",
 ]
 

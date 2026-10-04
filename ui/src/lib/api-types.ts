@@ -4,6 +4,51 @@
  */
 
 export interface paths {
+    "/api/v1/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The audit log (admin).
+         * @description Every change to users, passwords, two-factor sign-in, and API tokens, sign-ins and
+         *     lockouts, and configuration reloads, newest first, with who (attributed to the token and
+         *     its owner for API tokens), from where, why (`X-Telltale-Reason`), and what changed. Append-only and
+         *     hash-chained; check it with GET /audit/verify.
+         */
+        get: operations["audit_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify the audit log (admin).
+         * @description Recomputes every entry's hash and link. `ok: false` with `firstBadSeq` means the log was
+         *     edited at or before that entry outside TelltaleDNS. Compare `headHash` with a value you
+         *     saved earlier to detect removed entries at the end.
+         */
+        get: operations["audit_verify"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -555,6 +600,59 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One audit-log entry. */
+        AuditInfo: {
+            /**
+             * @description `auth.login`, `auth.lockout`, `user.create`, `user.update`, `user.delete`,
+             *     `user.password`, `user.totp.enable`, `user.totp.disable`, `token.create`,
+             *     `token.revoke`, `config.reload`.
+             */
+            action: string;
+            /**
+             * @description A username, `token:<name> (owner: <user>)`, or a system name (`setup-token`,
+             *     `bootstrap`, `lockout`, `reload`).
+             */
+            actor: string;
+            /** @description `session`, `token`, `basic`, or `system`. */
+            actorKind: string;
+            /** @description Details (what changed, as `{field: {from, to}}` for updates). Never secrets. */
+            detail: Record<string, never>;
+            /** @description BLAKE3 of the previous entry's hash and this entry (hex). */
+            hash: string;
+            /** @description The caller's `X-Telltale-Reason`, when sent. */
+            reason?: string | null;
+            remote?: string | null;
+            /**
+             * Format: int64
+             * @description Position in the chain, from 1.
+             */
+            seq: number;
+            target: string;
+            /** @description RFC 3339. */
+            time: string;
+            /** Format: int64 */
+            tsUnixSeconds: number;
+        };
+        /** @description A page of the audit log, newest first. */
+        AuditPage: {
+            items: components["schemas"]["AuditInfo"][];
+            /** @description Pass as `cursor` for older entries; absent at the start of the log. */
+            nextCursor?: string | null;
+        };
+        /** @description Result of checking the hash chain. */
+        AuditVerify: {
+            /** Format: int64 */
+            entries: number;
+            /**
+             * Format: int64
+             * @description The first entry that was changed, removed, or reordered.
+             */
+            firstBadSeq?: number | null;
+            /** @description Hash of the newest entry (hex). Record it elsewhere to detect truncation later. */
+            headHash: string;
+            /** @description Every entry's hash and link checks out. */
+            ok: boolean;
+        };
         /** @description Whether setup is needed and who is signed in (public). */
         AuthStatus: {
             authenticated: boolean;
@@ -1262,6 +1360,77 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    audit_log: {
+        parameters: {
+            query?: {
+                /** @description Entries per page (1–500, default 100). */
+                limit?: number;
+                /** @description From a previous page's `nextCursor`. */
+                cursor?: string;
+                /** @description An action or prefix (`user.`, `token.create`). */
+                action?: string;
+                /** @description Exactly this actor. */
+                actor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    audit_verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditVerify"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;

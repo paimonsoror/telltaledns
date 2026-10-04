@@ -9,6 +9,114 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/audit": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "The audit log (admin).",
+        "description": "Every change to users, passwords, two-factor sign-in, and API tokens, sign-ins and\nlockouts, and configuration reloads, newest first, with who (attributed to the token and\nits owner for API tokens), from where, why (`X-Telltale-Reason`), and what changed. Append-only and\nhash-chained; check it with GET /audit/verify.",
+        "operationId": "audit_log",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Entries per page (1–500, default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "From a previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "An action or prefix (`user.`, `token.create`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Exactly this actor.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit/verify": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Verify the audit log (admin).",
+        "description": "Recomputes every entry's hash and link. `ok: false` with `firstBadSeq` means the log was\nedited at or before that entry outside TelltaleDNS. Compare `headHash` with a value you\nsaved earlier to detect removed entries at the end.",
+        "operationId": "audit_verify",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditVerify"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -1310,6 +1418,129 @@
   },
   "components": {
     "schemas": {
+      "AuditInfo": {
+        "type": "object",
+        "description": "One audit-log entry.",
+        "required": [
+          "seq",
+          "time",
+          "tsUnixSeconds",
+          "actor",
+          "actorKind",
+          "action",
+          "target",
+          "detail",
+          "hash"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`auth.login`, `auth.lockout`, `user.create`, `user.update`, `user.delete`,\n`user.password`, `user.totp.enable`, `user.totp.disable`, `token.create`,\n`token.revoke`, `config.reload`."
+          },
+          "actor": {
+            "type": "string",
+            "description": "A username, `token:<name> (owner: <user>)`, or a system name (`setup-token`,\n`bootstrap`, `lockout`, `reload`)."
+          },
+          "actorKind": {
+            "type": "string",
+            "description": "`session`, `token`, `basic`, or `system`."
+          },
+          "detail": {
+            "type": "object",
+            "description": "Details (what changed, as `{field: {from, to}}` for updates). Never secrets."
+          },
+          "hash": {
+            "type": "string",
+            "description": "BLAKE3 of the previous entry's hash and this entry (hex)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's `X-Telltale-Reason`, when sent."
+          },
+          "remote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Position in the chain, from 1.",
+            "minimum": 0
+          },
+          "target": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "tsUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AuditPage": {
+        "type": "object",
+        "description": "A page of the audit log, newest first.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditInfo"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for older entries; absent at the start of the log."
+          }
+        }
+      },
+      "AuditVerify": {
+        "type": "object",
+        "description": "Result of checking the hash chain.",
+        "required": [
+          "entries",
+          "ok",
+          "headHash"
+        ],
+        "properties": {
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "firstBadSeq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The first entry that was changed, removed, or reordered.",
+            "minimum": 0
+          },
+          "headHash": {
+            "type": "string",
+            "description": "Hash of the newest entry (hex). Record it elsewhere to detect truncation later."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Every entry's hash and link checks out."
+          }
+        }
+      },
       "AuthStatus": {
         "type": "object",
         "description": "Whether setup is needed and who is signed in (public).",

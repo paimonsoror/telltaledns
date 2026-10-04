@@ -15,8 +15,20 @@ use serde::{Deserialize, Serialize};
 use telltale_store::state::User;
 use utoipa::ToSchema;
 
-use super::{Auth, NewSession, Presented, Principal, Role, Scope, Via, crypto};
+use super::{Actor, Auth, NewSession, Presented, Principal, Role, Scope, Via, crypto};
 use crate::problem::{Code, Problem};
+
+/// Header carrying the caller's reason for a change, stored in the audit log (AGT-005).
+pub const REASON: &str = "x-telltale-reason";
+
+fn reason(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(REASON)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| r.chars().take(500).collect())
+}
 
 /// The session cookie's name.
 pub const COOKIE: &str = "telltale_session";
@@ -423,12 +435,161 @@ pub fn self_service(auth: AuthState) -> Router {
         .with_state(auth)
 }
 
-/// Admin-only user management.
+/// Admin-only user management and the audit log.
 pub fn admin(auth: AuthState) -> Router {
     Router::new()
         .route("/api/v1/users", get(list_users).post(create_user))
         .route("/api/v1/users/{id}", patch(update_user).delete(delete_user))
+        .route("/api/v1/audit", get(audit_log))
+        .route("/api/v1/audit/verify", get(audit_verify))
         .with_state(auth)
+}
+
+/// One audit-log entry.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditInfo {
+    /// Position in the chain, from 1.
+    pub seq: u64,
+    /// RFC 3339.
+    pub time: String,
+    pub ts_unix_seconds: u64,
+    /// A username, `token:<name> (owner: <user>)`, or a system name (`setup-token`,
+    /// `bootstrap`, `lockout`, `reload`).
+    pub actor: String,
+    /// `session`, `token`, `basic`, or `system`.
+    pub actor_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// `auth.login`, `auth.lockout`, `user.create`, `user.update`, `user.delete`,
+    /// `user.password`, `user.totp.enable`, `user.totp.disable`, `token.create`,
+    /// `token.revoke`, `config.reload`.
+    pub action: String,
+    pub target: String,
+    /// Details (what changed, as `{field: {from, to}}` for updates). Never secrets.
+    #[schema(value_type = Object)]
+    pub detail: serde_json::Value,
+    /// The caller's `X-Telltale-Reason`, when sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// BLAKE3 of the previous entry's hash and this entry (hex).
+    pub hash: String,
+}
+
+/// A page of the audit log, newest first.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditPage {
+    pub items: Vec<AuditInfo>,
+    /// Pass as `cursor` for older entries; absent at the start of the log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Result of checking the hash chain.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditVerify {
+    pub entries: u64,
+    /// Every entry's hash and link checks out.
+    pub ok: bool,
+    /// The first entry that was changed, removed, or reordered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_bad_seq: Option<u64>,
+    /// Hash of the newest entry (hex). Record it elsewhere to detect truncation later.
+    pub head_hash: String,
+}
+
+/// Query parameters for `GET /audit`.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AuditParams {
+    /// Entries per page (1–500, default 100).
+    pub limit: Option<usize>,
+    /// From a previous page's `nextCursor`.
+    pub cursor: Option<String>,
+    /// An action or prefix (`user.`, `token.create`).
+    pub action: Option<String>,
+    /// Exactly this actor.
+    pub actor: Option<String>,
+}
+
+fn audit_info(e: telltale_store::state::AuditEntry) -> AuditInfo {
+    AuditInfo {
+        seq: e.seq,
+        time: crate::time::format_us(e.ts.saturating_mul(1_000_000)),
+        ts_unix_seconds: e.ts,
+        actor: e.actor,
+        actor_kind: e.actor_kind,
+        remote: e.remote,
+        action: e.action,
+        target: e.target,
+        detail: serde_json::from_str(&e.detail).unwrap_or(serde_json::Value::Null),
+        reason: e.reason,
+        hash: crypto::hex(&e.hash),
+    }
+}
+
+/// The audit log (admin).
+///
+/// Every change to users, passwords, two-factor sign-in, and API tokens, sign-ins and
+/// lockouts, and configuration reloads, newest first, with who (attributed to the token and
+/// its owner for API tokens), from where, why (`X-Telltale-Reason`), and what changed. Append-only and
+/// hash-chained; check it with GET /audit/verify.
+#[utoipa::path(get, path = "/api/v1/audit", tag = "auth", params(AuditParams),
+    responses((status = 200, body = AuditPage), (status = 400, body = Problem), (status = 403, body = Problem)))]
+pub(crate) async fn audit_log(
+    State(auth): State<AuthState>,
+    axum::extract::Query(q): axum::extract::Query<AuditParams>,
+) -> Result<Json<AuditPage>, Problem> {
+    let limit = q.limit.unwrap_or(100);
+    if !(1..=500).contains(&limit) {
+        return Err(Problem::invalid("`limit`: 1 to 500"));
+    }
+    let before = match &q.cursor {
+        None => None,
+        Some(c) => Some(c.parse::<u64>().map_err(|_| {
+            Problem::invalid("`cursor`: not a cursor from this API")
+                .hint("Pass the nextCursor value from the previous page unchanged.")
+        })?),
+    };
+    blocking(move || {
+        let rows = auth
+            .state()
+            .audit_page(before, limit, q.action.as_deref(), q.actor.as_deref())
+            .map_err(db)?;
+        let next_cursor = (rows.len() == limit)
+            .then(|| rows.last().map(|e| e.seq.to_string()))
+            .flatten()
+            .filter(|s| s != "1");
+        Ok(Json(AuditPage {
+            items: rows.into_iter().map(audit_info).collect(),
+            next_cursor,
+        }))
+    })
+    .await
+}
+
+/// Verify the audit log (admin).
+///
+/// Recomputes every entry's hash and link. `ok: false` with `firstBadSeq` means the log was
+/// edited at or before that entry outside TelltaleDNS. Compare `headHash` with a value you
+/// saved earlier to detect removed entries at the end.
+#[utoipa::path(get, path = "/api/v1/audit/verify", tag = "auth",
+    responses((status = 200, body = AuditVerify), (status = 403, body = Problem)))]
+pub(crate) async fn audit_verify(
+    State(auth): State<AuthState>,
+) -> Result<Json<AuditVerify>, Problem> {
+    blocking(move || {
+        let v = auth.state().audit_verify().map_err(db)?;
+        Ok(Json(AuditVerify {
+            entries: v.entries,
+            ok: v.first_bad.is_none(),
+            first_bad_seq: v.first_bad,
+            head_hash: crypto::hex(&v.head),
+        }))
+    })
+    .await
 }
 
 // ---- handlers
@@ -541,6 +702,14 @@ pub(crate) async fn login(
             now(),
         )?;
         let sess = auth.start_session(&user, ip, now())?;
+        // REQ: API-006 — sign-ins are audited (failures only when they lock an account).
+        let who = Actor {
+            name: user.username.clone(),
+            kind: "session",
+            remote: Some(ip.to_string()),
+            reason: None,
+        };
+        auth.record(&who, "auth.login", &user.username, &serde_json::json!({}));
         Ok((sess, me(&auth, &user, None)?))
     })
     .await?;
@@ -599,11 +768,13 @@ pub(crate) async fn get_me(
     responses((status = 204, description = "Changed."), (status = 401, body = Problem)))]
 pub(crate) async fn change_password(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
     req_ext: axum::http::Extensions,
     b: Result<Json<PasswordChange>, JsonRejection>,
 ) -> Result<StatusCode, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         super::valid_password(&r.new_password)?;
         let u = auth.active_user(p.user_id)?;
@@ -621,6 +792,12 @@ pub(crate) async fn change_password(
         };
         auth.state().delete_user_sessions(u.id, keep).map_err(db)?;
         auth.forget_basic(u.id);
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "user.password",
+            &u.username,
+            &serde_json::json!({ "by": "self" }),
+        );
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -665,11 +842,13 @@ pub(crate) async fn totp_setup(
     responses((status = 200, body = RecoveryCodes), (status = 401, body = Problem)))]
 pub(crate) async fn totp_enable(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
     req_ext: axum::http::Extensions,
     b: Result<Json<TotpCode>, JsonRejection>,
 ) -> Result<Json<RecoveryCodes>, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
         let Some(secret) = u.totp_secret.as_deref().filter(|_| !u.totp_enabled) else {
@@ -687,6 +866,12 @@ pub(crate) async fn totp_enable(
         let (codes, hashes) = crypto::recovery_codes();
         auth.state().set_recovery_codes(u.id, &hashes).map_err(db)?;
         auth.forget_basic(u.id);
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "user.totp.enable",
+            &u.username,
+            &serde_json::json!({}),
+        );
         Ok(Json(RecoveryCodes { codes }))
     })
     .await
@@ -699,11 +884,13 @@ pub(crate) async fn totp_enable(
     responses((status = 204, description = "Off."), (status = 401, body = Problem)))]
 pub(crate) async fn totp_disable(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
     req_ext: axum::http::Extensions,
     b: Result<Json<PasswordConfirm>, JsonRejection>,
 ) -> Result<StatusCode, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
         if !crypto::verify_password(&r.password, &u.password_hash) {
@@ -711,6 +898,12 @@ pub(crate) async fn totp_disable(
         }
         auth.state().set_totp(u.id, None, false).map_err(db)?;
         auth.state().set_recovery_codes(u.id, &[]).map_err(db)?;
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "user.totp.disable",
+            &u.username,
+            &serde_json::json!({ "by": "self" }),
+        );
         Ok(StatusCode::NO_CONTENT)
     })
     .await
@@ -744,11 +937,13 @@ pub(crate) async fn list_tokens(
     responses((status = 201, body = NewToken), (status = 403, body = Problem)))]
 pub(crate) async fn create_token(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
     req_ext: axum::http::Extensions,
     b: Result<Json<CreateToken>, JsonRejection>,
 ) -> Result<(StatusCode, Json<NewToken>), Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         let name = r.name.trim();
         if name.is_empty() || name.len() > 64 {
@@ -784,6 +979,12 @@ pub(crate) async fn create_token(
             .token(&id)
             .map_err(db)?
             .ok_or_else(|| Problem::internal("token vanished"))?;
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "token.create",
+            &id,
+            &serde_json::json!({ "name": name, "scope": scope.as_str(), "owner": p.username, "expiresUnixSeconds": expires }),
+        );
         Ok((
             StatusCode::CREATED,
             Json(NewToken {
@@ -803,12 +1004,22 @@ pub(crate) async fn create_token(
     responses((status = 204, description = "Revoked."), (status = 404, body = Problem)))]
 pub(crate) async fn delete_token(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
     req_ext: axum::http::Extensions,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Problem> {
     let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
+        let who = auth.actor(&p, ip, why);
+        let name = auth.state().token(&id).map_err(db)?.map(|t| t.name);
         if auth.state().delete_token(&id, p.user_id).map_err(db)? {
+            auth.record(
+                &who,
+                "token.revoke",
+                &id,
+                &serde_json::json!({ "name": name, "owner": p.username }),
+            );
             Ok(StatusCode::NO_CONTENT)
         } else {
             Err(Problem::not_found(format!("you have no token `{id}`")))
@@ -846,9 +1057,13 @@ pub(crate) async fn list_users(
     responses((status = 201, body = UserInfo), (status = 409, body = Problem)))]
 pub(crate) async fn create_user(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
     b: Result<Json<CreateUser>, JsonRejection>,
 ) -> Result<(StatusCode, Json<UserInfo>), Problem> {
     let r = body(b)?;
+    let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         let u = auth.create_user(
             &r.username,
@@ -857,6 +1072,12 @@ pub(crate) async fn create_user(
             r.allow_basic_api.unwrap_or(false),
             now(),
         )?;
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "user.create",
+            &u.username,
+            &serde_json::json!({ "role": u.role, "allowBasicApi": u.allow_basic_api }),
+        );
         Ok((StatusCode::CREATED, Json(user_info(&u))))
     })
     .await
@@ -871,10 +1092,14 @@ pub(crate) async fn create_user(
     responses((status = 200, body = UserInfo), (status = 404, body = Problem), (status = 409, body = Problem)))]
 pub(crate) async fn update_user(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
     Path(id): Path<i64>,
     b: Result<Json<UpdateUser>, JsonRejection>,
 ) -> Result<Json<UserInfo>, Problem> {
     let r = body(b)?;
+    let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         let st = auth.state();
         let u = st
@@ -904,11 +1129,39 @@ pub(crate) async fn update_user(
             st.delete_user_sessions(id, None).map_err(db)?;
         }
         auth.forget_basic(id);
-        let u = st
+        let after = st
             .user(id)
             .map_err(db)?
             .ok_or_else(|| Problem::not_found(format!("no user {id}")))?;
-        Ok(Json(user_info(&u)))
+        // What changed, as {field: {from, to}} (passwords and secrets only as "changed").
+        let mut changes = serde_json::Map::new();
+        let mut diff = |k: &str, a: serde_json::Value, b: serde_json::Value| {
+            if a != b {
+                changes.insert(k.to_owned(), serde_json::json!({ "from": a, "to": b }));
+            }
+        };
+        diff("role", u.role.clone().into(), after.role.clone().into());
+        diff("disabled", u.disabled.into(), after.disabled.into());
+        diff(
+            "allowBasicApi",
+            u.allow_basic_api.into(),
+            after.allow_basic_api.into(),
+        );
+        if r.password.is_some() {
+            changes.insert("password".into(), "changed".into());
+        }
+        if r.reset_totp == Some(true) && u.totp_enabled {
+            changes.insert("totp".into(), "reset".into());
+        }
+        if !changes.is_empty() {
+            auth.record(
+                &auth.actor(&p, ip, why),
+                "user.update",
+                &after.username,
+                &changes.into(),
+            );
+        }
+        Ok(Json(user_info(&after)))
     })
     .await
 }
@@ -921,8 +1174,12 @@ pub(crate) async fn update_user(
     responses((status = 204, description = "Deleted."), (status = 404, body = Problem), (status = 409, body = Problem)))]
 pub(crate) async fn delete_user(
     State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, Problem> {
+    let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&req_ext), reason(&headers));
     blocking(move || {
         let st = auth.state();
         let u = st
@@ -935,6 +1192,12 @@ pub(crate) async fn delete_user(
         }
         st.delete_user(id).map_err(db)?;
         auth.forget_basic(id);
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "user.delete",
+            &u.username,
+            &serde_json::json!({ "role": u.role }),
+        );
         Ok(StatusCode::NO_CONTENT)
     })
     .await

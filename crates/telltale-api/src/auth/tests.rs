@@ -69,6 +69,16 @@ fn api_003_login_lockout_and_unknown_users() {
     assert!(
         a.login("ana", "correct horse battery", None, None, other, T0 + 41)
             .is_ok()
+    ); // REQ: API-006 — the lock (not each failure) is audited, once per key.
+    let locks = a
+        .state()
+        .audit_page(None, 10, Some("auth.lockout"), None)
+        .unwrap();
+    assert_eq!(locks.len(), 2, "the username and the address");
+    assert!(
+        locks
+            .iter()
+            .any(|e| e.target == "ana" && e.detail.contains("\"failures\":6"))
     );
     // Unknown users fail exactly like wrong passwords.
     let e = a

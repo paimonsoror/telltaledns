@@ -50,6 +50,8 @@ pub(crate) struct Sources {
     pub(crate) rollups: Option<Arc<telltale_store::rollup::Rollups>>,
     /// The live tail (OBS-008), unless the privacy level forbids it.
     pub(crate) tail: Option<Arc<crate::tail::Tail>>,
+    /// Sign-in and the audit log, once the API listener has opened `state.db`.
+    pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -707,6 +709,7 @@ mod tests {
             config: ArcSwap::from_pointee(telltale_config::Config::default()),
             rollups: None,
             tail: None,
+            auth: std::sync::OnceLock::new(),
             allowed: Vec::new(),
         };
         let text = render(&src);

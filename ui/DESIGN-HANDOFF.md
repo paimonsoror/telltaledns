@@ -202,7 +202,7 @@ JSON is camelCase; units are in field names (`totalMs`, `ttlSeconds`, `*UnixSeco
 | **Lists** `#/lists` | `GET /lists`, `GET /system/info` | table: state, names used, lines, size, checked/changed | Could visualize contribution (names used vs lines) and highlight failing/stale lists. |
 | **Upstreams** `#/upstreams` | `GET /upstreams`, `stats/latency?by=upstream` | table: endpoint, groups, breaker, requests, failures %, smoothed, p50, p99 | Spec wants sparklines (could use `stats/timeseries` upstream totals; per-upstream series don't exist in the API yet). |
 | **Local DNS** `#/local-dns` | none | explanatory note + example | Waits for the config API. |
-| **Settings** `#/settings?tab=` | `auth/me`, `auth/password`, `auth/totp/*`, `tokens`, `users`, `system/info` | tabs: Account (password, two-factor), API tokens (create once, revoke), Users (admin: role, 2FA reset, Basic opt-in, disable, two-click delete), System | TOTP shows an `otpauth://` link + key (no QR library, by budget choice; a tiny dependency-free QR encoder would be acceptable if < ~8 KiB gz). |
+| **Settings** `#/settings?tab=` | `auth/me`, `auth/password`, `auth/totp/*`, `tokens`, `users`, `audit`, `audit/verify`, `system/info` | tabs: Account (password, two-factor), API tokens (create once, revoke), Users (admin: role, 2FA reset, Basic opt-in, disable, two-click delete), Audit log (admin: filter by action, Older paging, Verify chain), System | TOTP shows an `otpauth://` link + key (no QR library, by budget choice; a tiny dependency-free QR encoder would be acceptable if < ~8 KiB gz). |
 
 ---
 
@@ -221,6 +221,7 @@ text, labels, or roles below breaks CI.
   `Menu` (mobile nav).
 - **Links:** top-list entries are links whose name is the domain (`ads.e2e.test`); nav link
   `Dashboard`.
+- **Audit tab:** `tab` named `Audit log` (admins only; absent for viewers), rows `table.audit tbody tr` containing the action (`user.create`) and target, button `Verify chain`, result `.verify-result` containing `Chain intact`.
 - **Roles:** `dialog` (the Why? drawer; Escape closes it), `alert` (ErrorNote; must contain the
   API's `wrong username or password`), `tab` with `aria-selected` for `Account`, `API tokens`,
   `Users` (absent for viewers).
@@ -287,7 +288,7 @@ by `api.ts` on every non-GET; tokens are shown once).
 
 **Out of scope for the UI agent** (needs backend work first; list them as requests instead):
 editing lists/groups/upstreams/local records and allow/block quick actions (configuration API),
-OIDC sign-in (T3.6), audit log (T3.8), cluster page and scope selector
+OIDC sign-in (T3.6), cluster page and scope selector
 (M5), analytics (new domains, DGA, anomalies), per-upstream time series, past-hour top lists.
 
 ---

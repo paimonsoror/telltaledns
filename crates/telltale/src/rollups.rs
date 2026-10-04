@@ -42,6 +42,17 @@ pub(crate) fn open(cfg: &Config) -> Option<Arc<Rollups>> {
     }
 }
 
+/// Opens the database and starts its writer (both `None` if it can't be opened).
+pub(crate) fn start(
+    cfg: &Config,
+    pipeline: &Arc<Pipeline>,
+) -> (Option<Arc<Rollups>>, Option<tokio::task::JoinHandle<()>>) {
+    let db = open(cfg);
+    let writer = db
+        .as_ref()
+        .map(|d| spawn(Arc::clone(d), Arc::clone(pipeline)));
+    (db, writer)
+}
 /// Starts the once-a-minute writer.
 pub(crate) fn spawn(db: Arc<Rollups>, pipeline: Arc<Pipeline>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {

@@ -1,4 +1,5 @@
-//! `state.db` (`spec/02` §6): users, sessions, API tokens, and recovery codes (API-003).
+//! `state.db` (`spec/02` §6): users, sessions, API tokens, and recovery codes (API-003), and
+//! the audit log (API-006).
 //!
 //! Pure persistence: secrets arrive already hashed, and policy (password hashing, expiry,
 //! roles) lives in `telltale-api`. One connection behind a mutex in WAL mode; every call is
@@ -49,7 +50,29 @@ const MIGRATIONS: &[&str] = &[
         created INTEGER NOT NULL,
         last_used INTEGER
     );",
+    // 2: audit log (T3.8, API-006): append-only, hash-chained.
+    "CREATE TABLE audit (
+        seq INTEGER PRIMARY KEY,
+        ts INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        actor_kind TEXT NOT NULL,
+        remote TEXT,
+        action TEXT NOT NULL,
+        target TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        reason TEXT,
+        prev_hash BLOB NOT NULL,
+        hash BLOB NOT NULL
+    );
+    CREATE INDEX audit_action ON audit(action);
+    CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit
+        BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;
+    CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit
+        BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;",
 ];
+
+pub mod audit;
+pub use audit::{AuditEntry, NewAudit, Verify};
 
 /// A user row.
 #[derive(Debug, Clone, PartialEq, Eq)]

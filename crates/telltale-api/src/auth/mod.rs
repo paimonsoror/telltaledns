@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
-use telltale_store::state::{State, StateError, User};
+use telltale_store::state::{NewAudit, State, StateError, User};
 use utoipa::ToSchema;
 
 use crate::problem::{Code, Problem};
@@ -110,6 +110,29 @@ pub struct Principal {
     /// The user's role, capped by a token's scope.
     pub role: Role,
     pub via: Via,
+}
+
+/// Who did something, for the audit log (REQ: API-006, AGT-005 attribution).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Actor {
+    /// A username, `token:<name> (owner: <user>)`, or a system name.
+    pub name: String,
+    /// `session`, `token`, `basic`, or `system`.
+    pub kind: &'static str,
+    pub remote: Option<String>,
+    /// From the `X-Telltale-Reason` header, when sent.
+    pub reason: Option<String>,
+}
+
+impl Actor {
+    pub fn system(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            kind: "system",
+            remote: None,
+            reason: None,
+        }
+    }
 }
 
 /// Settings from `[auth]`.
@@ -299,6 +322,12 @@ impl Auth {
             }
         };
         self.setup_done();
+        self.record(
+            &Actor::system("bootstrap"),
+            "user.create",
+            &user.username,
+            &serde_json::json!({ "role": "admin", "firstRun": true, "from": "environment" }),
+        );
         Ok(Some(user))
     }
 
@@ -359,6 +388,12 @@ impl Auth {
         }
         let user = self.create_user(username, password, Role::Admin, false, now)?;
         self.setup_done();
+        self.record(
+            &Actor::system("setup-token"),
+            "user.create",
+            &user.username,
+            &serde_json::json!({ "role": "admin", "firstRun": true }),
+        );
         Ok(user)
     }
 
@@ -371,20 +406,37 @@ impl Auth {
     }
 
     fn fail(&self, key: &str, now: u64) {
-        let mut map = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
-        let f = map.entry(key.to_owned()).or_default();
-        if now.saturating_sub(f.last) > MAX_LOCK_SECS {
-            *f = Failures::default();
-        }
-        f.count += 1;
-        f.last = now;
-        if f.count > FREE_ATTEMPTS {
-            let exp = (f.count - FREE_ATTEMPTS - 1).min(10);
-            f.locked_until = now + (30u64 << exp).min(MAX_LOCK_SECS);
-        }
-        // Bound the map: forget the stalest entries when an address sprays usernames.
-        if map.len() > 10_000 {
-            map.retain(|_, v| now.saturating_sub(v.last) <= MAX_LOCK_SECS);
+        let locked = {
+            let mut map = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
+            let f = map.entry(key.to_owned()).or_default();
+            if now.saturating_sub(f.last) > MAX_LOCK_SECS {
+                *f = Failures::default();
+            }
+            f.count += 1;
+            f.last = now;
+            let mut locked = None;
+            if f.count > FREE_ATTEMPTS {
+                let exp = (f.count - FREE_ATTEMPTS - 1).min(10);
+                f.locked_until = now + (30u64 << exp).min(MAX_LOCK_SECS);
+                locked = Some((f.count, f.locked_until - now));
+            }
+            // Bound the map: forget the stalest entries when an address sprays usernames.
+            if map.len() > 10_000 {
+                map.retain(|_, v| now.saturating_sub(v.last) <= MAX_LOCK_SECS);
+            }
+            locked
+        };
+        // REQ: API-006 — the first lock of a run is audited (not every failed attempt).
+        if let Some((count, secs)) = locked.filter(|(c, _)| *c == FREE_ATTEMPTS + 1) {
+            let (field, value) = key.split_once(':').map_or(("key", key), |(k, v)| {
+                (if k == "u" { "username" } else { "address" }, v)
+            });
+            self.record(
+                &Actor::system("lockout"),
+                "auth.lockout",
+                value,
+                &serde_json::json!({ field: value, "failures": count, "lockedSeconds": secs }),
+            );
         }
     }
 
@@ -679,6 +731,51 @@ impl Auth {
             username: user.username,
             via: Via::Basic,
         })
+    }
+
+    /// The audit actor for a request (token actors name the token and its owner).
+    pub fn actor(&self, p: &Principal, remote: IpAddr, reason: Option<String>) -> Actor {
+        let (name, kind) = match &p.via {
+            Via::Session { .. } => (p.username.clone(), "session"),
+            Via::Basic => (p.username.clone(), "basic"),
+            Via::Token { id } => {
+                let token = self
+                    .state
+                    .token(id)
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| id.clone(), |t| t.name);
+                (format!("token:{token} (owner: {})", p.username), "token")
+            }
+        };
+        Actor {
+            name,
+            kind,
+            remote: Some(remote.to_string()),
+            reason,
+        }
+    }
+
+    /// Appends to the audit log (REQ: API-006). The change has already happened, so a
+    /// failure here is logged rather than undoing it. Blocking.
+    pub fn record(&self, who: &Actor, action: &str, target: &str, detail: &serde_json::Value) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let detail = detail.to_string();
+        let entry = NewAudit {
+            ts: now,
+            actor: &who.name,
+            actor_kind: who.kind,
+            remote: who.remote.as_deref(),
+            action,
+            target,
+            detail: &detail,
+            reason: who.reason.as_deref(),
+        };
+        if let Err(e) = self.state.audit_append(&entry) {
+            tracing::error!(action, target, "audit log write failed: {e}");
+        }
     }
 
     /// Drops cached Basic results for a user (password, role, or status changed).

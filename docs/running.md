@@ -450,7 +450,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, and latency |
-| Settings | your password and two-factor sign-in, API tokens, users (admins), and system information |
+| Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), and system information |
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Lists, groups, and local records are read-only in the UI for now; edit the configuration and reload.
 
@@ -475,6 +475,7 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains) |
 | `GET /api/v1/stats/latency?by=upstream` | percentiles by `path`, `qtype`, `upstream`, or `stage` |
 | `GET /api/v1/queries?name=ads&status=blocked&from=-1h` | the query log, newest first (filters: `name` + `match`, `client`, `status`, `qtype`, `rcode`, `upstream`, `minLatencyMs`, `from`, `to`) |
+| `GET /api/v1/audit?action=user.`, `GET /api/v1/audit/verify` | the audit log, newest first, and a check of its hash chain (admins) |
 | `GET /api/v1/queries/stream?status=blocked` | live queries as Server-Sent Events (`event: query` with a query-log row, `event: dropped` with how many matching queries were skipped). Filters: `name` + `match` (not regex), `client`, `group`, `status`, `qtype`, `upstream`, `minLatencyMs`; `rate` caps events per second (default 500, at most 2000). At most 16 streams per node; follows the query-log privacy level (level 3: off) |
 | `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20` | why a name is or isn't blocked for a device ([explain](#why-was-it-blocked-explain)) |
 | `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health |
@@ -524,6 +525,16 @@ allow_insecure_basic = false
 **Prometheus:** the metrics listener (`:9153`) is unchanged: no sign-in, limited to `allowed_networks`. `/metrics` on the API port needs a viewer token or Basic.
 
 Users, sessions, and tokens are kept in `<data_dir>/state.db` (SQLite). If it can't be opened, the API stays off and DNS keeps answering.
+
+**Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
+
+Entries can't be edited or deleted, and each is chained to the previous one with a BLAKE3 hash, so tampering with the database is detectable:
+```sh
+telltale audit list -n 20                  # newest first; --action user. or config.reload
+telltale audit verify                      # "ok: 42 entries, head 9f3c…" or "BROKEN at entry 17" (exit 1)
+curl -s -H "Authorization: Bearer $TOKEN" http://dns.lan:8053/api/v1/audit/verify
+```
+Keep the `head` hash somewhere else from time to time: a later `verify` with a different head and fewer entries means entries were removed from the end.
 
 ## Reload without restarting
 Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):

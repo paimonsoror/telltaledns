@@ -264,7 +264,7 @@
       <h2>Locked until you set it up</h2>
       <p class="muted">There is no default password. On first start TelltaleDNS prints a one-time setup token, and whoever has it creates the first admin. Kubernetes and Ansible installs can create that admin from a secret instead.</p>
       <p class="muted">The web UI is part of the binary, about 60 KiB compressed: a dashboard, a searchable query log with a "Why?" button on every row and a live view that streams queries as they happen, and pages for lists, devices, upstreams, users, and API tokens. It follows your light or dark theme and works on a phone. Charts reach back 400 days from a small on-disk history, and a ready-made Grafana dashboard covers the Prometheus metrics.</p>
-      <p class="muted">People sign in with a password and, if they like, an authenticator app. Scripts, dashboards, and AI agents get their own tokens, limited to reading if that is all they need. Prometheus and home dashboards can use HTTP Basic, but only for accounts where an admin turned it on. Each user is a viewer, an operator, or an admin.</p>
+      <p class="muted">People sign in with a password and, if they like, an authenticator app. Scripts, dashboards, and AI agents get their own tokens, limited to reading if that is all they need. Prometheus and home dashboards can use HTTP Basic, but only for accounts where an admin turned it on. Each user is a viewer, an operator, or an admin, and every change they make lands in a tamper-evident audit log.</p>
     </div>
   </div>
 </section>

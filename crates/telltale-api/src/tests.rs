@@ -334,7 +334,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 25);
+    assert_eq!(paths.len(), 27);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -744,4 +744,140 @@ async fn obs_008_live_tail_streams_server_sent_events() {
         (s, v["code"].as_str()),
         (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable"))
     );
+}
+
+/// API-006, AGT-005: changes are audited with who (token and owner), from where, why, and
+/// what changed; the chain verifies; only admins read it.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: changes, reading, verifying, paging, access
+async fn api_006_changes_are_audited_and_the_chain_verifies() {
+    let (app, _) = app();
+    let req = |method: &str, uri: &str, body: serde_json::Value, reason: Option<&str>| {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json");
+        if let Some(r) = reason {
+            b = b.header("x-telltale-reason", r);
+        }
+        b.body(Body::from(body.to_string())).unwrap()
+    };
+    let (s, _, v) = send(&app, req("POST", "/api/v1/users", serde_json::json!({"username": "ana", "password": "another long password", "role": "viewer"}), Some("new family member"))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["id"].as_i64().unwrap();
+    let (s, _, _) = send(
+        &app,
+        req(
+            "PATCH",
+            &format!("/api/v1/users/{id}"),
+            serde_json::json!({"role": "operator", "password": "a different password"}),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, v) = send(
+        &app,
+        req(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "ci", "scope": "read"}),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let token_id = v["info"]["id"].as_str().unwrap().to_owned();
+    let (s, _, _) = send(
+        &app,
+        req(
+            "DELETE",
+            &format!("/api/v1/tokens/{token_id}"),
+            serde_json::json!(null),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    let (s, _, v) = get(&app, "/api/v1/audit").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let items = v["items"].as_array().unwrap();
+    let actions: Vec<&str> = items
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actions,
+        ["token.revoke", "token.create", "user.update", "user.create"]
+    );
+    let create = &items[3];
+    assert_eq!(create["actor"], "token:tests (owner: root)");
+    assert_eq!(
+        (create["actorKind"].as_str(), create["target"].as_str()),
+        (Some("token"), Some("ana"))
+    );
+    assert_eq!(create["reason"], "new family member");
+    assert_eq!(create["detail"]["role"], "viewer");
+    let update = &items[2]["detail"];
+    assert_eq!(
+        update["role"],
+        serde_json::json!({"from": "viewer", "to": "operator"})
+    );
+    assert_eq!(update["password"], "changed", "never the password itself");
+    assert!(!v.to_string().contains("a different password"));
+    assert_eq!(items[1]["detail"]["name"], "ci");
+
+    let (s, _, v) = get(&app, "/api/v1/audit/verify").await;
+    assert_eq!(
+        (s, v["ok"].as_bool(), v["entries"].as_u64()),
+        (StatusCode::OK, Some(true), Some(4))
+    );
+    assert_eq!(v["headHash"], items[0]["hash"]);
+
+    let (_, _, v) = get(&app, "/api/v1/audit?action=user.&limit=1").await;
+    assert_eq!(v["items"][0]["action"], "user.update");
+    let cursor = v["nextCursor"].as_str().unwrap().to_owned();
+    let (_, _, v) = get(
+        &app,
+        &format!("/api/v1/audit?action=user.&limit=1&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(v["items"][0]["action"], "user.create");
+
+    // A viewer can't read the audit log.
+    app.auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (_, h, v) = send(
+        &app,
+        Request::post("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"username": "vic", "password": "a viewer password"}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    let cookie = h["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(v["csrfToken"].is_string());
+    let (s, _, _) = send(
+        &app,
+        Request::get("/api/v1/audit")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // ... and the sign-in itself was recorded.
+    let (_, _, v) = get(&app, "/api/v1/audit?action=auth.login").await;
+    assert_eq!(v["items"][0]["actor"], "vic");
 }

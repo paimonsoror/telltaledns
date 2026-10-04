@@ -339,6 +339,7 @@ async fn start_http(
         };
         let _purge = crate::auth_setup::spawn_purge(Arc::clone(&auth));
         let addr = cfg.api.listen;
+        let _ = sources.auth.set(Arc::clone(&auth));
         let app = http::api_router(Arc::clone(sources), auth);
         let bound = http::serve(addr, app, stopped(stop.clone()))
             .await
@@ -388,10 +389,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     listeners.apply(&cfg.listen)?;
 
     // REQ: OBS-004, `spec/06` §3 — rollups on disk, fed once a minute off the query path.
-    let rollups = crate::rollups::open(&cfg);
-    let _rollup_writer = rollups
-        .as_ref()
-        .map(|db| crate::rollups::spawn(Arc::clone(db), Arc::clone(&pipeline)));
+    let (rollups, _rollup_writer) = crate::rollups::start(&cfg, &pipeline);
 
     // REQ: OBS-005, OPS-006 — metrics and health probes.
     let ready = Arc::new(AtomicBool::new(false));
@@ -410,6 +408,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         config: ArcSwap::from_pointee(cfg.clone()),
         rollups: rollups.clone(),
         tail,
+        auth: std::sync::OnceLock::new(),
     });
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     start_http(&cfg, &sources, &http_stopped).await?;
@@ -525,7 +524,68 @@ fn reload(
     if !restart.is_empty() {
         warn!(sections = ?restart, "these changes take effect after a restart");
     }
+    audit_reload(sources, files, current, &new);
     sources.config.store(Arc::new(new.clone()));
     *current = new;
     info!("configuration reloaded");
+}
+
+/// REQ: API-006 — a reload that changed anything is audited with the changed settings'
+/// paths (never their values: configs can hold secrets).
+fn audit_reload(sources: &http::Sources, files: &[PathBuf], old: &Config, new: &Config) {
+    let Some(auth) = sources.auth.get() else {
+        return;
+    };
+    let (Ok(a), Ok(b)) = (serde_json::to_value(old), serde_json::to_value(new)) else {
+        return;
+    };
+    let mut changed = Vec::new();
+    changed_paths(&a, &b, String::new(), &mut changed);
+    if changed.is_empty() {
+        return;
+    }
+    let files: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+    let more = changed.len().saturating_sub(100);
+    changed.truncate(100);
+    let auth = Arc::clone(auth);
+    let target = files.join(", ");
+    let detail = serde_json::json!({ "changed": changed, "more": more, "files": files });
+    tokio::task::spawn_blocking(move || {
+        auth.record(
+            &telltale_api::auth::Actor::system("reload"),
+            "config.reload",
+            &target,
+            &detail,
+        );
+    });
+}
+
+/// Dotted paths whose values differ (arrays compare as a whole).
+fn changed_paths(
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+    at: String,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value::Object;
+    match (old, new) {
+        (Object(before), Object(after)) => {
+            let mut keys: Vec<&String> = before.keys().chain(after.keys()).collect();
+            keys.sort();
+            keys.dedup();
+            for key in keys {
+                let path = if at.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{at}.{key}")
+                };
+                match (before.get(key), after.get(key)) {
+                    (Some(was), Some(now)) => changed_paths(was, now, path, out),
+                    _ => out.push(path),
+                }
+            }
+        }
+        _ if old != new => out.push(if at.is_empty() { "(root)".into() } else { at }),
+        _ => {}
+    }
 }
