@@ -602,3 +602,37 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - The price is that with a GitOps authority, configuration is frozen (never lost or wrong) while no GitOps node is up. That is the right trade for a homelab where the k8s node is the one being changed.
 - Implemented with T5.4 (elections and promotion) and T5.7 (writes); until then the owner's cluster uses the convention of the homelab node as primary, set up by hand.
 
+## ADR-049 — Git as the cluster's config source: the primary fetches, the cluster distributes (Proposed)
+**Context:** owner idea 2026-10-04, building on ADR-048: let nodes that aren't in Kubernetes (the Pi) also take their configuration from the Git repository, an "external control plane" every node sources from. Two shapes were weighed:
+1. **Every node pulls Git.** Rejected as the default:
+   - nodes poll on their own schedules, so they run different commits for a while and "which config is live?" has no single answer;
+   - every node needs repository credentials, outbound internet, and a Git client;
+   - a GitHub outage or rate limit hits each node separately;
+   - the DNS server has to resolve the forge's name to fetch its own config.
+2. **Git is the authority; the cluster distributes.** Chosen.
+
+**Decision:**
+- **A `git` config source.** On the primary, `[cluster.config] source = "git"` with `repo` (HTTPS), `ref` (branch or tag), `path` (a TelltaleDNS TOML file holding the *shared* sections), an optional `credentials_file` (read-only deploy key or token, never in the repo), and `poll` (default 60 s; a push webhook endpoint can trigger a fetch early).
+- **The primary fetches; the cluster distributes.**
+  - The primary fetches the file at the ref's current commit, over HTTPS through the bootstrap resolvers (as list downloads do, UPS-009).
+  - It validates the file merged with each node's local sections and publishes the result as the usual signed manifest (ADR-047), recording provenance: repo, path, commit SHA, commit author, and commit time.
+  - Replicas follow over the cluster channel unchanged, so every node converges to the same commit, lag is visible, and nodes keep the last good version when GitHub or the link is down (CLU-004).
+- **Any Git-capable node can be primary.** Under ADR-048, a `gitops` authority now names the repository rather than a kind of node. Any eligible node that has the source configured and can reach it may publish: the Pi becomes a valid primary for a GitOps cluster, which removes most of ADR-048's frozen-config case. A node configured without the source stays ineligible.
+- **Guardrails:**
+  - **Pinned source:** `repo`, `ref` and `path` are pinned in the signed cluster state; changing them is a `cluster set-authority` operation.
+  - **Optional commit signatures:** `require_signed = true` with an allowed-signers file (SSH or GPG keys) accepts only commits signed by those keys. Without it, anyone who can push to the repository controls DNS on every node, which is already true for Argo-managed nodes; this makes it explicit and enforceable. The UI and docs recommend it.
+  - **Validate before publish:** a commit that fails validation is never published; the cluster stays on the last good commit and raises an alert naming the commit and the error.
+  - **History only moves forward:** a force-pushed or rewound ref is refused unless `allow_rewind = true` (rollbacks are new commits).
+  - **Bounded fetch:** size limit, timeout, TLS with system roots, no submodules, no LFS.
+  - **No secrets in the repository:** config refers to secret files (as `client_secret_file` already does).
+  - **Audit:** every published commit is in the audit log with its SHA and author.
+- **Direct-pull fallback (off by default):** `[cluster.config] direct_fallback = true` lets a replica cut off from every primary for longer than `fallback_after` (default 1 h) fetch the same pinned source itself, with the same signature and validation rules. It applies the result locally only, and drops it when the cluster channel returns.
+- **Repository layout:** the shared configuration lives in a plain file (e.g. `telltale/shared.toml`) instead of TOML embedded in Argo values. The k8s chart reads the same file (an Argo multi-source app, or the chart's `configFiles`), so one artifact feeds both the primary's Git source and Kubernetes. Each node's own settings stay in its local config or Helm values.
+- **Writes:** under a Git source the API is read-only for shared configuration (`409 gitops_managed`, OPS-005). The UI offers "propose this change" as a patch or a link to the file on GitHub, never a direct commit (writing to the repository is out of scope for v1).
+
+**Consequences:**
+- Config changes for the whole cluster are Git commits, reviewed and versioned like the rest of the homelab.
+- The cluster runs one fetcher, and every node shows which commit it serves.
+- New: a small Git-over-HTTPS fetch (no Git binary), signature verification (SSH signatures via the existing crypto, GPG optional), and a webhook endpoint.
+- Builds on T5.2 (replication) and T5.4 (authority and elections); it is T5.12.
+
