@@ -21,7 +21,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "standards.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "performance.html", "standards.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -226,6 +226,71 @@ def render_config(page, schema):
     return page.replace("<!-- @config-reference -->", "\n".join(out))
 
 
+# REQ: DOC-002/003 (T4.7) — the performance page shows the newest bench-full result in
+# site/data/bench/ (harness numbers only) and publishes every result file next to it.
+BENCH_DIR = os.path.join(SITE, "data", "bench")
+
+
+def _us(v):
+    return "{:.0f} µs".format(v) if v < 1000 else "{:.1f} ms".format(v / 1000)
+
+
+def render_bench(page):
+    files = sorted(f for f in os.listdir(BENCH_DIR) if f.endswith(".json"))
+    if not files:
+        sys.exit("site/data/bench has no results")
+    name = files[-1]
+    d = json.loads(read(os.path.join(BENCH_DIR, name)))
+    host, srv, s = d["host"], d["server"], d["summary"]
+    raw = "data/bench/" + name
+    rev = d["git"]["rev"][:7]
+    out = ['<div class="card bench">']
+    out.append(
+        "<p><b>{cpu}</b> ({cores} threads, {arch}, Linux {kernel}) · {workers} DNS workers · {date} · "
+        'commit <a href="https://github.com/paimonsoror/telltaledns/commit/{full}">{rev}</a> · '
+        '<a href="{raw}">raw results (JSON)</a></p>'.format(
+            cpu=html.escape(host["cpu"]), cores=host["cores"], arch=host["arch"],
+            kernel=html.escape(host["kernel"].split("-")[0]), workers=srv["workers"],
+            date=d["started"][:10], full=d["git"]["rev"], rev=rev, raw=raw,
+        )
+    )
+    out.append('<div class="table-wrap"><table><thead><tr><th>Corpus</th><th class="num">Peak qps</th>'
+               '<th>Load</th><th class="num">Offered qps</th><th class="num">p50</th><th class="num">p99</th>'
+               '<th class="num">Loss</th></tr></thead><tbody>')
+    for corpus in ("cache-hot", "blocked", "miss-heavy"):
+        c = s.get(corpus)
+        if not c:
+            continue
+        loads = c.get("at_load") or {}
+        rows = [(pct, l["offered_qps"], l["latency_us"], l["loss_pct"]) for pct, l in sorted(loads.items(), key=lambda x: int(x[0]))]
+        if not rows:
+            rows = [("fixed", c["qps"], c["latency_us"], c["loss_pct"])]
+        for i, (pct, qps, lat, loss) in enumerate(rows):
+            out.append(
+                "<tr>{head}<td>{load}</td><td class=\"num\">{qps:,.0f}</td><td class=\"num\">{p50}</td>"
+                "<td class=\"num\">{p99}</td><td class=\"num\">{loss:.2f}%</td></tr>".format(
+                    head='<td rowspan="{n}"><code>{c}</code></td><td class="num" rowspan="{n}">{peak}</td>'.format(
+                        n=len(rows), c=corpus, peak="{:,.0f}".format(c["qps"]) if loads else "—")
+                    if i == 0 else "",
+                    load=(pct + "%") if pct != "fixed" else "fixed rate", qps=qps,
+                    p50=_us(lat["p50"]), p99=_us(lat["p99"]), loss=loss,
+                )
+            )
+    out.append("</tbody></table></div>")
+    out.append(
+        "<p class=\"muted\">Server: ready in {ready:.0f} ms, filter ready in {filt:.1f} s, {idle:.0f} MiB idle and {peak:.0f} MiB peak RSS "
+        "with {n} blocklists loaded. {runs} runs of {dur} s per corpus; each number is the median across runs. "
+        "Load generator: dnsperf {tool}, {threads} threads, {clients} clients.</p>".format(
+            ready=srv["ready_ms"], filt=srv.get("filter_ready_s", 0), idle=srv["idle_rss_kib"] / 1024,
+            peak=srv["peak_rss_kib"] / 1024, n=len(srv.get("lists", [])), runs=d["params"]["runs"],
+            dur=d["params"]["duration_s"], tool=html.escape(d["tools"]["dnsperf"]),
+            threads=d["params"]["threads"], clients=d["params"]["clients"],
+        )
+    )
+    out.append("</div>")
+    return page.replace("<!-- @bench -->", "\n".join(out)), files
+
+
 def expand_ids(text):
     """'UPS-001, 005, 006' -> {'UPS-001','UPS-005','UPS-006'}"""
     ids = set()
@@ -304,6 +369,11 @@ def main():
         page = page.replace("<!-- @header -->", h).replace("<!-- @footer -->", footer)
         if name == "config.html":
             page = render_config(page, json.loads(read(os.path.join(ROOT, "docs", "config-schema.json"))))
+        if name == "performance.html":
+            page, bench_files = render_bench(page)
+            os.makedirs(os.path.join(out, "data", "bench"), exist_ok=True)
+            for bf in bench_files:
+                shutil.copy(os.path.join(BENCH_DIR, bf), os.path.join(out, "data", "bench", bf))
         if name == "standards.html":
             page = render_standards(page, data)
         if "<!-- @" in page:

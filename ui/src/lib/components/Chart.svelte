@@ -74,12 +74,14 @@
           stroke: muted,
           grid: { stroke: grid, width: 1 },
           ticks: { stroke: grid },
+          // Room for "12:34 PM" so labels never run together.
+          space: 80,
           // Over two days: label with the date.
           values: (_u, vals) =>
             vals.map((v) =>
               times.length > 1 && times[times.length - 1] - times[0] > 172_800
                 ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
-                : clock(v, seconds),
+                : clock(v, seconds && times[times.length - 1] - times[0] < 180),
             ),
         },
         {
@@ -91,7 +93,7 @@
         },
       ],
       series: [
-        { value: (_u, v) => (v == null ? '' : clock(v, true)) },
+        { value: (_u, v) => (v == null ? 'total' : clock(v, true)) },
         ...order.map((i) => {
           const c = color(series[i].color);
           return {
@@ -101,7 +103,8 @@
             fill: stacked ? c + '99' : undefined,
             points: { show: times.length < 3 },
             value: (_u: uPlot, _v: number | null, _si: number, idx: number | null) =>
-              idx == null ? '' : format(series[i].values[idx] ?? 0),
+              // Not hovering: the total over the shown range.
+              format(idx == null ? series[i].values.reduce((a, v) => a + (v ?? 0), 0) : (series[i].values[idx] ?? 0)),
           } satisfies uPlot.Series;
         }),
       ],

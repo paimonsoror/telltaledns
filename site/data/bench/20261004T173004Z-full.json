@@ -1,0 +1,728 @@
+{
+ "schema": 1,
+ "mode": "full",
+ "started": "2026-10-04T17:30:04+00:00",
+ "git": {
+  "rev": "c67ccbadbae42f0a0f84f587f36b3e07197f65f7",
+  "dirty": false
+ },
+ "host": {
+  "cpu": "AMD Ryzen 5 5500U with Radeon Graphics",
+  "cores": 12,
+  "arch": "x86_64",
+  "kernel": "6.8.0-138-generic",
+  "os": "Linux-6.8.0-138-generic-x86_64-with-glibc2.39"
+ },
+ "tools": {
+  "dnsperf": "2.14.0"
+ },
+ "params": {
+  "duration_s": 30,
+  "runs": 3,
+  "warmup_s": 5,
+  "threads": 2,
+  "clients": 8,
+  "outstanding": 200,
+  "miss_qps": 2000
+ },
+ "server": {
+  "bin": "telltale (bench-fast profile)",
+  "version": "0.1.0",
+  "workers": 4,
+  "upstream_delay_ms": 0.0,
+  "ready_ms": 75.6,
+  "idle_rss_kib": 91460,
+  "lists": [
+   "adguard-dns.txt",
+   "hagezi-pro.txt",
+   "hagezi-tif.txt",
+   "oisd-big.txt",
+   "stevenblack.txt"
+  ],
+  "filter_ready_s": 5.5,
+  "peak_rss_kib": 362328
+ },
+ "runs": [
+  {
+   "corpus": "cache-hot",
+   "run": 1,
+   "seed": 32273,
+   "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+   "qps": 176778.483647,
+   "sent": 5303366,
+   "completed": 5303366,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 5303366
+   },
+   "latency_us": {
+    "avg": 255.0,
+    "min": 20.0,
+    "max": 7935.0,
+    "stddev": 403.0,
+    "p50": 69.0,
+    "p90": 799.0,
+    "p99": 1887.0,
+    "p999": 2815.0
+   },
+   "server": {
+    "rss_kib": 132308,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 319.4
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 44194,
+     "qps": 44193.954333,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 52.0,
+      "min": 22.0,
+      "max": 10965.0,
+      "stddev": 232.0,
+      "p50": 34.0,
+      "p90": 43.0,
+      "p99": 247.0,
+      "p999": 4351.0
+     }
+    },
+    "50": {
+     "offered_qps": 88389,
+     "qps": 87851.74404,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 135.0,
+      "min": 20.0,
+      "max": 18674.0,
+      "stddev": 531.0,
+      "p50": 38.0,
+      "p90": 77.0,
+      "p99": 2815.0,
+      "p999": 6527.0
+     }
+    },
+    "75": {
+     "offered_qps": 132583,
+     "qps": 132551.4052,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 139.0,
+      "min": 20.0,
+      "max": 13880.0,
+      "stddev": 356.0,
+      "p50": 41.0,
+      "p90": 303.0,
+      "p99": 1759.0,
+      "p999": 3263.0
+     }
+    }
+   }
+  },
+  {
+   "corpus": "cache-hot",
+   "run": 2,
+   "seed": 32273,
+   "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+   "qps": 161951.005237,
+   "sent": 4858547,
+   "completed": 4858547,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 4858547
+   },
+   "latency_us": {
+    "avg": 276.0,
+    "min": 21.0,
+    "max": 11484.0,
+    "stddev": 520.0,
+    "p50": 50.0,
+    "p90": 879.0,
+    "p99": 2495.0,
+    "p999": 3263.0
+   },
+   "server": {
+    "rss_kib": 134628,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 322.6
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 40487,
+     "qps": 40486.928473,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 45.0,
+      "min": 23.0,
+      "max": 7413.0,
+      "stddev": 120.0,
+      "p50": 34.0,
+      "p90": 43.0,
+      "p99": 303.0,
+      "p999": 1695.0
+     }
+    },
+    "50": {
+     "offered_qps": 80975,
+     "qps": 80974.946017,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 77.0,
+      "min": 20.0,
+      "max": 19832.0,
+      "stddev": 269.0,
+      "p50": 35.0,
+      "p90": 56.0,
+      "p99": 1119.0,
+      "p999": 2943.0
+     }
+    },
+    "75": {
+     "offered_qps": 121463,
+     "qps": 119629.402359,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 785.0,
+      "min": 20.0,
+      "max": 9958.0,
+      "stddev": 974.0,
+      "p50": 139.0,
+      "p90": 2367.0,
+      "p99": 3071.0,
+      "p999": 3967.0
+     }
+    }
+   }
+  },
+  {
+   "corpus": "cache-hot",
+   "run": 3,
+   "seed": 32273,
+   "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+   "qps": 172579.537888,
+   "sent": 5177567,
+   "completed": 5177567,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 5177567
+   },
+   "latency_us": {
+    "avg": 382.0,
+    "min": 20.0,
+    "max": 17212.0,
+    "stddev": 529.0,
+    "p50": 105.0,
+    "p90": 1215.0,
+    "p99": 1823.0,
+    "p999": 4607.0
+   },
+   "server": {
+    "rss_kib": 137004,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 295.7
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 43144,
+     "qps": 43143.972675,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 59.0,
+      "min": 21.0,
+      "max": 9713.0,
+      "stddev": 225.0,
+      "p50": 35.0,
+      "p90": 47.0,
+      "p99": 655.0,
+      "p999": 3583.0
+     }
+    },
+    "50": {
+     "offered_qps": 86289,
+     "qps": 86276.063657,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 93.0,
+      "min": 19.0,
+      "max": 13938.0,
+      "stddev": 322.0,
+      "p50": 37.0,
+      "p90": 62.0,
+      "p99": 1631.0,
+      "p999": 4351.0
+     }
+    },
+    "75": {
+     "offered_qps": 129434,
+     "qps": 129375.809437,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 275.0,
+      "min": 20.0,
+      "max": 9125.0,
+      "stddev": 584.0,
+      "p50": 47.0,
+      "p90": 815.0,
+      "p99": 2879.0,
+      "p999": 3647.0
+     }
+    }
+   }
+  },
+  {
+   "corpus": "miss-heavy",
+   "run": 1,
+   "seed": 32274,
+   "corpus_sha256": "68766cd575bce6cc7db488adf96c16d4a338760d9e351627354613ab59082881",
+   "qps": 1999.9988,
+   "sent": 60000,
+   "completed": 60000,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 60000
+   },
+   "latency_us": {
+    "avg": 203.0,
+    "min": 46.0,
+    "max": 6343.0,
+    "stddev": 130.0,
+    "p50": 187.0,
+    "p90": 263.0,
+    "p99": 423.0,
+    "p999": 1983.0
+   },
+   "server": {
+    "rss_kib": 161744,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 26.4
+   }
+  },
+  {
+   "corpus": "miss-heavy",
+   "run": 2,
+   "seed": 32274,
+   "corpus_sha256": "68766cd575bce6cc7db488adf96c16d4a338760d9e351627354613ab59082881",
+   "qps": 1999.998333,
+   "sent": 60000,
+   "completed": 60000,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 60000
+   },
+   "latency_us": {
+    "avg": 111.0,
+    "min": 35.0,
+    "max": 4283.0,
+    "stddev": 69.0,
+    "p50": 103.0,
+    "p90": 159.0,
+    "p99": 251.0,
+    "p999": 591.0
+   },
+   "server": {
+    "rss_kib": 156196,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 12.4
+   }
+  },
+  {
+   "corpus": "miss-heavy",
+   "run": 3,
+   "seed": 32274,
+   "corpus_sha256": "68766cd575bce6cc7db488adf96c16d4a338760d9e351627354613ab59082881",
+   "qps": 1999.932333,
+   "sent": 59998,
+   "completed": 59998,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 59998
+   },
+   "latency_us": {
+    "avg": 83.0,
+    "min": 31.0,
+    "max": 4693.0,
+    "stddev": 140.0,
+    "p50": 63.0,
+    "p90": 119.0,
+    "p99": 243.0,
+    "p999": 2687.0
+   },
+   "server": {
+    "rss_kib": 155716,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 9.5
+   }
+  },
+  {
+   "corpus": "blocked",
+   "run": 1,
+   "seed": 32275,
+   "corpus_sha256": "d2b0222ee394b7902c2c51997301cad0184fb57960132ef1c4da3beccf1788fc",
+   "qps": 154381.148398,
+   "sent": 4631637,
+   "completed": 4631637,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 4631637
+   },
+   "latency_us": {
+    "avg": 886.0,
+    "min": 20.0,
+    "max": 8622.0,
+    "stddev": 889.0,
+    "p50": 319.0,
+    "p90": 2015.0,
+    "p99": 2303.0,
+    "p999": 3199.0
+   },
+   "server": {
+    "rss_kib": 162272,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 327.9
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 38595,
+     "qps": 38594.971697,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 47.0,
+      "min": 22.0,
+      "max": 4660.0,
+      "stddev": 117.0,
+      "p50": 35.0,
+      "p90": 44.0,
+      "p99": 399.0,
+      "p999": 1919.0
+     }
+    },
+    "50": {
+     "offered_qps": 77190,
+     "qps": 77189.837901,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 64.0,
+      "min": 20.0,
+      "max": 7612.0,
+      "stddev": 213.0,
+      "p50": 33.0,
+      "p90": 47.0,
+      "p99": 975.0,
+      "p999": 2943.0
+     }
+    },
+    "75": {
+     "offered_qps": 115785,
+     "qps": 115784.861058,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 124.0,
+      "min": 20.0,
+      "max": 14032.0,
+      "stddev": 339.0,
+      "p50": 39.0,
+      "p90": 219.0,
+      "p99": 1727.0,
+      "p999": 3455.0
+     }
+    }
+   }
+  },
+  {
+   "corpus": "blocked",
+   "run": 2,
+   "seed": 32275,
+   "corpus_sha256": "d2b0222ee394b7902c2c51997301cad0184fb57960132ef1c4da3beccf1788fc",
+   "qps": 151453.88599,
+   "sent": 4543926,
+   "completed": 4543926,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 4543926
+   },
+   "latency_us": {
+    "avg": 1210.0,
+    "min": 20.0,
+    "max": 7620.0,
+    "stddev": 1207.0,
+    "p50": 607.0,
+    "p90": 2751.0,
+    "p99": 3071.0,
+    "p999": 3583.0
+   },
+   "server": {
+    "rss_kib": 161360,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 304.3
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 37863,
+     "qps": 37862.943206,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 91.0,
+      "min": 23.0,
+      "max": 17188.0,
+      "stddev": 420.0,
+      "p50": 35.0,
+      "p90": 47.0,
+      "p99": 1919.0,
+      "p999": 5887.0
+     }
+    },
+    "50": {
+     "offered_qps": 75726,
+     "qps": 75725.830879,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 73.0,
+      "min": 20.0,
+      "max": 10113.0,
+      "stddev": 212.0,
+      "p50": 37.0,
+      "p90": 57.0,
+      "p99": 943.0,
+      "p999": 2815.0
+     }
+    },
+    "75": {
+     "offered_qps": 113590,
+     "qps": 113589.765248,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 115.0,
+      "min": 20.0,
+      "max": 12369.0,
+      "stddev": 334.0,
+      "p50": 36.0,
+      "p90": 135.0,
+      "p99": 1823.0,
+      "p999": 3263.0
+     }
+    }
+   }
+  },
+  {
+   "corpus": "blocked",
+   "run": 3,
+   "seed": 32275,
+   "corpus_sha256": "d2b0222ee394b7902c2c51997301cad0184fb57960132ef1c4da3beccf1788fc",
+   "qps": 155634.435167,
+   "sent": 4669363,
+   "completed": 4669363,
+   "lost": 0,
+   "loss_pct": 0.0,
+   "rcodes": {
+    "NOERROR": 4669363
+   },
+   "latency_us": {
+    "avg": 860.0,
+    "min": 20.0,
+    "max": 6051.0,
+    "stddev": 871.0,
+    "p50": 351.0,
+    "p90": 2111.0,
+    "p99": 2431.0,
+    "p999": 3007.0
+   },
+   "server": {
+    "rss_kib": 162744,
+    "peak_rss_kib": 362328,
+    "cpu_pct": 318.5
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 38908,
+     "qps": 38907.975358,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 54.0,
+      "min": 23.0,
+      "max": 10095.0,
+      "stddev": 175.0,
+      "p50": 35.0,
+      "p90": 46.0,
+      "p99": 575.0,
+      "p999": 2495.0
+     }
+    },
+    "50": {
+     "offered_qps": 77817,
+     "qps": 77458.415028,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 115.0,
+      "min": 21.0,
+      "max": 15747.0,
+      "stddev": 431.0,
+      "p50": 36.0,
+      "p90": 85.0,
+      "p99": 1887.0,
+      "p999": 5887.0
+     }
+    },
+    "75": {
+     "offered_qps": 116725,
+     "qps": 116574.581179,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 127.0,
+      "min": 20.0,
+      "max": 11112.0,
+      "stddev": 336.0,
+      "p50": 37.0,
+      "p90": 251.0,
+      "p99": 1727.0,
+      "p999": 3455.0
+     }
+    }
+   }
+  }
+ ],
+ "summary": {
+  "cache-hot": {
+   "runs": 3,
+   "qps": 172579.5,
+   "loss_pct": 0.0,
+   "latency_us": {
+    "avg": 276.0,
+    "min": 20.0,
+    "max": 11484.0,
+    "stddev": 520.0,
+    "p50": 69.0,
+    "p90": 879.0,
+    "p99": 1887.0,
+    "p999": 3263.0
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 43144,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 52.0,
+      "min": 22.0,
+      "max": 9713.0,
+      "stddev": 225.0,
+      "p50": 34.0,
+      "p90": 43.0,
+      "p99": 303.0,
+      "p999": 3583.0
+     }
+    },
+    "50": {
+     "offered_qps": 86289,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 93.0,
+      "min": 20.0,
+      "max": 18674.0,
+      "stddev": 322.0,
+      "p50": 37.0,
+      "p90": 62.0,
+      "p99": 1631.0,
+      "p999": 4351.0
+     }
+    },
+    "75": {
+     "offered_qps": 129434,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 275.0,
+      "min": 20.0,
+      "max": 9958.0,
+      "stddev": 584.0,
+      "p50": 47.0,
+      "p90": 815.0,
+      "p99": 2879.0,
+      "p999": 3647.0
+     }
+    }
+   },
+   "server_cpu_pct": 319.4
+  },
+  "miss-heavy": {
+   "runs": 3,
+   "qps": 2000.0,
+   "loss_pct": 0.0,
+   "latency_us": {
+    "avg": 111.0,
+    "min": 35.0,
+    "max": 4693.0,
+    "stddev": 130.0,
+    "p50": 103.0,
+    "p90": 159.0,
+    "p99": 251.0,
+    "p999": 1983.0
+   },
+   "server_cpu_pct": 12.4
+  },
+  "blocked": {
+   "runs": 3,
+   "qps": 154381.1,
+   "loss_pct": 0.0,
+   "latency_us": {
+    "avg": 886.0,
+    "min": 20.0,
+    "max": 7620.0,
+    "stddev": 889.0,
+    "p50": 351.0,
+    "p90": 2111.0,
+    "p99": 2431.0,
+    "p999": 3199.0
+   },
+   "at_load": {
+    "25": {
+     "offered_qps": 38595,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 54.0,
+      "min": 23.0,
+      "max": 10095.0,
+      "stddev": 175.0,
+      "p50": 35.0,
+      "p90": 46.0,
+      "p99": 575.0,
+      "p999": 2495.0
+     }
+    },
+    "50": {
+     "offered_qps": 77190,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 73.0,
+      "min": 20.0,
+      "max": 10113.0,
+      "stddev": 213.0,
+      "p50": 36.0,
+      "p90": 57.0,
+      "p99": 975.0,
+      "p999": 2943.0
+     }
+    },
+    "75": {
+     "offered_qps": 115785,
+     "loss_pct": 0.0,
+     "latency_us": {
+      "avg": 124.0,
+      "min": 20.0,
+      "max": 12369.0,
+      "stddev": 336.0,
+      "p50": 37.0,
+      "p90": 219.0,
+      "p99": 1727.0,
+      "p999": 3455.0
+     }
+    }
+   },
+   "server_cpu_pct": 318.5
+  }
+ }
+}

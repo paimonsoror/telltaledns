@@ -1,6 +1,10 @@
-// Screenshots of the main pages, for docs and the site (T4.7). Run with SHOTS=1; skipped
+// Screenshots of the main pages for the site (T4.7, DOC-002), written to site/assets/shots/ as
+// JPEG. Regenerate with `SHOTS=1 npx playwright test` (after 1-ui.spec.ts); skipped
 // otherwise. Expects the state left by ui.spec.ts (admin `admin`, some traffic).
 import { test } from '@playwright/test';
+import { resolve } from 'node:path';
+
+const shot = (name: string) => resolve(import.meta.dirname, '../../../site/assets/shots', `${name}.jpg`);
 
 test.skip(!process.env.SHOTS, 'set SHOTS=1 to capture screenshots');
 
@@ -27,12 +31,15 @@ for (const theme of ['light', 'dark'] as const) {
       ['settings', '/#/settings?tab=tokens'],
     ]) {
       await page.goto(path);
+      // The test server is minutes old: the 15-minute range shows its traffic.
+      if (name === 'dashboard') await page.getByRole('button', { name: '15 min' }).click();
       await page.waitForTimeout(600);
-      await page.screenshot({ path: `test-results/shots/${name}-${theme}.png`, fullPage: true });
+      await page.screenshot({ path: shot(`${name}-${theme}`), type: 'jpeg', quality: 80 });
     }
-    await page.goto('/#/queries');
+    // "Why?" on a blocked query: it names the list and the rule.
+    await page.goto('/#/queries?status=blocked');
     await page.getByRole('button', { name: 'Why?' }).first().click();
     await page.waitForTimeout(400);
-    await page.screenshot({ path: `test-results/shots/why-${theme}.png` });
+    await page.screenshot({ path: shot(`why-${theme}`), type: 'jpeg', quality: 80 });
   });
 }

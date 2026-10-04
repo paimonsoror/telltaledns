@@ -16,6 +16,7 @@ writeFileSync(
   cfg,
   `[node]
 data_dir = "${resolve(root, 'data')}"
+name = "home-dns"
 
 [[listen]]
 proto = "udp"

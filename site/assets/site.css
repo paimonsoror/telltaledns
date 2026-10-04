@@ -163,3 +163,11 @@ footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; justify-content: space
 .cfg h3 code { font-size: 1.05em; }
 .cfg { margin: 28px 0; }
 @media (max-width: 700px) { .toc { columns: 1; } .cfg td:nth-child(2), .cfg td:nth-child(3) { white-space: normal; } }
+/* T4.7: performance table and screenshots */
+.bench table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.bench th, .bench td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.bench .num { text-align: right; font-variant-numeric: tabular-nums; }
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.shots figure { margin: 0; }
+.shots img { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+.shots figcaption { font-size: 14px; color: var(--ink-2); margin-top: 6px; }
