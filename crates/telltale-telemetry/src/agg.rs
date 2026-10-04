@@ -10,7 +10,7 @@ use crate::event::{Name, QueryEvent, Record, UpstreamEvent};
 use crate::export::Exported;
 use crate::recent::{ClientWindow, RecentClients};
 use crate::topk::{SpaceSaving, Top};
-use crate::{N_QTYPE, N_RCODE, N_STATUS, Path, Proto, Status, qtype_index};
+use crate::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Path, Proto, Status, qtype_index};
 
 /// Per-second buckets kept (15 minutes) and per-minute buckets (48 hours).
 pub const SECONDS: usize = 15 * 60;
@@ -36,7 +36,7 @@ pub struct Counts {
     pub status: [u32; N_STATUS],
     pub qtype: [u32; N_QTYPE],
     pub rcode: [u32; N_RCODE],
-    pub proto: [u32; 2],
+    pub proto: [u32; N_PROTO],
     /// By primary group index (the last column also holds every higher index).
     pub groups: Vec<u32>,
     /// Upstream exchanges by upstream index, and how many failed.

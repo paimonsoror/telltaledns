@@ -32,6 +32,18 @@ spec:
       port: {{ $dns.port }}
       targetPort: dns-tcp
       protocol: TCP
+    {{- if .Values.encrypted.dot.enabled }}
+    - name: dns-dot
+      port: {{ .Values.encrypted.dot.port }}
+      targetPort: dns-dot
+      protocol: TCP
+    {{- end }}
+    {{- if .Values.encrypted.doh.enabled }}
+    - name: dns-doh
+      port: {{ .Values.encrypted.doh.port }}
+      targetPort: dns-doh
+      protocol: TCP
+    {{- end }}
 ---
 {{- $api := .Values.service.api }}
 # The web UI and REST API.

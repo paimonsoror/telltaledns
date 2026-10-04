@@ -17,6 +17,12 @@ spec:
     - ports:
         - { port: dns-udp, protocol: UDP }
         - { port: dns-tcp, protocol: TCP }
+        {{- if .Values.encrypted.dot.enabled }}
+        - { port: dns-dot, protocol: TCP }
+        {{- end }}
+        {{- if .Values.encrypted.doh.enabled }}
+        - { port: dns-doh, protocol: TCP }
+        {{- end }}
       {{- with $np.dnsFrom }}
       from:
         {{- range . }}

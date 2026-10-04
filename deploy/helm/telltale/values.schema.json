@@ -10,6 +10,28 @@
     "hostNetwork": { "type": "boolean" },
     "dnsPort": { "type": "integer", "minimum": 1024, "maximum": 65535 },
     "config": { "type": "string" },
+    "encrypted": {
+      "type": "object",
+      "properties": {
+        "dot": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
+        "doh": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "path": { "type": "string", "pattern": "^/" } } },
+        "proxyProtocol": { "type": "boolean" },
+        "tls": {
+          "type": "object",
+          "properties": {
+            "secretName": { "type": "string" },
+            "certManager": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "issuerRef": { "type": "object", "properties": { "name": { "type": "string" }, "kind": { "enum": ["Issuer", "ClusterIssuer"] } } },
+                "dnsNames": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    },
     "service": {
       "type": "object",
       "properties": {

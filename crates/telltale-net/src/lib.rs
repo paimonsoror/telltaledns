@@ -5,16 +5,21 @@
 //! REQ: NFR-003 — all `unsafe` lives in the private `sys` module (Linux syscalls), and every
 //! block carries a `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`).
 
+pub mod doh;
 pub mod handler;
 pub mod neigh;
+pub mod proxy;
 #[cfg(target_os = "linux")]
 mod sys;
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 
-pub use handler::{Deferred, QueryHandler, RequestMeta, Response, Transport};
+pub use doh::{DohConfig, DohServer, DohStats};
+pub use handler::{ClientId, Deferred, QueryHandler, RequestMeta, Response, Transport};
 pub use neigh::{Neighbor, neighbors};
 pub use tcp::{TcpConfig, TcpServer, TcpStats};
+pub use tls::CertStore;
 pub use udp::{LocalAddr, UdpConfig, UdpListener, WorkerStats};
 
 /// Lowers the calling thread's CPU priority to at least `nice` (0–19), for background work

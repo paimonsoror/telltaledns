@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use telltale_telemetry::agg::Counts;
-use telltale_telemetry::{N_QTYPE, N_RCODE, N_STATUS};
+use telltale_telemetry::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS};
 
 use crate::state::StateError;
 
@@ -73,14 +73,21 @@ pub struct Rollups {
     conn: Mutex<Connection>,
 }
 
-const VERSION: u8 = 1;
+/// Version 2 added the transport-column count (DoT and DoH, T4.5); version 1 rows had two.
+const VERSION: u8 = 2;
 
-/// `Counts` → bytes: a header with the column counts (so a build with more statuses or
-/// qtypes can still read old rows), then little-endian u32s.
+/// `Counts` → bytes: a header with the column counts (so a build with more statuses, qtypes,
+/// or transports can still read old rows), then little-endian u32s.
 pub fn encode(c: &Counts) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 4 * (5 + N_STATUS + N_QTYPE + N_RCODE));
+    let mut out = Vec::with_capacity(5 + 4 * (3 + N_STATUS + N_QTYPE + N_RCODE + N_PROTO));
     #[allow(clippy::cast_possible_truncation)] // all < 256
-    out.extend_from_slice(&[VERSION, N_STATUS as u8, N_QTYPE as u8, N_RCODE as u8]);
+    out.extend_from_slice(&[
+        VERSION,
+        N_STATUS as u8,
+        N_QTYPE as u8,
+        N_RCODE as u8,
+        N_PROTO as u8,
+    ]);
     let mut put = |v: u32| out.extend_from_slice(&v.to_le_bytes());
     put(c.total);
     c.status.iter().for_each(|v| put(*v));
@@ -95,9 +102,11 @@ pub fn encode(c: &Counts) -> Vec<u8> {
 /// Bytes → `Counts` (upstream exchanges come back as a single total in `upstreams[0]`).
 pub fn decode(b: &[u8]) -> Option<Counts> {
     let (&[version, ns, nq, nr], rest) = b.split_first_chunk::<4>()?;
-    if version != VERSION {
-        return None;
-    }
+    let (np, rest) = match version {
+        1 => (2, rest),
+        VERSION => rest.split_first().map(|(np, r)| (*np, r))?,
+        _ => return None,
+    };
     let mut words = rest
         .as_chunks::<4>()
         .0
@@ -124,7 +133,12 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
         let j = i.min(N_RCODE - 1);
         c.rcode[j] = c.rcode[j].saturating_add(v);
     }
-    c.proto = [words.next()?, words.next()?];
+    for i in 0..usize::from(np) {
+        let v = words.next()?;
+        if let Some(x) = c.proto.get_mut(i) {
+            *x = v;
+        }
+    }
     c.upstreams = vec![words.next()?];
     c.upstream_failures = words.next()?;
     Some(c)
@@ -416,6 +430,36 @@ mod tests {
         assert_eq!(d.upstream_failures, 1);
         assert!(decode(&[9, 0, 0, 0]).is_none(), "unknown version");
         assert!(decode(&encode(&c)[..10]).is_none(), "truncated");
+    }
+
+    // DNS-002/003 (T4.5): version 1 rows (two transport columns) still decode.
+    #[test]
+    fn dns_002_version_1_rows_decode() {
+        let mut c = counts(10, 4);
+        c.proto[1] = 3;
+        let v2 = encode(&c);
+        // Rebuild the same row in the version-1 layout: no transport count, two columns.
+        let words = |b: &[u8]| -> Vec<u32> {
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w))
+                .collect()
+        };
+        let w = words(&v2[5..]);
+        let proto_at = 1 + N_STATUS + N_QTYPE + N_RCODE;
+        let mut v1 = vec![1, v2[1], v2[2], v2[3]];
+        for (i, x) in w.iter().enumerate() {
+            if i < proto_at + 2 || i >= proto_at + N_PROTO {
+                v1.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        let d = decode(&v1).unwrap();
+        assert_eq!(d.total, 10);
+        assert_eq!(d.proto, [10, 3, 0, 0]);
+        assert_eq!(d.upstreams, vec![5]);
+        assert_eq!(d.upstream_failures, 1);
+        assert_eq!(decode(&v2).unwrap().proto, [10, 3, 0, 0]);
     }
 
     // REQ: OBS-004, `spec/06` §3 — minutes roll up into hours and days; rewriting a minute

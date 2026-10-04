@@ -131,10 +131,14 @@ impl Path {
 pub enum Proto {
     Udp,
     Tcp,
+    /// DNS over TLS (RFC 7858).
+    Dot,
+    /// DNS over HTTPS (RFC 8484).
+    Doh,
 }
 
 impl Proto {
-    pub const ALL: [Self; 2] = [Self::Udp, Self::Tcp];
+    pub const ALL: [Self; N_PROTO] = [Self::Udp, Self::Tcp, Self::Dot, Self::Doh];
     pub fn from_u8(v: u8) -> Option<Self> {
         Self::ALL.get(usize::from(v)).copied()
     }
@@ -142,6 +146,8 @@ impl Proto {
         match self {
             Self::Udp => "udp",
             Self::Tcp => "tcp",
+            Self::Dot => "dot",
+            Self::Doh => "doh",
         }
     }
 }
@@ -171,6 +177,7 @@ pub const QTYPES: [(u16, &str); 12] = [
 pub const N_QTYPE: usize = QTYPES.len() + 1;
 pub const N_RCODE: usize = 17; // 0..=15, then "other" (extended)
 pub const N_STATUS: usize = Status::ALL.len();
+pub const N_PROTO: usize = 4;
 
 /// Index of `qtype` in [`QTYPES`], or the "other" column.
 pub fn qtype_index(qtype: u16) -> usize {
@@ -186,7 +193,7 @@ const N_BUCKET: usize = BUCKETS_US.len() + 1; // + Inf
 #[derive(Debug)]
 #[repr(align(128))]
 struct Slot {
-    queries: [[AtomicU64; N_STATUS]; 2],
+    queries: [[AtomicU64; N_STATUS]; N_PROTO],
     rcodes: [AtomicU64; N_RCODE],
     qtypes: [AtomicU64; N_QTYPE],
     buckets: [[AtomicU64; N_BUCKET]; N_PATH],
@@ -296,7 +303,7 @@ impl Metrics {
 /// Summed counters (see [`Metrics::snapshot`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    pub queries: [[u64; N_STATUS]; 2],
+    pub queries: [[u64; N_STATUS]; N_PROTO],
     pub rcodes: [u64; N_RCODE],
     pub qtypes: [u64; N_QTYPE],
     /// Non-cumulative per-bucket counts; the last bucket is +Inf.

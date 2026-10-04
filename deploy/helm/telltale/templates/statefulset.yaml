@@ -89,6 +89,16 @@ spec:
             - name: dns-tcp
               containerPort: {{ include "telltale.dnsPort" . }}
               protocol: TCP
+            {{- if .Values.encrypted.dot.enabled }}
+            - name: dns-dot
+              containerPort: {{ include "telltale.dotPort" . }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.encrypted.doh.enabled }}
+            - name: dns-doh
+              containerPort: {{ include "telltale.dohPort" . }}
+              protocol: TCP
+            {{- end }}
             - name: api
               containerPort: {{ .Values.service.api.port }}
               protocol: TCP
@@ -115,6 +125,12 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/telltale
+            {{- if include "telltale.encrypted" . }}
+            # REQ: DNS-002/003 — renewed in place by cert-manager; re-read every 10 s.
+            - name: dns-tls
+              mountPath: /etc/telltale-tls
+              readOnly: true
+            {{- end }}
             {{- range .Values.secretMounts }}
             - name: secret-{{ .name }}
               mountPath: /etc/telltale-secrets/{{ .name }}
@@ -124,6 +140,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "telltale.fullname" . }}
+        {{- if include "telltale.encrypted" . }}
+        - name: dns-tls
+          secret:
+            secretName: {{ required "encrypted: set tls.secretName or tls.certManager" (include "telltale.tlsSecret" .) }}
+        {{- end }}
         {{- range .Values.secretMounts }}
         - name: secret-{{ .name }}
           secret:

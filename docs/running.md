@@ -34,7 +34,7 @@ strategy = "fastest"      # failover | round_robin | weighted | fastest | parall
 telltale run -c dev.toml
 dig @127.0.0.1 -p 5300 example.com
 ```
-Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, and DoQ *listeners* are accepted in config but skipped with a warning.
+Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT and DoH listeners are described in "Encrypted DNS for your devices"; DoQ and DoH3 listeners are accepted in config but skipped with a warning.
 
 ## Container image
 `ghcr.io/paimonsoror/telltale:edge` is built from every commit on `main` for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 3 MiB compressed, with no shell. It runs as user `65532:65532`. Versioned tags (`:1`, `:1.2.3`) start with the first release.
@@ -99,6 +99,7 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
 - **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
 - **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
+- **Encrypted DNS**: `encrypted.dot.enabled` (853) and `encrypted.doh.enabled` (443) add DoT and DoH to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
 - One replica (`mode: allInOne`, a StatefulSet with a volume for lists, the query log, and users). Several resolver replicas (`scaled`, `daemonSet`) arrive with clustering.
 
 ## Seeing real client IPs
@@ -122,6 +123,27 @@ telltale presets show quad9 --proto tls,https --group default >> telltale.toml
 telltale presets show nextdns --param profile=abc123    # templated presets need your account ID
 ```
 `show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. DoQ (`quic://`) endpoints are listed but skipped until DoQ support lands.
+
+## Encrypted DNS for your devices (DoT and DoH)
+Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858) or DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), so nobody on the network path can read or change their lookups:
+```toml
+[[listen]]
+proto = "dot"
+addr = "0.0.0.0:853"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+
+[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+path = "/dns-query"                     # default; /dns-query/<client-id> also works
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+```
+- **Certificate:** a PEM chain (leaf first) and key, valid for the name devices use, e.g. `dns.example.com` from Let's Encrypt (DNS-01 works for internal names). Both files are re-read within 10 seconds of changing, so renewals (certbot, cert-manager) need no restart; a broken renewal keeps the old certificate and logs a warning.
+- **DoH** speaks HTTP/2 and HTTP/1.1, `GET ?dns=` and `POST application/dns-message`, and answers with `Cache-Control: max-age` set to the answer's smallest TTL. DoT uses ALPN `dot` with RFC 7766 pipelining, like plain TCP.
+- **Devices identify themselves:** with a wildcard certificate (`dns.example.com` and `*.dns.example.com`), a device configured with `kids-tablet.dns.example.com` (Android Private DNS, DoT or DoH) or the URL `https://dns.example.com/dns-query/kids-tablet` gets the client ID `kids-tablet`, which `[[client]] match = ["id:kids-tablet"]` recognizes wherever the device is, even on mobile data. The path wins over the name.
+- **Behind a load balancer:** `proxy_protocol = true` on a `tcp`, `dot`, or `doh` listener makes it read the client's address from a PROXY protocol v2 header (HAProxy, Traefik, AWS NLB, ...). Every connection must then start with one, so only enable it when the balancer sends it, and don't let clients reach the listener directly. `LOCAL` connections (the balancer's health checks) keep the socket address.
+- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"}`), plus `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
+- In Kubernetes, enable `encrypted.dot` / `encrypted.doh` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
 
 ## Encrypted upstreams
 ```toml
@@ -346,7 +368,7 @@ name = "Office"
 match = ["10.0.5.0/24"]                  # groups default to ["default"]
 ```
 - A device in several groups gets every list of all of them. Other settings, such as block mode (T2.6), come from its highest-priority group.
-- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT name `<id>.dns.example.com`, once those listeners land) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
+- **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
 - **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. TelltaleDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`). That only sees real devices with host networking (as on a Pi). In a container's bridge network, every query appears to come from the gateway.
 - If your router forwards queries with dnsmasq's `add-mac`, trust it explicitly. Any device could send that option and impersonate another, so it's ignored by default:
   ```toml

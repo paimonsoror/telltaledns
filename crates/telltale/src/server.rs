@@ -13,7 +13,9 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use telltale_cache::{Cache, CachePolicy};
 use telltale_config::{Config, ListenProto, Listener, Loader};
-use telltale_net::{TcpConfig, TcpServer, UdpConfig, UdpListener};
+use telltale_net::{
+    CertStore, DohConfig, DohServer, TcpConfig, TcpServer, Transport, UdpConfig, UdpListener,
+};
 use telltale_policy::LocalData;
 use telltale_upstream::Router;
 use tokio::signal::unix::{SignalKind, signal};
@@ -140,19 +142,61 @@ fn spawn_health_checks(router: &Router) -> JoinHandle<()> {
     ))
 }
 
-/// The running DNS listeners, keyed by (protocol, address).
+/// The running DNS listeners: UDP keyed by address, stream listeners (TCP, DoT, DoH) by their
+/// whole config entry.
 struct Listeners {
     udp: Vec<(SocketAddr, UdpListener)>,
-    tcp: Vec<(SocketAddr, TcpServer)>,
+    streams: Vec<(Listener, Stream)>,
     workers: usize,
     handler: Arc<Handler>,
     rt: tokio::runtime::Handle,
 }
 
+/// A TCP-based listener, and the certificate watcher of a TLS one.
+enum Stream {
+    /// Plain TCP or DoT.
+    Tcp(TcpServer, Option<JoinHandle<()>>),
+    Doh(DohServer, JoinHandle<()>),
+}
+
+impl Stream {
+    async fn shutdown(self) {
+        match self {
+            Self::Tcp(s, watch) => {
+                if let Some(w) = watch {
+                    w.abort();
+                }
+                s.shutdown().await;
+            }
+            Self::Doh(s, watch) => {
+                watch.abort();
+                s.shutdown().await;
+            }
+        }
+    }
+}
+
+/// REQ: DNS-002/003 — re-reads the certificate files every 10 s (cert-manager renewals).
+fn watch_cert(store: Arc<CertStore>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(10));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match store.reload_if_changed() {
+                Ok(true) => info!(cert = %store.cert_path().display(), "TLS certificate reloaded"),
+                Ok(false) => {}
+                Err(e) => warn!("TLS certificate reload failed (keeping the previous one): {e}"),
+            }
+        }
+    })
+}
+
 impl Listeners {
     /// Makes the running set match `listen`: binds additions first, then closes removals, so a
-    /// changed address never leaves a gap (`spec/08` §5).
-    fn apply(&mut self, listen: &[Listener]) -> io::Result<()> {
+    /// changed address never leaves a gap (`spec/08` §5). A stream listener whose settings
+    /// changed on the same address is closed just before its replacement binds.
+    async fn apply(&mut self, listen: &[Listener]) -> io::Result<()> {
         for l in listen {
             let ctx =
                 |e: io::Error| io::Error::new(e.kind(), format!("{:?} {}: {e}", l.proto, l.addr));
@@ -167,56 +211,117 @@ impl Listeners {
                     info!(addr = %listener.local_addr(), workers = self.workers, "listening (udp)");
                     self.udp.push((l.addr, listener));
                 }
-                ListenProto::Tcp if !self.tcp.iter().any(|(a, _)| *a == l.addr) => {
-                    let server = TcpServer::bind(TcpConfig::new(l.addr), Arc::clone(&self.handler))
-                        .map_err(ctx)?;
-                    info!(addr = %server.local_addr(), "listening (tcp)");
-                    self.tcp.push((l.addr, server));
+                ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh
+                    if !self.streams.iter().any(|(c, _)| c == l) =>
+                {
+                    // Same protocol and address with other settings: replace it.
+                    if let Some(i) = self
+                        .streams
+                        .iter()
+                        .position(|(c, _)| c.proto == l.proto && c.addr == l.addr)
+                    {
+                        let (_, old) = self.streams.remove(i);
+                        old.shutdown().await;
+                    }
+                    let stream = self.bind_stream(l).map_err(ctx)?;
+                    self.streams.push((l.clone(), stream));
                 }
-                ListenProto::Udp | ListenProto::Tcp => {}
+                ListenProto::Udp | ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh => {}
                 other => {
                     warn!(addr = %l.addr, proto = ?other, "listener type not implemented yet; skipping");
                 }
             }
         }
-        let keep = |proto: ListenProto, addr: SocketAddr| {
-            listen.iter().any(|l| l.proto == proto && l.addr == addr)
-        };
-        let (kept, gone): (Vec<_>, Vec<_>) = self
-            .udp
-            .drain(..)
-            .partition(|(a, _)| keep(ListenProto::Udp, *a));
+        let (kept, gone): (Vec<_>, Vec<_>) = self.udp.drain(..).partition(|(a, _)| {
+            listen
+                .iter()
+                .any(|l| l.proto == ListenProto::Udp && l.addr == *a)
+        });
         self.udp = kept;
         for (addr, l) in gone {
             info!(%addr, "closing udp listener");
             l.shutdown();
         }
         let (kept, gone): (Vec<_>, Vec<_>) = self
-            .tcp
+            .streams
             .drain(..)
-            .partition(|(a, _)| keep(ListenProto::Tcp, *a));
-        self.tcp = kept;
-        for (addr, s) in gone {
-            info!(%addr, "closing tcp listener");
+            .partition(|(c, _)| listen.contains(c));
+        self.streams = kept;
+        for (c, s) in gone {
+            info!(addr = %c.addr, proto = ?c.proto, "closing listener");
             tokio::spawn(s.shutdown()); // drains its connections in the background
         }
         Ok(())
     }
 
-    fn stats(
-        &self,
-    ) -> (
-        Vec<Arc<telltale_net::WorkerStats>>,
-        Vec<Arc<telltale_net::TcpStats>>,
-    ) {
-        (
-            self.udp
+    fn bind_stream(&self, l: &Listener) -> io::Result<Stream> {
+        let store = match &l.tls {
+            Some(t) => Some(CertStore::load(t.cert.as_str(), t.key.as_str())?),
+            None => None,
+        };
+        let handler = Arc::clone(&self.handler);
+        match (l.proto, store) {
+            (ListenProto::Doh, Some(store)) => {
+                let mut cfg = DohConfig::new(l.addr, Arc::clone(&store));
+                if let Some(p) = &l.path {
+                    p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
+                }
+                cfg.proxy_protocol = l.proxy_protocol;
+                let s = DohServer::bind(cfg, handler)?;
+                info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening (doh)");
+                Ok(Stream::Doh(s, watch_cert(store)))
+            }
+            (proto, store) => {
+                let mut cfg = TcpConfig::new(l.addr);
+                cfg.proxy_protocol = l.proxy_protocol;
+                if proto == ListenProto::Dot {
+                    cfg.transport = Transport::Dot;
+                    cfg.tls.clone_from(&store);
+                }
+                let s = TcpServer::bind(cfg, handler)?;
+                let label = if proto == ListenProto::Dot {
+                    "dot"
+                } else {
+                    "tcp"
+                };
+                info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening ({label})");
+                Ok(Stream::Tcp(s, store.map(watch_cert)))
+            }
+        }
+    }
+
+    fn stats(&self) -> ListenerStats {
+        ListenerStats {
+            udp: self
+                .udp
                 .iter()
                 .flat_map(|(_, l)| l.stats().iter().cloned())
                 .collect(),
-            self.tcp.iter().map(|(_, s)| s.stats_handle()).collect(),
-        )
+            tcp: self
+                .streams
+                .iter()
+                .filter_map(|(_, s)| match s {
+                    Stream::Tcp(t, _) => Some(t.stats_handle()),
+                    Stream::Doh(..) => None,
+                })
+                .collect(),
+            doh: self
+                .streams
+                .iter()
+                .filter_map(|(_, s)| match s {
+                    Stream::Doh(d, _) => Some(d.stats_handle()),
+                    Stream::Tcp(..) => None,
+                })
+                .collect(),
+        }
     }
+}
+
+/// Listener counters for `/metrics`.
+struct ListenerStats {
+    udp: Vec<Arc<telltale_net::WorkerStats>>,
+    tcp: Vec<Arc<telltale_net::TcpStats>>,
+    doh: Vec<Arc<telltale_net::DohStats>>,
 }
 
 /// Settings a reload can't change without a restart; returns what differs.
@@ -381,25 +486,26 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         .spawn_aggregator(Duration::from_millis(25), sink)?;
     let mut listeners = Listeners {
         udp: Vec::new(),
-        tcp: Vec::new(),
+        streams: Vec::new(),
         workers,
         handler: Arc::new(Handler(Arc::clone(&pipeline))),
         rt: tokio::runtime::Handle::current(),
     };
-    listeners.apply(&cfg.listen)?;
+    listeners.apply(&cfg.listen).await?;
 
     // REQ: OBS-004, `spec/06` §3 — rollups on disk, fed once a minute off the query path.
     let (rollups, _rollup_writer) = crate::rollups::start(&cfg, &pipeline);
 
     // REQ: OBS-005, OPS-006 — metrics and health probes.
     let ready = Arc::new(AtomicBool::new(false));
-    let (udp_stats, tcp_stats) = listeners.stats();
+    let stats = listeners.stats();
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache,
         pipeline: Arc::clone(&pipeline),
-        udp: ArcSwap::from_pointee(udp_stats),
-        tcp: ArcSwap::from_pointee(tcp_stats),
+        udp: ArcSwap::from_pointee(stats.udp),
+        tcp: ArcSwap::from_pointee(stats.tcp),
+        doh: ArcSwap::from_pointee(stats.doh),
         ready: Arc::clone(&ready),
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
@@ -433,7 +539,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         tokio::select! {
             _ = term.recv() => { info!(signal = "SIGTERM", "shutting down"); break; }
             _ = tokio::signal::ctrl_c() => { info!(signal = "SIGINT", "shutting down"); break; }
-            _ = hup.recv() => reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists),
+            _ = hup.recv() => reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists).await,
             _ = usr1.recv() => {
                 // REQ: FLT-004 — refresh every list now (like `pihole -g`); the compiler
                 // runs if anything changed.
@@ -449,7 +555,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // connections, let in-flight upstream lookups finish (bounded), then stop UDP workers.
     ready.store(false, Ordering::Release);
     let _ = stop_http.send(true);
-    for (_, s) in listeners.tcp.drain(..) {
+    for (_, s) in listeners.streams.drain(..) {
         s.shutdown().await;
     }
     if !pipeline.drain(Duration::from_secs(3)).await {
@@ -470,7 +576,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
 
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the
 /// running configuration.
-fn reload(
+async fn reload(
     files: &[PathBuf],
     current: &mut Config,
     listeners: &mut Listeners,
@@ -502,7 +608,7 @@ fn reload(
         }
     };
     set_client_metrics(&new, pipeline);
-    if let Err(e) = listeners.apply(&new.listen) {
+    if let Err(e) = listeners.apply(&new.listen).await {
         error!("reload: {e}; listeners unchanged where binding failed");
     }
     if !same_upstreams {
@@ -510,9 +616,10 @@ fn reload(
         *health = spawn_health_checks(&router);
     }
     pipeline.reload(router, policy);
-    let (u, t) = listeners.stats();
-    sources.udp.store(Arc::new(u));
-    sources.tcp.store(Arc::new(t));
+    let stats = listeners.stats();
+    sources.udp.store(Arc::new(stats.udp));
+    sources.tcp.store(Arc::new(stats.tcp));
+    sources.doh.store(Arc::new(stats.doh));
     if let Some(l) = lists {
         l.reload(&new);
     } else {

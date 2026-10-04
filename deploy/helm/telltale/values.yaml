@@ -52,6 +52,33 @@ service:
   metrics:
     port: 9153
 
+# REQ: DNS-002/003 — encrypted DNS for devices: DNS over TLS (853) and DNS over HTTPS (443)
+# on the same DNS Service. Needs a certificate: an existing kubernetes.io/tls Secret, or one
+# from cert-manager. A wildcard name (*.dns.example.com) lets devices identify themselves
+# (kids-tablet.dns.example.com → client ID "kids-tablet"). The certificate is re-read when
+# cert-manager renews it; no restart.
+encrypted:
+  dot:
+    enabled: false
+    port: 853
+  doh:
+    enabled: false
+    port: 443
+    path: /dns-query
+  # REQ: DNS-020 — accept PROXY protocol v2 on TCP, DoT, and DoH (only when a balancer in
+  # front sends it: every connection must then start with the header).
+  proxyProtocol: false
+  tls:
+    # An existing Secret with tls.crt and tls.key. Ignored when certManager.enabled.
+    secretName: ""
+    certManager:
+      enabled: false
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+      # e.g. [dns.example.com, "*.dns.example.com"]
+      dnsNames: []
+
 # The UI and API behind an Ingress (TLS). Also set [api] trusted_proxies in `config` to the
 # ingress's source network so sign-in lockouts and the audit log see client addresses.
 ingress:

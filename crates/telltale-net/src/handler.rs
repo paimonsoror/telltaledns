@@ -15,6 +15,10 @@ use crate::udp::LocalAddr;
 pub enum Transport {
     Udp,
     Tcp,
+    /// DNS over TLS.
+    Dot,
+    /// DNS over HTTPS (one request per HTTP exchange).
+    Doh,
 }
 
 /// Facts about a request that the pipeline may need.
@@ -24,6 +28,50 @@ pub struct RequestMeta {
     /// Destination address of the packet (UDP wildcard binds only).
     pub local: Option<LocalAddr>,
     pub transport: Transport,
+    /// Client ID from the DoT SNI or the DoH path (FLT-006), if any.
+    pub client_id: Option<ClientId>,
+}
+
+/// A client ID (one DNS label: letters, digits, `-`, at most 63 bytes), stored inline so
+/// [`RequestMeta`] stays `Copy` and allocation-free.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ClientId {
+    len: u8,
+    bytes: [u8; 63],
+}
+
+impl ClientId {
+    /// Lowercases `s`; `None` unless it's a valid label.
+    pub fn new(s: &str) -> Option<Self> {
+        let b = s.as_bytes();
+        let ok = !b.is_empty()
+            && b.len() <= 63
+            && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+            && b[0] != b'-'
+            && b[b.len() - 1] != b'-';
+        if !ok {
+            return None;
+        }
+        let mut bytes = [0u8; 63];
+        for (d, s) in bytes.iter_mut().zip(b) {
+            *d = s.to_ascii_lowercase();
+        }
+        Some(Self {
+            len: u8::try_from(b.len()).ok()?,
+            bytes,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Built from ASCII only.
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for ClientId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ClientId({})", self.as_str())
+    }
 }
 
 /// A response produced later; resolves to the full response message, or `None` to drop.

@@ -26,9 +26,22 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 
 [dependencies]
+# REQ: DNS-002/003 — DoT and DoH (all already in the tree via the upstream client and axum).
+bytes = "1"
+http-body-util = "0.1.3"
+hyper = { version = "1.11.1", default-features = false, features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 libc = "0.2.190"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1.15"
 socket2 = { version = "0.6.5", features = ["all"] }
+telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
 tokio = { version = "1.53.1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+# Certificate names (wildcards → client IDs from SNI).
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "ring"] }
 
 [dev-dependencies]
+hyper = { version = "1.11.1", default-features = false, features = ["client", "http1", "http2"] }
+tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

@@ -117,6 +117,8 @@ pub(crate) struct FilterState {
 pub(crate) struct Who {
     pub(crate) peer: IpAddr,
     pub(crate) mac: Option<[u8; 6]>,
+    /// From the DoT SNI or the DoH path.
+    pub(crate) client_id: Option<telltale_net::ClientId>,
 }
 
 /// Drops a swapped-out value on a background thread after a grace period (T2.7). Readers
@@ -348,7 +350,7 @@ impl Pipeline {
                 len,
                 udp_limit(q.edns.as_ref(), self.settings.edns_payload),
             ),
-            Transport::Tcp => len,
+            Transport::Tcp | Transport::Dot | Transport::Doh => len,
         }
     }
 
@@ -389,16 +391,19 @@ impl Pipeline {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
-        // REQ: FLT-006 — client identification (`spec/03` §3 step 2). Client IDs arrive with
-        // the DoH/DoT listeners (T4.5).
+        // REQ: FLT-006 — client identification (`spec/03` §3 step 2), including client IDs from
+        // the DoT SNI or the DoH path.
         let who = Who {
             peer: meta.peer.ip(),
             mac: q.edns.as_ref().and_then(telltale_proto::Edns::client_mac),
+            client_id: meta.client_id,
         };
-        let ident = st
-            .policy
-            .clients
-            .identify(who.peer, None, who.mac, &self.neighbors);
+        let ident = st.policy.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+        );
         oc.client_ref = ident.client.map_or(0, |c| u32::from(c) + 1);
         oc.group = st
             .policy
@@ -582,7 +587,12 @@ impl Pipeline {
         name: &[u8],
         qtype: u16,
     ) -> Option<(Identity, Decision)> {
-        let ident = f.clients.identify(who.peer, None, who.mac, &self.neighbors);
+        let ident = f.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+        );
         let group = f.clients.primary_group(ident);
         if self.pause.is_paused(&group.name, unix_now) {
             return None;
@@ -590,7 +600,7 @@ impl Pipeline {
         let client = ClientCtx {
             ip: who.peer,
             name: f.clients.client(ident).map(|c| &*c.name),
-            client_id: None,
+            client_id: who.client_id.as_ref().map(telltale_net::ClientId::as_str),
         };
         let decision = FILTER_SCRATCH.with(|s| {
             f.matcher
@@ -1079,6 +1089,8 @@ fn proto(t: Transport) -> Proto {
     match t {
         Transport::Udp => Proto::Udp,
         Transport::Tcp => Proto::Tcp,
+        Transport::Dot => Proto::Dot,
+        Transport::Doh => Proto::Doh,
     }
 }
 
@@ -1179,6 +1191,7 @@ mod tests {
             peer: "127.0.0.1:5353".parse().unwrap(),
             local: None,
             transport: Transport::Udp,
+            client_id: None,
         }
     }
 
@@ -1296,6 +1309,7 @@ groups = ["kids"]
                 peer: peer.parse().unwrap(),
                 local: None,
                 transport: Transport::Udp,
+                client_id: None,
             };
             match Handler(Arc::clone(&p)).handle(
                 &query("ads.example.com", rtype::A, true),
@@ -1353,6 +1367,7 @@ groups = ["kids"]
             peer: format!("{peer}:1000").parse().unwrap(),
             local: None,
             transport: Transport::Udp,
+            client_id: None,
         };
         match Handler(Arc::clone(p)).handle(&query(name, qtype, true), &meta, &mut out) {
             Response::Ready(len) => out[..len].to_vec(),
@@ -1707,6 +1722,7 @@ mod policy_tests {
             peer: peer.parse().unwrap(),
             local: None,
             transport: Transport::Udp,
+            client_id: None,
         };
         let mut out = [0u8; 4096];
         match Handler(Arc::clone(p)).handle(&buf[..len], &meta, &mut out) {
@@ -1813,6 +1829,7 @@ mod reload_tests {
             peer: "10.0.0.2:5353".parse().unwrap(),
             local: None,
             transport: Transport::Udp,
+            client_id: None,
         };
         let answer = |p: &Arc<Pipeline>| {
             let mut out = [0u8; 1024];

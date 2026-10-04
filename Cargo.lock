@@ -1254,6 +1254,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "httparse",
@@ -3039,9 +3040,19 @@ dependencies = [
 name = "telltale-net"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
  "socket2",
+ "telltale-proto",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

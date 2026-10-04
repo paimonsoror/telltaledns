@@ -20,7 +20,7 @@ use telltale_config::Cidr;
 use telltale_filter::fetch::{Fetcher, ListMeta};
 
 use crate::lists::ListsShared;
-use telltale_net::{TcpStats, WorkerStats};
+use telltale_net::{DohStats, TcpStats, WorkerStats};
 use telltale_telemetry::Metrics;
 use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
 use telltale_upstream::Router;
@@ -36,6 +36,7 @@ pub(crate) struct Sources {
     /// Listener counters; replaced when a reload adds or removes listeners.
     pub(crate) udp: ArcSwap<Vec<Arc<WorkerStats>>>,
     pub(crate) tcp: ArcSwap<Vec<Arc<TcpStats>>>,
+    pub(crate) doh: ArcSwap<Vec<Arc<DohStats>>>,
     /// Set once every listener is bound; cleared at the start of shutdown.
     pub(crate) ready: Arc<AtomicBool>,
     pub(crate) started: Instant,
@@ -691,6 +692,50 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
             "TCP connections closed for idleness.",
             tsum(|s| s.idle_closed.load(Relaxed)),
         ),
+        (
+            "telltale_tls_handshake_failures_total",
+            "DoT and DoH connections whose TLS handshake failed or timed out.",
+            tsum(|s| s.tls_failed.load(Relaxed))
+                + src
+                    .doh
+                    .load()
+                    .iter()
+                    .map(|s| s.tls_failed.load(Relaxed))
+                    .sum::<u64>(),
+        ),
+        (
+            "telltale_proxy_protocol_rejected_total",
+            "Connections closed for a missing or malformed PROXY protocol v2 header.",
+            tsum(|s| s.proxy_rejected.load(Relaxed))
+                + src
+                    .doh
+                    .load()
+                    .iter()
+                    .map(|s| s.proxy_rejected.load(Relaxed))
+                    .sum::<u64>(),
+        ),
+    ] {
+        w.family(name, "counter", help).sample(name, &[], v);
+    }
+    // REQ: DNS-003 — DoH requests (queries are also in telltale_queries_total{proto="doh"}).
+    let doh = src.doh.load();
+    let dsum = |f: fn(&DohStats) -> u64| doh.iter().map(|s| f(s)).sum::<u64>();
+    for (name, help, v) in [
+        (
+            "telltale_doh_connections_total",
+            "DoH connections accepted.",
+            dsum(|s| s.accepted.load(Relaxed)),
+        ),
+        (
+            "telltale_doh_requests_total",
+            "DoH HTTP requests received.",
+            dsum(|s| s.requests.load(Relaxed)),
+        ),
+        (
+            "telltale_doh_bad_requests_total",
+            "DoH requests refused with a 4xx status (path, method, media type, message).",
+            dsum(|s| s.bad_requests.load(Relaxed)),
+        ),
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
@@ -726,6 +771,7 @@ mod tests {
             ),
             udp: ArcSwap::from_pointee(Vec::new()),
             tcp: ArcSwap::from_pointee(Vec::new()),
+            doh: ArcSwap::from_pointee(Vec::new()),
             ready: Arc::new(AtomicBool::new(true)),
             started: Instant::now(),
             lists: ArcSwapOption::empty(),

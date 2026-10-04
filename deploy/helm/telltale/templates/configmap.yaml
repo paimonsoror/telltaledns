@@ -22,6 +22,27 @@ data:
     [[listen]]
     proto = "tcp"
     addr = "0.0.0.0:{{ include "telltale.dnsPort" . }}"
+    {{- if .Values.encrypted.proxyProtocol }}
+    proxy_protocol = true
+    {{- end }}
+    {{- $tls := printf "{ cert = \"/etc/telltale-tls/tls.crt\", key = \"/etc/telltale-tls/tls.key\" }" }}
+    {{- if .Values.encrypted.dot.enabled }}
+
+    [[listen]]
+    proto = "dot"
+    addr = "0.0.0.0:{{ include "telltale.dotPort" . }}"
+    tls = {{ $tls }}
+    proxy_protocol = {{ .Values.encrypted.proxyProtocol }}
+    {{- end }}
+    {{- if .Values.encrypted.doh.enabled }}
+
+    [[listen]]
+    proto = "doh"
+    addr = "0.0.0.0:{{ include "telltale.dohPort" . }}"
+    path = {{ .Values.encrypted.doh.path | quote }}
+    tls = {{ $tls }}
+    proxy_protocol = {{ .Values.encrypted.proxyProtocol }}
+    {{- end }}
 
     [telemetry.metrics]
     listen = "0.0.0.0:{{ .Values.service.metrics.port }}"

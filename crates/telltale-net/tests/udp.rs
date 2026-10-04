@@ -59,12 +59,20 @@ fn dns_001_udp_workers_answer_and_shut_down() {
         assert_eq!(&buf[..2], &req[..2]);
         assert_eq!(buf[2] & 0x80, 0x80);
     }
-    let total: u64 = listener
-        .stats()
-        .iter()
-        .map(|s| s.replied.load(Ordering::Relaxed))
-        .sum();
-    assert_eq!(total, 64);
+    // Workers count a reply after sending it, so the last answer can arrive before its
+    // count does (this raced on busy CI runners): wait briefly for the counters to settle.
+    let replied = || -> u64 {
+        listener
+            .stats()
+            .iter()
+            .map(|s| s.replied.load(Ordering::Relaxed))
+            .sum()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while replied() < 64 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(replied(), 64);
     let busy = listener
         .stats()
         .iter()
@@ -108,6 +116,13 @@ fn dns_001_deferred_answers_reply_from_the_runtime() {
         "deferred reply also uses the PKTINFO source"
     );
     assert_eq!(buf[2] & 0x80, 0x80);
+    // Counted after the send: allow the count to land.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while listener.stats()[0].deferred_replied.load(Ordering::Relaxed) < 1
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         listener.stats()[0].deferred_replied.load(Ordering::Relaxed),
         1

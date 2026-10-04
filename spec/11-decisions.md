@@ -439,3 +439,17 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Tests:** CI job `native` runs the Compose bundle (host network, healthcheck, hardening) and `install.sh` against a locally served release signed with a throwaway key: DNS on 53 over UDP and TCP, runs as `telltale`, upgrade keeps the config, a swapped binary and a modified `SHA256SUMS` are both refused.
 
 **Consequences:** The owner must add `MINISIGN_SECRET_KEY` once before the first binaries are published. The cluster-version check of `self-update` (spec §4) waits for clustering (T5.11).
+
+## ADR-039 — DoT and DoH listeners, client IDs from certificates, PROXY v2 rules (Proposed)
+**Context:** T4.5 (DNS-002/003) and T4.4 (DNS-020). The spec names SNI and DoH-path client IDs (`<clientid>.dns.example.com`) but not how the server knows which part of the name is the ID, how certificates are reloaded, or how PROXY headers are trusted.
+
+**Decision:**
+- **One connection path.** DoT is the TCP listener with a TLS acceptor (ALPN `dot`) in front; the TCP code now serves any stream, so pipelining, out-of-order answers, idle and in-flight limits are identical. DoH is hyper (HTTP/2 by ALPN `h2`, else HTTP/1.1; both already in the tree via axum) over the same TLS setup, calling the same `QueryHandler`. No new crates: rustls, tokio-rustls, hyper, hyper-util, rustls-webpki were already dependencies.
+- **Client IDs come from the certificate.** If the leaf certificate has a wildcard name `*.X` and the SNI is `<label>.X`, the label is the client ID. No `server_name` setting to keep in sync with the certificate. The DoH path `/dns-query/<id>` wins over SNI. IDs are one DNS label, lowercased, carried inline in `RequestMeta` (a 64-byte `Copy` value, no allocation).
+- **Certificate reload:** each TLS listener polls its two files' (mtime, length) every 10 s and swaps the `CertifiedKey` behind a `ResolvesServerCert`; new handshakes use it, open connections keep theirs; a failed read keeps the old one. Polling (not inotify) works with Kubernetes Secret symlink swaps and needs no new dependency.
+- **DoH responses:** `Cache-Control: max-age` = min(answer/authority TTL, negative TTL), `max-age=0` without records. Requests the resolver never sees: wrong path or invalid client ID → 404, wrong media type → 415, other methods → 405 with `Allow`, bad base64url or shorter than a DNS header → 400, body over 64 KiB → 413. A handler `Drop` (e.g. rate limit) → 503.
+- **PROXY protocol v2 only, and mandatory when enabled.** A listener with `proxy_protocol = true` reads a v2 header before TLS on every connection and closes connections without one (accepting both would let clients pick their address). v1 text headers are refused. `LOCAL` keeps the socket address. TLVs are skipped. There is no source allowlist: exposure must be limited by the network (documented).
+- **Telemetry:** `Proto` gains `dot` and `doh` (metrics labels, query log, aggregates). Rollup rows carry a transport-column count (format version 2); version-1 rows still decode.
+- **Helm:** `encrypted.dot` / `encrypted.doh` add ports to the same DNS LoadBalancer (so `externalTrafficPolicy: Local` keeps client IPs), with a certificate from an existing Secret or a cert-manager `Certificate`; pods listen on 8853/8443 unless on the host network.
+
+**Consequences:** Clients must trust the certificate (a public CA, or a private one distributed to devices). DoQ and DoH3 remain skipped until their listeners (M7).

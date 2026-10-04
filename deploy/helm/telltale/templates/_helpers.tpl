@@ -29,3 +29,18 @@ app.kubernetes.io/component: all
 {{- define "telltale.dnsPort" -}}
 {{- if .Values.hostNetwork }}53{{ else }}{{ .Values.dnsPort }}{{ end }}
 {{- end }}
+
+{{/* REQ: DNS-002/003 — encrypted DNS is on, and the TLS Secret that serves it. */}}
+{{- define "telltale.encrypted" -}}
+{{- if or .Values.encrypted.dot.enabled .Values.encrypted.doh.enabled }}true{{ end }}
+{{- end }}
+{{- define "telltale.tlsSecret" -}}
+{{- if .Values.encrypted.tls.certManager.enabled }}{{ include "telltale.fullname" . }}-dns-tls{{ else }}{{ .Values.encrypted.tls.secretName }}{{ end }}
+{{- end }}
+{{/* Ports inside the pod: the Service port on the host network, else an unprivileged one. */}}
+{{- define "telltale.dotPort" -}}
+{{- if .Values.hostNetwork }}{{ .Values.encrypted.dot.port }}{{ else }}8853{{ end }}
+{{- end }}
+{{- define "telltale.dohPort" -}}
+{{- if .Values.hostNetwork }}{{ .Values.encrypted.doh.port }}{{ else }}8443{{ end }}
+{{- end }}

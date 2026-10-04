@@ -131,6 +131,7 @@ fn served(p: &Arc<Pipeline>, name: &str, client: &str) -> Option<Vec<u8>> {
         peer: format!("{client}:1000").parse().unwrap(),
         local: None,
         transport: Transport::Udp,
+        client_id: None,
     };
     let mut out = [0u8; 4096];
     match Handler(Arc::clone(p)).handle(&q[..len], &meta, &mut out) {

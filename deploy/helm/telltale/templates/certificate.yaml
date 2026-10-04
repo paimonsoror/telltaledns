@@ -1,0 +1,16 @@
+{{- if and (include "telltale.encrypted" .) .Values.encrypted.tls.certManager.enabled }}
+# REQ: DNS-002/003 — the DoT/DoH certificate from cert-manager (renewals are picked up live).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "telltale.fullname" . }}-dns
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "telltale.fullname" . }}-dns-tls
+  issuerRef:
+    name: {{ required "encrypted.tls.certManager.issuerRef.name is required" .Values.encrypted.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.encrypted.tls.certManager.issuerRef.kind }}
+  dnsNames:
+    {{- required "encrypted.tls.certManager.dnsNames is required" .Values.encrypted.tls.certManager.dnsNames | toYaml | nindent 4 }}
+{{- end }}

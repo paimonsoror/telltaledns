@@ -56,7 +56,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 |---|---|---|
 | `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory | `spec/02` |
 | `[cluster]` | cluster name, site label, primary eligibility | `spec/12` |
-| `[[listen]]` | `udp`, `tcp`, `dot`, `doh`, `doh3`, `doq` listeners. Default: UDP + TCP on port 53, IPv4 and IPv6 | `spec/03` §1 |
+| `[[listen]]` | `udp`, `tcp`, `dot`, `doh` listeners (`doh3`, `doq` are accepted and skipped for now); `tls` cert/key for DoT and DoH (reloaded on change), DoH `path`, `proxy_protocol` (v2) on TCP-based listeners. Default: UDP + TCP on port 53, IPv4 and IPv6 | `spec/03` §1, DNS-002/003/020 |
 | `[[upstream]]` | upstream resolvers; the URL scheme picks the protocol | `spec/04` |
 | `[[upstream_group]]` | named sets of upstreams with a strategy (`failover`, `round_robin`, `weighted`, `fastest`, `parallel`). Queries that match no route use the group named `default` | `spec/04` §4 |
 | `[[route]]` | conditional forwarding by domain suffix, client group, or query type | `spec/04` §1 |

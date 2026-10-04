@@ -208,6 +208,6 @@ jobs:
             'RUN mkdir -p /var/lib/telltale /etc/telltale && chown 65532:65532 /var/lib/telltale' \
             'ENTRYPOINT ["/usr/local/bin/telltale"]' 'CMD ["run"]' > ctx/Dockerfile
           docker build -q -t telltale:ci ctx
-          deploy/compose/e2e.sh telltale:ci
+          bash deploy/compose/e2e.sh telltale:ci
       - name: install.sh + systemd unit
-        run: sudo deploy/systemd/e2e.sh target/bench-fast/telltale
+        run: sudo bash deploy/systemd/e2e.sh target/bench-fast/telltale

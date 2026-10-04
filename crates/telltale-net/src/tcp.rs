@@ -3,6 +3,10 @@
 //! REQ: DNS-001; `spec/03` §1 — idle timeout 10 s, max 64 in-flight per connection, global
 //! connection cap. Each connection has a reader and a writer task joined by a bounded channel,
 //! so responses produced asynchronously (cache misses, later) can be written out of order.
+//!
+//! The same code serves DNS over TLS (REQ: DNS-002, RFC 7858: ALPN `dot`, client ID from SNI)
+//! and, on any of them, PROXY protocol v2 (REQ: DNS-020), which is read before the TLS
+//! handshake, as a load balancer sends it.
 
 use std::cell::RefCell;
 use std::io;
@@ -11,13 +15,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use crate::handler::{QueryHandler, RequestMeta, Response, Transport};
+use crate::handler::{ClientId, QueryHandler, RequestMeta, Response, Transport};
+use crate::tls::CertStore;
 
 /// Prepends the RFC 7766 two-byte length.
 fn framed(msg: &[u8]) -> Option<Vec<u8>> {
@@ -38,6 +43,12 @@ pub struct TcpConfig {
     pub max_inflight: usize,
     /// Max concurrent connections; extra connections are closed immediately.
     pub max_connections: usize,
+    /// `Tcp`, or `Dot` with `tls` set.
+    pub transport: Transport,
+    /// The certificate for DoT.
+    pub tls: Option<Arc<CertStore>>,
+    /// Every connection starts with a PROXY protocol v2 header (DNS-020).
+    pub proxy_protocol: bool,
 }
 
 impl TcpConfig {
@@ -47,6 +58,9 @@ impl TcpConfig {
             idle_timeout: Duration::from_secs(10),
             max_inflight: 64,
             max_connections: 1024,
+            transport: Transport::Tcp,
+            tls: None,
+            proxy_protocol: false,
         }
     }
 }
@@ -60,6 +74,10 @@ pub struct TcpStats {
     pub queries: AtomicU64,
     pub replies: AtomicU64,
     pub idle_closed: AtomicU64,
+    /// TLS handshakes that failed or timed out.
+    pub tls_failed: AtomicU64,
+    /// Connections closed for a missing or malformed PROXY header.
+    pub proxy_rejected: AtomicU64,
 }
 
 /// A running TCP DNS listener.
@@ -80,22 +98,35 @@ thread_local! {
     static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0; MAX_MSG]);
 }
 
+/// A listening TCP socket (v6-only for IPv6 addresses, so v4 and v6 can bind separately).
+pub(crate) fn listen(addr: SocketAddr) -> io::Result<TcpListener> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    if addr.is_ipv6() {
+        sock.set_only_v6(true)?;
+    }
+    sock.set_reuse_address(true)?;
+    sock.set_nonblocking(true)?;
+    sock.bind(&addr.into())?;
+    sock.listen(1024)?;
+    TcpListener::from_std(sock.into())
+}
+
+/// Runs `f` with this thread's response buffer (never hold it across an `.await`).
+pub(crate) fn with_scratch<R>(f: impl FnOnce(&mut [u8]) -> R) -> R {
+    SCRATCH.with(|s| f(&mut s.borrow_mut()[..]))
+}
+
 impl TcpServer {
     /// Binds and starts accepting. Must be called from within a Tokio runtime.
     pub fn bind<H: QueryHandler>(cfg: TcpConfig, handler: Arc<H>) -> io::Result<Self> {
-        let sock = socket2::Socket::new(
-            socket2::Domain::for_address(cfg.addr),
-            socket2::Type::STREAM,
-            Some(socket2::Protocol::TCP),
-        )?;
-        if cfg.addr.is_ipv6() {
-            sock.set_only_v6(true)?;
+        if let Some(store) = &cfg.tls {
+            store.server_config(&[b"dot"])?; // fail at bind, not per connection
         }
-        sock.set_reuse_address(true)?;
-        sock.set_nonblocking(true)?;
-        sock.bind(&cfg.addr.into())?;
-        sock.listen(1024)?;
-        let listener = TcpListener::from_std(sock.into())?;
+        let listener = listen(cfg.addr)?;
         let local_addr = listener.local_addr()?;
         let (stop, stop_rx) = watch::channel(false);
         let stats = Arc::new(TcpStats::default());
@@ -142,6 +173,14 @@ async fn accept_loop<H: QueryHandler>(
     stats: Arc<TcpStats>,
 ) {
     let slots = Arc::new(Semaphore::new(cfg.max_connections));
+    // REQ: DNS-002 — RFC 7858 §3.2 ALPN "dot".
+    let acceptor = match &cfg.tls {
+        Some(store) => match store.server_config(&[b"dot"]) {
+            Ok(c) => Some(tokio_rustls::TlsAcceptor::from(c)),
+            Err(_) => return,
+        },
+        None => None,
+    };
     let cfg = Arc::new(cfg);
     let mut conns = tokio::task::JoinSet::new();
     loop {
@@ -167,8 +206,9 @@ async fn accept_loop<H: QueryHandler>(
             stop.clone(),
             Arc::clone(&stats),
         );
+        let acceptor = acceptor.clone();
         conns.spawn(async move {
-            serve_conn(stream, peer, &*handler, &cfg, stop, &stats).await;
+            open(stream, peer, acceptor, &*handler, &cfg, stop, &stats).await;
             drop(permit);
         });
         // Reap finished connections so the set doesn't grow without bound.
@@ -178,15 +218,55 @@ async fn accept_loop<H: QueryHandler>(
     while conns.join_next().await.is_some() {}
 }
 
-async fn serve_conn<H: QueryHandler + ?Sized>(
-    stream: TcpStream,
+/// Reads the PROXY header (if configured), completes the TLS handshake (if any), then serves.
+async fn open<H: QueryHandler + ?Sized>(
+    mut stream: TcpStream,
+    mut peer: SocketAddr,
+    acceptor: Option<tokio_rustls::TlsAcceptor>,
+    handler: &H,
+    cfg: &TcpConfig,
+    stop: watch::Receiver<bool>,
+    stats: &Arc<TcpStats>,
+) {
+    if cfg.proxy_protocol {
+        match timeout(cfg.idle_timeout, crate::proxy::read_header(&mut stream)).await {
+            Ok(Ok(Some(src))) => peer = src,
+            Ok(Ok(None)) => {} // LOCAL: the balancer itself
+            _ => {
+                stats.proxy_rejected.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+    }
+    let Some(acceptor) = acceptor else {
+        serve_conn(stream, peer, None, handler, cfg, stop, stats).await;
+        return;
+    };
+    let Ok(Ok(tls)) = timeout(cfg.idle_timeout, acceptor.accept(stream)).await else {
+        stats.tls_failed.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    // FLT-006 — the client ID in front of a wildcard name of our certificate.
+    let client_id = match (&cfg.tls, tls.get_ref().1.server_name()) {
+        (Some(store), Some(sni)) => store.client_id(sni),
+        _ => None,
+    };
+    serve_conn(tls, peer, client_id, handler, cfg, stop, stats).await;
+}
+
+async fn serve_conn<S, H>(
+    stream: S,
     peer: SocketAddr,
+    client_id: Option<ClientId>,
     handler: &H,
     cfg: &TcpConfig,
     mut stop: watch::Receiver<bool>,
     stats: &Arc<TcpStats>,
-) {
-    let (mut rd, mut wr) = stream.into_split();
+) where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+    H: QueryHandler + ?Sized,
+{
+    let (mut rd, mut wr) = tokio::io::split(stream);
     let inflight = cfg.max_inflight.max(1);
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(inflight);
     // Caps queries being answered at once on this connection (RFC 7766 §6.2.1.2).
@@ -194,11 +274,16 @@ async fn serve_conn<H: QueryHandler + ?Sized>(
     let meta = RequestMeta {
         peer,
         local: None,
-        transport: Transport::Tcp,
+        transport: cfg.transport,
+        client_id,
     };
     let writer = tokio::spawn(async move {
         while let Some(buf) = rx.recv().await {
             if wr.write_all(&buf).await.is_err() {
+                break;
+            }
+            // TLS buffers records; push them out once nothing else is queued.
+            if rx.is_empty() && wr.flush().await.is_err() {
                 break;
             }
         }

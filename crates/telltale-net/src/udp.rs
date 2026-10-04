@@ -244,6 +244,7 @@ impl<H: QueryHandler> Worker<H> {
                     peer,
                     local: rx.local,
                     transport: Transport::Udp,
+                    client_id: None,
                 };
                 match self.handler.handle(data, &meta, tx) {
                     Response::Ready(len) => {
@@ -278,6 +279,7 @@ impl<H: QueryHandler> Worker<H> {
                 peer,
                 local: None,
                 transport: Transport::Udp,
+                client_id: None,
             };
             match self.handler.handle(&rx[..len], &meta, &mut tx) {
                 Response::Ready(n) => {
