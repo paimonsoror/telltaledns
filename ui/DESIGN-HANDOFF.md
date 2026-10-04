@@ -269,6 +269,8 @@ by `api.ts` on every non-GET; tokens are shown once).
 
 ## 9. Where design help is most valuable (suggested backlog, in priority order)
 
+0. **Guided UI (API-011, ADR-036, roadmap T3.11), the owner's top request:** help panels with diagrams and Simple/Advanced views, see §11. Build the components first, then retrofit pages.
+
 1. **Dashboard visual hierarchy:** KPI tiles with sparklines and deltas vs. the previous period
    (fetch `stats/summary` for the previous window); a proper "where time goes" stage chart;
    clearer "this hour" vs. range labeling; upstream health panel with mini bars.
@@ -316,3 +318,61 @@ editing lists/groups/upstreams/local records and allow/block quick actions (conf
 
 If you need something the API doesn't offer, add it to a "UI requests" list in your final
 report (endpoint, fields, why) rather than working around it.
+
+---
+
+## 11. Guided UI: help panels, diagrams, Simple/Advanced (API-011, ADR-036)
+
+The owner's words: Pi-hole is easy for people who aren't DNS experts; Technitium is powerful
+but assumes expertise. TelltaleDNS must be both. Concretely:
+
+**Names.** Label features by outcome with the DNS term as a subtitle: "Names on my network"
+(*local records / zone*), "Send a domain to another server" (*conditional forwarding*),
+"Block and allow lists" (*filter lists*), "Where answers come from" (*upstreams*). Don't put
+"zone", "SOA", or "NS" in a Simple view.
+
+**Glossary** (`docs/help/topics.json`, one source for UI, docs, and site). Each entry:
+```json
+{
+  "id": "forward-domain",
+  "title": "Send a domain to another server",
+  "term": "Conditional forwarding",
+  "summary": "Questions about one domain go to a server you choose instead of the internet.",
+  "when": "Your router, NAS, or another DNS server knows the names in a domain, like home.arpa or your company network.",
+  "example": "Everything under sororlab.dev goes to Technitium at 192.168.5.122, which has your homelab's records.",
+  "caution": "If that server is down, names in the domain stop working. Don't forward public domains you don't control.",
+  "diagram": "route",
+  "docs": "running.md#routing-conditional-forwarding"
+}
+```
+CI will check that every `help="..."` id used in the UI exists in the file.
+
+**`HelpPanel`.** A "?" button (`aria-label="Help: <title>"`) next to a field opens a right
+slide-out (reuse `Drawer`, `role="dialog"`, Escape closes) showing, in order: summary, diagram,
+when, example, caution, "Technical term: <term>", a docs link. It must not block or reset the
+form behind it. At 360 px it is full-width.
+
+**`FlowDiagram`.** Inline SVG drawn by a Svelte component, with no chart or diagram library
+(CSP and budget). Nodes: the device (left), TelltaleDNS (center), destinations on the right:
+*cache*, *local name*, *blocked*, *another server*, *the internet (upstreams)*. Props: `kind`
+(which path the option creates: `local`, `route`, `block`, `allow`, `upstream`, `cache`),
+`highlight` (the path to emphasize), and `values` (labels such as the domain and server, e.g.
+`{ domain: "sororlab.dev", target: "192.168.5.122" }`). Colors come from the status tokens
+(`--s-local`, `--s-blocked`, `--s-forwarded`, `--s-cached`); everything in the drawing is also
+in text next to it (screen readers, and the "every chart has a table" rule). Keep each diagram
+small (a few KiB) and readable at 360 px.
+
+Use it in three places: help panels (generic values), change previews (the user's values, before
+saving), and the Explain view (draw the path the query took and why).
+
+**Simple / Advanced.** A toggle at the top of editing pages, remembered per user (localStorage
+with try/catch). Simple shows common fields with safe defaults; Advanced shows everything. If
+an advanced field has a non-default value, Simple shows "Customized in Advanced".
+
+**Previews.** Before any change is saved, show one plain sentence plus the diagram ("From now on,
+every device asking for anything under sororlab.dev gets its answer from 192.168.5.122"), using
+the API's dry-run when it exists. Next to each rule, a "Test a name" button opens Explain
+pre-filled.
+
+Order of work: glossary + `HelpPanel` + `FlowDiagram` → Explain view diagram → retrofit the
+read-only pages → editing pages (T3.12) built around them.
