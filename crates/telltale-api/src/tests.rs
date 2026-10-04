@@ -634,3 +634,38 @@ async fn api_003_http_sign_in_csrf_tokens_and_roles() {
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
+
+/// API-005: the UI is served at `/` without sign-in, with a strict CSP; `/api` misses stay
+/// problem+json. Passes with or without a built `ui/dist`.
+#[tokio::test]
+async fn api_005_ui_is_served_with_security_headers() {
+    let (app, _) = app();
+    let get = |uri: &str| {
+        Request::get(uri)
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, h, _) = send(&app, get("/")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(h["content-type"].to_str().unwrap().starts_with("text/html"));
+    let csp = h["content-security-policy"].to_str().unwrap();
+    assert!(
+        csp.contains("script-src 'self'") && !csp.contains("unsafe-inline"),
+        "{csp}"
+    );
+    assert_eq!(h["x-frame-options"], "DENY");
+    assert_eq!(h["cache-control"], "no-cache");
+    let (s, h, v) = send(&app, get("/api/v1/nope")).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("not_found"))
+    );
+    assert_eq!(h["content-type"], "application/problem+json");
+    for bad in ["/assets/nope.js", "/assets/../Cargo.toml", "/index.html.gz"] {
+        let (s, _, _) = send(&app, get(bad)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{bad}");
+    }
+    let (s, _, _) = send(&app, Request::post("/").body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+}

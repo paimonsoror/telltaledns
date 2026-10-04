@@ -14,6 +14,7 @@ pub mod auth;
 pub mod model;
 pub mod problem;
 pub mod time;
+pub mod ui;
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -98,7 +99,20 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/openapi.json", get(openapi_json))
         .merge(auth::routes::public(auth))
         .merge(protected)
-        .fallback(not_found)
+        .fallback(fallback)
+}
+
+/// `/api/*` misses are problem+json; everything else is the web UI (REQ: API-005).
+async fn fallback(
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if uri.path() == "/api" || uri.path().starts_with("/api/") {
+        not_found(&uri).into_response()
+    } else {
+        ui::serve(&method, &uri, &headers)
+    }
 }
 /// The OpenAPI 3.1 document for every route above.
 #[derive(Debug, OpenApi)]
@@ -190,7 +204,7 @@ async fn openapi_json() -> Response {
         .into_response()
 }
 
-async fn not_found(uri: axum::http::Uri) -> Problem {
+fn not_found(uri: &axum::http::Uri) -> Problem {
     Problem::not_found(format!("no API route `{}`", uri.path()))
         .hint("See /api/v1/openapi.json for every route.")
 }

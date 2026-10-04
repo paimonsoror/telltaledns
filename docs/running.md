@@ -430,6 +430,21 @@ fsync = false                # true: sync every write (slower on SD cards)
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
+## Web UI
+Open `http://<server>:8053/` in a browser. On first start it asks for the setup token (see [Users and sign-in](#users-and-sign-in)) and creates the first admin.
+
+| Page | What it shows |
+|---|---|
+| Dashboard | queries, blocked %, cache hits, upstream latency, active clients; queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients (click through to the query log); upstream share and health |
+| Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared |
+| Explain | why any name is or isn't blocked for any device |
+| Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, and latency |
+| Settings | your password and two-factor sign-in, API tokens, users (admins), and system information |
+
+Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Lists, groups, and local records are read-only in the UI for now; edit the configuration and reload.
+
+The UI is part of the binary (about 60 KiB compressed). The page is served with a strict Content Security Policy and can't be framed.
+
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:
 ```toml

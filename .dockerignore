@@ -9,6 +9,9 @@ bench/lists/
 site/_site/
 ui/node_modules/
 ui/dist/
+ui/.e2e/
+ui/test-results/
+ui/playwright-report/
 .git/
 **/*Zone.Identifier
 **/__pycache__/

@@ -67,3 +67,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 site/build.py --check
+
+  # REQ: API-005 — T3.9 AC: the UI type-checks, its API types match docs/api/openapi.json,
+  # the bundle stays within 400 KiB gzipped, and the Playwright suite passes against the
+  # real binary.
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: API types match the OpenAPI document
+        run: npm run types && git diff --exit-code src/lib/api-types.ts
+      - run: npm run check
+      - name: Build (fails over the size budget)
+        run: npm run build
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p telltale
+        working-directory: .
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: ui/playwright-report
+          if-no-files-found: ignore

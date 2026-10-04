@@ -8,6 +8,16 @@
 #   docker buildx build --build-arg PROFILE=bench-fast --load -t telltale:dev .   # quick local build
 
 ARG RUST_VERSION=1.99.0
+ARG NODE_VERSION=24
+
+# REQ: API-005 — the web UI is built once (it's platform-independent) and embedded in the
+# binary (ADR-009). No Node in the final image.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS ui
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY ui/ ./
+RUN npm run build
 
 FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS build
 ARG TARGETARCH
@@ -50,6 +60,7 @@ RUN case "${TARGETARCH}${TARGETVARIANT}" in \
 
 WORKDIR /src
 COPY . .
+COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
