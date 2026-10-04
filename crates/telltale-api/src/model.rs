@@ -36,8 +36,12 @@ pub struct SystemInfo {
 pub enum Step {
     /// 1-second buckets (the last 15 minutes are kept).
     Second,
-    /// 1-minute buckets (the last 48 hours are kept).
+    /// 1-minute buckets: 48 hours in memory, 7 days in the rollup database.
     Minute,
+    /// 1-hour buckets from the rollup database (400 days).
+    Hour,
+    /// 1-day buckets from the rollup database (kept forever).
+    Day,
 }
 
 /// Which node's data an analytics call reads (`spec/07` §1, `spec/12` §6). Until clustering
@@ -73,8 +77,8 @@ pub struct TimeBucket {
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct TimeseriesParams {
-    /// Start: RFC 3339 or relative (`-1h`). Default: 1 hour ago (minute steps) or 5 minutes
-    /// ago (second steps).
+    /// Start: RFC 3339 or relative (`-1h`). Default: 5 minutes ago (second steps), 1 hour
+    /// (minute), 7 days (hour), or 90 days (day).
     pub from: Option<String>,
     /// End: RFC 3339 or relative. Default: now.
     pub to: Option<String>,
@@ -111,7 +115,8 @@ pub struct Summary {
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct SummaryParams {
-    /// Start: RFC 3339 or relative (`-24h`). Default: 24 hours ago (at most 48 hours back).
+    /// Start: RFC 3339 or relative (`-24h`, `-30d`). Default: 24 hours ago. Ranges over
+    /// 48 hours are summed from hourly rollups.
     pub from: Option<String>,
     /// End. Default: now.
     pub to: Option<String>,

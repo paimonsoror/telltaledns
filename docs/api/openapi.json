@@ -663,13 +663,13 @@
           "stats"
         ],
         "summary": "Totals over a time range.",
-        "description": "Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts\nfrom the minute series (the last 48 hours), plus this hour's active clients and latency\npercentiles by answer path. Example: `GET /api/v1/stats/summary?from=-24h`.",
+        "description": "Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts\nover the range (per-minute data up to 48 hours back, hourly rollups beyond), plus this\nhour's active clients and latency percentiles by answer path. Example:\n`GET /api/v1/stats/summary?from=-24h` or `?from=-30d`.",
         "operationId": "stats_summary",
         "parameters": [
           {
             "name": "from",
             "in": "query",
-            "description": "Start: RFC 3339 or relative (`-24h`). Default: 24 hours ago (at most 48 hours back).",
+            "description": "Start: RFC 3339 or relative (`-24h`, `-30d`). Default: 24 hours ago. Ranges over\n48 hours are summed from hourly rollups.",
             "required": false,
             "schema": {
               "type": "string"
@@ -722,13 +722,13 @@
           "stats"
         ],
         "summary": "Query counts over time.",
-        "description": "Buckets by status, query type, and response code, plus upstream exchanges. `step=second`\ncovers the last 15 minutes, `step=minute` the last 48 hours. Example:\n`GET /api/v1/stats/timeseries?from=-1h&step=minute`.",
+        "description": "Buckets by status, query type, and response code, plus upstream exchanges. `step=second`\ncovers the last 15 minutes, `step=minute` 7 days (48 hours live), `step=hour` 400 days,\n`step=day` everything. Buckets without queries are omitted. Example:\n`GET /api/v1/stats/timeseries?from=-30d&step=hour`.",
         "operationId": "stats_timeseries",
         "parameters": [
           {
             "name": "from",
             "in": "query",
-            "description": "Start: RFC 3339 or relative (`-1h`). Default: 1 hour ago (minute steps) or 5 minutes\nago (second steps).",
+            "description": "Start: RFC 3339 or relative (`-1h`). Default: 5 minutes ago (second steps), 1 hour\n(minute), 7 days (hour), or 90 days (day).",
             "required": false,
             "schema": {
               "type": "string"
@@ -2694,7 +2694,9 @@
         "description": "Time-bucket size for [`TimeseriesParams`].",
         "enum": [
           "second",
-          "minute"
+          "minute",
+          "hour",
+          "day"
         ]
       },
       "Summary": {
@@ -3200,7 +3202,7 @@
     },
     {
       "name": "stats",
-      "description": "Live counters, top lists, and latency percentiles from memory (the last 48 hours at minute resolution, 15 minutes at second resolution)."
+      "description": "Counters, top lists, and latency percentiles. Live windows in memory (15 minutes per second, 48 hours per minute) plus rollups on disk (7 days per minute, 400 days per hour, days forever)."
     },
     {
       "name": "queries",

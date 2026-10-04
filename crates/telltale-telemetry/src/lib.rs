@@ -18,6 +18,7 @@ pub mod agg;
 pub mod event;
 #[cfg(test)]
 mod events_tests;
+pub mod export;
 pub mod prom;
 pub mod ring;
 pub mod topk;

@@ -5,6 +5,7 @@
 
 use std::fmt::Write as _;
 
+use crate::export::Buckets;
 use crate::{BUCKETS_US, Path, Proto, QTYPES, Snapshot, Status};
 
 /// RCODE names (RFC 6895 registry, 0-15).
@@ -75,6 +76,26 @@ impl PromWriter {
     ) -> &mut Self {
         let _ = writeln!(self.out, "{name}{} {value}", labels(pairs));
         self
+    }
+
+    /// One labeled histogram (`_bucket`, `_sum`, `_count`) of a family declared with
+    /// [`Self::family`] as `histogram`.
+    pub fn histogram(&mut self, name: &str, pairs: &[(&str, &str)], b: &Buckets) -> &mut Self {
+        let bucket = format!("{name}_bucket");
+        let mut cumulative = 0u64;
+        for (i, ub) in BUCKETS_US.iter().enumerate() {
+            cumulative += b.counts[i];
+            let le = format!("{}", *ub as f64 / 1e6);
+            let mut l = pairs.to_vec();
+            l.push(("le", &le));
+            self.sample(&bucket, &l, cumulative);
+        }
+        cumulative += b.counts[BUCKETS_US.len()];
+        let mut l = pairs.to_vec();
+        l.push(("le", "+Inf"));
+        self.sample(&bucket, &l, cumulative);
+        self.sample(&format!("{name}_sum"), pairs, b.sum_us as f64 / 1e6);
+        self.sample(&format!("{name}_count"), pairs, cumulative)
     }
 
     pub fn finish(self) -> String {
@@ -221,5 +242,36 @@ mod tests {
         assert!(text.contains("odd=\"a\\\"b\\\\c\""), "label values escaped");
         // Every family is declared exactly once.
         assert_eq!(text.matches("# TYPE telltale_queries_total").count(), 1);
+    }
+
+    #[test]
+    fn obs_005_labeled_histograms() {
+        let mut b = Buckets::default();
+        b.record(40);
+        b.record(3_000);
+        b.record(9_000_000);
+        let mut w = PromWriter::new();
+        w.family("telltale_upstream_duration_seconds", "histogram", "x");
+        w.histogram(
+            "telltale_upstream_duration_seconds",
+            &[("upstream", "quad9"), ("protocol", "tls")],
+            &b,
+        );
+        let t = w.finish();
+        assert!(t.contains(
+            "telltale_upstream_duration_seconds_bucket{upstream=\"quad9\",protocol=\"tls\",le=\"0.00005\"} 1"
+        ));
+        assert!(t.contains(
+            "telltale_upstream_duration_seconds_bucket{upstream=\"quad9\",protocol=\"tls\",le=\"0.005\"} 2"
+        ));
+        assert!(t.contains(
+            "telltale_upstream_duration_seconds_bucket{upstream=\"quad9\",protocol=\"tls\",le=\"+Inf\"} 3"
+        ));
+        assert!(t.contains(
+            "telltale_upstream_duration_seconds_count{upstream=\"quad9\",protocol=\"tls\"} 3"
+        ));
+        assert!(t.contains(
+            "telltale_upstream_duration_seconds_sum{upstream=\"quad9\",protocol=\"tls\"} 9.00304"
+        ));
     }
 }

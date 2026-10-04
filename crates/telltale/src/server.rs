@@ -294,6 +294,16 @@ fn build_pipeline(
     Pipeline::new(settings, cache, router, policy)
 }
 
+/// REQ: OBS-005 — per-client query series are opt-in and capped (`[telemetry.metrics]`).
+fn set_client_metrics(cfg: &Config, pipeline: &Pipeline) {
+    let m = &cfg.telemetry.metrics;
+    pipeline.telemetry.aggregates().exported.client_cap = if m.per_client {
+        usize::try_from(m.per_client_cap).unwrap_or(usize::MAX)
+    } else {
+        0
+    };
+}
+
 /// Starts the metrics and API listeners; both stop when `stop` turns true.
 async fn start_http(
     cfg: &Config,
@@ -361,6 +371,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OBS-002 — one aggregator thread drains the event rings (`spec/06` §2). It never
     // touches the query path: a stalled aggregator only means dropped (counted) events.
     let (qlog, qlog_stats) = query_log(&cfg);
+    set_client_metrics(&cfg, &pipeline);
     let _aggregator = pipeline
         .telemetry
         .spawn_aggregator(Duration::from_millis(25), qlog)?;
@@ -372,6 +383,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         rt: tokio::runtime::Handle::current(),
     };
     listeners.apply(&cfg.listen)?;
+
+    // REQ: OBS-004, `spec/06` §3 — rollups on disk, fed once a minute off the query path.
+    let rollups = crate::rollups::open(&cfg);
+    let _rollup_writer = rollups
+        .as_ref()
+        .map(|db| crate::rollups::spawn(Arc::clone(db), Arc::clone(&pipeline)));
 
     // REQ: OBS-005, OPS-006 — metrics and health probes.
     let ready = Arc::new(AtomicBool::new(false));
@@ -388,6 +405,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
+        rollups: rollups.clone(),
     });
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     start_http(&cfg, &sources, &http_stopped).await?;
@@ -479,6 +497,7 @@ fn reload(
             return;
         }
     };
+    set_client_metrics(&new, pipeline);
     if let Err(e) = listeners.apply(&new.listen) {
         error!("reload: {e}; listeners unchanged where binding failed");
     }

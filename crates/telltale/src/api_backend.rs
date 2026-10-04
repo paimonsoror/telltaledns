@@ -17,7 +17,8 @@ use telltale_api::model::{
 use telltale_api::problem::Problem;
 use telltale_api::time::format_us;
 use telltale_store::qlog;
-use telltale_telemetry::agg::{HourSel, LatencyKey, Percentiles, Resolution};
+use telltale_store::rollup::{Level, merge};
+use telltale_telemetry::agg::{Counts, HourSel, LatencyKey, Percentiles, Resolution};
 use telltale_telemetry::{N_RCODE, Path as AnswerPath, Proto, QTYPES, Status};
 use telltale_upstream::health::Breaker;
 
@@ -123,6 +124,55 @@ fn csv(v: Option<&String>) -> Vec<String> {
 }
 
 impl ApiBackend {
+    /// Count buckets at `step`: seconds from memory; minutes from the rollup database
+    /// overlaid with memory (memory is fresher); hours and days from the rollup database,
+    /// or summed from memory minutes when it isn't available.
+    fn counts(&self, step: Step, from_s: u64, to_s: u64) -> Vec<(u64, Counts)> {
+        let mem = |res| {
+            self.src
+                .pipeline
+                .telemetry
+                .aggregates()
+                .series(res, from_s, to_s)
+        };
+        let db = self.src.rollups.as_ref();
+        let stored = |level| {
+            db.map(|d| {
+                d.range(level, from_s, to_s).unwrap_or_else(|e| {
+                    tracing::warn!("rollups: {e}");
+                    Vec::new()
+                })
+            })
+        };
+        match step {
+            Step::Second => mem(Resolution::Second),
+            Step::Minute => {
+                let live = mem(Resolution::Minute);
+                let Some(old) = stored(Level::Minute) else {
+                    return live;
+                };
+                let mut by: std::collections::BTreeMap<u64, Counts> = old.into_iter().collect();
+                by.extend(live);
+                by.into_iter().collect()
+            }
+            Step::Hour | Step::Day => {
+                let level = if step == Step::Hour {
+                    Level::Hour
+                } else {
+                    Level::Day
+                };
+                stored(level).unwrap_or_else(|| {
+                    let width = level.width_s();
+                    let mut by = std::collections::BTreeMap::<u64, Counts>::new();
+                    for (start, c) in mem(Resolution::Minute) {
+                        merge(by.entry(start - start % width).or_default(), &c);
+                    }
+                    by.into_iter().collect()
+                })
+            }
+        }
+    }
+
     /// List names of the active snapshot, by list ID.
     fn list_names(&self) -> Vec<String> {
         self.src
@@ -206,13 +256,7 @@ impl Backend for ApiBackend {
             .load()
             .as_ref()
             .and_then(|f| f.matcher.snapshot().cloned());
-        let node = if cfg.node.name.is_empty() {
-            std::fs::read_to_string("/proc/sys/kernel/hostname")
-                .map(|h| h.trim().to_owned())
-                .unwrap_or_default()
-        } else {
-            cfg.node.name.to_string()
-        };
+        let node = crate::http::node_name(&cfg);
         let started_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_micros())
@@ -237,17 +281,9 @@ impl Backend for ApiBackend {
         }
     }
 
+    // REQ: OBS-004, `spec/06` §3 — live windows from memory, longer ranges from rollups.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
-        let res = match step {
-            Step::Second => Resolution::Second,
-            Step::Minute => Resolution::Minute,
-        };
-        let series = self
-            .src
-            .pipeline
-            .telemetry
-            .aggregates()
-            .series(res, from_s, to_s);
+        let series = self.counts(step, from_s, to_s);
         series
             .into_iter()
             .map(|(start, c)| {

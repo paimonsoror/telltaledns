@@ -864,6 +864,7 @@ pub struct MetricsConfig {
     pub listen: SocketAddr,
     /// Export per-client series (high cardinality; capped).
     pub per_client: bool,
+    /// At most this many clients get their own series (default 100); the rest are "other".
     pub per_client_cap: u32,
 }
 
@@ -873,7 +874,7 @@ impl Default for MetricsConfig {
             enabled: true,
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9153),
             per_client: false,
-            per_client_cap: 256,
+            per_client_cap: 100,
         }
     }
 }

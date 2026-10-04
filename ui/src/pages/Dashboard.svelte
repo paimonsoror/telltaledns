@@ -15,6 +15,8 @@
     { id: '1h', label: '1 h', from: '-1h', step: 'minute' as const, summary: '-1h', secs: 3600 },
     { id: '24h', label: '24 h', from: '-24h', step: 'minute' as const, summary: '-24h', secs: 86400 },
     { id: '48h', label: '48 h', from: '-48h', step: 'minute' as const, summary: '-48h', secs: 172800 },
+    { id: '7d', label: '7 d', from: '-7d', step: 'hour' as const, summary: '-7d', secs: 604800 },
+    { id: '30d', label: '30 d', from: '-30d', step: 'hour' as const, summary: '-30d', secs: 2592000 },
   ];
   let range = $state(ranges[2]);
 
@@ -42,7 +44,7 @@
         api.latency('path'),
       ]);
       summary = s;
-      buckets = dense(ts.items, r.step === 'second' ? 1 : 60, r.secs);
+      buckets = dense(ts.items, { second: 1, minute: 60, hour: 3600, day: 86400 }[r.step], r.secs);
       topDomains = d.items;
       topBlocked = b.items;
       topClients = c.items;

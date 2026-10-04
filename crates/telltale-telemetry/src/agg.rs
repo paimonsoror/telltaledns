@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use hdrhistogram::Histogram;
 
 use crate::event::{Name, QueryEvent, Record, UpstreamEvent};
+use crate::export::Exported;
 use crate::topk::{SpaceSaving, Top};
 use crate::{N_QTYPE, N_RCODE, N_STATUS, Path, Proto, Status, qtype_index};
 
@@ -297,6 +298,8 @@ pub struct Aggregates {
     seq: u64,
     /// Newest event timestamp (seconds).
     pub latest_s: u64,
+    /// Cumulative series for Prometheus (OBS-005).
+    pub exported: Exported,
 }
 
 impl Default for Aggregates {
@@ -321,6 +324,7 @@ impl Aggregates {
             previous: None,
             seq: 0,
             latest_s: 0,
+            exported: Exported::default(),
         }
     }
 
@@ -341,6 +345,7 @@ impl Aggregates {
         let in_hour = hour == self.current.index;
         match r {
             Record::Query(e, name) => {
+                self.exported.add_query(e);
                 for series in [&mut self.seconds, &mut self.minutes] {
                     if let Some(c) = series.at(ts_s) {
                         c.add_query(e);
@@ -351,6 +356,7 @@ impl Aggregates {
                 }
             }
             Record::Upstream(e) => {
+                self.exported.add_upstream(e);
                 for series in [&mut self.seconds, &mut self.minutes] {
                     if let Some(c) = series.at(ts_s) {
                         c.add_upstream(e);
@@ -426,6 +432,11 @@ impl Aggregates {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Start (Unix seconds) of the last complete hour kept in memory, if any.
+    pub fn previous_hour_start(&self) -> Option<u64> {
+        self.previous.as_ref().map(|h| h.index * 3600)
     }
 
     /// Latency percentiles for `key` in the selected hour.

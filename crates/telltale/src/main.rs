@@ -10,6 +10,7 @@ mod http;
 mod lists;
 mod pipeline;
 mod qlog_cli;
+mod rollups;
 mod server;
 
 use std::io::{self, Write};

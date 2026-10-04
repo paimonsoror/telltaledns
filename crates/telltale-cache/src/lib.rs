@@ -163,6 +163,8 @@ pub struct CacheStats {
     pub inserts: u64,
     pub uncacheable: u64,
     pub evictions: u64,
+    /// Hits that triggered a background refresh (DNS-008).
+    pub prefetches: u64,
     pub entries: usize,
     pub bytes: usize,
 }
@@ -260,7 +262,11 @@ impl Cache {
             _ => Lookup::Miss,
         };
         match outcome {
-            Lookup::Hit { .. } => shard.stats.hits += 1,
+            Lookup::Hit { prefetch, .. } => {
+                shard.stats.hits += 1;
+                // REQ: DNS-008, OBS-005 — prefetches triggered (`telltale_cache_prefetch_total`).
+                shard.stats.prefetches += u64::from(prefetch);
+            }
             _ => shard.stats.misses += 1,
         }
         outcome
@@ -366,6 +372,7 @@ impl Cache {
         for s in &self.shards {
             let s = s.0.lock();
             t.hits += s.stats.hits;
+            t.prefetches += s.stats.prefetches;
             t.misses += s.stats.misses;
             t.stale_served += s.stats.stale_served;
             t.inserts += s.stats.inserts;

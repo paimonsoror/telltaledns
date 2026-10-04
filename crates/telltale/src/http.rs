@@ -46,6 +46,8 @@ pub(crate) struct Sources {
     pub(crate) qlog: Option<Arc<telltale_store::qlog::Stats>>,
     /// The running configuration (replaced on reload), for the API.
     pub(crate) config: ArcSwap<telltale_config::Config>,
+    /// Minute/hour/day rollups on disk (spec/06 §3), when they could be opened.
+    pub(crate) rollups: Option<Arc<telltale_store::rollup::Rollups>>,
 }
 
 pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
@@ -127,6 +129,17 @@ async fn metrics(State(src): State<Arc<Sources>>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, CONTENT_TYPE)], render(&src))
 }
 
+/// The node's name: `[node] name`, or the host name.
+pub(crate) fn node_name(cfg: &telltale_config::Config) -> String {
+    if cfg.node.name.is_empty() {
+        std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .map(|h| h.trim().to_owned())
+            .unwrap_or_default()
+    } else {
+        cfg.node.name.to_string()
+    }
+}
+
 /// Resident set size from /proc (Linux), for the footprint gates in `spec/00` §5.
 fn rss_bytes() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -146,6 +159,7 @@ pub(crate) fn render(src: &Sources) -> String {
     }
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
+    render_exported(&mut w, src, &state);
     if let Some(l) = src.lists.load_full() {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
@@ -194,7 +208,10 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
     w.family("telltale_build_info", "gauge", "Build information.")
         .sample(
             "telltale_build_info",
-            &[("version", env!("CARGO_PKG_VERSION"))],
+            &[
+                ("version", env!("CARGO_PKG_VERSION")),
+                ("node", node_name(&src.config.load()).as_str()),
+            ],
             1,
         );
     w.family("telltale_uptime_seconds", "gauge", "Seconds since start.")
@@ -315,6 +332,12 @@ fn render_cache(w: &mut PromWriter, cache: &Cache) {
             "counter",
             "Entries evicted to stay within budget.",
             c.evictions,
+        ),
+        (
+            "telltale_cache_prefetch_total",
+            "counter",
+            "Hot entries refreshed before they expired (DNS-008).",
+            c.prefetches,
         ),
         (
             "telltale_cache_entries",
@@ -439,24 +462,18 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
     w.family(
         "telltale_upstream_requests_total",
         "counter",
-        "Upstream attempts.",
+        "Upstream attempts by outcome (failure: timeout, error, SERVFAIL/REFUSED).",
     );
     for (name, s) in &snaps {
+        let ok = s.requests.saturating_sub(s.failures);
         w.sample(
             "telltale_upstream_requests_total",
-            &[("upstream", name)],
-            s.requests,
+            &[("upstream", name), ("outcome", "success")],
+            ok,
         );
-    }
-    w.family(
-        "telltale_upstream_failures_total",
-        "counter",
-        "Failed upstream attempts (timeouts, errors, SERVFAIL/REFUSED).",
-    );
-    for (name, s) in &snaps {
         w.sample(
-            "telltale_upstream_failures_total",
-            &[("upstream", name)],
+            "telltale_upstream_requests_total",
+            &[("upstream", name), ("outcome", "failure")],
             s.failures,
         );
     }
@@ -487,6 +504,111 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
             );
         }
     }
+}
+
+/// REQ: OBS-005, OBS-011 — series built from events by the aggregator: upstream latency
+/// histograms, the upstream-wait stage, blocks by group and list, opt-in per-client counts.
+fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::Dynamic) {
+    let ex = src.pipeline.telemetry.aggregates().exported.clone();
+    w.family(
+        "telltale_stage_duration_seconds",
+        "histogram",
+        "Time spent in a pipeline stage, per query that went through it (stage=upstream: waiting for upstreams).",
+    )
+    .histogram(
+        "telltale_stage_duration_seconds",
+        &[("stage", "upstream")],
+        &ex.stage_upstream,
+    );
+
+    w.family(
+        "telltale_upstream_duration_seconds",
+        "histogram",
+        "Upstream exchange time, including prefetches.",
+    );
+    for u in state.router.upstreams() {
+        if let Some(t) = ex.upstreams.get(usize::from(u.id)) {
+            let endpoint = u.endpoint.to_string();
+            let protocol = endpoint.split_once("://").map_or("udp", |(p, _)| p);
+            w.histogram(
+                "telltale_upstream_duration_seconds",
+                &[("upstream", u.name.as_str()), ("protocol", protocol)],
+                &t.latency,
+            );
+        }
+    }
+
+    let groups = state.policy.clients.groups();
+    let lists: Vec<String> = src
+        .pipeline
+        .filter
+        .load()
+        .as_ref()
+        .and_then(|f| f.matcher.snapshot().cloned())
+        .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
+        .unwrap_or_default();
+    w.family(
+        "telltale_blocked_total",
+        "counter",
+        "Blocked queries by the client's primary group and the deciding list.",
+    );
+    let mut blocked: Vec<_> = ex.blocked.iter().collect();
+    blocked.sort();
+    for ((g, l), n) in blocked {
+        let group = groups
+            .get(usize::from(*g))
+            .map_or_else(|| "unknown".to_owned(), |g| g.name.to_string());
+        let list = lists.get(usize::from(*l)).map_or("unknown", String::as_str);
+        w.sample(
+            "telltale_blocked_total",
+            &[("group", group.as_str()), ("list", list)],
+            *n,
+        );
+    }
+    if ex.blocked_other > 0 {
+        w.sample(
+            "telltale_blocked_total",
+            &[("group", "other"), ("list", "other")],
+            ex.blocked_other,
+        );
+    }
+
+    if ex.client_cap > 0 {
+        w.family(
+            "telltale_client_queries_total",
+            "counter",
+            "Queries per client (opt-in: [telemetry.metrics] per_client; capped, the rest are client=\"other\").",
+        );
+        let mut clients: Vec<_> = ex.clients.iter().collect();
+        clients.sort();
+        for (ip, n) in clients {
+            let ip = telltale_telemetry::agg::client_text(*ip);
+            w.sample(
+                "telltale_client_queries_total",
+                &[("client", ip.as_str())],
+                *n,
+            );
+        }
+        w.sample(
+            "telltale_client_queries_total",
+            &[("client", "other")],
+            ex.clients_other,
+        );
+    }
+
+    // `spec/06` §5 names this separately; it equals queries_total{status="rate_limited"}.
+    let s = src.metrics.snapshot();
+    let limited: u64 = s
+        .queries
+        .iter()
+        .map(|row| row[telltale_telemetry::Status::RateLimited as usize])
+        .sum();
+    w.family(
+        "telltale_ratelimited_total",
+        "counter",
+        "Queries refused or dropped by per-client rate limiting (DNS-014).",
+    )
+    .sample("telltale_ratelimited_total", &[], limited);
 }
 
 fn render_listeners(w: &mut PromWriter, src: &Sources) {
@@ -581,6 +703,7 @@ mod tests {
             lists: ArcSwapOption::empty(),
             qlog: None,
             config: ArcSwap::from_pointee(telltale_config::Config::default()),
+            rollups: None,
             allowed: Vec::new(),
         };
         let text = render(&src);

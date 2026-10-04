@@ -67,6 +67,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 site/build.py --check
+      # REQ: OBS-005 — the Grafana dashboard is regenerated from deploy/grafana/build.py.
+      - run: python3 deploy/grafana/build.py --check
 
   # REQ: API-005 — T3.9 AC: the UI type-checks, its API types match docs/api/openapi.json,
   # the bundle stays within 400 KiB gzipped, and the Playwright suite passes against the

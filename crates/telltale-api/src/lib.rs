@@ -150,8 +150,9 @@ async fn fallback(
     security(("session" = []), ("bearer" = []), ("basic" = [])),
     tags(
         (name = "system", description = "Node information."),
-        (name = "stats", description = "Live counters, top lists, and latency percentiles from \
-            memory (the last 48 hours at minute resolution, 15 minutes at second resolution)."),
+        (name = "stats", description = "Counters, top lists, and latency percentiles. Live \
+            windows in memory (15 minutes per second, 48 hours per minute) plus rollups on disk \
+            (7 days per minute, 400 days per hour, days forever)."),
         (name = "queries", description = "The query log and explanations of decisions."),
         (name = "config", description = "Lists, groups, clients, and upstreams as running."),
         (name = "auth", description = "Sign-in, two-factor, API tokens, and users. Everything \
@@ -254,8 +255,9 @@ async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
 /// Totals over a time range.
 ///
 /// Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts
-/// from the minute series (the last 48 hours), plus this hour's active clients and latency
-/// percentiles by answer path. Example: `GET /api/v1/stats/summary?from=-24h`.
+/// over the range (per-minute data up to 48 hours back, hourly rollups beyond), plus this
+/// hour's active clients and latency percentiles by answer path. Example:
+/// `GET /api/v1/stats/summary?from=-24h` or `?from=-30d`.
 #[utoipa::path(get, path = "/api/v1/stats/summary", tag = "stats", params(SummaryParams),
     responses((status = 200, body = Summary), (status = 400, body = Problem)))]
 async fn stats_summary(
@@ -271,7 +273,14 @@ async fn stats_summary(
         to_unix_seconds: to,
         ..Summary::default()
     };
-    for bucket in b.timeseries(Step::Minute, from, to) {
+    let step = if now.saturating_sub(from) > 48 * 3600 {
+        Step::Hour
+    } else {
+        Step::Minute
+    };
+    let bk = Arc::clone(&b);
+    let buckets = blocking(move || Ok(bk.timeseries(step, from, to))).await?;
+    for bucket in buckets {
         let st = |k: &str| u64::from(bucket.by_status.get(k).copied().unwrap_or(0));
         s.queries += u64::from(bucket.total);
         s.blocked += st("blocked");
@@ -298,8 +307,9 @@ async fn stats_summary(
 /// Query counts over time.
 ///
 /// Buckets by status, query type, and response code, plus upstream exchanges. `step=second`
-/// covers the last 15 minutes, `step=minute` the last 48 hours. Example:
-/// `GET /api/v1/stats/timeseries?from=-1h&step=minute`.
+/// covers the last 15 minutes, `step=minute` 7 days (48 hours live), `step=hour` 400 days,
+/// `step=day` everything. Buckets without queries are omitted. Example:
+/// `GET /api/v1/stats/timeseries?from=-30d&step=hour`.
 #[utoipa::path(get, path = "/api/v1/stats/timeseries", tag = "stats", params(TimeseriesParams),
     responses((status = 200, body = Items<TimeBucket>), (status = 400, body = Problem)))]
 async fn stats_timeseries(
@@ -309,12 +319,16 @@ async fn stats_timeseries(
     check_scope(p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let step = p.step.unwrap_or(Step::Minute);
-    let default_from = now.saturating_sub(if step == Step::Second { 300 } else { 3600 });
+    let default_from = now.saturating_sub(match step {
+        Step::Second => 300,
+        Step::Minute => 3600,
+        Step::Hour => 7 * 86_400,
+        Step::Day => 90 * 86_400,
+    });
     let from = time_param(p.from.as_deref(), default_from, now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
-    Ok(Json(Items {
-        items: b.timeseries(step, from, to),
-    }))
+    let items = blocking(move || Ok(b.timeseries(step, from, to))).await?;
+    Ok(Json(Items { items }))
 }
 
 /// Top domains, blocked domains, NXDOMAIN names, or clients.

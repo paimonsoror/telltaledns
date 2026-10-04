@@ -74,7 +74,13 @@
           stroke: muted,
           grid: { stroke: grid, width: 1 },
           ticks: { stroke: grid },
-          values: (_u, vals) => vals.map((v) => clock(v, seconds)),
+          // Over two days: label with the date.
+          values: (_u, vals) =>
+            vals.map((v) =>
+              times.length > 1 && times[times.length - 1] - times[0] > 172_800
+                ? new Date(v * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                : clock(v, seconds),
+            ),
         },
         {
           stroke: muted,

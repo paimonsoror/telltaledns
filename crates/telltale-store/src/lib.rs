@@ -6,4 +6,5 @@
 #![forbid(unsafe_code)]
 
 pub mod qlog;
+pub mod rollup;
 pub mod state;

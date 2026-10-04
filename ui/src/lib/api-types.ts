@@ -331,8 +331,9 @@ export interface paths {
         /**
          * Totals over a time range.
          * @description Queries, blocked (count and percent), cache hits, forwarded, NXDOMAIN and SERVFAIL counts
-         *     from the minute series (the last 48 hours), plus this hour's active clients and latency
-         *     percentiles by answer path. Example: `GET /api/v1/stats/summary?from=-24h`.
+         *     over the range (per-minute data up to 48 hours back, hourly rollups beyond), plus this
+         *     hour's active clients and latency percentiles by answer path. Example:
+         *     `GET /api/v1/stats/summary?from=-24h` or `?from=-30d`.
          */
         get: operations["stats_summary"];
         put?: never;
@@ -353,8 +354,9 @@ export interface paths {
         /**
          * Query counts over time.
          * @description Buckets by status, query type, and response code, plus upstream exchanges. `step=second`
-         *     covers the last 15 minutes, `step=minute` the last 48 hours. Example:
-         *     `GET /api/v1/stats/timeseries?from=-1h&step=minute`.
+         *     covers the last 15 minutes, `step=minute` 7 days (48 hours live), `step=hour` 400 days,
+         *     `step=day` everything. Buckets without queries are omitted. Example:
+         *     `GET /api/v1/stats/timeseries?from=-30d&step=hour`.
          */
         get: operations["stats_timeseries"];
         put?: never;
@@ -1031,7 +1033,7 @@ export interface components {
          * @description Time-bucket size for [`TimeseriesParams`].
          * @enum {string}
          */
-        Step: "second" | "minute";
+        Step: "second" | "minute" | "hour" | "day";
         /** @description Totals over a time range. */
         Summary: {
             /**
@@ -1673,7 +1675,10 @@ export interface operations {
     stats_summary: {
         parameters: {
             query?: {
-                /** @description Start: RFC 3339 or relative (`-24h`). Default: 24 hours ago (at most 48 hours back). */
+                /**
+                 * @description Start: RFC 3339 or relative (`-24h`, `-30d`). Default: 24 hours ago. Ranges over
+                 *     48 hours are summed from hourly rollups.
+                 */
                 from?: string;
                 /** @description End. Default: now. */
                 to?: string;
@@ -1708,8 +1713,8 @@ export interface operations {
         parameters: {
             query?: {
                 /**
-                 * @description Start: RFC 3339 or relative (`-1h`). Default: 1 hour ago (minute steps) or 5 minutes
-                 *     ago (second steps).
+                 * @description Start: RFC 3339 or relative (`-1h`). Default: 5 minutes ago (second steps), 1 hour
+                 *     (minute), 7 days (hour), or 90 days (day).
                  */
                 from?: string;
                 /** @description End: RFC 3339 or relative. Default: now. */
