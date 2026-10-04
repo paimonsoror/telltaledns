@@ -49,7 +49,32 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     clients(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
+    cluster(cfg, &mut r);
     r.warnings
+}
+
+// REQ: CLU-001 — the cluster port can't share an address with a listener (both default to
+// 8443 for DoH and the cluster channel).
+fn cluster(cfg: &Config, r: &mut Report<'_>) {
+    let Ok(addr) = cfg.cluster.listen.as_str().parse::<std::net::SocketAddr>() else {
+        r.err(
+            "cluster.listen",
+            "must be an address and port, e.g. 0.0.0.0:8443",
+        );
+        return;
+    };
+    for (i, l) in cfg.listen.iter().enumerate() {
+        if matches!(
+            l.proto,
+            crate::ListenProto::Tcp | crate::ListenProto::Dot | crate::ListenProto::Doh
+        ) && l.addr.port() == addr.port()
+        {
+            r.warn(format!(
+                "cluster.listen: listen[{i}] also uses TCP port {}; the cluster port opens only after `telltale cluster init|join`, and will then fail to bind",
+                addr.port()
+            ));
+        }
+    }
 }
 
 // REQ: API-003

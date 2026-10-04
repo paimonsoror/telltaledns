@@ -952,6 +952,41 @@ export interface components {
              */
             name?: string | null;
         };
+        /** @description This node's cluster membership and the peers it holds a stream with. */
+        ClusterInfo: {
+            /** @description When this node's cluster certificate expires (RFC 3339). */
+            certExpiresAt: string;
+            clusterId: string;
+            /**
+             * @description The name given at `telltale cluster init`.
+             * @example home
+             */
+            name: string;
+            /**
+             * @description This node's ID (from its key; stable across restarts).
+             * @example 3f9c2a71d04b8e15
+             */
+            nodeId: string;
+            /** @description Peers this node has heard from since it started. */
+            peers: components["schemas"]["ClusterPeer"][];
+            /** @description Whether this node holds the cluster CA (the first node, until promotion arrives). */
+            primary: boolean;
+            /** @example home-pi */
+            site: string;
+        };
+        /** @description A peer node, as last heard over the cluster channel. */
+        ClusterPeer: {
+            /** Format: int64 */
+            lastSeenSecondsAgo: number;
+            nodeId: string;
+            primary: boolean;
+            site: string;
+            /** @description Heard from within the last three heartbeats (15 s). */
+            up: boolean;
+            version: string;
+            /** @description `inbound` (it connected to us) or `outbound`. */
+            via: string;
+        };
         /**
          * @description Stable error codes.
          * @enum {string}
@@ -1648,6 +1683,7 @@ export interface components {
         /** @description Node and build information. */
         SystemInfo: {
             clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
+            cluster?: components["schemas"]["ClusterInfo"] | null;
             /**
              * Format: int64
              * @description Blocked names in the active snapshot.

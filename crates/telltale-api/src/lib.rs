@@ -27,10 +27,10 @@ use axum::routing::get;
 use utoipa::OpenApi;
 
 use crate::model::{
-    AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ConfigChange,
-    ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams, ExplainRoute,
-    ExplainRule, Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items, LatencyBy,
-    LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, QueryPage,
+    AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ClusterInfo, ClusterPeer,
+    ConfigChange, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
+    ExplainRoute, ExplainRule, Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items,
+    LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, QueryPage,
     QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams,
     SystemInfo, TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind,
     TopParams, UpstreamInfo,
@@ -241,7 +241,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,

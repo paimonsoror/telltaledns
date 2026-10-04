@@ -2434,6 +2434,93 @@
         },
         "additionalProperties": false
       },
+      "ClusterInfo": {
+        "type": "object",
+        "description": "This node's cluster membership and the peers it holds a stream with.",
+        "required": [
+          "clusterId",
+          "name",
+          "nodeId",
+          "site",
+          "primary",
+          "certExpiresAt",
+          "peers"
+        ],
+        "properties": {
+          "certExpiresAt": {
+            "type": "string",
+            "description": "When this node's cluster certificate expires (RFC 3339)."
+          },
+          "clusterId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name given at `telltale cluster init`.",
+            "example": "home"
+          },
+          "nodeId": {
+            "type": "string",
+            "description": "This node's ID (from its key; stable across restarts).",
+            "example": "3f9c2a71d04b8e15"
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClusterPeer"
+            },
+            "description": "Peers this node has heard from since it started."
+          },
+          "primary": {
+            "type": "boolean",
+            "description": "Whether this node holds the cluster CA (the first node, until promotion arrives)."
+          },
+          "site": {
+            "type": "string",
+            "example": "home-pi"
+          }
+        }
+      },
+      "ClusterPeer": {
+        "type": "object",
+        "description": "A peer node, as last heard over the cluster channel.",
+        "required": [
+          "nodeId",
+          "site",
+          "version",
+          "up",
+          "primary",
+          "lastSeenSecondsAgo",
+          "via"
+        ],
+        "properties": {
+          "lastSeenSecondsAgo": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "site": {
+            "type": "string"
+          },
+          "up": {
+            "type": "boolean",
+            "description": "Heard from within the last three heartbeats (15 s)."
+          },
+          "version": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string",
+            "description": "`inbound` (it connected to us) or `outbound`."
+          }
+        }
+      },
       "Code": {
         "type": "string",
         "description": "Stable error codes.",
@@ -4403,6 +4490,17 @@
               {
                 "$ref": "#/components/schemas/MaskedClients",
                 "description": "Present when client IPs appear masked (OPS-003): most recent queries come from a few\ninfrastructure addresses (a Kubernetes node, a Docker bridge, a forwarding router),\nso per-device statistics and rules see those instead of devices."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cluster": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterInfo",
+                "description": "Present when this node belongs to a cluster (CLU-001)."
               },
               {
                 "type": "null"

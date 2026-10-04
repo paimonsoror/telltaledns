@@ -497,3 +497,18 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Surfaces:** `GET /api/v1/analytics/anomalies?since=`, the Anomalies page, `telltale_anomalies_total{kind}` with a chart alert (`TelltaleDNSDeviceAnomaly`, info), and later the `find_anomalies` MCP tool (T6.6). Off at privacy level 3.
 
 **Deferred:** the TTL-violation flag (events don't carry answer TTLs yet), per-group sensitivity, mute/acknowledge, and the alert-rule engine's own destinations (OBS-010).
+
+## ADR-044 — Cluster channel v1: identity files, reusable join tokens, and peer trust (Proposed)
+**Context:** T5.1 implements CLU-001 under `spec/12` §3, which fixes the shape (Ed25519 CA, join token with CA fingerprint + URLs + secret, 90-day node certificates, mTLS over HTTP/2 with protobuf, persistent streams, replicas dial out) but not the token format, how peers name each other in TLS, where identity lives, or whether a token is single-use.
+
+**Decision:**
+- **Token:** `tt_join_` + base64url(JSON `{v, cluster_id, cluster_name, ca_fp, urls, secret, exp}`) (the spec's `vgl_join_` predates the rename). Tokens are **reusable until they expire**, because `spec/12` §3 has every Kubernetes pod join with one long-lived token from a Secret. The primary stores only SHA-256 hashes of token secrets (`tokens.json`) and compares them in constant time.
+- **Join:** the joining node pins the CA by fingerprint against the chain the server sends (CA included), so the secret is never sent to a server outside the cluster. The primary picks the certificate's names itself, ignoring names in the CSR.
+- **Peer names:** every node certificate carries `cluster.telltale.invalid` and `<node-id>.node.telltale.invalid` (plus its advertise hosts). Peers verify against the cluster CA and the shared name, so trust doesn't depend on the address a peer was dialed at (LAN IP, ingress, NAT). The peer's node ID comes from its certificate, and its Hello must match it. Node ID = the first 16 hex digits of SHA-256(public key).
+- **Identity on disk:** `<data_dir>/cluster/{cluster.json, ca.crt, node.crt, node.key, ca.key (primary only), tokens.json}`, keys mode 0600, atomic writes. `telltale cluster init|join` write it, and the server reads it at startup (a restart joins the channel).
+- **Wire:** 4-byte big-endian length + prost `Frame{Hello|Heartbeat}`, 1 MiB frame limit, `POST /cluster/v1/stream` with a streaming body in both directions, heartbeats every 5 s, peer down after 15 s, reconnect with full-jitter backoff (1 s doubling to 30 s). `POST /cluster/v1/join` is the only route served without a client certificate.
+- **Port:** `[cluster] listen`, default `0.0.0.0:8443` per `spec/12`. That is the same port our docs use for DoH, so `telltale config check` warns about the clash rather than changing either default.
+- **Dependencies:** `prost` is new (pure Rust; frames only, no codegen step); `rcgen` moves from dev-only to runtime for issuing certificates.
+
+**Deferred:** certificate renewal at 2/3 of life and CA rotation (with T5.4 promotion, since only the CA holder can issue), eligible-to-eligible streams, and ephemeral Kubernetes members joining from a Secret at startup (T5.10). The cluster health page and per-peer lag (T5.9); heartbeats carry `qps`, which is still 0.
+

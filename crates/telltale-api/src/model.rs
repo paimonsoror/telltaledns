@@ -32,6 +32,44 @@ pub struct SystemInfo {
     /// infrastructure addresses (a Kubernetes node, a Docker bridge, a forwarding router),
     /// so per-device statistics and rules see those instead of devices.
     pub client_ips_masked: Option<MaskedClients>,
+    /// Present when this node belongs to a cluster (CLU-001).
+    pub cluster: Option<ClusterInfo>,
+}
+
+/// This node's cluster membership and the peers it holds a stream with.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterInfo {
+    pub cluster_id: String,
+    /// The name given at `telltale cluster init`.
+    #[schema(example = "home")]
+    pub name: String,
+    /// This node's ID (from its key; stable across restarts).
+    #[schema(example = "3f9c2a71d04b8e15")]
+    pub node_id: String,
+    #[schema(example = "home-pi")]
+    pub site: String,
+    /// Whether this node holds the cluster CA (the first node, until promotion arrives).
+    pub primary: bool,
+    /// When this node's cluster certificate expires (RFC 3339).
+    pub cert_expires_at: String,
+    /// Peers this node has heard from since it started.
+    pub peers: Vec<ClusterPeer>,
+}
+
+/// A peer node, as last heard over the cluster channel.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterPeer {
+    pub node_id: String,
+    pub site: String,
+    pub version: String,
+    /// Heard from within the last three heartbeats (15 s).
+    pub up: bool,
+    pub primary: bool,
+    pub last_seen_seconds_ago: u64,
+    /// `inbound` (it connected to us) or `outbound`.
+    pub via: String,
 }
 
 /// Evidence that client IPs appear masked.

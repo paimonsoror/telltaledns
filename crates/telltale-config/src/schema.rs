@@ -144,6 +144,10 @@ pub struct ClusterConfig {
     pub site: SafeString,
     /// Whether this node may become the cluster primary.
     pub eligible: bool,
+    /// The cluster port (mTLS, node-to-node; REQ: CLU-001). Opened only once this node has
+    /// joined or created a cluster (`telltale cluster init|join`). Peers dial the URLs given
+    /// with `--advertise`, so map this port to those.
+    pub listen: SafeString,
 }
 
 impl Default for ClusterConfig {
@@ -152,6 +156,7 @@ impl Default for ClusterConfig {
             name: SafeString::from("telltale"),
             site: SafeString::from("default"),
             eligible: true,
+            listen: SafeString::from("0.0.0.0:8443"),
         }
     }
 }

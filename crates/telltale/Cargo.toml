@@ -32,6 +32,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 telltale-api = { version = "0.1.0", path = "../telltale-api" }
 telltale-cache = { version = "0.1.0", path = "../telltale-cache" }
+telltale-cluster = { version = "0.1.0", path = "../telltale-cluster" }
 telltale-config.workspace = true
 telltale-filter = { version = "0.1.0", path = "../telltale-filter" }
 telltale-store = { version = "0.1.0", path = "../telltale-store" }

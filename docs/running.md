@@ -461,6 +461,43 @@ upstream_group = "lan"
 ```
 The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 
+## Clusters (in progress)
+
+Nodes can form a cluster: the first node creates it and holds the cluster's certificate
+authority; others join with a token and then keep an encrypted, mutually authenticated link
+(mTLS over HTTP/2) to it. **So far the cluster only knows its members** — sharing
+configuration, failover, and one management plane arrive in the next roadmap steps (M5).
+DNS never depends on the cluster: a node answers the same whether its peers are up or not.
+
+Run these as the user telltale runs as (`sudo -u telltale` for native installs,
+`docker compose exec telltale` for Compose), then restart telltale.
+
+```sh
+# On the first node: create the cluster. List every URL other nodes might use to reach it.
+telltale cluster init --name home --advertise https://192.168.3.2:8443 --site home-pi
+
+# Still on the first node: a join token (reusable until it expires; treat it like a password).
+telltale cluster token create --ttl 1h
+
+# On the joining node: join, then restart it.
+telltale cluster join tt_join_... --site k8s
+
+# On any node: this node's identity.
+telltale cluster status
+```
+
+- **The cluster port** is `[cluster] listen` (default `0.0.0.0:8443`). It opens only once the node
+  is in a cluster. Only the first node's port must be reachable: joining nodes connect out
+  to it, so they can sit behind NAT. If you also serve DoH on 8443, change one of them
+  (`telltale config check` warns about the clash).
+- **Trust:** the token carries the fingerprint of the cluster's CA, so a joining node can't be
+  tricked into joining another server; the token's secret proves the node may join. Each node
+  gets a certificate valid for 90 days.
+- **State** lives in `<data_dir>/cluster/` (keys are readable only by their owner). Removing
+  that directory takes a node out of the cluster.
+- **Seeing members:** `GET /api/v1/system/info` lists them under `cluster.peers`, and
+  `telltale_cluster_peers{state="up"|"down"}` counts them in `/metrics`.
+
 ## Monitoring
 An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`) serves:
 

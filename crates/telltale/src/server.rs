@@ -514,6 +514,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let stats = listeners.stats();
     let (reload_tx, mut reload_rx) =
         tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(8);
+    let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
+    // REQ: CLU-001, CLU-004 — the cluster channel runs beside DNS and never gates it.
+    let cluster = crate::cluster::start(&cfg, &http_stopped);
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache,
@@ -533,9 +536,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         anomalies: anomalies.clone(),
         auth: std::sync::OnceLock::new(),
         masking: crate::masking::Detector::default(),
+        cluster,
         reload: reload_tx,
     });
-    let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     start_http(&cfg, &sources, &http_stopped).await?;
     let neighbors =
         neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));

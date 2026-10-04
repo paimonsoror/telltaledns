@@ -6,6 +6,7 @@
 mod anomaly;
 mod api_backend;
 mod auth_setup;
+mod cluster;
 mod explain;
 mod http;
 mod import;
@@ -116,6 +117,15 @@ enum Command {
         #[command(subcommand)]
         command: ImportCommand,
     },
+    /// Clusters: create one, issue join tokens, join one, show this node's membership.
+    // REQ: CLU-001
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommand,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config", global = true)]
+        config: Vec<PathBuf>,
+    },
     /// Exit 0 if the server answers 200 at `url` (a container healthcheck without a shell).
     // REQ: OPS-004, OPS-006
     Health {
@@ -135,6 +145,59 @@ enum Command {
         /// Restart the `telltale` systemd service after updating.
         #[arg(long)]
         restart: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ClusterCommand {
+    /// Create a cluster with this node as its primary (it generates and keeps the cluster CA).
+    /// Run as the user telltale runs as, then restart telltale.
+    Init {
+        /// Cluster name.
+        #[arg(long)]
+        name: String,
+        /// URLs other nodes reach this node's cluster port at (repeatable), e.g.
+        /// `https://192.168.3.2:8443`. Put every address peers might use (LAN IP, DNS name).
+        #[arg(long = "advertise", required = true)]
+        advertise: Vec<String>,
+        /// Site label (default: `[cluster] site`).
+        #[arg(long)]
+        site: Option<String>,
+    },
+    /// Join tokens (run on the primary).
+    Token {
+        #[command(subcommand)]
+        command: ClusterTokenCommand,
+    },
+    /// Join the cluster a token belongs to, then restart telltale.
+    Join {
+        /// The `tt_join_…` token from `telltale cluster token create`.
+        token: String,
+        /// URLs other nodes reach this node at (optional: replicas dial out).
+        #[arg(long = "advertise")]
+        advertise: Vec<String>,
+        /// Site label (default: `[cluster] site`).
+        #[arg(long)]
+        site: Option<String>,
+        /// May become primary (needs persistent storage).
+        #[arg(long)]
+        eligible: bool,
+    },
+    /// Show this node's cluster identity (offline; live peers are in the API and UI).
+    Status,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClusterTokenCommand {
+    /// Print a join token. Reusable until it expires, so one token can sit in a Kubernetes
+    /// Secret for every pod.
+    Create {
+        /// Lifetime: 30m, 1h, 7d, ... (default 1h).
+        #[arg(long, default_value = "1h", value_parser = cluster::parse_ttl)]
+        ttl: u64,
+        /// Cluster URLs to put in the token (default: this node's advertise URLs).
+        #[arg(long = "url")]
+        urls: Vec<String>,
     },
 }
 
@@ -391,6 +454,7 @@ fn main() -> ExitCode {
                     output,
                 },
         } => Ok(run_import_zone(&file, origin.as_deref(), output.as_deref())),
+        Command::Cluster { command, config } => Ok(run_cluster(command, config)),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -405,6 +469,42 @@ fn main() -> ExitCode {
             eprintln!("telltale: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
+    let Some(cfg) = server::load(&config_files(config)) else {
+        return ExitCode::FAILURE;
+    };
+    match command {
+        ClusterCommand::Init {
+            name,
+            advertise,
+            site,
+        } => cluster::init(
+            &cfg,
+            &mut io::stdout().lock(),
+            &name,
+            advertise,
+            site.as_deref(),
+        ),
+        ClusterCommand::Token {
+            command: ClusterTokenCommand::Create { ttl, urls },
+        } => cluster::token_create(&cfg, &mut io::stdout().lock(), ttl, urls),
+        ClusterCommand::Join {
+            token,
+            advertise,
+            site,
+            eligible,
+        } => cluster::join(
+            &cfg,
+            &mut io::stdout().lock(),
+            &token,
+            advertise,
+            site.as_deref(),
+            eligible,
+        ),
+        ClusterCommand::Status => cluster::status(&cfg, &mut io::stdout().lock()),
     }
 }
 

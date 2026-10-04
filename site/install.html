@@ -132,7 +132,7 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
 </section>
 
 <section id="hybrid">
-  <p class="eyebrow">Planned · roadmap M5</p>
+  <p class="eyebrow">In progress · roadmap M5</p>
   <h2>A Pi and Kubernetes, one cluster</h2>
   <figure class="figure">
     <svg viewBox="0 0 900 200" role="img">
@@ -149,8 +149,9 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
       <text x="450" y="90" text-anchor="middle" class="svg-sub">mTLS · signed config</text>
       <text x="450" y="118" text-anchor="middle" class="svg-sub">one management plane</text>
     </svg>
-    <figcaption>Until clustering lands, run both and give DHCP two DNS servers: each answers independently, with its own configuration.</figcaption>
+    <figcaption>Until shared configuration lands, run both and give DHCP two DNS servers: each answers independently, with its own configuration.</figcaption>
   </figure>
+  <p>Nodes can already form a cluster and keep an mTLS link: <code>telltale cluster init --name home --advertise https://192.168.3.2:8443</code> on the first node, <code>telltale cluster token create</code> there, then <code>telltale cluster join tt_join_…</code> on the other. Only the first node's port 8443 must be reachable; the others connect out. Shared configuration, failover, and one management plane follow in the next steps.</p>
 </section>
 
 <section id="router">

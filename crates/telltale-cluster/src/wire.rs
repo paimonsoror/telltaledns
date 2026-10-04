@@ -1,0 +1,153 @@
+//! Node-to-node messages (REQ: CLU-001, CLU-010; `spec/12` §3): protobuf (`prost`), each frame
+//! a 4-byte big-endian length then the encoded [`Frame`]. Fields are only ever added (never
+//! renumbered), so version N and N-1 interoperate: unknown fields are ignored.
+
+use prost::Message;
+
+/// The protocol version this build speaks. A peer with a different major version is refused.
+pub const PROTOCOL: u32 = 1;
+/// Largest frame accepted (snapshot manifests arrive later; blobs go over their own requests).
+pub const MAX_FRAME: usize = 1 << 20;
+
+/// The first message on a stream, both ways.
+#[derive(Clone, PartialEq, Message)]
+pub struct Hello {
+    #[prost(uint32, tag = "1")]
+    pub protocol: u32,
+    #[prost(string, tag = "2")]
+    pub cluster_id: String,
+    #[prost(string, tag = "3")]
+    pub node_id: String,
+    #[prost(string, tag = "4")]
+    pub version: String,
+    #[prost(string, tag = "5")]
+    pub site: String,
+    #[prost(bool, tag = "6")]
+    pub eligible: bool,
+    #[prost(string, repeated, tag = "7")]
+    pub advertise: Vec<String>,
+    /// The highest epoch this node has seen (CLU-005).
+    #[prost(uint64, tag = "8")]
+    pub epoch: u64,
+    /// The config version it has applied (CLU-003).
+    #[prost(uint64, tag = "9")]
+    pub applied_seq: u64,
+    #[prost(bool, tag = "10")]
+    pub primary: bool,
+}
+
+/// Sent every few seconds both ways; its absence marks a peer down.
+#[derive(Clone, PartialEq, Message)]
+pub struct Heartbeat {
+    /// Sender's clock (Unix ms), for lag display only.
+    #[prost(uint64, tag = "1")]
+    pub ts_ms: u64,
+    #[prost(uint64, tag = "2")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "3")]
+    pub applied_seq: u64,
+    /// Queries per second over the last interval (CLU-008).
+    #[prost(uint64, tag = "4")]
+    pub qps: u64,
+}
+
+/// One message on a stream.
+#[derive(Clone, PartialEq, Message)]
+pub struct Frame {
+    #[prost(oneof = "Body", tags = "1, 2")]
+    pub body: Option<Body>,
+}
+
+#[derive(Clone, PartialEq, prost::Oneof)]
+pub enum Body {
+    #[prost(message, tag = "1")]
+    Hello(Hello),
+    #[prost(message, tag = "2")]
+    Heartbeat(Heartbeat),
+}
+
+/// A frame with its length prefix.
+pub fn encode(f: &Frame) -> Vec<u8> {
+    let body = f.encode_to_vec();
+    let mut out = Vec::with_capacity(body.len() + 4);
+    out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_be_bytes());
+    out.extend_from_slice(&body);
+    out
+}
+
+/// Splits complete frames off the front of `buf` (incomplete bytes stay for the next read).
+pub fn decode_all(buf: &mut Vec<u8>) -> Result<Vec<Frame>, String> {
+    let mut out = Vec::new();
+    while let Some(len) = buf.first_chunk::<4>().map(|b| u32::from_be_bytes(*b)) {
+        let len = usize::try_from(len).unwrap_or(usize::MAX);
+        if len > MAX_FRAME {
+            return Err(format!("frame of {len} bytes is over the limit"));
+        }
+        if buf.len() < 4 + len {
+            break;
+        }
+        let f = Frame::decode(&buf[4..4 + len]).map_err(|e| format!("bad frame: {e}"))?;
+        buf.drain(..4 + len);
+        out.push(f);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clu_010_frames_round_trip_in_pieces() {
+        let hello = Frame {
+            body: Some(Body::Hello(Hello {
+                protocol: PROTOCOL,
+                cluster_id: "c".into(),
+                node_id: "n1".into(),
+                version: "0.1.0".into(),
+                site: "k8s".into(),
+                eligible: true,
+                advertise: vec!["https://10.0.0.1:8443".into()],
+                epoch: 3,
+                applied_seq: 9,
+                primary: false,
+            })),
+        };
+        let hb = Frame {
+            body: Some(Body::Heartbeat(Heartbeat {
+                ts_ms: 1,
+                epoch: 3,
+                applied_seq: 9,
+                qps: 42,
+            })),
+        };
+        let mut wire = encode(&hello);
+        wire.extend(encode(&hb));
+        // Fed byte by byte, frames come out whole and in order.
+        let mut buf = Vec::new();
+        let mut got = Vec::new();
+        for b in wire {
+            buf.push(b);
+            got.extend(decode_all(&mut buf).unwrap());
+        }
+        assert_eq!(got, [hello, hb]);
+        assert_eq!(buf, Vec::<u8>::new());
+        // A huge length is refused before any allocation.
+        let mut bad = (u32::MAX).to_be_bytes().to_vec();
+        assert!(decode_all(&mut bad).is_err());
+    }
+
+    #[test]
+    fn clu_010_unknown_fields_are_ignored() {
+        // A newer peer's Heartbeat with an extra field 99 still decodes.
+        let mut body = Heartbeat {
+            ts_ms: 5,
+            epoch: 1,
+            applied_seq: 2,
+            qps: 3,
+        }
+        .encode_to_vec();
+        body.extend_from_slice(&[0x98, 0x06, 0x07]); // field 99, varint 7
+        assert_eq!(Heartbeat::decode(&body[..]).unwrap().qps, 3);
+    }
+}

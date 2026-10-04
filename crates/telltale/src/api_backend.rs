@@ -297,6 +297,7 @@ impl Backend for ApiBackend {
                     window_start: format_us(m.window_start_s.saturating_mul(1_000_000)),
                 }
             }),
+            cluster: self.src.cluster.as_deref().map(crate::cluster::info),
         }
     }
 

@@ -59,6 +59,8 @@ pub(crate) struct Sources {
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
     /// Masked-client-IP detector state (OPS-003).
     pub(crate) masking: crate::masking::Detector,
+    /// This node's cluster channel, when it's in a cluster (CLU-001).
+    pub(crate) cluster: Option<Arc<telltale_cluster::net::Cluster>>,
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
@@ -175,6 +177,28 @@ fn rss_bytes() -> Option<u64> {
     Some(kb * 1024)
 }
 
+/// REQ: CLU-001, CLU-008 — peers this node streams with, by state.
+fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
+    if let Some(c) = &src.cluster {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let peers = c.members();
+        let up = peers.iter().filter(|p| p.up(now)).count();
+        w.family(
+            "telltale_cluster_peers",
+            "gauge",
+            "Cluster peers this node has heard from, by whether they're up (heard within 15 s).",
+        );
+        w.sample("telltale_cluster_peers", &[("state", "up")], up);
+        w.sample(
+            "telltale_cluster_peers",
+            &[("state", "down")],
+            peers.len() - up,
+        );
+    }
+}
+
 pub(crate) fn render(src: &Sources) -> String {
     let mut w = PromWriter::new();
     render_process(&mut w, src);
@@ -247,6 +271,7 @@ pub(crate) fn render(src: &Sources) -> String {
         &[],
         u8::from(src.masked_clients().is_some()),
     );
+    cluster_metrics(src, &mut w);
     if let Some(f) = src.pipeline.filter.load_full() {
         w.family(
             "telltale_filter_lookup_index_bytes",
@@ -814,6 +839,7 @@ mod tests {
             anomalies: None,
             auth: std::sync::OnceLock::new(),
             masking: crate::masking::Detector::default(),
+            cluster: None,
             reload: tokio::sync::mpsc::channel(1).0,
             allowed: Vec::new(),
         }

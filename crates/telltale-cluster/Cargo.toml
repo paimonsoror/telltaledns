@@ -12,3 +12,27 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# REQ: CLU-001 — cluster PKI (rcgen issues node certificates; x509-parser reads them back).
+rcgen = { version = "0.14.10", features = ["x509-parser"] }
+x509-parser = "0.18.1"
+time = "0.3.55"
+# Node-to-node frames (CLU-010): prost is the one new dependency (pure Rust, ~200 KiB).
+prost = "0.14"
+ring = "0.17.14"
+rand = "0.10.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pki-types = "1.15"
+hyper = { version = "1.11.1", default-features = false, features = ["client", "server", "http2"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+http-body-util = { version = "0.1.5", features = ["channel"] }
+bytes = "1.12.1"
+tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

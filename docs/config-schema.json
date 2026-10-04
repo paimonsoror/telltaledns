@@ -99,6 +99,7 @@
       "$ref": "#/$defs/ClusterConfig",
       "default": {
         "eligible": true,
+        "listen": "0.0.0.0:8443",
         "name": "telltale",
         "site": "default"
       }
@@ -650,6 +651,12 @@
           "description": "Whether this node may become the cluster primary.",
           "type": "boolean",
           "default": true
+        },
+        "listen": {
+          "description": "The cluster port (mTLS, node-to-node; REQ: CLU-001). Opened only once this node has\njoined or created a cluster (`telltale cluster init|join`). Peers dial the URLs given\nwith `--advertise`, so map this port to those.",
+          "type": "string",
+          "default": "0.0.0.0:8443",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "name": {
           "description": "Cluster name.",
