@@ -115,6 +115,7 @@ ui/
         ErrorNote.svelte     # renders ApiError detail + hint (role=alert)
         StatusBadge.svelte   # status/rcode/state → toned badge
         ExplainView.svelte   # renders an Explanation (client, block, matching rules ★, route)
+        ClientChip.svelte    # a device address/name anywhere: menu "Name this device…", "Add to group…", "Show queries" (API-010)
         Logo.svelte
     pages/
       AuthShell.svelte, Login.svelte, Setup.svelte

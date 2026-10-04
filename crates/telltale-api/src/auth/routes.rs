@@ -21,7 +21,7 @@ use crate::problem::{Code, Problem};
 /// Header carrying the caller's reason for a change, stored in the audit log (AGT-005).
 pub const REASON: &str = "x-telltale-reason";
 
-fn reason(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn reason(headers: &HeaderMap) -> Option<String> {
     headers
         .get(REASON)
         .and_then(|v| v.to_str().ok())
@@ -51,7 +51,7 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// A JSON body, or a problem+json 400 (axum's default rejection is plain text).
-fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
+pub(crate) fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
     b.map(|Json(v)| v)
         .map_err(|e| Problem::invalid(format!("request body: {}", e.body_text())))
 }
@@ -60,7 +60,7 @@ fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
 /// reverse proxy) it's the rightmost `X-Forwarded-For` entry that isn't itself a trusted
 /// proxy; entries further left are client-supplied and can be forged. Used for lockouts,
 /// break-glass networks, and audit entries.
-fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> IpAddr {
+pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> IpAddr {
     let peer = req_ext
         .get::<ConnectInfo<SocketAddr>>()
         .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
@@ -200,7 +200,7 @@ pub async fn require_admin(req: axum::extract::Request, next: Next) -> Response 
     require(Role::Admin, req, next).await
 }
 
-fn principal(ext: &axum::http::Extensions) -> Result<Principal, Problem> {
+pub(crate) fn principal(ext: &axum::http::Extensions) -> Result<Principal, Problem> {
     ext.get::<Principal>()
         .cloned()
         .ok_or_else(|| Problem::new(Code::Unauthorized, "sign in to use the API"))

@@ -37,7 +37,8 @@ pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
             for w in &l.warnings {
                 warn!("config: {w}");
             }
-            Some(l.config)
+            // ADR-040 — plus the devices named in the UI / API.
+            Some(crate::managed::effective(&l.config))
         }
         Err(errors) => {
             for e in &errors {
@@ -455,6 +456,8 @@ async fn start_http(
 }
 
 /// Runs until SIGTERM/SIGINT. SIGHUP reloads config from `files`.
+// The startup sequence and the main loop read best in one place.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // spec/04 §7: tag outbound queries so a forwarding loop back to us is detectable.
     telltale_upstream::set_node_tag(rand::random());
@@ -499,6 +502,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OBS-005, OPS-006 — metrics and health probes.
     let ready = Arc::new(AtomicBool::new(false));
     let stats = listeners.stats();
+    let (reload_tx, mut reload_rx) =
+        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(8);
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache,
@@ -516,6 +521,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         tail,
         auth: std::sync::OnceLock::new(),
         masking: crate::masking::Detector::default(),
+        reload: reload_tx,
     });
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
     start_http(&cfg, &sources, &http_stopped).await?;
@@ -539,7 +545,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         tokio::select! {
             _ = term.recv() => { info!(signal = "SIGTERM", "shutting down"); break; }
             _ = tokio::signal::ctrl_c() => { info!(signal = "SIGINT", "shutting down"); break; }
-            _ = hup.recv() => reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists).await,
+            _ = hup.recv() => { reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists, false).await; }
+            // ADR-040 — a change made through the API: re-read files + state.db and apply.
+            Some(done) = reload_rx.recv() => {
+                let ok = reload(&files, &mut current, &mut listeners, &mut health, &pipeline, &sources, &mut lists, true).await;
+                let _ = done.send(ok);
+            }
             _ = usr1.recv() => {
                 // REQ: FLT-004 — refresh every list now (like `pihole -g`); the compiler
                 // runs if anything changed.
@@ -576,6 +587,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
 
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the
 /// running configuration.
+// Everything a reload swaps; grouping it would only rename the parameters.
+#[allow(clippy::too_many_arguments)]
 async fn reload(
     files: &[PathBuf],
     current: &mut Config,
@@ -584,11 +597,16 @@ async fn reload(
     pipeline: &Arc<Pipeline>,
     sources: &http::Sources,
     lists: &mut Option<Lists>,
-) {
-    info!(signal = "SIGHUP", "reloading configuration");
+    from_api: bool,
+) -> bool {
+    if from_api {
+        info!("applying a configuration change made through the API");
+    } else {
+        info!(signal = "SIGHUP", "reloading configuration");
+    }
     let Some(new) = load(files) else {
         error!("reload failed: configuration invalid; still serving the previous configuration");
-        return;
+        return false;
     };
     // Unchanged upstream config keeps the running router: its health state, pooled
     // connections, and bootstrap cache survive the reload (T2.7).
@@ -604,7 +622,7 @@ async fn reload(
                 error!("{e}");
             }
             error!("reload failed; still serving the previous configuration");
-            return;
+            return false;
         }
     };
     set_client_metrics(&new, pipeline);
@@ -632,10 +650,14 @@ async fn reload(
     if !restart.is_empty() {
         warn!(sections = ?restart, "these changes take effect after a restart");
     }
-    audit_reload(sources, files, current, &new);
+    // API changes are audited by the API with their author.
+    if !from_api {
+        audit_reload(sources, files, current, &new);
+    }
     sources.config.store(Arc::new(new.clone()));
     *current = new;
     info!("configuration reloaded");
+    true
 }
 
 /// REQ: API-006 — a reload that changed anything is audited with the changed settings'

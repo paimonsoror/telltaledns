@@ -379,6 +379,17 @@ match = ["10.0.5.0/24"]                  # groups default to ["default"]
 - `[[route]] match_group = ["kids"]` sends a group's queries to its own upstreams (for example, a family-filtering resolver).
 - Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
 
+### Naming devices in the UI
+Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
+
+Devices named this way are stored in `state.db` (next to users and the audit log) and merged with `[[client]]` entries from the config files. The files win: a device defined in a file is read-only in the UI, and the UI can't reuse its name. If a stored device stops being valid (say its group was removed from the file), TelltaleDNS logs why and runs with the file config alone until it's fixed. Operators and admins can name devices; viewers see the names.
+
+The same through the API, for scripts and agents:
+```sh
+curl -X PUT https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=true \n  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \n  -d '{"match": ["192.168.1.42"], "groups": ["default"]}'       # what would change; nothing is saved
+```
+Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
+
 ## Why was it blocked? (explain)
 `telltale explain` shows what happens to a name for a given device, and why. It lists:
 - who the device is recognized as, and its groups;

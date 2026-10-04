@@ -554,6 +554,156 @@
         }
       }
     },
+    "/api/v1/clients/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Create, rename, or change a device (API-010).",
+        "description": "Names devices across every view: the query log, live tail, charts, and history (names\nare resolved when read, so earlier queries are relabelled too). To rename, send the new\n`name` in the body. Devices defined in the config files are read-only here (409). Needs\nthe operator role (or a `write` token).",
+        "operationId": "put_client",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The device's current name (or the name for a new one).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the config files, or an Idempotency-Key reused for another request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match: the config changed since that version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The resulting configuration is invalid (e.g. an unknown group).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Delete a device named through the API.",
+        "description": "Its queries, past and future, go back to showing the address, and it leaves its groups\n(the `default` group applies). Devices from the config files can't be deleted here (409).\nNeeds the operator role (or a `write` token).",
+        "operationId": "delete_client",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The device's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No device by that name was created through the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the config files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/explain": {
       "get": {
         "tags": [
@@ -1710,13 +1860,71 @@
           }
         }
       },
+      "ClientChange": {
+        "type": "object",
+        "description": "What a device change did, or would do with `dryRun=true` (AGT-002).",
+        "required": [
+          "applied",
+          "configVersion",
+          "recentQueries",
+          "warnings"
+        ],
+        "properties": {
+          "after": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClientInfo",
+                "description": "The device after the change (absent after a delete)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "applied": {
+            "type": "boolean",
+            "description": "False for a dry run."
+          },
+          "before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClientInfo",
+                "description": "The device before the change (absent when it's new)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration version after the change (send it as `If-Match` next time).",
+            "minimum": 0
+          },
+          "recentQueries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries in the current and previous hour from the addresses it matches: how much\nhistory gets the new label (names are resolved when read, so the past is relabelled).",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Configuration warnings after the change."
+          }
+        }
+      },
       "ClientInfo": {
         "type": "object",
         "description": "A configured client (device).",
         "required": [
           "name",
           "match",
-          "groups"
+          "groups",
+          "source"
         ],
         "properties": {
           "groups": {
@@ -1735,8 +1943,48 @@
           },
           "name": {
             "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (defined in the config files: read-only here) or `api` (named in the UI or\nthrough the API: editable with `PUT /clients/{name}`).",
+            "example": "api"
           }
         }
+      },
+      "ClientInput": {
+        "type": "object",
+        "description": "A device to create, rename, or change (`PUT /api/v1/clients/{name}`, API-010).",
+        "required": [
+          "match"
+        ],
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups, highest priority first (default `[\"default\"]`)."
+          },
+          "match": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "How to recognize it: IPs, CIDRs, MACs (`aa:bb:cc:dd:ee:ff`), or `id:<client-id>`.",
+            "example": [
+              "192.168.1.42"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The new name, to rename the device (default: the name in the path).",
+            "example": "Living room TV"
+          }
+        },
+        "additionalProperties": false
       },
       "Code": {
         "type": "string",
@@ -1752,6 +2000,8 @@
           "forbidden",
           "csrf_rejected",
           "conflict",
+          "version_conflict",
+          "invalid_config",
           "rate_limited"
         ]
       },
@@ -2142,7 +2392,8 @@
               "required": [
                 "name",
                 "match",
-                "groups"
+                "groups",
+                "source"
               ],
               "properties": {
                 "groups": {
@@ -2161,6 +2412,11 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`file` (defined in the config files: read-only here) or `api` (named in the UI or\nthrough the API: editable with `PUT /clients/{name}`).",
+                  "example": "api"
                 }
               }
             }

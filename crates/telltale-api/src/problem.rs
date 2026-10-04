@@ -30,6 +30,11 @@ pub enum Code {
     CsrfRejected,
     /// Conflicts with existing state (a duplicate name, the last admin).
     Conflict,
+    /// The configuration changed since the version in `If-Match`: re-read and retry.
+    VersionConflict,
+    /// The change is well-formed but the resulting configuration is invalid (the detail
+    /// names the field).
+    InvalidConfig,
     /// Too many failed sign-ins; wait and retry.
     RateLimited,
 }
@@ -48,6 +53,8 @@ impl Code {
             Self::CsrfRejected => "https://telltaledns.dev/problems/csrf_rejected",
             Self::Conflict => "https://telltaledns.dev/problems/conflict",
             Self::RateLimited => "https://telltaledns.dev/problems/rate_limited",
+            Self::VersionConflict => "https://telltaledns.dev/problems/version_conflict",
+            Self::InvalidConfig => "https://telltaledns.dev/problems/invalid_config",
         }
     }
 
@@ -64,6 +71,8 @@ impl Code {
             Self::CsrfRejected => "CSRF check failed",
             Self::Conflict => "Conflict",
             Self::RateLimited => "Too many attempts",
+            Self::VersionConflict => "Configuration changed",
+            Self::InvalidConfig => "Invalid configuration",
         }
     }
 
@@ -77,6 +86,8 @@ impl Code {
             Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
             Self::Conflict => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
+            Self::InvalidConfig => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
 }
@@ -137,6 +148,11 @@ impl Problem {
 
     pub fn unavailable(detail: impl Into<String>) -> Self {
         Self::new(Code::Unavailable, detail)
+    }
+
+    /// The HTTP status this problem is sent with.
+    pub fn code_status(&self) -> StatusCode {
+        self.code.status()
     }
 
     pub fn internal(detail: impl Into<String>) -> Self {

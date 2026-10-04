@@ -9,6 +9,7 @@
   import Chart from '../lib/components/Chart.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
+  import ClientChip from '../lib/components/ClientChip.svelte';
 
   const ranges = [
     { id: '15m', label: '15 min', from: '-15m', step: 'second' as const, summary: '-15m', secs: 900 },
@@ -215,7 +216,11 @@
             {#each t.items as i (i.key)}
               <li>
                 <div class="row">
-                  <a class="name" href={t.link(i.key)}>{i.name ? `${i.name} (${i.key})` : i.key}</a>
+                  {#if t.title === 'Top clients'}
+                    <span class="name"><ClientChip ip={i.key} name={i.name} onchanged={() => void load()} /></span>
+                  {:else}
+                    <a class="name" href={t.link(i.key)}>{i.key}</a>
+                  {/if}
                   <span class="spacer"></span>
                   <span class="num small">{num(i.count)}</span>
                 </div>

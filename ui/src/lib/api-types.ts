@@ -303,6 +303,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create, rename, or change a device (API-010).
+         * @description Names devices across every view: the query log, live tail, charts, and history (names
+         *     are resolved when read, so earlier queries are relabelled too). To rename, send the new
+         *     `name` in the body. Devices defined in the config files are read-only here (409). Needs
+         *     the operator role (or a `write` token).
+         */
+        put: operations["put_client"];
+        post?: never;
+        /**
+         * Delete a device named through the API.
+         * @description Its queries, past and future, go back to showing the address, and it leaves its groups
+         *     (the `default` group applies). Devices from the config files can't be deleted here (409).
+         *     Needs the operator role (or a `write` token).
+         */
+        delete: operations["delete_client"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/explain": {
         parameters: {
             query?: never;
@@ -714,6 +743,26 @@ export interface components {
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
         };
+        /** @description What a device change did, or would do with `dryRun=true` (AGT-002). */
+        ClientChange: {
+            after?: components["schemas"]["ClientInfo"] | null;
+            /** @description False for a dry run. */
+            applied: boolean;
+            before?: components["schemas"]["ClientInfo"] | null;
+            /**
+             * Format: int64
+             * @description The configuration version after the change (send it as `If-Match` next time).
+             */
+            configVersion: number;
+            /**
+             * Format: int64
+             * @description Queries in the current and previous hour from the addresses it matches: how much
+             *     history gets the new label (names are resolved when read, so the past is relabelled).
+             */
+            recentQueries: number;
+            /** @description Configuration warnings after the change. */
+            warnings: string[];
+        };
         /** @description A configured client (device). */
         ClientInfo: {
             /** @description Highest priority first. */
@@ -721,12 +770,35 @@ export interface components {
             /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
             match: string[];
             name: string;
+            /**
+             * @description `file` (defined in the config files: read-only here) or `api` (named in the UI or
+             *     through the API: editable with `PUT /clients/{name}`).
+             * @example api
+             */
+            source: string;
+        };
+        /** @description A device to create, rename, or change (`PUT /api/v1/clients/{name}`, API-010). */
+        ClientInput: {
+            /** @description Groups, highest priority first (default `["default"]`). */
+            groups?: string[];
+            /**
+             * @description How to recognize it: IPs, CIDRs, MACs (`aa:bb:cc:dd:ee:ff`), or `id:<client-id>`.
+             * @example [
+             *       "192.168.1.42"
+             *     ]
+             */
+            match: string[];
+            /**
+             * @description The new name, to rename the device (default: the name in the path).
+             * @example Living room TV
+             */
+            name?: string | null;
         };
         /**
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "rate_limited";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited";
         CreateToken: {
             /**
              * Format: int32
@@ -846,6 +918,12 @@ export interface components {
                 /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
                 match: string[];
                 name: string;
+                /**
+                 * @description `file` (defined in the config files: read-only here) or `api` (named in the UI or
+                 *     through the API: editable with `PUT /clients/{name}`).
+                 * @example api
+                 */
+                source: string;
             }[];
         };
         /** @description A list wrapper used by every collection endpoint. */
@@ -1866,6 +1944,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ClientInfo"];
+                };
+            };
+        };
+    };
+    put_client: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device's current name (or the name for a new one). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClientInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientChange"];
+                };
+            };
+            /** @description Defined in the config files, or an Idempotency-Key reused for another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description If-Match: the config changed since that version. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The resulting configuration is invalid (e.g. an unknown group). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_client: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The device's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientChange"];
+                };
+            };
+            /** @description No device by that name was created through the API. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Defined in the config files. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

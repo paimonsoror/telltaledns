@@ -453,3 +453,15 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Helm:** `encrypted.dot` / `encrypted.doh` add ports to the same DNS LoadBalancer (so `externalTrafficPolicy: Local` keeps client IPs), with a certificate from an existing Secret or a cert-manager `Certificate`; pods listen on 8853/8443 unless on the host network.
 
 **Consequences:** Clients must trust the certificate (a public CA, or a private one distributed to devices). DoQ and DoH3 remain skipped until their listeners (M7).
+
+## ADR-040 — Config made through the API before clustering: managed entries in state.db (Proposed)
+**Context:** API-002 (everything configurable through the API) and API-010 (name a device from the UI) need API writes now. Today the configuration is files only (on Kubernetes, the chart's values), and `spec/12` describes the end state: a change log held by the cluster primary, with GitOps mode refusing writes. Rewriting config files from the server would fight GitOps and lose comments.
+
+**Decision:**
+- **Managed entries, merged by name.** Entries written through the API are stored in `state.db` (`managed(kind, name, body JSON, updated, updated_by)`), starting with `client`. At every load (startup, `SIGHUP`, an API write) the effective config is the files plus the managed entries whose names the files don't use. The files are authoritative: file entries are read-only through the API (409), and the API can't create a name the files use.
+- **Never breaks DNS.** If the merged config doesn't validate (a group a managed device names was removed from the file), the files alone are used and the reason is logged until it's fixed (rule 5). API writes are validated against the full resulting config before they're stored (422 with the field).
+- **Write semantics that map onto the future change log:** one `config_version` counter in `state.db`, bumped by every write and returned as the `ETag` of `GET /clients` and in each response; `If-Match` refuses stale writes (412 `version_conflict`); `?dryRun=true` validates and reports (before/after, warnings, and an impact estimate: recent queries from the matched addresses, from the aggregator's current and previous hour) without storing; `Idempotency-Key` stores the first successful response for 24 h per user and replays it (a different request with the same key is 409). Writes need operator (or a `write` token) and are audited (`client.put`, `client.delete`) with their author.
+- **Applying:** the API stores the entry, then asks the main loop to reload (the same path as `SIGHUP`, minus its own audit entry), and answers after the swap.
+- **Names are resolved at read time** from the address (the query log stores addresses, not names; the old lookup by the client's index at query time mislabelled history after any client list change), so naming relabels history and live views at once.
+
+**Consequences:** With clustering (M5), the managed table becomes change-log entries on the primary and replicates (CLU-003); GitOps mode will refuse these writes (`409 gitops_managed`). Other kinds (groups, records, routes; T3.12) reuse the same table and endpoints.

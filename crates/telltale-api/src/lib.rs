@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod config_api;
 pub mod model;
 pub mod problem;
 pub mod time;
@@ -26,11 +27,11 @@ use axum::routing::get;
 use utoipa::OpenApi;
 
 use crate::model::{
-    ClientInfo, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
-    ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, Items, LatencyBy, LatencyParams,
-    LatencyRow, ListInfo, MaskedClients, NameMatch, QueryPage, QueryParams, QueryRow, ScanStats,
-    Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket,
-    TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    ClientChange, ClientInfo, ClientInput, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine,
+    ExplainParams, ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, Items, LatencyBy,
+    LatencyParams, LatencyRow, ListInfo, MaskedClients, NameMatch, QueryPage, QueryParams,
+    QueryRow, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem,
+    TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -71,9 +72,41 @@ pub trait Backend: Send + Sync + 'static {
     fn groups(&self) -> Vec<GroupInfo>;
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
+    /// The configuration version (bumped by every change made through the API; ADR-040).
+    fn config_version(&self) -> u64 {
+        0
+    }
+    /// Creates, renames, changes (`input` set), or deletes (`input` None) a device made
+    /// through the API (API-010). Validates the resulting configuration and, unless
+    /// `dry_run`, stores and applies it.
+    fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "configuration changes aren't available on this node",
+            ))
+        })
+    }
 }
 
 type Shared = Arc<dyn Backend>;
+
+/// A boxed future returned by backend writes.
+pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
+
+/// A device write (`PUT`/`DELETE /api/v1/clients/{name}`).
+#[derive(Debug, Clone)]
+pub struct ClientWrite {
+    /// The name in the path: the device's current name, or the new device's name.
+    pub name: String,
+    /// The new definition; `None` deletes.
+    pub input: Option<ClientInput>,
+    pub dry_run: bool,
+    /// `If-Match`: refuse unless the config version is still this.
+    pub expect: Option<u64>,
+    /// Who made the change (stored with the entry).
+    pub by: String,
+}
 
 /// The `/api/v1` routes (REQ: API-001, API-003). Everything except sign-in, first-run setup,
 /// and the OpenAPI document needs authentication; reads need `viewer`, user management
@@ -93,10 +126,15 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/groups", get(groups))
         .route("/api/v1/clients", get(clients))
         .route("/api/v1/upstreams", get(upstreams))
-        .with_state(backend)
+        .with_state(Arc::clone(&backend))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
+        // REQ: API-002, API-010 — configuration changes need operator (or a `write` token).
+        .merge(
+            config_api::routes(backend, Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
         .merge(
             auth::routes::admin(Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
@@ -146,13 +184,13 @@ async fn fallback(
         auth::routes::create_token, auth::routes::delete_token, auth::routes::list_users,
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
-        auth::routes::oidc_callback
+        auth::routes::oidc_callback, config_api::put_client, config_api::delete_client
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -498,8 +536,13 @@ async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
 /// priority order (the first group's settings apply). Unknown devices use the `default` group.
 #[utoipa::path(get, path = "/api/v1/clients", tag = "config",
     responses((status = 200, body = Items<ClientInfo>)))]
-async fn clients(State(b): State<Shared>) -> Json<Items<ClientInfo>> {
-    Json(Items { items: b.clients() })
+async fn clients(State(b): State<Shared>) -> impl IntoResponse {
+    // The config version for `If-Match` on writes (ADR-040).
+    let etag = format!("\"{}\"", b.config_version());
+    (
+        [(axum::http::header::ETAG, etag)],
+        Json(Items { items: b.clients() }),
+    )
 }
 
 /// Upstream servers with health and latency.

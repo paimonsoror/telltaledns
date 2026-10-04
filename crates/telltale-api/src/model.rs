@@ -504,6 +504,45 @@ pub struct ClientInfo {
     pub matches: Vec<String>,
     /// Highest priority first.
     pub groups: Vec<String>,
+    /// `file` (defined in the config files: read-only here) or `api` (named in the UI or
+    /// through the API: editable with `PUT /clients/{name}`).
+    #[schema(example = "api")]
+    pub source: String,
+}
+
+/// A device to create, rename, or change (`PUT /api/v1/clients/{name}`, API-010).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientInput {
+    /// The new name, to rename the device (default: the name in the path).
+    #[schema(example = "Living room TV")]
+    pub name: Option<String>,
+    /// How to recognize it: IPs, CIDRs, MACs (`aa:bb:cc:dd:ee:ff`), or `id:<client-id>`.
+    #[serde(rename = "match")]
+    #[schema(example = json!(["192.168.1.42"]))]
+    pub matches: Vec<String>,
+    /// Groups, highest priority first (default `["default"]`).
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+/// What a device change did, or would do with `dryRun=true` (AGT-002).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientChange {
+    /// False for a dry run.
+    pub applied: bool,
+    /// The configuration version after the change (send it as `If-Match` next time).
+    pub config_version: u64,
+    /// The device before the change (absent when it's new).
+    pub before: Option<ClientInfo>,
+    /// The device after the change (absent after a delete).
+    pub after: Option<ClientInfo>,
+    /// Queries in the current and previous hour from the addresses it matches: how much
+    /// history gets the new label (names are resolved when read, so the past is relabelled).
+    pub recent_queries: u64,
+    /// Configuration warnings after the change.
+    pub warnings: Vec<String>,
 }
 
 /// An upstream server and its health.

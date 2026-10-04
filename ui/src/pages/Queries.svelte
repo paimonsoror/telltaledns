@@ -8,6 +8,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import ExplainView from '../lib/components/ExplainView.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
+  import ClientChip from '../lib/components/ClientChip.svelte';
 
   const STATUSES = ['blocked', 'cached', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
@@ -163,6 +164,12 @@
     search();
   }
 
+  // API-010 — a rename shows at once: live rows are relabelled in place, a search re-runs.
+  function renamed(ip: string, name: string) {
+    if (live) rows = rows.map((x) => (x.client === ip ? { ...x, clientName: name } : x));
+    else void load();
+  }
+
   async function explain(r: S['QueryRow']) {
     why = r;
     explained = null;
@@ -250,7 +257,7 @@
               <tr>
                 <td class="nowrap" title={logDate(r.time)}>{logTime(r.time)}</td>
                 <td class="nowrap">
-                  <a href={`#/queries?client=${encodeURIComponent(r.client)}`}>{r.clientName ?? r.client}</a>
+                  <ClientChip ip={r.client} name={r.clientName} onchanged={(n) => renamed(r.client, n)} />
                   {#if r.group}<div class="muted small">{r.group}</div>{/if}
                 </td>
                 <td class="name mono">{r.name}</td>

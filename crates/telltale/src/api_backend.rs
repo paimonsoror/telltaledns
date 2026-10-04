@@ -7,22 +7,33 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::Serialize;
-use telltale_api::Backend;
 use telltale_api::model::{
-    ClientInfo, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
-    ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, LatencyBy, LatencyRow, ListInfo,
-    NameMatch, QueryPage, QueryParams, QueryRow, ScanStats, Step, SystemInfo, TimeBucket, TopItem,
-    TopKind, UpstreamInfo,
+    ClientChange, ClientInfo, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine,
+    ExplainParams, ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, LatencyBy, LatencyRow,
+    ListInfo, NameMatch, QueryPage, QueryParams, QueryRow, ScanStats, Step, SystemInfo, TimeBucket,
+    TopItem, TopKind, UpstreamInfo,
 };
-use telltale_api::problem::Problem;
+use telltale_api::problem::{Code, Problem};
 use telltale_api::time::format_us;
+use telltale_api::{Backend, BoxFuture, ClientWrite};
 use telltale_store::qlog;
 use telltale_store::rollup::{Level, merge};
+use telltale_store::state::ManagedError;
 use telltale_telemetry::agg::{Counts, HourSel, LatencyKey, Percentiles, Resolution};
 use telltale_telemetry::{N_RCODE, Path as AnswerPath, Proto, QTYPES, Status};
 use telltale_upstream::health::Breaker;
 
 use crate::http::Sources;
+
+/// The current name of the device at `ip` (v4-mapped), by today's client table.
+fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
+    let v6 = std::net::Ipv6Addr::from(ip);
+    let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
+    let state = src.pipeline.current();
+    let clients = &state.policy.clients;
+    let id = clients.identify(ip, None, None, &src.pipeline.neighbors);
+    clients.client(id).map(|c| c.name.to_string())
+}
 
 /// The API backend over the server's shared state.
 #[derive(Debug)]
@@ -422,12 +433,7 @@ impl Backend for ApiBackend {
             .iter()
             .map(|g| g.name.to_string())
             .collect();
-        let clients: Vec<String> = policy
-            .clients
-            .clients()
-            .iter()
-            .map(|c| c.name.to_string())
-            .collect();
+        let src = Arc::clone(&self.src);
         let filter = crate::tail::Filter::parse(p, &groups)?;
         let (events, slot) = tail.subscribe().ok_or_else(|| {
             Problem::unavailable(format!(
@@ -447,11 +453,7 @@ impl Backend for ApiBackend {
                     time: format_us(e.ts_us),
                     ts_unix_micros: e.ts_us,
                     client: telltale_telemetry::agg::client_text(e.client_ip),
-                    client_name: e
-                        .client_ref
-                        .checked_sub(1)
-                        .and_then(|i| clients.get(i as usize))
-                        .cloned(),
+                    client_name: device_name(&src, e.client_ip),
                     group: groups.get(usize::from(e.group)).cloned(),
                     name: telltale_telemetry::event::dotted(&t.name),
                     qtype: qtype_name(e.qtype),
@@ -507,7 +509,6 @@ impl Backend for ApiBackend {
             .map_err(|e| Problem::internal(format!("query log: {e}")))?;
         let lists = self.list_names();
         let policy = &self.src.pipeline.current().policy;
-        let clients = policy.clients.clients();
         let groups = policy.clients.groups();
         let items = page
             .rows
@@ -516,11 +517,9 @@ impl Backend for ApiBackend {
                 time: format_us(r.ts_us),
                 ts_unix_micros: r.ts_us,
                 client: telltale_telemetry::agg::client_text(r.client_ip),
-                client_name: r
-                    .client_ref
-                    .checked_sub(1)
-                    .and_then(|i| clients.get(i as usize))
-                    .map(|c| c.name.to_string()),
+                // REQ: API-010 — names are resolved now, from the address, so naming or
+                // renaming a device relabels its history without rewriting the log.
+                client_name: device_name(&self.src, r.client_ip),
                 group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
                 name: r.name.clone(),
                 qtype: qtype_name(r.qtype),
@@ -717,17 +716,104 @@ impl Backend for ApiBackend {
     }
 
     fn clients(&self) -> Vec<ClientInfo> {
+        let managed = managed_names(&self.src);
         self.src
             .config
             .load()
             .client
             .iter()
-            .map(|c| ClientInfo {
-                name: c.name.to_string(),
-                matches: c.match_keys.iter().map(ToString::to_string).collect(),
-                groups: c.groups.iter().map(ToString::to_string).collect(),
-            })
+            .map(|c| client_info(c, &managed))
             .collect()
+    }
+
+    fn config_version(&self) -> u64 {
+        self.src
+            .auth
+            .get()
+            .and_then(|a| a.state().config_version().ok())
+            .unwrap_or(0)
+    }
+
+    // REQ: API-002, API-010 — devices named through the API (ADR-040).
+    fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            let state = src
+                .auth
+                .get()
+                .map(|a| Arc::clone(a.state()))
+                .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
+            let (plan, current) = {
+                let (src, state, w) = (Arc::clone(&src), Arc::clone(&state), w.clone());
+                tokio::task::spawn_blocking(move || {
+                    let current = state
+                        .config_version()
+                        .map_err(|e| Problem::internal(e.to_string()))?;
+                    plan_client(&src, &state, &w).map(|p| (p, current))
+                })
+                .await
+                .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
+            };
+            let change = |applied, version| ClientChange {
+                applied,
+                config_version: version,
+                before: plan.before.clone(),
+                after: plan
+                    .after
+                    .as_ref()
+                    .map(|c| client_info(c, &[c.name.to_string()])),
+                recent_queries: plan.recent_queries,
+                warnings: plan.warnings.clone(),
+            };
+            if w.dry_run {
+                if let Some(v) = w.expect
+                    && v != current
+                {
+                    return Err(version_conflict(current));
+                }
+                return Ok(change(false, current));
+            }
+            let stored = {
+                let (state, w, after) = (Arc::clone(&state), w.clone(), plan.after.clone());
+                tokio::task::spawn_blocking(move || {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    match &after {
+                        Some(c) => {
+                            let body = serde_json::to_string(c).unwrap_or_default();
+                            let from = (c.name.as_str() != w.name).then_some(w.name.as_str());
+                            state.put_managed(
+                                crate::managed::CLIENT,
+                                c.name.as_str(),
+                                &body,
+                                from,
+                                w.expect,
+                                now,
+                                &w.by,
+                            )
+                        }
+                        None => state.delete_managed(crate::managed::CLIENT, &w.name, w.expect),
+                    }
+                })
+                .await
+                .map_err(|e| Problem::internal(format!("request worker failed: {e}")))?
+            };
+            let version = stored.map_err(|e| match e {
+                ManagedError::VersionConflict { current } => version_conflict(current),
+                ManagedError::NotFound { .. } => Problem::not_found(e.to_string()),
+                ManagedError::State(e) => Problem::internal(e.to_string()),
+            })?;
+            // Apply: the main loop re-reads the files and state.db, validates, and swaps.
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
+            if !applied {
+                return Err(Problem::internal(
+                    "the change was saved but couldn't be applied; the server log says why",
+                ));
+            }
+            Ok(change(true, version))
+        })
     }
 
     fn upstreams(&self) -> Vec<UpstreamInfo> {
@@ -763,4 +849,149 @@ impl Backend for ApiBackend {
             })
             .collect()
     }
+}
+
+/// Names of the devices stored through the API.
+fn managed_names(src: &Sources) -> Vec<String> {
+    src.auth
+        .get()
+        .and_then(|a| a.state().managed(crate::managed::CLIENT).ok())
+        .map(|m| m.into_iter().map(|e| e.name).collect())
+        .unwrap_or_default()
+}
+
+fn client_info(c: &telltale_config::ClientConfig, managed: &[String]) -> ClientInfo {
+    ClientInfo {
+        name: c.name.to_string(),
+        matches: c.match_keys.iter().map(ToString::to_string).collect(),
+        groups: c.groups.iter().map(ToString::to_string).collect(),
+        source: if managed.iter().any(|m| m == c.name.as_str()) {
+            "api".to_owned()
+        } else {
+            "file".to_owned()
+        },
+    }
+}
+
+fn version_conflict(current: u64) -> Problem {
+    Problem::new(
+        Code::VersionConflict,
+        format!("the configuration is now at version {current}"),
+    )
+    .hint("Re-read the clients (GET /api/v1/clients returns the version as ETag) and retry with If-Match.")
+}
+
+/// A validated device change.
+struct ClientPlan {
+    before: Option<ClientInfo>,
+    /// `None` deletes.
+    after: Option<telltale_config::ClientConfig>,
+    recent_queries: u64,
+    warnings: Vec<String>,
+}
+
+/// Checks a device write against the running configuration (ADR-040): files win, names are
+/// unique, and the resulting configuration must validate.
+fn plan_client(
+    src: &Sources,
+    state: &telltale_store::state::State,
+    w: &ClientWrite,
+) -> Result<ClientPlan, Problem> {
+    let managed: Vec<String> = state
+        .managed(crate::managed::CLIENT)
+        .map_err(|e| Problem::internal(e.to_string()))?
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+    let cfg = src.config.load_full();
+    let is_managed = |n: &str| managed.iter().any(|m| m == n);
+    let in_files = |n: &str| cfg.client.iter().any(|c| c.name.as_str() == n) && !is_managed(n);
+    if in_files(&w.name) {
+        return Err(Problem::new(
+            Code::Conflict,
+            format!("`{}` is defined in the config files", w.name),
+        )
+        .hint("Change it in the config file, or name the device differently."));
+    }
+    let before = cfg
+        .client
+        .iter()
+        .find(|c| c.name.as_str() == w.name)
+        .map(|c| client_info(c, &managed));
+    let after = match &w.input {
+        None => {
+            if before.is_none() {
+                return Err(Problem::not_found(format!(
+                    "no device named `{}` was created through the API",
+                    w.name
+                )));
+            }
+            None
+        }
+        Some(input) => {
+            let name = input.name.as_deref().unwrap_or(&w.name).trim().to_owned();
+            if name != w.name && (in_files(&name) || is_managed(&name)) {
+                return Err(Problem::new(
+                    Code::Conflict,
+                    format!("there is already a device named `{name}`"),
+                ));
+            }
+            let groups = if input.groups.is_empty() {
+                vec!["default".to_owned()]
+            } else {
+                input.groups.clone()
+            };
+            let json =
+                serde_json::json!({ "name": name, "match": input.matches, "groups": groups });
+            let c: telltale_config::ClientConfig = serde_json::from_value(json)
+                .map_err(|e| Problem::new(Code::InvalidConfig, format!("device: {e}")))?;
+            Some(c)
+        }
+    };
+    let mut candidate = (*cfg).clone();
+    let new_name = after.as_ref().map(|c| c.name.to_string());
+    candidate
+        .client
+        .retain(|c| c.name.as_str() != w.name && Some(c.name.as_str()) != new_name.as_deref());
+    if let Some(c) = &after {
+        candidate.client.push(c.clone());
+    }
+    let warnings = telltale_config::validate_config(&candidate).map_err(|errs| {
+        Problem::new(
+            Code::InvalidConfig,
+            errs.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .hint("GET /api/v1/groups lists the groups a device can join.")
+    })?;
+    // AGT-002 impact: recent queries from the addresses it matches (they get the new label).
+    let keys: Vec<String> = after
+        .as_ref()
+        .map(|c| c.match_keys.iter().map(ToString::to_string).collect())
+        .or_else(|| before.as_ref().map(|b| b.matches.clone()))
+        .unwrap_or_default();
+    let nets: Vec<telltale_config::Cidr> = keys
+        .iter()
+        .filter_map(|k| telltale_config::Cidr::parse(k).ok())
+        .collect();
+    let agg = src.pipeline.telemetry.aggregates();
+    let recent_queries = [HourSel::Current, HourSel::Previous]
+        .into_iter()
+        .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Clients, h, 1000))
+        .filter(|t| {
+            t.key
+                .parse::<IpAddr>()
+                .is_ok_and(|ip| nets.iter().any(|n| n.contains(ip)))
+        })
+        .map(|t| t.count)
+        .sum();
+    drop(agg);
+    Ok(ClientPlan {
+        before,
+        after,
+        recent_queries,
+        warnings,
+    })
 }

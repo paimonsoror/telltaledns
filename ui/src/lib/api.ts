@@ -44,8 +44,12 @@ function qs(q?: Query): string {
   return s ? `?${s}` : '';
 }
 
-async function call<T>(method: string, path: string, opts: { query?: Query; body?: unknown } = {}): Promise<T> {
-  const headers: Record<string, string> = { accept: 'application/json' };
+async function call<T>(
+  method: string,
+  path: string,
+  opts: { query?: Query; body?: unknown; headers?: Record<string, string> } = {},
+): Promise<T> {
+  const headers: Record<string, string> = { accept: 'application/json', ...opts.headers };
   if (opts.body !== undefined) headers['content-type'] = 'application/json';
   if (method !== 'GET' && csrf) headers['x-csrf-token'] = csrf;
   let res: Response;
@@ -74,6 +78,11 @@ async function call<T>(method: string, path: string, opts: { query?: Query; body
     throw err;
   }
   return json as T;
+}
+
+/** A random Idempotency-Key (getRandomValues also works on plain-HTTP LAN addresses). */
+function newKey(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
@@ -112,4 +121,17 @@ export const api = {
   groups: () => get<S['Items_GroupInfo']>('/groups'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
+
+  // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a
+  // retried request (flaky Wi-Fi) is applied once.
+  putClient: (name: string, body: S['ClientInput'], dryRun = false) =>
+    call<S['ClientChange']>('PUT', `/clients/${encodeURIComponent(name)}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
+  deleteClient: (name: string) =>
+    call<S['ClientChange']>('DELETE', `/clients/${encodeURIComponent(name)}`, {
+      headers: { 'idempotency-key': newKey() },
+    }),
 };

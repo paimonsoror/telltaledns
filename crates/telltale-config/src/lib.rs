@@ -168,6 +168,18 @@ fn merge(base: &mut Table, over: Table) {
     }
 }
 
+/// Validates a config built in code (the files plus entries made through the API,
+/// ADR-040). Returns the warnings, or every error.
+pub fn validate_config(config: &Config) -> Result<Vec<String>, Vec<ConfigError>> {
+    let mut errors = Vec::new();
+    let warnings = validate::validate(config, &mut errors);
+    if errors.is_empty() {
+        Ok(warnings)
+    } else {
+        Err(errors)
+    }
+}
+
 /// JSON Schema for `telltale.toml` (`telltale config schema`), for editor completion.
 pub fn json_schema() -> schemars::Schema {
     schemars::schema_for!(Config)

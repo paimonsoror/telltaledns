@@ -76,13 +76,34 @@ const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX users_oidc ON users(oidc_provider, oidc_subject)
         WHERE oidc_subject IS NOT NULL;
     ALTER TABLE sessions ADD COLUMN oidc_provider TEXT;",
+    // 4: config made in the UI/API (T3.10, API-002/010, ADR-040): entries merged with the
+    // config files by name; a version for If-Match; replayable responses for Idempotency-Key.
+    "CREATE TABLE managed (
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        body TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        updated_by TEXT NOT NULL,
+        PRIMARY KEY (kind, name)
+    );
+    CREATE TABLE idempotency (
+        key TEXT PRIMARY KEY,
+        request BLOB NOT NULL,
+        status INTEGER NOT NULL,
+        response TEXT NOT NULL,
+        created INTEGER NOT NULL
+    );
+    INSERT INTO meta (key, value) VALUES ('config_version', '0')
+        ON CONFLICT(key) DO NOTHING;",
 ];
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
 
 pub mod audit;
+pub mod managed;
 pub use audit::{AuditEntry, NewAudit, Verify};
+pub use managed::{Managed, ManagedError, Replay};
 
 /// A user row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +219,10 @@ impl State {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {

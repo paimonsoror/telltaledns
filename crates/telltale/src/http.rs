@@ -55,6 +55,9 @@ pub(crate) struct Sources {
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
     /// Masked-client-IP detector state (OPS-003).
     pub(crate) masking: crate::masking::Detector,
+    /// Asks the main loop to re-read the config files and state.db and apply them; answers
+    /// whether it worked (ADR-040).
+    pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
 }
 
 impl Sources {
@@ -781,6 +784,7 @@ mod tests {
             tail: None,
             auth: std::sync::OnceLock::new(),
             masking: crate::masking::Detector::default(),
+            reload: tokio::sync::mpsc::channel(1).0,
             allowed: Vec::new(),
         }
     }

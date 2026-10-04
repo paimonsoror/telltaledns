@@ -200,3 +200,77 @@ test('ops_003 masked client IPs raise a banner', async () => {
   await expect(page.getByTestId('masked-banner')).toContainText('127.0.0.1');
   await expect(page.getByRole('link', { name: 'How to fix it' })).toHaveAttribute('href', /seeing-real-client-ips/);
 });
+
+// REQ: API-010 (T3.10 AC) — name a device from the top-clients widget; the name shows at once in
+// the widget, the query log (past rows included), and the live tail.
+test('api_010 name a device from the dashboard', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  const widget = page.locator('section.card', { hasText: 'Top clients' });
+  await widget.getByRole('button', { name: '127.0.0.1' }).click();
+  await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Test laptop');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status')).toContainText('Saved');
+  await page.keyboard.press('Escape');
+  await expect(widget).toContainText('Test laptop');
+  // History is relabelled (names are resolved when read).
+  await page.goto('/#/queries');
+  await expect(page.locator('table.log tbody tr').first()).toContainText('Test laptop');
+  // New queries in the live tail carry the name too.
+  await page.getByLabel('Live').check();
+  await expect(page.locator('.live-toggle .badge')).toContainText('streaming');
+  await query('api010.nas.e2e.test').catch(() => -1); // no upstream: logged as servfail
+  const liveRow = page.locator('table.log tbody tr', { hasText: 'api010.nas.e2e.test' });
+  await expect(liveRow).toContainText('Test laptop');
+  await page.getByLabel('Live').uncheck();
+});
+
+// REQ: API-002, AGT-002, AGT-003 — the same change through the API: dry run, If-Match,
+// Idempotency-Key, validation, delete, audit.
+test('api_010 device API: dry run, versions, idempotency', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = (extra: Record<string, string> = {}) => ({ 'x-csrf-token': csrf, ...extra });
+  const list = await r.get('/api/v1/clients');
+  const version = Number((list.headers()['etag'] ?? '"0"').replaceAll('"', ''));
+  const laptop = (await list.json()).items.find((c: { name: string }) => c.name === 'Test laptop');
+  expect(laptop).toMatchObject({ source: 'api', match: ['127.0.0.1'] });
+
+  const rename = { name: 'Renamed laptop', match: ['127.0.0.1'], groups: ['default'] };
+  const url = '/api/v1/clients/Test%20laptop';
+  // Dry run: reported, not applied.
+  const dry = await r.put(`${url}?dryRun=true`, { headers: h(), data: rename });
+  expect(dry.status()).toBe(200);
+  expect(await dry.json()).toMatchObject({ applied: false, configVersion: version, after: { name: 'Renamed laptop' } });
+  // A stale version is refused.
+  const stale = await r.put(url, { headers: h({ 'if-match': `"${version + 99}"` }), data: rename });
+  expect(stale.status()).toBe(412);
+  expect((await stale.json()).code).toBe('version_conflict');
+  // An unknown group is refused with the reason.
+  const bad = await r.put(url, { headers: h(), data: { ...rename, groups: ['nope'] } });
+  expect(bad.status()).toBe(422);
+  expect((await bad.json()).detail).toContain('nope');
+  // Applied once; the retry replays the first answer; the key can't be reused for another change.
+  const key = `e2e-${Date.now()}`;
+  const first = await r.put(url, { headers: h({ 'if-match': `"${version}"`, 'idempotency-key': key }), data: rename });
+  expect(first.status()).toBe(200);
+  const applied = await first.json();
+  expect(applied).toMatchObject({ applied: true, configVersion: version + 1 });
+  const again = await r.put(url, { headers: h({ 'if-match': `"${version}"`, 'idempotency-key': key }), data: rename });
+  expect(again.headers()['idempotency-replayed']).toBe('true');
+  expect(await again.json()).toEqual(applied);
+  const reused = await r.put(url, { headers: h({ 'idempotency-key': key }), data: { ...rename, name: 'Other' } });
+  expect(reused.status()).toBe(409);
+  // Past query-log rows now show the new name.
+  const rows = (await (await r.get('/api/v1/queries?client=127.0.0.1&limit=5')).json()).items;
+  expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) expect(row.clientName).toBe('Renamed laptop');
+  // Audited with the author.
+  const audit = (await (await r.get('/api/v1/audit?action=client.put')).json()).items;
+  expect(audit[0]).toMatchObject({ action: 'client.put', target: 'Test laptop', actor: 'admin' });
+  // Forget it: the address comes back.
+  expect((await r.delete('/api/v1/clients/Renamed%20laptop', { headers: h() })).status()).toBe(200);
+  const after = (await (await r.get('/api/v1/queries?client=127.0.0.1&limit=1')).json()).items[0];
+  expect(after.clientName).toBeUndefined();
+});
