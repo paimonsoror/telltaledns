@@ -512,3 +512,20 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Deferred:** certificate renewal at 2/3 of life and CA rotation (with T5.4 promotion, since only the CA holder can issue), eligible-to-eligible streams, and ephemeral Kubernetes members joining from a Secret at startup (T5.10). The cluster health page and per-peer lag (T5.9); heartbeats carry `qps`, which is still 0.
 
+## ADR-045 — Sign-in across cluster nodes: replicated identities, per-node sessions and OIDC callbacks (Proposed)
+**Context:** `spec/12` §6 says users, RBAC, and OIDC config are part of the replicated config, so sign-in works on every node even with the primary down. It doesn't say where sessions live, how one OIDC client serves several nodes reached at different URLs, or what happens to users that already exist on a node that joins (the owner's homelab node has its own users, and the Pi got its own admin before clustering).
+
+**Decision:**
+- **Replicated from the primary (with T5.2, writes forwarded by T5.7):** local users (Argon2id hashes, roles, TOTP secrets), API-token hashes and scopes, OIDC provider settings and group-to-role rules, and the session-revocation list. So a break-glass local admin works on every node, even when the identity provider is down.
+- **Per node, never replicated (CLU-006 node-local keys):**
+  - `auth.oidc.public_url`, because each node is reached at its own URL, and each one is registered as a redirect URI on the same OIDC client (`<public_url>/api/v1/auth/oidc/{id}/callback`);
+  - the OIDC client secret file, because secrets stay in each node's own Secret or file and never cross the cluster channel.
+- **Sessions are per node.** Signing in to a second node with SSO is a silent redirect (the provider already has a session). There is no shared session-signing key to protect or rotate. Sign-out and revocation replicate, so revoking a user ends their sessions everywhere within one sync.
+  - If the owner later puts one hostname in front of several nodes without sticky sessions, cluster-signed session tokens (signed with the cluster key) are the follow-up; that's not needed for the hybrid Pi + k8s setup.
+- **Join merges identities once:** on its first sync, a joining node offers its local users and tokens to the primary.
+  - A user that doesn't exist on the primary is added.
+  - A name that exists on both keeps the primary's record, and the joiner's copy is listed under Conflicts. Nothing is silently dropped.
+  - After that, the primary is the only source.
+
+**Consequences:** the owner registers one extra redirect URI in Authentik per node (for the Pi, e.g. `https://telltale-pi.sororlab.dev`, or its LAN address). The Pi's OIDC needs its own copy of the client secret.
+

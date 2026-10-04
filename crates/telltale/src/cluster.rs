@@ -66,8 +66,7 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let m = &c.identity.meta;
-    let expires =
-        pki::validity(&c.identity.cert_pem).map_or(0, |(_, to)| u64::try_from(to).unwrap_or(0));
+    let expires = expiry_unix(&c.identity.cert_pem);
     ClusterInfo {
         cluster_id: m.cluster_id.clone(),
         name: m.cluster_name.clone(),
@@ -218,7 +217,7 @@ pub(crate) fn status(cfg: &telltale_config::Config, out: &mut impl Write) -> Exi
         Err(e) => return fail(&e),
     };
     let m = &id.meta;
-    let expires = pki::validity(&id.cert_pem).map_or(0, |(_, to)| u64::try_from(to).unwrap_or(0));
+    let expires = expiry_unix(&id.cert_pem);
     let _ = writeln!(out, "cluster    {} ({})", m.cluster_name, m.cluster_id);
     let _ = writeln!(out, "node       {}", m.node_id);
     let _ = writeln!(out, "site       {}", m.site);
@@ -250,6 +249,14 @@ pub(crate) fn status(cfg: &telltale_config::Config, out: &mut impl Write) -> Exi
         format_us(expires.saturating_mul(1_000_000))
     );
     ExitCode::SUCCESS
+}
+
+/// When a certificate expires (Unix seconds); `validity` gives (seconds left, lifetime).
+fn expiry_unix(cert_pem: &str) -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    pki::validity(cert_pem).map_or(0, |(left, _)| now.saturating_add_signed(left))
 }
 
 fn human(s: u64) -> String {

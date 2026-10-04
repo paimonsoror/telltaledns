@@ -67,7 +67,14 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
 - [ ] **T5.6 Federated reads** (stats merge, top-K merge, HDR merge, k-way query-log merge, partial results). *(CLU-002, OBS-012)*
 - [ ] **T5.7 Write forwarding to primary with identity propagation.** *(CLU-002)*
 - [ ] **T5.8 Telemetry ship mode + store-and-forward.** *(CLU-007)*
-- [ ] **T5.9 Cluster health page, metrics, alerts.** *(CLU-008)*
+- [ ] **T5.9 Cluster health page, metrics, alerts.** *(CLU-008)* Owner request 2026-10-04: a **Cluster** item in the main navigation with deep technical detail for judging whether the cluster is active, healthy, and serving traffic:
+  - **Topology:** cluster name/ID, epoch, election mode, which node is primary, nodes by site, eligible vs replica vs ephemeral.
+  - **Per node:** up/down with last heartbeat age, link direction and RTT, version and protocol (N/N-1 warnings), uptime, certificate expiry (renewal due), advertise URLs, and whether its DNS is serving: QPS, answer rate, SERVFAIL rate, p90 latency, readiness.
+  - **Sync:** applied config version vs the primary's, lag in changes and seconds, last sync time, propagation time p50/p95 over the last hour, snapshot/filter version per node, blobs pending, and orphaned changes (conflicts).
+  - **Events:** a timeline of joins, disconnects/reconnects, promotions, epoch changes, and sync failures, with the reason.
+  - **Diagnosis:** a "Cluster check" summary (every node heard from, all in sync, quorum/lease state, clocks within tolerance) with plain-language fixes; the same data at `GET /api/v1/cluster` and as an MCP tool.
+  - **Metrics/alerts:** `telltale_cluster_peers`, peer RTT, sync lag (changes, seconds), cert expiry, epoch; alerts for a peer down > 1 min, lag > 30 s, a cert expiring in < 14 days, and a node not serving DNS.
+  *AC:* the page and API agree with `telltale cluster status` on every node; a killed peer shows down within 15 s; a partition shows lag and recovers; Playwright covers the page.
 - [ ] **T5.10 Ephemeral k8s members + site grouping; Helm values for hybrid.** *(CLU-009)* *AC:* e2e: Pi-like container (outside kind) + kind cluster form one cluster; UI on either shows both; promote works both ways.
 - [ ] **T5.11 Version compatibility N/N-1 + rolling upgrade test.** *(CLU-010)*
 
