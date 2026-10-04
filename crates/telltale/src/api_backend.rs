@@ -769,11 +769,17 @@ impl Backend for ApiBackend {
     }
 
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
+        if let Some(p) = self.replica_read_only() {
+            return Box::pin(async move { Err(p) });
+        }
         self.do_write_managed(w)
     }
 
     // REQ: API-002, API-010 — devices named through the API (ADR-040).
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
+        if let Some(p) = self.replica_read_only() {
+            return Box::pin(async move { Err(p) });
+        }
         let src = Arc::clone(&self.src);
         Box::pin(async move {
             let state = src
@@ -1197,6 +1203,28 @@ fn plan_managed(
 }
 
 impl ApiBackend {
+    /// REQ: CLU-003 — a replica that follows the primary takes configuration only from it;
+    /// writes go to the primary (forwarded automatically once T5.7 lands).
+    fn replica_read_only(&self) -> Option<Problem> {
+        let cfg = self.src.config.load_full();
+        let m = crate::replication::applied(&cfg)?;
+        let at = self
+            .src
+            .cluster
+            .as_ref()
+            .and_then(|c| c.connected_primary())
+            .unwrap_or_else(|| format!("node {}", m.primary));
+        Some(
+            Problem::new(
+                telltale_api::problem::Code::Conflict,
+                "this node is a cluster replica: its configuration comes from the primary",
+            )
+            .hint(format!(
+                "make this change on the primary ({at}); it reaches every node within seconds"
+            )),
+        )
+    }
+
     fn managed_names_of(&self, kind: &str) -> Vec<String> {
         self.src
             .auth

@@ -2444,6 +2444,9 @@
           "site",
           "primary",
           "certExpiresAt",
+          "configSeq",
+          "lastSyncFetched",
+          "lastSyncMs",
           "peers"
         ],
         "properties": {
@@ -2453,6 +2456,38 @@
           },
           "clusterId": {
             "type": "string"
+          },
+          "configAppliedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When this node applied it (RFC 3339)."
+          },
+          "configCreatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When that version was created on the primary (RFC 3339)."
+          },
+          "configSeq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration version this node published (primary) or applied (replica), CLU-003.",
+            "minimum": 0
+          },
+          "lastSyncFetched": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Blobs fetched for the last applied version (replicas).",
+            "minimum": 0
+          },
+          "lastSyncMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Fetch + apply time of the last sync, in milliseconds.",
+            "minimum": 0
           },
           "name": {
             "type": "string",
@@ -2478,6 +2513,13 @@
           "site": {
             "type": "string",
             "example": "home-pi"
+          },
+          "syncError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last replication error, until the next success."
           }
         }
       },
@@ -2491,9 +2533,16 @@
           "up",
           "primary",
           "lastSeenSecondsAgo",
-          "via"
+          "via",
+          "configSeq"
         ],
         "properties": {
+          "configSeq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration version the peer reports as applied (the primary: published).",
+            "minimum": 0
+          },
           "lastSeenSecondsAgo": {
             "type": "integer",
             "format": "int64",

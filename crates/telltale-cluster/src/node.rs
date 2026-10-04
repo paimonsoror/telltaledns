@@ -133,6 +133,11 @@ impl Identity {
         self.dir.join("ca.key").exists()
     }
 
+    /// The CA key (primary only), for signing manifests (CLU-003).
+    pub fn ca_key_pem(&self) -> Result<String, String> {
+        self.ca().map(|c| c.key_pem)
+    }
+
     fn ca(&self) -> Result<Ca, String> {
         Ok(Ca {
             cert_pem: self.ca_pem.clone(),

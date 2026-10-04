@@ -343,14 +343,22 @@ fn compile_if_changed(
 /// served with the FST walk as soon as it's loaded, then again with the hash index once that
 /// is built (ADR-020), so neither a cold start nor a recompile waits for the index.
 #[derive(Clone)]
-struct Publisher {
+pub(crate) struct Publisher {
     pipeline: Arc<Pipeline>,
     /// Bumped per publish; a slow index build for an older snapshot is discarded.
     generation: Arc<AtomicU64>,
 }
 
 impl Publisher {
-    fn publish(&self, dir: PathBuf) {
+    /// A publisher of its own (a replica installs snapshots it didn't compile, CLU-003).
+    pub(crate) fn new(pipeline: Arc<Pipeline>) -> Self {
+        Self {
+            pipeline,
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub(crate) fn publish(&self, dir: PathBuf) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let this = self.clone();
         let spawned = std::thread::Builder::new()

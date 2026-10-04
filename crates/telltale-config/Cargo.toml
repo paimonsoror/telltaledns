@@ -15,10 +15,9 @@ workspace = true
 # JSON Schema output for editor completion (`telltale config schema`, 08 §5); derive keeps schema and types in one place.
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
+# The cluster's shared configuration as canonical JSON (CLU-003; already in the binary).
+serde_json = "1.0.151"
 # Exact key paths in deserialization errors (OPS-005 AC: unknown keys error with path).
 serde_path_to_error = "0.1.20"
 thiserror = "2.0.21"
 toml = "1.1.6"
-
-[dev-dependencies]
-serde_json = "1.0.151"

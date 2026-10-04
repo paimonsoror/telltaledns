@@ -556,3 +556,24 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** small CI changes (stamp the version; generate and sign `releases.json`), a `[updates]` config section, and the API/UI/metric fields. `telltale self-update` switches from reading `SHA256SUMS` to reading the index (same signature check).
 
+## ADR-047 — Config replication v1: whole-version manifests, shared vs node-local sections (Proposed)
+**Context:** T5.2 implements CLU-003 under `spec/02` §5 and `spec/12` §4. Those describe a change log of semantic ops (JSON-Patch) that replicas replay, with a full snapshot as fallback. They don't say which settings are node-local before T5.5, how UI/API-made entries (ADR-040) replicate, or what a replica does with its own lists and config file.
+
+**Decision:**
+- **Whole versions, not ops (for now).** Each change produces a new manifest `(epoch, seq)` naming the complete shared configuration as one blob (canonical JSON, a few KB) and the filter snapshot's blobs. A replica converges to the newest manifest from any state, including after a long partition, with no log to replay or compact. BLAKE3 content addressing keeps transfers incremental: a config change ships one small blob, and a list change ships only the FST shards that changed.
+  - **Measured:** p95 190 ms over a simulated 50 ms RTT (the AC is 5 s). On two local processes, a primary edit was answered by the replica 0.39 s later.
+  - The per-change log (author, op, timestamp) with orphan detection is still needed for fencing and conflicts (T5.4); it will ride alongside, recording what each version changed.
+- **Shared vs node-local:** node-local = `config_version`, `node`, `cluster`, `listen`, `api`, `auth`, `telemetry`, `cache` (a superset of CLU-006's list: sign-in stays local until ADR-045 replicates identities). Everything else is the primary's *effective* configuration: files plus UI/API entries (ADR-040), so devices named on the primary reach every node.
+  - A setting the replica doesn't recognize (a newer primary) fails validation, and the replica keeps its last version rather than dropping it silently.
+  - T5.5 adds the explicit `node.toml` allow-list and the startup error for overriding shared keys.
+- **Signing:** manifests are signed with the cluster CA's Ed25519 key and verified against the CA certificate every node already has. `spec/12` mentions a separate signing key rotated with the CA; this reuses the CA key until CA rotation (T5.4) needs the split.
+- **Replica behavior once synced:**
+  - its effective configuration = its own node-local sections + the primary's shared ones;
+  - its own list fetcher stops, and it installs the primary's snapshot as `snapshots/<version>`;
+  - it refuses API config writes with 409 `conflict` naming the primary, until T5.7 forwards them;
+  - it records the applied manifest in `cluster/applied.json` and serves it at cold start without contacting the primary (CLU-004).
+  - Until its first sync, a new replica runs on its own configuration (DNS keeps filtering while it joins).
+- **Primary:** checks twice a second for a changed shared configuration (by hash) or a new snapshot, and republishes with `seq + 1`, persisted in `cluster/published.json`. Peers get the current manifest when their stream connects, and every new one at once. Replicas report their applied `seq` in a heartbeat sent immediately after applying, so lag is visible without waiting for the 5 s tick.
+
+**Consequences:** with the Pi as primary, the homelab node's GitOps values for shared sections stop applying once it syncs. The Pi's config file (or UI) becomes the place to change shared settings, until write forwarding (T5.7) and a GitOps primary option are settled with the owner.
+

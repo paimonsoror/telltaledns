@@ -53,6 +53,18 @@ pub struct ClusterInfo {
     pub primary: bool,
     /// When this node's cluster certificate expires (RFC 3339).
     pub cert_expires_at: String,
+    /// The configuration version this node published (primary) or applied (replica), CLU-003.
+    pub config_seq: u64,
+    /// When that version was created on the primary (RFC 3339).
+    pub config_created_at: Option<String>,
+    /// When this node applied it (RFC 3339).
+    pub config_applied_at: Option<String>,
+    /// Blobs fetched for the last applied version (replicas).
+    pub last_sync_fetched: u64,
+    /// Fetch + apply time of the last sync, in milliseconds.
+    pub last_sync_ms: u64,
+    /// The last replication error, until the next success.
+    pub sync_error: Option<String>,
     /// Peers this node has heard from since it started.
     pub peers: Vec<ClusterPeer>,
 }
@@ -70,6 +82,8 @@ pub struct ClusterPeer {
     pub last_seen_seconds_ago: u64,
     /// `inbound` (it connected to us) or `outbound`.
     pub via: String,
+    /// The configuration version the peer reports as applied (the primary: published).
+    pub config_seq: u64,
 }
 
 /// Evidence that client IPs appear masked.

@@ -11,9 +11,10 @@
 //! [`CLUSTER_NAME`], so trust doesn't depend on the address a peer was dialed at. This module
 //! never touches DNS answering (CLU-004): a dead cluster link only marks peers down.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -34,8 +35,9 @@ use tracing::{debug, info, warn};
 
 use crate::node::{Identity, JoinRequest, JoinResponse};
 use crate::pki::CLUSTER_NAME;
+use crate::sync::{BlobRef, BlobStore, ClusterManifest, Signed};
 use crate::token::Token;
-use crate::wire::{self, Body, Frame, Heartbeat, Hello, PROTOCOL};
+use crate::wire::{self, Body, Frame, Heartbeat, Hello, ManifestMsg, PROTOCOL};
 
 /// Heartbeat interval; a peer silent for three intervals is down.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -218,6 +220,18 @@ pub struct LocalState {
     pub qps: u64,
 }
 
+/// Where the primary reads a blob it serves.
+#[derive(Debug, Clone)]
+pub enum BlobSource {
+    Bytes(Bytes),
+    File(PathBuf),
+}
+
+/// Largest blob a replica accepts (FST shards of a few million names are ~5 MB).
+const MAX_BLOB: usize = 256 << 20;
+/// Blobs fetched at once.
+const FETCH_PARALLEL: usize = 8;
+
 /// A node's cluster runtime: identity, peers, and its own reported state.
 #[derive(Debug)]
 pub struct Cluster {
@@ -225,6 +239,35 @@ pub struct Cluster {
     pub version: String,
     members: Mutex<BTreeMap<String, Member>>,
     local: Mutex<LocalState>,
+    /// The manifest this node publishes (primary), sent on every stream.
+    published: watch::Sender<Option<Arc<Signed>>>,
+    /// Blobs this node serves, by hash.
+    served: Mutex<HashMap<String, BlobSource>>,
+    /// The newest manifest received from a peer (verified by whoever applies it).
+    incoming: watch::Sender<Option<Arc<Signed>>>,
+    /// The primary URL of the stream that's up (blobs are fetched from there).
+    connected: Mutex<Option<String>>,
+    /// Replication state, for the API and the Cluster page.
+    sync: Mutex<SyncStatus>,
+    /// Bumped when the applied version changes, so the next heartbeat goes out at once.
+    local_changed: watch::Sender<u64>,
+}
+
+/// What this node has applied from the primary (replica) or published (primary).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncStatus {
+    pub epoch: u64,
+    pub seq: u64,
+    /// When the manifest was created on the primary (Unix ms).
+    pub created_ms: u64,
+    /// When this node applied (or published) it (Unix ms).
+    pub applied_ms: u64,
+    /// Blobs fetched for it (0 on the primary).
+    pub fetched: usize,
+    /// Fetch + apply time.
+    pub duration_ms: u64,
+    /// The last failure, cleared by the next success.
+    pub error: Option<String>,
 }
 
 impl Cluster {
@@ -237,7 +280,113 @@ impl Cluster {
             identity,
             version: version.to_owned(),
             members: Mutex::new(BTreeMap::new()),
+            published: watch::Sender::new(None),
+            served: Mutex::new(HashMap::new()),
+            incoming: watch::Sender::new(None),
+            connected: Mutex::new(None),
+            sync: Mutex::new(SyncStatus::default()),
+            local_changed: watch::Sender::new(0),
         })
+    }
+
+    /// Replication state.
+    pub fn sync_status(&self) -> SyncStatus {
+        self.sync
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Records replication state (the primary records what it published).
+    pub fn set_sync_status(&self, f: impl FnOnce(&mut SyncStatus)) {
+        f(&mut self.sync.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    /// Publishes a manifest and the blobs it names (primary): every connected peer gets it at
+    /// once, and peers that connect later get it first thing.
+    pub fn publish(&self, signed: Signed, blobs: HashMap<String, BlobSource>) {
+        *self.served.lock().unwrap_or_else(PoisonError::into_inner) = blobs;
+        self.published.send_replace(Some(Arc::new(signed)));
+    }
+
+    /// The manifest this node publishes, if any.
+    pub fn published(&self) -> Option<Arc<Signed>> {
+        self.published.borrow().clone()
+    }
+
+    /// Manifests received from peers (latest wins).
+    pub fn incoming(&self) -> watch::Receiver<Option<Arc<Signed>>> {
+        self.incoming.subscribe()
+    }
+
+    /// The primary URL this node's stream is connected to.
+    pub fn connected_primary(&self) -> Option<String> {
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Fetches the blobs in `refs` that `store` lacks from the connected primary; returns how
+    /// many were fetched. Each is checked against its hash before it's stored.
+    pub async fn fetch(&self, refs: &[BlobRef], store: &BlobStore) -> Result<usize, String> {
+        let mut missing: Vec<BlobRef> = refs.iter().filter(|b| !store.has(b)).cloned().collect();
+        missing.sort_by(|a, b| a.hash.cmp(&b.hash));
+        missing.dedup_by(|a, b| a.hash == b.hash);
+        if missing.is_empty() {
+            return Ok(0);
+        }
+        let url = self
+            .connected_primary()
+            .ok_or("not connected to the primary")?;
+        let tls = tls_connect(&url, client_config(&self.identity)?).await?;
+        let (send, conn) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .map_err(|e| e.to_string())?;
+        let conn = tokio::spawn(conn);
+        let n = missing.len();
+        let mut set = tokio::task::JoinSet::new();
+        let mut queue = missing.into_iter();
+        let mut result = Ok(n);
+        loop {
+            while set.len() < FETCH_PARALLEL {
+                let Some(b) = queue.next() else { break };
+                let (mut send, store) = (send.clone(), store.clone());
+                set.spawn(async move {
+                    let r = send
+                        .send_request(
+                            Request::get(format!(
+                                "https://{CLUSTER_NAME}/cluster/v1/blob/{}",
+                                b.hash
+                            ))
+                            .body(Full::new(Bytes::new()))
+                            .map_err(|e| e.to_string())?,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !r.status().is_success() {
+                        return Err(format!("blob {}: {}", b.name, r.status()));
+                    }
+                    let bytes = Limited::new(r.into_body(), MAX_BLOB)
+                        .collect()
+                        .await
+                        .map_err(|e| format!("blob {}: {e}", b.name))?
+                        .to_bytes();
+                    tokio::task::spawn_blocking(move || store.put(&b, &bytes))
+                        .await
+                        .map_err(|e| e.to_string())?
+                });
+            }
+            match set.join_next().await {
+                None => break,
+                Some(Ok(Ok(()))) => {}
+                Some(Ok(Err(e))) => result = Err(e),
+                Some(Err(e)) => result = Err(e.to_string()),
+            }
+        }
+        conn.abort();
+        result
     }
 
     /// Peers, by node ID.
@@ -252,7 +401,12 @@ impl Cluster {
 
     /// Updates what this node reports (qps from telemetry, applied version from replication).
     pub fn set_local(&self, f: impl FnOnce(&mut LocalState)) {
-        f(&mut self.local.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = (l.epoch, l.applied_seq);
+        f(&mut l);
+        if (l.epoch, l.applied_seq) != before {
+            self.local_changed.send_modify(|n| *n += 1);
+        }
     }
 
     fn hello(&self) -> Frame {
@@ -345,6 +499,13 @@ impl Cluster {
                     m.qps = hb.qps;
                 }
             }
+            Some(Body::Manifest(m)) => {
+                peer.as_ref().ok_or("manifest before Hello")?;
+                self.incoming.send_replace(Some(Arc::new(Signed {
+                    json: m.json,
+                    sig: m.sig,
+                })));
+            }
             None => {}
         }
         Ok(())
@@ -380,17 +541,45 @@ async fn write_frames(cluster: Arc<Cluster>, mut tx: http_body_util::channel::Se
     {
         return;
     }
+    let mut manifests = cluster.published.subscribe();
+    let mut changed = cluster.local_changed.subscribe();
     let mut tick = tokio::time::interval(HEARTBEAT);
     tick.tick().await;
+    // The current manifest first (a peer that just connected), then whatever happens next.
+    let mut pending = manifests.borrow_and_update().clone();
     loop {
-        tick.tick().await;
+        let frame = if let Some(m) = pending.take() {
+            manifest_frame(&m)
+        } else {
+            tokio::select! {
+                _ = tick.tick() => cluster.heartbeat(),
+                r = changed.changed() => {
+                    if r.is_err() { return; }
+                    cluster.heartbeat()
+                }
+                r = manifests.changed() => {
+                    if r.is_err() { return; }
+                    pending.clone_from(&manifests.borrow_and_update());
+                    continue;
+                }
+            }
+        };
         if tx
-            .send_data(Bytes::from(wire::encode(&cluster.heartbeat())))
+            .send_data(Bytes::from(wire::encode(&frame)))
             .await
             .is_err()
         {
             return;
         }
+    }
+}
+
+fn manifest_frame(m: &Signed) -> Frame {
+    Frame {
+        body: Some(Body::Manifest(ManifestMsg {
+            json: m.json.clone(),
+            sig: m.sig.clone(),
+        })),
     }
 }
 
@@ -453,6 +642,30 @@ async fn handle(
                 }
             });
             Response::new(http_body_util::Either::Right(body))
+        }
+        (&Method::GET, path) if path.starts_with("/cluster/v1/blob/") => {
+            if peer.is_none() {
+                return reply(
+                    StatusCode::UNAUTHORIZED,
+                    "a cluster certificate is required".into(),
+                );
+            }
+            let hash = &path["/cluster/v1/blob/".len()..];
+            let source = cluster
+                .served
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(hash)
+                .cloned();
+            let bytes = match source {
+                None => return reply(StatusCode::NOT_FOUND, "no such blob".into()),
+                Some(BlobSource::Bytes(b)) => b,
+                Some(BlobSource::File(p)) => match tokio::fs::read(&p).await {
+                    Ok(b) => Bytes::from(b),
+                    Err(e) => return reply(StatusCode::GONE, format!("blob unavailable: {e}")),
+                },
+            };
+            Response::new(http_body_util::Either::Left(Full::new(bytes)))
         }
         _ => reply(StatusCode::NOT_FOUND, "not found".into()),
     }
@@ -664,9 +877,117 @@ async fn stream_once(
         writer.abort();
         return Err(format!("{url}: {}", r.status()));
     }
+    *cluster
+        .connected
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
     let result = read_frames(&cluster, r.into_body(), server_id, "outbound").await;
     writer.abort();
+    cluster
+        .connected
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take_if(|u| u == url);
     result
+}
+
+/// How long a failed fetch or apply waits before trying the same manifest again.
+const SYNC_RETRY: Duration = Duration::from_secs(2);
+
+/// Replica side of CLU-003: follows the manifests the primary sends, starting after
+/// `(epoch, seq)` (what's already applied). For each newer manifest whose signature verifies,
+/// fetches the missing blobs into `store` and calls `apply`; on success the new version is
+/// reported in heartbeats. A newer manifest arriving mid-sync supersedes the one in progress.
+pub async fn follow<F, Fut>(
+    cluster: Arc<Cluster>,
+    store: BlobStore,
+    applied: (u64, u64),
+    mut apply: F,
+    mut stop: watch::Receiver<bool>,
+) where
+    F: FnMut(ClusterManifest) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let (mut epoch, mut seq) = applied;
+    cluster.set_local(|l| l.applied_seq = seq);
+    let mut incoming = cluster.incoming();
+    loop {
+        tokio::select! {
+            _ = stop.changed() => return,
+            r = incoming.changed() => if r.is_err() { return },
+        }
+        loop {
+            let Some(signed) = incoming.borrow_and_update().clone() else {
+                break;
+            };
+            let m = match signed.verify(&cluster.identity.ca_pem) {
+                Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => m,
+                Ok(_) => {
+                    warn!("ignoring a manifest from another cluster");
+                    break;
+                }
+                Err(e) => {
+                    warn!("ignoring a cluster manifest: {e}");
+                    cluster.set_sync_status(|s| s.error = Some(e));
+                    break;
+                }
+            };
+            if !m.newer_than(epoch, seq) {
+                break;
+            }
+            let t = tokio::time::Instant::now();
+            let refs: Vec<BlobRef> = m.blobs().into_iter().cloned().collect();
+            let result = match cluster.fetch(&refs, &store).await {
+                Ok(n) => apply(m.clone()).await.map(|()| n),
+                Err(e) => Err(format!("fetching from the primary: {e}")),
+            };
+            match result {
+                Ok(fetched) => {
+                    (epoch, seq) = (m.epoch, m.seq);
+                    cluster.set_local(|l| {
+                        l.applied_seq = seq;
+                        l.epoch = l.epoch.max(epoch);
+                    });
+                    let duration_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    cluster.set_sync_status(|s| {
+                        *s = SyncStatus {
+                            epoch,
+                            seq,
+                            created_ms: m.created_ms,
+                            applied_ms: now_ms(),
+                            fetched,
+                            duration_ms,
+                            error: None,
+                        };
+                    });
+                    info!(
+                        seq,
+                        epoch,
+                        fetched,
+                        ms = duration_ms,
+                        "applied cluster configuration"
+                    );
+                    store.retain(&m.blobs());
+                }
+                Err(e) => {
+                    warn!(
+                        seq = m.seq,
+                        "cluster configuration not applied (will retry): {e}"
+                    );
+                    cluster.set_sync_status(|s| s.error = Some(e));
+                    tokio::select! {
+                        _ = stop.changed() => return,
+                        () = tokio::time::sleep(SYNC_RETRY) => {}
+                    }
+                    // Retry the newest manifest (this one, unless a newer one arrived).
+                    incoming.mark_changed();
+                }
+            }
+            if !incoming.has_changed().unwrap_or(false) {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

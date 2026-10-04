@@ -8,5 +8,6 @@
 pub mod net;
 pub mod node;
 pub mod pki;
+pub mod sync;
 pub mod token;
 pub mod wire;

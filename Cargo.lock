@@ -2958,6 +2958,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "axum",
+ "bytes",
  "clap",
  "mimalloc",
  "minisign-verify",
@@ -3021,6 +3022,7 @@ dependencies = [
 name = "telltale-cluster"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bytes",
  "http-body-util",
  "hyper",

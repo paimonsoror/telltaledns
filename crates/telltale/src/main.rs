@@ -15,6 +15,7 @@ mod managed;
 mod masking;
 mod pipeline;
 mod qlog_cli;
+mod replication;
 mod rollups;
 mod selfupdate;
 mod server;

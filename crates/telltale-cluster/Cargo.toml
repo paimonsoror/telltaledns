@@ -19,6 +19,8 @@ time = "0.3.55"
 # Node-to-node frames (CLU-010): prost is the one new dependency (pure Rust, ~200 KiB).
 prost = "0.14"
 ring = "0.17.14"
+# Content addresses of replicated blobs (the filter snapshot already uses BLAKE3).
+blake3 = "1.8.7"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -30,7 +32,7 @@ hyper = { version = "1.11.1", default-features = false, features = ["client", "s
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 http-body-util = { version = "0.1.5", features = ["channel"] }
 bytes = "1.12.1"
-tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync"] }
+tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync", "fs"] }
 tracing = "0.1.44"
 
 [dev-dependencies]

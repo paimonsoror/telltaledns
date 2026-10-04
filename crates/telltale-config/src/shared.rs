@@ -1,0 +1,154 @@
+//! The cluster's shared configuration (REQ: CLU-003, CLU-006; ADR-047): what the primary
+//! replicates, and how a replica combines it with its own node-local sections.
+//!
+//! Node-local sections stay with each node: where it listens, its identity and data
+//! directory, its cluster port, the API listener and sign-in (ADR-045 replicates identities
+//! separately), telemetry/query-log retention, and the cache size. Everything else (upstreams,
+//! routes, records, lists, groups, clients, access, rate limits, special names) is the
+//! primary's.
+
+use serde_json::{Map, Value};
+
+use crate::{Config, ConfigError, validate_config};
+
+/// Top-level sections that never leave a node.
+pub const NODE_LOCAL: &[&str] = &[
+    "config_version",
+    "node",
+    "cluster",
+    "listen",
+    "api",
+    "auth",
+    "telemetry",
+    "cache",
+];
+
+/// The shared part of `cfg` as a JSON object. Serializing the same struct always gives the
+/// same key order, so equal configs give equal bytes and equal hashes.
+pub fn shared_part(cfg: &Config) -> Value {
+    let mut v = serde_json::to_value(cfg).unwrap_or(Value::Null);
+    if let Value::Object(m) = &mut v {
+        for k in NODE_LOCAL {
+            m.remove(*k);
+        }
+    }
+    v
+}
+
+/// `local` with every shared section replaced by the primary's `shared`, validated as a
+/// whole. Unknown sections in `shared` (a newer primary) are an error, so a replica never
+/// silently drops settings it doesn't understand.
+pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigError>> {
+    let Value::Object(shared) = shared else {
+        return Err(vec![ConfigError::new(
+            "cluster",
+            "the shared configuration isn't an object",
+        )]);
+    };
+    let mut merged: Map<String, Value> = match serde_json::to_value(local) {
+        Ok(Value::Object(m)) => m,
+        _ => {
+            return Err(vec![ConfigError::new(
+                "cluster",
+                "cannot serialize the local configuration",
+            )]);
+        }
+    };
+    for (k, v) in shared {
+        if NODE_LOCAL.contains(&k.as_str()) {
+            continue;
+        }
+        if !merged.contains_key(k) {
+            return Err(vec![ConfigError::new(
+                k.clone(),
+                "the primary sent a setting this version doesn't know; upgrade this node",
+            )]);
+        }
+        merged.insert(k.clone(), v.clone());
+    }
+    let cfg: Config = serde_json::from_value(Value::Object(merged)).map_err(|e| {
+        vec![ConfigError::new(
+            "cluster",
+            format!("shared configuration: {e}"),
+        )]
+    })?;
+    validate_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Loader;
+
+    fn load(toml: &str) -> Config {
+        Loader::new().toml_str("t", toml).load().unwrap().config
+    }
+
+    #[test]
+    fn clu_006_local_sections_stay_and_shared_ones_come_from_the_primary() {
+        let primary = load(
+            r#"
+[node]
+name = "pi"
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:53"
+[[upstream]]
+name = "q9"
+url = "udp://9.9.9.9"
+[[upstream_group]]
+name = "default"
+members = ["q9"]
+[[record]]
+name = "nas.home.arpa"
+type = "A"
+value = "192.168.1.10"
+"#,
+        );
+        let replica = load(
+            r#"
+[node]
+name = "k8s"
+[[listen]]
+proto = "udp"
+addr = "0.0.0.0:5300"
+[[upstream]]
+name = "cf"
+url = "udp://1.1.1.1"
+[[upstream_group]]
+name = "default"
+members = ["cf"]
+[cache]
+max_bytes = "128 MiB"
+"#,
+        );
+        let shared = shared_part(&primary);
+        assert!(shared.get("node").is_none() && shared.get("listen").is_none());
+        let merged = with_shared(&replica, &shared).unwrap();
+        // Local: name, listeners, cache. Shared: upstreams, records.
+        assert_eq!(merged.node.name.as_str(), "k8s");
+        assert_eq!(merged.listen, replica.listen);
+        assert_eq!(merged.cache, replica.cache);
+        assert_eq!(merged.upstream, primary.upstream);
+        assert_eq!(merged.record, primary.record);
+        // Same config, same bytes.
+        assert_eq!(
+            serde_json::to_vec(&shared_part(&primary)).unwrap(),
+            serde_json::to_vec(&shared).unwrap()
+        );
+    }
+
+    #[test]
+    fn clu_003_an_unknown_or_invalid_shared_setting_is_refused() {
+        let local = Config::default();
+        let mut shared = shared_part(&local);
+        shared["from_the_future"] = Value::Bool(true);
+        assert!(with_shared(&local, &shared).is_err());
+        // A route to a group that doesn't exist fails validation as a whole.
+        let mut shared = shared_part(&local);
+        shared["route"] =
+            serde_json::json!([{ "match_suffix": ["x.test"], "upstream_group": "nope" }]);
+        assert!(with_shared(&local, &shared).is_err());
+    }
+}

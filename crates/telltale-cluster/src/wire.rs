@@ -51,10 +51,20 @@ pub struct Heartbeat {
     pub qps: u64,
 }
 
+/// A signed cluster manifest (CLU-003, `crate::sync`): the primary sends it on connect and
+/// whenever it changes.
+#[derive(Clone, PartialEq, Message)]
+pub struct ManifestMsg {
+    #[prost(bytes = "vec", tag = "1")]
+    pub json: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub sig: Vec<u8>,
+}
+
 /// One message on a stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Frame {
-    #[prost(oneof = "Body", tags = "1, 2")]
+    #[prost(oneof = "Body", tags = "1, 2, 3")]
     pub body: Option<Body>,
 }
 
@@ -64,6 +74,8 @@ pub enum Body {
     Hello(Hello),
     #[prost(message, tag = "2")]
     Heartbeat(Heartbeat),
+    #[prost(message, tag = "3")]
+    Manifest(ManifestMsg),
 }
 
 /// A frame with its length prefix.

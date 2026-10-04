@@ -66,6 +66,7 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let m = &c.identity.meta;
+    let sync = c.sync_status();
     let expires = expiry_unix(&c.identity.cert_pem);
     ClusterInfo {
         cluster_id: m.cluster_id.clone(),
@@ -74,6 +75,14 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
         site: m.site.clone(),
         primary: c.identity.holds_ca(),
         cert_expires_at: format_us(expires.saturating_mul(1_000_000)),
+        config_seq: sync.seq,
+        config_created_at: (sync.created_ms > 0)
+            .then(|| format_us(sync.created_ms.saturating_mul(1000))),
+        config_applied_at: (sync.applied_ms > 0)
+            .then(|| format_us(sync.applied_ms.saturating_mul(1000))),
+        last_sync_fetched: sync.fetched as u64,
+        last_sync_ms: sync.duration_ms,
+        sync_error: sync.error,
         peers: c
             .members()
             .into_iter()
@@ -85,6 +94,7 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
                 version: p.version,
                 primary: p.primary,
                 via: p.via.to_owned(),
+                config_seq: p.applied_seq,
             })
             .collect(),
     }

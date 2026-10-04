@@ -28,7 +28,7 @@ use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 /// Loads and validates config from `files` + environment plus what the UI/API stored
 /// (ADR-040), logging every problem.
 pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
-    load_files(files).map(|c| crate::managed::effective(&c))
+    load_files(files).map(|c| crate::replication::effective(&c))
 }
 
 /// Loads and validates `files` + environment only (without what the UI/API stored).
@@ -547,10 +547,24 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
 
     // REQ: FLT-004 — lists download in the background once DNS is up (rule 5: DNS never
     // waits for, or depends on, a list).
-    let mut lists = Lists::start(&cfg, &pipeline);
+    // A synced replica gets them compiled from the primary instead (CLU-003).
+    let mut lists = if crate::replication::follows_primary(&cfg) {
+        None
+    } else {
+        Lists::start(&cfg, &pipeline)
+    };
     sources
         .lists
         .store(lists.as_ref().map(|l| Arc::clone(&l.shared)));
+    if let Some(c) = &sources.cluster {
+        crate::replication::start(
+            c,
+            files.clone(),
+            &sources,
+            sources.reload.clone(),
+            &http_stopped,
+        );
+    }
 
     let mut term = signal(SignalKind::terminate())?;
     let mut hup = signal(SignalKind::hangup())?;
@@ -623,7 +637,7 @@ async fn reload(
         error!("reload failed: configuration invalid; still serving the previous configuration");
         return false;
     };
-    let new = crate::managed::effective(&file);
+    let new = crate::replication::effective(&file);
     // Unchanged upstream config keeps the running router: its health state, pooled
     // connections, and bootstrap cache survive the reload (T2.7).
     let same_upstreams = current.upstream == new.upstream
@@ -654,7 +668,14 @@ async fn reload(
     sources.udp.store(Arc::new(stats.udp));
     sources.tcp.store(Arc::new(stats.tcp));
     sources.doh.store(Arc::new(stats.doh));
-    if let Some(l) = lists {
+    if crate::replication::follows_primary(&new) {
+        // REQ: CLU-003 — a synced replica serves the primary's compiled lists.
+        if let Some(l) = lists.take() {
+            info!("following the cluster primary: this node no longer downloads lists");
+            l.stop();
+            sources.lists.store(None);
+        }
+    } else if let Some(l) = lists {
         l.reload(&new);
     } else {
         *lists = Lists::start(&new, pipeline);

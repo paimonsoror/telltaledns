@@ -467,10 +467,25 @@ The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 ## Clusters (in progress)
 
 Nodes can form a cluster: the first node creates it and holds the cluster's certificate
-authority; others join with a token and then keep an encrypted, mutually authenticated link
-(mTLS over HTTP/2) to it. **So far the cluster only knows its members** — sharing
-configuration, failover, and one management plane arrive in the next roadmap steps (M5).
-DNS never depends on the cluster: a node answers the same whether its peers are up or not.
+authority (it's the **primary**); others join with a token and then keep an encrypted,
+mutually authenticated link (mTLS over HTTP/2) to it. **The primary's configuration and
+blocklists reach every node within seconds.** Failover, forwarding changes made on other
+nodes, and one management plane arrive in the next roadmap steps (M5). DNS never depends on
+the cluster: a node answers the same whether its peers are up or not.
+
+**What's shared and what stays per node.** The primary shares upstreams, routes, local
+records, lists, groups, devices, access rules, rate limits, and special names, including
+what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`, `[cluster]`,
+`[api]`, `[auth]`, `[telemetry]`, and `[cache]` from its own config file. So:
+- **Make configuration changes on the primary** (its config file or UI). A replica refuses
+  changes through its own API (409, naming the primary), and the shared sections of a
+  replica's own config file are ignored once it has synced.
+- **Replicas don't download lists.** The primary compiles them, and replicas fetch only the
+  parts that changed.
+- **A replica keeps serving what it last received** if the primary is down, including after a
+  restart (it starts answering from `<data_dir>/cluster/applied.json` in milliseconds).
+- **Every version is signed** by the cluster's key; a replica rejects anything else.
+- **Sign-in is still per node:** each node has its own users and sessions until ADR-045 lands.
 
 Run these as the user telltale runs as (`sudo -u telltale` for native installs,
 `docker compose exec telltale` for Compose), then restart telltale.
@@ -498,8 +513,10 @@ telltale cluster status
   gets a certificate valid for 90 days.
 - **State** lives in `<data_dir>/cluster/` (keys are readable only by their owner). Removing
   that directory takes a node out of the cluster.
-- **Seeing members:** `GET /api/v1/system/info` lists them under `cluster.peers`, and
-  `telltale_cluster_peers{state="up"|"down"}` counts them in `/metrics`.
+- **Seeing members and sync:** `GET /api/v1/system/info` shows `cluster.configSeq` (the
+  version this node published or applied), when it was applied, the last sync's duration and
+  error, and each peer's version under `cluster.peers`. `telltale_cluster_peers{state="up"|"down"}`
+  counts peers in `/metrics`.
 
 ## Monitoring
 An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`) serves:

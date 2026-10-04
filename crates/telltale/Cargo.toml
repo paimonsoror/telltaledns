@@ -30,6 +30,7 @@ ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+bytes = "1.12.1"
 telltale-api = { version = "0.1.0", path = "../telltale-api" }
 telltale-cache = { version = "0.1.0", path = "../telltale-cache" }
 telltale-cluster = { version = "0.1.0", path = "../telltale-cluster" }

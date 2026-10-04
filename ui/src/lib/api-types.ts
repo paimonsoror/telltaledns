@@ -957,6 +957,25 @@ export interface components {
             /** @description When this node's cluster certificate expires (RFC 3339). */
             certExpiresAt: string;
             clusterId: string;
+            /** @description When this node applied it (RFC 3339). */
+            configAppliedAt?: string | null;
+            /** @description When that version was created on the primary (RFC 3339). */
+            configCreatedAt?: string | null;
+            /**
+             * Format: int64
+             * @description The configuration version this node published (primary) or applied (replica), CLU-003.
+             */
+            configSeq: number;
+            /**
+             * Format: int64
+             * @description Blobs fetched for the last applied version (replicas).
+             */
+            lastSyncFetched: number;
+            /**
+             * Format: int64
+             * @description Fetch + apply time of the last sync, in milliseconds.
+             */
+            lastSyncMs: number;
             /**
              * @description The name given at `telltale cluster init`.
              * @example home
@@ -973,9 +992,16 @@ export interface components {
             primary: boolean;
             /** @example home-pi */
             site: string;
+            /** @description The last replication error, until the next success. */
+            syncError?: string | null;
         };
         /** @description A peer node, as last heard over the cluster channel. */
         ClusterPeer: {
+            /**
+             * Format: int64
+             * @description The configuration version the peer reports as applied (the primary: published).
+             */
+            configSeq: number;
             /** Format: int64 */
             lastSeenSecondsAgo: number;
             nodeId: string;
