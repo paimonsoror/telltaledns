@@ -1,5 +1,8 @@
 # TelltaleDNS web UI
 
+Changing the design? Read [DESIGN-HANDOFF.md](DESIGN-HANDOFF.md) first (constraints, design
+system, test contract, backlog).
+
 Svelte 5 + Vite + TypeScript + uPlot, no CSS framework (`spec/07` §3, ADR-009, ADR-030). The
 build output (`dist/`) is embedded in the binary by `telltale-api` (`rust-embed`) and served at
 `/` on the API listener.
