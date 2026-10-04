@@ -618,3 +618,77 @@ pub enum TailItem {
     Query(Box<QueryRow>),
     Dropped(TailDropped),
 }
+
+/// One record of a local name.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordInput {
+    /// `A`, `AAAA`, `CNAME` (Simple); `PTR`, `TXT`, `MX`, `SRV` (Advanced).
+    #[serde(rename = "type")]
+    #[schema(example = "A")]
+    pub rtype: String,
+    /// An address for A/AAAA, a name for CNAME/PTR, text for TXT, `"10 mail.home.arpa"` for MX,
+    /// `"0 5 5060 pbx.home.arpa"` for SRV.
+    #[schema(example = "192.168.1.10")]
+    pub value: String,
+    /// TTL in seconds (default: `[local] default_ttl`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u32>,
+}
+
+/// A local name's records (`PUT /api/v1/records/{name}`).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordsInput {
+    pub records: Vec<RecordInput>,
+}
+
+/// A name TelltaleDNS answers itself.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalName {
+    #[schema(example = "nas.home.arpa")]
+    pub name: String,
+    pub records: Vec<RecordInput>,
+    /// `file` (read-only here) or `api`.
+    pub source: String,
+}
+
+/// The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForwardInput {
+    /// Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.
+    #[schema(example = json!(["10.0.0.53"]))]
+    pub servers: Vec<String>,
+}
+
+/// A domain sent to other servers (conditional forwarding).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardInfo {
+    #[schema(example = "corp.example")]
+    pub domain: String,
+    /// The servers (upstream URLs), in order.
+    pub servers: Vec<String>,
+    /// `file` (read-only here) or `api`.
+    pub source: String,
+}
+
+/// What a change to local names or forwarded domains did (or would do, with `dryRun`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigChange {
+    /// False for a dry run.
+    pub applied: bool,
+    /// The configuration version after the change (send it as `If-Match` next time).
+    pub config_version: u64,
+    /// The entry before (absent when new).
+    #[schema(value_type = Option<Object>)]
+    pub before: Option<serde_json::Value>,
+    /// The entry after (absent after a delete).
+    #[schema(value_type = Option<Object>)]
+    pub after: Option<serde_json::Value>,
+    /// Configuration warnings after the change.
+    pub warnings: Vec<String>,
+}

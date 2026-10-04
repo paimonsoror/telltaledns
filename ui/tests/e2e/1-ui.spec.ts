@@ -120,7 +120,7 @@ test('lists, groups, clients, upstreams, local DNS render', async () => {
     ['/#/groups', 'default'],
     ['/#/clients', '127.0.0.1'],
     ['/#/upstreams', 'nowhere'],
-    ['/#/local-dns', '[[record]]'],
+    ['/#/local-dns', 'nas.e2e.test'],
   ]) {
     await page.goto(path);
     await expect(page.locator('main')).toContainText(text);
@@ -300,4 +300,56 @@ test('api_011 help panels, diagrams, and simple/advanced', async () => {
   await page.reload();
   await expect(page.getByRole('button', { name: 'Advanced', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Simple', exact: true }).click();
+});
+
+// REQ: API-011 (T3.12 AC) — a novice creates nas.home.arpa and sends corp.example elsewhere through
+// the wizards, without docs; DNS answers at once; the API does the same with dry-run.
+test('api_011 names on my network: wizards, DNS, and the API', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/local-dns');
+  await expect(page.getByRole('heading', { name: 'Names on my network' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Set up my home domain', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Home domain', exact: true })).toHaveValue('home.arpa');
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('textbox', { name: 'Device name', exact: true }).fill('nas');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('192.168.1.10');
+  await expect(page.getByTestId('change-preview')).toContainText('nas.home.arpa gets the address 192.168.1.10');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status')).toContainText('nas.home.arpa now answers');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('main')).toContainText('nas.home.arpa');
+  expect(await query('nas.home.arpa')).toBe(0); // NOERROR, answered locally
+
+  await page.getByRole('button', { name: 'Send a domain to another server', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Domain', exact: true }).fill('corp.example');
+  await page.getByRole('textbox', { name: 'Server address', exact: true }).fill('10.0.0.53');
+  await expect(page.getByTestId('change-preview')).toContainText('asked of 10.0.0.53');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('status')).toContainText('corp.example');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('main')).toContainText('udp://10.0.0.53');
+
+  // Explain confirms both paths.
+  await page.goto('/#/explain?name=nas.home.arpa&client=127.0.0.1');
+  await expect(page.getByTestId('explain-flow').getByRole('img')).toHaveAttribute('aria-label', /your own names/);
+  await page.goto('/#/explain?name=intranet.corp.example&client=127.0.0.1');
+  await expect(page.getByTestId('explain-flow').getByRole('img')).toHaveAttribute('aria-label', /server you chose/);
+
+  // The API: dry run, validation, and the same change.
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = { 'x-csrf-token': csrf };
+  const dry = await r.put('/api/v1/records/printer.home.arpa?dryRun=true', { headers: h, data: { records: [{ type: 'A', value: '192.168.1.20' }] } });
+  expect(await dry.json()).toMatchObject({ applied: false, after: { name: 'printer.home.arpa' } });
+  expect((await (await r.get('/api/v1/records')).json()).items.map((n: { name: string }) => n.name)).not.toContain('printer.home.arpa');
+  const bad = await r.put('/api/v1/records/printer.home.arpa', { headers: h, data: { records: [{ type: 'A', value: 'printer' }] } });
+  expect(bad.status()).toBe(422);
+  const file = await r.put('/api/v1/records/nas.e2e.test', { headers: h, data: { records: [{ type: 'A', value: '10.1.1.1' }] } });
+  expect(file.status()).toBe(409);
+  const fwDry = await r.put('/api/v1/forwards/lab.example?dryRun=true', { headers: h, data: { servers: ['tls://10.0.0.9'] } });
+  expect(await fwDry.json()).toMatchObject({ applied: false, after: { domain: 'lab.example', servers: ['tls://10.0.0.9'] } });
+  expect((await r.delete('/api/v1/forwards/corp.example', { headers: h })).status()).toBe(200);
+  expect((await r.delete('/api/v1/records/nas.home.arpa', { headers: h })).status()).toBe(200);
+  expect(await query('nas.home.arpa').catch(() => -1)).not.toBe(0);
 });

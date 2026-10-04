@@ -8,14 +8,14 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use telltale_api::model::{
-    ClientChange, ClientInfo, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine,
-    ExplainParams, ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, LatencyBy, LatencyRow,
-    ListInfo, NameMatch, QueryPage, QueryParams, QueryRow, ScanStats, Step, SystemInfo, TimeBucket,
-    TopItem, TopKind, UpstreamInfo,
+    ClientChange, ClientInfo, ConfigChange, ExplainBlock, ExplainClient, ExplainFilter,
+    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo, GroupInfo,
+    Hour, LatencyBy, LatencyRow, ListInfo, LocalName, NameMatch, QueryPage, QueryParams, QueryRow,
+    RecordInput, ScanStats, Step, SystemInfo, TimeBucket, TopItem, TopKind, UpstreamInfo,
 };
 use telltale_api::problem::{Code, Problem};
 use telltale_api::time::format_us;
-use telltale_api::{Backend, BoxFuture, ClientWrite};
+use telltale_api::{Backend, BoxFuture, ClientWrite, ManagedKind, ManagedWrite};
 use telltale_store::qlog;
 use telltale_store::rollup::{Level, merge};
 use telltale_store::state::ManagedError;
@@ -734,6 +734,19 @@ impl Backend for ApiBackend {
             .unwrap_or(0)
     }
 
+    // REQ: API-011 — names on my network and domains sent elsewhere (ADR-042).
+    fn local_names(&self) -> Vec<LocalName> {
+        self.list_local_names()
+    }
+
+    fn forwards(&self) -> Vec<ForwardInfo> {
+        self.list_forwards()
+    }
+
+    fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
+        self.do_write_managed(w)
+    }
+
     // REQ: API-002, API-010 — devices named through the API (ADR-040).
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         let src = Arc::clone(&self.src);
@@ -994,4 +1007,314 @@ fn plan_client(
         recent_queries,
         warnings,
     })
+}
+
+/// The `state.db` kind for an API kind.
+fn kind_name(k: ManagedKind) -> &'static str {
+    match k {
+        ManagedKind::Record => crate::managed::RECORD,
+        ManagedKind::Forward => crate::managed::FORWARD,
+    }
+}
+
+/// A local name or domain as stored: lowercase, no trailing dot.
+fn norm(name: &str) -> String {
+    name.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// A validated change to a local name or forwarded domain.
+struct ManagedPlan {
+    name: String,
+    before: Option<serde_json::Value>,
+    after: Option<serde_json::Value>,
+    /// What to store (`None` deletes).
+    body: Option<String>,
+    warnings: Vec<String>,
+}
+
+/// Parses a records body into stored form.
+fn record_values(
+    v: &serde_json::Value,
+    name: &str,
+) -> Result<Vec<crate::managed::RecordValue>, Problem> {
+    let input: telltale_api::model::RecordsInput =
+        serde_json::from_value(v.clone()).map_err(|e| Problem::invalid(format!("body: {e}")))?;
+    if input.records.is_empty() {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            format!("`{name}`: give at least one record (or DELETE the name)"),
+        ));
+    }
+    Ok(input
+        .records
+        .into_iter()
+        .map(|r| crate::managed::RecordValue {
+            rtype: r.rtype.trim().to_ascii_uppercase(),
+            value: r.value.trim().to_owned(),
+            ttl: r.ttl,
+        })
+        .collect())
+}
+
+/// Parses a forward body into stored form.
+fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forward, Problem> {
+    let input: telltale_api::model::ForwardInput =
+        serde_json::from_value(v.clone()).map_err(|e| Problem::invalid(format!("body: {e}")))?;
+    let servers: Vec<String> = input
+        .servers
+        .iter()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if servers.is_empty() {
+        return Err(Problem::new(
+            Code::InvalidConfig,
+            format!("`{name}`: give at least one server"),
+        ));
+    }
+    Ok(crate::managed::Forward { servers })
+}
+
+/// Checks a local-name or forward write (ADR-042): files win, and the files plus every API
+/// entry with this change must validate, record values included.
+fn plan_managed(
+    src: &Sources,
+    state: &telltale_store::state::State,
+    w: &ManagedWrite,
+) -> Result<ManagedPlan, Problem> {
+    let name = norm(&w.name);
+    if name.is_empty() {
+        return Err(Problem::invalid("the name is empty"));
+    }
+    let file = src.file_config.load_full();
+    let in_files = match w.kind {
+        ManagedKind::Record => file
+            .record
+            .iter()
+            .any(|r| r.name.eq_ignore_ascii_case(&name)),
+        ManagedKind::Forward => file
+            .route
+            .iter()
+            .any(|r| r.match_suffix.iter().any(|s| s.eq_ignore_ascii_case(&name))),
+    };
+    if in_files {
+        return Err(Problem::new(
+            Code::Conflict,
+            format!("`{name}` is defined in the config files"),
+        )
+        .hint("Change it in the config file."));
+    }
+    let mut entries = crate::managed::entries(state);
+    let (before, after) = match w.kind {
+        ManagedKind::Record => {
+            let before = entries
+                .records
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, r)| r.clone());
+            entries.records.retain(|(n, _)| *n != name);
+            let after = match &w.body {
+                None => None,
+                Some(v) => {
+                    let recs = record_values(v, &name)?;
+                    entries.records.push((name.clone(), recs.clone()));
+                    Some(recs)
+                }
+            };
+            (
+                before.map(|b| serde_json::json!({ "name": name, "records": b })),
+                after.map(|a| serde_json::json!({ "name": name, "records": a })),
+            )
+        }
+        ManagedKind::Forward => {
+            let before = entries
+                .forwards
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, f)| f.clone());
+            entries.forwards.retain(|(n, _)| *n != name);
+            let after = match &w.body {
+                None => None,
+                Some(v) => {
+                    let f = forward_of(v, &name)?;
+                    entries.forwards.push((name.clone(), f.clone()));
+                    Some(f)
+                }
+            };
+            (
+                before.map(|b| serde_json::json!({ "domain": name, "servers": b.servers })),
+                after.map(|a| serde_json::json!({ "domain": name, "servers": a.servers })),
+            )
+        }
+    };
+    if w.body.is_none() && before.is_none() {
+        return Err(Problem::not_found(format!(
+            "`{name}` wasn't created through the API"
+        )));
+    }
+    let merged = crate::managed::merge(&file, &entries)
+        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
+    let body = match (w.kind, &after) {
+        (_, None) => None,
+        (ManagedKind::Record, Some(a)) => Some(a["records"].to_string()),
+        (ManagedKind::Forward, Some(a)) => {
+            Some(serde_json::json!({ "servers": a["servers"] }).to_string())
+        }
+    };
+    Ok(ManagedPlan {
+        name,
+        before,
+        after,
+        body,
+        warnings,
+    })
+}
+
+impl ApiBackend {
+    fn managed_names_of(&self, kind: &str) -> Vec<String> {
+        self.src
+            .auth
+            .get()
+            .and_then(|a| a.state().managed(kind).ok())
+            .map(|m| m.into_iter().map(|e| e.name).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn list_local_names(&self) -> Vec<LocalName> {
+        let api = self.managed_names_of(crate::managed::RECORD);
+        let cfg = self.src.config.load();
+        let mut out: Vec<LocalName> = Vec::new();
+        for r in &cfg.record {
+            let rec = RecordInput {
+                rtype: r.rtype.to_ascii_uppercase(),
+                value: r.value.to_string(),
+                ttl: r.ttl,
+            };
+            match out
+                .iter_mut()
+                .find(|n| n.name.eq_ignore_ascii_case(&r.name))
+            {
+                Some(n) => n.records.push(rec),
+                None => out.push(LocalName {
+                    name: r.name.to_ascii_lowercase(),
+                    records: vec![rec],
+                    source: if api.iter().any(|a| a.eq_ignore_ascii_case(&r.name)) {
+                        "api".into()
+                    } else {
+                        "file".into()
+                    },
+                }),
+            }
+        }
+        out
+    }
+
+    pub(crate) fn list_forwards(&self) -> Vec<ForwardInfo> {
+        let api = self.managed_names_of(crate::managed::FORWARD);
+        let cfg = self.src.config.load();
+        let url_of = |name: &str| {
+            cfg.upstream
+                .iter()
+                .find(|u| u.name.as_str() == name)
+                .map(|u| u.url.to_string())
+        };
+        let mut out = Vec::new();
+        for r in &cfg.route {
+            if !r.match_group.is_empty() || !r.match_qtype.is_empty() {
+                continue; // per-group or per-type routes aren't "send this domain" routes
+            }
+            let servers: Vec<String> = cfg
+                .upstream_group
+                .iter()
+                .find(|g| g.name == r.upstream_group)
+                .map(|g| g.members.iter().filter_map(|m| url_of(m)).collect())
+                .unwrap_or_default();
+            for d in &r.match_suffix {
+                out.push(ForwardInfo {
+                    domain: d.to_ascii_lowercase(),
+                    servers: servers.clone(),
+                    source: if api.iter().any(|a| a.eq_ignore_ascii_case(d)) {
+                        "api".into()
+                    } else {
+                        "file".into()
+                    },
+                });
+            }
+        }
+        out
+    }
+
+    pub(crate) fn do_write_managed(
+        &self,
+        w: ManagedWrite,
+    ) -> BoxFuture<Result<ConfigChange, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            let state = src
+                .auth
+                .get()
+                .map(|a| Arc::clone(a.state()))
+                .ok_or_else(|| Problem::unavailable("the state database isn't open yet"))?;
+            let (plan, current) = {
+                let (src, state, w) = (Arc::clone(&src), Arc::clone(&state), w.clone());
+                tokio::task::spawn_blocking(move || {
+                    let current = state
+                        .config_version()
+                        .map_err(|e| Problem::internal(e.to_string()))?;
+                    plan_managed(&src, &state, &w).map(|p| (p, current))
+                })
+                .await
+                .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
+            };
+            let change = |applied, version| ConfigChange {
+                applied,
+                config_version: version,
+                before: plan.before.clone(),
+                after: plan.after.clone(),
+                warnings: plan.warnings.clone(),
+            };
+            if w.dry_run {
+                if let Some(v) = w.expect
+                    && v != current
+                {
+                    return Err(version_conflict(current));
+                }
+                return Ok(change(false, current));
+            }
+            let stored = {
+                let (state, w, name, body) = (
+                    Arc::clone(&state),
+                    w.clone(),
+                    plan.name.clone(),
+                    plan.body.clone(),
+                );
+                tokio::task::spawn_blocking(move || {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    let kind = kind_name(w.kind);
+                    match &body {
+                        Some(b) => state.put_managed(kind, &name, b, None, w.expect, now, &w.by),
+                        None => state.delete_managed(kind, &name, w.expect),
+                    }
+                })
+                .await
+                .map_err(|e| Problem::internal(format!("request worker failed: {e}")))?
+            };
+            let version = stored.map_err(|e| match e {
+                ManagedError::VersionConflict { current } => version_conflict(current),
+                ManagedError::NotFound { .. } => Problem::not_found(e.to_string()),
+                ManagedError::State(e) => Problem::internal(e.to_string()),
+            })?;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
+            if !applied {
+                return Err(Problem::internal(
+                    "the change was saved but couldn't be applied; the server log says why",
+                ));
+            }
+            Ok(change(true, version))
+        })
+    }
 }

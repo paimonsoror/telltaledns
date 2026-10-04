@@ -27,10 +27,11 @@ use axum::routing::get;
 use utoipa::OpenApi;
 
 use crate::model::{
-    ClientChange, ClientInfo, ClientInput, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine,
-    ExplainParams, ExplainRoute, ExplainRule, Explanation, GroupInfo, Hour, Items, LatencyBy,
-    LatencyParams, LatencyRow, ListInfo, MaskedClients, NameMatch, QueryPage, QueryParams,
-    QueryRow, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem,
+    ClientChange, ClientInfo, ClientInput, ConfigChange, ExplainBlock, ExplainClient,
+    ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo,
+    ForwardInput, GroupInfo, Hour, Items, LatencyBy, LatencyParams, LatencyRow, ListInfo,
+    LocalName, MaskedClients, NameMatch, QueryPage, QueryParams, QueryRow, RecordInput,
+    RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem,
     TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
@@ -73,6 +74,25 @@ pub trait Backend: Send + Sync + 'static {
     fn clients(&self) -> Vec<ClientInfo>;
     fn upstreams(&self) -> Vec<UpstreamInfo>;
     /// The configuration version (bumped by every change made through the API; ADR-040).
+    /// Names TelltaleDNS answers itself (files and API), by name.
+    fn local_names(&self) -> Vec<LocalName> {
+        Vec::new()
+    }
+    /// Domains sent to other servers (files and API).
+    fn forwards(&self) -> Vec<ForwardInfo> {
+        Vec::new()
+    }
+    /// Sets (`body` set) or removes (`body` None) a local name or a forwarded domain made
+    /// through the API (ADR-042). Validates the resulting configuration and, unless `dry_run`,
+    /// stores and applies it.
+    fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "configuration changes aren't available on this node",
+            ))
+        })
+    }
     fn config_version(&self) -> u64 {
         0
     }
@@ -93,6 +113,29 @@ type Shared = Arc<dyn Backend>;
 
 /// A boxed future returned by backend writes.
 pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
+
+/// What kind of entry a [`ManagedWrite`] changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedKind {
+    /// A local name and its records (`/records/{name}`).
+    Record,
+    /// A domain sent to other servers (`/forwards/{domain}`).
+    Forward,
+}
+
+/// A write to a local name or a forwarded domain.
+#[derive(Debug, Clone)]
+pub struct ManagedWrite {
+    pub kind: ManagedKind,
+    /// The name or domain in the path.
+    pub name: String,
+    /// The new definition ([`model::RecordsInput`] or [`model::ForwardInput`] as JSON); `None`
+    /// deletes.
+    pub body: Option<serde_json::Value>,
+    pub dry_run: bool,
+    pub expect: Option<u64>,
+    pub by: String,
+}
 
 /// A device write (`PUT`/`DELETE /api/v1/clients/{name}`).
 #[derive(Debug, Clone)]
@@ -125,6 +168,8 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/lists", get(lists))
         .route("/api/v1/groups", get(groups))
         .route("/api/v1/clients", get(clients))
+        .route("/api/v1/records", get(local_names))
+        .route("/api/v1/forwards", get(forwards))
         .route("/api/v1/upstreams", get(upstreams))
         .with_state(Arc::clone(&backend))
         .route_layer(from_fn(auth::routes::require_viewer));
@@ -184,13 +229,15 @@ async fn fallback(
         auth::routes::create_token, auth::routes::delete_token, auth::routes::list_users,
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
-        auth::routes::oidc_callback, config_api::put_client, config_api::delete_client
+        auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
+        local_names, forwards, config_api::put_records, config_api::delete_records,
+        config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -542,6 +589,38 @@ async fn clients(State(b): State<Shared>) -> impl IntoResponse {
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items { items: b.clients() }),
+    )
+}
+
+/// Names on my network: the names TelltaleDNS answers itself.
+///
+/// Every local name with its records and where it's defined (`file`: read-only here; `api`:
+/// editable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.
+#[utoipa::path(get, path = "/api/v1/records", tag = "config",
+    responses((status = 200, body = Items<LocalName>)))]
+async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
+    let etag = format!("\"{}\"", b.config_version());
+    (
+        [(axum::http::header::ETAG, etag)],
+        Json(Items {
+            items: b.local_names(),
+        }),
+    )
+}
+
+/// Domains sent to other DNS servers (conditional forwarding).
+///
+/// Each domain whose names are asked of specific servers instead of the public upstreams,
+/// with where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.
+#[utoipa::path(get, path = "/api/v1/forwards", tag = "config",
+    responses((status = 200, body = Items<ForwardInfo>)))]
+async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
+    let etag = format!("\"{}\"", b.config_version());
+    (
+        [(axum::http::header::ETAG, etag)],
+        Json(Items {
+            items: b.forwards(),
+        }),
     )
 }
 

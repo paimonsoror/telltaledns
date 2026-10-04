@@ -120,6 +120,8 @@ export const api = {
   lists: () => get<S['Items_ListInfo']>('/lists'),
   groups: () => get<S['Items_GroupInfo']>('/groups'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
+  localNames: () => get<S['Items_LocalName']>('/records'),
+  forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
 
   // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a
@@ -130,6 +132,22 @@ export const api = {
       query: { dryRun: dryRun || undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
+  putRecords: (name: string, body: S['RecordsInput'], dryRun = false) =>
+    call<S['ConfigChange']>('PUT', `/records/${encodeURIComponent(name)}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
+  deleteRecords: (name: string) =>
+    call<S['ConfigChange']>('DELETE', `/records/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
+  putForward: (domain: string, body: S['ForwardInput'], dryRun = false) =>
+    call<S['ConfigChange']>('PUT', `/forwards/${encodeURIComponent(domain)}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
+  deleteForward: (domain: string) =>
+    call<S['ConfigChange']>('DELETE', `/forwards/${encodeURIComponent(domain)}`, { headers: { 'idempotency-key': newKey() } }),
   deleteClient: (name: string) =>
     call<S['ClientChange']>('DELETE', `/clients/${encodeURIComponent(name)}`, {
       headers: { 'idempotency-key': newKey() },

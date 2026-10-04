@@ -354,6 +354,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/forwards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Domains sent to other DNS servers (conditional forwarding).
+         * @description Each domain whose names are asked of specific servers instead of the public upstreams,
+         *     with where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.
+         */
+        get: operations["forwards"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/forwards/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Send a domain to other DNS servers (conditional forwarding; API-011).
+         * @description Every name under `domain` is asked of `servers` (in order, failing over) instead of the
+         *     public upstreams: a work network's DNS over a VPN, a router that knows your devices, another
+         *     lab. A bare address means plain DNS; `tls://` and `https://` URLs work too. Local names still
+         *     answer first. Domains routed in the config files are read-only here (409).
+         */
+        put: operations["put_forward"];
+        post?: never;
+        /**
+         * Stop sending a domain to other servers.
+         * @description Names under it go to the public upstreams again. Routes from the config files can't be
+         *     removed here (409).
+         */
+        delete: operations["delete_forward"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/groups": {
         parameters: {
             query?: never;
@@ -439,6 +488,56 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Names on my network: the names TelltaleDNS answers itself.
+         * @description Every local name with its records and where it's defined (`file`: read-only here; `api`:
+         *     editable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.
+         */
+        get: operations["local_names"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/records/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set a local name's records (API-011, "Names on my network").
+         * @description Replaces every record of `name` made through the API with `records` (A and AAAA addresses,
+         *     CNAME aliases, and in Advanced PTR, TXT, MX, SRV). TelltaleDNS then answers the name itself,
+         *     before the cache and upstreams; reverse lookups for addresses are added automatically
+         *     (`[local] auto_ptr`). Names defined in the config files are read-only here (409). Needs the
+         *     operator role (or a `write` token).
+         */
+        put: operations["put_records"];
+        post?: never;
+        /**
+         * Remove a local name made through the API.
+         * @description TelltaleDNS stops answering it itself; queries for it go to the upstreams (or a route) as
+         *     usual. Names from the config files can't be removed here (409).
+         */
+        delete: operations["delete_records"];
         options?: never;
         head?: never;
         patch?: never;
@@ -799,6 +898,22 @@ export interface components {
          * @enum {string}
          */
         Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited";
+        /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
+        ConfigChange: {
+            /** @description The entry after (absent after a delete). */
+            after?: Record<string, never> | null;
+            /** @description False for a dry run. */
+            applied: boolean;
+            /** @description The entry before (absent when new). */
+            before?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description The configuration version after the change (send it as `If-Match` next time).
+             */
+            configVersion: number;
+            /** @description Configuration warnings after the change. */
+            warnings: string[];
+        };
         CreateToken: {
             /**
              * Format: int32
@@ -888,6 +1003,25 @@ export interface components {
             /** @description One sentence for people. */
             summary: string;
         };
+        /** @description A domain sent to other servers (conditional forwarding). */
+        ForwardInfo: {
+            /** @example corp.example */
+            domain: string;
+            /** @description The servers (upstream URLs), in order. */
+            servers: string[];
+            /** @description `file` (read-only here) or `api`. */
+            source: string;
+        };
+        /** @description The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`). */
+        ForwardInput: {
+            /**
+             * @description Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.
+             * @example [
+             *       "10.0.0.53"
+             *     ]
+             */
+            servers: string[];
+        };
         /** @description A client group. */
         GroupInfo: {
             /** @description `null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`. */
@@ -923,6 +1057,17 @@ export interface components {
                  *     through the API: editable with `PUT /clients/{name}`).
                  * @example api
                  */
+                source: string;
+            }[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_ForwardInfo: {
+            items: {
+                /** @example corp.example */
+                domain: string;
+                /** @description The servers (upstream URLs), in order. */
+                servers: string[];
+                /** @description `file` (read-only here) or `api`. */
                 source: string;
             }[];
         };
@@ -989,6 +1134,16 @@ export interface components {
                 source: string;
                 /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
                 state: string;
+            }[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_LocalName: {
+            items: {
+                /** @example nas.home.arpa */
+                name: string;
+                records: components["schemas"]["RecordInput"][];
+                /** @description `file` (read-only here) or `api`. */
+                source: string;
             }[];
         };
         /** @description A list wrapper used by every collection endpoint. */
@@ -1141,6 +1296,14 @@ export interface components {
                 username: string;
             }[];
         };
+        /** @description A name TelltaleDNS answers itself. */
+        LocalName: {
+            /** @example nas.home.arpa */
+            name: string;
+            records: components["schemas"]["RecordInput"][];
+            /** @description `file` (read-only here) or `api`. */
+            source: string;
+        };
         LoginRequest: {
             password: string;
             /** @description A recovery code instead of `totp`. */
@@ -1290,6 +1453,29 @@ export interface components {
             tsUnixMicros: number;
             /** Format: double */
             upstreamMs: number;
+        };
+        /** @description One record of a local name. */
+        RecordInput: {
+            /**
+             * Format: int32
+             * @description TTL in seconds (default: `[local] default_ttl`).
+             */
+            ttl?: number | null;
+            /**
+             * @description `A`, `AAAA`, `CNAME` (Simple); `PTR`, `TXT`, `MX`, `SRV` (Advanced).
+             * @example A
+             */
+            type: string;
+            /**
+             * @description An address for A/AAAA, a name for CNAME/PTR, text for TXT, `"10 mail.home.arpa"` for MX,
+             *     `"0 5 5060 pbx.home.arpa"` for SRV.
+             * @example 192.168.1.10
+             */
+            value: string;
+        };
+        /** @description A local name's records (`PUT /api/v1/records/{name}`). */
+        RecordsInput: {
+            records: components["schemas"]["RecordInput"][];
         };
         /** @description Single-use recovery codes, shown once. */
         RecoveryCodes: {
@@ -2095,6 +2281,129 @@ export interface operations {
             };
         };
     };
+    forwards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ForwardInfo"];
+                };
+            };
+        };
+    };
+    put_forward: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The domain, e.g. corp.example (its whole subtree is sent). */
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForwardInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A server isn't an address or a supported URL. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_forward: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The domain. */
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     groups: {
         parameters: {
             query?: never;
@@ -2247,6 +2556,131 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    local_names: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_LocalName"];
+                };
+            };
+        };
+    };
+    put_records: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The full name, e.g. nas.home.arpa (a leading `*.` makes a wildcard). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordsInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Defined in the config files, or an Idempotency-Key reused. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A value doesn't fit its type (e.g. A with a name), or the result is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_records: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The full name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No name like that was created through the API. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };

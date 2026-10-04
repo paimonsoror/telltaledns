@@ -25,8 +25,14 @@ use tracing::{error, info, warn};
 use crate::http;
 use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 
-/// Loads and validates config from `files` + environment, logging every problem.
+/// Loads and validates config from `files` + environment plus what the UI/API stored
+/// (ADR-040), logging every problem.
 pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
+    load_files(files).map(|c| crate::managed::effective(&c))
+}
+
+/// Loads and validates `files` + environment only (without what the UI/API stored).
+pub(crate) fn load_files(files: &[PathBuf]) -> Option<Config> {
     match files
         .iter()
         .fold(Loader::new(), Loader::file)
@@ -37,8 +43,7 @@ pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
             for w in &l.warnings {
                 warn!("config: {w}");
             }
-            // ADR-040 — plus the devices named in the UI / API.
-            Some(crate::managed::effective(&l.config))
+            Some(l.config)
         }
         Err(errors) => {
             for e in &errors {
@@ -517,6 +522,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         lists: ArcSwapOption::empty(),
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
+        file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
         rollups: rollups.clone(),
         tail,
         auth: std::sync::OnceLock::new(),
@@ -604,10 +610,11 @@ async fn reload(
     } else {
         info!(signal = "SIGHUP", "reloading configuration");
     }
-    let Some(new) = load(files) else {
+    let Some(file) = load_files(files) else {
         error!("reload failed: configuration invalid; still serving the previous configuration");
         return false;
     };
+    let new = crate::managed::effective(&file);
     // Unchanged upstream config keeps the running router: its health state, pooled
     // connections, and bootstrap cache survive the reload (T2.7).
     let same_upstreams = current.upstream == new.upstream
@@ -655,6 +662,7 @@ async fn reload(
         audit_reload(sources, files, current, &new);
     }
     sources.config.store(Arc::new(new.clone()));
+    sources.file_config.store(Arc::new(file));
     *current = new;
     info!("configuration reloaded");
     true

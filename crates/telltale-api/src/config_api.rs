@@ -1,5 +1,6 @@
 //! Configuration changes through the API (REQ: API-002, API-010; AGT-002 dry-run, AGT-003
-//! idempotency; ADR-040). Today: devices (`/clients/{name}`). Every write takes
+//! idempotency; ADR-040, ADR-042): devices (`/clients/{name}`), local names
+//! (`/records/{name}`), and domains sent elsewhere (`/forwards/{domain}`). Every write takes
 //! `?dryRun=true` (validate and report, change nothing), `If-Match: <configVersion>`
 //! (412 when the config changed meanwhile), and `Idempotency-Key` (the first response is
 //! replayed for 24 hours), and is recorded in the audit log.
@@ -17,9 +18,9 @@ use utoipa::IntoParams;
 
 use crate::auth::Auth;
 use crate::auth::routes::{body, principal, reason, remote};
-use crate::model::{ClientChange, ClientInput};
+use crate::model::{ClientChange, ClientInput, ConfigChange, ForwardInput, RecordsInput};
 use crate::problem::{Code, Problem};
-use crate::{Backend, ClientWrite};
+use crate::{Backend, ClientWrite, ManagedKind, ManagedWrite};
 
 type Ctx = (Arc<dyn Backend>, Arc<Auth>);
 
@@ -62,7 +63,42 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/clients/{name}",
             put(put_client).delete(delete_client),
         )
+        .route(
+            "/api/v1/records/{name}",
+            put(put_records).delete(delete_records),
+        )
+        .route(
+            "/api/v1/forwards/{domain}",
+            put(put_forward).delete(delete_forward),
+        )
         .with_state((backend, auth))
+}
+
+/// What a write changes.
+enum Op {
+    Client(Option<ClientInput>),
+    Managed(ManagedKind, Option<serde_json::Value>),
+}
+
+impl Op {
+    fn audit_kind(&self) -> &'static str {
+        match self {
+            Self::Client(_) => "client",
+            Self::Managed(ManagedKind::Record, _) => "record",
+            Self::Managed(ManagedKind::Forward, _) => "forward",
+        }
+    }
+    fn deleting(&self) -> bool {
+        matches!(self, Self::Client(None) | Self::Managed(_, None))
+    }
+}
+
+fn dry(q: &DryRun) -> bool {
+    q.dry_run.unwrap_or(false)
+}
+
+fn json_of<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_string(v).unwrap_or_default()
 }
 
 /// Create, rename, or change a device (API-010).
@@ -83,7 +119,7 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
 pub(crate) async fn put_client(
     State((backend, auth)): State<Ctx>,
     Path(name): Path<String>,
-    Query(dry): Query<DryRun>,
+    Query(q): Query<DryRun>,
     headers: HeaderMap,
     ext: axum::http::Extensions,
     b: Result<Json<ClientInput>, JsonRejection>,
@@ -92,19 +128,16 @@ pub(crate) async fn put_client(
         Ok(i) => i,
         Err(p) => return p.into_response(),
     };
-    let request = format!(
-        "PUT /clients/{name} {}",
-        serde_json::to_string(&input).unwrap_or_default()
-    );
+    let request = format!("PUT /clients/{name} {}", json_of(&input));
     write(
         backend,
         auth,
         headers,
         ext,
-        dry.dry_run.unwrap_or(false),
+        dry(&q),
         request,
         name,
-        Some(input),
+        Op::Client(Some(input)),
     )
     .await
 }
@@ -125,7 +158,7 @@ pub(crate) async fn put_client(
 pub(crate) async fn delete_client(
     State((backend, auth)): State<Ctx>,
     Path(name): Path<String>,
-    Query(dry): Query<DryRun>,
+    Query(q): Query<DryRun>,
     headers: HeaderMap,
     ext: axum::http::Extensions,
 ) -> Response {
@@ -135,10 +168,161 @@ pub(crate) async fn delete_client(
         auth,
         headers,
         ext,
-        dry.dry_run.unwrap_or(false),
+        dry(&q),
         request,
         name,
-        None,
+        Op::Client(None),
+    )
+    .await
+}
+
+/// Set a local name's records (API-011, "Names on my network").
+///
+/// Replaces every record of `name` made through the API with `records` (A and AAAA addresses,
+/// CNAME aliases, and in Advanced PTR, TXT, MX, SRV). TelltaleDNS then answers the name itself,
+/// before the cache and upstreams; reverse lookups for addresses are added automatically
+/// (`[local] auto_ptr`). Names defined in the config files are read-only here (409). Needs the
+/// operator role (or a `write` token).
+#[utoipa::path(put, path = "/api/v1/records/{name}", tag = "config",
+    params(("name" = String, Path, description = "The full name, e.g. nas.home.arpa (a leading `*.` makes a wildcard)."), DryRun),
+    request_body = RecordsInput,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused."),
+        (status = 412, body = Problem),
+        (status = 422, body = Problem, description = "A value doesn't fit its type (e.g. A with a name), or the result is invalid."),
+    ))]
+pub(crate) async fn put_records(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<RecordsInput>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /records/{name} {}", json_of(&input));
+    let v = serde_json::to_value(&input).unwrap_or_default();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Record, Some(v)),
+    )
+    .await
+}
+
+/// Remove a local name made through the API.
+///
+/// TelltaleDNS stops answering it itself; queries for it go to the upstreams (or a route) as
+/// usual. Names from the config files can't be removed here (409).
+#[utoipa::path(delete, path = "/api/v1/records/{name}", tag = "config",
+    params(("name" = String, Path, description = "The full name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange),
+        (status = 404, body = Problem, description = "No name like that was created through the API."),
+        (status = 409, body = Problem),
+        (status = 412, body = Problem),
+    ))]
+pub(crate) async fn delete_records(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /records/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Record, None),
+    )
+    .await
+}
+
+/// Send a domain to other DNS servers (conditional forwarding; API-011).
+///
+/// Every name under `domain` is asked of `servers` (in order, failing over) instead of the
+/// public upstreams: a work network's DNS over a VPN, a router that knows your devices, another
+/// lab. A bare address means plain DNS; `tls://` and `https://` URLs work too. Local names still
+/// answer first. Domains routed in the config files are read-only here (409).
+#[utoipa::path(put, path = "/api/v1/forwards/{domain}", tag = "config",
+    params(("domain" = String, Path, description = "The domain, e.g. corp.example (its whole subtree is sent)."), DryRun),
+    request_body = ForwardInput,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem),
+        (status = 412, body = Problem),
+        (status = 422, body = Problem, description = "A server isn't an address or a supported URL."),
+    ))]
+pub(crate) async fn put_forward(
+    State((backend, auth)): State<Ctx>,
+    Path(domain): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<ForwardInput>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /forwards/{domain} {}", json_of(&input));
+    let v = serde_json::to_value(&input).unwrap_or_default();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        domain,
+        Op::Managed(ManagedKind::Forward, Some(v)),
+    )
+    .await
+}
+
+/// Stop sending a domain to other servers.
+///
+/// Names under it go to the public upstreams again. Routes from the config files can't be
+/// removed here (409).
+#[utoipa::path(delete, path = "/api/v1/forwards/{domain}", tag = "config",
+    params(("domain" = String, Path, description = "The domain."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange),
+        (status = 404, body = Problem),
+        (status = 409, body = Problem),
+        (status = 412, body = Problem),
+    ))]
+pub(crate) async fn delete_forward(
+    State((backend, auth)): State<Ctx>,
+    Path(domain): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /forwards/{domain}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        domain,
+        Op::Managed(ManagedKind::Forward, None),
     )
     .await
 }
@@ -152,7 +336,7 @@ async fn write(
     dry_run: bool,
     request: String,
     name: String,
-    input: Option<ClientInput>,
+    op: Op,
 ) -> Response {
     let p = match principal(&ext) {
         Ok(p) => p,
@@ -186,30 +370,46 @@ async fn write(
         }
     }
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
-    let deleting = input.is_none();
-    let w = ClientWrite {
-        name: name.clone(),
-        input,
-        dry_run,
-        expect,
-        by: actor.name.clone(),
+    let action = format!(
+        "{}.{}",
+        op.audit_kind(),
+        if op.deleting() { "delete" } else { "put" }
+    );
+    let result: Result<serde_json::Value, Problem> = match op {
+        Op::Client(input) => backend
+            .write_client(ClientWrite {
+                name: name.clone(),
+                input,
+                dry_run,
+                expect,
+                by: actor.name.clone(),
+            })
+            .await
+            .map(|c| serde_json::to_value(c).unwrap_or_default()),
+        Op::Managed(kind, body) => backend
+            .write_managed(ManagedWrite {
+                kind,
+                name: name.clone(),
+                body,
+                dry_run,
+                expect,
+                by: actor.name.clone(),
+            })
+            .await
+            .map(|c| serde_json::to_value(c).unwrap_or_default()),
     };
-    let result = backend.write_client(w).await;
-    let (status, body) = match &result {
-        Ok(c) => (StatusCode::OK, serde_json::to_string(c).unwrap_or_default()),
-        Err(e) => (
-            e.code_status(),
-            serde_json::to_string(e).unwrap_or_default(),
-        ),
+    let (status, text) = match &result {
+        Ok(c) => (StatusCode::OK, c.to_string()),
+        Err(e) => (e.code_status(), json_of(e)),
     };
     if let Ok(c) = &result
-        && c.applied
+        && c["applied"].as_bool() == Some(true)
     {
         auth.record(
             &actor,
-            if deleting { "client.delete" } else { "client.put" },
+            &action,
             &name,
-            &serde_json::json!({ "before": c.before, "after": c.after, "configVersion": c.config_version }),
+            &serde_json::json!({ "before": c["before"], "after": c["after"], "configVersion": c["configVersion"] }),
         );
     }
     if let Some(k) = &key
@@ -218,7 +418,7 @@ async fn write(
         let r = Replay {
             request: request.into_bytes(),
             status: status.as_u16(),
-            response: body.clone(),
+            response: text.clone(),
         };
         if let Err(e) = auth.state().remember_idempotent(k, &r, now) {
             tracing::warn!("idempotency key not stored: {e}");

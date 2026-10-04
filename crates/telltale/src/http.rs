@@ -47,6 +47,8 @@ pub(crate) struct Sources {
     pub(crate) qlog: Option<Arc<telltale_store::qlog::Stats>>,
     /// The running configuration (replaced on reload), for the API.
     pub(crate) config: ArcSwap<telltale_config::Config>,
+    /// The config files alone (what the API's entries are merged onto; ADR-040).
+    pub(crate) file_config: ArcSwap<telltale_config::Config>,
     /// Minute/hour/day rollups on disk (spec/06 §3), when they could be opened.
     pub(crate) rollups: Option<Arc<telltale_store::rollup::Rollups>>,
     /// The live tail (OBS-008), unless the privacy level forbids it.
@@ -780,6 +782,7 @@ mod tests {
             lists: ArcSwapOption::empty(),
             qlog: None,
             config: ArcSwap::from_pointee(telltale_config::Config::default()),
+            file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
             rollups: None,
             tail: None,
             auth: std::sync::OnceLock::new(),

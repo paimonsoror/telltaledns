@@ -28,7 +28,7 @@
     { path: '/groups', label: 'Groups', page: Groups },
     { path: '/lists', label: 'Lists', page: Lists },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams },
-    { path: '/local-dns', label: 'Local DNS', page: LocalDns },
+    { path: '/local-dns', label: 'Names on my network', page: LocalDns },
     { path: '/settings', label: 'Settings', page: Settings },
   ];
   const current = $derived(pages.find((p) => p.path === route.path) ?? pages[0]);

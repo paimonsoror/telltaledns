@@ -773,6 +773,173 @@
         }
       }
     },
+    "/api/v1/forwards": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Domains sent to other DNS servers (conditional forwarding).",
+        "description": "Each domain whose names are asked of specific servers instead of the public upstreams,\nwith where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.",
+        "operationId": "forwards",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ForwardInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/forwards/{domain}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Send a domain to other DNS servers (conditional forwarding; API-011).",
+        "description": "Every name under `domain` is asked of `servers` (in order, failing over) instead of the\npublic upstreams: a work network's DNS over a VPN, a router that knows your devices, another\nlab. A bare address means plain DNS; `tls://` and `https://` URLs work too. Local names still\nanswer first. Domains routed in the config files are read-only here (409).",
+        "operationId": "put_forward",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain, e.g. corp.example (its whole subtree is sent).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForwardInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A server isn't an address or a supported URL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Stop sending a domain to other servers.",
+        "description": "Names under it go to the public upstreams again. Routes from the config files can't be\nremoved here (409).",
+        "operationId": "delete_forward",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The domain.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/groups": {
       "get": {
         "tags": [
@@ -1106,6 +1273,175 @@
             }
           },
           "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/records": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Names on my network: the names TelltaleDNS answers itself.",
+        "description": "Every local name with its records and where it's defined (`file`: read-only here; `api`:\neditable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.",
+        "operationId": "local_names",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_LocalName"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/records/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set a local name's records (API-011, \"Names on my network\").",
+        "description": "Replaces every record of `name` made through the API with `records` (A and AAAA addresses,\nCNAME aliases, and in Advanced PTR, TXT, MX, SRV). TelltaleDNS then answers the name itself,\nbefore the cache and upstreams; reverse lookups for addresses are added automatically\n(`[local] auto_ptr`). Names defined in the config files are read-only here (409). Needs the\noperator role (or a `write` token).",
+        "operationId": "put_records",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The full name, e.g. nas.home.arpa (a leading `*.` makes a wildcard).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the config files, or an Idempotency-Key reused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value doesn't fit its type (e.g. A with a name), or the result is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a local name made through the API.",
+        "description": "TelltaleDNS stops answering it itself; queries for it go to the upstreams (or a route) as\nusual. Names from the config files can't be removed here (409).",
+        "operationId": "delete_records",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The full name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No name like that was created through the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
             "content": {
               "application/json": {
                 "schema": {
@@ -2005,6 +2341,48 @@
           "rate_limited"
         ]
       },
+      "ConfigChange": {
+        "type": "object",
+        "description": "What a change to local names or forwarded domains did (or would do, with `dryRun`).",
+        "required": [
+          "applied",
+          "configVersion",
+          "warnings"
+        ],
+        "properties": {
+          "after": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The entry after (absent after a delete)."
+          },
+          "applied": {
+            "type": "boolean",
+            "description": "False for a dry run."
+          },
+          "before": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The entry before (absent when new)."
+          },
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration version after the change (send it as `If-Match` next time).",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Configuration warnings after the change."
+          }
+        }
+      },
       "CreateToken": {
         "type": "object",
         "required": [
@@ -2322,6 +2700,52 @@
           }
         }
       },
+      "ForwardInfo": {
+        "type": "object",
+        "description": "A domain sent to other servers (conditional forwarding).",
+        "required": [
+          "domain",
+          "servers",
+          "source"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "example": "corp.example"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The servers (upstream URLs), in order."
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (read-only here) or `api`."
+          }
+        }
+      },
+      "ForwardInput": {
+        "type": "object",
+        "description": "The servers a domain is sent to (`PUT /api/v1/forwards/{domain}`).",
+        "required": [
+          "servers"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Addresses (plain DNS) or `udp://`, `tcp://`, `tls://`, `https://` URLs, tried in order.",
+            "example": [
+              "10.0.0.53"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "GroupInfo": {
         "type": "object",
         "description": "A client group.",
@@ -2417,6 +2841,44 @@
                   "type": "string",
                   "description": "`file` (defined in the config files: read-only here) or `api` (named in the UI or\nthrough the API: editable with `PUT /clients/{name}`).",
                   "example": "api"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_ForwardInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A domain sent to other servers (conditional forwarding).",
+              "required": [
+                "domain",
+                "servers",
+                "source"
+              ],
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "example": "corp.example"
+                },
+                "servers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The servers (upstream URLs), in order."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`file` (read-only here) or `api`."
                 }
               }
             }
@@ -2616,6 +3078,43 @@
                 "state": {
                   "type": "string",
                   "description": "`ok`, `failed`, or `pending` (not downloaded yet)."
+                }
+              }
+            }
+          }
+        }
+      },
+      "Items_LocalName": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A name TelltaleDNS answers itself.",
+              "required": [
+                "name",
+                "records",
+                "source"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "nas.home.arpa"
+                },
+                "records": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RecordInput"
+                  }
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`file` (read-only here) or `api`."
                 }
               }
             }
@@ -3055,6 +3554,31 @@
           }
         }
       },
+      "LocalName": {
+        "type": "object",
+        "description": "A name TelltaleDNS answers itself.",
+        "required": [
+          "name",
+          "records",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "nas.home.arpa"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordInput"
+            }
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (read-only here) or `api`."
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -3443,6 +3967,52 @@
             "format": "double"
           }
         }
+      },
+      "RecordInput": {
+        "type": "object",
+        "description": "One record of a local name.",
+        "required": [
+          "type",
+          "value"
+        ],
+        "properties": {
+          "ttl": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "TTL in seconds (default: `[local] default_ttl`).",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "description": "`A`, `AAAA`, `CNAME` (Simple); `PTR`, `TXT`, `MX`, `SRV` (Advanced).",
+            "example": "A"
+          },
+          "value": {
+            "type": "string",
+            "description": "An address for A/AAAA, a name for CNAME/PTR, text for TXT, `\"10 mail.home.arpa\"` for MX,\n`\"0 5 5060 pbx.home.arpa\"` for SRV.",
+            "example": "192.168.1.10"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RecordsInput": {
+        "type": "object",
+        "description": "A local name's records (`PUT /api/v1/records/{name}`).",
+        "required": [
+          "records"
+        ],
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordInput"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "RecoveryCodes": {
         "type": "object",

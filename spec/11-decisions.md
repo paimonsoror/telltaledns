@@ -472,3 +472,15 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 **Decision:** `telltale import zone FILE` converts RFC 1035 zone files (Technitium export, BIND, PowerDNS) into `[[record]]` TOML for the supported types (A, AAAA, CNAME, PTR, TXT, MX, SRV), skips SOA/NS at the apex, and lists everything else in a header report; the output is validated as config before it's written. Imported names behave as per-name local records, so unimported names under the zone fall through to the upstreams (the owner chose this: public-only hosts keep working from inside). A "this server owns the whole zone" mode (NXDOMAIN for unknown names) belongs to T3.12's zone-lite view.
 
 **Consequences:** The rest of T6.4 (forwarders and conditional forwarders → upstreams and routes, block/allow lists, and a Technitium API source) remains open. Moving a zone: import, add the records while keeping the route to the old server (local records win over routes, so anything missed still resolves there), compare answers name by name, then remove the route.
+
+## ADR-042 — Names on my network and forwarded domains through the API (Proposed)
+**Context:** T3.12 (API-011, DNS-010, UPS-007) needs local names and conditional forwarding editable from the UI and the API, following ADR-040's managed entries.
+
+**Decision:**
+- **Two more managed kinds:** `record` (an owner name and the set of its records; a write replaces the set) and `forward` (a domain and its servers). A forward expands at merge time into upstreams `forward:<domain>#n` (a bare address means `udp://`), a `failover` upstream group `forward:<domain>`, and a route for the domain with a DNSSEC negative trust anchor (internal domains are usually unsigned). The names are reserved for this purpose.
+- **Files win:** a name with any file `[[record]]`, or a domain any file route matches exactly, is read-only (409). Validation runs the whole merge (files + every API entry + this change) through config validation and the local-record value parser, so a bad value is a 422 with the field, before anything is stored.
+- **Zone-lite, not zones:** the UI groups names by their parent domain and never asks for SOA or NS. Per-name answers fall through to upstreams for unknown names (ADR-041); a whole-zone authority mode stays deferred.
+- **Endpoints:** `GET /records`, `PUT`/`DELETE /records/{name}`, `GET /forwards`, `PUT`/`DELETE /forwards/{domain}`, with the device endpoints' dry-run, `If-Match`, idempotency, operator role, and audit (`record.put`, `forward.delete`, ...). The write path is shared code.
+- **Applying** reuses the reload path; a forward change rebuilds the upstream router (health state of unchanged upstreams is rebuilt too, as on any upstream change).
+
+**Consequences:** The UI covers the common cases without the config file. Hosts files stay file-only. The MCP tools for these writes come with T6.6 / M7.
