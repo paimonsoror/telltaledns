@@ -804,6 +804,11 @@ pub struct ApiConfig {
     pub enabled: bool,
     /// Where the API listens (default `0.0.0.0:8053`).
     pub listen: SocketAddr,
+    /// Reverse proxies or ingress controllers in front of the API (e.g. the pod network,
+    /// `10.0.0.0/8`). For requests from them, the client address comes from
+    /// `X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log). Default:
+    /// none (the connection's address is the client).
+    pub trusted_proxies: Vec<Cidr>,
 }
 
 impl Default for ApiConfig {
@@ -811,6 +816,7 @@ impl Default for ApiConfig {
         Self {
             enabled: true,
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
+            trusted_proxies: Vec::new(),
         }
     }
 }

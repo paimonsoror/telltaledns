@@ -39,6 +39,12 @@ fn settings(cfg: &Config) -> Settings {
             .iter()
             .map(|c| (c.addr, c.prefix))
             .collect(),
+        trusted_proxies: cfg
+            .api
+            .trusted_proxies
+            .iter()
+            .map(|c| (c.addr, c.prefix))
+            .collect(),
     }
 }
 
@@ -139,8 +145,11 @@ fn write_secret(path: &Path, token: &str) -> io::Result<()> {
 /// Opens the auth service for the server. Blocking (Argon2 for a bootstrap password).
 pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     let auth = Arc::new(Auth::new(Arc::new(open_state(cfg)?), settings(cfg)));
-    if let Some(o) = oidc(cfg)? {
-        auth.set_oidc(o);
+    // A broken provider setup (say, a missing secret file) leaves password sign-in working.
+    match oidc(cfg) {
+        Ok(Some(o)) => auth.set_oidc(o),
+        Ok(None) => {}
+        Err(e) => error!("OIDC sign-in disabled: {e}"),
     }
     bootstrap_from_env(&auth);
     let setup = auth

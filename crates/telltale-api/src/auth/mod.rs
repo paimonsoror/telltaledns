@@ -155,6 +155,8 @@ pub struct Settings {
     pub disable_local_login: bool,
     /// `(network, prefix length)`.
     pub admin_networks: Vec<(IpAddr, u8)>,
+    /// Proxies (ingress, reverse proxy) whose `X-Forwarded-For` names the real client.
+    pub trusted_proxies: Vec<(IpAddr, u8)>,
 }
 
 /// `ip` is inside `net/len` (IPv4-mapped IPv6 addresses match IPv4 networks).
@@ -190,6 +192,7 @@ impl Default for Settings {
             setup_token_file: None,
             disable_local_login: false,
             admin_networks: Vec::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 }

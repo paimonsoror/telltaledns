@@ -56,10 +56,34 @@ fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
         .map_err(|e| Problem::invalid(format!("request body: {}", e.body_text())))
 }
 
-fn remote(req_ext: &axum::http::Extensions) -> IpAddr {
-    req_ext
+/// The client's address. Behind a trusted proxy (`[api] trusted_proxies`: an ingress, a
+/// reverse proxy) it's the rightmost `X-Forwarded-For` entry that isn't itself a trusted
+/// proxy; entries further left are client-supplied and can be forged. Used for lockouts,
+/// break-glass networks, and audit entries.
+fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> IpAddr {
+    let peer = req_ext
         .get::<ConnectInfo<SocketAddr>>()
-        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip())
+        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
+    let trusted = |ip: IpAddr| {
+        auth.settings()
+            .trusted_proxies
+            .iter()
+            .any(|(n, l)| super::in_network(ip, *n, *l))
+    };
+    if !trusted(peer) {
+        return peer;
+    }
+    headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find(|ip| !trusted(*ip))
+        .unwrap_or(peer)
 }
 
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -109,7 +133,7 @@ pub async fn authenticate(
 ) -> Response {
     let headers = req.headers().clone();
     let https = is_https(&headers);
-    let ip = remote(req.extensions());
+    let ip = remote(&auth, req.extensions(), &headers);
     let (session, bearer, basic) = presented(&headers);
     let result = blocking(move || {
         let p = Presented {
@@ -657,7 +681,7 @@ pub(crate) async fn status(
 ) -> Result<Json<AuthStatus>, Problem> {
     let (session, bearer, basic) = presented(&headers);
     let https = is_https(&headers);
-    let ip = remote(&req_ext);
+    let ip = remote(&auth, &req_ext, &headers);
     blocking(move || {
         let setup_required = auth.setup_required()?;
         let p = Presented {
@@ -711,7 +735,7 @@ pub(crate) async fn setup(
     b: Result<Json<SetupRequest>, JsonRejection>,
 ) -> Result<Response, Problem> {
     let r = body(b)?;
-    let ip = remote(&req_ext);
+    let ip = remote(&auth, &req_ext, &headers);
     let https = is_https(&headers);
     let ttl = auth.settings().session_ttl_secs;
     let (user, sess, info) = blocking(move || {
@@ -750,7 +774,7 @@ pub(crate) async fn login(
     b: Result<Json<LoginRequest>, JsonRejection>,
 ) -> Result<Response, Problem> {
     let r = body(b)?;
-    let ip = remote(&req_ext);
+    let ip = remote(&auth, &req_ext, &headers);
     let https = is_https(&headers);
     let ttl = auth.settings().session_ttl_secs;
     let (sess, info) = blocking(move || {
@@ -918,7 +942,7 @@ pub(crate) async fn oidc_callback(
         Ok(v) => v,
         Err(p) => return login_error(&p.detail),
     };
-    let ip = remote(&req_ext);
+    let ip = remote(&auth, &req_ext, &headers);
     let https = is_https(&headers);
     let ttl = auth.settings().session_ttl_secs;
     let pid = id.clone();
@@ -973,7 +997,7 @@ pub(crate) async fn change_password(
 ) -> Result<StatusCode, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         super::valid_password(&r.new_password)?;
         let u = auth.active_user(p.user_id)?;
@@ -1047,7 +1071,7 @@ pub(crate) async fn totp_enable(
 ) -> Result<Json<RecoveryCodes>, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
         let Some(secret) = u.totp_secret.as_deref().filter(|_| !u.totp_enabled) else {
@@ -1089,7 +1113,7 @@ pub(crate) async fn totp_disable(
 ) -> Result<StatusCode, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
         if !crypto::verify_password(&r.password, &u.password_hash) {
@@ -1142,7 +1166,7 @@ pub(crate) async fn create_token(
 ) -> Result<(StatusCode, Json<NewToken>), Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let name = r.name.trim();
         if name.is_empty() || name.len() > 64 {
@@ -1208,7 +1232,7 @@ pub(crate) async fn delete_token(
     Path(id): Path<String>,
 ) -> Result<StatusCode, Problem> {
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let who = auth.actor(&p, ip, why);
         let name = auth.state().token(&id).map_err(db)?.map(|t| t.name);
@@ -1262,7 +1286,7 @@ pub(crate) async fn create_user(
 ) -> Result<(StatusCode, Json<UserInfo>), Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let u = auth.create_user(
             &r.username,
@@ -1298,7 +1322,7 @@ pub(crate) async fn update_user(
 ) -> Result<Json<UserInfo>, Problem> {
     let r = body(b)?;
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let st = auth.state();
         let u = st
@@ -1378,7 +1402,7 @@ pub(crate) async fn delete_user(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, Problem> {
     let p = principal(&req_ext)?;
-    let (ip, why) = (remote(&req_ext), reason(&headers));
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let st = auth.state();
         let u = st

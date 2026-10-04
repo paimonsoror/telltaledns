@@ -881,3 +881,78 @@ async fn api_006_changes_are_audited_and_the_chain_verifies() {
     let (_, _, v) = get(&app, "/api/v1/audit?action=auth.login").await;
     assert_eq!(v["items"][0]["actor"], "vic");
 }
+
+/// API-003: behind a trusted proxy, lockouts and audit entries use the forwarded client
+/// address, so one client's failures don't lock everyone out through the proxy.
+#[tokio::test]
+async fn api_003_trusted_proxy_forwards_the_client_address() {
+    let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
+    let settings = auth::Settings {
+        // Test requests carry no peer address, which reads as 0.0.0.0: make that the proxy.
+        trusted_proxies: vec![
+            ("0.0.0.0".parse().unwrap(), 32),
+            ("10.0.0.0".parse().unwrap(), 8),
+        ],
+        ..auth::Settings::default()
+    };
+    let a = Arc::new(auth::Auth::new(state, settings));
+    a.create_user(
+        "ana",
+        "correct horse battery",
+        auth::Role::Viewer,
+        false,
+        NOW,
+    )
+    .unwrap();
+    let router = router(Arc::new(Fake::default()) as Shared, Arc::clone(&a));
+    let login = |xff: &str, pw: &str| {
+        Request::post("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", xff)
+            .body(Body::from(
+                serde_json::json!({"username": "nobody", "password": pw}).to_string(),
+            ))
+            .unwrap()
+    };
+    // Six failures from 192.168.1.66 (forged left-hand entry ignored; 10.x is another proxy).
+    for _ in 0..6 {
+        let r = router
+            .clone()
+            .oneshot(login("6.6.6.6, 192.168.1.66, 10.1.2.3", "wrong password!"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    }
+    let r = router
+        .clone()
+        .oneshot(login("192.168.1.66", "wrong password!"))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "that client is locked"
+    );
+    // Another client through the same proxy is not.
+    let ok = Request::post("/api/v1/auth/login")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", "192.168.1.20")
+        .body(Body::from(
+            serde_json::json!({"username": "ana", "password": "correct horse battery"}).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(ok).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let lock = a
+        .state()
+        .audit_page(None, 10, Some("auth.lockout"), None)
+        .unwrap();
+    assert!(lock.iter().any(|e| e.target == "192.168.1.66"), "{lock:?}");
+    let login = a
+        .state()
+        .audit_page(None, 10, Some("auth.login"), None)
+        .unwrap();
+    assert_eq!(login[0].remote.as_deref(), Some("192.168.1.20"));
+}
