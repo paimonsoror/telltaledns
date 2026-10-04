@@ -577,3 +577,28 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** with the Pi as primary, the homelab node's GitOps values for shared sections stop applying once it syncs. The Pi's config file (or UI) becomes the place to change shared settings, until write forwarding (T5.7) and a GitOps primary option are settled with the owner.
 
+## ADR-048 — Config authority: the cluster, not whichever node is primary, decides where configuration comes from (Proposed)
+**Context:** owner question 2026-10-04: in a mixed cluster (a Kubernetes node managed by GitOps plus a Pi edited by hand), nothing stops the wrong node from becoming primary, by `cluster init` on it, a promotion during an outage (T5.4), or a quorum election. That node would then replicate its own file over the GitOps one: every node follows a config nobody committed, and the next GitOps sync fights it. Recency or availability must not decide what the source of truth is; the operator does, once.
+
+**Decision:**
+- **The cluster records its config authority** in its signed cluster state, set at `cluster init`. It is either:
+  - `gitops`, which names the source (e.g. `homelab-charts:charts/argocd-apps/values.yaml#telltaledns`); or
+  - `api`: the primary's file plus UI/API edits, as today.
+
+  The authority can only be changed by an explicit, audited `telltale cluster set-authority` run on the current primary, which bumps the epoch.
+- **Each node declares how its own configuration is managed** with `[cluster] config_source = "gitops" | "file"` (the Helm chart sets `gitops`), and reports it in its Hello. The Cluster page shows it next to every node.
+- **Only matching nodes may be primary.**
+  - Under `gitops` authority, only `gitops` nodes are eligible to publish configuration: `cluster init` on a non-GitOps node refuses `--config-authority gitops`, and elections and promotions skip ineligible nodes.
+  - Under `api`, any eligible node may be primary.
+- **Emergency primaries never change configuration.** If every authority-matching node is down, an operator may still promote another node (`telltale cluster promote --emergency`). It keeps nodes coordinated (leases, certificates, alerts) but publishes nothing new.
+  - Every node keeps serving the last authoritative version, the API stays read-only, and the UI says so ("GitOps primary unreachable since …").
+  - When an authority-matching node returns it takes over again automatically; the emergency primary had no writes, so nothing is orphaned.
+- **Manifests carry their provenance:** the authority, the source, and, for GitOps, the revision (commit) the primary loaded. A replica rejects a manifest whose authority differs from the cluster's. The UI shows "configuration from homelab-charts @ <commit>" on every node.
+- **GitOps write rules** (OPS-005) apply cluster-wide: under `gitops` authority, API config writes on any node return `409 gitops_managed`. Operational actions (pause blocking, flush cache, list refresh) still work. Node-local settings stay in each node's own file in both modes.
+- **Mixed architectures are supported.** Every replicated blob is architecture-independent: the FSTs, list sets written as explicit little-endian, and JSON. The cluster's anomaly golden-file check already runs on amd64 and arm64. A cross-architecture snapshot test (compile on amd64, load and match on arm64 and armv7) joins CI with T5.11.
+
+**Consequences:**
+- A misconfigured or recovering node can't silently take over the configuration.
+- The price is that with a GitOps authority, configuration is frozen (never lost or wrong) while no GitOps node is up. That is the right trade for a homelab where the k8s node is the one being changed.
+- Implemented with T5.4 (elections and promotion) and T5.7 (writes); until then the owner's cluster uses the convention of the homelab node as primary, set up by hand.
+
