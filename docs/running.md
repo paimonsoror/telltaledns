@@ -438,7 +438,7 @@ enabled = true
 listen = "0.0.0.0:8053"
 ```
 - The full description is at `/api/v1/openapi.json` (OpenAPI 3.1), so any OpenAPI tool or AI agent can explore it. The same document is in the repository as `docs/api/openapi.json`.
-- Until logins arrive (next release), the API answers only clients inside `[access] allowed_networks`, and it can only read: nothing can be changed through it yet.
+- Every endpoint except sign-in, `/auth/status`, the OpenAPI document, and the probes needs a sign-in ([Users and sign-in](#users-and-sign-in)). The listener also answers only clients inside `[access] allowed_networks`.
 - Times take RFC 3339 (`2026-10-03T12:00:00Z`) or a relative offset (`-24h`, `-15m`). Lists come back as `{"items": [...]}`; the query log pages with `nextCursor` → `cursor`. Errors are `application/problem+json` with a stable `code` and a `hint` saying what to change.
 
 | Endpoint | What it returns |
@@ -453,9 +453,49 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health |
 
 ```sh
-curl -s 'http://dns.lan:8053/api/v1/stats/top?kind=blocked&limit=5'
-curl -s 'http://dns.lan:8053/api/v1/queries?client=192.168.1.20&limit=20'
+TOKEN=tt_...   # create one under "API tokens" below
+curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/stats/top?kind=blocked&limit=5'
+curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries?client=192.168.1.20&limit=20'
 ```
+
+## Users and sign-in
+There is no default password. On first start the server logs a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only):
+```sh
+telltale auth setup-token          # prints it again
+curl -s -c jar -H 'content-type: application/json' \
+  -d '{"setupToken":"<token>","username":"admin","password":"a long passphrase"}' \
+  http://dns.lan:8053/api/v1/auth/setup
+```
+That creates the first admin and signs them in; the token file is then deleted. Passwords need at least 10 characters.
+
+For a deployment that must come up configured (Kubernetes, Ansible), create the first admin from a secret instead. These are read only while no user exists:
+```sh
+TELLTALE_BOOTSTRAP_ADMIN_USER=admin
+TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a long passphrase' | telltale auth hash-password
+# or TELLTALE_BOOTSTRAP_ADMIN_PASSWORD=...
+```
+
+**Roles.** `viewer` sees dashboards and the query log; `operator` can also pause, flush the cache, and manage lists, clients, and groups; `admin` can do everything, including users. Admins manage users at `/api/v1/users`. The last admin can't be removed or demoted.
+
+**Ways to sign in:**
+- **Web UI / browser:** `POST /api/v1/auth/login` sets an `HttpOnly; SameSite=Strict` session cookie (`Secure` when the request came over HTTPS) and returns a CSRF token, which must be sent as `X-CSRF-Token` on every change. Sessions end after 7 days, or after a day unused.
+- **API tokens** for scripts, dashboards, and agents: `POST /api/v1/tokens` with `{"name": "grafana", "scope": "read"}` returns `tt_<id>_<secret>` once; send it as `Authorization: Bearer ...`. Scope `read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role. Only a hash is stored.
+- **HTTP Basic**, for scrapers and widgets that can't send a token: off per user until an admin sets `allowBasicApi`, and refused over plain HTTP unless `[auth] allow_insecure_basic = true`. Verified credentials are cached for a minute.
+
+**Two-factor sign-in (TOTP):** `POST /api/v1/auth/totp/setup` returns a secret and an `otpauth://` URL for an authenticator app, and `POST /api/v1/auth/totp/enable` with a current code turns it on and returns ten single-use recovery codes. To require it for a role:
+```toml
+[auth]
+totp_required_roles = ["admin"]
+session_ttl_hours = 168
+session_idle_hours = 24
+allow_insecure_basic = false
+```
+
+**Lockout:** after 5 failed sign-ins for a username or from an address, each further attempt waits 30 s, doubling up to 15 minutes (HTTP 429).
+
+**Prometheus:** the metrics listener (`:9153`) is unchanged: no sign-in, limited to `allowed_networks`. `/metrics` on the API port needs a viewer token or Basic.
+
+Users, sessions, and tokens are kept in `<data_dir>/state.db` (SQLite). If it can't be opened, the API stays off and DNS keeps answering.
 
 ## Reload without restarting
 Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s HUP telltale`):

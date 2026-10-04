@@ -48,7 +48,25 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     lists(cfg, &mut r);
     clients(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
+    auth(cfg, &mut r);
     r.warnings
+}
+
+// REQ: API-003
+fn auth(cfg: &Config, r: &mut Report<'_>) {
+    let a = &cfg.auth;
+    if a.session_ttl_hours == 0 || a.session_ttl_hours > 24 * 366 {
+        r.err("auth.session_ttl_hours", "must be 1 to 8784 (a year)");
+    }
+    if a.session_idle_hours == 0 || a.session_idle_hours > a.session_ttl_hours {
+        r.err(
+            "auth.session_idle_hours",
+            "must be at least 1 and at most auth.session_ttl_hours",
+        );
+    }
+    if a.allow_insecure_basic {
+        r.warn("auth.allow_insecure_basic: passwords sent with HTTP Basic cross the network in the clear");
+    }
 }
 
 fn node(cfg: &Config, r: &mut Report<'_>) {

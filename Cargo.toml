@@ -36,6 +36,13 @@ missing_panics_doc = "allow"
 telltale-config = { path = "crates/telltale-config" }
 
 # REQ: OPS-001 / 08 §2 — release profile for the static image binary.
+# Password hashing is deliberately expensive (19 MiB Argon2id); unoptimized it would make
+# every auth test take seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 [profile.release]
 opt-level = 3
 lto = "fat"

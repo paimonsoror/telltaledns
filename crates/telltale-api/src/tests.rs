@@ -131,33 +131,79 @@ impl Backend for Fake {
     }
 }
 
-async fn get(app: &Router, uri: &str) -> (StatusCode, String, serde_json::Value) {
-    let resp = app
-        .clone()
-        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+/// A router plus an admin token for authenticated requests.
+struct TestApp {
+    router: Router,
+    bearer: String,
+    auth: Arc<auth::Auth>,
+}
+
+async fn send(
+    app: &TestApp,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
+    let resp = app.router.clone().oneshot(req).await.unwrap();
     let status = resp.status();
-    let ctype = resp
-        .headers()
-        .get("content-type")
-        .map(|v| v.to_str().unwrap().to_owned())
-        .unwrap_or_default();
+    let headers = resp.headers().clone();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
         .unwrap();
     (
         status,
-        ctype,
+        headers,
         serde_json::from_slice(&bytes).unwrap_or_default(),
     )
 }
 
-fn app() -> (Router, Arc<Fake>) {
-    let fake = Arc::new(Fake::default());
-    (router(Arc::clone(&fake) as Shared), fake)
+/// GET with the admin token.
+async fn get(app: &TestApp, uri: &str) -> (StatusCode, String, serde_json::Value) {
+    let req = Request::get(uri)
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, v) = send(app, req).await;
+    let ctype = headers
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, ctype, v)
 }
 
+fn app() -> (TestApp, Arc<Fake>) {
+    let fake = Arc::new(Fake::default());
+    let state = Arc::new(telltale_store::state::State::in_memory().unwrap());
+    let auth = Arc::new(auth::Auth::new(state, auth::Settings::default()));
+    let admin = auth
+        .create_user(
+            "root",
+            "correct horse battery",
+            auth::Role::Admin,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    auth.state()
+        .create_token(
+            &id,
+            admin.id,
+            "tests",
+            &auth::crypto::secret_hash(&secret),
+            "admin",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let router = router(Arc::clone(&fake) as Shared, Arc::clone(&auth));
+    (
+        TestApp {
+            router,
+            bearer: format!("tt_{id}_{secret}"),
+            auth,
+        },
+        fake,
+    )
+}
 #[tokio::test]
 async fn api_001_summary_is_derived_from_the_series() {
     let (app, fake) = app();
@@ -254,18 +300,19 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 11);
+    assert_eq!(paths.len(), 24);
     for (path, ops) in paths {
-        let op = &ops["get"];
-        // AGT-001: every operation has a summary and a description for agents.
-        assert!(
-            op["summary"].as_str().is_some_and(|s| !s.is_empty()),
-            "{path} summary"
-        );
-        assert!(
-            op["description"].as_str().is_some_and(|s| s.len() > 20),
-            "{path} description"
-        );
+        for (method, op) in ops.as_object().unwrap() {
+            // AGT-001: every operation has a summary and a description for agents.
+            assert!(
+                op["summary"].as_str().is_some_and(|s| !s.is_empty()),
+                "{method} {path} summary"
+            );
+            assert!(
+                op["description"].as_str().is_some_and(|s| s.len() > 20),
+                "{method} {path} description"
+            );
+        }
     }
 }
 
@@ -284,4 +331,306 @@ fn api_001_committed_openapi_matches_the_code() {
         committed == doc,
         "docs/api/openapi.json is out of date: run UPDATE_OPENAPI=1 cargo test -p telltale-api api_001_committed_openapi"
     );
+}
+
+/// API-003 over HTTP: setup, sign-in with cookie + CSRF, tokens, roles, sign-out.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one end-to-end story: sign in, CSRF, tokens, roles, sign out
+async fn api_003_http_sign_in_csrf_tokens_and_roles() {
+    let (app, _) = app();
+    let json = |method: &str, uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    // Unauthenticated: data is closed, status and the OpenAPI document are open.
+    let (s, _, v) = send(
+        &app,
+        Request::get("/api/v1/stats/summary")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthorized"))
+    );
+    let (s, _, v) = send(
+        &app,
+        Request::get("/api/v1/auth/status")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (
+            s,
+            v["setupRequired"].as_bool(),
+            v["authenticated"].as_bool()
+        ),
+        (StatusCode::OK, Some(false), Some(false))
+    );
+    let (s, _, _) = send(
+        &app,
+        Request::get("/api/v1/openapi.json")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A viewer signs in: cookie + CSRF token.
+    app.auth
+        .create_user(
+            "ana",
+            "another long password",
+            auth::Role::Viewer,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let (s, h, v) = send(
+        &app,
+        json(
+            "POST",
+            "/api/v1/auth/login",
+            serde_json::json!({"username": "ana", "password": "nope nope nope"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthorized"))
+    );
+    assert!(h.get("set-cookie").is_none());
+    let (s, h, v) = send(
+        &app,
+        json(
+            "POST",
+            "/api/v1/auth/login",
+            serde_json::json!({"username": "ANA", "password": "another long password"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let set = h.get("set-cookie").unwrap().to_str().unwrap().to_owned();
+    assert!(
+        set.contains("HttpOnly") && set.contains("SameSite=Strict") && !set.contains("Secure"),
+        "{set}"
+    );
+    let cookie = set.split(';').next().unwrap().to_owned();
+    let csrf = v["csrfToken"].as_str().unwrap().to_owned();
+    assert_eq!(v["user"]["role"], "viewer");
+
+    let with_cookie = |method: &str, uri: &str, csrf: Option<&str>, body: serde_json::Value| {
+        let mut b = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("cookie", &cookie)
+            .header("content-type", "application/json");
+        if let Some(c) = csrf {
+            b = b.header("x-csrf-token", c);
+        }
+        b.body(Body::from(body.to_string())).unwrap()
+    };
+    let (s, _, v) = send(
+        &app,
+        with_cookie(
+            "GET",
+            "/api/v1/stats/summary",
+            None,
+            serde_json::json!(null),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, v) = send(
+        &app,
+        with_cookie("GET", "/api/v1/auth/status", None, serde_json::json!(null)),
+    )
+    .await;
+    assert_eq!(
+        (v["user"]["username"].as_str(), v["csrfToken"].as_str()),
+        (Some("ana"), Some(csrf.as_str()))
+    );
+    assert_eq!(s, StatusCode::OK);
+
+    // Changes with the cookie need the CSRF header.
+    let body = serde_json::json!({"name": "grafana"});
+    let (s, _, v) = send(
+        &app,
+        with_cookie("POST", "/api/v1/tokens", None, body.clone()),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("csrf_rejected"))
+    );
+    let (s, _, v) = send(
+        &app,
+        with_cookie("POST", "/api/v1/tokens", Some("wrong"), body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _, v) = send(
+        &app,
+        with_cookie("POST", "/api/v1/tokens", Some(&csrf), body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let token = v["token"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("tt_"));
+    assert_eq!(v["info"]["scope"], "read");
+    // A viewer can't mint a write token, and can't manage users.
+    let (s, _, _) = send(
+        &app,
+        with_cookie(
+            "POST",
+            "/api/v1/tokens",
+            Some(&csrf),
+            serde_json::json!({"name": "x", "scope": "write"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, v) = send(
+        &app,
+        with_cookie("GET", "/api/v1/users", None, serde_json::json!(null)),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden"))
+    );
+
+    // The new token works without cookies or CSRF.
+    let (s, _, v) = send(
+        &app,
+        Request::get("/api/v1/auth/me")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["via"].as_str(), v["role"].as_str()),
+        (StatusCode::OK, Some("token"), Some("viewer"))
+    );
+
+    // Admin user management; the last admin is protected.
+    let admin = |method: &str, uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, admin("GET", "/api/v1/users", serde_json::json!(null))).await;
+    assert_eq!(
+        (s, v["items"].as_array().map(Vec::len)),
+        (StatusCode::OK, Some(2))
+    );
+    let (s, _, v) = send(
+        &app,
+        admin(
+            "PATCH",
+            "/api/v1/users/1",
+            serde_json::json!({"role": "viewer"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict"))
+    );
+    let (s, _, v) = send(&app, admin("POST", "/api/v1/users", serde_json::json!({"username": "ana", "password": "another long password", "role": "viewer"}))).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict"))
+    );
+    let (s, _, v) = send(
+        &app,
+        admin(
+            "POST",
+            "/api/v1/users",
+            serde_json::json!({"username": "bob"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_parameter")),
+        "bad body is problem+json"
+    );
+    // Disabling ana ends her session.
+    let (s, _, _) = send(
+        &app,
+        admin(
+            "PATCH",
+            "/api/v1/users/2",
+            serde_json::json!({"disabled": true}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(
+        &app,
+        with_cookie(
+            "GET",
+            "/api/v1/stats/summary",
+            None,
+            serde_json::json!(null),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    // Sign-out clears the cookie (an admin session this time).
+    let (_, h, v) = send(
+        &app,
+        json(
+            "POST",
+            "/api/v1/auth/login",
+            serde_json::json!({"username": "root", "password": "correct horse battery"}),
+        ),
+    )
+    .await;
+    let cookie = h
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let csrf = v["csrfToken"].as_str().unwrap().to_owned();
+    let out = Request::post("/api/v1/auth/logout")
+        .header("cookie", &cookie)
+        .header("x-csrf-token", &csrf)
+        .body(Body::empty())
+        .unwrap();
+    let (s, h, _) = send(&app, out).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(
+        h.get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    let (s, _, _) = send(
+        &app,
+        Request::get("/api/v1/auth/me")
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
 }

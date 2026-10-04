@@ -58,6 +58,8 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
     /// The REST API (and, later, the web UI).
     pub api: ApiConfig,
+    /// Sign-in: sessions, HTTP Basic, two-factor policy (API-003).
+    pub auth: AuthConfig,
 }
 
 impl Default for Config {
@@ -91,6 +93,7 @@ impl Default for Config {
             cache: CacheConfig::default(),
             telemetry: TelemetryConfig::default(),
             api: ApiConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -793,8 +796,8 @@ impl Default for QlogConfig {
     }
 }
 
-/// REST API listener (API-001). It also serves `/metrics` and the health probes. Until
-/// authentication lands (T3.5) it answers only clients in `[access] allowed_networks`.
+/// REST API listener (API-001). It also serves `/metrics` (signed in) and the health probes,
+/// only to clients in `[access] allowed_networks` (ADR-029).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct ApiConfig {
@@ -810,6 +813,47 @@ impl Default for ApiConfig {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
         }
     }
+}
+
+/// Sign-in settings (API-003, `spec/08` §6). Users, sessions, and tokens live in
+/// `<data_dir>/state.db`. The first admin comes from the one-time setup token (in the log
+/// and `<data_dir>/setup-token`) or from `TELLTALE_BOOTSTRAP_ADMIN_USER` with
+/// `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD` or `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct AuthConfig {
+    /// A UI session ends this long after sign-in (default 168 = 7 days).
+    pub session_ttl_hours: u32,
+    /// ... or after this long unused (default 24).
+    pub session_idle_hours: u32,
+    /// Accept HTTP Basic over plain HTTP. Off: Basic only behind HTTPS (a proxy that sends
+    /// `X-Forwarded-Proto: https`).
+    pub allow_insecure_basic: bool,
+    /// Roles that must use two-factor sign-in (TOTP), e.g. `["admin"]`.
+    pub totp_required_roles: Vec<UserRole>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            session_ttl_hours: 168,
+            session_idle_hours: 24,
+            allow_insecure_basic: false,
+            totp_required_roles: Vec::new(),
+        }
+    }
+}
+
+/// What a user may do (`spec/08` §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    /// Dashboards and the query log.
+    Viewer,
+    /// Viewer, plus pause, cache flush, and managing lists, clients, and groups.
+    Operator,
+    /// Everything.
+    Admin,
 }
 
 /// Prometheus endpoint (OBS-005).

@@ -9,6 +9,300 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign in.",
+        "description": "Username and password, plus `totp` (or `recoveryCode`) when two-factor sign-in is on:\nwithout it the answer is 401 `totp_required`. Sets an `HttpOnly; SameSite=Strict` session\ncookie and returns the CSRF token to send as `X-CSRF-Token` on changes. Repeated failures\nlock the username and the address out for a while (429).",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign out.",
+        "description": "Ends this session and clears the cookie. With a token or Basic, does nothing but succeed.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Signed out."
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Who am I.",
+        "description": "The signed-in user: role (capped by a token's scope), two-factor state, unused recovery\ncodes, and how this request authenticated.",
+        "operationId": "get_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change my password.",
+        "description": "Needs the current password. Ends every other session of this user.",
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/setup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Create the first admin.",
+        "description": "Only while no user exists. `setupToken` is printed in the server log at startup and saved\nin `<data_dir>/setup-token`. Signs the new admin in (sets the session cookie).",
+        "operationId": "setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Setup is already done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/status": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign-in state.",
+        "description": "Whether first-run setup is needed, and who the request is signed in as (if anyone),\nwith the session's CSRF token. Public; the UI calls it on load.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/totp/disable": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Turn off two-factor sign-in.",
+        "description": "Needs the current password. Removes the TOTP secret and the unused recovery codes.",
+        "operationId": "totp_disable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Off."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/totp/enable": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Turn on two-factor sign-in.",
+        "description": "Confirms a current code from the app enrolled with POST /auth/totp/setup, turns\nenforcement on, and returns ten single-use recovery codes (shown only now).",
+        "operationId": "totp_enable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/totp/setup": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start two-factor enrollment.",
+        "description": "Returns a new TOTP secret (base32 and an `otpauth://` URL for a QR code). Nothing is\nenforced until POST /auth/totp/enable confirms a code from the app.",
+        "operationId": "totp_setup",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpSetup"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients": {
       "get": {
         "tags": [
@@ -588,6 +882,100 @@
         }
       }
     },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "My API tokens.",
+        "description": "Name, scope, expiry, and last use. The secrets themselves are never shown again.",
+        "operationId": "list_tokens",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Listed_TokenInfo"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Create an API token.",
+        "description": "For scripts, dashboards, and agents: send as `Authorization: Bearer <token>`. `scope`\n`read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role.\nThe token is shown only in this response.",
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateToken"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewToken"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revoke one of my API tokens.",
+        "description": "By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected.",
+        "operationId": "delete_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Token ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/upstreams": {
       "get": {
         "tags": [
@@ -608,10 +996,216 @@
           }
         }
       }
+    },
+    "/api/v1/users": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Users (admin).",
+        "description": "Every user with role, status, and two-factor state.",
+        "operationId": "list_users",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Listed_UserInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Add a user (admin).",
+        "description": "`role` is `viewer`, `operator`, or `admin`. The password needs at least 10 characters.",
+        "operationId": "create_user",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUser"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserInfo"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Delete a user (admin).",
+        "description": "Also deletes their sessions and tokens. The last enabled admin can't be deleted.",
+        "operationId": "delete_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change a user (admin).",
+        "description": "Role, disabled, HTTP Basic opt-in, a new password (ends their sessions), or a TOTP reset.\nThe last enabled admin can't be demoted or disabled.",
+        "operationId": "update_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUser"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserInfo"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AuthStatus": {
+        "type": "object",
+        "description": "Whether setup is needed and who is signed in (public).",
+        "required": [
+          "setupRequired",
+          "authenticated"
+        ],
+        "properties": {
+          "authenticated": {
+            "type": "boolean"
+          },
+          "csrfToken": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For session sign-ins: send as `X-CSRF-Token` on changes."
+          },
+          "setupRequired": {
+            "type": "boolean",
+            "description": "No user exists yet: create the first admin with the setup token."
+          },
+          "user": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Me"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "ClientInfo": {
         "type": "object",
         "description": "A configured client (device).",
@@ -648,8 +1242,72 @@
           "not_found",
           "unsupported_scope",
           "unavailable",
-          "internal"
+          "internal",
+          "unauthorized",
+          "totp_required",
+          "forbidden",
+          "csrf_rejected",
+          "conflict",
+          "rate_limited"
         ]
+      },
+      "CreateToken": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "expiresInDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Default: never expires.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "What it's for (`grafana`, `homepage-widget`)."
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope",
+                "description": "Default: `read`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CreateUser": {
+        "type": "object",
+        "required": [
+          "username",
+          "password",
+          "role"
+        ],
+        "properties": {
+          "allowBasicApi": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Allow HTTP Basic on the API for scripts and scrapers (default false)."
+          },
+          "password": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
       },
       "ExplainBlock": {
         "type": "object",
@@ -1527,6 +2185,202 @@
           }
         }
       },
+      "Listed_TokenInfo": {
+        "type": "object",
+        "description": "List wrapper.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "scope",
+                "createdUnixSeconds"
+              ],
+              "properties": {
+                "createdUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "expiresUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "id": {
+                  "type": "string"
+                },
+                "lastUsedUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "name": {
+                  "type": "string"
+                },
+                "scope": {
+                  "$ref": "#/components/schemas/Scope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "Listed_UserInfo": {
+        "type": "object",
+        "description": "List wrapper.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "username",
+                "role",
+                "disabled",
+                "totpEnabled",
+                "allowBasicApi",
+                "createdUnixSeconds"
+              ],
+              "properties": {
+                "allowBasicApi": {
+                  "type": "boolean"
+                },
+                "createdUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "disabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "role": {
+                  "$ref": "#/components/schemas/Role"
+                },
+                "totpEnabled": {
+                  "type": "boolean"
+                },
+                "username": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "recoveryCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A recovery code instead of `totp`."
+          },
+          "totp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "6-digit code from the authenticator app, when TOTP is on."
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "user",
+          "csrfToken",
+          "expiresUnixSeconds"
+        ],
+        "properties": {
+          "csrfToken": {
+            "type": "string",
+            "description": "Send as `X-CSRF-Token` on every change made with this session."
+          },
+          "expiresUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "user": {
+            "$ref": "#/components/schemas/Me"
+          }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "description": "The signed-in user.",
+        "required": [
+          "id",
+          "username",
+          "role",
+          "totpEnabled",
+          "allowBasicApi",
+          "recoveryCodesLeft",
+          "via"
+        ],
+        "properties": {
+          "allowBasicApi": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "recoveryCodesLeft": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unused recovery codes (when TOTP is on).",
+            "minimum": 0
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Effective role (a token's scope caps its owner's role)."
+          },
+          "totpEnabled": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string",
+            "description": "How this request authenticated: `session`, `token`, or `basic`."
+          }
+        }
+      },
       "NameMatch": {
         "type": "string",
         "description": "How `name` in [`QueryParams`] is matched.",
@@ -1537,6 +2391,48 @@
           "glob",
           "regex"
         ]
+      },
+      "NewToken": {
+        "type": "object",
+        "required": [
+          "token",
+          "info"
+        ],
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/TokenInfo"
+          },
+          "token": {
+            "type": "string",
+            "description": "The token, shown only now: send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "PasswordChange": {
+        "type": "object",
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ],
+        "properties": {
+          "currentPassword": {
+            "type": "string"
+          },
+          "newPassword": {
+            "type": "string"
+          }
+        }
+      },
+      "PasswordConfirm": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        }
       },
       "Problem": {
         "type": "object",
@@ -1712,6 +2608,30 @@
           }
         }
       },
+      "RecoveryCodes": {
+        "type": "object",
+        "description": "Single-use recovery codes, shown once.",
+        "required": [
+          "codes"
+        ],
+        "properties": {
+          "codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "description": "What a user may do (`spec/08` §6).",
+        "enum": [
+          "viewer",
+          "operator",
+          "admin"
+        ]
+      },
       "ScanStats": {
         "type": "object",
         "required": [
@@ -1736,6 +2656,36 @@
           "segments": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "Scope": {
+        "type": "string",
+        "description": "An API token's scope; a token never exceeds its owner's role.",
+        "enum": [
+          "read",
+          "write",
+          "admin"
+        ]
+      },
+      "SetupRequest": {
+        "type": "object",
+        "required": [
+          "setupToken",
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "description": "At least 10 characters."
+          },
+          "setupToken": {
+            "type": "string",
+            "description": "From the server log or `<data_dir>/setup-token`."
+          },
+          "username": {
+            "type": "string"
           }
         }
       },
@@ -1969,6 +2919,47 @@
           }
         }
       },
+      "TokenInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "scope",
+          "createdUnixSeconds"
+        ],
+        "properties": {
+          "createdUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expiresUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastUsedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        }
+      },
       "TopItem": {
         "type": "object",
         "description": "One ranked item. Counts come from a Space-Saving sketch: the true count lies in\n`[count - errorBound, count]`.",
@@ -2010,6 +3001,75 @@
           "nxdomain",
           "clients"
         ]
+      },
+      "TotpCode": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "TotpSetup": {
+        "type": "object",
+        "required": [
+          "secretBase32",
+          "otpauthUrl"
+        ],
+        "properties": {
+          "otpauthUrl": {
+            "type": "string",
+            "description": "For a QR code."
+          },
+          "secretBase32": {
+            "type": "string",
+            "description": "For manual entry in an authenticator app."
+          }
+        }
+      },
+      "UpdateUser": {
+        "type": "object",
+        "properties": {
+          "allowBasicApi": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set a new password (ends the user's sessions)."
+          },
+          "resetTotp": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Turn off the user's TOTP (if they lost their device)."
+          },
+          "role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "UpstreamInfo": {
         "type": "object",
@@ -2065,9 +3125,74 @@
             "minimum": 0
           }
         }
+      },
+      "UserInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "role",
+          "disabled",
+          "totpEnabled",
+          "allowBasicApi",
+          "createdUnixSeconds"
+        ],
+        "properties": {
+          "allowBasicApi": {
+            "type": "boolean"
+          },
+          "createdUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "totpEnabled": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "basic": {
+        "type": "http",
+        "scheme": "basic"
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "tt_<id>_<secret>"
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "telltale_session"
       }
     }
   },
+  "security": [
+    {
+      "session": []
+    },
+    {
+      "bearer": []
+    },
+    {
+      "basic": []
+    }
+  ],
   "tags": [
     {
       "name": "system",
@@ -2084,6 +3209,10 @@
     {
       "name": "config",
       "description": "Lists, groups, clients, and upstreams as running."
+    },
+    {
+      "name": "auth",
+      "description": "Sign-in, two-factor, API tokens, and users. Everything else needs one of: the session cookie from POST /auth/login (plus X-CSRF-Token on changes), Authorization: Bearer <token>, or HTTP Basic for users who allow it."
     }
   ]
 }

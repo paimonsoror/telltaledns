@@ -19,7 +19,15 @@ use crate::ConfigError;
 pub const ENV_PREFIX: &str = "TELLTALE_";
 
 /// Variables consumed by the binary itself rather than mapped onto the schema.
-const RESERVED: &[&str] = &["CONFIG", "NODE_CONFIG", "LOG", "LOG_FORMAT"];
+const RESERVED: &[&str] = &[
+    "CONFIG",
+    "NODE_CONFIG",
+    "LOG",
+    "LOG_FORMAT",
+    "BOOTSTRAP_ADMIN_USER",
+    "BOOTSTRAP_ADMIN_PASSWORD",
+    "BOOTSTRAP_ADMIN_PASSWORD_HASH",
+];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.
 /// Returns warnings; errors are pushed to `errors`.

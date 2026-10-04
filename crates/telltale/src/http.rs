@@ -61,18 +61,28 @@ pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
         .with_state(src)
 }
 
-/// The API listener's app: `/api/v1/*` plus the same `/metrics` and probes (REQ: API-001,
-/// `spec/06` §5). Until authentication (T3.5), only `allowed_networks` may call it.
-pub(crate) fn api_router(src: Arc<Sources>) -> HttpRouter {
+/// The API listener's app: `/api/v1/*`, `/metrics` for signed-in users (a viewer token or
+/// opt-in HTTP Basic), and open probes (REQ: API-001, API-003, `spec/06` §5). Everything is
+/// still limited to `allowed_networks` (ADR-029).
+pub(crate) fn api_router(src: Arc<Sources>, auth: Arc<telltale_api::auth::Auth>) -> HttpRouter {
+    use telltale_api::auth::routes::{authenticate, require_viewer};
     let backend = Arc::new(crate::api_backend::ApiBackend {
         src: Arc::clone(&src),
     });
-    telltale_api::router(backend)
+    let metrics = HttpRouter::new()
+        .route("/metrics", get(metrics))
+        .with_state(Arc::clone(&src))
+        .route_layer(middleware::from_fn(require_viewer))
         .layer(middleware::from_fn_with_state(
-            Arc::clone(&src),
-            only_allowed,
-        ))
-        .merge(router(src))
+            Arc::clone(&auth),
+            authenticate,
+        ));
+    telltale_api::router(backend, auth)
+        .merge(metrics)
+        .route("/livez", get(|| async { "ok\n" }))
+        .route("/healthz", get(|| async { "ok\n" }))
+        .route("/readyz", get(readyz).with_state(Arc::clone(&src)))
+        .layer(middleware::from_fn_with_state(src, only_allowed))
 }
 
 /// Serves `app` until `shutdown` resolves.

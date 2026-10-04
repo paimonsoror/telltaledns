@@ -296,3 +296,22 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Roadmap order:** at the owner's request (2026-10-04: "we will want a UI to help with testing"), T3.5 and T3.9 come next. T3.3 (Prometheus set, Grafana, SQLite rollups) moves after T3.9; none of the UI depends on it, since the dashboard reads the in-memory windows.
 
 **Consequences:** The UI and agents have a documented, typed surface now. Every later endpoint follows the same pattern (types and doc comments in `telltale-api`, data from `Backend`).
+
+## ADR-029 — Local sign-in details (Proposed)
+**Context:** `spec/08` §6 and API-003 define local users (Argon2id), session cookies with CSRF, opt-in HTTP Basic, scoped API tokens, TOTP, lockout, RBAC, and a first-run setup token. Several details are left open.
+
+**Decision:**
+- **Storage:** users, recovery codes, sessions, and tokens in SQLite `<data_dir>/state.db` (rusqlite, bundled). Session IDs, token secrets, and recovery codes are stored only as BLAKE3 hashes (they are 256-bit random, so a slow hash adds nothing); passwords as Argon2id PHC strings with the `08` §6 parameters. If `state.db` can't be opened, the API stays off and DNS keeps answering (rule 5).
+- **Cookie `Secure` flag:** set only when the request arrived over HTTPS (`X-Forwarded-Proto: https`), because the API has no TLS listener yet and browsers drop `Secure` cookies over plain HTTP, which would make sign-in impossible on a LAN. `HttpOnly; SameSite=Strict` always. Revisit when the API gets TLS (`08` §6 asks for `Secure` unconditionally).
+- **CSRF:** a per-session random token returned at sign-in and by `GET /auth/status`, required as `X-CSRF-Token` on every non-GET request authenticated by the cookie. Tokens and Basic don't need it (they are not sent automatically by browsers).
+- **Tokens:** `tt_<16-char id>_<43-char secret>`. Scope caps the owner's role (`read` → viewer, `write` → operator, `admin` → admin). The optional group scope from `08` §6 is deferred to the `family` role (P1).
+- **Basic:** per-user opt-in; refused over plain HTTP unless `[auth] allow_insecure_basic`; verified results cached 60 s keyed by a salted BLAKE3 hash of the credentials, invalidated on any change to the user. Users with TOTP can't use Basic (it would bypass the second factor).
+- **Password policy:** 10–256 characters, no composition rules (NIST SP 800-63B).
+- **Lockout:** per username and per client address, 5 free failures, then 30 s × 2^n up to 15 minutes; in memory (a restart clears it). Unknown usernames take the same time as wrong passwords (a dummy Argon2 verify).
+- **Sessions:** 7 days absolute, 1 day idle (configurable in `[auth]`); `last_seen` is written at most once a minute; a password change ends the user's other sessions; disabling or deleting a user ends all of theirs; hourly purge.
+- **TOTP:** RFC 6238, SHA-1, 6 digits, 30 s, ±1 step; each step is accepted once (replay protection); ten recovery codes, single-use. `[auth] totp_required_roles` refuses password-only sign-in for those roles until TOTP is enrolled (403).
+- **First admin:** the setup token is kept in `<data_dir>/setup-token` (mode 0600) and logged, so it survives restarts and `telltale auth setup-token` can print it; it is deleted once an admin exists. Deployments can instead set `TELLTALE_BOOTSTRAP_ADMIN_USER` with `..._PASSWORD` or `..._PASSWORD_HASH` (Argon2id PHC only; `telltale auth hash-password` makes one), applied only while no user exists.
+- **What is open:** `/api/v1/auth/{status,setup,login}`, `/api/v1/openapi.json`, and the probes. Everything else, including `/metrics` on the API port, needs a sign-in. The dedicated metrics listener (`:9153`) stays unauthenticated and limited to `allowed_networks`, so existing scrapers keep working. The API listener also stays limited to `allowed_networks` (defense in depth).
+- **AGT-002/003:** the auth endpoints don't take dry-run or idempotency keys: sign-in, sign-out, and token creation aren't meaningful to preview, and replaying a token creation must not mint a second secret silently. Configuration mutations will take both when they land.
+
+**Consequences:** The API is safe to expose on the LAN, and the UI (T3.9) can build sign-in and first-run screens on `/auth/status`. TLS on the API listener and OIDC (API-004) are later tasks; until TLS, HTTP Basic needs a TLS-terminating proxy.

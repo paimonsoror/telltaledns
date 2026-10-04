@@ -10,6 +10,7 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+pub mod auth;
 pub mod model;
 pub mod problem;
 pub mod time;
@@ -64,11 +65,12 @@ pub trait Backend: Send + Sync + 'static {
 
 type Shared = Arc<dyn Backend>;
 
-/// The `/api/v1` routes (REQ: API-001). Mount under the API listener; access control is the
-/// caller's (until T3.5, the listener only answers `allowed_networks`).
-pub fn router(backend: Shared) -> Router {
-    Router::new()
-        .route("/api/v1/openapi.json", get(openapi_json))
+/// The `/api/v1` routes (REQ: API-001, API-003). Everything except sign-in, first-run setup,
+/// and the OpenAPI document needs authentication; reads need `viewer`, user management
+/// `admin`.
+pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
+    use axum::middleware::{from_fn, from_fn_with_state};
+    let data = Router::new()
         .route("/api/v1/system/info", get(system_info))
         .route("/api/v1/stats/summary", get(stats_summary))
         .route("/api/v1/stats/timeseries", get(stats_timeseries))
@@ -80,10 +82,24 @@ pub fn router(backend: Shared) -> Router {
         .route("/api/v1/groups", get(groups))
         .route("/api/v1/clients", get(clients))
         .route("/api/v1/upstreams", get(upstreams))
-        .fallback(not_found)
         .with_state(backend)
+        .route_layer(from_fn(auth::routes::require_viewer));
+    let protected = data
+        .merge(auth::routes::self_service(Arc::clone(&auth)))
+        .merge(
+            auth::routes::admin(Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        .layer(from_fn_with_state(
+            Arc::clone(&auth),
+            auth::routes::authenticate,
+        ));
+    Router::new()
+        .route("/api/v1/openapi.json", get(openapi_json))
+        .merge(auth::routes::public(auth))
+        .merge(protected)
+        .fallback(not_found)
 }
-
 /// The OpenAPI 3.1 document for every route above.
 #[derive(Debug, OpenApi)]
 #[openapi(
@@ -98,23 +114,67 @@ pub fn router(backend: Shared) -> Router {
     ),
     paths(
         system_info, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
-        explain, lists, groups, clients, upstreams
+        explain, lists, groups, clients, upstreams,
+        auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
+        auth::routes::get_me, auth::routes::change_password, auth::routes::totp_setup,
+        auth::routes::totp_enable, auth::routes::totp_disable, auth::routes::list_tokens,
+        auth::routes::create_token, auth::routes::delete_token, auth::routes::list_users,
+        auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, UpstreamInfo, Step, TopKind,
-        Hour, LatencyBy, NameMatch
+        Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
+        auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
+        auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
+        auth::routes::TotpCode, auth::routes::PasswordConfirm, auth::routes::RecoveryCodes,
+        auth::routes::TokenInfo, auth::routes::CreateToken, auth::routes::NewToken,
+        auth::routes::UserInfo, auth::routes::CreateUser, auth::routes::UpdateUser
     )),
+    modifiers(&Security),
+    security(("session" = []), ("bearer" = []), ("basic" = [])),
     tags(
         (name = "system", description = "Node information."),
         (name = "stats", description = "Live counters, top lists, and latency percentiles from \
             memory (the last 48 hours at minute resolution, 15 minutes at second resolution)."),
         (name = "queries", description = "The query log and explanations of decisions."),
-        (name = "config", description = "Lists, groups, clients, and upstreams as running.")
+        (name = "config", description = "Lists, groups, clients, and upstreams as running."),
+        (name = "auth", description = "Sign-in, two-factor, API tokens, and users. Everything \
+            else needs one of: the session cookie from POST /auth/login (plus X-CSRF-Token on \
+            changes), Authorization: Bearer <token>, or HTTP Basic for users who allow it.")
     )
 )]
 pub struct ApiDoc;
+
+/// Declares the three ways to authenticate.
+struct Security;
+
+impl utoipa::Modify for Security {
+    fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{
+            ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme,
+        };
+        let c = api.components.get_or_insert_with(Default::default);
+        c.add_security_scheme(
+            "session",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(auth::routes::COOKIE))),
+        );
+        c.add_security_scheme(
+            "bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("tt_<id>_<secret>")
+                    .build(),
+            ),
+        );
+        c.add_security_scheme(
+            "basic",
+            SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Basic).build()),
+        );
+    }
+}
 
 /// The document as pretty JSON (what `GET /api/v1/openapi.json` serves and what the
 /// committed `docs/api/openapi.json` must equal).

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod api_backend;
+mod auth_setup;
 mod explain;
 mod http;
 mod lists;
@@ -60,6 +61,11 @@ enum Command {
         #[command(subcommand)]
         command: ListsCommand,
     },
+    /// Sign-in administration: the first-run setup token, password hashes.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Search the query log (newest first), offline from the data directory.
     // REQ: OBS-003
     Qlog {
@@ -92,6 +98,21 @@ enum Command {
         #[arg(short, long = "config")]
         config: Vec<PathBuf>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Print the first-run setup token (until the first admin exists). The server creates it
+    /// at startup and keeps it in `<data_dir>/setup-token`.
+    // REQ: API-003
+    SetupToken {
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Read a password from stdin and print its Argon2id hash, for
+    /// `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
+    HashPassword,
 }
 
 #[derive(Debug, Subcommand)]
@@ -261,6 +282,7 @@ fn main() -> ExitCode {
                 }),
             )
         }
+        Command::Auth { command } => Ok(run_auth(command)),
         Command::Explain {
             name,
             client,
@@ -386,6 +408,26 @@ fn run_lists(cmd: ListsCommand) -> io::Result<ExitCode> {
                     Ok(ExitCode::FAILURE)
                 }
             }
+        }
+    }
+}
+
+fn run_auth(command: AuthCommand) -> ExitCode {
+    let done = match command {
+        AuthCommand::SetupToken { config } => {
+            let Some(cfg) = server::load(&config_files(config)) else {
+                return ExitCode::FAILURE;
+            };
+            auth_setup::print_setup_token(&cfg)
+        }
+        AuthCommand::HashPassword => auth_setup::hash_password(),
+    };
+    match done {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
     }
 }

@@ -20,6 +20,18 @@ pub enum Code {
     Unavailable,
     /// A server-side failure; retrying may help.
     Internal,
+    /// Not signed in, or the credentials are wrong.
+    Unauthorized,
+    /// The password was right; a TOTP code (or recovery code) is needed too.
+    TotpRequired,
+    /// Signed in, but the role or token scope doesn't allow this.
+    Forbidden,
+    /// A session-authenticated change without a valid `X-CSRF-Token` header.
+    CsrfRejected,
+    /// Conflicts with existing state (a duplicate name, the last admin).
+    Conflict,
+    /// Too many failed sign-ins; wait and retry.
+    RateLimited,
 }
 
 impl Code {
@@ -30,6 +42,12 @@ impl Code {
             Self::UnsupportedScope => "https://telltaledns.dev/problems/unsupported_scope",
             Self::Unavailable => "https://telltaledns.dev/problems/unavailable",
             Self::Internal => "https://telltaledns.dev/problems/internal",
+            Self::Unauthorized => "https://telltaledns.dev/problems/unauthorized",
+            Self::TotpRequired => "https://telltaledns.dev/problems/totp_required",
+            Self::Forbidden => "https://telltaledns.dev/problems/forbidden",
+            Self::CsrfRejected => "https://telltaledns.dev/problems/csrf_rejected",
+            Self::Conflict => "https://telltaledns.dev/problems/conflict",
+            Self::RateLimited => "https://telltaledns.dev/problems/rate_limited",
         }
     }
 
@@ -40,6 +58,12 @@ impl Code {
             Self::UnsupportedScope => "Unsupported scope",
             Self::Unavailable => "Temporarily unavailable",
             Self::Internal => "Internal error",
+            Self::Unauthorized => "Authentication required",
+            Self::TotpRequired => "Second factor required",
+            Self::Forbidden => "Not allowed",
+            Self::CsrfRejected => "CSRF check failed",
+            Self::Conflict => "Conflict",
+            Self::RateLimited => "Too many attempts",
         }
     }
 
@@ -49,6 +73,10 @@ impl Code {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
+            Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
+            Self::Conflict => StatusCode::CONFLICT,
+            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         }
     }
 }

@@ -243,6 +243,32 @@
 </section>
 
 <section>
+  <div class="two">
+    <figure class="figure">
+      <svg viewBox="0 0 460 250" role="img">
+        <title>Three ways to sign in, one role check: browser sessions with a CSRF token, scoped API tokens, and opt-in HTTP Basic for scrapers</title>
+        <rect x="10" y="20" width="170" height="44" rx="8" class="svg-box"/><text x="22" y="40" class="svg-text">Browser</text><text x="22" y="56" class="svg-sub">cookie + CSRF token</text>
+        <rect x="10" y="76" width="170" height="44" rx="8" class="svg-box"/><text x="22" y="96" class="svg-text">Scripts, agents</text><text x="22" y="112" class="svg-sub">Bearer tt_… (scoped)</text>
+        <rect x="10" y="132" width="170" height="44" rx="8" class="svg-box" stroke-dasharray="4 3"/><text x="22" y="152" class="svg-text">Scrapers, widgets</text><text x="22" y="168" class="svg-sub">HTTP Basic (opt-in)</text>
+        <path d="M184 42 L236 98 M184 98 H236 M184 154 L236 98" class="svg-stroke-ok" stroke-width="2"/>
+        <rect x="240" y="66" width="210" height="64" rx="10" class="svg-brand"/>
+        <text x="345" y="94" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="13">role check</text>
+        <text x="345" y="114" text-anchor="middle" fill="#e8eef6" font-size="11">viewer · operator · admin</text>
+        <text x="10" y="206" class="svg-sub">• No default password: a one-time setup token creates the first admin.</text>
+        <text x="10" y="226" class="svg-sub">• Argon2id passwords, optional TOTP, lockout after repeated failures.</text>
+        <text x="10" y="246" class="svg-sub">• Secrets are stored only as hashes.</text>
+      </svg>
+    </figure>
+    <div>
+      <p class="eyebrow">Sign-in</p>
+      <h2>Locked until you set it up</h2>
+      <p class="muted">There is no default password. On first start TelltaleDNS prints a one-time setup token, and whoever has it creates the first admin. Kubernetes and Ansible installs can create that admin from a secret instead.</p>
+      <p class="muted">People sign in with a password and, if they like, an authenticator app. Scripts, dashboards, and AI agents get their own tokens, limited to reading if that is all they need. Prometheus and home dashboards can use HTTP Basic, but only for accounts where an admin turned it on. Each user is a viewer, an operator, or an admin.</p>
+    </div>
+  </div>
+</section>
+
+<section>
   <p class="eyebrow">Coming next</p>
   <h2>One cluster across a Pi and Kubernetes</h2>
   <figure class="figure">

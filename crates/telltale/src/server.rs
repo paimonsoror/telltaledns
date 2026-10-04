@@ -312,9 +312,24 @@ async fn start_http(
         info!(addr = %bound, "serving /metrics, /healthz, /readyz, /livez");
     }
     // REQ: API-001 — the REST API (and its OpenAPI document) on its own listener.
+    // REQ: API-003 — behind sign-in. Rule 5: if state.db can't be opened, the API stays off
+    // and DNS keeps answering.
     if cfg.api.enabled {
+        let c = cfg.clone();
+        let auth = match tokio::task::spawn_blocking(move || crate::auth_setup::open(&c)).await {
+            Ok(Ok(a)) => a,
+            Ok(Err(e)) => {
+                error!("api disabled: cannot open the user database: {e}");
+                return Ok(());
+            }
+            Err(e) => {
+                error!("api disabled: {e}");
+                return Ok(());
+            }
+        };
+        let _purge = crate::auth_setup::spawn_purge(Arc::clone(&auth));
         let addr = cfg.api.listen;
-        let app = http::api_router(Arc::clone(sources));
+        let app = http::api_router(Arc::clone(sources), auth);
         let bound = http::serve(addr, app, stopped(stop.clone()))
             .await
             .map_err(|e| io::Error::new(e.kind(), format!("api {addr}: {e}")))?;
