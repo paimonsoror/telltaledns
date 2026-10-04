@@ -465,3 +465,10 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Names are resolved at read time** from the address (the query log stores addresses, not names; the old lookup by the client's index at query time mislabelled history after any client list change), so naming relabels history and live views at once.
 
 **Consequences:** With clustering (M5), the managed table becomes change-log entries on the primary and replicates (CLU-003); GitOps mode will refuse these writes (`409 gitops_managed`). Other kinds (groups, records, routes; T3.12) reuse the same table and endpoints.
+
+## ADR-041 — Importing zones: per-name local records, not a whole-zone authority (Proposed)
+**Context:** The owner is moving the internal `sororlab.dev` zone from Technitium (split-horizon: the same domain is public in Route 53). T6.4 (Technitium importer) covers zones as "local names and routes". Technitium is authoritative for the whole zone (unknown names get NXDOMAIN); TelltaleDNS local records are per name (unknown names go upstream).
+
+**Decision:** `telltale import zone FILE` converts RFC 1035 zone files (Technitium export, BIND, PowerDNS) into `[[record]]` TOML for the supported types (A, AAAA, CNAME, PTR, TXT, MX, SRV), skips SOA/NS at the apex, and lists everything else in a header report; the output is validated as config before it's written. Imported names behave as per-name local records, so unimported names under the zone fall through to the upstreams (the owner chose this: public-only hosts keep working from inside). A "this server owns the whole zone" mode (NXDOMAIN for unknown names) belongs to T3.12's zone-lite view.
+
+**Consequences:** The rest of T6.4 (forwarders and conditional forwarders → upstreams and routes, block/allow lists, and a Technitium API source) remains open. Moving a zone: import, add the records while keeping the route to the old server (local records win over routes, so anything missed still resolves there), compare answers name by name, then remove the route.

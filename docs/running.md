@@ -207,6 +207,7 @@ default_ttl = 300
 - CNAMEs are followed within local data; if the target is elsewhere, the client follows it.
 - Hosts files skip `0.0.0.0`, `::`, and loopback entries (those are blocklists or this machine, not network hosts).
 - `telltale config check` validates record values and reads the hosts files.
+- **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
 ## Filter lists
 > **Status:** lists are downloaded, compiled, and **enforced** per client group, including names reached through a CNAME.

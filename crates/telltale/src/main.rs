@@ -7,6 +7,7 @@ mod api_backend;
 mod auth_setup;
 mod explain;
 mod http;
+mod import;
 mod lists;
 mod managed;
 mod masking;
@@ -108,6 +109,12 @@ enum Command {
         #[arg(short, long = "config")]
         config: Vec<PathBuf>,
     },
+    /// Import configuration from other DNS servers.
+    // REQ: API-007
+    Import {
+        #[command(subcommand)]
+        command: ImportCommand,
+    },
     /// Exit 0 if the server answers 200 at `url` (a container healthcheck without a shell).
     // REQ: OPS-004, OPS-006
     Health {
@@ -127,6 +134,22 @@ enum Command {
         /// Restart the `telltale` systemd service after updating.
         #[arg(long)]
         restart: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImportCommand {
+    /// Convert a zone file (Technitium, BIND, `PowerDNS` export) into `[[record]]` entries.
+    /// Prints TOML to add to your config; the header lists what had no local equivalent.
+    Zone {
+        /// The zone file.
+        file: PathBuf,
+        /// The zone's name, if the file has no `$ORIGIN` line (e.g. home.arpa).
+        #[arg(long)]
+        origin: Option<String>,
+        /// Write the TOML here instead of to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -359,6 +382,14 @@ fn main() -> ExitCode {
             check,
             restart,
         } => Ok(run_self_update(channel, check, restart)),
+        Command::Import {
+            command:
+                ImportCommand::Zone {
+                    file,
+                    origin,
+                    output,
+                },
+        } => Ok(run_import_zone(&file, origin.as_deref(), output.as_deref())),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -374,6 +405,55 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_import_zone(file: &Path, origin: Option<&str>, output: Option<&Path>) -> ExitCode {
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let im = import::parse_zone(&text, origin);
+    let toml = import::to_toml(&im, &file.display().to_string());
+    // The result must load as config, with valid record values.
+    match Loader::new().toml_str("import", toml.clone()).load() {
+        Ok(l) => {
+            let (_, report) = LocalData::from_config(&l.config);
+            if !report.errors.is_empty() {
+                for e in &report.errors {
+                    eprintln!("error: {e}");
+                }
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    }
+    let written = match output {
+        Some(p) => std::fs::write(p, &toml).map_err(|e| format!("{}: {e}", p.display())),
+        None => writeln!(io::stdout().lock(), "{toml}").map_err(|e| e.to_string()),
+    };
+    if let Err(e) = written {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!(
+        "imported {} records from {} ({} lines skipped; see the header)",
+        im.records.len(),
+        if im.origin.is_empty() {
+            "the file"
+        } else {
+            &im.origin
+        },
+        im.skipped.len()
+    );
+    ExitCode::SUCCESS
 }
 
 /// GETs a plain-HTTP `url` with a 3-second budget; Ok on status 200.
