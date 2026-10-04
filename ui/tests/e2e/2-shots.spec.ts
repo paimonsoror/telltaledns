@@ -21,8 +21,8 @@ for (const theme of ['light', 'dark'] as const) {
       await route.fulfill({ response: res, json: info });
     });
     await page.goto('/');
-    await page.getByLabel('Username').fill('admin');
-    await page.getByLabel('Password').fill('correct horse battery');
+    await page.getByLabel('Username', { exact: true }).fill('admin');
+    await page.getByLabel('Password', { exact: true }).fill('correct horse battery');
     await page.getByRole('button', { name: 'Sign in' }).click();
     for (const [name, path] of [
       ['dashboard', '/#/'],

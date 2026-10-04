@@ -31,8 +31,8 @@ test.afterAll(async () => {
 });
 
 async function signIn(user: string, pass: string) {
-  await page.getByLabel('Username').fill(user);
-  await page.getByLabel('Password').fill(pass);
+  await page.getByLabel('Username', { exact: true }).fill(user);
+  await page.getByLabel('Password', { exact: true }).fill(pass);
   await page.getByRole('button', { name: 'Sign in' }).click();
 }
 
