@@ -529,3 +529,30 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner registers one extra redirect URI in Authentik per node (for the Pi, e.g. `https://telltale-pi.sororlab.dev`, or its LAN address). The Pi's OIDC needs its own copy of the client secret.
 
+## ADR-046 — Version management: one build identity, a signed release index, and update status everywhere (Proposed)
+**Context:** owner request 2026-10-04: the user should always know which version they run, which versions exist, and whether they're on the latest, the same way on every architecture and install type. Today an edge binary reports only `telltale 0.1.0` (the Pi shows exactly that), so two different builds look identical, and nothing tells the user an update exists.
+
+**Decision:**
+- **One build identity, stamped by CI into every artifact from the same commit** (the amd64, arm64 and armv7 binaries and the multi-arch image):
+  - **version:** the tag's semver for releases; `<next>-edge.<run>` for main builds, e.g. `0.1.0-edge.47`;
+  - **commit:** short SHA;
+  - **build date**, and **channel** (`stable` or `edge`);
+  - **target:** e.g. `aarch64-unknown-linux-musl`;
+  - **install type:** `native`, `container` or `helm`, from an environment variable the systemd unit, Dockerfile and chart set.
+  `telltale --version` prints all of it on one line. A local dev build says `dev` and its commit, so it's never mistaken for a release.
+- **Where it shows:**
+  - the UI footer and an About/Updates panel under Settings;
+  - `GET /api/v1/system/info` (`build {...}`);
+  - the metric `telltale_build_info{version,commit,channel,target} 1`;
+  - each node's Hello on the cluster channel, so the Cluster page lists every node's version and flags mixed versions (CLU-010: N/N-1 only, replicas upgrade first);
+  - an MCP tool later.
+- **Which versions exist:** every release publishes a signed `releases.json` next to `SHA256SUMS`, signed with the same minisign key. It lists the channel, version, date, commit, notes URL, assets per architecture with hashes, and the oldest version it can upgrade from. The `edge` index lists the latest main build. Clients trust only a verified index, never the GitHub API's unsigned listing.
+- **Latest or not:** a node fetches its channel's index once a day (`[updates] check = true` by default; off for air-gapped or privacy-strict sites; through the normal HTTP client, never blocking DNS) and compares semver within its channel; edge compares by run number.
+  - **Status:** `up to date`, `update available <version> (<date>)`, `newer than the index` (a dev build), or `unknown` (check off or failing; the last success time is shown).
+  - The status is in the UI, in system info, and in `telltale_update_available 0|1`, with an optional info-level alert.
+- **How to update, per install type:** the panel shows the right step. Native: `sudo telltale self-update --restart`. Compose: `docker compose pull && docker compose up -d`. Helm: the chart version and `helm upgrade`, or bumping it in GitOps values. A cluster gets the replicas-first order.
+  - The UI never self-updates a node: replacing the binary needs root, and container installs are the orchestrator's job.
+- **Architecture independence:** one index serves all architectures; a node picks its asset by target. Versions and commits are identical across architectures because CI builds them all from one commit in one workflow (already true of `image.yml`). The image tag and the binary version always match.
+
+**Consequences:** small CI changes (stamp the version; generate and sign `releases.json`), a `[updates]` config section, and the API/UI/metric fields. `telltale self-update` switches from reading `SHA256SUMS` to reading the index (same signature check).
+
