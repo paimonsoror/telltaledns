@@ -1,0 +1,15 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>The chain of trust from the root key to the answer, and what each verdict does</title>
+<rect x="10" y="10" width="62" height="24" rx="5" class="svg-ok" opacity=".75"/><text x="41" y="26" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">root key</text>
+<path d="M72 22 H88" class="svg-ink"/>
+<rect x="88" y="10" width="62" height="24" rx="5" class="svg-ok" opacity=".75"/><text x="119" y="26" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">TLD (DS)</text>
+<path d="M150 22 H166" class="svg-ink"/>
+<rect x="166" y="10" width="62" height="24" rx="5" class="svg-ok" opacity=".75"/><text x="197" y="26" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">zone keys</text>
+<path d="M228 22 H244" class="svg-ink"/>
+<rect x="244" y="10" width="66" height="24" rx="5" class="svg-ok" opacity=".75"/><text x="277" y="26" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">RRSIG</text>
+<rect x="10" y="50" width="96" height="26" rx="5" class="svg-ok" opacity=".75"/><text x="58" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">secure → AD</text>
+<rect x="112" y="50" width="96" height="26" rx="5" class="svg-warn" opacity=".55"/><text x="160" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">unsigned → as is</text>
+<rect x="214" y="50" width="96" height="26" rx="5" class="svg-bad" opacity=".75"/><text x="262" y="67" text-anchor="middle" fill="#fff" font-size="10" font-weight="700">bogus → SERVFAIL</text>
+<text x="10" y="102" class="svg-sub">Forwarded with DO and CD; keys and proofs cached.</text>
+<text x="10" y="120" class="svg-sub">Bogus carries EDE 6. CD from the client, or a</text>
+<text x="10" y="138" class="svg-sub">negative trust anchor, skips validation.</text>
+</svg>
