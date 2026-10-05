@@ -630,3 +630,43 @@ test('dns_006 cache page', async () => {
   await page.goto('/#/settings?tab=system');
   await expect(page.getByRole('link', { name: 'Cache page' })).toHaveAttribute('href', '#/cache');
 });
+
+// REQ: DNS-006, CLU-008 (T6.15) — the Cache page scales with the cluster: with 8 nodes, each
+// name is listed once (hits summed, "N of 8" nodes, per-node detail on demand), and the makeup
+// is one row per node, the first 6 shown.
+test('dns_006 cache page with many nodes', async () => {
+  const pods = Array.from({ length: 8 }, (_, i) => `telltale-resolver-${i}`);
+  const entry = (name: string, hits: number, ttl: number) => ({
+    name, qtype: 'A', rcode: 'NOERROR', answers: 1, authentic: false, dnssecOk: false,
+    ttlLeftSeconds: ttl, ageSeconds: 10, bytes: 180, hits,
+  });
+  const makeup = { positive: 90, nxdomain: 6, nodata: 3, servfail: 1, stale: 2, validated: 40 };
+  await page.route('**/api/v1/cache/entries**', (route) =>
+    route.fulfill({
+      json: {
+        missingNodes: [],
+        items: pods.map((node, i) => ({
+          node,
+          makeup,
+          // Every node holds popular.example; the first three also hold three.example.
+          entries: [entry('popular.example', 10, 100 + i), ...(i < 3 ? [entry('three.example', 5, 50)] : [])],
+        })),
+      },
+    }),
+  );
+  await page.goto('/#/cache');
+  const top = page.getByTestId('cache-top');
+  await expect(top.locator('tbody tr')).toHaveCount(2); // two names, not 11 rows
+  const first = top.locator('tbody tr').first();
+  await expect(first).toContainText('popular.example');
+  await expect(first).toContainText('8 of 8');
+  await expect(first).toContainText('80'); // 8 × 10 hits
+  await expect(top.locator('tbody tr').nth(1)).toContainText('3 of 8');
+  await first.getByRole('button', { name: '8 of 8' }).click();
+  await expect(top.locator('tr.detail')).toContainText('telltale-resolver-7');
+  const makeupRows = page.getByTestId('cache-makeup').locator('tbody tr');
+  await expect(makeupRows).toHaveCount(6);
+  await page.getByRole('button', { name: 'Show all 8 nodes' }).click();
+  await expect(makeupRows).toHaveCount(8);
+  await page.unroute('**/api/v1/cache/entries**');
+});

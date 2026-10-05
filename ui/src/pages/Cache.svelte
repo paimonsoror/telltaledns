@@ -40,7 +40,8 @@
     loading = true;
     entriesError = null;
     try {
-      entries = (await api.cacheEntries({ sort, limit: 25, node: node || undefined })).items;
+      entries = (await api.cacheEntries({ sort, limit: LIMIT, node: node || undefined })).items;
+      expanded = null;
     } catch (e) {
       entriesError = e;
     } finally {
@@ -82,6 +83,69 @@
     return looked > 0 ? (hits * 100) / looked : null;
   };
   const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
+  const LIMIT = 25;
+  const NODES_SHOWN = 6;
+  const barColors = ['--ok', '--warn', '--info', '--bad'];
+  let showAllNodes = $state(false);
+  let expanded = $state<string | null>(null);
+  const ttlShort = (s: number) => (s >= 0 ? duration(s) : `-${duration(-s)}`);
+  type Merged = {
+    key: string;
+    name: string;
+    qtype: string;
+    dnssecOk: boolean;
+    rcode: string;
+    answers: number;
+    authentic: boolean;
+    hits: number;
+    bytes: number;
+    ttlMin: number;
+    ttlMax: number;
+    nodes: { node: string; entry: S['CacheTopEntry'] }[];
+  };
+  // Answers with an error (a node that couldn't be asked) don't count as nodes holding names.
+  const answered = $derived(entries.filter((n) => !n.error));
+  const multi = $derived(answered.length > 1);
+  const nodeCount = $derived(answered.length);
+  // One row per name and type across the nodes (the list doesn't grow with the cluster).
+  const merged = $derived.by((): Merged[] => {
+    const by = new Map<string, Merged>();
+    for (const n of answered) {
+      for (const e of n.entries) {
+        const key = `${e.name}|${e.qtype}|${e.dnssecOk}`;
+        const m = by.get(key);
+        const node = label(n);
+        if (m) {
+          m.hits += e.hits;
+          m.bytes = Math.max(m.bytes, e.bytes);
+          m.ttlMin = Math.min(m.ttlMin, e.ttlLeftSeconds);
+          m.ttlMax = Math.max(m.ttlMax, e.ttlLeftSeconds);
+          m.authentic ||= e.authentic;
+          m.nodes.push({ node, entry: e });
+        } else {
+          by.set(key, {
+            key,
+            name: e.name,
+            qtype: e.qtype,
+            dnssecOk: e.dnssecOk,
+            rcode: e.rcode,
+            answers: e.answers,
+            authentic: e.authentic,
+            hits: e.hits,
+            bytes: e.bytes,
+            ttlMin: e.ttlLeftSeconds,
+            ttlMax: e.ttlLeftSeconds,
+            nodes: [{ node, entry: e }],
+          });
+        }
+      }
+    }
+    const rows = [...by.values()];
+    if (sort === 'bytes') rows.sort((a, b) => b.bytes - a.bytes);
+    else if (sort === 'expiring') rows.sort((a, b) => a.ttlMin - b.ttlMin);
+    else rows.sort((a, b) => b.hits - a.hits || b.nodes.length - a.nodes.length);
+    return rows.slice(0, LIMIT);
+  });
   const kinds: [keyof S['CacheMakeup'], string, string][] = [
     ['positive', 'answer', 'answers'],
     ['nxdomain', 'no such name', 'no such name'],
@@ -175,45 +239,110 @@
       <button onclick={loadEntries} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
     </div>
     <ErrorNote error={entriesError} />
-    {#each entries as n, i (n.node ?? i)}
-      <div class="entries" data-testid="cache-top">
-        {#if entries.length > 1}<h3>{label(n)}</h3>{/if}
-        {#if n.error}
-          <p class="notice warn small">{n.error}</p>
-        {:else}
-          {@const t = total(n.makeup)}
-          <p class="small makeup" data-testid="cache-makeup">
-            {#each kinds as [k, one, many] (k)}
-              <span><strong>{num(n.makeup[k])}</strong> {n.makeup[k] === 1 ? one : many}{#if t}{` (${pct((n.makeup[k] * 100) / t, 0)})`}{/if}</span>
+    <!-- T6.15 — scales with the cluster: one row per node for the makeup, and one merged
+         list of names (not one list per node) unless a node is picked. -->
+    {#if entries.length}
+      {@const shownNodes = showAllNodes ? entries : entries.slice(0, NODES_SHOWN)}
+      <div class="table-wrap">
+        <table class="compact makeup-table" data-testid="cache-makeup">
+          <thead>
+            <tr>
+              {#if entries.length > 1}<th>Node</th>{/if}
+              <th>Holds</th>
+              <th class="bar-col">
+                <span class="key k-ok"></span>answers
+                <span class="key k-warn"></span>no such name
+                <span class="key k-info"></span>no data
+                <span class="key k-bad"></span>SERVFAIL
+              </th>
+              <th class="num">Stale</th>
+              <th class="num">Validated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each shownNodes as n, i (n.node ?? i)}
+              {@const t = total(n.makeup)}
+              <tr>
+                {#if entries.length > 1}<td>{label(n)}</td>{/if}
+                {#if n.error}
+                  <td colspan="4" class="small warn-text">{n.error}</td>
+                {:else}
+                  <td class="small">{plural(t, 'answer', 'answers')}</td>
+                  <td class="bar-col">
+                    {#if t}
+                      <span class="stack" title={kinds.map(([k, one, many]) => `${num(n.makeup[k])} ${n.makeup[k] === 1 ? one : many}`).join(' · ')}>
+                        {#each kinds as [k], j (k)}
+                          {#if n.makeup[k]}<span style:width={`${(n.makeup[k] * 100) / t}%`} style:--c={`var(${barColors[j]})`}></span>{/if}
+                        {/each}
+                      </span>
+                    {/if}
+                  </td>
+                  <td class="num small">{num(n.makeup.stale)}</td>
+                  <td class="num small">{num(n.makeup.validated)}</td>
+                {/if}
+              </tr>
             {/each}
-            <span class="muted">· {num(n.makeup.stale)} stale (kept for serving stale) · {num(n.makeup.validated)} DNSSEC-validated</span>
-          </p>
-          {#if n.entries.length === 0}
-            <p class="empty">Nothing cached{sort === 'expiring' ? ' that is still fresh' : ''}.</p>
-          {:else}
-            <div class="table-wrap">
-              <table class="compact">
-                <thead>
-                  <tr><th>Name</th><th>Type</th><th>Answer</th><th>Fresh</th><th class="num">Hits</th><th class="num">Size</th></tr>
-                </thead>
-                <tbody>
-                  {#each n.entries as e, j (j)}
-                    <tr>
-                      <td class="mono"><button class="link" onclick={() => (lookupName = e.name)} title="Look it up below">{e.name}</button></td>
-                      <td>{e.qtype}{#if e.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
-                      <td class="small">{e.rcode} · {e.answers}{#if e.authentic}<span class="badge ok">validated</span>{/if}</td>
-                      <td class="small {e.ttlLeftSeconds < 0 ? 'muted' : ''}">{ttl(e.ttlLeftSeconds)}</td>
-                      <td class="num">{num(e.hits)}</td>
-                      <td class="num small">{bytes(e.bytes)}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-          {/if}
-        {/if}
+          </tbody>
+        </table>
       </div>
-    {/each}
+      {#if entries.length > NODES_SHOWN}
+        <button class="link small" onclick={() => (showAllNodes = !showAllNodes)}>
+          {showAllNodes ? 'Show fewer nodes' : `Show all ${entries.length} nodes`}
+        </button>
+      {/if}
+
+      {#if merged.length === 0}
+        <p class="empty">Nothing cached{sort === 'expiring' ? ' that is still fresh' : ''}.</p>
+      {:else}
+        <div class="table-wrap" data-testid="cache-top">
+          <table class="compact">
+            <thead>
+              <tr>
+                <th>Name</th><th>Type</th><th>Answer</th><th>Fresh</th>
+                {#if multi}<th>Nodes</th>{/if}
+                <th class="num">Hits</th><th class="num">Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each merged as m (m.key)}
+                <tr class:open={expanded === m.key}>
+                  <td class="mono"><button class="link" onclick={() => (lookupName = m.name)} title="Look it up below">{m.name}</button></td>
+                  <td>{m.qtype}{#if m.dnssecOk}<span class="muted small"> (DO)</span>{/if}</td>
+                  <td class="small">{m.rcode} · {m.answers}{#if m.authentic}<span class="badge ok">validated</span>{/if}</td>
+                  <td class="small {m.ttlMax < 0 ? 'muted' : ''}">{ttlShort(m.ttlMin) === ttlShort(m.ttlMax) ? ttl(m.ttlMin) : `${ttlShort(m.ttlMin)} to ${ttlShort(m.ttlMax)}`}</td>
+                  {#if multi}
+                    <td class="small">
+                      <button class="link" aria-expanded={expanded === m.key} onclick={() => (expanded = expanded === m.key ? null : m.key)}
+                        >{m.nodes.length} of {nodeCount}</button
+                      >
+                    </td>
+                  {/if}
+                  <td class="num">{num(m.hits)}</td>
+                  <td class="num small">{bytes(m.bytes)}</td>
+                </tr>
+                {#if expanded === m.key}
+                  <tr class="detail">
+                    <td colspan="7">
+                      <ul class="per-node">
+                        {#each m.nodes as d (d.node)}
+                          <li><strong>{d.node}</strong> · {ttl(d.entry.ttlLeftSeconds)} · {plural(d.entry.hits, 'hit', 'hits')}</li>
+                        {/each}
+                      </ul>
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#if multi}
+          <p class="muted small">
+            Merged across nodes: each name once, with the hits of the nodes where it's among their top {LIMIT}. Pick a node
+            above for its own list.
+          </p>
+        {/if}
+      {/if}
+    {/if}
   </section>
 
   {#key lookupName}
@@ -259,17 +388,64 @@
   .spacer {
     flex: 1;
   }
-  .makeup {
+  .bar-col {
+    width: 45%;
+    min-width: 160px;
+  }
+  th.bar-col {
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .key {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    margin: 0 4px 0 10px;
+  }
+  .k-ok {
+    background: var(--ok);
+  }
+  .k-warn {
+    background: var(--warn);
+  }
+  .k-info {
+    background: var(--info);
+  }
+  .k-bad {
+    background: var(--bad);
+  }
+  .key:first-child {
+    margin-left: 0;
+  }
+  .stack {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px 14px;
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+    background: var(--surface-2);
   }
-  .entries + .entries {
-    margin-top: 16px;
+  .stack span {
+    background: var(--c);
   }
-  h3 {
-    margin: 8px 0 4px;
-    font-size: 1rem;
+  .warn-text {
+    color: var(--warn-strong, var(--warn));
+  }
+  tr.detail td {
+    background: var(--surface-2);
+  }
+  .per-node {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 2px 16px;
+    font-size: 0.85rem;
+  }
+  .makeup-table {
+    margin-bottom: 6px;
   }
   .badge {
     margin-left: 6px;

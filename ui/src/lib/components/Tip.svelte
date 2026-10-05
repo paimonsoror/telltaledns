@@ -38,7 +38,8 @@
     class:open={pos != null}
     role="tooltip"
     {id}
-    style={pos ? `top:${pos.top}px;left:${pos.left}px` : ''}>{text}</span
+    style:top={pos ? `${pos.top}px` : null}
+    style:left={pos ? `${pos.left}px` : null}>{text}</span
   >
 </button>
 
