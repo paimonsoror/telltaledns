@@ -141,8 +141,14 @@ jobs:
       - run: npx playwright install --with-deps --only-shell chromium
       - name: Wait for Authentik to apply its blueprint
         run: |
+          # Authentik's startup blueprint run can die on a Postgres deadlock and isn't retried
+          # (CI 2026-10-04): after a minute, apply ours explicitly, then every minute after.
           for i in $(seq 60); do
             curl -sf -o /dev/null http://127.0.0.1:9000/application/o/telltale/.well-known/openid-configuration && exit 0
+            if [ "$i" -ge 12 ] && [ $((i % 12)) -eq 0 ]; then
+              docker compose -f tests/oidc/compose.yml exec -T authentik-worker \
+                ak apply_blueprint /blueprints/custom/telltale.yaml || true
+            fi
             sleep 5
           done
           exit 1

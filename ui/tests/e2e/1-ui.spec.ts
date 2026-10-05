@@ -189,10 +189,23 @@ test('works at phone width (360 px)', async () => {
 test('ops_003 masked client IPs raise a banner', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await Promise.all(Array.from({ length: 120 }, (_, i) => query(`m${i}.nas.e2e.test`).catch(() => -1)));
+  // A slow runner can drop some of those UDP queries (CI flake 2026-10-04): keep sending small
+  // batches until the detector has seen its 100.
+  let batch = 0;
   await expect
-    .poll(async () => (await (await page.request.get('/api/v1/system/info')).json()).clientIpsMasked?.sources ?? [], {
-      timeout: 20_000,
-    })
+    .poll(
+      async () => {
+        const masked = (await (await page.request.get('/api/v1/system/info')).json()).clientIpsMasked;
+        if (!masked) {
+          batch += 1;
+          await Promise.all(
+            Array.from({ length: 20 }, (_, i) => query(`m${batch}-${i}.nas.e2e.test`).catch(() => -1)),
+          );
+        }
+        return masked?.sources ?? [];
+      },
+      { timeout: 30_000 },
+    )
     .toContain('127.0.0.1');
   await expect(async () => {
     await page.reload();
