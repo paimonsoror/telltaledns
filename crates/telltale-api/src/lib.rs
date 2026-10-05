@@ -29,13 +29,13 @@ use utoipa::OpenApi;
 
 use crate::model::{
     AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ClusterCheck,
-    ClusterConflict, ClusterEvent, ClusterInfo, ClusterNode, ClusterPeer, ClusterView,
-    ConfigChange, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
-    ExplainRoute, ExplainRule, Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items,
-    LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch,
-    PromoteRequest, QueryPage, QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step,
-    Summary, SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket,
-    TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    ClusterConflict, ClusterEvent, ClusterFailover, ClusterInfo, ClusterNode, ClusterPeer,
+    ClusterSource, ClusterView, ConfigChange, ExplainBlock, ExplainClient, ExplainFilter,
+    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo, ForwardInput,
+    GroupInfo, Hour, Items, LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName,
+    MaskedClients, NameMatch, PromoteRequest, QueryPage, QueryParams, QueryRow, RecordInput,
+    RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem,
+    TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -63,6 +63,13 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (req, by);
         Err(Problem::unavailable("this node isn't in a cluster"))
     }
+    /// A Git push webhook (ADR-049): checks the signature, then the ref at once.
+    fn git_hook(&self, signature: Option<String>, body: Vec<u8>) -> Result<(), Problem> {
+        let _ = (signature, body);
+        Err(Problem::not_found(
+            "this node has no Git configuration source",
+        ))
+    }
     /// The cluster as this node sees it (CLU-008).
     fn cluster(&self) -> ClusterView {
         ClusterView {
@@ -78,6 +85,7 @@ pub trait Backend: Send + Sync + 'static {
             authority: None,
             conflicts: Vec::new(),
             failover: None,
+            source: None,
         }
     }
     /// Buckets with start in `[from_s, to_s)`, oldest first.
@@ -251,6 +259,11 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         ));
     Router::new()
         .route("/api/v1/openapi.json", get(openapi_json))
+        // REQ: CLU-003 (ADR-049) — authenticated by its HMAC signature, not a session.
+        .route(
+            "/api/v1/hooks/git",
+            axum::routing::post(git_hook).with_state(Arc::clone(&backend)),
+        )
         .merge(auth::routes::public(auth))
         .merge(protected)
         .fallback(fallback)
@@ -281,7 +294,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, cluster, config_api::cluster_promote, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, cluster, config_api::cluster_promote, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -295,7 +308,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, PromoteRequest, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, PromoteRequest, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -422,6 +435,27 @@ async fn blocking<T: Send + 'static>(
     responses((status = 200, body = SystemInfo)))]
 async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
     Json(b.system_info())
+}
+
+/// Git push webhook.
+///
+/// Point the repository's push webhook here (content type JSON, with the secret from
+/// `[cluster.git] webhook_secret_file`): the primary checks the ref at once instead of at
+/// the next poll. Authenticated by the `X-Hub-Signature-256` HMAC, not a session.
+#[utoipa::path(post, path = "/api/v1/hooks/git", tag = "system",
+    responses((status = 202, description = "The ref will be checked now."),
+        (status = 401, body = Problem), (status = 404, body = Problem)))]
+async fn git_hook(
+    State(b): State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::http::StatusCode, Problem> {
+    let sig = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    b.git_hook(sig, body.to_vec())?;
+    Ok(axum::http::StatusCode::ACCEPTED)
 }
 
 /// The cluster's health.

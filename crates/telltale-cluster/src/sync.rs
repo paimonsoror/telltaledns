@@ -60,10 +60,29 @@ pub struct ClusterManifest {
     /// How the cluster fails over (ADR-056): `manual` or `auto`.
     #[serde(default)]
     pub failover: String,
+    /// Where the configuration came from, when it's a Git commit (ADR-049).
+    #[serde(default)]
+    pub source: Option<SourceInfo>,
     /// The configuration schema of `config` (CLU-010): a replica that reads an older schema
     /// keeps its last version when it can't read this one, and says to upgrade.
     #[serde(default)]
     pub schema: u32,
+}
+
+/// A Git commit as a configuration's provenance (ADR-049). `repo`, `git_ref` and `path` also
+/// pin the source: a promoted node fetches only from the same place.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SourceInfo {
+    pub repo: String,
+    pub git_ref: String,
+    pub path: String,
+    pub commit: String,
+    pub author: String,
+    /// Committer time, Unix seconds.
+    pub time: i64,
+    pub subject: String,
+    #[serde(default)]
+    pub signed_by: Option<String>,
 }
 
 /// The configuration schema this build writes and reads (CLU-010). Raised when the shared

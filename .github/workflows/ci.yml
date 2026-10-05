@@ -247,6 +247,11 @@ jobs:
             https://github.com/paimonsoror/telltaledns/releases/download/edge/telltale-x86_64-linux
           chmod +x "$RUNNER_TEMP/telltale-old"
           bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/telltale-old" target/bench-fast/telltale
+      # REQ: CLU-003 (T5.12 AC) — the cluster's configuration from a Git repository (served by
+      # git upload-pack over HTTP): same commit everywhere, invalid and force-pushed commits
+      # refused, outages harmless, a promoted node keeps following.
+      - name: Cluster configuration from Git
+        run: bash deploy/cluster/git-e2e.sh target/bench-fast/telltale
       # REQ: CLU-009 (T5.10 AC) — Helm mode: scaled on kind with this build: resolver pods join
       # and sync, answer DNS; a node outside Kubernetes joins; a deleted pod expires.
       - name: Install kind

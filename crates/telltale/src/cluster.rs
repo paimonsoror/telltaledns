@@ -263,6 +263,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         ephemeral: flags(&me.node_id).0,
         witness: me.witness,
         protocol: telltale_cluster::wire::PROTOCOL,
+        source_commit: Some(local.source_commit.clone()).filter(|s| !s.is_empty()),
         node_id: me.node_id.clone(),
         site: me.site.clone(),
         role: match c.role().0 {
@@ -298,6 +299,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
             ephemeral: flags(&p.node_id).0,
             witness: flags(&p.node_id).1,
             protocol: p.protocol,
+            source_commit: Some(p.source_commit.clone()).filter(|s| !s.is_empty()),
             node_id: p.node_id.clone(),
             site: p.site.clone(),
             role: if p.primary { "primary" } else { "replica" }.into(),
@@ -344,6 +346,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         authority: Some(c.identity.reload().meta.config_authority),
         conflicts: Vec::new(),
         failover: Some(failover),
+        source: None,
     }
 }
 
@@ -802,7 +805,7 @@ pub(crate) fn promote_offline(
         );
     }
     let gitops = id.meta.config_authority == "gitops";
-    let source = cfg.cluster.config_source.as_str() == "gitops";
+    let source = crate::replication::gitops_capable(cfg);
     if gitops && !source && !emergency {
         return fail(
             "this cluster's configuration comes from Git and this node isn't GitOps-managed: use --emergency",

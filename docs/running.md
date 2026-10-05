@@ -662,6 +662,44 @@ telltale cluster set-failover auto
 - **Under a Git config authority,** an elected node that isn't Git-managed becomes an emergency
   primary: it keeps the cluster coordinated on the last version.
 
+**Configuration from a Git repository.** The cluster can take its shared settings
+(upstreams, lists, groups, devices, records…) from one file in a Git repository. The primary
+fetches it, checks it, and hands it to every node, so all nodes serve the same commit:
+```toml
+# On every node that may become primary:
+[cluster.git]
+repo = "https://github.com/me/homelab"
+ref = "main"                              # branch, tag, or commit
+path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS's format
+# credentials_file = "/etc/telltale/git-token"   # private repositories: a token, or user:password
+# poll_secs = 60
+# webhook_secret_file = "/etc/telltale/git-hook" # then add a push webhook to /api/v1/hooks/git
+# require_signed = true                          # only SSH-signed commits by...
+# allowed_signers_file = "/etc/telltale/allowed_signers"   # ...these keys (git's format)
+# allow_rewind = false                           # refuse force-pushes and rewinds
+```
+- **Safe by default:** a commit is used only if its file loads and validates (merged with
+  each node's own settings), and it descends from the commit in use. Anything else is
+  refused: the cluster stays on the last good commit, and the Cluster page, the event log,
+  and the `TelltaleDNSGitCommitRefused` alert say why.
+- **Signed commits:** with `require_signed`, only commits SSH-signed by a key in
+  `allowed_signers_file` are accepted (`git config gpg.format ssh`; Ed25519 keys).
+- **Webhook:** point the repository's push webhook at `https://<node>/api/v1/hooks/git` with
+  the secret from `webhook_secret_file`. Changes then apply within seconds, not at the next
+  poll.
+- **Outages don't matter to DNS:** with the repository unreachable, every node keeps serving
+  the last commit (`telltale_cluster_git_failing` and an alert after 15 minutes).
+- **What you see:** the Cluster page shows the repository, the commit in use (author,
+  message, signer), and each node's commit. `telltale_cluster_config_commit{commit=…}` on
+  every node should be the same.
+- **Changes go through Git:** with a Git source the cluster is GitOps-managed, so the UI and
+  API don't change shared settings (409 `gitops_managed`).
+- **Failover:** any eligible node with the same `[cluster.git]` can take over and keep
+  following the repository. A node configured with a different repository, ref, or path
+  refuses to fetch, since the cluster is pinned to its source.
+- No `git` program is needed: TelltaleDNS speaks Git's protocol over HTTPS and fetches only
+  that one file.
+
 **Where configuration comes from (config authority).**
 - **Choosing it:** `telltale cluster init --config-authority gitops` (or `telltale cluster
   set-authority gitops` on the primary, then restart) says the cluster's configuration comes from

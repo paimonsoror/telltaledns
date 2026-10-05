@@ -557,9 +557,21 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         masking: crate::masking::Detector::default(),
         cluster,
         ship: Arc::default(),
+        git_poke: Arc::default(),
         reload: reload_tx,
     });
     http::serve_peers(&sources);
+    // REQ: CLU-003 — the Git config source polls on the primary (ADR-049).
+    if let Some(c) = &sources.cluster
+        && cfg.cluster.git.is_some()
+    {
+        tokio::spawn(crate::gitsource::run(
+            Arc::clone(c),
+            Arc::clone(&sources),
+            Arc::clone(&sources.git_poke),
+            http_stopped.clone(),
+        ));
+    }
     // REQ: CLU-007 — ship mode delivers the query log to another node (ADR-055).
     if let Some(c) = &sources.cluster
         && cfg.telemetry.mode == telltale_config::TelemetryMode::Ship

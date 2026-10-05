@@ -1065,6 +1065,39 @@
         }
       }
     },
+    "/api/v1/hooks/git": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Git push webhook.",
+        "description": "Point the repository's push webhook here (content type JSON, with the secret from\n`[cluster.git] webhook_secret_file`): the primary checks the ref at once instead of at\nthe next poll. Authenticated by the `X-Hub-Signature-256` HMAC, not a session.",
+        "operationId": "git_hook",
+        "responses": {
+          "202": {
+            "description": "The ref will be checked now."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/lists": {
       "get": {
         "tags": [
@@ -2890,6 +2923,13 @@
           "site": {
             "type": "string"
           },
+          "sourceCommit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Git commit of the configuration it serves (ADR-049)."
+          },
           "thisNode": {
             "type": "boolean",
             "description": "The node answering this request."
@@ -2961,6 +3001,78 @@
           "via": {
             "type": "string",
             "description": "`inbound` (it connected to us) or `outbound`."
+          }
+        }
+      },
+      "ClusterSource": {
+        "type": "object",
+        "description": "The cluster's configuration from Git (ADR-049): the commit in use and the last check.",
+        "required": [
+          "repo",
+          "gitRef",
+          "path",
+          "refused"
+        ],
+        "properties": {
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the primary last checked the ref (RFC 3339; on the primary only)."
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The commit every node should be serving."
+          },
+          "committedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Commit time (RFC 3339)."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last check failed, or why the newest commit was refused."
+          },
+          "gitRef": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "refused": {
+            "type": "boolean",
+            "description": "The newest commit isn't acceptable (invalid, unsigned, rewound): the cluster stays on\n`commit`."
+          },
+          "repo": {
+            "type": "string"
+          },
+          "signedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The allowed signer who signed it (with `require_signed`)."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3047,6 +3159,17 @@
               "$ref": "#/components/schemas/ClusterNode"
             },
             "description": "This node first, then peers by site and ID."
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterSource",
+                "description": "The Git repository the configuration comes from, when it does (ADR-049)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "thisNode": {
             "type": [

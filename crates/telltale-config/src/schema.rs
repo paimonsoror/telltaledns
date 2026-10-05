@@ -168,6 +168,57 @@ pub struct ClusterConfig {
     pub ephemeral: bool,
     /// How long the primary keeps an ephemeral member it no longer hears from.
     pub ephemeral_ttl_secs: u32,
+    /// Take the cluster's shared configuration from a Git repository (ADR-049): the primary
+    /// fetches it, validates it, and publishes it to every node. Set it on every node that
+    /// may become primary.
+    pub git: Option<GitSourceConfig>,
+}
+
+/// `[cluster.git]`: the cluster's configuration from a file in a Git repository (ADR-049).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitSourceConfig {
+    /// The repository's HTTPS URL, e.g. `https://github.com/me/homelab`.
+    pub repo: SafeString,
+    /// Branch, tag, or commit ID.
+    #[serde(rename = "ref", default = "default_git_ref")]
+    pub git_ref: SafeString,
+    /// The TelltaleDNS file with the shared settings, e.g. `telltale/shared.toml`.
+    pub path: SafeString,
+    /// A file with an access token (or `user:password`) for private repositories.
+    #[serde(default)]
+    pub credentials_file: Option<SafeString>,
+    /// How often to check the ref, in seconds.
+    #[serde(default = "default_git_poll")]
+    pub poll_secs: u32,
+    /// Accept only commits SSH-signed by a key in `allowed_signers_file`.
+    #[serde(default)]
+    pub require_signed: bool,
+    /// `git`'s allowed-signers format: `<principal> ssh-ed25519 <key>` per line.
+    #[serde(default)]
+    pub allowed_signers_file: Option<SafeString>,
+    /// Accept a commit that doesn't descend from the one in use (a force-push or rewind).
+    #[serde(default)]
+    pub allow_rewind: bool,
+    /// Largest file accepted.
+    #[serde(default = "default_git_max")]
+    pub max_bytes: ByteSize,
+    /// A file with the secret for `POST /api/v1/hooks/git` (GitHub's `X-Hub-Signature-256`),
+    /// which checks the ref at once instead of at the next poll.
+    #[serde(default)]
+    pub webhook_secret_file: Option<SafeString>,
+}
+
+fn default_git_ref() -> SafeString {
+    SafeString::from("main")
+}
+
+fn default_git_poll() -> u32 {
+    60
+}
+
+fn default_git_max() -> ByteSize {
+    ByteSize::mib(1)
 }
 
 /// `[cluster.init]`: create a cluster on first start.
@@ -198,6 +249,7 @@ impl Default for ClusterConfig {
             join_url: None,
             ephemeral: false,
             ephemeral_ttl_secs: 600,
+            git: None,
         }
     }
 }

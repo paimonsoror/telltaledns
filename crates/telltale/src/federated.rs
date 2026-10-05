@@ -346,6 +346,9 @@ impl Backend for Federated {
     fn cluster(&self) -> ClusterView {
         self.local.cluster()
     }
+    fn git_hook(&self, signature: Option<String>, body: Vec<u8>) -> Result<(), Problem> {
+        self.local.git_hook(signature, body)
+    }
 
     // REQ: CLU-002 — counters sum across nodes.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {

@@ -21,7 +21,7 @@ E=$(mktemp -d)
 export KUBECONFIG="$E/kubeconfig"
 PIDS=()
 cleanup() {
-  for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+  for p in "${PIDS[@]}"; do pkill -P "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; done
   [[ "${KEEP:-}" == 1 ]] && { echo "kept: KUBECONFIG=$KUBECONFIG, files in $E"; return; }
   kind delete cluster --name "$name" >/dev/null 2>&1 || true
   rm -rf "$E"
@@ -37,6 +37,12 @@ fail() {
   exit 1
 }
 k() { kubectl -n "$ns" "$@"; }
+# kubectl port-forward exits on some connection errors (a reset forwarded connection, a
+# restarted pod): keep each one running for the whole test.
+forward() { # target ports
+  ( while true; do kubectl -n "$ns" port-forward "$1" "$2" >/dev/null 2>&1; sleep 0.5; done ) &
+  PIDS+=($!)
+}
 metric() { # url name [label-filter] -> value
   { curl -s --max-time 3 "$1/metrics" || true; } | awk -v n="$2" -v f="${3:-}" 'index($1, n) == 1 && (f == "" || index($1, f)) {print $2; exit}'
 }
@@ -75,8 +81,8 @@ helm install t deploy/helm/telltale -n "$ns" --create-namespace -f "$E/values.ya
 # Resolver pods are ready only once they applied the controller's configuration.
 k wait --for=condition=Ready pod -l app.kubernetes.io/component=resolver --timeout 180s >/dev/null \
   || fail "resolver pods never became ready (joined and synced)"
-k port-forward svc/t-telltale-metrics 19153:9153 >/dev/null 2>&1 & PIDS+=($!)
-k port-forward svc/t-telltale-cluster 19443:9443 >/dev/null 2>&1 & PIDS+=($!)
+forward svc/t-telltale-metrics 19153:9153
+forward svc/t-telltale-cluster 19443:9443
 sleep 2
 up=""
 for _ in $(seq 30); do up=$(metric http://127.0.0.1:19153 telltale_cluster_peers 'state="up"'); [[ "$up" == 2 ]] && break; sleep 1; done
@@ -85,7 +91,7 @@ echo "ok (2 resolver pods joined)"
 
 echo "== 2. DNS through a resolver pod"
 pod=$(k get pods -l app.kubernetes.io/component=resolver -o jsonpath='{.items[0].metadata.name}')
-k port-forward "pod/$pod" 15353:5353 >/dev/null 2>&1 & PIDS+=($!)
+forward "pod/$pod" 15353:5353
 sleep 2
 ans=$(python3 - <<'PY'
 import socket, struct
@@ -118,7 +124,7 @@ EOF
 "$B" run -c "$E/pi.toml" > "$E/pi.log" 2>&1 & PIDS+=($!)
 seen=""
 for _ in $(seq 120); do seen=$(metric http://127.0.0.1:29599 telltale_cluster_peer_up 'site="k8s"'); [[ "$seen" == 1 ]] && break; sleep 0.5; done
-[[ "$seen" == 1 ]] || fail "the outside node doesn't see the controller"
+[[ "$seen" == 1 ]] || fail "the outside node doesn't see the controller ($(grep -i 'cluster' "$E/pi.log" | tail -2 | cut -c1-200 | tr '\n' ' '))"
 for _ in $(seq 30); do up=$(metric http://127.0.0.1:19153 telltale_cluster_peers 'state="up"'); [[ "$up" == 3 ]] && break; sleep 1; done
 [[ "$up" == 3 ]] || fail "the controller sees $up peers up, not 3"
 echo "ok"

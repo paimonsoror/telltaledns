@@ -636,6 +636,26 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - New: a small Git-over-HTTPS fetch (no Git binary), signature verification (SSH signatures via the existing crypto, GPG optional), and a webhook endpoint.
 - Builds on T5.2 (replication) and T5.4 (authority and elections); it is T5.12.
 
+**Implementation notes (T5.12, 2026-10-05):**
+- **Configuration:** the settings are `[cluster.git]` (`repo`, `ref`, `path`, `credentials_file`, `poll_secs`, `require_signed`, `allowed_signers_file`, `allow_rewind`, `max_bytes`, `webhook_secret_file`), node-local, rather than `[cluster.config] source = "git"`.
+- **Authority:**
+  - A Git source makes the published authority `gitops`, so the existing `409 gitops_managed` and promotion rules apply.
+  - A node with `[cluster.git]` counts as Git-managed (`config_source` reported as `gitops`).
+- **Pinning:**
+  - The manifest carries `source` (repo, ref, path, commit, author, time, subject, signer), and replicas store the pin.
+  - A promoted node whose `[cluster.git]` differs refuses to fetch and says so; changing the source means changing it on the primary.
+- **Transport:**
+  - `telltale-git` speaks protocol v2 over smart HTTP: `ls-refs`, a commits-only fetch for the history check, a blob-less fetch for the tree, then the one blob. It handles packfiles with deltas, with `miniz_oxide` the only new dependency.
+  - Plain `http://` is accepted only on loopback, for tests.
+  - Verified against github.com and against real `git upload-pack` in tests.
+- **First start:** before the first good commit, a Git primary publishes nothing, so a fresh primary never pushes an empty configuration. It serves the last version it applied.
+- **Alerts:** `TelltaleDNSGitCommitRefused` and `TelltaleDNSGitSourceFailing`. Metrics: `telltale_cluster_git_*` and `telltale_cluster_config_commit`.
+- **Deferred:**
+  - the direct-pull fallback;
+  - GPG signatures (SSH signatures only);
+  - the UI's "propose this change";
+  - the Helm chart reading the same `shared.toml` (use an Argo multi-source app meanwhile).
+
 ## ADR-050 — Network groups: groups match subnets, and groups are an analytics dimension (Proposed)
 **Context:** owner request 2026-10-05: categorize devices by VLAN (Management 192.168.1.0/24, IOT .2, AUX .3, LAB .5, SONOS .6, Surveillance .7, Trust .10) and see, per category, what traffic each kind of device makes.
 - **Today:** a subnet can only be matched by a `[[client]]` entry (`match = ["192.168.2.0/24"]`). That entry also *names* every device in it, so the query log would show "IOT" instead of each device.

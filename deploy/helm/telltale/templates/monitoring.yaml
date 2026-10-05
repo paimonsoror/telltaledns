@@ -103,6 +103,19 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: The cluster certificate on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days.
+        # REQ: CLU-003 (ADR-049) — the Git configuration source.
+        - alert: TelltaleDNSGitCommitRefused
+          expr: telltale_cluster_git_refused{job="{{ include "telltale.fullname" . }}-metrics"} == 1
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: "The newest Git commit was refused (invalid, unsigned, or rewound); the cluster stays on the last good commit. The Cluster page shows why."
+        - alert: TelltaleDNSGitSourceFailing
+          expr: telltale_cluster_git_failing{job="{{ include "telltale.fullname" . }}-metrics"} == 1
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: "The Git configuration source has been unreachable for 15 minutes; every node keeps serving the last commit."
 ---
 {{- end }}
 {{- if .Values.grafanaDashboard.enabled }}

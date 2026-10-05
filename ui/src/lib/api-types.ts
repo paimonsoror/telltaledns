@@ -501,6 +501,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/hooks/git": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Git push webhook.
+         * @description Point the repository's push webhook here (content type JSON, with the secret from
+         *     `[cluster.git] webhook_secret_file`): the primary checks the ref at once instead of at
+         *     the next poll. Authenticated by the `X-Hub-Signature-256` HMAC, not a session.
+         */
+        post: operations["git_hook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/lists": {
         parameters: {
             query?: never;
@@ -1178,6 +1200,8 @@ export interface components {
              */
             servfailPercent: number;
             site: string;
+            /** @description The Git commit of the configuration it serves (ADR-049). */
+            sourceCommit?: string | null;
             /** @description The node answering this request. */
             thisNode: boolean;
             /** @description Heard from within 15 s (always true for this node). */
@@ -1211,6 +1235,29 @@ export interface components {
             /** @description `inbound` (it connected to us) or `outbound`. */
             via: string;
         };
+        /** @description The cluster's configuration from Git (ADR-049): the commit in use and the last check. */
+        ClusterSource: {
+            author?: string | null;
+            /** @description When the primary last checked the ref (RFC 3339; on the primary only). */
+            checkedAt?: string | null;
+            /** @description The commit every node should be serving. */
+            commit?: string | null;
+            /** @description Commit time (RFC 3339). */
+            committedAt?: string | null;
+            /** @description Why the last check failed, or why the newest commit was refused. */
+            error?: string | null;
+            gitRef: string;
+            path: string;
+            /**
+             * @description The newest commit isn't acceptable (invalid, unsigned, rewound): the cluster stays on
+             *     `commit`.
+             */
+            refused: boolean;
+            repo: string;
+            /** @description The allowed signer who signed it (with `require_signed`). */
+            signedBy?: string | null;
+            subject?: string | null;
+        };
         /**
          * @description The cluster as this node sees it (REQ: CLU-008): every node with its health, sync, and
          *     serving state, a timeline, and a pass/fail check list.
@@ -1237,6 +1284,7 @@ export interface components {
             newestConfigSeq: number;
             /** @description This node first, then peers by site and ID. */
             nodes: components["schemas"]["ClusterNode"][];
+            source?: components["schemas"]["ClusterSource"] | null;
             /** @description The node answering this request. */
             thisNode?: string | null;
         };
@@ -2997,6 +3045,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_GroupInfo"];
+                };
+            };
+        };
+    };
+    git_hook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ref will be checked now. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

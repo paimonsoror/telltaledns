@@ -44,6 +44,9 @@ pub struct Hello {
     /// How this node's own configuration is managed: `gitops` or `file` (ADR-048).
     #[prost(string, tag = "11")]
     pub config_source: String,
+    /// The Git commit of the configuration it serves (ADR-049).
+    #[prost(string, tag = "12")]
+    pub source_commit: String,
 }
 
 /// A federated read (CLU-002, T5.6): `kind` names the call, `body` carries its arguments
@@ -106,6 +109,10 @@ pub struct Heartbeat {
     pub p90_us: u64,
     #[prost(uint64, tag = "10")]
     pub uptime_s: u64,
+    /// The Git commit of the configuration it serves (ADR-049), if the cluster's config
+    /// comes from Git.
+    #[prost(string, tag = "11")]
+    pub source_commit: String,
 }
 
 /// A signed cluster manifest (CLU-003, `crate::sync`): the primary sends it on connect and
@@ -185,6 +192,7 @@ mod tests {
     fn clu_010_frames_round_trip_in_pieces() {
         let hello = Frame {
             body: Some(Body::Hello(Hello {
+                source_commit: String::new(),
                 protocol: PROTOCOL,
                 cluster_id: "c".into(),
                 node_id: "n1".into(),
@@ -200,6 +208,7 @@ mod tests {
         };
         let hb = Frame {
             body: Some(Body::Heartbeat(Heartbeat {
+                source_commit: String::new(),
                 ts_ms: 1,
                 epoch: 3,
                 applied_seq: 9,
@@ -227,6 +236,7 @@ mod tests {
     fn clu_010_unknown_fields_are_ignored() {
         // A newer peer's Heartbeat with an extra field 99 still decodes.
         let mut body = Heartbeat {
+            source_commit: String::new(),
             ts_ms: 5,
             epoch: 1,
             applied_seq: 2,

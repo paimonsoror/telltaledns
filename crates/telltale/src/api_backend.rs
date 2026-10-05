@@ -447,6 +447,8 @@ impl Backend for ApiBackend {
         match &self.src.cluster {
             Some(c) => {
                 let mut v = crate::cluster::view(c);
+                // ADR-049 — where the configuration comes from, when it's Git.
+                v.source = crate::gitsource::view(&self.src.config.load(), c.is_primary());
                 let cfg = self.src.config.load_full();
                 // REQ: CLU-006 — settings in this node's file that the primary's replace.
                 if crate::replication::follows_primary(&cfg) {
@@ -492,6 +494,7 @@ impl Backend for ApiBackend {
                 authority: None,
                 conflicts: Vec::new(),
                 failover: None,
+                source: None,
             },
         }
     }
@@ -508,7 +511,7 @@ impl Backend for ApiBackend {
             .as_ref()
             .ok_or_else(|| Problem::unavailable("this node isn't in a cluster"))?;
         let cfg = self.src.config.load_full();
-        let gitops_source = cfg.cluster.config_source.as_str() == "gitops";
+        let gitops_source = crate::replication::gitops_capable(&cfg);
         crate::cluster::promote(c, gitops_source, req.emergency)
             .map_err(|e| Problem::new(telltale_api::problem::Code::Conflict, e))?;
         tracing::info!(by = %by, "promoted to cluster primary through the API");
@@ -1030,6 +1033,23 @@ impl Backend for ApiBackend {
 
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.list_forwards()
+    }
+
+    // REQ: CLU-003 (ADR-049) — a push webhook checks the Git source at once.
+    fn git_hook(&self, signature: Option<String>, body: Vec<u8>) -> Result<(), Problem> {
+        let cfg = self.src.config.load();
+        if cfg.cluster.git.is_none() {
+            return Err(Problem::not_found(
+                "this node has no Git configuration source",
+            ));
+        }
+        crate::gitsource::webhook_ok(&cfg, signature.as_deref(), &body).map_err(|e| {
+            Problem::new(Code::Unauthorized, e).hint(
+                "Set the webhook's secret to the contents of [cluster.git] webhook_secret_file.",
+            )
+        })?;
+        self.src.git_poke.notify_one();
+        Ok(())
     }
 
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {

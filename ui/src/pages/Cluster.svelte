@@ -100,7 +100,32 @@ telltale cluster join tt_join_…</pre>
         <dt>Nodes</dt><dd>{view.nodes.length} ({view.nodes.filter((n) => n.up).length} up)</dd>
         <dt>Configuration</dt><dd>version {num(view.newestConfigSeq)}</dd>
         <dt>Primary</dt><dd>{view.nodes.find((n) => n.role.includes('primary'))?.site ?? 'none'}</dd>
-        <dt>Configuration from</dt><dd>{view.authority === 'gitops' ? 'Git (only Git-managed nodes may publish it)' : 'the primary (its file and UI)'}</dd>
+        <dt>Configuration from</dt>
+        <dd>
+          {#if view.source}
+            <!-- REQ: CLU-003 — the Git repository, the commit in use, and the last check (ADR-049). -->
+            <span data-testid="cluster-source">
+              Git: <span class="mono small">{view.source.repo}</span> @ {view.source.gitRef}, <span class="mono small">{view.source.path}</span>
+            </span>
+            {#if view.source.commit}
+              <div class="small">
+                commit <span class="mono" title={view.source.commit}>{view.source.commit.slice(0, 12)}</span>
+                {#if view.source.subject}“{view.source.subject}”{/if}
+                <span class="muted">by {view.source.author}{#if view.source.committedAt}, {logDate(view.source.committedAt)}{/if}{#if view.source.signedBy}, signed by {view.source.signedBy}{/if}</span>
+              </div>
+            {:else}
+              <div class="small muted">no commit accepted yet: nothing is published until one is</div>
+            {/if}
+            {#if view.source.error}
+              <div class="notice {view.source.refused ? 'bad' : 'warn'} small" role="alert">
+                {view.source.refused ? 'Newest commit refused' : 'Repository check failed'}: {view.source.error}
+                <div class="muted">Every node keeps serving the commit above.</div>
+              </div>
+            {/if}
+          {:else}
+            {view.authority === 'gitops' ? 'Git (only Git-managed nodes may publish it)' : 'the primary (its file and UI)'}
+          {/if}
+        </dd>
         <!-- REQ: CLU-005 — how the cluster fails over (ADR-056). -->
         {#if view.failover}
           <dt>Failover</dt>
@@ -213,6 +238,7 @@ telltale cluster join tt_join_…</pre>
                 </td>
                 <td>
                   version {num(n.configSeq)}
+                  {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
                   <div class="small {n.configLag ? 'warn-text' : 'muted'}">
                     {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
                   </div>

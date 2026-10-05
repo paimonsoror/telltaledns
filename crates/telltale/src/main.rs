@@ -10,6 +10,7 @@ mod cluster;
 mod explain;
 mod federated;
 mod forward;
+mod gitsource;
 mod http;
 mod import;
 mod lists;

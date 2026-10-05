@@ -852,6 +852,32 @@ pub struct ClusterView {
     pub conflicts: Vec<ClusterConflict>,
     /// How the cluster fails over (ADR-056).
     pub failover: Option<ClusterFailover>,
+    /// The Git repository the configuration comes from, when it does (ADR-049).
+    pub source: Option<ClusterSource>,
+}
+
+/// The cluster's configuration from Git (ADR-049): the commit in use and the last check.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterSource {
+    pub repo: String,
+    pub git_ref: String,
+    pub path: String,
+    /// The commit every node should be serving.
+    pub commit: Option<String>,
+    pub author: Option<String>,
+    /// Commit time (RFC 3339).
+    pub committed_at: Option<String>,
+    pub subject: Option<String>,
+    /// The allowed signer who signed it (with `require_signed`).
+    pub signed_by: Option<String>,
+    /// When the primary last checked the ref (RFC 3339; on the primary only).
+    pub checked_at: Option<String>,
+    /// Why the last check failed, or why the newest commit was refused.
+    pub error: Option<String>,
+    /// The newest commit isn't acceptable (invalid, unsigned, rewound): the cluster stays on
+    /// `commit`.
+    pub refused: bool,
 }
 
 /// Automatic failover as this node sees it (ADR-056).
@@ -915,6 +941,8 @@ pub struct ClusterNode {
     pub witness: bool,
     /// The cluster protocol it speaks (CLU-010); nodes within one version work together.
     pub protocol: u32,
+    /// The Git commit of the configuration it serves (ADR-049).
+    pub source_commit: Option<String>,
     /// `primary` or `replica`.
     pub role: String,
     /// The node answering this request.

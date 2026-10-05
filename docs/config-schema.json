@@ -103,6 +103,7 @@
         "eligible": true,
         "ephemeral": false,
         "ephemeral_ttl_secs": 600,
+        "git": null,
         "init": null,
         "join_url": null,
         "listen": "0.0.0.0:8443",
@@ -687,6 +688,18 @@
           "default": 600,
           "minimum": 0
         },
+        "git": {
+          "description": "Take the cluster's shared configuration from a Git repository (ADR-049): the primary\nfetches it, validates it, and publishes it to every node. Set it on every node that\nmay become primary.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitSourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "init": {
           "description": "Create a cluster on first start when this node isn't in one (CLU-009; the Helm chart's\ncontroller). Same as `telltale cluster init`.",
           "anyOf": [
@@ -914,6 +927,91 @@
       "additionalProperties": false,
       "required": [
         "name"
+      ]
+    },
+    "GitSourceConfig": {
+      "description": "`[cluster.git]`: the cluster's configuration from a file in a Git repository (ADR-049).",
+      "type": "object",
+      "properties": {
+        "allow_rewind": {
+          "description": "Accept a commit that doesn't descend from the one in use (a force-push or rewind).",
+          "type": "boolean",
+          "default": false
+        },
+        "allowed_signers_file": {
+          "description": "`git`'s allowed-signers format: `<principal> ssh-ed25519 <key>` per line.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "credentials_file": {
+          "description": "A file with an access token (or `user:password`) for private repositories.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "max_bytes": {
+          "description": "Largest file accepted.",
+          "default": "1MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "path": {
+          "description": "The TelltaleDNS file with the shared settings, e.g. `telltale/shared.toml`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "poll_secs": {
+          "description": "How often to check the ref, in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "ref": {
+          "description": "Branch, tag, or commit ID.",
+          "type": "string",
+          "default": "main",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "repo": {
+          "description": "The repository's HTTPS URL, e.g. `https://github.com/me/homelab`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "require_signed": {
+          "description": "Accept only commits SSH-signed by a key in `allowed_signers_file`.",
+          "type": "boolean",
+          "default": false
+        },
+        "webhook_secret_file": {
+          "description": "A file with the secret for `POST /api/v1/hooks/git` (GitHub's `X-Hub-Signature-256`),\nwhich checks the ref at once instead of at the next poll.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "path"
       ]
     },
     "GroupConfig": {

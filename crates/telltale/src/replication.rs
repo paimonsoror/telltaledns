@@ -46,7 +46,7 @@ fn identity(cfg: &Config) -> Option<node::Identity> {
 
 /// The last manifest this node applied as a replica (kept after a promotion: a promoted node
 /// builds on it).
-fn last_applied(cfg: &Config) -> Option<ClusterManifest> {
+pub(crate) fn last_applied(cfg: &Config) -> Option<ClusterManifest> {
     let dir = node::dir_of(data_dir(cfg));
     serde_json::from_slice(&std::fs::read(dir.join(APPLIED)).ok()?).ok()
 }
@@ -77,8 +77,25 @@ pub(crate) fn effective(file: &Config) -> Config {
         return crate::managed::effective(file);
     };
     let base = last_applied(file);
-    let gitops_source =
-        id.meta.config_authority == "gitops" && file.cluster.config_source.as_str() == "gitops";
+    // REQ: CLU-003 (ADR-049) — a primary with a Git source uses the commit in use, else
+    // (before its first fetch) the last version the cluster published.
+    if file.cluster.git.is_some() && matches!(id.meta.role, Some(node::Role::Primary)) {
+        if let Some(shared) = crate::gitsource::shared(file) {
+            match telltale_config::shared::with_shared(file, &shared) {
+                Ok(c) => return c,
+                Err(e) => {
+                    error!("the Git commit in use doesn't merge with this node's settings: {e:?}");
+                }
+            }
+        }
+        if let Some(m) = &base
+            && let Ok(c) = merged(file, m)
+        {
+            return c;
+        }
+        return file.clone();
+    }
+    let gitops_source = id.meta.config_authority == "gitops" && gitops_capable(file);
     let m = match id.meta.role {
         Some(node::Role::Primary) if gitops_source => None,
         Some(node::Role::Primary) => base.map(|m| (m, true)),
@@ -118,6 +135,28 @@ fn merged(file: &Config, m: &ClusterManifest) -> Result<Config, String> {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ")
+    })
+}
+
+/// Whether this node's own configuration comes from Git: rendered from a repository (the Helm
+/// chart under Argo CD), or fetched from a `[cluster.git]` source (ADR-048, ADR-049).
+pub(crate) fn gitops_capable(cfg: &Config) -> bool {
+    cfg.cluster.config_source.as_str() == "gitops" || cfg.cluster.git.is_some()
+}
+
+/// The provenance of the configuration this primary publishes, from its Git source.
+fn git_source(cfg: &Config) -> Option<telltale_cluster::sync::SourceInfo> {
+    let g = cfg.cluster.git.as_ref()?;
+    let s = crate::gitsource::status(cfg)?;
+    Some(telltale_cluster::sync::SourceInfo {
+        repo: g.repo.to_string(),
+        git_ref: g.git_ref.to_string(),
+        path: g.path.to_string(),
+        commit: s.commit?,
+        author: s.author,
+        time: s.time,
+        subject: s.subject,
+        signed_by: s.signed_by,
     })
 }
 
@@ -190,7 +229,11 @@ pub(crate) fn start(
     reload: mpsc::Sender<oneshot::Sender<bool>>,
     stop: &watch::Receiver<bool>,
 ) {
-    cluster.set_config_source(sources.config.load().cluster.config_source.as_str());
+    cluster.set_config_source(if gitops_capable(&sources.config.load()) {
+        "gitops"
+    } else {
+        "file"
+    });
     tokio::spawn(serving_loop(
         Arc::clone(cluster),
         Arc::clone(sources),
@@ -370,6 +413,16 @@ async fn apply(
     if !m.failover.is_empty() {
         let _ = cluster.identity.save_failover(&m.failover);
     }
+    // ADR-049 — the Git source the cluster is pinned to, and the commit this node serves.
+    if let Some(s) = &m.source {
+        crate::gitsource::save_pin(&file, &s.repo, &s.git_ref, &s.path);
+    }
+    let commit = m
+        .source
+        .as_ref()
+        .map(|s| s.commit.clone())
+        .unwrap_or_default();
+    cluster.set_local(|l| l.source_commit = commit);
     let json = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
     write_atomic(&cdir.join(APPLIED), &json).map_err(|e| e.to_string())?;
     // The normal reload path: validate, swap, audit-free (the primary audited the change).
@@ -564,7 +617,15 @@ async fn publish_loop(
     let mut first = true;
     loop {
         // REQ: CLU-005 — in automatic failover, publish only while the lease holds (ADR-056).
-        if !cluster.may_publish() {
+        // ADR-049 — with a Git source, nothing is published before the first good commit.
+        let git_waiting = {
+            let c = sources.config.load();
+            c.cluster.git.is_some()
+                && crate::gitsource::status(&c)
+                    .and_then(|s| s.commit)
+                    .is_none()
+        };
+        if !cluster.may_publish() || git_waiting {
             tokio::select! {
                 r = stop.changed() => if r.is_err() || *stop.borrow() { return; },
                 () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
@@ -617,9 +678,17 @@ async fn publish_loop(
         let filter_version = filter.as_ref().map(|(f, _)| f.version);
         let nodes = cluster.identity.registry();
         let meta = cluster.identity.reload().meta;
-        let (authority, failover) = (meta.config_authority, meta.failover);
-        let meta_hash =
-            hash(&serde_json::to_vec(&(&nodes, &authority, &failover)).unwrap_or_default());
+        let (mut authority, failover) = (meta.config_authority, meta.failover);
+        // REQ: CLU-003 (ADR-049) — a Git source makes the cluster GitOps-managed, and every
+        // version names its commit.
+        let source = git_source(&cfg);
+        if source.is_some() {
+            "gitops".clone_into(&mut authority);
+            let _ = cluster.identity.save_authority("gitops");
+        }
+        let meta_hash = hash(
+            &serde_json::to_vec(&(&nodes, &authority, &failover, &source)).unwrap_or_default(),
+        );
         let new_epoch = epoch > last.epoch;
         let changed = new_epoch
             || config_hash != last.config
@@ -663,11 +732,20 @@ async fn publish_loop(
                 emergency,
                 failover,
                 schema: telltale_cluster::sync::SCHEMA,
+                source: source.clone(),
             };
             match Signed::sign(&m, &key) {
                 Ok(signed) => {
                     cluster.publish(signed, blobs);
-                    cluster.set_local(|l| l.applied_seq = seq);
+                    let commit = m
+                        .source
+                        .as_ref()
+                        .map(|s| s.commit.clone())
+                        .unwrap_or_default();
+                    cluster.set_local(|l| {
+                        l.applied_seq = seq;
+                        l.source_commit = commit;
+                    });
                     cluster.set_sync_status(|s| {
                         s.epoch = m.epoch;
                         s.seq = seq;

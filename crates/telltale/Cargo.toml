@@ -16,6 +16,9 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+http = "1.5.0"
+base64 = "0.22.1"
+telltale-git = { version = "0.1.0", path = "../telltale-git" }
 blake3 = "1.8.7"
 arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }

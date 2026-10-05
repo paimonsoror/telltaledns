@@ -63,6 +63,8 @@ pub(crate) struct Sources {
     pub(crate) cluster: Option<Arc<telltale_cluster::net::Cluster>>,
     /// Query-log shipping, both directions (CLU-007).
     pub(crate) ship: Arc<crate::ship::Stats>,
+    /// Wakes the Git source's poll at once (its webhook, ADR-049).
+    pub(crate) git_poke: Arc<tokio::sync::Notify>,
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
@@ -186,8 +188,51 @@ fn rss_bytes() -> Option<u64> {
 }
 
 /// REQ: CLU-001, CLU-008 — peers this node streams with, by state.
+/// REQ: CLU-003 (ADR-049) — the Git source, on the node that polls it.
+fn git_metrics(src: &Sources, w: &mut PromWriter) {
+    let cfg = src.config.load();
+    if cfg.cluster.git.is_none() {
+        return;
+    }
+    let s = crate::gitsource::status(&cfg).unwrap_or_default();
+    for (name, help, v) in [
+        (
+            "telltale_cluster_git_refused",
+            "1 when the newest commit was refused (invalid, unsigned, or rewound); the cluster stays on the last good one.",
+            u64::from(s.refused),
+        ),
+        (
+            "telltale_cluster_git_failing",
+            "1 when the last check of the repository failed (unreachable, auth, ...).",
+            u64::from(s.error.is_some() && !s.refused),
+        ),
+        (
+            "telltale_cluster_git_commit_timestamp_seconds",
+            "Commit time of the configuration in use.",
+            u64::try_from(s.time).unwrap_or(0),
+        ),
+        (
+            "telltale_cluster_git_checked_timestamp_seconds",
+            "When the repository was last checked.",
+            s.checked_ms / 1000,
+        ),
+    ] {
+        w.family(name, "gauge", help).sample(name, &[], v);
+    }
+}
+
 /// REQ: CLU-005 — role, epoch, and the election (ADR-056).
 fn election_metrics(c: &telltale_cluster::net::Cluster, w: &mut PromWriter) {
+    // ADR-049 — the Git commit this node serves (every node should show the same one).
+    let commit = c.local_state().source_commit;
+    if !commit.is_empty() {
+        w.family(
+            "telltale_cluster_config_commit",
+            "gauge",
+            "1 for the Git commit of the configuration this node serves.",
+        )
+        .sample("telltale_cluster_config_commit", &[("commit", &commit)], 1);
+    }
     let (_, epoch) = c.role();
     let fv = c.failover_view();
     for (name, help, v) in [
@@ -278,6 +323,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
         )
         .sample("telltale_cluster_config_seq", &[], local.applied_seq);
         election_metrics(c, w);
+        git_metrics(src, w);
         w.family(
             "telltale_cluster_behind_seconds",
             "gauge",
@@ -1041,6 +1087,7 @@ mod tests {
             masking: crate::masking::Detector::default(),
             cluster: None,
             ship: Arc::default(),
+            git_poke: Arc::default(),
             reload: tokio::sync::mpsc::channel(1).0,
             allowed: Vec::new(),
         }

@@ -349,6 +349,8 @@ pub struct Member {
     pub config_source: String,
     /// The cluster protocol it speaks (CLU-010).
     pub protocol: u32,
+    /// The Git commit of the configuration it serves (ADR-049).
+    pub source_commit: String,
 }
 
 impl Member {
@@ -362,6 +364,8 @@ impl Member {
 /// Values this node reports in its Hello and heartbeats.
 #[derive(Debug, Clone, Default)]
 pub struct LocalState {
+    /// The Git commit of the configuration this node serves (ADR-049).
+    pub source_commit: String,
     pub epoch: u64,
     pub applied_seq: u64,
     pub qps: u64,
@@ -1100,6 +1104,7 @@ impl Cluster {
             .clone();
         Frame {
             body: Some(Body::Hello(Hello {
+                source_commit: l.source_commit.clone(),
                 protocol: PROTOCOL,
                 cluster_id: m.cluster_id.clone(),
                 node_id: m.node_id.clone(),
@@ -1132,6 +1137,7 @@ impl Cluster {
                 });
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
+                source_commit: l.source_commit.clone(),
                 ts_ms: now_ms(),
                 epoch: l.epoch.max(self.role().1),
                 applied_seq: l.applied_seq,
@@ -1200,6 +1206,7 @@ impl Cluster {
                         behind_since_ms: prev.and_then(|p| p.behind_since_ms),
                         config_source: h.config_source,
                         protocol: h.protocol,
+                        source_commit: h.source_commit,
                     },
                 );
                 drop(members);
@@ -1237,6 +1244,7 @@ impl Cluster {
                     m.servfail_permille = hb.servfail_permille;
                     m.p90_us = hb.p90_us;
                     m.uptime_s = hb.uptime_s;
+                    m.source_commit = hb.source_commit;
                     if hb.echo_ms > 0 {
                         let rtt = now
                             .saturating_sub(hb.echo_ms)

@@ -90,6 +90,38 @@ fn cluster(cfg: &Config, r: &mut Report<'_>) {
     if c.ephemeral_ttl_secs < 60 {
         r.err("cluster.ephemeral_ttl_secs", "must be at least 60");
     }
+    // REQ: CLU-003 (ADR-049) — the Git config source.
+    if let Some(g) = &c.git {
+        let repo = g.repo.as_str();
+        let local_http = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+            .iter()
+            .any(|p| repo.starts_with(p));
+        if !repo.starts_with("https://") && !local_http {
+            r.err(
+                "cluster.git.repo",
+                "must be an https:// URL (plain http only on this host, for testing)",
+            );
+        }
+        let path = g.path.as_str();
+        if path.is_empty() || path.starts_with('/') || path.split('/').any(|p| p == "..") {
+            r.err(
+                "cluster.git.path",
+                "must be a file inside the repository, e.g. telltale/shared.toml",
+            );
+        }
+        if g.git_ref.as_str().is_empty() {
+            r.err("cluster.git.ref", "must name a branch, tag, or commit");
+        }
+        if g.poll_secs < 5 {
+            r.err("cluster.git.poll_secs", "must be at least 5");
+        }
+        if g.require_signed && g.allowed_signers_file.is_none() {
+            r.err(
+                "cluster.git.allowed_signers_file",
+                "require_signed needs the allowed signers",
+            );
+        }
+    }
     let Ok(addr) = cfg.cluster.listen.as_str().parse::<std::net::SocketAddr>() else {
         r.err(
             "cluster.listen",
