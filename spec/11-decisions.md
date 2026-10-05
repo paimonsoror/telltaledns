@@ -970,4 +970,4 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 
 **Consequences:**
 - Merging into an existing configuration is manual (both define `default`).
-- The importer showed that the first blocking snapshot waits for every list's first fetch, including retries: an unreachable adlist delays all blocking at first start. Tracked under T6.3 as an open item.
+- The importer's e2e showed that the first blocking snapshot waited for every list's first fetch, including retries, so an unreachable adlist delayed all blocking at first start. Fixed: the fetcher signals the compiler at most 10 s (`settle`) after the first update in a round, so lists that arrive together still compile once.

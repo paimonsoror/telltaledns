@@ -129,9 +129,6 @@ addr = "127.0.0.1:$port"
 listen = "127.0.0.1:$((port + 1000))"
 [telemetry.metrics]
 listen = "127.0.0.1:$((port + 2000))"
-# The test's lists.example URLs don't exist: don't wait through retries.
-[filter]
-fetch_retries = 0
 EOF
   "$B" run -c "$E/run.toml" -c "$t" > "$E/serve-$v.log" 2>&1 & P=$!
   d() { dig +time=2 +tries=2 -p "$port" @127.0.0.1 "$@"; }
@@ -139,7 +136,8 @@ EOF
   [ "$(d +short nas.lan A)" = 192.168.1.10 ] || fail "$v: nas.lan doesn't answer 192.168.1.10"
   [ "$(d +short nas.lan AAAA)" = fd00::10 ] || fail "$v: nas.lan AAAA"
   d tv.lan A | grep -q 'tv.lan.*300.*CNAME.*nas.lan' || fail "$v: tv.lan isn't a CNAME with TTL 300"
-  # Inline lists compile in the background.
+  # Inline lists compile in the background. The lists.example adlists don't exist and retry
+  # with backoff; they must not hold back the others (at most [filter] settle, 10 s).
   for _ in $(seq 60); do d denied.example A | grep -q 'EDE: 15' && break; sleep 0.5; done
   out=$(d denied.example A)
   echo "$out" | grep -q 'EDE: 15' || fail "$v: denied.example isn't blocked"

@@ -126,7 +126,18 @@ EOF
 TELLTALE_LOG=debug "$B" run -c "$E/pi.toml" > "$E/pi.log" 2>&1 & PIDS+=($!)
 seen=""
 for _ in $(seq 120); do seen=$(metric http://127.0.0.1:29599 telltale_cluster_peer_up 'site="k8s"'); [[ "$seen" == 1 ]] && break; sleep 0.5; done
-[[ "$seen" == 1 ]] || fail "the outside node doesn't see the controller: $(grep 'telltale_cluster' "$E/pi.log" | grep -viE 'upstream' | grep -iE 'error|fail|refused|dial|connect|tls|cert|reject|timed out' | tail -4 | cut -c1-260 | tr '\n' ' ') | primary_urls: $(grep -o '"primary_urls": \[[^]]*\]' "$E/pi/cluster/cluster.json" | tr -d '\n ')"
+if [[ "$seen" != 1 ]]; then
+  # Job logs need a token; annotations don't. Log lines carry no module target, so pick the
+  # cluster-related ones by content, one annotation each.
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    grep -viE 'upstream|setup token|list (updated|fetcher)|serving|listening' "$E/pi.log" \
+      | grep -iE 'cluster|peer|primary|stream|join|tls|cert|connect|refused|error|warn' \
+      | tail -8 | cut -c1-300 | while IFS= read -r l; do echo "::warning title=outside node log::$l"; done
+    echo "::warning title=outside node cluster.json::$(tr -d '\n ' < "$E/pi/cluster/cluster.json" | grep -o '"primary_urls":\[[^]]*\]')"
+    echo "::warning title=outside node metrics::$({ curl -s --max-time 3 http://127.0.0.1:29599/metrics || true; } | grep '^telltale_cluster' | tr '\n' ' ' | cut -c1-400)"
+  fi
+  fail "the outside node doesn't see the controller"
+fi
 for _ in $(seq 30); do up=$(metric http://127.0.0.1:19153 telltale_cluster_peers 'state="up"'); [[ "$up" == 3 ]] && break; sleep 1; done
 [[ "$up" == 3 ]] || fail "the controller sees $up peers up, not 3"
 echo "ok"

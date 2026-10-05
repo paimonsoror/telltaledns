@@ -106,7 +106,7 @@ The header lists what has no equivalent, by setting name (values, such as passwo
 - privacy level, web-server, and other Pi-hole-only settings. From v6, only settings marked as changed from their defaults are listed;
 - the `IP` blocking modes, entries switched off, and domain entries our regex engine can't run (backreferences and lookaround).
 
-Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`telltale run -c telltale.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to TelltaleDNS, or use a `recursive://` upstream. CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
+Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`telltale run -c telltale.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to TelltaleDNS (a built-in recursive resolver is on the post-1.0 list). CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
 
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).

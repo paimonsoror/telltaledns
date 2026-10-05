@@ -95,6 +95,10 @@ pub struct FetchSettings {
     pub retries: u8,
     /// First retry delay; each later one is 4× longer (±25% jitter, capped at 60 s).
     pub backoff: Duration,
+    /// How long a finished update waits for the rest of a refresh round before the compiler
+    /// is told: lists that arrive together compile once, and a slow or dead source delays
+    /// the others by at most this much (ADR-061).
+    pub settle: Duration,
 }
 
 impl FetchSettings {
@@ -104,6 +108,7 @@ impl FetchSettings {
             timeout: Duration::from_secs(u64::from(cfg.filter.fetch_timeout_secs)),
             retries: cfg.filter.fetch_retries,
             backoff: Duration::from_secs(2),
+            settle: Duration::from_secs(10),
         }
     }
 }
@@ -187,8 +192,7 @@ impl Fetcher {
             .insert(name.to_owned(), meta);
     }
 
-    /// Refreshes `specs` concurrently (at most `concurrency` at a time).
-    pub async fn refresh(self: &Arc<Self>, specs: &[ListSpec]) -> Vec<(String, Outcome)> {
+    fn spawn_refreshes(self: &Arc<Self>, specs: &[ListSpec]) -> JoinSet<(String, Outcome)> {
         let sem = Arc::new(Semaphore::new(self.settings.concurrency.max(1)));
         let mut set = JoinSet::new();
         for spec in specs.iter().cloned() {
@@ -199,6 +203,12 @@ impl Fetcher {
                 (spec.name, outcome)
             });
         }
+        set
+    }
+
+    /// Refreshes `specs` concurrently (at most `concurrency` at a time).
+    pub async fn refresh(self: &Arc<Self>, specs: &[ListSpec]) -> Vec<(String, Outcome)> {
+        let mut set = self.spawn_refreshes(specs);
         let mut out = Vec::with_capacity(specs.len());
         while let Some(res) = set.join_next().await {
             match res {
@@ -208,6 +218,46 @@ impl Fetcher {
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// Refreshes `specs` like [`Self::refresh`], bumping `changed` once stored content changed:
+    /// at the end of the round, or `settle` after the first update if other lists are still
+    /// downloading, so one unreachable source (retrying with backoff) doesn't hold back
+    /// blocking from the lists that did arrive.
+    async fn refresh_and_signal(
+        self: &Arc<Self>,
+        specs: &[ListSpec],
+        changed: &watch::Sender<u64>,
+    ) {
+        let mut set = self.spawn_refreshes(specs);
+        let mut pending: Option<tokio::time::Instant> = None;
+        loop {
+            let deadline = pending.map(|t| t + self.settings.settle);
+            let settled = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                next = set.join_next() => match next {
+                    None => break,
+                    Some(Ok((_, Outcome::Updated))) => {
+                        pending.get_or_insert_with(tokio::time::Instant::now);
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => warn!("list fetch task failed: {e}"),
+                },
+                () = settled => {
+                    debug!("lists updated; compiling without waiting for the rest of the round");
+                    changed.send_modify(|g| *g += 1);
+                    pending = None;
+                }
+            }
+        }
+        if pending.is_some() {
+            changed.send_modify(|g| *g += 1);
+        }
     }
 
     /// Fetches one list and records the result. Never removes a good stored copy.
@@ -382,10 +432,7 @@ impl Fetcher {
 
             let (due, next) = self.due(&list, unix_now());
             if !due.is_empty() {
-                let results = self.refresh(&due).await;
-                if results.iter().any(|(_, o)| *o == Outcome::Updated) {
-                    changed.send_modify(|g| *g += 1);
-                }
+                self.refresh_and_signal(&due, &changed).await;
                 continue;
             }
             // Wake at the next due time (re-checked at least hourly, in case the clock jumped).
@@ -394,12 +441,7 @@ impl Fetcher {
                 .min(Duration::from_secs(3600));
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
-                () = self.refresh_now.notified() => {
-                    let results = self.refresh(&list).await;
-                    if results.iter().any(|(_, o)| *o == Outcome::Updated) {
-                        changed.send_modify(|g| *g += 1);
-                    }
-                }
+                () = self.refresh_now.notified() => self.refresh_and_signal(&list, &changed).await,
                 r = specs.changed() => if r.is_err() { return },
             }
         }

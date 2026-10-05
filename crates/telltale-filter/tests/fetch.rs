@@ -184,6 +184,7 @@ fn settings() -> FetchSettings {
         timeout: Duration::from_secs(5),
         retries: 2,
         backoff: Duration::from_millis(10),
+        settle: Duration::from_secs(10),
     }
 }
 
@@ -527,6 +528,57 @@ async fn flt_004_file_and_inline_sources() {
         f.store().read_source("manual").unwrap(),
         b"||ads.example.com^\n@@||ok.example.com^\n"
     );
+}
+
+// REQ: FLT-004 — a slow or unreachable source doesn't hold back the lists that arrived: the
+// compiler is told `settle` after the first update, not at the end of the round.
+#[tokio::test]
+async fn flt_004_a_slow_list_does_not_delay_the_others() {
+    let srv = serve(
+        handler(|r, _| {
+            if r.path == "/slow" {
+                Reply {
+                    delay: Duration::from_secs(3),
+                    ..ok("slow.com\n")
+                }
+            } else {
+                ok("fast.com\n")
+            }
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(
+        tmp.path(),
+        FetchSettings {
+            settle: Duration::from_millis(200),
+            ..settings()
+        },
+        &[],
+    );
+    let specs = vec![
+        spec("fast", srv.url("http", "h", "/fast")),
+        spec("slow", srv.url("http", "h", "/slow")),
+    ];
+    let (_specs_tx, specs_rx) = watch::channel(Arc::new(specs));
+    let (changed_tx, mut changed_rx) = watch::channel(0u64);
+    let started = std::time::Instant::now();
+    let task = tokio::spawn(Arc::clone(&f).run(specs_rx, changed_tx));
+    tokio::time::timeout(Duration::from_secs(2), changed_rx.changed())
+        .await
+        .expect("signalled before the slow list finished")
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(f.store().read_source("fast").is_ok());
+    assert!(f.store().read_source("slow").is_err(), "still downloading");
+    // The slow list's arrival is signalled too.
+    tokio::time::timeout(Duration::from_secs(5), changed_rx.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(f.store().read_source("slow").is_ok());
+    task.abort();
 }
 
 #[tokio::test]

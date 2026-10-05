@@ -279,7 +279,7 @@ fn membership(rows: &[Row], item: &str) -> BTreeMap<i64, BTreeSet<i64>> {
 }
 
 /// One line of user text, safe inside a TOML comment or a name.
-fn one_line(s: &str) -> String {
+pub(crate) fn one_line(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect::<String>()
@@ -546,7 +546,7 @@ pub(crate) fn reverse_zones(cidr: &str) -> Result<Vec<String>, String> {
 }
 
 /// A list name (`[a-z0-9_-]`, at most 64) from free text.
-fn slug(s: &str, max: usize) -> String {
+pub(crate) fn slug(s: &str, max: usize) -> String {
     let mut out = String::new();
     for c in s.chars() {
         let c = c.to_ascii_lowercase();
@@ -560,7 +560,7 @@ fn slug(s: &str, max: usize) -> String {
     out.trim_end_matches('-').to_owned()
 }
 
-fn unique(name: &str, taken: &mut HashSet<String>) -> String {
+pub(crate) fn unique(name: &str, taken: &mut HashSet<String>) -> String {
     let mut n = name.to_owned();
     let mut i = 2;
     while !taken.insert(n.to_ascii_lowercase()) {
@@ -571,7 +571,7 @@ fn unique(name: &str, taken: &mut HashSet<String>) -> String {
 }
 
 /// A MAC in `aa:bb:cc:dd:ee:ff` form.
-fn mac(s: &str) -> Option<String> {
+pub(crate) fn mac(s: &str) -> Option<String> {
     let parts: Vec<&str> = s.split([':', '-']).collect();
     (parts.len() == 6
         && parts
@@ -719,7 +719,7 @@ impl<'a> Builder<'a> {
             );
             if local {
                 self.notes.push(format!(
-                    "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, or use a `recursive://` upstream instead."
+                    "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, which reaches it at the same address when they share a machine."
                 ));
             }
             members.push(name);
@@ -1288,7 +1288,7 @@ fn dhcp_host(h: &str) -> (Vec<String>, Option<String>) {
     ([m, ip].into_iter().flatten().collect(), host)
 }
 
-fn toml_array(items: &[String]) -> String {
+pub(crate) fn toml_array(items: &[String]) -> String {
     format!(
         "[{}]",
         items

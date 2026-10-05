@@ -47,6 +47,7 @@ async fn flt_001_real_lists_parse_cleanly() {
         timeout: Duration::from_secs(120),
         retries: 2,
         backoff: Duration::from_secs(2),
+        settle: Duration::from_secs(10),
     };
     let fetcher = Arc::new(Fetcher::new(
         Store::open(tmp.path()).unwrap(),
