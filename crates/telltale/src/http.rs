@@ -59,6 +59,8 @@ pub(crate) struct Sources {
     pub(crate) tail: Option<Arc<crate::tail::Tail>>,
     /// The device anomaly engine (OBS-013), unless disabled.
     pub(crate) anomalies: Option<Arc<crate::anomaly::Anomalies>>,
+    /// The machine this node runs on (T6.11), sampled every 15 s.
+    pub(crate) host: Arc<crate::host::HostMonitor>,
     /// Sign-in and the audit log, once the API listener has opened `state.db`.
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
     /// Masked-client-IP detector state (OPS-003).
@@ -364,6 +366,9 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
 pub(crate) fn render(src: &Sources) -> String {
     let mut w = PromWriter::new();
     render_process(&mut w, src);
+    if let Some(h) = src.host.latest() {
+        crate::host::render(&mut w, &h);
+    }
     w.queries(&src.metrics.snapshot());
     render_cache(&mut w, &src.cache);
     render_telemetry(&mut w, &src.pipeline.telemetry);
@@ -1120,6 +1125,7 @@ mod tests {
             rollups: None,
             tail: None,
             anomalies: None,
+            host: Arc::default(),
             auth: std::sync::OnceLock::new(),
             masking: crate::masking::Detector::default(),
             cluster: None,

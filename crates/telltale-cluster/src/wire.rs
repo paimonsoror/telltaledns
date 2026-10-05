@@ -122,6 +122,89 @@ pub struct Heartbeat {
     /// The fingerprint of the CA that issued its certificate (T5.4c).
     #[prost(string, tag = "13")]
     pub issuer_fp: String,
+    /// The machine it runs on, sampled every 15 s (T6.11). Absent from older nodes.
+    #[prost(message, optional, boxed, tag = "14")]
+    pub host: Option<Box<HostStats>>,
+}
+
+/// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and
+/// triage. Each value is optional: absent means the node couldn't read it (another OS, a
+/// locked-down container), never zero. Sizes are bytes; ratios are permille.
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct HostStats {
+    /// When it was sampled (the sender's clock, Unix ms).
+    #[prost(uint64, tag = "1")]
+    pub ts_ms: u64,
+    #[prost(uint64, optional, tag = "2")]
+    pub mem_total: Option<u64>,
+    /// `MemAvailable`: what can be used without swapping.
+    #[prost(uint64, optional, tag = "3")]
+    pub mem_available: Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub swap_total: Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub swap_free: Option<u64>,
+    /// The container's memory limit (cgroup), when it has one.
+    #[prost(uint64, optional, tag = "6")]
+    pub cgroup_mem_limit: Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub cgroup_mem_current: Option<u64>,
+    /// Processes the kernel killed in this cgroup for lack of memory, ever.
+    #[prost(uint64, optional, tag = "8")]
+    pub oom_kills: Option<u64>,
+    /// This process's resident memory.
+    #[prost(uint64, optional, tag = "9")]
+    pub process_rss: Option<u64>,
+    #[prost(uint32, optional, tag = "10")]
+    pub cpus: Option<u32>,
+    /// Load averages over 1, 5, and 15 minutes, times 1000.
+    #[prost(uint32, optional, tag = "11")]
+    pub load1_milli: Option<u32>,
+    #[prost(uint32, optional, tag = "12")]
+    pub load5_milli: Option<u32>,
+    #[prost(uint32, optional, tag = "13")]
+    pub load15_milli: Option<u32>,
+    /// Host CPU busy over the last sample interval.
+    #[prost(uint32, optional, tag = "14")]
+    pub cpu_permille: Option<u32>,
+    /// The container's CPU quota in thousandths of a core (`cpu.max`), when limited.
+    #[prost(uint32, optional, tag = "15")]
+    pub cgroup_cpu_quota_milli: Option<u32>,
+    /// Share of the last interval the container was throttled by its quota.
+    #[prost(uint32, optional, tag = "16")]
+    pub throttled_permille: Option<u32>,
+    /// The filesystem holding the data directory.
+    #[prost(uint64, optional, tag = "17")]
+    pub disk_total: Option<u64>,
+    #[prost(uint64, optional, tag = "18")]
+    pub disk_free: Option<u64>,
+    #[prost(uint64, optional, tag = "19")]
+    pub qlog_bytes: Option<u64>,
+    #[prost(uint64, optional, tag = "20")]
+    pub snapshot_bytes: Option<u64>,
+    /// Bytes this process wrote to storage per second over the last interval.
+    #[prost(uint64, optional, tag = "21")]
+    pub write_bytes_per_s: Option<u64>,
+    #[prost(uint64, optional, tag = "22")]
+    pub host_uptime_s: Option<u64>,
+    /// The hottest thermal zone, in thousandths of a degree Celsius.
+    #[prost(int32, optional, tag = "23")]
+    pub temp_millic: Option<i32>,
+    #[prost(string, tag = "24")]
+    pub os: String,
+    #[prost(string, tag = "25")]
+    pub kernel: String,
+    #[prost(string, tag = "26")]
+    pub arch: String,
+    #[prost(uint32, optional, tag = "27")]
+    pub open_fds: Option<u32>,
+    #[prost(uint32, optional, tag = "28")]
+    pub max_fds: Option<u32>,
+    #[prost(uint32, optional, tag = "29")]
+    pub threads: Option<u32>,
+    /// Sources that couldn't be read (e.g. `cgroup`, `thermal`), so "absent" can be explained.
+    #[prost(string, repeated, tag = "30")]
+    pub unavailable: Vec<String>,
 }
 
 /// A signed cluster manifest (CLU-003, `crate::sync`): the primary sends it on connect and

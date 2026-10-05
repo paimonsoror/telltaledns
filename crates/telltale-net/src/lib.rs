@@ -55,3 +55,18 @@ pub fn background_thread() {
 pub fn default_workers() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
+
+/// REQ: CLU-008 (T6.11) — the size and free space (for unprivileged users) of the filesystem
+/// holding `path`, in bytes: `(total, available)`. `None` off Linux or when it can't be read.
+/// Lives here because it needs a syscall, and only this crate may use `unsafe`.
+pub fn filesystem_space(path: &std::path::Path) -> Option<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        sys::statvfs(path).ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        None
+    }
+}

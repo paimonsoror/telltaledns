@@ -284,7 +284,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, and recent events. On a standalone node it says so.",
+    "description": "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), and recent events. On a standalone node it says so and still shows its machine.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},

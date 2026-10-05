@@ -251,10 +251,43 @@ const CERT_WARN_DAYS: u64 = 14;
 /// Lag tolerated before `in_sync` fails (a sync normally takes well under a second).
 const LAG_WARN_SECS: u64 = 30;
 
-#[allow(clippy::cast_precision_loss)] // per-mille and microseconds to display units
+/// REQ: CLU-008 (T6.11) — the machines nodes run on: low disk, memory pressure, heat, and
+/// clock drift, per node.
+fn host_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model::ClusterCheck {
+    let problems: Vec<String> = nodes
+        .iter()
+        .filter_map(|n| {
+            let w = &n.host.as_ref()?.latest.warnings;
+            (!w.is_empty()).then(|| format!("{}: {}", n.node_id, w.join(", ")))
+        })
+        .collect();
+    telltale_api::model::ClusterCheck {
+        id: "host_resources".into(),
+        ok: problems.is_empty(),
+        summary: if problems.is_empty() {
+            "The machines look fine (disk, memory, temperature, clocks)".into()
+        } else {
+            problems.join("; ")
+        },
+        fix: (!problems.is_empty()).then(|| {
+            concat!(
+                "Disk: shorten the query log's retention (`[telemetry.qlog] retention_days`, ",
+                "`retention_bytes`) or free space. Memory: raise the container's limit, or use ",
+                "fewer or smaller lists. Heat: check the Pi's cooling. Clock: make sure every ",
+                "node runs NTP (systemd-timesyncd, chrony)."
+            )
+            .to_owned()
+        }),
+    }
+}
+
 /// REQ: CLU-008 — the Cluster page's data.
+#[allow(clippy::cast_precision_loss)] // per-mille and microseconds to display units
 #[allow(clippy::too_many_lines)] // one view, field by field
-pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
+pub(crate) fn view(
+    c: &Cluster,
+    host: &crate::host::HostMonitor,
+) -> telltale_api::model::ClusterView {
     use telltale_api::model::{ClusterNode, ClusterView};
     let now = now_ms();
     let me = &c.identity.meta;
@@ -306,6 +339,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         uptime_seconds: local.uptime_s,
         cert_expires_at: Some(format_us(expires.saturating_mul(1_000_000))),
         config_source: Some(c.config_source()),
+        host: crate::host::report(host.latest(), &host.history(), None),
     }];
     let mut peers = c.members();
     peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
@@ -337,6 +371,11 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
             uptime_seconds: p.uptime_s,
             cert_expires_at: None,
             config_source: (!p.config_source.is_empty()).then(|| p.config_source.clone()),
+            host: crate::host::report(
+                p.host.clone(),
+                &c.host_history(&p.node_id),
+                p.clock_offset_ms,
+            ),
         });
     }
     let sync = c.sync_status();
@@ -344,6 +383,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     let mut checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
     let failover = failover_view(c, &nodes);
     checks.push(versions_check(&nodes));
+    checks.push(host_check(&nodes));
     // T5.4c (ADR-066) — a CA rotation in progress, and whom it waits for.
     if let Some(r) = telltale_cluster::rotation::current(&c.identity.reload()) {
         let waiting = if r.pending.is_empty() {
@@ -382,6 +422,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         conflicts: Vec::new(),
         failover: Some(failover),
         source: None,
+        host: None,
     }
 }
 

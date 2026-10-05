@@ -221,6 +221,20 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - Filling a test filesystem to under 10% free raises the alert.
     - A DNS benchmark with collection on stays within budget (`make bench-smoke`).
     - Docs and help panels are updated.
+  - *Built 2026-10-05, not yet ticked.*
+    - **Done:**
+      - the collector in `crates/telltale/src/host.rs`: `/proc`, `/sys`, cgroup v2/v1, and `statvfs` through `telltale_net::filesystem_space`;
+      - `HostStats` in heartbeats (tag 14, boxed, ignored by N−1), with a per-peer one-hour history and clock offset;
+      - `HostReport` on `GET /api/v1/cluster` (per node, and for a standalone node), plus the `host_resources` check;
+      - `telltale_host_*`, `telltale_cgroup_*` and `telltale_data_*` metrics;
+      - Helm alerts, tested with `deploy/helm/alerts-test.sh` (promtool, run in CI);
+      - Machines cards on the Cluster page;
+      - help topic, docs, and the MCP `cluster_status` description.
+    - **Checks:** workspace tests, clippy, the UI suite and bench-smoke all pass.
+    - **Measured cost:** about 0.6 MiB idle RSS (22.9 vs 22.3 MiB, five runs each, bench-fast build on the dev laptop).
+    - **Separately:** idle RSS without lists is now above the 20 MiB 1.0 gate on that build. That predates this task and should be revisited before the gate.
+    - **Remaining:** the live check of Pi and homelab values against `free` and `/proc/loadavg` (needs a rollout).
+    - **Deferred:** process restart counts (uptime shows restarts) and Grafana dashboard panels.
 - **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
 
 ## M7 — v1.x (post-1.0, priority order)

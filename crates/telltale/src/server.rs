@@ -565,6 +565,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         rollups: rollups.clone(),
         tail,
         anomalies: anomalies.clone(),
+        host: {
+            // REQ: CLU-008 (T6.11) — host resources, off the DNS path.
+            let h = Arc::new(crate::host::HostMonitor::default());
+            h.spawn(std::path::PathBuf::from(cfg.node.data_dir.as_str()));
+            h
+        },
         auth: std::sync::OnceLock::new(),
         masking: crate::masking::Detector::default(),
         cluster,

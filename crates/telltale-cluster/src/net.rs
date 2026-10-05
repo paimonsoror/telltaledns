@@ -355,6 +355,10 @@ pub struct Member {
     /// (hex fingerprint), from its heartbeats: CA rotation readiness (T5.4c).
     pub trust_fp: String,
     pub issuer_fp: String,
+    /// The machine it runs on, from its heartbeats (T6.11); absent from older nodes.
+    pub host: Option<crate::wire::HostStats>,
+    /// Its clock minus ours, estimated from heartbeat timestamps and the round-trip time.
+    pub clock_offset_ms: Option<i64>,
 }
 
 impl Member {
@@ -377,7 +381,12 @@ pub struct LocalState {
     pub servfail_permille: u32,
     pub p90_us: u64,
     pub uptime_s: u64,
+    /// The machine this node runs on (T6.11), refreshed by the binary's collector.
+    pub host: Option<crate::wire::HostStats>,
 }
+
+/// Host samples kept per peer: one hour at the collector's 15 s interval (T6.11).
+pub const HOST_HISTORY: usize = 240;
 
 /// Something that happened in the cluster, for the Cluster page's timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,6 +488,8 @@ pub struct Cluster {
     bootstrap: std::sync::OnceLock<BootstrapSecret>,
     /// When this process started (Unix ms), for expiring ephemeral members.
     started_ms: u64,
+    /// Each peer's recent host samples, oldest first (T6.11).
+    host_history: Mutex<HashMap<String, VecDeque<crate::wire::HostStats>>>,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -518,6 +529,7 @@ impl Cluster {
             sync: Mutex::new(SyncStatus::default()),
             local_changed: watch::Sender::new(0),
             events: Mutex::new(VecDeque::new()),
+            host_history: Mutex::new(HashMap::new()),
             behind_since: Mutex::new(None),
             role: watch::Sender::new((identity_role, identity_epoch)),
             config_source: Mutex::new("file".into()),
@@ -1095,6 +1107,16 @@ impl Cluster {
             .collect()
     }
 
+    /// A peer's recent host samples, oldest first (T6.11).
+    pub fn host_history(&self, node_id: &str) -> Vec<crate::wire::HostStats> {
+        self.host_history
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(node_id)
+            .map(|h| h.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Updates what this node reports (qps from telemetry, applied version from replication).
     pub fn set_local(&self, f: impl FnOnce(&mut LocalState)) {
         let mut l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1103,6 +1125,22 @@ impl Cluster {
         if (l.epoch, l.applied_seq) != before {
             self.local_changed.send_modify(|n| *n += 1);
         }
+    }
+
+    /// Appends a peer's host sample to its history, once per sample (heartbeats repeat it).
+    fn record_host(&self, node_id: &str, h: &crate::wire::HostStats) {
+        let mut all = self
+            .host_history
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let q = all.entry(node_id.to_owned()).or_default();
+        if q.back().is_some_and(|last| last.ts_ms == h.ts_ms) {
+            return;
+        }
+        if q.len() == HOST_HISTORY {
+            q.pop_front();
+        }
+        q.push_back(h.clone());
     }
 
     fn hello(&self) -> Frame {
@@ -1164,6 +1202,7 @@ impl Cluster {
                 servfail_permille: l.servfail_permille,
                 p90_us: l.p90_us,
                 uptime_s: l.uptime_s,
+                host: l.host.clone().map(Box::new),
             })),
         }
     }
@@ -1231,6 +1270,8 @@ impl Cluster {
                             .as_ref()
                             .map(|p| p.issuer_fp.clone())
                             .unwrap_or_default(),
+                        host: prev.as_ref().and_then(|p| p.host.clone()),
+                        clock_offset_ms: prev.as_ref().and_then(|p| p.clock_offset_ms),
                     },
                 );
                 drop(members);
@@ -1278,6 +1319,13 @@ impl Cluster {
                             .saturating_sub(hb.echo_ms)
                             .saturating_sub(u64::from(hb.echo_delay_ms));
                         m.rtt_ms = Some(u32::try_from(rtt).unwrap_or(u32::MAX));
+                        // T6.11 — its clock was at ts_ms about half a round trip ago.
+                        let theirs = i128::from(hb.ts_ms) + i128::from(rtt / 2);
+                        m.clock_offset_ms = i64::try_from(theirs - i128::from(now)).ok();
+                    }
+                    if let Some(h) = hb.host {
+                        self.record_host(id, &h);
+                        m.host = Some(*h);
                     }
                     if m.applied_seq >= newest {
                         m.behind_since_ms = None;

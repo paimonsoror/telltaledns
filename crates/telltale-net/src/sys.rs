@@ -512,6 +512,24 @@ fn write_pktinfo(buf: &mut CtrlBuf, local: LocalAddr) -> usize {
     }
 }
 
+/// `statvfs(2)`: `(total, available to unprivileged users)` in bytes (T6.11).
+#[allow(clippy::useless_conversion)] // the field widths differ between targets (armv7 is 32-bit)
+pub(crate) fn statvfs(path: &std::path::Path) -> io::Result<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    // SAFETY: `statvfs` is plain old data; the kernel fills it in, and all-zero is a valid value.
+    let mut st: libc::statvfs = unsafe { mem::zeroed() };
+    // SAFETY: `c` is a NUL-terminated path that lives for the call; `st` is a valid, writable
+    // `statvfs` the kernel writes into and nothing else aliases.
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &raw mut st) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let frsize = u64::from(st.f_frsize);
+    let (blocks, avail) = (u64::from(st.f_blocks), u64::from(st.f_bavail));
+    Ok((blocks.saturating_mul(frsize), avail.saturating_mul(frsize)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

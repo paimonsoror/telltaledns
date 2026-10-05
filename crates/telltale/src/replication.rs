@@ -834,6 +834,7 @@ async fn serving_loop(
         };
         let ready = sources.ready.load(std::sync::atomic::Ordering::Acquire);
         let uptime = sources.started.elapsed().as_secs();
+        let host = sources.host.latest();
         cluster.set_local(|l| {
             l.qps = total / 60;
             l.servfail_permille =
@@ -841,6 +842,7 @@ async fn serving_loop(
             l.p90_us = p90;
             l.ready = ready;
             l.uptime_s = uptime;
+            l.host = host;
         });
         tokio::select! {
             _ = stop.changed() => return,

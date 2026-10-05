@@ -14,6 +14,7 @@ mod explain;
 mod federated;
 mod forward;
 mod gitsource;
+mod host;
 mod http;
 mod import;
 mod lists;

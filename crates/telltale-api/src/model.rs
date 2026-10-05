@@ -916,6 +916,86 @@ pub struct ClusterView {
     pub failover: Option<ClusterFailover>,
     /// The Git repository the configuration comes from, when it does (ADR-049).
     pub source: Option<ClusterSource>,
+    /// A standalone node's own machine (T6.11); in a cluster, each node carries its own.
+    pub host: Option<HostReport>,
+}
+
+/// REQ: CLU-008 (T6.11) — the machine a node runs on: its latest sample, what looks wrong,
+/// and the last hour. Values the node couldn't read are absent (see `unavailable`).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HostReport {
+    pub latest: HostInfo,
+    /// Up to an hour of samples (every 15 s), oldest first.
+    pub history: Vec<HostPoint>,
+}
+
+/// One host sample, with sizes in bytes and shares in percent.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInfo {
+    /// When it was sampled (RFC 3339, the node's clock).
+    pub sampled_at: String,
+    pub os: Option<String>,
+    pub kernel: Option<String>,
+    pub arch: String,
+    pub host_uptime_seconds: Option<u64>,
+    pub cpus: Option<u32>,
+    pub load1: Option<f64>,
+    pub load5: Option<f64>,
+    pub load15: Option<f64>,
+    /// Host CPU busy over the last 15 s.
+    pub cpu_percent: Option<f64>,
+    pub mem_total_bytes: Option<u64>,
+    pub mem_available_bytes: Option<u64>,
+    /// `100 × (1 − available / total)`.
+    pub mem_used_percent: Option<f64>,
+    pub swap_total_bytes: Option<u64>,
+    pub swap_used_bytes: Option<u64>,
+    /// The container's (cgroup's) memory limit, when it has one.
+    pub cgroup_mem_limit_bytes: Option<u64>,
+    pub cgroup_mem_used_bytes: Option<u64>,
+    pub cgroup_mem_used_percent: Option<f64>,
+    /// Processes killed for lack of memory in this container, ever.
+    pub oom_kills: Option<u64>,
+    /// The container's CPU quota, in cores.
+    pub cgroup_cpu_quota_cores: Option<f64>,
+    /// Share of the last 15 s the container was throttled by its quota.
+    pub throttled_percent: Option<f64>,
+    /// The filesystem holding the data directory.
+    pub disk_total_bytes: Option<u64>,
+    pub disk_free_bytes: Option<u64>,
+    pub disk_used_percent: Option<f64>,
+    pub qlog_bytes: Option<u64>,
+    pub snapshot_bytes: Option<u64>,
+    /// What this process writes to storage (SD-card wear on a Pi).
+    pub write_bytes_per_second: Option<u64>,
+    pub process_rss_bytes: Option<u64>,
+    pub open_fds: Option<u32>,
+    pub max_fds: Option<u32>,
+    pub threads: Option<u32>,
+    /// The hottest thermal zone (on a Pi, the system-on-chip).
+    pub temperature_c: Option<f64>,
+    /// Its clock minus this node's, from heartbeats (peers only).
+    pub clock_offset_ms: Option<i64>,
+    /// Sources it couldn't read: `memory`, `load`, `cpu`, `process`, `cgroup`, `thermal`,
+    /// `disk`, `os`.
+    pub unavailable: Vec<String>,
+    /// What looks wrong, in plain words (low disk, memory pressure, heat, clock drift).
+    pub warnings: Vec<String>,
+}
+
+/// A point of the last hour, for trend lines.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HostPoint {
+    /// Unix seconds.
+    pub t: u64,
+    pub cpu_percent: Option<f64>,
+    pub mem_used_percent: Option<f64>,
+    pub load1: Option<f64>,
+    pub disk_used_percent: Option<f64>,
+    pub temperature_c: Option<f64>,
 }
 
 /// The cluster's configuration from Git (ADR-049): the commit in use and the last check.
@@ -1052,6 +1132,8 @@ pub struct ClusterNode {
     pub cert_expires_at: Option<String>,
     /// How the node's own configuration is managed: `gitops` or `file` (ADR-048).
     pub config_source: Option<String>,
+    /// The machine it runs on (T6.11); absent from older nodes and before the first sample.
+    pub host: Option<HostReport>,
 }
 
 /// A cluster event (joins, connections, published and applied versions, failures).

@@ -33,10 +33,11 @@ use crate::model::{
     ClusterConflict, ClusterEvent, ClusterFailover, ClusterInfo, ClusterNode, ClusterPeer,
     ClusterSource, ClusterView, ConfigChange, ExplainBlock, ExplainClient, ExplainFilter,
     ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo, ForwardInput,
-    GroupInfo, Hour, Items, LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName,
-    MaskedClients, NameMatch, PromoteRequest, QueryPage, QueryParams, QueryRow, RecordInput,
-    RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped, TailItem,
-    TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    GroupInfo, HostInfo, HostPoint, HostReport, Hour, Items, LatencyBy, LatencyParams, LatencyRow,
+    ListInfo, LocalName, MaskedClients, NameMatch, PromoteRequest, QueryPage, QueryParams,
+    QueryRow, RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo,
+    TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams,
+    UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -99,6 +100,7 @@ pub trait Backend: Send + Sync + 'static {
             conflicts: Vec::new(),
             failover: None,
             source: None,
+            host: None,
         }
     }
     /// Buckets with start in `[from_s, to_s)`, oldest first.
@@ -341,7 +343,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,

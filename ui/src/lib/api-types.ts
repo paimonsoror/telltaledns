@@ -1216,6 +1216,7 @@ export interface components {
             eligible: boolean;
             /** @description A Kubernetes resolver pod (CLU-009): dropped when no longer heard from. */
             ephemeral: boolean;
+            host?: components["schemas"]["HostReport"] | null;
             /** Format: int64 */
             lastSeenSecondsAgo: number;
             /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
@@ -1322,6 +1323,7 @@ export interface components {
             failover?: components["schemas"]["ClusterFailover"] | null;
             /** @description Every check passed. */
             healthy: boolean;
+            host?: components["schemas"]["HostReport"] | null;
             name?: string | null;
             /**
              * Format: int64
@@ -1522,6 +1524,136 @@ export interface components {
              * @description Queries from the group's devices over the last 24 hours.
              */
             queries24h: number;
+        };
+        /** @description One host sample, with sizes in bytes and shares in percent. */
+        HostInfo: {
+            arch: string;
+            /**
+             * Format: double
+             * @description The container's CPU quota, in cores.
+             */
+            cgroupCpuQuotaCores?: number | null;
+            /**
+             * Format: int64
+             * @description The container's (cgroup's) memory limit, when it has one.
+             */
+            cgroupMemLimitBytes?: number | null;
+            /** Format: int64 */
+            cgroupMemUsedBytes?: number | null;
+            /** Format: double */
+            cgroupMemUsedPercent?: number | null;
+            /**
+             * Format: int64
+             * @description Its clock minus this node's, from heartbeats (peers only).
+             */
+            clockOffsetMs?: number | null;
+            /**
+             * Format: double
+             * @description Host CPU busy over the last 15 s.
+             */
+            cpuPercent?: number | null;
+            /** Format: int32 */
+            cpus?: number | null;
+            /** Format: int64 */
+            diskFreeBytes?: number | null;
+            /**
+             * Format: int64
+             * @description The filesystem holding the data directory.
+             */
+            diskTotalBytes?: number | null;
+            /** Format: double */
+            diskUsedPercent?: number | null;
+            /** Format: int64 */
+            hostUptimeSeconds?: number | null;
+            kernel?: string | null;
+            /** Format: double */
+            load1?: number | null;
+            /** Format: double */
+            load15?: number | null;
+            /** Format: double */
+            load5?: number | null;
+            /** Format: int32 */
+            maxFds?: number | null;
+            /** Format: int64 */
+            memAvailableBytes?: number | null;
+            /** Format: int64 */
+            memTotalBytes?: number | null;
+            /**
+             * Format: double
+             * @description `100 × (1 − available / total)`.
+             */
+            memUsedPercent?: number | null;
+            /**
+             * Format: int64
+             * @description Processes killed for lack of memory in this container, ever.
+             */
+            oomKills?: number | null;
+            /** Format: int32 */
+            openFds?: number | null;
+            os?: string | null;
+            /** Format: int64 */
+            processRssBytes?: number | null;
+            /** Format: int64 */
+            qlogBytes?: number | null;
+            /** @description When it was sampled (RFC 3339, the node's clock). */
+            sampledAt: string;
+            /** Format: int64 */
+            snapshotBytes?: number | null;
+            /** Format: int64 */
+            swapTotalBytes?: number | null;
+            /** Format: int64 */
+            swapUsedBytes?: number | null;
+            /**
+             * Format: double
+             * @description The hottest thermal zone (on a Pi, the system-on-chip).
+             */
+            temperatureC?: number | null;
+            /** Format: int32 */
+            threads?: number | null;
+            /**
+             * Format: double
+             * @description Share of the last 15 s the container was throttled by its quota.
+             */
+            throttledPercent?: number | null;
+            /**
+             * @description Sources it couldn't read: `memory`, `load`, `cpu`, `process`, `cgroup`, `thermal`,
+             *     `disk`, `os`.
+             */
+            unavailable: string[];
+            /** @description What looks wrong, in plain words (low disk, memory pressure, heat, clock drift). */
+            warnings: string[];
+            /**
+             * Format: int64
+             * @description What this process writes to storage (SD-card wear on a Pi).
+             */
+            writeBytesPerSecond?: number | null;
+        };
+        /** @description A point of the last hour, for trend lines. */
+        HostPoint: {
+            /** Format: double */
+            cpuPercent?: number | null;
+            /** Format: double */
+            diskUsedPercent?: number | null;
+            /** Format: double */
+            load1?: number | null;
+            /** Format: double */
+            memUsedPercent?: number | null;
+            /**
+             * Format: int64
+             * @description Unix seconds.
+             */
+            t: number;
+            /** Format: double */
+            temperatureC?: number | null;
+        };
+        /**
+         * @description REQ: CLU-008 (T6.11) — the machine a node runs on: its latest sample, what looks wrong,
+         *     and the last hour. Values the node couldn't read are absent (see `unavailable`).
+         */
+        HostReport: {
+            /** @description Up to an hour of samples (every 15 s), oldest first. */
+            history: components["schemas"]["HostPoint"][];
+            latest: components["schemas"]["HostInfo"];
         };
         /**
          * @description Which hour a top-K or latency call reads.

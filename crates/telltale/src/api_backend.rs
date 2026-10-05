@@ -452,7 +452,7 @@ impl Backend for ApiBackend {
     fn cluster(&self) -> telltale_api::model::ClusterView {
         match &self.src.cluster {
             Some(c) => {
-                let mut v = crate::cluster::view(c);
+                let mut v = crate::cluster::view(c, &self.src.host);
                 // ADR-049 — where the configuration comes from, when it's Git.
                 v.source = crate::gitsource::view(&self.src.config.load(), c.is_primary());
                 let cfg = self.src.config.load_full();
@@ -501,6 +501,8 @@ impl Backend for ApiBackend {
                 conflicts: Vec::new(),
                 failover: None,
                 source: None,
+                // T6.11 — a standalone node still shows its machine.
+                host: crate::host::report(self.src.host.latest(), &self.src.host.history(), None),
             },
         }
     }

@@ -198,6 +198,9 @@ jobs:
         run: |
           helm lint deploy/helm/telltale --strict \
             --set prometheusRule.enabled=true --set serviceMonitor.enabled=true --set grafanaDashboard.enabled=true
+      # REQ: CLU-008 (T6.11) — the alert rules fire on bad values and stay quiet on good ones.
+      - name: Alert rules (promtool test rules)
+        run: bash deploy/helm/alerts-test.sh
       - name: Install kind
         if: matrix.tool == 'kind'
         uses: helm/kind-action@v1

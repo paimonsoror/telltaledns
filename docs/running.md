@@ -658,7 +658,7 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
 - **Counted** in `telltale_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
 - The trust anchors are the root's 2017 and 2024 keys, built in.
 
-## Clusters (in progress)
+## Clusters
 
 Nodes can form a cluster: the first node creates it and holds the cluster's certificate
 authority (it's the **primary**); others join with a token and then keep an encrypted,
@@ -954,8 +954,47 @@ Main metrics:
 | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
 | `telltale_udp_*`, `telltale_tcp_*` | listener counters |
 | `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
+| `telltale_host_*`, `telltale_cgroup_*`, `telltale_data_*`, `telltale_open_fds` | the machine it runs on: see [Host resources](#host-resources) |
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory. The per-upstream, per-list, and per-client series are built by the analytics thread from query events, off the query path.
+
+### Host resources
+Every node samples its machine every 15 seconds (off the DNS path, from `/proc`, `/sys`, and the cgroup files) and shows it on the **Cluster** page, one card per node, with the last hour as a line under each bar. A standalone node shows its own card there too. In a cluster, the samples travel in the nodes' heartbeats, so any node's page shows every machine.
+
+| What | Where it comes from | Metric |
+|---|---|---|
+| Memory: total, available, swap | `/proc/meminfo` | `telltale_host_memory_bytes{kind}` |
+| The container's memory limit and use, OOM kills | cgroup v2 (`memory.max`, `memory.current`, `memory.events`) or v1 | `telltale_cgroup_memory_bytes{kind}`, `telltale_cgroup_oom_kills_total` |
+| CPU busy, load average, cores | `/proc/stat`, `/proc/loadavg` | `telltale_host_cpu_busy_ratio`, `telltale_host_load{window}`, `telltale_host_cpus` |
+| The container's CPU quota, and how often it throttles | `cpu.max`, `cpu.stat` (v1: `cpu.cfs_*`) | `telltale_cgroup_cpu_quota_cores`, `telltale_cgroup_throttled_ratio` |
+| Free space where the data lives; query log and list sizes; write rate | `statvfs` of `data_dir`; `/proc/self/io` | `telltale_data_filesystem_bytes{kind}`, `telltale_data_bytes{kind}`, `telltale_write_bytes_per_second` |
+| Temperature (the hottest sensor; a Pi's SoC) | `/sys/class/thermal` | `telltale_host_temperature_celsius` |
+| Open files against the limit, threads | `/proc/self` | `telltale_open_fds`, `telltale_max_fds`, `telltale_threads` |
+| OS, kernel, architecture, machine uptime | `/etc/os-release`, `/proc` | `telltale_host_info{os,kernel,arch}`, `telltale_host_uptime_seconds` |
+| Clock offset between nodes | heartbeat timestamps and round-trip time | (Cluster page) |
+
+The card says what looks wrong, and the Cluster page's `host_resources` check turns red with it:
+- the data disk 90% full or more;
+- the host's memory, or the container's limit, 90% used or more;
+- an out-of-memory kill in the last hour;
+- 80 °C or more;
+- a clock 2 s or more away from this node's.
+
+With `prometheusRule.enabled`, the chart adds matching alerts:
+- `TelltaleDNSDataDiskLow` (under 10% free for 10 minutes);
+- `TelltaleDNSMemoryPressure` (over 90% of the limit);
+- `TelltaleDNSOutOfMemoryKill`;
+- `TelltaleDNSCpuThrottled` (over 25% of periods);
+- `TelltaleDNSRunningHot`.
+
+`deploy/helm/alerts-test.sh` checks them with `promtool`.
+
+**What a node can't read is left out, not shown as zero:**
+- the `FROM scratch` image has no `/etc/os-release`;
+- most PCs and VMs have no temperature sensor;
+- outside a container there's no cgroup limit.
+
+The card lists what's unavailable. Older nodes in a mixed-version cluster simply show no card.
 
 **Grafana:** import `deploy/grafana/telltale-dashboard.json` (traffic by status, answer-time percentiles, where time goes, upstream latency/share/failures/breakers, blocks by list and group, cache, top clients, and the health of TelltaleDNS itself). Pick the Prometheus data source, job, and instance at the top.
 

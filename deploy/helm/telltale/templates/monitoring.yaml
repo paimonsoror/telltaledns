@@ -116,6 +116,36 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "The Git configuration source has been unreachable for 15 minutes; every node keeps serving the last commit."
+        # REQ: CLU-008 (T6.11) — the machine a node runs on. Same thresholds as the Cluster page.
+        - alert: TelltaleDNSDataDiskLow
+          expr: telltale_data_filesystem_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="free"} / ignoring(kind) telltale_data_filesystem_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="total"} < 0.10
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Under 10% free on {{ "{{" }} $labels.instance {{ "}}" }}'s data disk; when it fills, the query log stops recording (DNS keeps answering). Shorten [telemetry.qlog] retention or add space."
+        - alert: TelltaleDNSMemoryPressure
+          expr: telltale_cgroup_memory_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="current"} / ignoring(kind) telltale_cgroup_memory_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="limit"} > 0.90
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} uses over 90% of its memory limit; a list compile could get it killed. Raise resources.limits.memory or use fewer lists."
+        - alert: TelltaleDNSOutOfMemoryKill
+          expr: increase(telltale_cgroup_oom_kills_total{job="{{ include "telltale.fullname" . }}-metrics"}[1h]) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "The kernel killed a process in {{ "{{" }} $labels.instance {{ "}}" }}'s container for lack of memory in the last hour."
+        - alert: TelltaleDNSCpuThrottled
+          expr: telltale_cgroup_throttled_ratio{job="{{ include "telltale.fullname" . }}-metrics"} > 0.25
+          for: 15m
+          labels: { severity: info }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} is throttled by its CPU limit in over 25% of periods; answers may slow down. Raise resources.limits.cpu."
+        - alert: TelltaleDNSRunningHot
+          expr: telltale_host_temperature_celsius{job="{{ include "telltale.fullname" . }}-metrics"} >= 80
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} has been at 80 °C or more for 10 minutes; check its cooling."
 ---
 {{- end }}
 {{- if .Values.grafanaDashboard.enabled }}

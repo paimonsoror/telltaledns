@@ -323,7 +323,17 @@
       "when": "You run TelltaleDNS on more than one machine (a Pi and Kubernetes, say) and hand out both as DNS servers.",
       "example": "Two nodes: the k8s pod is the primary (config from GitOps), the Pi follows it; both show version 12, in sync, ready.",
       "caution": "Change configuration on the primary. Each node keeps its own listeners, sign-in, query-log retention, and cache size.",
-      "docs": "clusters-in-progress"
+      "docs": "clusters"
+    },
+    {
+      "id": "host-resources",
+      "title": "The machines your nodes run on",
+      "term": "Host resources",
+      "summary": "Each node reports its machine every 15 seconds: memory (and its container's limit), CPU and load, free space where its data lives, temperature, and its process limits. Bars turn amber, then red, as a resource runs low, and the line under each bar shows the last hour.",
+      "when": "A node feels slow, restarts, or stops answering: check here first for a full disk, memory pressure, a CPU limit that throttles it, or a hot Pi.",
+      "example": "pi: data disk 93% full (query log 6.1 GB), 58 °C. Fix: shorten the query log's retention_days, or move the data to a bigger disk.",
+      "caution": "A container sees its own limits: 'container limit' is what can kill TelltaleDNS, not the host's total. Values a node can't read (a minimal image has no OS name; many machines have no temperature sensor) are left out, not shown as zero.",
+      "docs": "host-resources"
     },
     {
       "id": "updates",

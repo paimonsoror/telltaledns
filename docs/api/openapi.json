@@ -3040,6 +3040,17 @@
             "type": "boolean",
             "description": "A Kubernetes resolver pod (CLU-009): dropped when no longer heard from."
           },
+          "host": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostReport",
+                "description": "The machine it runs on (T6.11); absent from older nodes and before the first sample."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lastSeenSecondsAgo": {
             "type": "integer",
             "format": "int64",
@@ -3306,6 +3317,17 @@
           "healthy": {
             "type": "boolean",
             "description": "Every check passed."
+          },
+          "host": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/HostReport",
+                "description": "A standalone node's own machine (T6.11); in a cluster, each node carries its own."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": [
@@ -3893,6 +3915,352 @@
             "format": "int64",
             "description": "Queries from the group's devices over the last 24 hours.",
             "minimum": 0
+          }
+        }
+      },
+      "HostInfo": {
+        "type": "object",
+        "description": "One host sample, with sizes in bytes and shares in percent.",
+        "required": [
+          "sampledAt",
+          "arch",
+          "unavailable",
+          "warnings"
+        ],
+        "properties": {
+          "arch": {
+            "type": "string"
+          },
+          "cgroupCpuQuotaCores": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The container's CPU quota, in cores."
+          },
+          "cgroupMemLimitBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The container's (cgroup's) memory limit, when it has one.",
+            "minimum": 0
+          },
+          "cgroupMemUsedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "cgroupMemUsedPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "clockOffsetMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Its clock minus this node's, from heartbeats (peers only)."
+          },
+          "cpuPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Host CPU busy over the last 15 s."
+          },
+          "cpus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "diskFreeBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "diskTotalBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The filesystem holding the data directory.",
+            "minimum": 0
+          },
+          "diskUsedPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "hostUptimeSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "kernel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "load1": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "load15": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "load5": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "maxFds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "memAvailableBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "memTotalBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "memUsedPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`100 × (1 − available / total)`."
+          },
+          "oomKills": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Processes killed for lack of memory in this container, ever.",
+            "minimum": 0
+          },
+          "openFds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "os": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "processRssBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "qlogBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "sampledAt": {
+            "type": "string",
+            "description": "When it was sampled (RFC 3339, the node's clock)."
+          },
+          "snapshotBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "swapTotalBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "swapUsedBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "temperatureC": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The hottest thermal zone (on a Pi, the system-on-chip)."
+          },
+          "threads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "throttledPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Share of the last 15 s the container was throttled by its quota."
+          },
+          "unavailable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sources it couldn't read: `memory`, `load`, `cpu`, `process`, `cgroup`, `thermal`,\n`disk`, `os`."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What looks wrong, in plain words (low disk, memory pressure, heat, clock drift)."
+          },
+          "writeBytesPerSecond": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What this process writes to storage (SD-card wear on a Pi).",
+            "minimum": 0
+          }
+        }
+      },
+      "HostPoint": {
+        "type": "object",
+        "description": "A point of the last hour, for trend lines.",
+        "required": [
+          "t"
+        ],
+        "properties": {
+          "cpuPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "diskUsedPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "load1": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "memUsedPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "t": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds.",
+            "minimum": 0
+          },
+          "temperatureC": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "HostReport": {
+        "type": "object",
+        "description": "REQ: CLU-008 (T6.11) — the machine a node runs on: its latest sample, what looks wrong,\nand the last hour. Values the node couldn't read are absent (see `unavailable`).",
+        "required": [
+          "latest",
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostPoint"
+            },
+            "description": "Up to an hour of samples (every 15 s), oldest first."
+          },
+          "latest": {
+            "$ref": "#/components/schemas/HostInfo"
           }
         }
       },

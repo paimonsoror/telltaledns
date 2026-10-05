@@ -8,6 +8,7 @@
   import { duration, ms, num, pct, logTime, logDate } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import HostCard from '../lib/components/HostCard.svelte';
 
   let view = $state<S['ClusterView'] | null>(null);
   let error = $state<unknown>(null);
@@ -93,6 +94,13 @@ telltale cluster token create        # then, on the other node:
 telltale cluster join tt_join_…</pre>
       <p class="muted small">Run these as the user TelltaleDNS runs as, then restart it. See the help for what's shared and what stays per node.</p>
     </section>
+    {#if view.host}
+      <!-- REQ: CLU-008 (T6.11) — a standalone node still shows its machine. -->
+      <section class="machines">
+        <h2>This machine<HelpButton id="host-resources" /></h2>
+        <div class="host-grid"><HostCard title="This node" host={view.host} /></div>
+      </section>
+    {/if}
   {:else if view}
     <section class="card summary">
       <dl class="facts">
@@ -279,6 +287,19 @@ telltale cluster join tt_join_…</pre>
       {/if}
     </section>
 
+    <!-- REQ: CLU-008 (T6.11) — the machines nodes run on (pods only when their site is open). -->
+    {@const machines = view.nodes.filter((n) => n.host && (!n.ephemeral || openSites.includes(n.site)))}
+    {#if machines.length}
+      <section class="machines" data-testid="cluster-machines">
+        <h2>Machines<HelpButton id="host-resources" /></h2>
+        <div class="host-grid">
+          {#each machines as n (n.nodeId)}
+            {#if n.host}<HostCard title={n.site} sub={`${n.thisNode ? 'this node' : n.role} · ${shortId(n.nodeId)}`} host={n.host} />{/if}
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     <section class="card">
       <h2>Events</h2>
       {#if view.events.length === 0}
@@ -366,6 +387,14 @@ telltale cluster join tt_join_…</pre>
     padding-left: 18px;
     display: grid;
     gap: 6px;
+  }
+  .machines h2 {
+    margin: 4px 0 12px;
+  }
+  .host-grid {
+    display: grid;
+    gap: var(--gap);
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   }
   pre {
     overflow-x: auto;

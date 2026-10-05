@@ -1,0 +1,87 @@
+# REQ: CLU-008 (T6.11) — host-resource alerts, run by deploy/helm/alerts-test.sh with
+# `promtool test rules` against the rules the chart renders (release "telltale").
+rule_files: [rules.yml]
+evaluation_interval: 1m
+
+tests:
+  # The data disk: 5% free fires after 10 minutes; 50% free on another node doesn't.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="free"}'
+        values: "5x20"
+      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="total"}'
+        values: "100x20"
+      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pod",kind="free"}'
+        values: "50x20"
+      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pod",kind="total"}'
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TelltaleDNSDataDiskLow
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TelltaleDNSDataDiskLow
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi }
+            exp_annotations:
+              summary: "Under 10% free on pi's data disk; when it fills, the query log stops recording (DNS keeps answering). Shorten [telemetry.qlog] retention or add space."
+
+  # Memory: 95% of the container limit fires; 50% doesn't.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="pod",kind="current"}'
+        values: "95x20"
+      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="pod",kind="limit"}'
+        values: "100x20"
+      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="calm",kind="current"}'
+        values: "50x20"
+      - series: 'telltale_cgroup_memory_bytes{job="telltale-metrics",instance="calm",kind="limit"}'
+        values: "100x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TelltaleDNSMemoryPressure
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pod }
+            exp_annotations:
+              summary: "pod uses over 90% of its memory limit; a list compile could get it killed. Raise resources.limits.memory or use fewer lists."
+
+  # An OOM kill within the hour fires at once; a steady counter doesn't.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_cgroup_oom_kills_total{job="telltale-metrics",instance="pod"}'
+        values: "0x10 1x10"
+      - series: 'telltale_cgroup_oom_kills_total{job="telltale-metrics",instance="calm"}'
+        values: "3x20"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TelltaleDNSOutOfMemoryKill
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TelltaleDNSOutOfMemoryKill
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pod }
+            exp_annotations:
+              summary: "The kernel killed a process in pod's container for lack of memory in the last hour."
+
+  # Throttling over 25% for 15 minutes; heat at 80 °C for 10 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_cgroup_throttled_ratio{job="telltale-metrics",instance="pod"}'
+        values: "0.4x30"
+      - series: 'telltale_host_temperature_celsius{job="telltale-metrics",instance="pi"}'
+        values: "82x30"
+      - series: 'telltale_host_temperature_celsius{job="telltale-metrics",instance="cool"}'
+        values: "55x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: TelltaleDNSCpuThrottled
+        exp_alerts:
+          - exp_labels: { severity: info, job: telltale-metrics, instance: pod }
+            exp_annotations:
+              summary: "pod is throttled by its CPU limit in over 25% of periods; answers may slow down. Raise resources.limits.cpu."
+      - eval_time: 20m
+        alertname: TelltaleDNSRunningHot
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi }
+            exp_annotations:
+              summary: "pi has been at 80 °C or more for 10 minutes; check its cooling."
