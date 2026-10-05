@@ -472,6 +472,10 @@ struct Published {
     /// registry and the config authority): a change there is a new version too.
     #[serde(default)]
     meta: String,
+    /// The version this epoch continued from (ADR-051), carried by every manifest of the
+    /// epoch: peers only see the newest, and an old primary needs it to find its orphans.
+    #[serde(default)]
+    base: Option<(u64, u64)>,
 }
 
 /// The newest filter snapshot as replicated blobs (its own manifest included).
@@ -591,6 +595,8 @@ async fn publish_loop(
             let base = inherited
                 .as_ref()
                 .map_or((last.epoch, last.seq), |m| (m.epoch, m.seq));
+            // The epoch's base: set by its first manifest, then carried by every later one.
+            let epoch_base = if new_epoch { Some(base) } else { last.base };
             let seq = if changed {
                 last.seq.max(base.1) + 1
             } else {
@@ -619,7 +625,7 @@ async fn publish_loop(
                 filter: filter.map(|(f, _)| f),
                 nodes,
                 authority,
-                base: new_epoch.then_some(base),
+                base: epoch_base,
                 emergency,
             };
             match Signed::sign(&m, &key) {
@@ -657,6 +663,7 @@ async fn publish_loop(
                         filter: filter_version,
                         created_ms: now,
                         meta: meta_hash,
+                        base: epoch_base,
                     };
                     if let Ok(b) = serde_json::to_vec(&last)
                         && let Err(e) = write_atomic(&state_path, &b)

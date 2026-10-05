@@ -14,12 +14,20 @@ B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P_PID= R_PID=
 cleanup() {
-  [ -n "$P_PID" ] && kill "$P_PID" 2>/dev/null || true
-  [ -n "$R_PID" ] && kill "$R_PID" 2>/dev/null || true
+  # Wait for both to exit: the listeners use SO_REUSEPORT, so a node still draining would
+  # share its ports with the next run's (flaked locally when runs followed each other).
+  [ -n "$P_PID" ] && kill "$P_PID" 2>/dev/null && wait "$P_PID" 2>/dev/null || true
+  [ -n "$R_PID" ] && kill "$R_PID" 2>/dev/null && wait "$R_PID" 2>/dev/null || true
   [ "${KEEP:-}" = 1 ] || rm -rf "$E"
 }
 trap cleanup EXIT
-fail() { echo "FAIL: $*"; echo "--- primary log"; tail -30 "$E/p.log" || true; echo "--- replica log"; tail -30 "$E/r.log" || true; exit 1; }
+fail() {
+  echo "FAIL: $*"
+  echo "--- primary log"; tail -30 "$E/p.log" || true
+  echo "--- replica log"; tail -30 "$E/r.log" || true
+  if [ "${KEEP:-}" = 1 ]; then echo "logs kept in $E"; fi
+  exit 1
+}
 
 node_config() { # name dns-port api-port metrics-port cluster-port record list-rule
   cat <<EOF
