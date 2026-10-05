@@ -138,7 +138,12 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *Entries are re-keyed for the new process's hash seed, aged by the downtime, and only those still servable are kept. A dump from different upstreams or routes (a config fingerprint) is refused. The file is removed once loaded.*
   - *Tests: dump and reload across seeds, expiry, foreign fingerprint, and garbage input. A live restart's first query was a cache hit.*
   - *bench-smoke: cache-hot 139.7k qps, inside the 112–166k range of earlier runs; the hit path is untouched.*
-- [ ] **T6.3 Pi-hole importer (v5 + v6 Teleporter).** *(API-007)*
+- [x] **T6.3 Pi-hole importer (v5 + v6 Teleporter).** *(API-007)* *Done 2026-10-05 (ADR-061):*
+  - *`telltale import pihole PATH [-o FILE]` reads a v6 zip, a v5 tar.gz, a directory, or a `gravity.db` (zip/tar.gz readers on `miniz_oxide`; SQLite via `rusqlite`, both already in the tree).*
+  - *It maps upstreams, conditional forwarding (domain plus reverse zones, with an NTA), local DNS and CNAME records, adlists (v6 allowlists too), exact and regex domains (per set of groups), groups (exact list sets; disabled groups get none), clients, DHCP reservations as named devices, DNSSEC, the rate limit, and the blocking mode.*
+  - *The report names every unmapped setting: v6 `### CHANGED` keys, v5 keys. Values are never copied.*
+  - *Tests: unit tests on both formats; `deploy/pihole-import-e2e.sh` in CI exports from the official v6 (FTL 6.7.1) and v5 (5.18.3) images and checks the served answers.*
+  - *Open: an UI/API import (with T6.7 restore); the first blocking snapshot waits for every list's first fetch, so a dead adlist URL delays all blocking at first start.*
 - [ ] **T6.4 Technitium importer.** Zones (as local names and routes), records, forwarders/conditional forwarders, block and allow lists, with a plain-language report of what was imported and what has no equivalent. *(API-007, API-011)* *Partial 2026-10-04: `telltale import zone FILE [--origin] [-o]` (RFC 1035 zone files incl. Technitium exports: $ORIGIN/$TTL, parentheses, relative names, A/AAAA/CNAME/PTR/TXT/MX/SRV; SOA/NS and unsupported types reported; output validated as config); used to move the owner's `sororlab.dev` zone. ADR-041 (Proposed). Open: forwarders and conditional forwarders, block/allow lists, reading from the Technitium API directly.*
 - [ ] **T6.7 Backup/restore archive.** *(API-007)*
 - [ ] **T6.5 Agent-ready API hardening:** LLM-grade OpenAPI descriptions, dry-run + impact estimates on all mutations, idempotency keys, agent tokens/scopes, audit attribution, kill switch. *(AGT-001..005, AGT-009)* *AC:* every mutation has a dry-run test; OpenAPI lint (spectral) passes the description rules.
