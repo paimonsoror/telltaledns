@@ -299,6 +299,12 @@ for _ in $(seq 50); do [ "$(q 25301 c.p.test)" != 10.0.0.1 ] && break; sleep 0.1
 ls "$E/p/cluster/conflicts/" 2>/dev/null | grep -q '^1-.*[0-9]\.json$' || {
   echo "conflicts dir: $(ls -la "$E/p/cluster/conflicts/" 2>&1 | tr '\n' ' ')"
   grep -iE 'conflict|stepping down|epoch|orphan' "$E/p3.log" | tail -15
+  # Annotations are public (job logs aren't): what each side did, for the next failure.
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::warning title=old primary (p3)::$(grep -iE 'cluster|applied|sync|manifest|published|stepping|orphan|conflict|epoch|error|warn' "$E/p3.log" | tail -14 | cut -c28-200 | tr '\n' '|')"
+    echo "::warning title=new primary (r3)::$(grep -iE 'cluster|applied|sync|manifest|published|promot|epoch|error|warn' "$E/r3.log" | tail -14 | cut -c28-200 | tr '\n' '|')"
+    echo "::warning title=old primary files::published=$(tr -d '\n ' < "$E/p/cluster/published.json" 2>/dev/null | cut -c1-160) applied=$(python3 -c "import json;m=json.load(open('$E/p/cluster/applied.json'));print(m.get('epoch'),m.get('seq'),m.get('base'))" 2>/dev/null)"
+  fi
   fail "no conflict recorded for the orphaned version (conflicts: $(ls "$E/p/cluster/conflicts/" 2>&1 | tr '\n' ' '); log: $(grep -iE 'conflict|stepping down' "$E/p3.log" | tail -3 | cut -c1-160 | tr '\n' '|'))"
 }
 grep -q '"record"' "$E/p/cluster/conflicts/"1-*[0-9].json || fail "the conflict doesn't name the changed setting"
