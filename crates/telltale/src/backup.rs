@@ -527,6 +527,17 @@ pub(crate) fn restore(
     }
     fs::create_dir_all(&data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
     fs::create_dir_all(&config_dir).map_err(|e| format!("{}: {e}", config_dir.display()))?;
+    // REQ: CLU-008 (T6.14) — never restore under a running server.
+    let _lock = match crate::datadir::lock(&data_dir, std::time::Duration::ZERO) {
+        Ok(l) => Some(l),
+        Err(crate::datadir::LockError::Held(holder)) => {
+            return Err(format!(
+                "TelltaleDNS is running on {} ({holder}); stop it first",
+                data_dir.display()
+            ));
+        }
+        Err(crate::datadir::LockError::Io(_)) => None,
+    };
     let stage = data_dir.join(format!(".restore-{}", std::process::id()));
     let _ = fs::remove_dir_all(&stage);
     let result = restore_staged(archive, &m, &stage, &target, &data_dir);

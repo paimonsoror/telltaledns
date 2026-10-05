@@ -111,6 +111,13 @@ fn api_007_backup_create_show_restore() {
     let e = restore(&out, Some(&new.join("data")), Some(&new.join("etc")), false).unwrap_err();
     assert!(e.contains("--force"), "{e}");
     restore(&out, Some(&new.join("data")), Some(&new.join("etc")), true).unwrap();
+
+    // REQ: CLU-008 (T6.14) — never under a running server (which holds the lock).
+    let running = crate::datadir::lock(&new.join("data"), std::time::Duration::ZERO).unwrap();
+    let e = restore(&out, Some(&new.join("data")), Some(&new.join("etc")), true).unwrap_err();
+    assert!(e.contains("TelltaleDNS is running"), "{e}");
+    drop(running);
+    restore(&out, Some(&new.join("data")), Some(&new.join("etc")), true).unwrap();
 }
 
 #[test]

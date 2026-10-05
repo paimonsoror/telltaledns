@@ -10,6 +10,7 @@ mod auth_setup;
 mod backup;
 mod build_info;
 mod cluster;
+mod datadir;
 mod explain;
 mod federated;
 mod forward;
@@ -40,7 +41,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use telltale_config::Loader;
 use telltale_policy::LocalData;
-use tracing::info;
+use tracing::{error, info, warn};
 
 // REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
 // allocator, which roughly halved cache-hit throughput in the bench harness.
@@ -1037,6 +1038,24 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     let files = config_files(config);
     let Some(cfg) = server::load(&files) else {
         return Ok(ExitCode::FAILURE);
+    };
+    // REQ: CLU-008 (T6.14) — one process per data directory, held until exit.
+    let data_dir = Path::new(cfg.node.data_dir.as_str());
+    let _lock = match datadir::lock(data_dir, std::time::Duration::from_secs(10)) {
+        Ok(l) => Some(l),
+        Err(datadir::LockError::Held(holder)) => {
+            error!(
+                data_dir = %data_dir.display(),
+                holder = %holder,
+                "another TelltaleDNS process is using this data directory; each process needs its own \
+                 (in Kubernetes, use mode: scaled rather than more replicas of one volume)"
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(datadir::LockError::Io(e)) => {
+            warn!(data_dir = %data_dir.display(), error = %e, "couldn't lock the data directory; starting anyway");
+            None
+        }
     };
     info!(
         version = build_info::VERSION,

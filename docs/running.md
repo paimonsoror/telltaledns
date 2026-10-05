@@ -189,6 +189,7 @@ The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written own
 - Every file is checked before anything is written, so a damaged or truncated backup changes nothing.
 - Existing files are only replaced with `--force`.
 - Data goes back to the directory it came from, or `--data-dir`. Config files go back where they were, or `--config-dir`.
+- It refuses while TelltaleDNS is running on that data directory (it can't take the directory's lock): stop the service first.
 - Files are given the data directory's owner, so a restore run as root works for the `telltale` service user.
 - If you restore into a different data directory, the restored config still names the old one: restore says so, and you set `data_dir` (or add a small file that does).
 
@@ -225,6 +226,13 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
     - then run `telltale cluster join <token>` on the Pi.
   - With Argo CD (which can't keep a generated Secret stable), create the join Secret yourself and set `cluster.bootstrapSecret.existingSecret`. A changed secret applies without restarting the controller.
   - `daemonSet` (host-network resolvers on every node) comes later.
+  - **Don't raise the replica count of a workload that shares one volume.** Every copy would
+    share one node identity, `state.db`, and query log. Each TelltaleDNS process locks its data
+    directory (`<data_dir>/telltale.lock`) for as long as it runs. A second process pointed at
+    the same directory waits up to 10 s for it, then exits with an error naming the holder (pid,
+    host or pod, and since when). The lock is released when the process exits, even after a
+    crash. Use `mode: scaled` for more pods. With your own manifests, give a single-volume
+    Deployment `strategy: Recreate`, or the new pod can't start until the old one stops.
 
 ## Seeing real client IPs
 Per-device statistics, groups, and rules need each query's real sender. TelltaleDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `telltale_client_ips_masked` is 1, and the log says so once.

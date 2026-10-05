@@ -1207,3 +1207,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Device scoping is only as good as recognising the device; the docs say so.
 - Expiry depends on node clocks being roughly right. A node whose clock is off keeps or drops a rule early or late by that offset, and the Cluster page flags offsets of 2 s or more.
 - **Mixed versions (CLU-010):** the config schema rejects unknown keys, and an empty `rule` list is left out of the shared configuration. So an N−1 replica follows the cluster as long as nobody has made a quick rule. Once one exists, the replica refuses that version and keeps serving its last good one until it's upgraded. Quick rules therefore wait for a cluster-wide upgrade, as any new shared section does.
+
+## ADR-068 — One process per data directory: an exclusive lock held for the process's life (Proposed)
+**Context:** T6.14 (owner request 2026-10-05). Scaling a single-volume Deployment (or starting a second `telltale run` with the same configuration) makes two processes share one data directory: the node identity and cluster certificates, `state.db`, the query-log segments, and the cache dump. Nothing stopped it, and the damage is silent: two nodes with one identity, interleaved query-log writes, and SQLite contention.
+
+**Decision:**
+- `telltale run` takes an exclusive advisory lock (`flock`, through `std::fs::File::try_lock`) on `<data_dir>/telltale.lock` before anything else touches the directory, and holds it until the process exits.
+- If another process holds it, the new one retries for 10 s (a previous process may still be shutting down), then exits non-zero with an error. The error names the directory and the holder (pid, host or pod name, and start time, which the holder writes into the file), and points to `mode: scaled`.
+- If the lock file can't be opened at all (a read-only or unusual file system), the node logs a warning and starts anyway: the lock protects against a mistake and must never stop DNS (CLU-004).
+- `telltale backup restore` takes the same lock without waiting, so it refuses to restore under a running server.
+- Read-only commands (`qlog search`, `explain`, `backup create`) don't take it.
+
+**Consequences:**
+- The operating system releases the lock when the process exits, even after a crash or `SIGKILL`, so there is no stale-lock cleanup.
+- A rolling update of a single-volume Deployment would wait for the old pod forever. The chart uses a StatefulSet and the homelab Deployment uses `Recreate`, and the docs tell people with their own manifests to do the same.
+- On network file systems `flock` may be emulated or local-only. That is acceptable for a guard against mistakes.
