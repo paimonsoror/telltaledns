@@ -199,6 +199,23 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - generated from data the site build checks against the repo (crate list, ADR and requirement IDs), so it can't drift;
   - linked from the site header;
   - passes the site check and the Lighthouse budget.
+- [ ] **T6.11 Host resources on the Cluster page (proposed, owner request 2026-10-05).** For monitoring and triage, each node reports the machine it runs on. *(CLU-008, OBS-005; a new requirement, proposed CLU-012, is to be added)*
+  - **Memory:** host total, available, and swap. In a container, also its cgroup limit, its usage, and OOM kills. Telltale's own RSS.
+  - **CPU:** core count, load average (1/5/15 min), and utilisation. In a container, the cgroup quota and throttled time.
+  - **Disk:** free and total space on the data directory's filesystem, the query-log and snapshot sizes, and the write rate (SD-card wear).
+  - **System:** host uptime, OS, kernel, and architecture; temperature where the board exposes it (Pi `thermal_zone`); clock offset against the other nodes.
+  - **Process:** open file descriptors against the limit, threads, and restarts.
+  - **Where it shows:**
+    - per-node rows and small trend sparklines on the Cluster page; a 1-hour average and a peak beside the current value;
+    - `GET /api/v1/cluster` and an MCP read tool;
+    - `telltale_host_*` and `telltale_process_*` metrics;
+    - alert rules for low disk space, memory pressure (cgroup near its limit, OOM kills), and high temperature.
+  - **How it's collected:** read every 15 s, off the DNS path, straight from `/proc`, `/sys` and cgroup v1/v2 files (no new dependencies; this works in the `FROM scratch` image). Only the latest sample and a small history travel in heartbeats as new optional protobuf fields, which N−1 nodes ignore (CLU-010). A collector that can't read a source reports that source as "unavailable" (macOS dev builds, restricted containers) and never fails the node (CLU-004).
+  - **AC:**
+    - Pi, homelab pod, and a kind replica each show correct values. Memory and CPU match `free` and `/proc/loadavg` within 5%. A pod shows its cgroup limit.
+    - Filling a test filesystem to under 10% free raises the alert.
+    - A DNS benchmark with collection on stays within budget (`make bench-smoke`).
+    - Docs and help panels are updated.
 - **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
 
 ## M7 — v1.x (post-1.0, priority order)
