@@ -51,6 +51,8 @@ pub(crate) struct Sources {
     pub(crate) file_config: ArcSwap<telltale_config::Config>,
     /// The config files' paths, for backups (ADR-063).
     pub(crate) config_files: Vec<std::path::PathBuf>,
+    /// Update status from the signed release index (ADR-046).
+    pub(crate) update: Arc<std::sync::Mutex<telltale_api::model::UpdateStatus>>,
     /// Minute/hour/day rollups on disk (spec/06 §3), when they could be opened.
     pub(crate) rollups: Option<Arc<telltale_store::rollup::Rollups>>,
     /// The live tail (OBS-008), unless the privacy level forbids it.
@@ -459,11 +461,22 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
         .sample(
             "telltale_build_info",
             &[
-                ("version", env!("CARGO_PKG_VERSION")),
+                ("version", crate::build_info::VERSION),
+                ("commit", crate::build_info::COMMIT),
+                ("channel", crate::build_info::CHANNEL),
+                ("target", crate::build_info::TARGET),
                 ("node", node_name(&src.config.load()).as_str()),
             ],
             1,
         );
+    // REQ: OPS-004 (ADR-046) — 1 when the release index lists a newer build on this channel.
+    let available = src.update.lock().is_ok_and(|u| u.state == "available");
+    w.family(
+        "telltale_update_available",
+        "gauge",
+        "1 if a newer build exists on this build's channel (from the signed release index).",
+    )
+    .sample("telltale_update_available", &[], u64::from(available));
     w.family("telltale_uptime_seconds", "gauge", "Seconds since start.")
         .sample(
             "telltale_uptime_seconds",
@@ -1103,6 +1116,7 @@ mod tests {
             config: ArcSwap::from_pointee(telltale_config::Config::default()),
             file_config: ArcSwap::from_pointee(telltale_config::Config::default()),
             config_files: Vec::new(),
+            update: Arc::new(std::sync::Mutex::new(crate::updates::initial(false))),
             rollups: None,
             tail: None,
             anomalies: None,

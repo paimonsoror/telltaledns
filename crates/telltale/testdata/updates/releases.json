@@ -1,0 +1,21 @@
+{
+  "channel": "edge",
+  "version": "0.1.0-edge.60",
+  "commit": "abc1234",
+  "date": "2026-10-05T12:00:00Z",
+  "notes": "https://github.com/paimonsoror/telltaledns/releases/tag/edge",
+  "assets": {
+    "x86_64-unknown-linux-musl": {
+      "name": "telltale-x86_64-linux",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "aarch64-unknown-linux-musl": {
+      "name": "telltale-aarch64-linux",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "armv7-unknown-linux-musleabihf": {
+      "name": "telltale-armv7-linux",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  }
+}

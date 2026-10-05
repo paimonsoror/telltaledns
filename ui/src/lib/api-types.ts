@@ -1006,6 +1006,21 @@ export interface components {
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
         };
+        /** @description The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit. */
+        BuildInfo: {
+            /** @description `stable`, `edge`, or `dev`. */
+            channel: string;
+            /** @description Short commit SHA. */
+            commit: string;
+            /** @description Build date (RFC 3339), or `unknown`. */
+            date: string;
+            /** @description `native`, `container`, or `helm`: decides how to update. */
+            install: string;
+            /** @description Rust target, e.g. `aarch64-unknown-linux-musl`. */
+            target: string;
+            /** @description `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build). */
+            version: string;
+        };
         /** @description What a device change did, or would do with `dryRun=true` (AGT-002). */
         ClientChange: {
             after?: components["schemas"]["ClientInfo"] | null;
@@ -2161,6 +2176,8 @@ export interface components {
         };
         /** @description Node and build information. */
         SystemInfo: {
+            /** @description Exactly which build this is (ADR-046). */
+            build: components["schemas"]["BuildInfo"];
             clientIpsMasked?: components["schemas"]["MaskedClients"] | null;
             cluster?: components["schemas"]["ClusterInfo"] | null;
             /**
@@ -2183,6 +2200,8 @@ export interface components {
             role: string;
             /** @description When the process started (RFC 3339). */
             startedAt: string;
+            /** @description Whether a newer build exists on this build's channel (ADR-046). */
+            update: components["schemas"]["UpdateStatus"];
             /** Format: int64 */
             uptimeSeconds: number;
             /**
@@ -2301,6 +2320,30 @@ export interface components {
             otpauthUrl: string;
             /** @description For manual entry in an authenticator app. */
             secretBase32: string;
+        };
+        /** @description Update status from the signed release index (ADR-046). */
+        UpdateStatus: {
+            /**
+             * Format: int64
+             * @description When the index was last read successfully (Unix seconds).
+             */
+            checkedUnixSeconds?: number | null;
+            /** @description Why the last check failed. */
+            error?: string | null;
+            /** @description How to update this install, step by step. */
+            how: string;
+            /** @description The newest version on this channel, when known. */
+            latest?: string | null;
+            /** @description Its commit and date. */
+            latestCommit?: string | null;
+            latestDate?: string | null;
+            /** @description Release notes. */
+            notesUrl?: string | null;
+            /**
+             * @description `up_to_date`, `available`, `newer` (this build is newer than the index, e.g. dev),
+             *     `off` (`[updates] check = false`), or `unknown` (not checked yet, or failing).
+             */
+            state: string;
         };
         UpdateUser: {
             allowBasicApi?: boolean | null;

@@ -59,6 +59,8 @@ pub struct Config {
     /// AI agents and automation using agent tokens (AGT-004, AGT-009). Shared across a
     /// cluster, so `enabled = false` switches every agent off everywhere.
     pub agents: AgentsConfig,
+    /// Whether to check for newer builds (OPS-004, ADR-046).
+    pub updates: UpdatesConfig,
     /// Telemetry, query log, and metrics.
     pub telemetry: TelemetryConfig,
     /// The REST API (and, later, the web UI).
@@ -98,6 +100,7 @@ impl Default for Config {
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
             agents: AgentsConfig::default(),
+            updates: UpdatesConfig::default(),
             telemetry: TelemetryConfig::default(),
             api: ApiConfig::default(),
             auth: AuthConfig::default(),
@@ -883,6 +886,28 @@ impl Default for DnssecConfig {
         Self {
             mode: DnssecMode::Off,
             negative_trust_anchors: Vec::new(),
+        }
+    }
+}
+
+/// `[updates]` (REQ: OPS-004, ADR-046).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UpdatesConfig {
+    /// Read this build's channel's signed release index once a day to see whether a newer
+    /// build exists. `false`: nothing leaves the node, and the status is `off`.
+    pub check: bool,
+    /// Where to read the index instead of GitHub (a mirror); its signature is still checked
+    /// with the release key built into the binary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_url: Option<SafeString>,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            check: true,
+            index_url: None,
         }
     }
 }

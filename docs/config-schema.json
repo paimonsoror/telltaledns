@@ -287,6 +287,13 @@
         }
       }
     },
+    "updates": {
+      "description": "Whether to check for newer builds (OPS-004, ADR-046).",
+      "$ref": "#/$defs/UpdatesConfig",
+      "default": {
+        "check": true
+      }
+    },
     "upstream": {
       "description": "Upstream resolvers.",
       "type": "array",
@@ -1891,6 +1898,26 @@
         "cert",
         "key"
       ]
+    },
+    "UpdatesConfig": {
+      "description": "`[updates]` (REQ: OPS-004, ADR-046).",
+      "type": "object",
+      "properties": {
+        "check": {
+          "description": "Read this build's channel's signed release index once a day to see whether a newer\nbuild exists. `false`: nothing leaves the node, and the status is `off`.",
+          "type": "boolean",
+          "default": true
+        },
+        "index_url": {
+          "description": "Where to read the index instead of GitHub (a mirror); its signature is still checked\nwith the release key built into the binary.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
     },
     "Upstream": {
       "description": "One upstream resolver (`spec/04` §1–2).",

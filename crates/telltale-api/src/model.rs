@@ -34,6 +34,56 @@ pub struct SystemInfo {
     pub client_ips_masked: Option<MaskedClients>,
     /// Present when this node belongs to a cluster (CLU-001).
     pub cluster: Option<ClusterInfo>,
+    /// Exactly which build this is (ADR-046).
+    pub build: BuildInfo,
+    /// Whether a newer build exists on this build's channel (ADR-046).
+    pub update: UpdateStatus,
+}
+
+/// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    /// `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build).
+    pub version: String,
+    /// Short commit SHA.
+    pub commit: String,
+    /// Build date (RFC 3339), or `unknown`.
+    pub date: String,
+    /// `stable`, `edge`, or `dev`.
+    pub channel: String,
+    /// Rust target, e.g. `aarch64-unknown-linux-musl`.
+    pub target: String,
+    /// `native`, `container`, or `helm`: decides how to update.
+    pub install: String,
+}
+
+/// Update status from the signed release index (ADR-046).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    /// `up_to_date`, `available`, `newer` (this build is newer than the index, e.g. dev),
+    /// `off` (`[updates] check = false`), or `unknown` (not checked yet, or failing).
+    pub state: String,
+    /// The newest version on this channel, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+    /// Its commit and date.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_date: Option<String>,
+    /// Release notes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes_url: Option<String>,
+    /// When the index was last read successfully (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_unix_seconds: Option<u64>,
+    /// Why the last check failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// How to update this install, step by step.
+    pub how: String,
 }
 
 /// This node's cluster membership and the peers it holds a stream with.

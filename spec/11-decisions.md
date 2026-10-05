@@ -556,6 +556,14 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** small CI changes (stamp the version; generate and sign `releases.json`), a `[updates]` config section, and the API/UI/metric fields. `telltale self-update` switches from reading `SHA256SUMS` to reading the index (same signature check).
 
+**Addendum (2026-10-05, T6.9 implemented):**
+- **Stamping:** `crates/telltale/build.rs` reads `TELLTALE_BUILD_{VERSION,COMMIT,DATE,CHANNEL}`. CI computes them once per run and passes the same `--build-arg`s to every buildx call, so all three architectures (and the image) carry one identity, which `image.yml` checks in each binary. Edge is `<Cargo version>-edge.<run number>`, a tag is its semver, and a PR build is `-pr.<run>` on channel `dev`.
+- **Install type:** the image sets `TELLTALE_INSTALL=container`, the chart `helm`, and the systemd unit `native`. Without it, the binary guesses from `/.dockerenv` or the Kubernetes environment.
+- **Release index:** `deploy/release/index.py` writes `releases.json` (channel, version, commit, date, notes, and per-target asset names and hashes from `SHA256SUMS`). It's signed and verified in the release job next to `SHA256SUMS`.
+- **Update check:** nodes fetch `releases/download/edge/releases.json` (edge) or `releases/latest/download/releases.json` (stable), plus `.minisig`, and verify with the built-in key. Edge builds compare by run number, and a release sorts after its edge builds. The first check is 60 s after start, then daily, retrying hourly after a failure.
+- **Not yet:** `self-update` still reads `SHA256SUMS` (it works and is verified the same way). Moving it onto the index is a follow-up, as is an MCP tool for update status.
+
+
 ## ADR-047 — Config replication v1: whole-version manifests, shared vs node-local sections (Proposed)
 **Context:** T5.2 implements CLU-003 under `spec/02` §5 and `spec/12` §4. Those describe a change log of semantic ops (JSON-Patch) that replicas replay, with a full snapshot as fallback. They don't say which settings are node-local before T5.5, how UI/API-made entries (ADR-040) replicate, or what a replica does with its own lists and config file.
 

@@ -61,6 +61,11 @@ RUN case "${TARGETARCH}${TARGETVARIANT}" in \
  && rustup target add "$(cat /rust-target)"
 
 WORKDIR /src
+# REQ: OPS-004 (ADR-046) — the build identity CI stamps into every architecture alike.
+ARG TELLTALE_BUILD_VERSION=dev
+ARG TELLTALE_BUILD_COMMIT=
+ARG TELLTALE_BUILD_DATE=
+ARG TELLTALE_BUILD_CHANNEL=dev
 COPY . .
 COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
@@ -90,6 +95,8 @@ LABEL org.opencontainers.image.title="TelltaleDNS" \
       org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /out/ /
 COPY --from=build --chown=65532:65532 /out/var/lib/telltale /var/lib/telltale
+# REQ: OPS-004 (ADR-046) — containers update by pulling a new image.
+ENV TELLTALE_INSTALL=container
 USER 65532:65532
 # The only writable path; run with a read-only root filesystem (spec/08 §2).
 VOLUME ["/var/lib/telltale"]

@@ -324,6 +324,16 @@
       "example": "Two nodes: the k8s pod is the primary (config from GitOps), the Pi follows it; both show version 12, in sync, ready.",
       "caution": "Change configuration on the primary. Each node keeps its own listeners, sign-in, query-log retention, and cache size.",
       "docs": "clusters-in-progress"
+    },
+    {
+      "id": "updates",
+      "title": "Which version am I running?",
+      "term": "Version and update status",
+      "summary": "The exact build (version, commit, channel), and whether a newer one exists on your channel, checked once a day against a signed release list.",
+      "when": "Before reporting a problem, or to know when to update.",
+      "example": "0.1.0-edge.60 · commit abc1234 · edge: Update available 0.1.0-edge.64.",
+      "caution": "TelltaleDNS never updates itself from the UI: follow the step shown for your install (self-update, a new image, or a chart upgrade), replicas first in a cluster. Turn the check off with [updates] check = false.",
+      "docs": "versions-and-updates"
     }
   ]
 }

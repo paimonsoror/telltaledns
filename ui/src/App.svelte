@@ -118,6 +118,13 @@
         <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple view</button>
         <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced view</button>
       </span>
+      <!-- REQ: OPS-004 (ADR-046) — which build this is, and whether a newer one exists. -->
+      {#if info?.build}
+        <a class="build small muted" href="#/settings?tab=system" data-testid="build-footer" title={`commit ${info.build.commit}, ${info.build.target}`}>
+          {info.build.version} · {info.build.commit}
+          {#if info.update?.state === 'available'}<span class="badge">update</span>{/if}
+        </a>
+      {/if}
     </nav>
     <main class="content">
       {#if info && !info.queryLog}

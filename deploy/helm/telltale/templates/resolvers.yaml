@@ -50,6 +50,9 @@ spec:
           env:
             - name: TELLTALE_LOG
               value: info
+            # REQ: OPS-004 (ADR-046) — how this node updates (shown with the update status).
+            - name: TELLTALE_INSTALL
+              value: helm
             - name: TELLTALE_NODE_IPS
               valueFrom:
                 fieldRef: { fieldPath: status.hostIP }

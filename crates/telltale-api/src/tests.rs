@@ -32,6 +32,24 @@ impl Backend for Fake {
             filter_names: 42,
             client_ips_masked: None,
             cluster: None,
+            build: crate::model::BuildInfo {
+                version: "0.1.0-edge.60".into(),
+                commit: "abc1234".into(),
+                date: "2026-10-05T12:00:00Z".into(),
+                channel: "edge".into(),
+                target: "x86_64-unknown-linux-musl".into(),
+                install: "native".into(),
+            },
+            update: crate::model::UpdateStatus {
+                state: "up_to_date".into(),
+                latest: Some("0.1.0-edge.60".into()),
+                latest_commit: None,
+                latest_date: None,
+                notes_url: None,
+                checked_unix_seconds: None,
+                error: None,
+                how: "Run: sudo telltale self-update --channel edge --restart.".into(),
+            },
         }
     }
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {

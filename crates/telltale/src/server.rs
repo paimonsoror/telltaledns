@@ -559,6 +559,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         config: ArcSwap::from_pointee(cfg.clone()),
         file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
         config_files: files.clone(),
+        update: Arc::new(std::sync::Mutex::new(crate::updates::initial(
+            cfg.updates.check,
+        ))),
         rollups: rollups.clone(),
         tail,
         anomalies: anomalies.clone(),
@@ -594,6 +597,13 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             http_stopped.clone(),
         ));
     }
+    // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).
+    tokio::spawn(crate::updates::run(
+        Arc::clone(&sources.update),
+        cfg.updates.check,
+        cfg.updates.index_url.as_ref().map(ToString::to_string),
+        http_stopped.clone(),
+    ));
     start_http(&cfg, &sources, &http_stopped).await?;
     let neighbors =
         neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));

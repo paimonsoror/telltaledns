@@ -136,6 +136,32 @@ The header lists what isn't imported:
 
 Technitium's backup files use a private binary format, so the importer reads the documented API instead (ADR-062). CI runs it against the official Technitium image (`deploy/technitium-import-e2e.sh`).
 
+## Versions and updates
+Every build says exactly what it is, the same way on every architecture:
+```
+$ telltale --version
+telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)
+```
+
+**Version formats:**
+- releases are `0.1.0`;
+- builds of `main` are `0.1.0-edge.<run>`;
+- a local build is `dev` with its commit.
+
+The same build identity, and how the node was installed (`native`, `container`, or `helm`), shows in the web UI's sidebar and **Settings → System → Version and updates**, in `GET /api/v1/system/info` (`build`, `update`), in `telltale_build_info{version,commit,channel,target}`, and on the Cluster page for every node.
+
+**Update checks:**
+- **How:** once a day, a node reads its channel's `releases.json` (published with every release, signed with the release key) and compares versions: `up_to_date`, `available`, `newer` (a dev build), or `unknown` (not checked yet, or failing). An index whose signature doesn't verify is ignored.
+- **Where it shows:** `telltale_update_available` is 1 when an update exists.
+- **Air-gapped:** `[updates] check = false` means nothing leaves the node; `[updates] index_url` points at a mirror (still verified with the built-in key).
+
+TelltaleDNS never updates itself from the UI. The panel shows the step for your install:
+- **Native:** `sudo telltale self-update --restart` (`--channel edge` for edge).
+- **Container:** `docker compose pull && docker compose up -d`.
+- **Helm:** `helm upgrade`, or bump the chart version in your GitOps values.
+
+In a cluster, upgrade replicas first.
+
 ## Backups and moving to a new machine
 ```sh
 telltale backup create -o pi.ttbk               # safe while TelltaleDNS runs

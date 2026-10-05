@@ -323,7 +323,7 @@ fn write_archive(
     let manifest = Manifest {
         format: FORMAT.into(),
         version: VERSION,
-        telltale_version: env!("CARGO_PKG_VERSION").into(),
+        telltale_version: crate::build_info::VERSION.into(),
         created: unix_now(),
         node: cfg.node.name.to_string(),
         data_dir: data.display().to_string(),

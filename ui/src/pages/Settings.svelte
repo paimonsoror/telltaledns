@@ -519,6 +519,33 @@
       {/if}
       <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
     </section>
+    {#if info}
+      <!-- REQ: OPS-004 (ADR-046) -->
+      <section class="card" data-testid="updates">
+        <h2>Version and updates<HelpButton id="updates" /></h2>
+        <dl class="sys">
+          <dt>This build</dt><dd><strong>{info.build.version}</strong> · commit <code>{info.build.commit}</code> · {info.build.channel} channel</dd>
+          <dt>Built</dt><dd>{info.build.date} · {info.build.target} · {info.build.install} install</dd>
+          <dt>Status</dt>
+          <dd>
+            {#if info.update.state === 'available'}
+              <span class="badge warn">Update available</span> {info.update.latest}{info.update.latestDate ? ` (${info.update.latestDate})` : ''}
+              {#if info.update.notesUrl}<a href={info.update.notesUrl} target="_blank" rel="noreferrer">What's new</a>{/if}
+            {:else if info.update.state === 'up_to_date'}
+              Up to date
+            {:else if info.update.state === 'newer'}
+              Newer than the published {info.build.channel} build{info.update.latest ? ` (${info.update.latest})` : ''}
+            {:else if info.update.state === 'off'}
+              Not checked (<code>[updates] check = false</code>)
+            {:else}
+              Not known yet{info.update.error ? `: ${info.update.error}` : ''}
+            {/if}
+            {#if info.update.checkedUnixSeconds}<div class="muted small">Checked {ago(info.update.checkedUnixSeconds)}</div>{/if}
+          </dd>
+        </dl>
+        <p class="small">{info.update.how}</p>
+      </section>
+    {/if}
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->
       <section class="card">

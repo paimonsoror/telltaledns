@@ -414,7 +414,13 @@ impl Backend for ApiBackend {
             .map_or(0, |d| d.as_micros())
             .saturating_sub(self.src.started.elapsed().as_micros());
         SystemInfo {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: crate::build_info::VERSION.to_owned(),
+            build: crate::build_info::api(),
+            update: self
+                .src
+                .update
+                .lock()
+                .map_or_else(|e| e.into_inner().clone(), |u| u.clone()),
             node,
             role: label(&cfg.node.role),
             uptime_seconds: self.src.started.elapsed().as_secs(),

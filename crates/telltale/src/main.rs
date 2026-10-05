@@ -8,6 +8,7 @@ mod api_backend;
 mod archive;
 mod auth_setup;
 mod backup;
+mod build_info;
 mod cluster;
 mod explain;
 mod federated;
@@ -29,6 +30,7 @@ mod server;
 mod ship;
 mod tail;
 mod technitium;
+mod updates;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -49,7 +51,7 @@ const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
 
 /// TelltaleDNS — see every question, answer on your terms.
 #[derive(Debug, Parser)]
-#[command(name = "telltale", version, about)]
+#[command(name = "telltale", version = build_info::LINE, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -1025,7 +1027,8 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     };
     info!(
-        version = env!("CARGO_PKG_VERSION"),
+        version = build_info::VERSION,
+        commit = build_info::COMMIT,
         role = ?cfg.node.role,
         workers = server::workers(&cfg),
         config = ?files,

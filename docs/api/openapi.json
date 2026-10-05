@@ -2546,6 +2546,44 @@
           }
         }
       },
+      "BuildInfo": {
+        "type": "object",
+        "description": "The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.",
+        "required": [
+          "version",
+          "commit",
+          "date",
+          "channel",
+          "target",
+          "install"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "`stable`, `edge`, or `dev`."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Short commit SHA."
+          },
+          "date": {
+            "type": "string",
+            "description": "Build date (RFC 3339), or `unknown`."
+          },
+          "install": {
+            "type": "string",
+            "description": "`native`, `container`, or `helm`: decides how to update."
+          },
+          "target": {
+            "type": "string",
+            "description": "Rust target, e.g. `aarch64-unknown-linux-musl`."
+          },
+          "version": {
+            "type": "string",
+            "description": "`0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build)."
+          }
+        }
+      },
       "ClientChange": {
         "type": "object",
         "description": "What a device change did, or would do with `dryRun=true` (AGT-002).",
@@ -5586,9 +5624,15 @@
           "startedAt",
           "listeners",
           "queryLog",
-          "filterNames"
+          "filterNames",
+          "build",
+          "update"
         ],
         "properties": {
+          "build": {
+            "$ref": "#/components/schemas/BuildInfo",
+            "description": "Exactly which build this is (ADR-046)."
+          },
           "clientIpsMasked": {
             "oneOf": [
               {
@@ -5648,6 +5692,10 @@
           "startedAt": {
             "type": "string",
             "description": "When the process started (RFC 3339)."
+          },
+          "update": {
+            "$ref": "#/components/schemas/UpdateStatus",
+            "description": "Whether a newer build exists on this build's channel (ADR-046)."
           },
           "uptimeSeconds": {
             "type": "integer",
@@ -5931,6 +5979,67 @@
           "secretBase32": {
             "type": "string",
             "description": "For manual entry in an authenticator app."
+          }
+        }
+      },
+      "UpdateStatus": {
+        "type": "object",
+        "description": "Update status from the signed release index (ADR-046).",
+        "required": [
+          "state",
+          "how"
+        ],
+        "properties": {
+          "checkedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the index was last read successfully (Unix seconds).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last check failed."
+          },
+          "how": {
+            "type": "string",
+            "description": "How to update this install, step by step."
+          },
+          "latest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest version on this channel, when known."
+          },
+          "latestCommit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its commit and date."
+          },
+          "latestDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notesUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Release notes."
+          },
+          "state": {
+            "type": "string",
+            "description": "`up_to_date`, `available`, `newer` (this build is newer than the index, e.g. dev),\n`off` (`[updates] check = false`), or `unknown` (not checked yet, or failing)."
           }
         }
       },

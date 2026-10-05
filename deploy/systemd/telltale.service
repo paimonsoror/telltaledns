@@ -16,6 +16,8 @@ RestartSec=2
 # Graceful drain (OPS-007) gets time to finish.
 TimeoutStopSec=30
 Environment=TELLTALE_LOG=info
+# REQ: OPS-004 (ADR-046) — how this node updates (self-update).
+Environment=TELLTALE_INSTALL=native
 
 # Port 53 without root: only this capability, nothing else.
 AmbientCapabilities=CAP_NET_BIND_SERVICE

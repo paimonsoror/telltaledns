@@ -154,9 +154,8 @@ pub(crate) fn verify_signature(key: &str, data: &[u8], sig: &[u8]) -> Result<(),
     let text = std::str::from_utf8(sig).map_err(|_| "signature file is not text")?;
     let sig =
         minisign_verify::Signature::decode(text).map_err(|e| format!("bad signature file: {e}"))?;
-    pk.verify(data, &sig, false).map_err(|_| {
-        "SHA256SUMS signature does not verify with the release key: not installing".into()
-    })
+    pk.verify(data, &sig, false)
+        .map_err(|_| "the signature does not verify with the release key: not trusted".into())
 }
 
 /// The SHA-256 listed for `asset` (`sha256sum` format: `<hex>  <name>` or `<hex> *<name>`).

@@ -18,7 +18,7 @@ use telltale_cluster::token::Token;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = crate::build_info::VERSION;
 
 fn data_dir(cfg: &telltale_config::Config) -> &Path {
     Path::new(cfg.node.data_dir.as_str())
