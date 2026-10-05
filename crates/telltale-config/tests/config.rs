@@ -133,6 +133,10 @@ fn ops_005_unknown_env_vars_warn_not_fail() {
             ("TELLTALE_SERVICE_HOST", "10.0.0.1"),
             ("TELLTALE_PORT", "udp://10.0.0.1:53"),
             ("TELLTALE_CONFIG", "/etc/telltale/telltale.toml"),
+            // T6.14 — the Helm charts' downward-API variables are the binary's own.
+            ("TELLTALE_KUBE_NODE", "k3s-1"),
+            ("TELLTALE_POD", "telltale-resolver-7d9f"),
+            ("TELLTALE_NODE_IPS", "192.168.5.2"),
         ])
         .load()
         .unwrap();
@@ -142,7 +146,11 @@ fn ops_005_unknown_env_vars_warn_not_fail() {
         .iter()
         .filter(|w| w.contains("unknown environment variable"))
         .collect();
-    assert_eq!(unknown.len(), 2, "TELLTALE_CONFIG is reserved: {unknown:?}");
+    assert_eq!(
+        unknown.len(),
+        2,
+        "TELLTALE_CONFIG, _KUBE_NODE, _POD, _NODE_IPS are reserved: {unknown:?}"
+    );
 }
 
 #[test]

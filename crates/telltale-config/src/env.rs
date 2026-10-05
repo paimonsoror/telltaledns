@@ -28,6 +28,9 @@ const RESERVED: &[&str] = &[
     "BOOTSTRAP_ADMIN_PASSWORD",
     "BOOTSTRAP_ADMIN_PASSWORD_HASH",
     "NODE_IPS",
+    // T6.14 — the Kubernetes node and pod (downward API, set by the Helm charts).
+    "KUBE_NODE",
+    "POD",
 ];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.
