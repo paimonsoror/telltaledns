@@ -33,6 +33,9 @@ rand = "0.10.3"
 # are zip / tar.gz. Both crates are already in the tree (telltale-store, telltale-git).
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 miniz_oxide = "0.8"
+# REQ: API-007 (T6.7) — backups are zstd-compressed tar; zstd is already in the tree
+# (telltale-store, telltale-filter).
+zstd = { version = "0.14.0", default-features = false }
 # SHA-256 for self-update (already in the tree through rustls).
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }

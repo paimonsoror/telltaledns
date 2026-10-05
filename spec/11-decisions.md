@@ -1003,3 +1003,36 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 - Importing needs the old server running, which matches the migration path (import, compare, switch).
 - A backup-zip reader can follow if the format gets documented.
 - The e2e found a real-data bug: concurrent forwarding with a single usable forwarder produced an invalid `parallel` group. Fixed and tested.
+
+## ADR-063 — Backups v1: a checked archive of config and local data, without the cluster key (Proposed)
+**Context:** T6.7 (API-007, P0) asks for Teleporter parity: one archive with config and local data, optionally with query history. `spec/08` §8 sketches `telltale ctl backup create [--include-qlog]` writing a `.ttbk` (tar.zst + manifest + signature) restored onto a new primary. `ctl` (the API-wrapping CLI, API-008) doesn't exist yet. The spec doesn't say what the signature is signed with or whether cluster identity is included.
+
+**Decision:**
+- **Commands:** `telltale backup create | show | restore`, local commands that work on the data directory.
+  - `create` is safe while the server runs: SQLite databases are copied consistently with `VACUUM INTO`, and query-log segments only grow, so the size seen at open is copied.
+- **Contents:**
+  - config files under `config/`;
+  - `state.db` (users, tokens, UI-made entries, audit), with sessions and idempotency keys removed;
+  - `rollups.db` and `anomaly.json`;
+  - the query log (`qlog/`, `qlog-nodes/`) only with `--include-qlog`;
+  - lists, snapshots, the cache, and `setup-token` are left out, since they're rebuilt or transient.
+- **Format:** a tar stream compressed with zstd (frame checksum on), with `manifest.json` last. It holds the format version, source node and paths, and each entry's size and BLAKE3 hash. The file is written owner-only and renamed into place when complete.
+- **No signature in v1:** a signature by the source node's key proves nothing to the fresh node it's restored onto, which doesn't know that key. Integrity comes from the manifest hashes and zstd's checksum. Confidentiality is the file's permissions, as with Pi-hole's Teleporter. Encryption with a passphrase is the natural next step.
+- **No cluster identity by default:** `cluster/`, with the CA key, isn't included. A portable file with the CA key could impersonate the cluster. A restored member starts standalone, and the manifest records that it was a member so restore can say what to do.
+- **Restore:**
+  - streams into a staging directory under the data directory;
+  - checks every entry against the manifest, and anything unexpected, a path outside `config/` or `data/`, or `..`, fails before any file is moved;
+  - refuses to replace existing files without `--force`;
+  - chowns restored files to the data directory's owner.
+
+**Verification:**
+- Unit tests: contents, permissions, round trip, session stripping, `--force`, corruption, path containment, and the query log.
+- `deploy/backup-e2e.sh` (CI) backs up a running node with an admin and an API-made name, restores it onto a second node, and checks the following on that node:
+  - the name answers;
+  - the admin signs in, and the old session doesn't carry over;
+  - the audit log is present;
+  - damaged archives are refused.
+
+**Consequences:**
+- API download and the UI button follow; restore through the API is deferred (restoring under a running server is risky).
+- `--include-cluster-key` (for disaster recovery of a lone primary) and passphrase encryption are follow-ups.

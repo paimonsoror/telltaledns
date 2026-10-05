@@ -136,6 +136,35 @@ The header lists what isn't imported:
 
 Technitium's backup files use a private binary format, so the importer reads the documented API instead (ADR-062). CI runs it against the official Technitium image (`deploy/technitium-import-e2e.sh`).
 
+## Backups and moving to a new machine
+```sh
+telltale backup create -o pi.ttbk               # safe while TelltaleDNS runs
+telltale backup create --include-qlog -o pi.ttbk # also the query log (can be large)
+telltale backup show pi.ttbk                     # check it and list what's in it
+telltale backup restore pi.ttbk                  # on the new machine, TelltaleDNS stopped
+```
+
+**In a backup:**
+- the config files the node was started with;
+- users (password hashes, two-factor secrets) and API tokens;
+- devices, names, and forwarded domains made in the UI;
+- the audit log, statistics history, and anomaly baselines;
+- the query log, with `--include-qlog`.
+
+**Left out:**
+- sign-in sessions (everyone signs in again);
+- downloaded lists, compiled snapshots, and the cache, which are rebuilt;
+- the cluster identity and its CA key. A restored cluster member starts on its own: run `telltale cluster init` or join it again.
+
+The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only (`0600`); keep it private.
+
+**Restore:**
+- Every file is checked before anything is written, so a damaged or truncated backup changes nothing.
+- Existing files are only replaced with `--force`.
+- Data goes back to the directory it came from, or `--data-dir`. Config files go back where they were, or `--config-dir`.
+- Files are given the data directory's owner, so a restore run as root works for the `telltale` service user.
+- If you restore into a different data directory, the restored config still names the old one: restore says so, and you set `data_dir` (or add a small file that does).
+
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
 Use a release version, or `0.1.0-edge.<n>` builds that follow `main`. Its source is in

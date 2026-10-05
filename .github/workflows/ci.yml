@@ -247,13 +247,6 @@ jobs:
             https://github.com/paimonsoror/telltaledns/releases/download/edge/telltale-x86_64-linux
           chmod +x "$RUNNER_TEMP/telltale-old"
           bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/telltale-old" target/bench-fast/telltale
-      # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
-      # and v5 images (Docker), then the imported configuration's answers.
-      - name: Pi-hole import (v6 and v5 Teleporter)
-        run: bash deploy/pihole-import-e2e.sh target/bench-fast/telltale
-      # REQ: API-007 (T6.4) — Technitium import through the API of the official image.
-      - name: Technitium import (API)
-        run: bash deploy/technitium-import-e2e.sh target/bench-fast/telltale
       # REQ: DNS-011 (T6.1) — DNSSEC validation against the real DNS tree (needs internet).
       - name: DNSSEC validation (live)
         run: bash deploy/dnssec-e2e.sh target/bench-fast/telltale
@@ -269,3 +262,26 @@ jobs:
         with: { install_only: true }
       - name: Helm scaled mode on kind
         run: bash deploy/helm/scaled-e2e.sh target/bench-fast/telltale
+
+  # REQ: API-007 — moving to and between TelltaleDNS installs: importers against the real
+  # Pi-hole and Technitium images (Docker), and backup/restore across two nodes. A job of its
+  # own: the image pulls and Pi-hole's first gravity run take minutes.
+  migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --profile bench-fast -p telltale
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils
+      # REQ: API-007 (T6.7) — a backup from a running node restores onto a fresh one.
+      - name: Backup and restore
+        run: bash deploy/backup-e2e.sh target/bench-fast/telltale
+      # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
+      # and v5 images, then the imported configuration's answers.
+      - name: Pi-hole import (v6 and v5 Teleporter)
+        run: bash deploy/pihole-import-e2e.sh target/bench-fast/telltale
+      # REQ: API-007 (T6.4) — Technitium import through the API of the official image.
+      - name: Technitium import (API)
+        run: bash deploy/technitium-import-e2e.sh target/bench-fast/telltale

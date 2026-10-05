@@ -7,6 +7,7 @@ mod anomaly;
 mod api_backend;
 mod archive;
 mod auth_setup;
+mod backup;
 mod cluster;
 mod explain;
 mod federated;
@@ -125,6 +126,12 @@ enum Command {
         #[command(subcommand)]
         command: ImportCommand,
     },
+    /// Back up this node's configuration and data to one file, or restore one.
+    // REQ: API-007
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
     /// Clusters: create one, issue join tokens, join one, show this node's membership.
     // REQ: CLU-001
     Cluster {
@@ -228,6 +235,45 @@ enum ClusterTokenCommand {
         /// Cluster URLs to put in the token (default: this node's advertise URLs).
         #[arg(long = "url")]
         urls: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BackupCommand {
+    /// Write a backup: the config files, users and API tokens, devices and names made in the
+    /// UI, the audit log, statistics history, and anomaly baselines (the query log with
+    /// --include-qlog). Safe while TelltaleDNS runs. The file is owner-only: it holds
+    /// password hashes.
+    Create {
+        /// Also include the query log (can be large).
+        #[arg(long)]
+        include_qlog: bool,
+        /// Where to write it (default: `telltale-<node>-<time>.ttbk` here).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Config files (same defaults as `telltale run`).
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Restore a backup onto this machine. Stop TelltaleDNS first. Every file is checked
+    /// before anything is written; existing files are only replaced with --force.
+    Restore {
+        /// The `.ttbk` file.
+        file: PathBuf,
+        /// Data directory (default: the one it was taken from).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Where the config files go (default: where they were).
+        #[arg(long)]
+        config_dir: Option<PathBuf>,
+        /// Replace existing files.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Check a backup and list what's in it.
+    Show {
+        /// The `.ttbk` file.
+        file: PathBuf,
     },
 }
 
@@ -503,6 +549,7 @@ fn main() -> ExitCode {
             restart,
         } => Ok(run_self_update(channel, check, restart)),
         Command::Import { command } => Ok(run_import(command)),
+        Command::Backup { command } => Ok(run_backup(command)),
         Command::Cluster { command, config } => Ok(run_cluster(command, config)),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
@@ -568,6 +615,82 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             witness,
         ),
         ClusterCommand::Status => cluster::status(&cfg, &mut io::stdout().lock()),
+    }
+}
+
+// REQ: API-007 (T6.7, ADR-063)
+fn run_backup(command: BackupCommand) -> ExitCode {
+    let result = match command {
+        BackupCommand::Create {
+            include_qlog,
+            output,
+            config,
+        } => {
+            let files = config_files(config);
+            let Some(cfg) = server::load(&files) else {
+                return ExitCode::FAILURE;
+            };
+            let out = output.unwrap_or_else(|| backup::default_name(cfg.node.name.as_str()));
+            backup::create(&files, &cfg, include_qlog, &out).map(|c| {
+                eprintln!(
+                    "wrote {} ({} files, {} KiB). It holds password hashes: keep it private.",
+                    c.path.display(),
+                    c.entries,
+                    c.bytes.div_ceil(1024)
+                );
+            })
+        }
+        BackupCommand::Restore {
+            file,
+            data_dir,
+            config_dir,
+            force,
+        } => backup::restore(&file, data_dir.as_deref(), config_dir.as_deref(), force).map(|r| {
+            eprintln!(
+                "restored {} files from {} (node {}, TelltaleDNS {}): data in {}, config in {}",
+                r.files,
+                file.display(),
+                r.manifest.node,
+                r.manifest.telltale_version,
+                r.data_dir.display(),
+                r.config_dir.display()
+            );
+            if Path::new(&r.manifest.data_dir) != r.data_dir {
+                eprintln!(
+                    "note: the restored config files say data_dir = {}; set it to {} (or add a file that does).",
+                    r.manifest.data_dir,
+                    r.data_dir.display()
+                );
+            }
+            if r.manifest.cluster_member {
+                eprintln!(
+                    "note: the backup came from a cluster member; cluster identity isn't in backups. Start this node, then `telltale cluster init` or join it again (docs: Clusters)."
+                );
+            }
+        }),
+        BackupCommand::Show { file } => backup::show(&file).map(|m| {
+            let mut out = io::stdout().lock();
+            let total: u64 = m.entries.iter().map(|e| e.size).sum();
+            let _ = writeln!(
+                out,
+                "TelltaleDNS {} backup of node `{}`, taken {} (unix), {} files, {} KiB, checksums OK",
+                m.telltale_version,
+                m.node,
+                m.created,
+                m.entries.len(),
+                total.div_ceil(1024)
+            );
+            for e in &m.entries {
+                let _ = writeln!(out, "  {:>10}  {}", e.size, e.path);
+            }
+        }),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

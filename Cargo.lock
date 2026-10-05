@@ -3080,6 +3080,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
