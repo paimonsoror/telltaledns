@@ -349,6 +349,10 @@ impl Backend for Federated {
     fn git_hook(&self, signature: Option<String>, body: Vec<u8>) -> Result<(), Problem> {
         self.local.git_hook(signature, body)
     }
+    // A backup is of this node (ADR-063).
+    fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
+        self.local.backup()
+    }
 
     // REQ: CLU-002 — counters sum across nodes.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {

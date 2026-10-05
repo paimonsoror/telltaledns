@@ -499,6 +499,23 @@ impl Backend for ApiBackend {
         }
     }
 
+    // REQ: API-007 (T6.7, ADR-063)
+    fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
+        let cfg = self.src.config.load_full();
+        let name = crate::backup::default_name(cfg.node.name.as_str());
+        let tmp = std::path::Path::new(cfg.node.data_dir.as_str()).join(format!(
+            ".backup-api-{}-{}.ttbk",
+            std::process::id(),
+            self.now_unix_seconds()
+        ));
+        let made = crate::backup::create(&self.src.config_files, &cfg, false, &tmp);
+        let bytes = made.and_then(|_| std::fs::read(&tmp).map_err(|e| e.to_string()));
+        let _ = std::fs::remove_file(&tmp);
+        let bytes = bytes.map_err(|e| Problem::internal(format!("backup failed: {e}")))?;
+        tracing::info!(bytes = bytes.len(), "backup downloaded through the API");
+        Ok((name.display().to_string(), bytes))
+    }
+
     // REQ: CLU-005 (ADR-051)
     fn promote(
         &self,

@@ -469,6 +469,21 @@
       {/if}
       <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
     </section>
+    {#if can('admin')}
+      <!-- REQ: API-007 (T6.7) -->
+      <section class="card">
+        <h2>Backup<HelpButton id="backup" /></h2>
+        <p>
+          One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
+          statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
+        </p>
+        <p><a class="button" href="/api/v1/backup" download>Download a backup</a></p>
+        <p class="muted small">
+          It holds password hashes, so keep it private. The query log isn't included; for that, run
+          <code>telltale backup create --include-qlog</code> on the server.
+        </p>
+      </section>
+    {/if}
   {/if}
 </div>
 

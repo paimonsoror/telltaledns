@@ -556,6 +556,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         qlog: qlog_stats,
         config: ArcSwap::from_pointee(cfg.clone()),
         file_config: ArcSwap::from_pointee(load_files(&files).unwrap_or_else(|| cfg.clone())),
+        config_files: files.clone(),
         rollups: rollups.clone(),
         tail,
         anomalies: anomalies.clone(),

@@ -1034,5 +1034,5 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
   - damaged archives are refused.
 
 **Consequences:**
-- API download and the UI button follow; restore through the API is deferred (restoring under a running server is risky).
+- **Download:** `GET /api/v1/backup` (admin, audited `backup.create`, without the query log) and a Settings → System button. Restore through the API is deferred: restoring under a running server is risky.
 - `--include-cluster-key` (for disaster recovery of a lone primary) and passphrase encryption are follow-ups.

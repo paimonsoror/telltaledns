@@ -143,6 +143,7 @@ telltale backup create --include-qlog -o pi.ttbk # also the query log (can be la
 telltale backup show pi.ttbk                     # check it and list what's in it
 telltale backup restore pi.ttbk                  # on the new machine, TelltaleDNS stopped
 ```
+Admins can also download one in the web UI (**Settings → System → Download a backup**) or with `GET /api/v1/backup`. Each download is recorded in the audit log as `backup.create`. Downloads leave out the query log; use the command for that.
 
 **In a backup:**
 - the config files the node was started with;

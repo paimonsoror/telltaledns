@@ -305,6 +305,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/backup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a backup of this node.
+         * @description One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and
+         *     names made through the API, the audit log, statistics history, and anomaly baselines.
+         *     Sign-in sessions, lists, and the cluster identity aren't included, and neither is the
+         *     query log (use `telltale backup create --include-qlog` for that). Restore it with
+         *     `telltale backup restore FILE` on the new machine.
+         *
+         *     The file holds password hashes: keep it private. Admin only; audited as `backup.create`.
+         */
+        get: operations["backup_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients": {
         parameters: {
             query?: never;
@@ -2680,6 +2706,35 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    backup_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The backup, as an attachment named `telltale-<node>-<time>.ttbk`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
+                };
+            };
+            /** @description Backups aren't available on this node. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

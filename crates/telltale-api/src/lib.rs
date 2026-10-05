@@ -63,6 +63,13 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (req, by);
         Err(Problem::unavailable("this node isn't in a cluster"))
     }
+    /// A backup of this node (ADR-063) without the query log: a file name and the archive.
+    /// May take a moment (it copies the databases); called on a blocking thread.
+    fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
+        Err(Problem::unavailable(
+            "backups aren't available on this node",
+        ))
+    }
     /// A Git push webhook (ADR-049): checks the signature, then the ref at once.
     fn git_hook(&self, signature: Option<String>, body: Vec<u8>) -> Result<(), Problem> {
         let _ = (signature, body);
@@ -294,7 +301,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, cluster, config_api::cluster_promote, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,

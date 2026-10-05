@@ -574,6 +574,43 @@
         }
       }
     },
+    "/api/v1/backup": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Download a backup of this node.",
+        "description": "One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and\nnames made through the API, the audit log, statistics history, and anomaly baselines.\nSign-in sessions, lists, and the cluster identity aren't included, and neither is the\nquery log (use `telltale backup create --include-qlog` for that). Restore it with\n`telltale backup restore FILE` on the new machine.\n\nThe file holds password hashes: keep it private. Admin only; audited as `backup.create`.",
+        "operationId": "backup_download",
+        "responses": {
+          "200": {
+            "description": "The backup, as an attachment named `telltale-<node>-<time>.ttbk`.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Backups aren't available on this node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients": {
       "get": {
         "tags": [

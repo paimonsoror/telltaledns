@@ -265,6 +265,16 @@
       "docs": "audit-log"
     },
     {
+      "id": "backup",
+      "title": "Keep a copy of your setup",
+      "term": "Backup and restore",
+      "summary": "One file with your settings, users, API tokens, the devices and names you added, the audit log, and statistics history.",
+      "when": "Before an upgrade, before moving to new hardware, or just to have a copy.",
+      "example": "Download a backup on the old Pi, then run telltale backup restore on the new one.",
+      "caution": "The file holds password hashes: keep it private. The query log is only included from the command line (--include-qlog).",
+      "docs": "backups-and-moving-to-a-new-machine"
+    },
+    {
       "id": "system",
       "title": "This server",
       "term": "System information",

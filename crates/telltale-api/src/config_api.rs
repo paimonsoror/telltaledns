@@ -81,6 +81,7 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
             "/api/v1/cluster/promote",
             axum::routing::post(cluster_promote),
         )
+        .route("/api/v1/backup", axum::routing::get(backup_download))
         .with_state((backend, auth))
 }
 
@@ -133,6 +134,63 @@ pub(crate) async fn cluster_promote(
                 &serde_json::json!({ "emergency": emergency }),
             );
             Json(view).into_response()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Download a backup of this node.
+///
+/// One `.ttbk` file (ADR-063) with the configuration files, users and API tokens, devices and
+/// names made through the API, the audit log, statistics history, and anomaly baselines.
+/// Sign-in sessions, lists, and the cluster identity aren't included, and neither is the
+/// query log (use `telltale backup create --include-qlog` for that). Restore it with
+/// `telltale backup restore FILE` on the new machine.
+///
+/// The file holds password hashes: keep it private. Admin only; audited as `backup.create`.
+#[utoipa::path(get, path = "/api/v1/backup", tag = "system",
+    responses(
+        (status = 200, content_type = "application/octet-stream", body = Vec<u8>,
+            description = "The backup, as an attachment named `telltale-<node>-<time>.ttbk`."),
+        (status = 503, body = Problem, description = "Backups aren't available on this node."),
+    ))]
+pub(crate) async fn backup_download(
+    State((backend, auth)): State<Ctx>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let p = match principal(&ext) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    let b2 = Arc::clone(&backend);
+    let result = tokio::task::spawn_blocking(move || b2.backup())
+        .await
+        .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))));
+    match result {
+        Ok((name, bytes)) => {
+            auth.record(
+                &actor,
+                "backup.create",
+                &name,
+                &serde_json::json!({ "bytes": bytes.len() }),
+            );
+            let mut resp = bytes.into_response();
+            let h = resp.headers_mut();
+            h.insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
+            );
+            h.insert(
+                axum::http::header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store"),
+            );
+            // The name is ours (letters, digits, `-`, `.`), so it's safe in the header.
+            if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
+                h.insert(axum::http::header::CONTENT_DISPOSITION, v);
+            }
+            resp
         }
         Err(e) => e.into_response(),
     }
