@@ -310,6 +310,37 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - an agent token without `ops:cache` is refused;
     - flushing while the cache is under load causes no SERVFAIL and no measurable p99 change;
     - docs and help panels are updated.
+- [ ] **T6.14 Multi-pod awareness and a live topology on the Cluster page (proposed, owner request 2026-10-05).** Running several pods should be safe, visible, and understandable at a glance. *(CLU-008, CLU-009, OPS-002)*
+  - **Safety: one process per data directory.** On start a node takes an exclusive lock on its data directory. A second process pointing at the same directory refuses to start with a clear message. This guards the real risk of scaling a single-volume Deployment: shared identity, `state.db`, and query-log files across replicas.
+  - **What each node reports** (new optional heartbeat fields, N−1 safe):
+    - the Kubernetes node name (downward API `NODE_NAME`) and pod name;
+    - cache hit rate and entries;
+    - process start time (restarts).
+  - The Cluster page computes each node's share of the cluster's queries.
+  - **A live topology diagram** (SVG, no new dependencies, refreshed with the page every 5 s):
+    - sites as boxes, with the controller or primary and the replicas;
+    - resolver pods as chips coloured by health, grouped by Kubernetes node; more than six fold into "+N";
+    - the primary, witnesses, and emergency primaries marked;
+    - cluster links labelled with round-trip time: dashed and red when down, in amber when that node's config is behind;
+    - each node's share of queries as line thickness, so uneven load balancing shows;
+    - selecting a node or pod jumps to its row and its Machines card;
+    - a standalone node shows itself and how to form a cluster.
+  - **Per-pod views:**
+    - load balance (queries share), with a check when one pod takes far more than its share;
+    - per-pod cache hit rate, explaining that each pod has its own cache;
+    - pod churn (joins and expiries) on the timeline.
+  - **Docs:** a "Scaling in Kubernetes" section covering:
+    - `mode: scaled` (controller plus resolver pods) versus `allInOne`;
+    - why not to raise `replicas` on a single-volume Deployment;
+    - per-pod caches and rate limits;
+    - what a single k3s node does and doesn't protect against.
+  - **Homelab:** move the live homelab from its single Deployment to the scaled shape (a controller plus 2–3 resolver pods) and tune from real data. The owner gave the go on 2026-10-05. The change is in homelab-charts, and the Pi stays a replica.
+  - *AC:*
+    - a second process on the same data directory exits with a clear error, and the first keeps serving;
+    - the topology matches `GET /api/v1/cluster` for 1 node, 2 nodes, and 1 controller with 3 pods, and updates within 10 s when a pod is added or removed;
+    - the kind scaled e2e checks node names and per-pod shares;
+    - the homelab runs scaled for 24 h with no SERVFAIL increase and every pod in sync;
+    - docs, help, and site updated.
 - **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
 
 ## M7 — v1.x (post-1.0, priority order)
