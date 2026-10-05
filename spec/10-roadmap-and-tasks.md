@@ -235,6 +235,57 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - **Separately:** idle RSS without lists is now above the 20 MiB 1.0 gate on that build. That predates this task and should be revisited before the gate.
     - **Remaining:** the live check of Pi and homelab values against `free` and `/proc/loadavg` (needs a rollout).
     - **Deferred:** process restart counts (uptime shows restarts) and Grafana dashboard panels.
+- [ ] **T6.12 Quick rules: per-device and per-group allow/block, optionally expiring (proposed, owner request 2026-10-05).** For everyday cases:
+  - unblock a game's server for one person's phone for two hours;
+  - block a site for the kids' devices until tomorrow.
+
+  *(FLT-005, FLT-006, FLT-013, AGT-004; a proposed ADR covers precedence and expiry)*
+  - **A rule:**
+    - allow or block a domain and its subdomains;
+    - for chosen devices, groups, or everyone;
+    - optional expiry (a duration or a time) and a note;
+    - who made it and when.
+  - **Storage:** rules are stored like other UI-managed entries (ADR-040) and replicated as shared configuration in a cluster.
+  - **Matching:** applied through the matcher's manual-rules overlay, so a new rule takes effect immediately without recompiling the lists. Precedence: device rule > group rule > lists.
+  - **Expiry:** enforced on the server when the rule expires; the audit log records adds, removals, and expiries.
+  - **Surfaces:**
+    - the query log ("Allow for this device: 1 hour / today / always", "Block for this device / group");
+    - a device's page ("Block a site…");
+    - a Rules page (active rules with a countdown, remove);
+    - "Why?" and explain name the rule ("allowed by a quick rule for Mom's phone, expires 21:30");
+    - the API and an agent scope, `config:write:rules`, so agents can do it with a reason header and impact estimate.
+  - **Docs set honest limits:**
+    - DNS sees whole sites (domains), not pages;
+    - an app uses many domains (bundles come with FLT-012);
+    - a rule follows the device only as well as the device is recognised (DHCP reservation; "private Wi-Fi address" off);
+    - devices keep cached answers for a few minutes;
+    - mobile data, VPNs, or hard-coded DNS bypass it unless the router blocks outside DNS.
+  - **Not parental controls:** no screen time, no content categories.
+  - *AC:*
+    - a device-scoped allow beats a list block for that device only, and other devices stay blocked;
+    - a group-scoped block applies to every device in the group;
+    - an expiring rule stops applying within 5 s of its expiry with no restart, and the audit log shows it;
+    - in a cluster, a rule made on the replica's UI applies on every node;
+    - adding a rule doesn't trigger a list recompile;
+    - `make bench-smoke` stays within budget with 1,000 rules;
+    - the Playwright suite covers "allow for 1 hour" from the query log.
+- [ ] **T6.13 Cache tools: inspect and flush, across the cluster (proposed, owner request 2026-10-05).** The endpoints `spec/07` §1 already plans (`GET /cache/stats`, `POST /cache/flush` with `{name?, subtree?}`) and the `flush_cache` agent operation (`spec/13` §3, scope `ops:cache`). *(DNS-006, API-005, AGT-004, CLU-002)*
+  - **Lookup:** what the cache holds for a name: answer, TTL left, stale or prefetched, DNSSEC status, and which upstream answered.
+  - **Flush:** one name, a subtree, or everything. By default it goes to every node over the cluster channel; an option limits it to one node. Every flush is audit-logged.
+  - **UI, with no new sidebar page:**
+    - the query log's "Why?" and the Explain page show the cache state for that name, with "Flush this name";
+    - a Cache card under Settings → System shows hit rate, entries, memory, evictions, stale answers served, and prefetches, plus a lookup box and the flush actions.
+  - **Help text says plainly:**
+    - flushing doesn't clear devices' own caches;
+    - blocked answers are never cached, so unblocking needs no flush;
+    - to change what a name resolves to, use Names on my network.
+  - *AC:*
+    - a flushed name is fetched from the upstream on the next query, on every node;
+    - a subtree flush removes the name and its subdomains only;
+    - viewers can look but not flush;
+    - an agent token without `ops:cache` is refused;
+    - flushing while the cache is under load causes no SERVFAIL and no measurable p99 change;
+    - docs and help panels are updated.
 - **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
 
 ## M7 — v1.x (post-1.0, priority order)
