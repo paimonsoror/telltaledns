@@ -549,17 +549,22 @@ def render_nerds(page, arch, adrs, reqs):
                 html.escape(it[key]), html.escape(it["summary"]), code, _chips(it, adrs, reqs)))
         return "\n".join(out)
 
+    # The tech stack as one card per area: each library with why it's there, and (for Rust
+    # crates) small chips naming the TelltaleDNS crates that use it, from Cargo.toml.
     stack = []
     for g in arch["stack"]:
-        rows = []
+        items = []
         for it in g["items"]:
             where = ""
             if it.get("crate"):
                 used = sorted(n for n in crates if it["crate"] in cargo_deps(os.path.join(ROOT, "crates", n, "Cargo.toml")))
-                where = '<span class="muted small">{}</span>'.format(", ".join(u.replace("telltale-", "") for u in used))
-            rows.append("<tr><td><b>{}</b></td><td>{}</td><td>{}</td></tr>".format(html.escape(it["name"]), html.escape(it["why"]), where))
-        stack.append('<h3>{}</h3><div class="table-wrap"><table class="stack"><thead><tr><th>What</th><th>Why</th><th>Used in</th></tr></thead><tbody>{}</tbody></table></div>'.format(
-            html.escape(g["group"]), "".join(rows)))
+                where = '<p class="used">used in {}</p>'.format(" ".join(
+                    '<a class="chip crate" href="#crate-{}">{}</a>'.format(u, html.escape(u.replace("telltale-", "") if u != "telltale" else "binary"))
+                    for u in used))
+            items.append("<li><b>{}</b><p>{}</p>{}</li>".format(html.escape(it["name"]), html.escape(it["why"]), where))
+        stack.append('<article class="card stack-card"><h3>{}</h3><ul class="stack-list">{}</ul></article>'.format(
+            html.escape(g["group"]), "".join(items)))
+    stack = ['<div class="stack-grid">'] + stack + ["</div>"]
 
     # The release gates, straight from spec/00 §5.
     gates = []

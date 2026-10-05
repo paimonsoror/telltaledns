@@ -246,5 +246,13 @@ svg.has-sel .arch-node:not(.hov-node):not(.hov-linked):not(.sel-node):not(.sel-l
 .pipe details[open] summary { margin-bottom: 6px; }
 .pipe p { margin: .3em 0 0; color: var(--ink-2); }
 .step-n { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--brand-fill); color: #e8eef6; font-size: 13px; flex: none; }
-.stack td:first-child { white-space: nowrap; }
+.stack-grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); align-items: start; }
+.stack-card h3 { margin: 0 0 6px; }
+.stack-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.stack-list li { padding: 12px 0; border-top: 1px solid var(--line); }
+.stack-list li:first-child { border-top: 0; padding-top: 4px; }
+.stack-list b { font-size: 15.5px; color: var(--ink); }
+.stack-list p { margin: .2em 0 0 !important; }
+.stack-list .used { font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 6px !important; }
+.chip.crate { background: var(--surface-2); color: var(--ink-2); font-weight: 500; }
 .small { font-size: 13px; }
