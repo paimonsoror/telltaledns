@@ -127,6 +127,9 @@ export const api = {
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   rules: () => get<S['Items_RuleInfo']>('/rules'),
+  cacheStats: () => get<S['Items_CacheNodeStats']>('/cache/stats'),
+  cacheLookup: (name: string) => get<S['CacheLookup']>('/cache/lookup', { name }),
+  cacheFlush: (body: S['CacheFlushRequest']) => post<S['CacheFlushResult']>('/cache/flush', body),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
 
   // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a

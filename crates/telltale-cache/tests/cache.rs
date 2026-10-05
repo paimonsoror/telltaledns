@@ -469,6 +469,43 @@ fn dns_006_flush_by_name_and_subtree() {
     assert_eq!(cache.stats().entries, 0);
 }
 
+/// REQ: DNS-006 (T6.13) — inspecting a name lists each cached variant with its TTL and age,
+/// without counting as a hit; the counted flush reports how many entries went.
+#[test]
+fn dns_006_inspect_and_counted_flush() {
+    let cache = Cache::new(CachePolicy::default());
+    let t0 = Instant::now();
+    for (n, t) in [
+        ("www.example.com", rtype::A),
+        ("www.example.com", rtype::AAAA),
+        ("other.example", rtype::A),
+    ] {
+        let m = query_bytes(n, t, None, 1);
+        let q = parse_query(&m).unwrap();
+        cache
+            .insert(&key(&q), &q, &upstream_a(&q, &[300]), t0)
+            .unwrap();
+    }
+    let name = NameBuf::from_presentation("WWW.Example.com").unwrap();
+    let later = t0 + std::time::Duration::from_secs(40);
+    let seen = cache.inspect(&name, later);
+    assert_eq!(seen.len(), 2, "A and AAAA, not the other name");
+    assert_eq!(seen[0].qtype, rtype::A);
+    assert_eq!(seen[1].qtype, rtype::AAAA);
+    assert!(
+        seen.iter()
+            .all(|e| e.ttl == 300 && e.age_secs == 40 && e.rcode == 0)
+    );
+    assert_eq!(cache.stats().hits, 0, "inspection isn't a hit");
+    let none = cache.inspect(
+        &NameBuf::from_presentation("nothing.example").unwrap(),
+        later,
+    );
+    assert_eq!(none.len(), 0);
+    assert_eq!(cache.flush_all_counted(), 3);
+    assert_eq!(cache.stats().entries, 0);
+}
+
 #[test]
 fn dns_006_byte_budget_is_respected() {
     let policy = CachePolicy {

@@ -6,6 +6,7 @@
   import { route, navigate } from '../lib/router.svelte';
   import { ago, dateTime, duration } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
+  import CacheCard from '../lib/components/CacheCard.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
 
   const tabs = $derived(
@@ -546,6 +547,8 @@
         <p class="small">{info.update.how}</p>
       </section>
     {/if}
+    <!-- REQ: DNS-006 (T6.13) -->
+    <CacheCard />
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->
       <section class="card">

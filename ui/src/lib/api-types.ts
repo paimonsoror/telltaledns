@@ -331,6 +331,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cache/flush": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Flush the cache: one name, a subtree, or everything.
+         * @description With `name`, removes that name's cached answers (with `subtree`, every name under it too);
+         *     without, empties the cache. By default every node in the cluster flushes; `node` limits it to
+         *     one. The next query for a flushed name is asked of the upstreams again. This doesn't clear
+         *     devices' own caches, blocked answers are never cached (unblocking needs no flush), and to
+         *     change what a name resolves to, use local names instead. Needs the operator role (or the
+         *     `ops:cache` agent scope); audit-logged as `cache.flush`.
+         */
+        post: operations["flush"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cache/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the cache holds for a name, on every node.
+         * @description Each cached answer for exactly `name` (every query type, and the variants for clients that
+         *     set DO or CD), with the node that holds it, its response code, answer count, whether it was
+         *     DNSSEC-validated, how long it stays fresh (negative: how long it has been stale), its age,
+         *     size, and hits. Looking doesn't count as a hit or change anything. Blocked answers are never
+         *     cached, so they don't appear.
+         */
+        get: operations["lookup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cache/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Cache counters, per node.
+         * @description For each node (this one first): entries, memory, hits, misses, the hit rate, stale answers
+         *     served, prefetches, evictions, and answers that couldn't be cached. Each node has its own
+         *     cache, so a cluster shows one row per node.
+         */
+        get: operations["stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients": {
         parameters: {
             query?: never;
@@ -1074,6 +1145,95 @@ export interface components {
             /** @description `0.1.0` (release), `0.1.0-edge.47` (main build), or `dev` (local build). */
             version: string;
         };
+        /** @description One cached answer for a name. */
+        CacheEntry: {
+            /** Format: int64 */
+            ageSeconds: number;
+            /** Format: int32 */
+            answers: number;
+            /** @description DNSSEC-validated (the AD bit). */
+            authentic: boolean;
+            /** Format: int64 */
+            bytes: number;
+            /** @description The variant for clients that set CD (checking disabled). */
+            checkingDisabled: boolean;
+            /** @description The variant for clients that set DO (they get DNSSEC records). */
+            dnssecOk: boolean;
+            /** Format: int32 */
+            hits: number;
+            /** @description The node holding it (absent on a standalone node). */
+            node?: string | null;
+            /** @example A */
+            qtype: string;
+            /** @example NOERROR */
+            rcode: string;
+            /**
+             * Format: int64
+             * @description Seconds until it goes stale; negative: how long it has been stale.
+             */
+            ttlLeftSeconds: number;
+        };
+        /** @description What one node removed. */
+        CacheFlushNode: {
+            error?: string | null;
+            node?: string | null;
+            /**
+             * Format: int64
+             * @description Entries removed; absent when the node couldn't be reached.
+             */
+            removed?: number | null;
+        };
+        /** @description What to flush (`POST /api/v1/cache/flush`). */
+        CacheFlushRequest: {
+            /**
+             * @description A name; absent: everything.
+             * @example www.example.com
+             */
+            name?: string | null;
+            /** @description One node only (its site or ID); absent: every node. */
+            node?: string | null;
+            /** @description Also every name under `name`. */
+            subtree?: boolean | null;
+        };
+        /** @description The result of a flush. */
+        CacheFlushResult: {
+            nodes: components["schemas"]["CacheFlushNode"][];
+            /** Format: int64 */
+            totalRemoved: number;
+        };
+        /** @description What the cache holds for a name. */
+        CacheLookup: {
+            entries: components["schemas"]["CacheEntry"][];
+            name: string;
+        };
+        /** @description REQ: DNS-006 (T6.13) — one node's cache counters. */
+        CacheNodeStats: {
+            /** Format: int64 */
+            bytes: number;
+            /** Format: int64 */
+            entries: number;
+            /** Format: int64 */
+            evictions: number;
+            /**
+             * Format: double
+             * @description hits / (hits + misses), percent; absent before any lookup.
+             */
+            hitPercent?: number | null;
+            /** Format: int64 */
+            hits: number;
+            /** Format: int64 */
+            inserts: number;
+            /** Format: int64 */
+            misses: number;
+            /** @description The node (its site), or absent for a standalone node. */
+            node?: string | null;
+            /** Format: int64 */
+            prefetches: number;
+            /** Format: int64 */
+            staleServed: number;
+            /** Format: int64 */
+            uncacheable: number;
+        };
         /** @description What a device change did, or would do with `dryRun=true` (AGT-002). */
         ClientChange: {
             after?: components["schemas"]["ClientInfo"] | null;
@@ -1749,6 +1909,38 @@ export interface components {
                 windowSeconds: number;
                 /** @description The window examined (RFC 3339 start, and length in seconds). */
                 windowStart: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_CacheNodeStats: {
+            items: {
+                /** Format: int64 */
+                bytes: number;
+                /** Format: int64 */
+                entries: number;
+                /** Format: int64 */
+                evictions: number;
+                /**
+                 * Format: double
+                 * @description hits / (hits + misses), percent; absent before any lookup.
+                 */
+                hitPercent?: number | null;
+                /** Format: int64 */
+                hits: number;
+                /** Format: int64 */
+                inserts: number;
+                /** Format: int64 */
+                misses: number;
+                /** @description The node (its site), or absent for a standalone node. */
+                node?: string | null;
+                /** Format: int64 */
+                prefetches: number;
+                /** Format: int64 */
+                staleServed: number;
+                /** Format: int64 */
+                uncacheable: number;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -3140,6 +3332,91 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    flush: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CacheFlushRequest"];
+            };
+        };
+        responses: {
+            /** @description What each node removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheFlushResult"];
+                };
+            };
+            /** @description Not a domain name, or an unknown node. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    lookup: {
+        parameters: {
+            query: {
+                /** @description The name to look up, e.g. `www.example.com`. */
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cached answers (empty when there are none). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CacheLookup"];
+                };
+            };
+            /** @description Not a domain name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One row per node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_CacheNodeStats"];
                 };
             };
         };

@@ -25,6 +25,27 @@ use telltale_proto::{NameBuf, Query};
 pub use entry::{Client, Uncacheable};
 pub use singleflight::{Flight, FlightGuard, Singleflight};
 
+/// One cached answer, as [`Cache::inspect`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryInfo {
+    pub qtype: u16,
+    /// The routing view (which upstream group's answer this is).
+    pub view: u16,
+    /// Cached for clients that set DO (DNSSEC records wanted).
+    pub dnssec_ok: bool,
+    /// Cached for clients that set CD (checking disabled).
+    pub checking_disabled: bool,
+    pub rcode: u8,
+    /// The AD bit: the answer was DNSSEC-validated.
+    pub authentic: bool,
+    pub answers: u16,
+    /// Seconds it's fresh for, from when it was stored.
+    pub ttl: u32,
+    pub age_secs: u32,
+    pub bytes: usize,
+    pub hits: u32,
+}
+
 use crate::entry::Entry;
 use crate::s3fifo::S3Fifo;
 
@@ -345,6 +366,50 @@ impl Cache {
         let now = Instant::now();
         let e = entry::prepare(q, resp, None, now).ok()?;
         entry::write(&e, client, now, None, out)
+    }
+
+    /// REQ: DNS-006 (T6.13) — every cached answer for `name` (any type, view, or DO/CD
+    /// variant), for inspection. Takes each shard lock briefly; never counts as a hit.
+    pub fn inspect(&self, name: &NameBuf, now: Instant) -> Vec<EntryInfo> {
+        let mut out = Vec::new();
+        for s in &self.shards {
+            s.0.lock().fifo.for_each(|k, e| {
+                if *e.name != *name.as_wire() {
+                    return;
+                }
+                let flags = e.wire.get(3).copied().unwrap_or(0);
+                let age = e.elapsed_secs(now);
+                out.push(EntryInfo {
+                    qtype: k.qtype,
+                    view: k.view,
+                    dnssec_ok: k.flags & 1 != 0,
+                    checking_disabled: k.flags & 2 != 0,
+                    rcode: flags & 0x0f,
+                    authentic: flags & 0x20 != 0,
+                    answers: e
+                        .wire
+                        .get(6..8)
+                        .map_or(0, |b| u16::from_be_bytes([b[0], b[1]])),
+                    ttl: e.ttl,
+                    age_secs: age,
+                    bytes: e.weight(),
+                    hits: e.hits,
+                });
+            });
+        }
+        out.sort_by_key(|e| (e.qtype, e.view, e.dnssec_ok, e.checking_disabled));
+        out
+    }
+
+    /// Removes everything; returns how many entries there were.
+    pub fn flush_all_counted(&self) -> usize {
+        let mut n = 0;
+        for s in &self.shards {
+            let mut g = s.0.lock();
+            n += g.fifo.len();
+            g.fifo.clear();
+        }
+        n
     }
 
     /// Removes everything.

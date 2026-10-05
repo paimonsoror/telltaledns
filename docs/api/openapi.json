@@ -636,6 +636,113 @@
         }
       }
     },
+    "/api/v1/cache/flush": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Flush the cache: one name, a subtree, or everything.",
+        "description": "With `name`, removes that name's cached answers (with `subtree`, every name under it too);\nwithout, empties the cache. By default every node in the cluster flushes; `node` limits it to\none. The next query for a flushed name is asked of the upstreams again. This doesn't clear\ndevices' own caches, blocked answers are never cached (unblocking needs no flush), and to\nchange what a name resolves to, use local names instead. Needs the operator role (or the\n`ops:cache` agent scope); audit-logged as `cache.flush`.",
+        "operationId": "flush",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CacheFlushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What each node removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CacheFlushResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a domain name, or an unknown node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache/lookup": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "What the cache holds for a name, on every node.",
+        "description": "Each cached answer for exactly `name` (every query type, and the variants for clients that\nset DO or CD), with the node that holds it, its response code, answer count, whether it was\nDNSSEC-validated, how long it stays fresh (negative: how long it has been stale), its age,\nsize, and hits. Looking doesn't count as a hit or change anything. Blocked answers are never\ncached, so they don't appear.",
+        "operationId": "lookup",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "The name to look up, e.g. `www.example.com`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cached answers (empty when there are none).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CacheLookup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a domain name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cache/stats": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Cache counters, per node.",
+        "description": "For each node (this one first): entries, memory, hits, misses, the hit rate, stale answers\nserved, prefetches, evictions, and answers that couldn't be cached. Each node has its own\ncache, so a cluster shows one row per node.",
+        "operationId": "stats",
+        "responses": {
+          "200": {
+            "description": "One row per node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_CacheNodeStats"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients": {
       "get": {
         "tags": [
@@ -2758,6 +2865,249 @@
           }
         }
       },
+      "CacheEntry": {
+        "type": "object",
+        "description": "One cached answer for a name.",
+        "required": [
+          "qtype",
+          "rcode",
+          "answers",
+          "authentic",
+          "dnssecOk",
+          "checkingDisabled",
+          "ttlLeftSeconds",
+          "ageSeconds",
+          "bytes",
+          "hits"
+        ],
+        "properties": {
+          "ageSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "answers": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "authentic": {
+            "type": "boolean",
+            "description": "DNSSEC-validated (the AD bit)."
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "checkingDisabled": {
+            "type": "boolean",
+            "description": "The variant for clients that set CD (checking disabled)."
+          },
+          "dnssecOk": {
+            "type": "boolean",
+            "description": "The variant for clients that set DO (they get DNSSEC records)."
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node holding it (absent on a standalone node)."
+          },
+          "qtype": {
+            "type": "string",
+            "example": "A"
+          },
+          "rcode": {
+            "type": "string",
+            "example": "NOERROR"
+          },
+          "ttlLeftSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until it goes stale; negative: how long it has been stale."
+          }
+        }
+      },
+      "CacheFlushNode": {
+        "type": "object",
+        "description": "What one node removed.",
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "removed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Entries removed; absent when the node couldn't be reached.",
+            "minimum": 0
+          }
+        }
+      },
+      "CacheFlushRequest": {
+        "type": "object",
+        "description": "What to flush (`POST /api/v1/cache/flush`).",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A name; absent: everything.",
+            "example": "www.example.com"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One node only (its site or ID); absent: every node."
+          },
+          "subtree": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Also every name under `name`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CacheFlushResult": {
+        "type": "object",
+        "description": "The result of a flush.",
+        "required": [
+          "totalRemoved",
+          "nodes"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CacheFlushNode"
+            }
+          },
+          "totalRemoved": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "CacheLookup": {
+        "type": "object",
+        "description": "What the cache holds for a name.",
+        "required": [
+          "name",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CacheEntry"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CacheNodeStats": {
+        "type": "object",
+        "description": "REQ: DNS-006 (T6.13) — one node's cache counters.",
+        "required": [
+          "entries",
+          "bytes",
+          "hits",
+          "misses",
+          "staleServed",
+          "prefetches",
+          "evictions",
+          "inserts",
+          "uncacheable"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "evictions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hitPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "hits / (hits + misses), percent; absent before any lookup."
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "inserts": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "misses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (its site), or absent for a standalone node."
+          },
+          "prefetches": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "staleServed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "uncacheable": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ClientChange": {
         "type": "object",
         "description": "What a device change did, or would do with `dryRun=true` (AGT-002).",
@@ -4523,6 +4873,102 @@
                 "windowStart": {
                   "type": "string",
                   "description": "The window examined (RFC 3339 start, and length in seconds)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_CacheNodeStats": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: DNS-006 (T6.13) — one node's cache counters.",
+              "required": [
+                "entries",
+                "bytes",
+                "hits",
+                "misses",
+                "staleServed",
+                "prefetches",
+                "evictions",
+                "inserts",
+                "uncacheable"
+              ],
+              "properties": {
+                "bytes": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "entries": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "evictions": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "hitPercent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double",
+                  "description": "hits / (hits + misses), percent; absent before any lookup."
+                },
+                "hits": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "inserts": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "misses": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node (its site), or absent for a standalone node."
+                },
+                "prefetches": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "staleServed": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "uncacheable": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
                 }
               }
             }

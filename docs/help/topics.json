@@ -326,6 +326,16 @@
       "docs": "clusters"
     },
     {
+      "id": "cache-tools",
+      "title": "What's in the cache, and flushing it",
+      "term": "DNS cache",
+      "summary": "TelltaleDNS keeps upstream answers until their time to live runs out, so repeat questions are answered in microseconds. Here you can see each node's hit rate, look up what's cached for a name (and how long it stays fresh), and flush a name, everything under it, or the whole cache, on every node or one.",
+      "when": "A site moved to a new address and you don't want to wait for the old answer to expire, or you're checking whether an answer came from the cache.",
+      "example": "Look up www.example.com: A, NOERROR, 1 answer, validated, 212 s left, on both nodes. Flush it, and the next query asks the upstreams again.",
+      "caution": "Flushing doesn't clear devices' own caches (a phone or browser may keep the old answer for a few minutes). Blocked answers are never cached, so unblocking needs no flush. To change what a name resolves to, use Names on my network instead. Each node in a cluster has its own cache.",
+      "docs": "cache-tools"
+    },
+    {
       "id": "quick-rules",
       "title": "Allow or block a site for one device or group",
       "term": "Quick rules",

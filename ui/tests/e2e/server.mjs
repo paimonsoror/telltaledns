@@ -2,6 +2,7 @@
 // directory, DNS on 127.0.0.1:15354, the API and UI on 127.0.0.1:18054, an inline blocklist,
 // and a local record, so tests don't depend on the internet.
 import { spawn } from 'node:child_process';
+import { createSocket } from 'node:dgram';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +31,20 @@ url = "udp://127.0.0.1:9"
 [[upstream_group]]
 name = "default"
 members = ["nowhere"]
+
+# T6.13 — a stub (below) that answers every name with 192.0.2.7, so there's something to cache.
+[[upstream]]
+name = "router"
+url = "udp://127.0.0.1:15399"
+
+[[upstream_group]]
+name = "router"
+members = ["router"]
+
+[[route]]
+match_suffix = ["cache.e2e.test"]
+upstream_group = "router"
+dnssec_nta = true
 
 # ADR-050 — every e2e query comes from 127.0.0.1: a network group puts them in "lab".
 [[group]]
@@ -87,6 +102,20 @@ role = "viewer"
   }
   writeFileSync(cfg, readFileSync(cfg, 'utf8') + extra);
 }
+
+// The stub upstream: NOERROR, one A record (TTL 300) for whatever was asked.
+const stub = createSocket('udp4');
+stub.on('message', (q, from) => {
+  if (q.length < 17) return;
+  let end = 12;
+  while (end < q.length && q[end] !== 0) end += q[end] + 1;
+  end += 5; // the root label, QTYPE, QCLASS
+  if (end > q.length) return;
+  const head = Buffer.from([q[0], q[1], 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+  const answer = Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 1, 0x2c, 0, 4, 192, 0, 2, 7]);
+  stub.send(Buffer.concat([head, q.subarray(12, end), answer]), from.port, from.address);
+});
+stub.bind(15399, '127.0.0.1');
 
 const bin = process.env.TELLTALE_BIN ?? resolve(here, '../../../target/debug/telltale');
 const child = spawn(bin, ['run', '-c', cfg], { stdio: 'inherit' });

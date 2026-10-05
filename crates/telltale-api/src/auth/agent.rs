@@ -117,7 +117,11 @@ pub fn required(method: &Method, path: &str) -> Need {
     if read {
         match p {
             "/api/v1/auth/me" | "/api/v1/auth/status" | "/mcp" => return Need::Any,
-            "/api/v1/system/info" | "/api/v1/cluster" | "/api/v1/explain" => {
+            "/api/v1/system/info"
+            | "/api/v1/cluster"
+            | "/api/v1/explain"
+            | "/api/v1/cache/stats"
+            | "/api/v1/cache/lookup" => {
                 return Need::Scope("analytics:read");
             }
             "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
@@ -148,6 +152,10 @@ pub fn required(method: &Method, path: &str) -> Need {
     // MCP: each tool's REST calls are checked on their own (ADR-065).
     if *method == Method::POST && p == "/mcp" {
         return Need::Any;
+    }
+    // REQ: AGT-004 (T6.13) — flushing the cache is an immediate low-risk op (spec/13 §3).
+    if *method == Method::POST && p == "/api/v1/cache/flush" {
+        return Need::Scope("ops:cache");
     }
     if *method == Method::POST && p == "/api/v1/cluster/promote" {
         return Need::Scope("cluster:admin");
@@ -364,6 +372,24 @@ mod tests {
             Scope("config:write:rules")
         );
         assert_eq!(required(&Method::PUT, "/api/v1/rules"), Forbidden);
+    }
+
+    /// REQ: AGT-004 (T6.13) — looking at the cache is analytics; flushing needs `ops:cache`.
+    #[test]
+    fn agt_004_cache_routes_need_their_scope() {
+        use Need::Scope;
+        assert_eq!(
+            required(&Method::GET, "/api/v1/cache/stats"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/cache/lookup"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/cache/flush"),
+            Scope("ops:cache")
+        );
     }
 
     #[test]

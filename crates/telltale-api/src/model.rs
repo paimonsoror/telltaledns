@@ -815,6 +815,88 @@ pub struct ForwardInput {
     pub servers: Vec<String>,
 }
 
+/// REQ: DNS-006 (T6.13) — one node's cache counters.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheNodeStats {
+    /// The node (its site), or absent for a standalone node.
+    pub node: Option<String>,
+    pub entries: u64,
+    pub bytes: u64,
+    pub hits: u64,
+    pub misses: u64,
+    /// hits / (hits + misses), percent; absent before any lookup.
+    pub hit_percent: Option<f64>,
+    pub stale_served: u64,
+    pub prefetches: u64,
+    pub evictions: u64,
+    pub inserts: u64,
+    pub uncacheable: u64,
+}
+
+/// One cached answer for a name.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheEntry {
+    /// The node holding it (absent on a standalone node).
+    pub node: Option<String>,
+    #[schema(example = "A")]
+    pub qtype: String,
+    #[schema(example = "NOERROR")]
+    pub rcode: String,
+    pub answers: u16,
+    /// DNSSEC-validated (the AD bit).
+    pub authentic: bool,
+    /// The variant for clients that set DO (they get DNSSEC records).
+    pub dnssec_ok: bool,
+    /// The variant for clients that set CD (checking disabled).
+    pub checking_disabled: bool,
+    /// Seconds until it goes stale; negative: how long it has been stale.
+    pub ttl_left_seconds: i64,
+    pub age_seconds: u64,
+    pub bytes: u64,
+    pub hits: u32,
+}
+
+/// What the cache holds for a name.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheLookup {
+    pub name: String,
+    pub entries: Vec<CacheEntry>,
+}
+
+/// What to flush (`POST /api/v1/cache/flush`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CacheFlushRequest {
+    /// A name; absent: everything.
+    #[schema(example = "www.example.com")]
+    pub name: Option<String>,
+    /// Also every name under `name`.
+    pub subtree: Option<bool>,
+    /// One node only (its site or ID); absent: every node.
+    pub node: Option<String>,
+}
+
+/// What one node removed.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheFlushNode {
+    pub node: Option<String>,
+    /// Entries removed; absent when the node couldn't be reached.
+    pub removed: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// The result of a flush.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheFlushResult {
+    pub total_removed: u64,
+    pub nodes: Vec<CacheFlushNode>,
+}
+
 /// REQ: FLT-005 (T6.12, ADR-067) — a quick rule to create or replace
 /// (`PUT /api/v1/rules/{id}`).
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]

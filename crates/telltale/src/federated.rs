@@ -62,6 +62,15 @@ enum Read {
     },
     /// The configuration version (a replica's `If-Match` and `ETag` use the primary's; T5.7).
     ConfigVersion,
+    /// REQ: DNS-006 (T6.13) — the peer's own cache: counters, a lookup, a flush.
+    CacheStats,
+    CacheLookup {
+        name: String,
+    },
+    CacheFlush {
+        name: Option<String>,
+        subtree: bool,
+    },
 }
 
 /// Answers a peer's read from this node's own data.
@@ -91,6 +100,12 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             limit,
         } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
+        Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
+        Read::CacheLookup { name } => serde_json::to_vec(&b.cache_lookup(&name).map_err(text)?),
+        Read::CacheFlush { name, subtree } => serde_json::to_vec(
+            &b.cache_flush(name.as_deref(), subtree, None)
+                .map_err(text)?,
+        ),
     }
     .map_err(|e| e.to_string())
 }
@@ -303,6 +318,41 @@ impl Federated {
         ok
     }
 
+    /// Asks every reachable peer the same read; decoded answers with each peer's label.
+    fn everyone_labelled<T: serde::de::DeserializeOwned>(
+        &self,
+        read: impl Fn() -> Read,
+    ) -> Vec<(String, T)> {
+        let reads = self
+            .cluster
+            .reachable_peers()
+            .into_iter()
+            .map(|p| (p, read()))
+            .collect();
+        self.gather(reads)
+            .into_iter()
+            .filter_map(|(peer, body)| {
+                serde_json::from_slice(&body)
+                    .ok()
+                    .map(|v| (self.label_of(&peer), v))
+            })
+            .collect()
+    }
+
+    /// A node named by site or ID: `None` for this node, `Some(peer ID)` for a peer.
+    fn resolve_node(&self, node: &str) -> Result<Option<String>, Problem> {
+        let me = &self.cluster.identity.meta;
+        if node == me.node_id || node == self.own_label() {
+            return Ok(None);
+        }
+        self.cluster
+            .members()
+            .into_iter()
+            .find(|m| m.node_id == node || (!m.site.is_empty() && m.site == node))
+            .map(|m| Some(m.node_id))
+            .ok_or_else(|| Problem::invalid(format!("`node`: no cluster node `{node}`")))
+    }
+
     /// Asks every reachable peer the same read; decoded answers.
     fn everyone<T: serde::de::DeserializeOwned>(&self, read: impl Fn() -> Read) -> Vec<T> {
         let reads = self
@@ -499,6 +549,120 @@ impl Backend for Federated {
     }
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.local.forwards()
+    }
+    // REQ: DNS-006, CLU-002 (T6.13) — each node has its own cache: one row per node.
+    fn cache_stats(&self) -> Vec<telltale_api::model::CacheNodeStats> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = self
+            .local
+            .cache_stats()
+            .into_iter()
+            .map(|mut r| {
+                r.node = Some(own.clone());
+                r
+            })
+            .collect();
+        for (label, peer_rows) in
+            self.everyone_labelled::<Vec<telltale_api::model::CacheNodeStats>>(|| Read::CacheStats)
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        rows
+    }
+    fn cache_lookup(&self, name: &str) -> Result<Vec<telltale_api::model::CacheEntry>, Problem> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = self
+            .local
+            .cache_lookup(name)?
+            .into_iter()
+            .map(|mut r| {
+                r.node = Some(own.clone());
+                r
+            })
+            .collect();
+        let n = name.to_owned();
+        for (label, peer_rows) in
+            self.everyone_labelled::<Vec<telltale_api::model::CacheEntry>>(|| Read::CacheLookup {
+                name: n.clone(),
+            })
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        Ok(rows)
+    }
+    fn cache_flush(
+        &self,
+        name: Option<&str>,
+        subtree: bool,
+        node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::CacheFlushNode>, Problem> {
+        use telltale_api::model::CacheFlushNode;
+        let label = |mut v: Vec<CacheFlushNode>, l: &str| {
+            for r in &mut v {
+                r.node = Some(l.to_owned());
+            }
+            v
+        };
+        let read = || Read::CacheFlush {
+            name: name.map(str::to_owned),
+            subtree,
+        };
+        match node.map(|n| self.resolve_node(n)).transpose()? {
+            // One node: this one, or one peer.
+            Some(None) => Ok(label(
+                self.local.cache_flush(name, subtree, None)?,
+                &self.own_label(),
+            )),
+            Some(Some(peer)) => {
+                let l = self.label_of(&peer);
+                Ok(match self.call_one(&peer, &read(), DEADLINE) {
+                    Some(Ok(body)) => label(serde_json::from_slice(&body).unwrap_or_default(), &l),
+                    Some(Err(e)) => vec![CacheFlushNode {
+                        node: Some(l),
+                        removed: None,
+                        error: Some(e),
+                    }],
+                    None => vec![CacheFlushNode {
+                        node: Some(l),
+                        removed: None,
+                        error: Some("no runtime".into()),
+                    }],
+                })
+            }
+            // Every node; those that don't answer are listed with an error.
+            None => {
+                let mut out = label(
+                    self.local.cache_flush(name, subtree, None)?,
+                    &self.own_label(),
+                );
+                let answered = self.everyone_labelled::<Vec<CacheFlushNode>>(read);
+                let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
+                for (l, v) in answered {
+                    out.extend(label(v, &l));
+                }
+                for m in self.cluster.members() {
+                    let l = if m.site.is_empty() {
+                        m.node_id.clone()
+                    } else {
+                        m.site.clone()
+                    };
+                    if !names.contains(&l) {
+                        out.push(CacheFlushNode {
+                            node: Some(l),
+                            removed: None,
+                            error: Some("not reachable: flush it when it's back".into()),
+                        });
+                    }
+                }
+                Ok(out)
+            }
+        }
     }
     // REQ: FLT-005 (T6.12) — quick rules are shared configuration: this node's copy is the
     // cluster's. (Without this, the trait's empty default hid them on clustered nodes.)

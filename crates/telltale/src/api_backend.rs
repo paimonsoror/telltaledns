@@ -1119,6 +1119,74 @@ impl Backend for ApiBackend {
         self.list_forwards()
     }
 
+    // REQ: DNS-006 (T6.13) — this node's cache.
+    fn cache_stats(&self) -> Vec<telltale_api::model::CacheNodeStats> {
+        let s = self.src.cache.stats();
+        let looked = s.hits + s.misses;
+        #[allow(clippy::cast_precision_loss)] // a percentage for display
+        let hit_percent =
+            (looked > 0).then(|| (s.hits as f64 / looked as f64 * 1000.0).round() / 10.0);
+        vec![telltale_api::model::CacheNodeStats {
+            node: None,
+            entries: s.entries as u64,
+            bytes: s.bytes as u64,
+            hits: s.hits,
+            misses: s.misses,
+            hit_percent,
+            stale_served: s.stale_served,
+            prefetches: s.prefetches,
+            evictions: s.evictions,
+            inserts: s.inserts,
+            uncacheable: s.uncacheable,
+        }]
+    }
+
+    fn cache_lookup(&self, name: &str) -> Result<Vec<telltale_api::model::CacheEntry>, Problem> {
+        let n = telltale_proto::NameBuf::from_presentation(name.trim())
+            .map_err(|e| Problem::invalid(format!("`name`: {e}")))?;
+        let now = std::time::Instant::now();
+        Ok(self
+            .src
+            .cache
+            .inspect(&n, now)
+            .into_iter()
+            .map(|e| telltale_api::model::CacheEntry {
+                node: None,
+                qtype: qtype_name(e.qtype),
+                rcode: rcode_name(e.rcode),
+                answers: e.answers,
+                authentic: e.authentic,
+                dnssec_ok: e.dnssec_ok,
+                checking_disabled: e.checking_disabled,
+                ttl_left_seconds: i64::from(e.ttl) - i64::from(e.age_secs),
+                age_seconds: u64::from(e.age_secs),
+                bytes: e.bytes as u64,
+                hits: e.hits,
+            })
+            .collect())
+    }
+
+    fn cache_flush(
+        &self,
+        name: Option<&str>,
+        subtree: bool,
+        _node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::CacheFlushNode>, Problem> {
+        let removed = match name {
+            Some(n) => {
+                let n = telltale_proto::NameBuf::from_presentation(n.trim())
+                    .map_err(|e| Problem::invalid(format!("`name`: {e}")))?;
+                self.src.cache.flush_name(&n, subtree)
+            }
+            None => self.src.cache.flush_all_counted(),
+        };
+        Ok(vec![telltale_api::model::CacheFlushNode {
+            node: None,
+            removed: Some(removed as u64),
+            error: None,
+        }])
+    }
+
     // REQ: FLT-005 (T6.12) — quick rules in effect, with how long each has left.
     fn rules(&self) -> Vec<telltale_api::model::RuleInfo> {
         let cfg = self.src.config.load();

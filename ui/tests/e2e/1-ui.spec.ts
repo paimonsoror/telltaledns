@@ -486,3 +486,38 @@ test('flt_005 quick rules expire on their own and are audited', async () => {
   });
   expect(unknownGroup.status()).toBe(422);
 });
+
+// REQ: DNS-006, API-005 (T6.13) — the cache: a cached answer shows up in a lookup (the UI
+// card and the API), a flush removes it and says how many, and viewers can look but not flush.
+test('dns_006 cache lookup and flush', async () => {
+  await query('www.cache.e2e.test'); // routed to the stub upstream (server.mjs)
+  const r = page.request;
+  await expect
+    .poll(async () => (await (await r.get('/api/v1/cache/lookup?name=www.cache.e2e.test')).json()).entries.length, {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('cache-card');
+  await card.getByRole('textbox', { name: 'Name to look up' }).fill('www.cache.e2e.test');
+  await card.getByRole('button', { name: 'Look up' }).click();
+  await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
+  await card.getByRole('button', { name: 'Flush this name' }).click();
+  await expect(card.getByTestId('cache-flushed')).toContainText(/Removed [1-9]/);
+  await expect(card).toContainText('Nothing cached for');
+  const stats = await (await r.get('/api/v1/cache/stats')).json();
+  expect(stats.items.length).toBe(1);
+  // A viewer may look but not flush.
+  const viewer = await page.context().browser()!.newContext({ baseURL: page.url().split('/#')[0] });
+  const vr = viewer.request;
+  const st = await (await vr.get('/api/v1/auth/status')).json();
+  const login = await vr.post('/api/v1/auth/login', {
+    headers: { 'x-csrf-token': st.csrfToken ?? '' },
+    data: { username: VIEWER.user, password: VIEWER.pass },
+  });
+  expect(login.ok()).toBeTruthy();
+  const csrf = (await (await vr.get('/api/v1/auth/status')).json()).csrfToken as string;
+  expect((await vr.get('/api/v1/cache/stats')).status()).toBe(200);
+  expect((await vr.post('/api/v1/cache/flush', { headers: { 'x-csrf-token': csrf }, data: {} })).status()).toBe(403);
+  await viewer.close();
+});

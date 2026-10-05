@@ -11,6 +11,7 @@
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
+  import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
 
   const STATUSES = ['blocked', 'cached', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
@@ -341,6 +342,8 @@
           <QuickRuleForm domain={why.name} device={why.clientName ?? why.client} group={why.group ?? ''} />
         </section>
       {/if}
+      <!-- REQ: DNS-006 (T6.13) — what the cache holds for this name, and flushing it. -->
+      <div class="quick-card"><CacheCard name={why.name} compact /></div>
     {:else if !whyError}
       <p class="muted">Loading…</p>
     {/if}

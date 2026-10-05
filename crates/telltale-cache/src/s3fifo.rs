@@ -139,6 +139,13 @@ where
         Some(node.value)
     }
 
+    /// Visits every entry without recording an access (inspection, T6.13).
+    pub fn for_each(&self, mut f: impl FnMut(&K, &V)) {
+        for (k, n) in &self.map {
+            f(k, &n.value);
+        }
+    }
+
     /// Removes every entry for which `pred` returns true.
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
         let (mut small, mut main) = (0, 0);

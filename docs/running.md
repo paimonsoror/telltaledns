@@ -684,6 +684,29 @@ instead of a cold one.
 - The file is owner-only, since it shows what was looked up. It's removed once loaded, so a
   crash never reloads old data.
 
+## Cache tools
+**Settings → System → Cache** shows each node's cache: entries, memory, hit rate, stale
+answers served, prefetches, and evictions. It also lets you look up what's cached for a name
+and flush it. The query log's **Why?** drawer has the same lookup for the name you clicked.
+- **Look up** lists every cached answer for exactly that name: the query type (and the
+  variants for clients that set DO or CD), the response code, the number of answers, whether
+  DNSSEC validated it, how long it stays fresh (or how long it has been stale), and its hits.
+  Looking doesn't count as a hit.
+- **Flush this name** removes it; tick *and everything under it* to flush a whole subtree
+  (`example.com` takes `www.example.com` with it). **Flush everything…** empties the cache
+  after a confirmation. Flushing needs the operator role and is audit-logged as `cache.flush`.
+- In a cluster, each node has its own cache. Stats and lookups show one row per node, and a
+  flush applies to every node unless you pick one. A node that can't be reached is listed with
+  the error, and the others still flush.
+- Flushing doesn't clear devices' own caches; a phone or browser may keep the old answer for a
+  few minutes. Blocked answers are never cached, so unblocking needs no flush. To change what a
+  name resolves to, use a local record instead.
+
+API: `GET /api/v1/cache/stats`, `GET /api/v1/cache/lookup?name=`, and
+`POST /api/v1/cache/flush` with `{"name": "example.com", "subtree": true, "node": "pi"}` (every
+field optional; an empty body empties every node's cache). Agents need `analytics:read` to
+look and `ops:cache` to flush.
+
 ## DNSSEC validation
 TelltaleDNS can check DNSSEC signatures on forwarded answers itself, instead of trusting the
 upstream:
