@@ -301,6 +301,24 @@ impl Backend for ApiBackend {
         }
     }
 
+    // REQ: CLU-008
+    fn cluster(&self) -> telltale_api::model::ClusterView {
+        match &self.src.cluster {
+            Some(c) => crate::cluster::view(c),
+            None => telltale_api::model::ClusterView {
+                enabled: false,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 0,
+                healthy: true,
+                checks: Vec::new(),
+                nodes: Vec::new(),
+                events: Vec::new(),
+            },
+        }
+    }
+
     // REQ: OBS-004, `spec/06` §3 — live windows from memory, longer ranges from rollups.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
         let series = self.counts(step, from_s, to_s);

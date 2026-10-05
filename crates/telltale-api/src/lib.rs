@@ -27,13 +27,13 @@ use axum::routing::get;
 use utoipa::OpenApi;
 
 use crate::model::{
-    AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ClusterInfo, ClusterPeer,
-    ConfigChange, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
-    ExplainRoute, ExplainRule, Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items,
-    LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, QueryPage,
-    QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams,
-    SystemInfo, TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind,
-    TopParams, UpstreamInfo,
+    AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ClusterCheck,
+    ClusterEvent, ClusterInfo, ClusterNode, ClusterPeer, ClusterView, ConfigChange, ExplainBlock,
+    ExplainClient, ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule,
+    Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items, LatencyBy, LatencyParams,
+    LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, QueryPage, QueryParams, QueryRow,
+    RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped,
+    TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -47,6 +47,20 @@ pub trait Backend: Send + Sync + 'static {
             .map_or(0, |d| d.as_secs())
     }
     fn system_info(&self) -> SystemInfo;
+    /// The cluster as this node sees it (CLU-008).
+    fn cluster(&self) -> ClusterView {
+        ClusterView {
+            enabled: false,
+            cluster_id: None,
+            name: None,
+            this_node: None,
+            newest_config_seq: 0,
+            healthy: true,
+            checks: Vec::new(),
+            nodes: Vec::new(),
+            events: Vec::new(),
+        }
+    }
     /// Buckets with start in `[from_s, to_s)`, oldest first.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket>;
     /// Live queries matching `p` as they happen (REQ: OBS-008). The stream ends when the
@@ -164,6 +178,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     use axum::middleware::{from_fn, from_fn_with_state};
     let data = Router::new()
         .route("/api/v1/system/info", get(system_info))
+        .route("/api/v1/cluster", get(cluster))
         .route("/api/v1/stats/summary", get(stats_summary))
         .route("/api/v1/stats/timeseries", get(stats_timeseries))
         .route("/api/v1/stats/top", get(stats_top))
@@ -227,7 +242,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, cluster, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -241,7 +256,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -358,6 +373,18 @@ async fn blocking<T: Send + 'static>(
     responses((status = 200, body = SystemInfo)))]
 async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
     Json(b.system_info())
+}
+
+/// The cluster's health.
+///
+/// Every node this node knows: role, link state and round-trip time, configuration version
+/// and lag, and whether it's serving DNS (queries per second, SERVFAIL share, upstream p90).
+/// Plus `checks` (each with a plain-language fix when failing) and recent `events`. On a
+/// standalone node, `enabled` is false. Use it to answer "is the cluster healthy and serving?".
+#[utoipa::path(get, path = "/api/v1/cluster", tag = "system",
+    responses((status = 200, body = ClusterView)))]
+async fn cluster(State(b): State<Shared>) -> Result<Json<ClusterView>, Problem> {
+    blocking(move || Ok(b.cluster())).await.map(Json)
 }
 
 /// Totals over a time range.

@@ -183,6 +183,12 @@ jobs:
         with: { python-version: "3.12" }
       - uses: helm/chart-testing-action@v2.7.0
       - run: ct lint --config ct.yaml --all
+      # The monitoring templates need CRDs a test cluster lacks, so ct install never renders
+      # them: lint them here (an unquoted ": " in an alert once slipped through).
+      - name: Lint the optional monitoring templates
+        run: |
+          helm lint deploy/helm/telltale --strict \
+            --set prometheusRule.enabled=true --set serviceMonitor.enabled=true --set grafanaDashboard.enabled=true
       - name: Install kind
         if: matrix.tool == 'kind'
         uses: helm/kind-action@v1

@@ -371,6 +371,21 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     );
     assert!(p95 <= Duration::from_secs(5), "p95 {p95:?}");
     assert!(replica.sync_status().error.is_none());
+    // CLU-008 — the round-trip time comes from heartbeat echoes (the proxy adds 50 ms), and the
+    // timeline has the connection and the applies.
+    let p = Arc::clone(&primary);
+    wait_for(|| p.members().first().and_then(|m| m.rtt_ms).is_some()).await;
+    let rtt = primary.members()[0].rtt_ms.unwrap();
+    assert!((50..2000).contains(&rtt), "rtt {rtt} ms");
+    assert!(primary.members()[0].connected);
+    let kinds: Vec<&str> = replica.events().iter().map(|e| e.kind).collect();
+    assert!(
+        kinds.contains(&"connected") && kinds.contains(&"applied"),
+        "{kinds:?}"
+    );
+    assert!(primary.events().iter().any(|e| e.kind == "joined"));
+    assert_eq!(replica.newest_seq(), 22);
+    assert!(replica.behind_since().is_none());
     let _ = stop_tx.send(true);
 }
 

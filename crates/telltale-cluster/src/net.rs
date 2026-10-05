@@ -11,7 +11,7 @@
 //! [`CLUSTER_NAME`], so trust doesn't depend on the address a peer was dialed at. This module
 //! never touches DNS answering (CLU-004): a dead cluster link only marks peers down.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -189,6 +189,7 @@ pub fn peer_node_id(cert: &CertificateDer<'_>) -> Option<String> {
 
 /// What this node knows about a peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // a record of independent flags
 pub struct Member {
     pub node_id: String,
     pub site: String,
@@ -202,6 +203,18 @@ pub struct Member {
     pub qps: u64,
     /// `inbound` (it dialed us) or `outbound`.
     pub via: &'static str,
+    /// Whether a stream to it is open right now.
+    pub connected: bool,
+    /// When the current (or last) stream came up (Unix ms).
+    pub connected_ms: u64,
+    /// Round-trip time measured from heartbeat echoes.
+    pub rtt_ms: Option<u32>,
+    pub ready: bool,
+    pub servfail_permille: u32,
+    pub p90_us: u64,
+    pub uptime_s: u64,
+    /// Since when its applied configuration has been older than the newest known (Unix ms).
+    pub behind_since_ms: Option<u64>,
 }
 
 impl Member {
@@ -218,7 +231,28 @@ pub struct LocalState {
     pub epoch: u64,
     pub applied_seq: u64,
     pub qps: u64,
+    pub ready: bool,
+    pub servfail_permille: u32,
+    pub p90_us: u64,
+    pub uptime_s: u64,
 }
+
+/// Something that happened in the cluster, for the Cluster page's timeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub ts_ms: u64,
+    /// `joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`.
+    pub kind: &'static str,
+    /// The node it's about.
+    pub node: String,
+    pub detail: String,
+}
+
+/// Events kept in memory.
+const MAX_EVENTS: usize = 200;
+
+/// The last heartbeat received on a stream, echoed back on the same stream.
+type EchoSlot = Arc<Mutex<Option<(u64, tokio::time::Instant)>>>;
 
 /// Where the primary reads a blob it serves.
 #[derive(Debug, Clone)]
@@ -251,6 +285,9 @@ pub struct Cluster {
     sync: Mutex<SyncStatus>,
     /// Bumped when the applied version changes, so the next heartbeat goes out at once.
     local_changed: watch::Sender<u64>,
+    events: Mutex<VecDeque<Event>>,
+    /// Since when this node's own applied version has been behind the newest known.
+    behind_since: Mutex<Option<u64>>,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -286,7 +323,76 @@ impl Cluster {
             connected: Mutex::new(None),
             sync: Mutex::new(SyncStatus::default()),
             local_changed: watch::Sender::new(0),
+            events: Mutex::new(VecDeque::new()),
+            behind_since: Mutex::new(None),
         })
+    }
+
+    /// Records an event (newest last; the oldest are dropped past [`MAX_EVENTS`]).
+    pub fn event(&self, kind: &'static str, node: &str, detail: impl Into<String>) {
+        let mut ev = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        if ev.len() == MAX_EVENTS {
+            ev.pop_front();
+        }
+        ev.push_back(Event {
+            ts_ms: now_ms(),
+            kind,
+            node: node.to_owned(),
+            detail: detail.into(),
+        });
+    }
+
+    /// Recent events, oldest first.
+    pub fn events(&self) -> Vec<Event> {
+        self.events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// The newest configuration version any node reports (this one included).
+    pub fn newest_seq(&self) -> u64 {
+        let own = self
+            .local
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .applied_seq;
+        self.members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|m| m.applied_seq)
+            .fold(own, u64::max)
+    }
+
+    /// Since when this node's applied version has been behind the newest known (Unix ms).
+    pub fn behind_since(&self) -> Option<u64> {
+        let newest = self.newest_seq();
+        let own = self
+            .local
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .applied_seq;
+        let mut b = self
+            .behind_since
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if own >= newest {
+            *b = None;
+        } else if b.is_none() {
+            *b = Some(now_ms());
+        }
+        *b
+    }
+
+    /// This node's own reported state.
+    pub fn local_state(&self) -> LocalState {
+        self.local
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Replication state.
@@ -432,18 +538,33 @@ impl Cluster {
         }
     }
 
-    fn heartbeat(&self) -> Frame {
+    fn heartbeat(&self, echo: &EchoSlot) -> Frame {
         let l = self
             .local
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let (echo_ms, echo_delay_ms) =
+            echo.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .map_or((0, 0), |(ts, at)| {
+                    (
+                        ts,
+                        u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX),
+                    )
+                });
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
                 ts_ms: now_ms(),
                 epoch: l.epoch,
                 applied_seq: l.applied_seq,
                 qps: l.qps,
+                echo_ms,
+                echo_delay_ms,
+                ready: l.ready,
+                servfail_permille: l.servfail_permille,
+                p90_us: l.p90_us,
+                uptime_s: l.uptime_s,
             })),
         }
     }
@@ -454,6 +575,7 @@ impl Cluster {
         peer: &mut Option<String>,
         f: Frame,
         via: &'static str,
+        echo: &EchoSlot,
     ) -> Result<(), String> {
         let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
         match f.body {
@@ -473,10 +595,12 @@ impl Cluster {
                     return Err("peer's Hello doesn't match its certificate".into());
                 }
                 *peer = Some(h.node_id.clone());
+                let detail = format!("{} at site {}, version {}", via, h.site, h.version);
+                let prev = members.get(&h.node_id).cloned();
                 members.insert(
                     h.node_id.clone(),
                     Member {
-                        node_id: h.node_id,
+                        node_id: h.node_id.clone(),
                         site: h.site,
                         version: h.version,
                         advertise: h.advertise,
@@ -485,18 +609,58 @@ impl Cluster {
                         last_seen_ms: now_ms(),
                         epoch: h.epoch,
                         applied_seq: h.applied_seq,
-                        qps: 0,
+                        qps: prev.as_ref().map_or(0, |p| p.qps),
                         via,
+                        connected: true,
+                        connected_ms: now_ms(),
+                        rtt_ms: prev.as_ref().and_then(|p| p.rtt_ms),
+                        ready: prev.as_ref().is_some_and(|p| p.ready),
+                        servfail_permille: prev.as_ref().map_or(0, |p| p.servfail_permille),
+                        p90_us: prev.as_ref().map_or(0, |p| p.p90_us),
+                        uptime_s: prev.as_ref().map_or(0, |p| p.uptime_s),
+                        behind_since_ms: prev.and_then(|p| p.behind_since_ms),
                     },
                 );
+                drop(members);
+                self.event("connected", &h.node_id, detail);
+                return Ok(());
             }
             Some(Body::Heartbeat(hb)) => {
                 let id = peer.as_ref().ok_or("heartbeat before Hello")?;
+                *echo.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some((hb.ts_ms, tokio::time::Instant::now()));
+                let now = now_ms();
+                let newest = members
+                    .values()
+                    .map(|m| m.applied_seq)
+                    .fold(
+                        self.local
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .applied_seq,
+                        u64::max,
+                    )
+                    .max(hb.applied_seq);
                 if let Some(m) = members.get_mut(id) {
-                    m.last_seen_ms = now_ms();
+                    m.last_seen_ms = now;
                     m.epoch = hb.epoch;
                     m.applied_seq = hb.applied_seq;
                     m.qps = hb.qps;
+                    m.ready = hb.ready;
+                    m.servfail_permille = hb.servfail_permille;
+                    m.p90_us = hb.p90_us;
+                    m.uptime_s = hb.uptime_s;
+                    if hb.echo_ms > 0 {
+                        let rtt = now
+                            .saturating_sub(hb.echo_ms)
+                            .saturating_sub(u64::from(hb.echo_delay_ms));
+                        m.rtt_ms = Some(u32::try_from(rtt).unwrap_or(u32::MAX));
+                    }
+                    if m.applied_seq >= newest {
+                        m.behind_since_ms = None;
+                    } else if m.behind_since_ms.is_none() {
+                        m.behind_since_ms = Some(now);
+                    }
                 }
             }
             Some(Body::Manifest(m)) => {
@@ -515,9 +679,36 @@ impl Cluster {
 /// Reads frames from `body` into `cluster` until it ends.
 async fn read_frames(
     cluster: &Cluster,
-    mut body: Incoming,
+    body: Incoming,
     mut peer: Option<String>,
     via: &'static str,
+    echo: &EchoSlot,
+) -> Result<(), String> {
+    let result = read_loop(cluster, body, &mut peer, via, echo).await;
+    if let Some(id) = &peer {
+        let mut members = cluster
+            .members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(m) = members.get_mut(id) {
+            m.connected = false;
+        }
+        drop(members);
+        let why = result
+            .as_ref()
+            .err()
+            .map_or("stream closed".to_owned(), Clone::clone);
+        cluster.event("disconnected", id, why);
+    }
+    result
+}
+
+async fn read_loop(
+    cluster: &Cluster,
+    mut body: Incoming,
+    peer: &mut Option<String>,
+    via: &'static str,
+    echo: &EchoSlot,
 ) -> Result<(), String> {
     let mut buf = Vec::new();
     while let Some(frame) = body.frame().await {
@@ -525,7 +716,7 @@ async fn read_frames(
         if let Ok(data) = frame.into_data() {
             buf.extend_from_slice(&data);
             for f in wire::decode_all(&mut buf)? {
-                cluster.on_frame(&mut peer, f, via)?;
+                cluster.on_frame(peer, f, via, echo)?;
             }
         }
     }
@@ -533,7 +724,11 @@ async fn read_frames(
 }
 
 /// Sends our Hello, then heartbeats, until the receiver goes away.
-async fn write_frames(cluster: Arc<Cluster>, mut tx: http_body_util::channel::Sender<Bytes>) {
+async fn write_frames(
+    cluster: Arc<Cluster>,
+    mut tx: http_body_util::channel::Sender<Bytes>,
+    echo: EchoSlot,
+) {
     if tx
         .send_data(Bytes::from(wire::encode(&cluster.hello())))
         .await
@@ -545,6 +740,15 @@ async fn write_frames(cluster: Arc<Cluster>, mut tx: http_body_util::channel::Se
     let mut changed = cluster.local_changed.subscribe();
     let mut tick = tokio::time::interval(HEARTBEAT);
     tick.tick().await;
+    // A heartbeat right away, so the peer can echo it and both sides know the round-trip
+    // time within one exchange.
+    if tx
+        .send_data(Bytes::from(wire::encode(&cluster.heartbeat(&echo))))
+        .await
+        .is_err()
+    {
+        return;
+    }
     // The current manifest first (a peer that just connected), then whatever happens next.
     let mut pending = manifests.borrow_and_update().clone();
     loop {
@@ -552,10 +756,10 @@ async fn write_frames(cluster: Arc<Cluster>, mut tx: http_body_util::channel::Se
             manifest_frame(&m)
         } else {
             tokio::select! {
-                _ = tick.tick() => cluster.heartbeat(),
+                _ = tick.tick() => cluster.heartbeat(&echo),
                 r = changed.changed() => {
                     if r.is_err() { return; }
-                    cluster.heartbeat()
+                    cluster.heartbeat(&echo)
                 }
                 r = manifests.changed() => {
                     if r.is_err() { return; }
@@ -614,6 +818,11 @@ async fn handle(
             match cluster.identity.accept_join(&jr) {
                 Ok(resp) => {
                     info!(node = %resp.node_id, site = %jr.site, "a node joined the cluster");
+                    cluster.event(
+                        "joined",
+                        &resp.node_id,
+                        format!("site {}, version {}", jr.site, jr.version),
+                    );
                     reply(
                         StatusCode::OK,
                         serde_json::to_string(&resp).unwrap_or_default(),
@@ -634,9 +843,11 @@ async fn handle(
             };
             let (tx, body) = Channel::<Bytes>::new(16);
             let c = Arc::clone(&cluster);
-            tokio::spawn(write_frames(Arc::clone(&cluster), tx));
+            let echo = EchoSlot::default();
+            tokio::spawn(write_frames(Arc::clone(&cluster), tx, Arc::clone(&echo)));
             tokio::spawn(async move {
-                if let Err(e) = read_frames(&c, req.into_body(), Some(id.clone()), "inbound").await
+                if let Err(e) =
+                    read_frames(&c, req.into_body(), Some(id.clone()), "inbound", &echo).await
                 {
                     debug!(peer = %id, "cluster stream ended: {e}");
                 }
@@ -864,7 +1075,8 @@ async fn stream_once(
         .map_err(|e| e.to_string())?;
     tokio::spawn(conn);
     let (tx, body) = Channel::<Bytes>::new(16);
-    let writer = tokio::spawn(write_frames(Arc::clone(&cluster), tx));
+    let echo = EchoSlot::default();
+    let writer = tokio::spawn(write_frames(Arc::clone(&cluster), tx, Arc::clone(&echo)));
     let r = send
         .send_request(
             Request::post(format!("https://{CLUSTER_NAME}/cluster/v1/stream"))
@@ -881,7 +1093,7 @@ async fn stream_once(
         .connected
         .lock()
         .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
-    let result = read_frames(&cluster, r.into_body(), server_id, "outbound").await;
+    let result = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo).await;
     writer.abort();
     cluster
         .connected
@@ -928,6 +1140,7 @@ pub async fn follow<F, Fut>(
                 }
                 Err(e) => {
                     warn!("ignoring a cluster manifest: {e}");
+                    cluster.event("rejected", &cluster.identity.meta.node_id, e.clone());
                     cluster.set_sync_status(|s| s.error = Some(e));
                     break;
                 }
@@ -967,12 +1180,22 @@ pub async fn follow<F, Fut>(
                         ms = duration_ms,
                         "applied cluster configuration"
                     );
+                    cluster.event(
+                        "applied",
+                        &cluster.identity.meta.node_id,
+                        format!("version {seq}: {fetched} blob(s) fetched, {duration_ms} ms"),
+                    );
                     store.retain(&m.blobs());
                 }
                 Err(e) => {
                     warn!(
                         seq = m.seq,
                         "cluster configuration not applied (will retry): {e}"
+                    );
+                    cluster.event(
+                        "sync_failed",
+                        &cluster.identity.meta.node_id,
+                        format!("version {}: {e}", m.seq),
                     );
                     cluster.set_sync_status(|s| s.error = Some(e));
                     tokio::select! {

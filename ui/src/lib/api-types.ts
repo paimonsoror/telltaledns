@@ -355,6 +355,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cluster": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The cluster's health.
+         * @description Every node this node knows: role, link state and round-trip time, configuration version
+         *     and lag, and whether it's serving DNS (queries per second, SERVFAIL share, upstream p90).
+         *     Plus `checks` (each with a plain-language fix when failing) and recent `events`. On a
+         *     standalone node, `enabled` is false. Use it to answer "is the cluster healthy and serving?".
+         */
+        get: operations["cluster"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/explain": {
         parameters: {
             query?: never;
@@ -952,6 +975,24 @@ export interface components {
              */
             name?: string | null;
         };
+        /** @description One health check with a plain-language fix when it fails. */
+        ClusterCheck: {
+            /** @description What to do about it (failing checks only). */
+            fix?: string | null;
+            /** @description Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`. */
+            id: string;
+            ok: boolean;
+            summary: string;
+        };
+        /** @description A cluster event (joins, connections, published and applied versions, failures). */
+        ClusterEvent: {
+            /** @description RFC 3339. */
+            at: string;
+            detail: string;
+            /** @description `joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`. */
+            kind: string;
+            nodeId: string;
+        };
         /** @description This node's cluster membership and the peers it holds a stream with. */
         ClusterInfo: {
             /** @description When this node's cluster certificate expires (RFC 3339). */
@@ -995,6 +1036,63 @@ export interface components {
             /** @description The last replication error, until the next success. */
             syncError?: string | null;
         };
+        /** @description One node in [`ClusterView`]. */
+        ClusterNode: {
+            /**
+             * Format: int64
+             * @description How long it has been behind (absent when in sync).
+             */
+            behindSeconds?: number | null;
+            /** @description This node only: when its cluster certificate expires (RFC 3339). */
+            certExpiresAt?: string | null;
+            /**
+             * Format: int64
+             * @description Versions behind the newest.
+             */
+            configLag: number;
+            /** Format: int64 */
+            configSeq: number;
+            /** @description A stream to it is open (this node: n/a, true). */
+            connected: boolean;
+            eligible: boolean;
+            /** Format: int64 */
+            lastSeenSecondsAgo: number;
+            /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
+            link: string;
+            nodeId: string;
+            /**
+             * Format: int64
+             * @description Queries per second over the last minute.
+             */
+            qps: number;
+            /** @description Serving DNS (listeners bound, not shutting down). */
+            ready: boolean;
+            /** @description `primary` or `replica`. */
+            role: string;
+            /**
+             * Format: int32
+             * @description Round-trip time over the cluster link.
+             */
+            rttMs?: number | null;
+            /**
+             * Format: double
+             * @description SERVFAIL share over the last minute, percent.
+             */
+            servfailPercent: number;
+            site: string;
+            /** @description The node answering this request. */
+            thisNode: boolean;
+            /** @description Heard from within 15 s (always true for this node). */
+            up: boolean;
+            /**
+             * Format: double
+             * @description Upstream p90 this hour.
+             */
+            upstreamP90Ms: number;
+            /** Format: int64 */
+            uptimeSeconds: number;
+            version: string;
+        };
         /** @description A peer node, as last heard over the cluster channel. */
         ClusterPeer: {
             /**
@@ -1012,6 +1110,30 @@ export interface components {
             version: string;
             /** @description `inbound` (it connected to us) or `outbound`. */
             via: string;
+        };
+        /**
+         * @description The cluster as this node sees it (REQ: CLU-008): every node with its health, sync, and
+         *     serving state, a timeline, and a pass/fail check list.
+         */
+        ClusterView: {
+            checks: components["schemas"]["ClusterCheck"][];
+            clusterId?: string | null;
+            /** @description False on a standalone node (everything else is then empty). */
+            enabled: boolean;
+            /** @description Recent events, newest first. */
+            events: components["schemas"]["ClusterEvent"][];
+            /** @description Every check passed. */
+            healthy: boolean;
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description The newest configuration version any node reports.
+             */
+            newestConfigSeq: number;
+            /** @description This node first, then peers by site and ID. */
+            nodes: components["schemas"]["ClusterNode"][];
+            /** @description The node answering this request. */
+            thisNode?: string | null;
         };
         /**
          * @description Stable error codes.
@@ -2427,6 +2549,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cluster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterView"];
                 };
             };
         };

@@ -513,10 +513,26 @@ telltale cluster status
   gets a certificate valid for 90 days.
 - **State** lives in `<data_dir>/cluster/` (keys are readable only by their owner). Removing
   that directory takes a node out of the cluster.
-- **Seeing members and sync:** `GET /api/v1/system/info` shows `cluster.configSeq` (the
-  version this node published or applied), when it was applied, the last sync's duration and
-  error, and each peer's version under `cluster.peers`. `telltale_cluster_peers{state="up"|"down"}`
-  counts peers in `/metrics`.
+- **The Cluster page** (and `GET /api/v1/cluster`) answers "is the cluster healthy and
+  serving?" on any node. It shows:
+  - every node's role and site, whether it's up, its link and round-trip time;
+  - each node's configuration version and how far and for how long it's behind;
+  - whether each node is serving DNS (ready, queries per second, SERVFAIL share, upstream p90),
+    its version, uptime, and certificate expiry;
+  - six checks (peers up, primary present, in sync, no sync errors, serving, certificate) with
+    what to do when one fails;
+  - a timeline of joins, connections, published and applied versions, and failures.
+
+  The page refreshes every 5 seconds.
+- **Metrics:**
+  - `telltale_cluster_peers{state}`;
+  - per peer: `telltale_cluster_peer_up`, `telltale_cluster_peer_rtt_seconds` and
+    `telltale_cluster_peer_config_lag`;
+  - this node: `telltale_cluster_config_seq`, `telltale_cluster_behind_seconds`,
+    `telltale_cluster_sync_error` and `telltale_cluster_cert_expiry_timestamp_seconds`.
+
+  The Helm chart's PrometheusRule alerts on a peer down for over a minute, configuration behind
+  for over 30 s, failing syncs, and a certificate within 14 days of expiry.
 
 ## Monitoring
 An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`) serves:

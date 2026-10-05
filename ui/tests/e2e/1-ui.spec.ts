@@ -215,6 +215,14 @@ test('ops_003 masked client IPs raise a banner', async () => {
   await expect(page.getByRole('link', { name: 'How to fix it' })).toHaveAttribute('href', /seeing-real-client-ips/);
 });
 
+// REQ: CLU-008 — the Cluster page on a standalone node says so and how to start a cluster.
+test('clu_008 cluster page on a standalone node', async () => {
+  await page.goto('/#/cluster');
+  await expect(page.getByRole('heading', { name: 'Cluster' })).toBeVisible();
+  await expect(page.getByTestId('cluster-standalone')).toContainText('telltale cluster init');
+  expect((await (await page.request.get('/api/v1/cluster')).json()).enabled).toBe(false);
+});
+
 // REQ: API-010 (T3.10 AC) — name a device from the top-clients widget; the name shows at once in
 // the widget, the query log (past rows included), and the live tail.
 test('api_010 name a device from the dashboard', async () => {

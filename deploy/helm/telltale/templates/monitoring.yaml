@@ -72,12 +72,37 @@ spec:
           for: 30m
           labels: { severity: warning }
           annotations:
-            summary: Most queries on {{ "{{" }} $labels.instance {{ "}}" }} come from infrastructure addresses, so per-device analytics and rules can't tell devices apart (see docs: Seeing real client IPs).
+            summary: "Most queries on {{ "{{" }} $labels.instance {{ "}}" }} come from infrastructure addresses, so per-device analytics and rules can't tell devices apart (see docs: Seeing real client IPs)."
         - alert: TelltaleDNSDeviceAnomaly
           expr: sum by (instance, kind) (increase(telltale_anomalies_total{job="{{ include "telltale.fullname" . }}-metrics"}[1h])) > 0
           labels: { severity: info }
           annotations:
             summary: A device on {{ "{{" }} $labels.instance {{ "}}" }} behaves unusually ({{ "{{" }} $labels.kind {{ "}}" }}); see Anomalies in the web UI for the evidence.
+        # REQ: CLU-008 — cluster health (only emitted by clustered nodes).
+        - alert: TelltaleDNSClusterPeerDown
+          expr: telltale_cluster_peer_up{job="{{ include "telltale.fullname" . }}-metrics"} == 0
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: Cluster node {{ "{{" }} $labels.node {{ "}}" }} ({{ "{{" }} $labels.site {{ "}}" }}) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
+        - alert: TelltaleDNSClusterConfigBehind
+          expr: telltale_cluster_behind_seconds{job="{{ include "telltale.fullname" . }}-metrics"} > 30
+          for: 1m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} is serving an older configuration than the primary (behind {{ "{{" }} $value {{ "}}" }} s); see Cluster → events."
+        - alert: TelltaleDNSClusterSyncFailing
+          expr: telltale_cluster_sync_error{job="{{ include "telltale.fullname" . }}-metrics"} == 1
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: Replication keeps failing on {{ "{{" }} $labels.instance {{ "}}" }} (it serves its last version meanwhile); the Cluster page shows the error.
+        - alert: TelltaleDNSClusterCertExpiring
+          expr: telltale_cluster_cert_expiry_timestamp_seconds{job="{{ include "telltale.fullname" . }}-metrics"} - time() < 14 * 86400
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: The cluster certificate on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days.
 ---
 {{- end }}
 {{- if .Values.grafanaDashboard.enabled }}

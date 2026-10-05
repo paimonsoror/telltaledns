@@ -121,6 +121,7 @@ export const api = {
   groups: () => get<S['Items_GroupInfo']>('/groups'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
   anomalies: (since = '-7d') => get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since }),
+  cluster: () => get<S['ClusterView']>('/cluster'),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),

@@ -152,6 +152,11 @@ pub(crate) fn start(
     reload: mpsc::Sender<oneshot::Sender<bool>>,
     stop: &watch::Receiver<bool>,
 ) {
+    tokio::spawn(serving_loop(
+        Arc::clone(cluster),
+        Arc::clone(sources),
+        stop.clone(),
+    ));
     let cfg = sources.config.load_full();
     if cluster.identity.holds_ca() {
         tokio::spawn(publish_loop(
@@ -285,6 +290,7 @@ fn filter_ref(dir: &Path, manifest: &Manifest) -> Option<(FilterRef, Vec<(String
 }
 
 /// Primary side: republishes whenever the shared configuration or the snapshot changes.
+#[allow(clippy::too_many_lines)] // one loop: gather, compare, sign, publish, persist
 async fn publish_loop(
     cluster: Arc<Cluster>,
     sources: Arc<Sources>,
@@ -361,6 +367,15 @@ async fn publish_loop(
                     });
                     if changed {
                         info!(seq, filter = ?filter_version, "published cluster configuration");
+                        cluster.event(
+                            "published",
+                            &cluster.identity.meta.node_id,
+                            format!(
+                                "version {seq}{}",
+                                filter_version
+                                    .map_or(String::new(), |v| format!(", filter snapshot {v}"))
+                            ),
+                        );
                     }
                     last = Published {
                         seq,
@@ -380,6 +395,51 @@ async fn publish_loop(
         tokio::select! {
             _ = stop.changed() => return,
             () = tokio::time::sleep(PUBLISH_EVERY) => {}
+        }
+    }
+}
+
+/// REQ: CLU-008 — what this node reports in its heartbeats: queries per second and SERVFAIL
+/// share over the last minute, upstream p90 this hour, readiness, uptime. Every 5 s, off the
+/// query path (the aggregator's data).
+async fn serving_loop(
+    cluster: Arc<Cluster>,
+    sources: Arc<Sources>,
+    mut stop: watch::Receiver<bool>,
+) {
+    use telltale_telemetry::agg::{HourSel, LatencyKey, Resolution};
+    loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let (total, servfail, p90) = {
+            let agg = sources.pipeline.telemetry.aggregates();
+            let (t, s) = agg
+                .series(Resolution::Second, now.saturating_sub(60), now)
+                .iter()
+                .fold((0u64, 0u64), |(t, s), (_, c)| {
+                    (t + u64::from(c.total), s + u64::from(c.rcode[2]))
+                });
+            (
+                t,
+                s,
+                agg.latency(LatencyKey::StageUpstream, HourSel::Current)
+                    .map_or(0, |p| p.p90),
+            )
+        };
+        let ready = sources.ready.load(std::sync::atomic::Ordering::Acquire);
+        let uptime = sources.started.elapsed().as_secs();
+        cluster.set_local(|l| {
+            l.qps = total / 60;
+            l.servfail_permille =
+                u32::try_from((servfail * 1000).checked_div(total).unwrap_or(0)).unwrap_or(1000);
+            l.p90_us = p90;
+            l.ready = ready;
+            l.uptime_s = uptime;
+        });
+        tokio::select! {
+            _ = stop.changed() => return,
+            () = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
     }
 }

@@ -46,9 +46,26 @@ pub struct Heartbeat {
     pub epoch: u64,
     #[prost(uint64, tag = "3")]
     pub applied_seq: u64,
-    /// Queries per second over the last interval (CLU-008).
+    /// Queries per second over the last minute (CLU-008).
     #[prost(uint64, tag = "4")]
     pub qps: u64,
+    /// The `ts_ms` of the last heartbeat received from this peer, echoed back, and how long
+    /// ago it arrived: the peer computes the round-trip time from them.
+    #[prost(uint64, tag = "5")]
+    pub echo_ms: u64,
+    #[prost(uint32, tag = "6")]
+    pub echo_delay_ms: u32,
+    /// Serving DNS: listeners bound and not shutting down.
+    #[prost(bool, tag = "7")]
+    pub ready: bool,
+    /// SERVFAIL answers per thousand over the last minute.
+    #[prost(uint32, tag = "8")]
+    pub servfail_permille: u32,
+    /// Upstream p90 this hour, in microseconds.
+    #[prost(uint64, tag = "9")]
+    pub p90_us: u64,
+    #[prost(uint64, tag = "10")]
+    pub uptime_s: u64,
 }
 
 /// A signed cluster manifest (CLU-003, `crate::sync`): the primary sends it on connect and
@@ -131,6 +148,7 @@ mod tests {
                 epoch: 3,
                 applied_seq: 9,
                 qps: 42,
+                ..Heartbeat::default()
             })),
         };
         let mut wire = encode(&hello);
@@ -157,6 +175,7 @@ mod tests {
             epoch: 1,
             applied_seq: 2,
             qps: 3,
+            ..Heartbeat::default()
         }
         .encode_to_vec();
         body.extend_from_slice(&[0x98, 0x06, 0x07]); // field 99, varint 7

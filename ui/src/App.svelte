@@ -15,6 +15,7 @@
   import Explain from './pages/Explain.svelte';
   import Clients from './pages/Clients.svelte';
   import Anomalies from './pages/Anomalies.svelte';
+  import Cluster from './pages/Cluster.svelte';
   import Groups from './pages/Groups.svelte';
   import Lists from './pages/Lists.svelte';
   import Upstreams from './pages/Upstreams.svelte';
@@ -31,6 +32,7 @@
     { path: '/lists', label: 'Lists', page: Lists },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams },
     { path: '/local-dns', label: 'Names on my network', page: LocalDns },
+    { path: '/cluster', label: 'Cluster', page: Cluster },
     { path: '/settings', label: 'Settings', page: Settings },
   ];
   const current = $derived(pages.find((p) => p.path === route.path) ?? pages[0]);

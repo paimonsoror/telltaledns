@@ -196,6 +196,83 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
             &[("state", "down")],
             peers.len() - up,
         );
+        // Per peer, labeled by node ID and site (a handful of nodes: bounded cardinality).
+        let newest = c.newest_seq();
+        w.family(
+            "telltale_cluster_peer_up",
+            "gauge",
+            "1 when the peer was heard from within 15 s.",
+        );
+        for p in &peers {
+            w.sample(
+                "telltale_cluster_peer_up",
+                &[("node", &p.node_id), ("site", &p.site)],
+                u8::from(p.up(now)),
+            );
+        }
+        w.family(
+            "telltale_cluster_peer_rtt_seconds",
+            "gauge",
+            "Round-trip time to the peer over the cluster link (from heartbeat echoes).",
+        );
+        for p in &peers {
+            if let Some(rtt) = p.rtt_ms {
+                w.sample(
+                    "telltale_cluster_peer_rtt_seconds",
+                    &[("node", &p.node_id), ("site", &p.site)],
+                    f64::from(rtt) / 1000.0,
+                );
+            }
+        }
+        w.family(
+            "telltale_cluster_peer_config_lag",
+            "gauge",
+            "Configuration versions the peer is behind the newest known.",
+        );
+        for p in &peers {
+            w.sample(
+                "telltale_cluster_peer_config_lag",
+                &[("node", &p.node_id), ("site", &p.site)],
+                newest.saturating_sub(p.applied_seq),
+            );
+        }
+        let local = c.local_state();
+        w.family(
+            "telltale_cluster_config_seq",
+            "gauge",
+            "The configuration version this node published (primary) or applied (replica).",
+        )
+        .sample("telltale_cluster_config_seq", &[], local.applied_seq);
+        w.family(
+            "telltale_cluster_behind_seconds",
+            "gauge",
+            "How long this node's configuration has been behind the newest known (0 in sync).",
+        )
+        .sample(
+            "telltale_cluster_behind_seconds",
+            &[],
+            c.behind_since().map_or(0, |s| now.saturating_sub(s) / 1000),
+        );
+        w.family(
+            "telltale_cluster_sync_error",
+            "gauge",
+            "1 while this node's last replication attempt failed.",
+        )
+        .sample(
+            "telltale_cluster_sync_error",
+            &[],
+            u8::from(c.sync_status().error.is_some()),
+        );
+        w.family(
+            "telltale_cluster_cert_expiry_timestamp_seconds",
+            "gauge",
+            "When this node's cluster certificate expires (Unix seconds).",
+        )
+        .sample(
+            "telltale_cluster_cert_expiry_timestamp_seconds",
+            &[],
+            crate::cluster::cert_expiry_unix(c),
+        );
     }
 }
 

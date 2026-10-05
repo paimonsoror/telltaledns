@@ -780,3 +780,89 @@ pub struct AnomalyFinding {
     #[schema(example = "4100 queries in an hour; usually 119 ± 30")]
     pub detail: String,
 }
+
+/// The cluster as this node sees it (REQ: CLU-008): every node with its health, sync, and
+/// serving state, a timeline, and a pass/fail check list.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterView {
+    /// False on a standalone node (everything else is then empty).
+    pub enabled: bool,
+    pub cluster_id: Option<String>,
+    pub name: Option<String>,
+    /// The node answering this request.
+    pub this_node: Option<String>,
+    /// The newest configuration version any node reports.
+    pub newest_config_seq: u64,
+    /// Every check passed.
+    pub healthy: bool,
+    pub checks: Vec<ClusterCheck>,
+    /// This node first, then peers by site and ID.
+    pub nodes: Vec<ClusterNode>,
+    /// Recent events, newest first.
+    pub events: Vec<ClusterEvent>,
+}
+
+/// One node in [`ClusterView`].
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)] // independent flags of one record
+#[serde(rename_all = "camelCase")]
+pub struct ClusterNode {
+    pub node_id: String,
+    pub site: String,
+    /// `primary` or `replica`.
+    pub role: String,
+    /// The node answering this request.
+    pub this_node: bool,
+    pub eligible: bool,
+    pub version: String,
+    /// Heard from within 15 s (always true for this node).
+    pub up: bool,
+    /// A stream to it is open (this node: n/a, true).
+    pub connected: bool,
+    /// `self`, `inbound` (it connected to this node), or `outbound`.
+    pub link: String,
+    pub last_seen_seconds_ago: u64,
+    /// Round-trip time over the cluster link.
+    pub rtt_ms: Option<u32>,
+    pub config_seq: u64,
+    /// Versions behind the newest.
+    pub config_lag: u64,
+    /// How long it has been behind (absent when in sync).
+    pub behind_seconds: Option<u64>,
+    /// Serving DNS (listeners bound, not shutting down).
+    pub ready: bool,
+    /// Queries per second over the last minute.
+    pub qps: u64,
+    /// SERVFAIL share over the last minute, percent.
+    pub servfail_percent: f64,
+    /// Upstream p90 this hour.
+    pub upstream_p90_ms: f64,
+    pub uptime_seconds: u64,
+    /// This node only: when its cluster certificate expires (RFC 3339).
+    pub cert_expires_at: Option<String>,
+}
+
+/// A cluster event (joins, connections, published and applied versions, failures).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterEvent {
+    /// RFC 3339.
+    pub at: String,
+    /// `joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`.
+    pub kind: String,
+    pub node_id: String,
+    pub detail: String,
+}
+
+/// One health check with a plain-language fix when it fails.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterCheck {
+    /// Stable ID: `peers_up`, `primary_present`, `in_sync`, `sync_errors`, `serving`, `certificate`.
+    pub id: String,
+    pub ok: bool,
+    pub summary: String,
+    /// What to do about it (failing checks only).
+    pub fix: Option<String>,
+}

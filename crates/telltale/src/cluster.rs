@@ -100,6 +100,206 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
     }
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Days a certificate must have left before the check fails.
+const CERT_WARN_DAYS: u64 = 14;
+/// Lag tolerated before `in_sync` fails (a sync normally takes well under a second).
+const LAG_WARN_SECS: u64 = 30;
+
+#[allow(clippy::cast_precision_loss)] // per-mille and microseconds to display units
+/// REQ: CLU-008 — the Cluster page's data.
+pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
+    use telltale_api::model::{ClusterEvent, ClusterNode, ClusterView};
+    let now = now_ms();
+    let me = &c.identity.meta;
+    let local = c.local_state();
+    let newest = c.newest_seq();
+    let expires = expiry_unix(&c.identity.cert_pem);
+    let lag_of = |seq: u64, since: Option<u64>| {
+        (
+            newest.saturating_sub(seq),
+            since.map(|s| now.saturating_sub(s) / 1000),
+        )
+    };
+    let (my_lag, my_behind) = lag_of(local.applied_seq, c.behind_since());
+    let mut nodes = vec![ClusterNode {
+        node_id: me.node_id.clone(),
+        site: me.site.clone(),
+        role: if c.identity.holds_ca() {
+            "primary"
+        } else {
+            "replica"
+        }
+        .into(),
+        this_node: true,
+        eligible: me.eligible,
+        version: c.version.clone(),
+        up: true,
+        connected: true,
+        link: "self".into(),
+        last_seen_seconds_ago: 0,
+        rtt_ms: None,
+        config_seq: local.applied_seq,
+        config_lag: my_lag,
+        behind_seconds: my_behind,
+        ready: local.ready,
+        qps: local.qps,
+        servfail_percent: f64::from(local.servfail_permille) / 10.0,
+        upstream_p90_ms: local.p90_us as f64 / 1000.0,
+        uptime_seconds: local.uptime_s,
+        cert_expires_at: Some(format_us(expires.saturating_mul(1_000_000))),
+    }];
+    let mut peers = c.members();
+    peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
+    for p in &peers {
+        let (lag, behind) = lag_of(p.applied_seq, p.behind_since_ms);
+        nodes.push(ClusterNode {
+            node_id: p.node_id.clone(),
+            site: p.site.clone(),
+            role: if p.primary { "primary" } else { "replica" }.into(),
+            this_node: false,
+            eligible: p.eligible,
+            version: p.version.clone(),
+            up: p.up(now),
+            connected: p.connected,
+            link: p.via.into(),
+            last_seen_seconds_ago: now.saturating_sub(p.last_seen_ms) / 1000,
+            rtt_ms: p.rtt_ms,
+            config_seq: p.applied_seq,
+            config_lag: lag,
+            behind_seconds: behind,
+            ready: p.ready,
+            qps: p.qps,
+            servfail_percent: f64::from(p.servfail_permille) / 10.0,
+            upstream_p90_ms: p.p90_us as f64 / 1000.0,
+            uptime_seconds: p.uptime_s,
+            cert_expires_at: None,
+        });
+    }
+    let sync = c.sync_status();
+    let cert_days = expires.saturating_sub(now / 1000) / 86_400;
+    let checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
+    let mut events: Vec<ClusterEvent> = c
+        .events()
+        .into_iter()
+        .map(|e| ClusterEvent {
+            at: format_us(e.ts_ms.saturating_mul(1000)),
+            kind: e.kind.into(),
+            node_id: e.node,
+            detail: e.detail,
+        })
+        .collect();
+    events.reverse();
+    ClusterView {
+        enabled: true,
+        cluster_id: Some(me.cluster_id.clone()),
+        name: Some(me.cluster_name.clone()),
+        this_node: Some(me.node_id.clone()),
+        newest_config_seq: newest,
+        healthy: checks.iter().all(|c| c.ok),
+        checks,
+        nodes,
+        events,
+    }
+}
+
+/// The Cluster page's pass/fail list, each failure with what to do about it.
+fn health_checks(
+    nodes: &[telltale_api::model::ClusterNode],
+    no_peers: bool,
+    newest: u64,
+    sync_error: Option<String>,
+    cert_days: u64,
+) -> Vec<telltale_api::model::ClusterCheck> {
+    use telltale_api::model::ClusterCheck;
+    let check = |id: &str, ok: bool, summary: String, fix: &str| ClusterCheck {
+        id: id.into(),
+        ok,
+        summary,
+        fix: (!ok).then(|| fix.to_owned()),
+    };
+    let down: Vec<&str> = nodes
+        .iter()
+        .filter(|n| !n.up)
+        .map(|n| n.node_id.as_str())
+        .collect();
+    let primary_up = nodes.iter().any(|n| n.role == "primary" && n.up);
+    let lagging: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n.up && n.behind_seconds.is_some_and(|s| s > LAG_WARN_SECS))
+        .map(|n| n.node_id.as_str())
+        .collect();
+    let not_serving: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n.up && !n.ready)
+        .map(|n| n.node_id.as_str())
+        .collect();
+    vec![
+        check(
+            "peers_up",
+            down.is_empty() && !no_peers,
+            if no_peers {
+                "No other node has connected yet".into()
+            } else if down.is_empty() {
+                format!("All {} nodes are up", nodes.len())
+            } else {
+                format!("Not heard from in 15 s: {}", down.join(", "))
+            },
+            "Check that the node is running and can reach the primary's cluster port (`telltale cluster status` on it shows the URL); DNS on every node keeps working meanwhile.",
+        ),
+        check(
+            "primary_present",
+            primary_up,
+            if primary_up {
+                "The primary is up".into()
+            } else {
+                "The primary is unreachable".into()
+            },
+            "Configuration changes wait until the primary is back; every node keeps serving its last version. Check the primary's pod or service, and its cluster port.",
+        ),
+        check(
+            "in_sync",
+            lagging.is_empty(),
+            if lagging.is_empty() {
+                format!("Every reachable node runs configuration version {newest}")
+            } else {
+                format!("Behind for over {LAG_WARN_SECS} s: {}", lagging.join(", "))
+            },
+            "Look at the node's events for `sync_failed`; a configuration the node can't use (an unknown setting from a newer primary) needs that node upgraded.",
+        ),
+        check(
+            "sync_errors",
+            sync_error.is_none(),
+            sync_error.map_or_else(
+                || "No replication errors on this node".into(),
+                |e| format!("Last sync failed: {e}"),
+            ),
+            "The node retries every 2 s and keeps serving its last version; the error says what's wrong.",
+        ),
+        check(
+            "serving",
+            not_serving.is_empty(),
+            if not_serving.is_empty() {
+                "Every reachable node is serving DNS".into()
+            } else {
+                format!("Not serving DNS: {}", not_serving.join(", "))
+            },
+            "A node that isn't ready has a listener that failed to bind or is shutting down; see its log.",
+        ),
+        check(
+            "certificate",
+            cert_days >= CERT_WARN_DAYS,
+            format!("This node's cluster certificate is valid for {cert_days} more days"),
+            "Renewal is automatic once T5.4 lands; until then, re-join the node with a fresh token before it expires.",
+        ),
+    ]
+}
+
 /// `telltale cluster init`.
 pub(crate) fn init(
     cfg: &telltale_config::Config,
@@ -259,6 +459,11 @@ pub(crate) fn status(cfg: &telltale_config::Config, out: &mut impl Write) -> Exi
         format_us(expires.saturating_mul(1_000_000))
     );
     ExitCode::SUCCESS
+}
+
+/// When this node's cluster certificate expires (Unix seconds).
+pub(crate) fn cert_expiry_unix(c: &Cluster) -> u64 {
+    expiry_unix(&c.identity.cert_pem)
 }
 
 /// When a certificate expires (Unix seconds); `validity` gives (seconds left, lifetime).

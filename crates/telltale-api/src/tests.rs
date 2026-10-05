@@ -329,6 +329,19 @@ async fn api_001_parameters_reach_the_backend() {
     );
 }
 
+// REQ: CLU-008 — a standalone node says so (the binary fills in a cluster's view).
+#[tokio::test]
+async fn clu_008_cluster_view_on_a_standalone_node() {
+    let (app, _) = app();
+    let (status, _, v) = get(&app, "/api/v1/cluster").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["enabled"], false);
+    assert_eq!(v["healthy"], true);
+    assert_eq!(v["nodes"].as_array().unwrap().len(), 0);
+    let anonymous = Request::get("/api/v1/cluster").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, anonymous).await.0, StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn api_001_openapi_is_served_and_documents_every_route() {
     let (app, _) = app();
@@ -336,7 +349,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 35);
+    assert_eq!(paths.len(), 36);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
