@@ -251,6 +251,9 @@ jobs:
       # and v5 images (Docker), then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)
         run: bash deploy/pihole-import-e2e.sh target/bench-fast/telltale
+      # REQ: API-007 (T6.4) — Technitium import through the API of the official image.
+      - name: Technitium import (API)
+        run: bash deploy/technitium-import-e2e.sh target/bench-fast/telltale
       # REQ: DNS-011 (T6.1) — DNSSEC validation against the real DNS tree (needs internet).
       - name: DNSSEC validation (live)
         run: bash deploy/dnssec-e2e.sh target/bench-fast/telltale

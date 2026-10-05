@@ -971,3 +971,35 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 **Consequences:**
 - Merging into an existing configuration is manual (both define `default`).
 - The importer's e2e showed that the first blocking snapshot waited for every list's first fetch, including retries, so an unreachable adlist delayed all blocking at first start. Fixed: the fetcher signals the compiler at most 10 s (`settle`) after the first update in a round, so lists that arrive together still compile once.
+
+## ADR-062 — Technitium import v1: read the API, not the backup (Proposed)
+**Context:** T6.4 (API-007, P1). `spec/08` §8 says "backup zip → blocked/allowed zones, block-list URLs, forwarders + protocols, Advanced Blocking app config → groups". Technitium's backup holds `dns.config`, zone files, and the allowed/blocked lists in its own versioned binary serialization. That format is undocumented and changes between releases. Its HTTP API returns the same data as documented JSON.
+
+**Decision:**
+- **Source:** `telltale import technitium URL` reads a running server through the API with an API token, which comes from `TECHNITIUM_TOKEN` or `--token-file`, never argv.
+- **Calls, all read-only:**
+  - `settings/get`;
+  - `zones/list`, then `zones/records/get` per zone;
+  - `allowed/export`, `blocked/export`;
+  - `apps/list`, and `apps/config/get` for Advanced Blocking;
+  - `dhcp/scopes/list` and `dhcp/scopes/get` (optional).
+- **Output:** reviewed TOML like ADR-061, validated before it's written.
+- **Mapping:**
+  - **Forwarders** go in the `default` group: concurrent forwarding becomes `parallel` with the same fan-out, but only with two or more usable forwarders. `name (ip:port)` pins the address, with the name as TLS name.
+  - **Forwarder zones:** forwarders by priority, a route, and an NTA unless every forwarder of the zone validated.
+  - **Primary zones:** records of the types we serve, with their TTLs.
+  - **Blocked and allowed zones** become subtree inline lists.
+  - **Advanced Blocking groups** become groups. The catch-all network's group becomes `default`, and other networks become `networks` (ADR-050). URL lists are shared across groups by URL. Regexes are wrapped as `/re/`. Server-wide lists are added to every group, since Technitium applies both. Disabled groups get no lists. The bypass list becomes a group with no lists.
+  - **Blocking answer:** NXDOMAIN, or custom addresses, become the group's `block_mode`.
+  - **Rate limit:** the per-/32 limit (queries per minute) becomes `[ratelimit]`.
+  - **Other settings:** `dnssecValidation` and `saveCache` carry over. DHCP reservations become named devices.
+- **Not imported (reported):** secondary and stub zones; QUIC forwarders; forwarders with no address; listener- and host-based group selection; per-list answers; the DHCP server; encrypted listeners; recursion ACLs, TSIG, zone transfers, the proxy, and other apps. Listeners, logging, users, and tokens are not imported either.
+
+**Verification:**
+- Unit tests on hand-written API responses.
+- `deploy/technitium-import-e2e.sh` (CI) runs against `technitium/dns-server:15.6.0`. It configures everything above through Technitium's API, installs Advanced Blocking from Technitium's store, and creates an API token. It then imports, serves the result, and checks the answers.
+
+**Consequences:**
+- Importing needs the old server running, which matches the migration path (import, compare, switch).
+- A backup-zip reader can follow if the format gets documented.
+- The e2e found a real-data bug: concurrent forwarding with a single usable forwarder produced an invalid `parallel` group. Fixed and tested.

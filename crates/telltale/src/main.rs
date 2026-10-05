@@ -26,6 +26,7 @@ mod selfupdate;
 mod server;
 mod ship;
 mod tail;
+mod technitium;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -251,6 +252,21 @@ enum ImportCommand {
     Pihole {
         /// The Teleporter archive, gravity.db, or Pi-hole directory.
         path: PathBuf,
+        /// Write the TOML here instead of to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Read a running Technitium DNS Server through its API (forwarders, zones and records,
+    /// forwarder zones, block lists, allowed/blocked names, Advanced Blocking groups, DHCP
+    /// reservations) and print a TelltaleDNS configuration. Create an API token in
+    /// Technitium (Administration → Sessions → Create Token) and pass it in the
+    /// `TECHNITIUM_TOKEN` environment variable or a file.
+    Technitium {
+        /// The web console's address, e.g. `http://192.168.1.2:5380`.
+        url: String,
+        /// Read the API token from this file instead of `TECHNITIUM_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
         /// Write the TOML here instead of to stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -486,17 +502,7 @@ fn main() -> ExitCode {
             check,
             restart,
         } => Ok(run_self_update(channel, check, restart)),
-        Command::Import {
-            command:
-                ImportCommand::Zone {
-                    file,
-                    origin,
-                    output,
-                },
-        } => Ok(run_import_zone(&file, origin.as_deref(), output.as_deref())),
-        Command::Import {
-            command: ImportCommand::Pihole { path, output },
-        } => Ok(run_import_pihole(&path, output.as_deref())),
+        Command::Import { command } => Ok(run_import(command)),
         Command::Cluster { command, config } => Ok(run_cluster(command, config)),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
@@ -565,17 +571,65 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
     }
 }
 
-// REQ: API-007 (T6.3, ADR-061)
-fn run_import_pihole(path: &Path, output: Option<&Path>) -> ExitCode {
-    let im = match pihole::Source::load(path)
-        .and_then(|src| pihole::convert(&src, &path.display().to_string()))
-    {
-        Ok(im) => im,
+// REQ: API-007
+fn run_import(command: ImportCommand) -> ExitCode {
+    match command {
+        ImportCommand::Zone {
+            file,
+            origin,
+            output,
+        } => run_import_zone(&file, origin.as_deref(), output.as_deref()),
+        ImportCommand::Pihole { path, output } => run_import_pihole(&path, output.as_deref()),
+        ImportCommand::Technitium {
+            url,
+            token_file,
+            output,
+        } => run_import_technitium(&url, token_file.as_deref(), output.as_deref()),
+    }
+}
+
+// REQ: API-007 (T6.4, ADR-062)
+fn run_import_technitium(url: &str, token_file: Option<&Path>, output: Option<&Path>) -> ExitCode {
+    let token = match token_file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())),
+        None => std::env::var("TECHNITIUM_TOKEN").map_err(|_| {
+            "set TECHNITIUM_TOKEN to a Technitium API token (or use --token-file)".to_owned()
+        }),
+    };
+    let fetched = token.and_then(|t| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(technitium::fetch(url, t.trim()))
+    });
+    match fetched {
+        Ok(ex) => {
+            let im = technitium::convert(&ex, url);
+            write_import(&im, output, &format!("Technitium {}", ex.version))
+        }
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::FAILURE;
+            ExitCode::FAILURE
         }
-    };
+    }
+}
+
+// REQ: API-007 (T6.3, ADR-061)
+fn run_import_pihole(path: &Path, output: Option<&Path>) -> ExitCode {
+    match pihole::Source::load(path)
+        .and_then(|src| pihole::convert(&src, &path.display().to_string()))
+    {
+        Ok(im) => write_import(&im, output, &format!("Pi-hole {}", im.version)),
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Checks an importer's output loads as config, writes it, and prints the summary and notes.
+fn write_import(im: &pihole::Imported, output: Option<&Path>, from: &str) -> ExitCode {
     // The result must load as config, with valid record values.
     match Loader::new().toml_str("import", im.toml.clone()).load() {
         Ok(l) => {
@@ -602,7 +656,7 @@ fn run_import_pihole(path: &Path, output: Option<&Path>) -> ExitCode {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;
     }
-    eprintln!("imported from Pi-hole {}: {}", im.version, im.counts);
+    eprintln!("imported from {from}: {}", im.counts);
     for n in &im.notes {
         eprintln!("  - {n}");
     }

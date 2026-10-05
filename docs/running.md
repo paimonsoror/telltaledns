@@ -108,6 +108,34 @@ The header lists what has no equivalent, by setting name (values, such as passwo
 
 Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`telltale run -c telltale.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to TelltaleDNS (a built-in recursive resolver is on the post-1.0 list). CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
 
+## Moving from Technitium
+`telltale import technitium http://192.168.1.2:5380 -o technitium.toml` reads a running Technitium DNS Server through its API and writes TelltaleDNS configuration. In Technitium, create an API token (Administration → Sessions → Create Token). Pass it in `TECHNITIUM_TOKEN`, or in a file with `--token-file`; it's never a command-line argument, so it doesn't show up in `ps`. The output is checked to load before it's written, and the token never appears in it.
+
+| Technitium | TelltaleDNS |
+|---|---|
+| Forwarders (UDP, TCP, TLS, HTTPS; `name (ip:port)` pins the address) | `[[upstream]]` `technitium-N` in the `default` group; concurrent forwarding becomes `parallel` with the same fan-out |
+| Primary zones | `[[record]]` A, AAAA, CNAME, PTR, TXT, MX, SRV, with their TTLs (SOA and apex NS aren't needed) |
+| Forwarder zones (conditional forwarding) | upstreams by priority, a group, and a `[[route]]` for the zone. A negative trust anchor applies unless every forwarder of the zone validated |
+| Block list URLs (`!` = allow list), blocked and allowed zones | `[[list]]`; the zones become inline lists `technitium-blocked` / `technitium-allowed` (subtree, like Technitium) |
+| Blocking type (NXDOMAIN, custom address) | each group's `block_mode` |
+| Advanced Blocking app groups | `[[group]]` with the group's URL lists (shared when groups use the same URL), names, and regexes. The group for `0.0.0.0/0` becomes `default`; other networks become the group's `networks`. Server-wide lists apply to every group |
+| Blocking bypass list | a `technitium-bypass` group with those networks and no lists |
+| DHCP reservations | named devices (MAC and IP) |
+| DNSSEC validation, per-address rate limit, saving the cache | `[dnssec]`, `[ratelimit]` (queries per minute), `[cache] persist` |
+
+The header lists what isn't imported:
+- secondary and stub zones;
+- QUIC forwarders;
+- forwarders given only by name;
+- record types we don't serve locally;
+- groups chosen by listener or DoH host name;
+- per-list blocking answers;
+- the DHCP server;
+- encrypted listeners (set them up under Encrypted DNS for your devices);
+- recursion ACLs, TSIG, zone transfers, the outgoing proxy, and other apps.
+
+Technitium's backup files use a private binary format, so the importer reads the documented API instead (ADR-062). CI runs it against the official Technitium image (`deploy/technitium-import-e2e.sh`).
+
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
 Use a release version, or `0.1.0-edge.<n>` builds that follow `main`. Its source is in

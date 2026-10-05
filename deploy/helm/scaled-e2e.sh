@@ -117,6 +117,10 @@ proto = "udp"
 addr = "127.0.0.1:25599"
 [telemetry.metrics]
 listen = "127.0.0.1:29599"
+# Every port its own: on a CI runner the default API port (8053) can still be taken by an
+# earlier step, and then this node exits at start.
+[api]
+listen = "127.0.0.1:27599"
 [cluster]
 listen = "127.0.0.1:28599"
 EOF

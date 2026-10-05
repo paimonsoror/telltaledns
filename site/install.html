@@ -163,6 +163,7 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
     <li>Read the notes at the top of <code>pihole.toml</code>: they list everything that has no equivalent (for example clients matched by host name, or the DHCP server). Then add the file to your configuration.</li>
   </ol>
   <p class="muted">Query history and passwords aren't imported. Keep Pi-hole running until TelltaleDNS answers the way you expect, then point your router at TelltaleDNS.</p>
+  <p><b>Coming from Technitium?</b> Create an API token in Technitium (Administration → Sessions), then run <code>TECHNITIUM_TOKEN=… telltale import technitium http://your-server:5380 -o technitium.toml</code>. Forwarders, zones and records, forwarder zones, block lists, Advanced Blocking groups, and DHCP reservations come across. The notes at the top of the file list the rest.</p>
 </section>
 
 <section id="router">
