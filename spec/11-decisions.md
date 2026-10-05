@@ -636,3 +636,27 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - New: a small Git-over-HTTPS fetch (no Git binary), signature verification (SSH signatures via the existing crypto, GPG optional), and a webhook endpoint.
 - Builds on T5.2 (replication) and T5.4 (authority and elections); it is T5.12.
 
+## ADR-050 — Network groups: groups match subnets, and groups are an analytics dimension (Proposed)
+**Context:** owner request 2026-10-05: categorize devices by VLAN (Management 192.168.1.0/24, IOT .2, AUX .3, LAB .5, SONOS .6, Surveillance .7, Trust .10) and see, per category, what traffic each kind of device makes.
+- **Today:** a subnet can only be matched by a `[[client]]` entry (`match = ["192.168.2.0/24"]`). That entry also *names* every device in it, so the query log would show "IOT" instead of each device.
+- **Groups:** they carry filtering (their lists, block mode), but they're not a first-class dimension in analytics. Per-group data exists internally (time series and blocked counters) without a UI or API around it.
+
+**Decision:**
+- **`[[group]] networks`:** a group lists the IPs and CIDRs whose devices belong to it, e.g. `networks = ["192.168.2.0/24"]`. A device gets the group of the most specific matching network.
+  - An explicit `[[client]]` entry with `groups` still wins.
+  - A `[[client]]` entry *without* `groups` keeps its network's group: naming a device no longer moves it to `default`.
+  - Networks must not overlap at the same prefix length (validation error naming both groups).
+  - Groups without `lists` keep using every list, so grouping for visibility never changes filtering unless the owner says so.
+- **Groups as a dimension everywhere:**
+  - the dashboard gets a "Traffic by group" chart and a group filter for every widget (top domains, top blocked, top clients, latency);
+  - the query log gets a group filter and a colored group chip per row;
+  - the Groups page shows each group's networks, active devices, queries, block rate, and top domains and blocked names;
+  - anomaly findings name the group;
+  - the API gets `group=` on stats, top, and query endpoints;
+  - each group has a color, used consistently in charts and chips;
+  - metrics: `telltale_group_queries_total{group,status}` (bounded: groups are capped at 64), next to the existing `telltale_blocked_total{group,list}`.
+- **Replication:** groups and networks are shared configuration (ADR-047), so every cluster node attributes devices the same way.
+- **Later:** importing VLANs from a router (UniFi networks, OPNsense interfaces) into groups, with the router integrations (M8). The owner's UniFi connector makes this a natural follow-up.
+
+**Consequences:** "which kinds of devices talk to what" becomes one click (e.g. IOT: 38% of queries, 21% blocked, top: amazon devices and Roku telemetry). Per-device names keep working inside each group. The owner's setup needs seven `[[group]]` entries in homelab-charts and nothing else.
+
