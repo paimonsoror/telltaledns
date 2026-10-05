@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod entry;
+mod persist;
 pub mod s3fifo;
 mod singleflight;
 
@@ -88,7 +89,13 @@ impl CacheKey {
         Self::from_parts(name_hash, q.qtype, q.qclass, flags, view)
     }
 
-    fn from_parts(name_hash: u64, qtype: u16, qclass: u16, flags: u8, view: u16) -> Self {
+    pub(crate) fn from_parts(
+        name_hash: u64,
+        qtype: u16,
+        qclass: u16,
+        flags: u8,
+        view: u16,
+    ) -> Self {
         let tag = u64::from(qtype)
             | (u64::from(qclass) << 16)
             | (u64::from(flags) << 32)

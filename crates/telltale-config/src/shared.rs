@@ -35,6 +35,12 @@ pub fn shared_part(cfg: &Config) -> Value {
         if let Some(Value::Array(records)) = m.get_mut("record") {
             records.retain(|r| r.get("node_only") != Some(&Value::Bool(true)));
         }
+        // REQ: CLU-010 — sections left at their defaults aren't sent: a replica one version
+        // behind would refuse a section it doesn't know even when nobody uses it. Replicas
+        // read a missing section as the default (`with_shared`).
+        if let Ok(Value::Object(d)) = serde_json::to_value(Config::default()) {
+            m.retain(|k, v| d.get(k) != Some(v));
+        }
     }
     v
 }
@@ -81,6 +87,14 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
             .collect(),
         _ => Vec::new(),
     };
+    // A shared section the primary didn't send is at its default (see `shared_part`).
+    if let Ok(Value::Object(d)) = serde_json::to_value(Config::default()) {
+        for (k, v) in d {
+            if !NODE_LOCAL.contains(&k.as_str()) && !shared.contains_key(&k) {
+                merged.insert(k, v);
+            }
+        }
+    }
     for (k, v) in shared {
         if NODE_LOCAL.contains(&k.as_str()) {
             continue;
@@ -114,6 +128,28 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
 mod tests {
     use super::*;
     use crate::Loader;
+
+    // REQ: CLU-010 — a section at its defaults isn't sent (an older replica doesn't know new
+    // sections), and a replica reads a missing section as the default, not as its own.
+    #[test]
+    fn clu_010_default_sections_stay_out_of_the_shared_part() {
+        let primary = load("[[record]]\nname = \"a.test\"\ntype = \"A\"\nvalue = \"10.0.0.1\"\n");
+        let shared = shared_part(&primary);
+        let keys: Vec<&String> = shared.as_object().unwrap().keys().collect();
+        assert!(keys.iter().any(|k| *k == "record"), "{keys:?}");
+        assert!(
+            !keys.iter().any(|k| *k == "dnssec"),
+            "an unused section isn't sent: {keys:?}"
+        );
+        // The replica's own (ignored) DNSSEC setting gives way to the primary's default.
+        let replica = load("[dnssec]\nmode = \"validate\"\n");
+        let merged = with_shared(&replica, &shared).unwrap();
+        assert_eq!(merged.dnssec.mode, crate::DnssecMode::Off);
+        assert_eq!(merged.record.len(), 1);
+        // A used setting is sent.
+        let p2 = load("[dnssec]\nmode = \"validate\"\n");
+        assert!(shared_part(&p2).as_object().unwrap().contains_key("dnssec"));
+    }
 
     fn load(toml: &str) -> Config {
         Loader::new().toml_str("t", toml).load().unwrap().config

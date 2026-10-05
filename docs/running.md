@@ -514,6 +514,17 @@ upstream_group = "lan"
 ```
 The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 
+## A warm cache after restarts
+With `[cache] persist = true`, TelltaleDNS writes its cache to `<data_dir>/cache.bin` when it
+stops, and reloads it when it starts. Upgrades and restarts then start with a warm cache
+instead of a cold one.
+- Only answers that can still be served come back (fresh, or within the serve-stale
+  window), and the time spent down counts against them.
+- A dump taken under different upstreams or routes isn't loaded, so an answer never reaches
+  a client through the wrong upstream group.
+- The file is owner-only, since it shows what was looked up. It's removed once loaded, so a
+  crash never reloads old data.
+
 ## DNSSEC validation
 TelltaleDNS can check DNSSEC signatures on forwarded answers itself, instead of trusting the
 upstream:

@@ -901,6 +901,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 An edit reaches the replica at every stage, and a client with both servers configured gets an answer to every query.
 
+**Addendum (2026-10-05):** the shared configuration leaves out top-level sections that are at their defaults, and a replica reads a missing section as the default. Without this, adding any new section (DNSSEC, ADR-060) broke N−1 replicas even when no one used it: CI's upgrade test caught it. A new setting now reaches an older replica only once someone actually sets it. That is the case the "no down-converting" rule is for.
+
 ## ADR-060 — DNSSEC validation v1: hickory's validator over our upstream groups, off by default (Proposed)
 **Context:** T6.1 (DNS-011). `spec/03` §5 asks for:
 - modes `off`, `validate` (the default once stable) and `validate_permissive`;

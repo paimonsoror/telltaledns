@@ -308,6 +308,13 @@ impl Pipeline {
         })
     }
 
+    /// This process's cache hash of a wire-format name (for reloading a cache dump, DNS-009).
+    pub(crate) fn name_hash(&self, wire: &[u8]) -> Option<u64> {
+        let mut n = telltale_proto::NameBuf::default();
+        telltale_proto::read_name_uncompressed(wire, 0, &mut n).ok()?;
+        Some(n.hash64(self.seed))
+    }
+
     /// REQ: DNS-011 — turns DNSSEC validation on or off for `cfg` (at start and on reload).
     pub(crate) fn set_dnssec(&self, cfg: &telltale_config::Config) {
         use telltale_config::DnssecMode;

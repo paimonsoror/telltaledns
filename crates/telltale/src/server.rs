@@ -5,7 +5,7 @@
 use crate::lists::Lists;
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -495,6 +495,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         )));
     let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
     let pipeline = build_pipeline(&cfg, Arc::clone(&cache), router, policy);
+    // REQ: DNS-009 — start warm: reload the cache dumped at the last shutdown.
+    if cfg.cache.persist {
+        load_cache(&cfg, &cache, &pipeline);
+    }
     // REQ: OBS-002 — one aggregator thread drains the event rings (`spec/06` §2). It never
     // touches the query path: a stalled aggregator only means dropped (counted) events.
     let (qlog, qlog_stats) = query_log(&cfg);
@@ -540,7 +544,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let cluster = crate::cluster::start(&cfg, &http_stopped);
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
-        cache,
+        cache: Arc::clone(&cache),
         pipeline: Arc::clone(&pipeline),
         udp: ArcSwap::from_pointee(stats.udp),
         tcp: ArcSwap::from_pointee(stats.tcp),
@@ -672,7 +676,72 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     if let Some(l) = lists {
         l.stop();
     }
+    if current.cache.persist {
+        save_cache(&current, &cache);
+    }
     Ok(())
+}
+
+/// Where the cache is dumped (DNS-009).
+fn cache_dump_path(cfg: &Config) -> PathBuf {
+    Path::new(cfg.node.data_dir.as_str()).join("cache.bin")
+}
+
+/// What the cached answers depend on besides the question: upstreams and routes (a "view"
+/// is a position in them). A dump taken under other routing isn't loaded.
+fn cache_fingerprint(cfg: &Config) -> u64 {
+    let b =
+        serde_json::to_vec(&(&cfg.upstream, &cfg.upstream_group, &cfg.route)).unwrap_or_default();
+    let h = blake3::hash(&b);
+    u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap_or([0; 8]))
+}
+
+/// REQ: DNS-009 — loads the dump, then removes it (a crash later shouldn't reload old data).
+fn load_cache(cfg: &Config, cache: &Cache, pipeline: &Pipeline) {
+    let path = cache_dump_path(cfg);
+    let Ok(data) = std::fs::read(&path) else {
+        return;
+    };
+    let _ = std::fs::remove_file(&path);
+    match cache.load(
+        &data,
+        std::time::Instant::now(),
+        cache_fingerprint(cfg),
+        |n| pipeline.name_hash(n),
+    ) {
+        Ok(n) => info!(
+            entries = n,
+            "cache: reloaded the dump from the last shutdown"
+        ),
+        Err(e) => warn!("cache: not reloading the dump: {e}"),
+    }
+}
+
+/// REQ: DNS-009 — dumps the cache on shutdown (owner-only: it reveals what was looked up).
+fn save_cache(cfg: &Config, cache: &Cache) {
+    let path = cache_dump_path(cfg);
+    let tmp = path.with_extension("tmp");
+    let mut buf = Vec::new();
+    let result = cache
+        .dump(std::time::Instant::now(), cache_fingerprint(cfg), &mut buf)
+        .and_then(|n| {
+            std::fs::write(&tmp, &buf)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            }
+            std::fs::rename(&tmp, &path)?;
+            Ok(n)
+        });
+    match result {
+        Ok(n) => info!(
+            entries = n,
+            bytes = buf.len(),
+            "cache: dumped for the next start"
+        ),
+        Err(e) => warn!("cache: couldn't dump: {e}"),
+    }
 }
 
 /// REQ: OPS-009 — validate the whole new config, then swap; on any error keep serving the

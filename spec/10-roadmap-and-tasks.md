@@ -132,7 +132,12 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *Fixed for all queries: a truncated UDP answer's TCP retry now gets its own timeout.*
   - *`deploy/dnssec-e2e.sh` (CI, real DNS tree): secure, insecure, bogus, CD, and signed denials.*
   - *Deferred: RFC 5011, RFC 8198, per-reason EDE codes, query-event field, Settings UI.*
-- [ ] **T6.2 Serve-stale, prefetch, cache persistence.** *(DNS-007, 008, 009)*
+- [x] **T6.2 Serve-stale, prefetch, cache persistence.** *(DNS-007, 008, 009)* *Done 2026-10-05:*
+  - *Serve-stale (RFC 8767, EDE 3) and prefetch were already in the cache and pipeline.*
+  - *New: `[cache] persist`. The cache is dumped to `<data_dir>/cache.bin` on shutdown (owner-only) and reloaded on start.*
+  - *Entries are re-keyed for the new process's hash seed, aged by the downtime, and only those still servable are kept. A dump from different upstreams or routes (a config fingerprint) is refused. The file is removed once loaded.*
+  - *Tests: dump and reload across seeds, expiry, foreign fingerprint, and garbage input. A live restart's first query was a cache hit.*
+  - *bench-smoke: cache-hot 139.7k qps, inside the 112–166k range of earlier runs; the hit path is untouched.*
 - [ ] **T6.3 Pi-hole importer (v5 + v6 Teleporter).** *(API-007)*
 - [ ] **T6.4 Technitium importer.** Zones (as local names and routes), records, forwarders/conditional forwarders, block and allow lists, with a plain-language report of what was imported and what has no equivalent. *(API-007, API-011)* *Partial 2026-10-04: `telltale import zone FILE [--origin] [-o]` (RFC 1035 zone files incl. Technitium exports: $ORIGIN/$TTL, parentheses, relative names, A/AAAA/CNAME/PTR/TXT/MX/SRV; SOA/NS and unsupported types reported; output validated as config); used to move the owner's `sororlab.dev` zone. ADR-041 (Proposed). Open: forwarders and conditional forwarders, block/allow lists, reading from the Technitium API directly.*
 - [ ] **T6.7 Backup/restore archive.** *(API-007)*
