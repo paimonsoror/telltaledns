@@ -530,11 +530,14 @@ test('clu_008 cluster topology', async () => {
   await expect(topo.getByTestId('topology-site')).toHaveCount(2);
   await expect(topo.getByTestId('topology-node')).toHaveCount(2); // controller and Pi
   await expect(topo.getByTestId('topology-pod')).toHaveCount(3);
-  await expect(topo).toContainText('node k3s-1 · 1 pod');
-  await expect(topo).toContainText('node k3s-2 · 2 pods');
+  await expect(topo).toContainText('node k3s-1 · 1 replica pod');
+  await expect(topo).toContainText('node k3s-2 · 2 replica pods');
   await expect(topo).toContainText('4 ms'); // the Pi's round trip, measured by this node
   // Long pod and site names are shortened in the middle to fit (the full name is in the tooltip).
-  await expect(topo.getByTestId('topology-node').first()).toContainText(/telltale.*….*-8j9h9/);
+  await expect(topo.getByTestId('topology-node').first()).toContainText(/tellta.*….*-8j9h9/);
+  // The primary is marked as such; the Pi is a replica.
+  await expect(topo.getByTestId('topology-node').first().getByTestId('topology-role')).toHaveText('PRIMARY');
+  await expect(topo.getByTestId('topology-node').nth(1).getByTestId('topology-role')).toHaveText('replica');
   await expect(topo.getByTestId('topology-site').nth(1).locator('text').first()).toHaveText(/^home-.*….*closet$/);
   await expect(topo.locator('.pod.bad')).toHaveCount(1);
   await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
@@ -552,7 +555,7 @@ test('clu_008 cluster topology', async () => {
   current = view(Array.from({ length: 8 }, (_, i) => pod(`p${i}xxx`, 'k3s-1')));
   await expect(topo.getByTestId('topology-pod')).toHaveCount(6, { timeout: 10_000 });
   await expect(topo).toContainText('+3');
-  await expect(topo).toContainText('node k3s-1 · 8 pods');
+  await expect(topo).toContainText('node k3s-1 · 8 replica pods');
   await page.unroute('**/api/v1/cluster');
 });
 

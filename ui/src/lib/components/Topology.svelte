@@ -172,11 +172,11 @@
     const head = Math.ceil((max - 1) * 0.45);
     return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
   };
-  // The second line: role, then load; whole items are left out (round trip first, then
-  // share) when they don't fit, rather than cutting words.
+  // The second line: load; whole items are left out (round trip first, then share) when they
+  // don't fit, rather than cutting words. The role is the badge.
   const sub = (n: Node, px: number) => {
     const parts = [
-      `${role(n)}${n.thisNode ? ' (you)' : ''}`,
+      n.thisNode ? 'you' : '',
       `${n.qps} q/s`,
       n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
       n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
@@ -186,6 +186,15 @@
   };
   const podLabel = (n: Node) => (n.pod ? n.pod.slice(-5) : n.nodeId.slice(0, 5));
   const role = (n: Node) => (n.witness ? 'witness' : n.role);
+  // T6.14 — the primary stands out: a filled badge and an accent stripe; replicas and
+  // witnesses get a quiet outlined badge, an emergency primary an amber one.
+  const badge = (n: Node) =>
+    n.role.includes('emergency')
+      ? { kind: 'emergency', text: 'EMERGENCY' }
+      : n.role === 'primary'
+        ? { kind: 'primary', text: 'PRIMARY' }
+        : { kind: 'replica', text: n.witness ? 'witness' : 'replica' };
+  const badgeW = (n: Node) => badge(n).text.length * 6.2 + 12;
   const describe = (n: Node) =>
     [
       `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
@@ -222,6 +231,8 @@
     {#each L.sites as s (s.name)}
       <g>
         {#each s.chips as c (c.node.nodeId)}
+          {@const b = badge(c.node)}
+          {@const bw = badgeW(c.node)}
           <g
             class="chip {health(c.node)}"
             class:me={c.node.thisNode}
@@ -234,14 +245,19 @@
           >
             <title>{describe(c.node)}</title>
             <rect x={c.x} y={c.y} width={c.w} height={c.h} rx="8" />
-            <circle class="dot" cx={c.x + 12} cy={c.y + 14} r="4" />
-            <text class="name" x={c.x + 22} y={c.y + 17}>{fit(label(c.node), c.w - 30, 7.2)}</text>
-            <text class="sub" x={c.x + 22} y={c.y + 32}>{sub(c.node, c.w - 30)}</text>
+            {#if b.kind === 'primary'}<rect class="stripe" x={c.x + 3} y={c.y + 6} width="3" height={c.h - 12} rx="1.5" />{/if}
+            <circle class="dot" cx={c.x + 14} cy={c.y + 14} r="4" />
+            <text class="name" x={c.x + 24} y={c.y + 17}>{fit(label(c.node), c.w - 32 - bw - 6, 7.2)}</text>
+            <g class="role-badge {b.kind}" data-testid="topology-role">
+              <rect x={c.x + c.w - bw - 6} y={c.y + 6} width={bw} height="15" rx="7.5" />
+              <text x={c.x + c.w - 6 - bw / 2} y={c.y + 17} text-anchor="middle">{b.text}</text>
+            </g>
+            <text class="sub" x={c.x + 24} y={c.y + 32}>{sub(c.node, c.w - 32)}</text>
           </g>
         {/each}
         {#each s.groups as g (g.label)}
           <rect class="group" x={g.x} y={g.y} width={g.w} height={g.h} rx="6" />
-          {@const count = ` · ${g.nodes.length} pod${g.nodes.length === 1 ? '' : 's'}`}
+          {@const count = ` · ${g.nodes.length} replica pod${g.nodes.length === 1 ? '' : 's'}`}
           <text class="group-name" x={g.x + 8} y={g.y + 14}>{fit(g.label, g.w - 16 - count.length * 6, 6)}{count}<title>{g.label}</title></text>
           {#each g.pods as p, i (p.node?.nodeId ?? `more-${i}`)}
             {@const n = p.node ?? p.more?.[0]}
@@ -266,6 +282,7 @@
     {/each}
   </svg>
   <p class="legend muted small">
+    <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
     <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down ·
     line thickness = share of queries{#if L.links.some((l) => l.label)}{' · times are round trips from this node'}{/if}
   </p>
@@ -366,6 +383,44 @@
     font-size: 11px;
     fill: var(--text);
     font-family: var(--mono);
+  }
+  .stripe {
+    fill: var(--accent-strong);
+  }
+  .chip .role-badge rect {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1;
+    stroke-dasharray: none;
+  }
+  .role-badge text {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    fill: var(--muted);
+  }
+  .chip .role-badge.primary rect {
+    fill: var(--accent-strong);
+    stroke: var(--accent-strong);
+  }
+  .role-badge.primary text {
+    fill: var(--accent-text);
+  }
+  .chip .role-badge.emergency rect {
+    stroke: var(--warn);
+  }
+  .role-badge.emergency text {
+    fill: var(--warn-strong, var(--warn));
+  }
+  .legend-badge {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--accent-strong);
+    color: var(--accent-text);
+    vertical-align: 1px;
   }
   .legend {
     text-align: center;
