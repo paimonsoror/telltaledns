@@ -13,7 +13,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 **Consequences:** Two code paths, so cross-checking them against each other is part of fuzzing (differential fuzz: both parsers must agree on header, question, and EDNS).
 
 ## ADR-003 — FST + regex DFA snapshots, compiled off-path (Accepted)
-**Context:** Pi-hole's SQLite lookups + linear regex scan, and Technitium's object-heavy in-memory zones, both scale poorly with list size.
+**Context:** Pi-hole keeps lists in SQLite with a verdict cache, and Technitium keeps them as in-memory zones; both suit their designs. TelltaleDNS's goals (multi-million-name lists on a Pi, lookup cost independent of list size, no pause during updates) call for a compiled index.
 **Decision:** Immutable, mmappable FST snapshots (reversed-label keys) + a multi-pattern lazy DFA, built in the background and swapped atomically.
 **Consequences:** ~10× less memory per domain, O(|qname|) lookups, and instant reloads. Snapshots are immutable, so every edit triggers a recompile. To keep manual rule edits instant, a small **overlay** (a HashMap of manual rules) is consulted before the FST and folded into the next compile.
 
@@ -32,7 +32,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 - Revisit (ADR-0NN) if multi-writer is ever needed.
 
 ## ADR-006 — Telemetry: custom columnar segments + SQLite rollups (Accepted)
-**Context:** Pi-hole's SQLite query DB gets slow and large. Technitium depends on external DB apps. DuckDB/ClickHouse are too heavy for a Pi.
+**Context:** Pi-hole keeps long-term history in SQLite, and Technitium hands per-query logs to database apps. TelltaleDNS wants 30-day searches in seconds on a Pi with no external database, and DuckDB/ClickHouse are too large for a Pi.
 **Decision:** Hourly columnar segments with dictionary encoding, a block index + bloom filters, and zstd, plus SQLite rollups. Parquet export for external analysis.
 **Consequences:** We own a storage format (versioned, fuzzed, with a migration tool). Search is fast via dictionary-first predicate evaluation. External SQL access goes through export or the API, not live SQL.
 

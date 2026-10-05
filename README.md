@@ -14,12 +14,12 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Never fail:** DNS keeps answering from its last good config, whatever happens to the control plane.
 - **Run anywhere:** the same artifact on a Pi, in a cluster, or both at once.
 
-**Status:** early preview. TelltaleDNS resolves and caches queries over UDP/TCP using plain or encrypted (DoT/DoH) upstreams, with failover and serve-stale. Filtering, telemetry, the UI, and clustering are next ([roadmap](spec/10-roadmap-and-tasks.md)). Project site: **https://paimonsoror.github.io/telltaledns/** · Running it: [`docs/running.md`](docs/running.md).
+**Status:** pre-1.0, built from `main` (`edge`). Resolving and caching, blocklists with per-device groups, encrypted DNS both ways, DNSSEC validation, the query log and analytics, the web UI, clustering across a Pi and Kubernetes, and agent access all work today; see the [roadmap](spec/10-roadmap-and-tasks.md) for what's next. Project site: **https://paimonsoror.github.io/telltaledns/** · Running it: [`docs/running.md`](docs/running.md).
 
 | Read this | If you want |
 |---|---|
-| [`EXECUTIVE-SUMMARY.md`](EXECUTIVE-SUMMARY.md) | Why TelltaleDNS instead of Pi-hole or Technitium |
-| [`docs/analysis.md`](docs/analysis.md) | The Pi-hole vs. Technitium deep dive (design, code, performance, pros and cons) |
+| [`EXECUTIVE-SUMMARY.md`](EXECUTIVE-SUMMARY.md) | What TelltaleDNS is built around, and the projects that inspired it |
+| [`docs/analysis.md`](docs/analysis.md) | Design notes: what we learned from Pi-hole and Technitium |
 | [`spec/`](spec/00-overview.md) | The build specification (requirements, architecture, ADRs, roadmap) |
 | [`AGENTS.md`](AGENTS.md) | Instructions for the agent or developer implementing it |
 
