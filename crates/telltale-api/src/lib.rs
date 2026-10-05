@@ -63,6 +63,11 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (req, by);
         Err(Problem::unavailable("this node isn't in a cluster"))
     }
+    /// What [`Backend::promote`] would do, without doing it (AGT-002).
+    fn promote_plan(&self, req: &PromoteRequest) -> Result<model::PromotePlan, Problem> {
+        let _ = req;
+        Err(Problem::unavailable("this node isn't in a cluster"))
+    }
     /// A backup of this node (ADR-063) without the query log: a file name and the archive.
     /// May take a moment (it copies the databases); called on a blocking thread.
     fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
@@ -315,7 +320,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, PromoteRequest, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -323,7 +328,7 @@ async fn fallback(
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
         auth::routes::TotpCode, auth::routes::PasswordConfirm, auth::routes::RecoveryCodes,
-        auth::routes::TokenInfo, auth::routes::CreateToken, auth::routes::NewToken,
+        auth::routes::TokenInfo, auth::routes::TokenKind, auth::routes::CreateToken, auth::routes::NewToken,
         auth::routes::UserInfo, auth::routes::CreateUser, auth::routes::UpdateUser,
         auth::routes::AuditInfo, auth::routes::AuditPage, auth::routes::AuditVerify,
         auth::routes::OidcButton, auth::routes::LogoutResult
@@ -439,7 +444,7 @@ async fn blocking<T: Send + 'static>(
 /// Version, role, uptime, listeners, whether the query log is on, and the active filter
 /// snapshot. Cheap; suitable for health dashboards.
 #[utoipa::path(get, path = "/api/v1/system/info", tag = "system",
-    responses((status = 200, body = SystemInfo)))]
+    responses((status = 200, body = SystemInfo, description = "The result.")))]
 async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
     Json(b.system_info())
 }
@@ -451,7 +456,7 @@ async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
 /// the next poll. Authenticated by the `X-Hub-Signature-256` HMAC, not a session.
 #[utoipa::path(post, path = "/api/v1/hooks/git", tag = "system",
     responses((status = 202, description = "The ref will be checked now."),
-        (status = 401, body = Problem), (status = 404, body = Problem)))]
+        (status = 401, body = Problem, description = "Not signed in, or the credentials are wrong."), (status = 404, body = Problem, description = "Not found.")))]
 async fn git_hook(
     State(b): State<Shared>,
     headers: axum::http::HeaderMap,
@@ -472,7 +477,7 @@ async fn git_hook(
 /// Plus `checks` (each with a plain-language fix when failing) and recent `events`. On a
 /// standalone node, `enabled` is false. Use it to answer "is the cluster healthy and serving?".
 #[utoipa::path(get, path = "/api/v1/cluster", tag = "system",
-    responses((status = 200, body = ClusterView)))]
+    responses((status = 200, body = ClusterView, description = "The result.")))]
 async fn cluster(State(b): State<Shared>) -> Result<Json<ClusterView>, Problem> {
     blocking(move || Ok(b.cluster())).await.map(Json)
 }
@@ -484,7 +489,7 @@ async fn cluster(State(b): State<Shared>) -> Result<Json<ClusterView>, Problem> 
 /// hour's active clients and latency percentiles by answer path. Example:
 /// `GET /api/v1/stats/summary?from=-24h` or `?from=-30d`.
 #[utoipa::path(get, path = "/api/v1/stats/summary", tag = "stats", params(SummaryParams),
-    responses((status = 200, body = Summary), (status = 400, body = Problem)))]
+    responses((status = 200, body = Summary, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn stats_summary(
     State(b): State<Shared>,
     Query(p): Query<SummaryParams>,
@@ -545,7 +550,7 @@ async fn stats_summary(
 /// `step=day` everything. Buckets without queries are omitted. Example:
 /// `GET /api/v1/stats/timeseries?from=-30d&step=hour`.
 #[utoipa::path(get, path = "/api/v1/stats/timeseries", tag = "stats", params(TimeseriesParams),
-    responses((status = 200, body = Items<TimeBucket>), (status = 400, body = Problem)))]
+    responses((status = 200, body = Items<TimeBucket>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn stats_timeseries(
     State(b): State<Shared>,
     Query(p): Query<TimeseriesParams>,
@@ -581,8 +586,8 @@ async fn stats_timeseries(
     responses(
         (status = 200, description = "`text/event-stream` of `query` (QueryRow) and `dropped` (TailDropped) events.",
             content_type = "text/event-stream", body = String),
-        (status = 400, body = Problem),
-        (status = 503, body = Problem)))]
+        (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
+        (status = 503, body = Problem, description = "Not available on this node right now.")))]
 async fn queries_stream(
     State(b): State<Shared>,
     Query(p): Query<TailParams>,
@@ -615,7 +620,7 @@ async fn queries_stream(
 /// far it may be over. Example: `GET /api/v1/stats/top?kind=blocked&limit=10`. With
 /// `kind=domains&client=192.168.1.20`, one client's top domains (recently active clients only).
 #[utoipa::path(get, path = "/api/v1/stats/top", tag = "stats", params(TopParams),
-    responses((status = 200, body = Items<TopItem>), (status = 400, body = Problem)))]
+    responses((status = 200, body = Items<TopItem>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn stats_top(
     State(b): State<Shared>,
     Query(p): Query<TopParams>,
@@ -660,7 +665,7 @@ async fn stats_top(
 /// By answer path and transport, query type, upstream server, or the upstream stage, for the
 /// current or previous hour, in milliseconds (HDR histograms, 2 significant digits).
 #[utoipa::path(get, path = "/api/v1/stats/latency", tag = "stats", params(LatencyParams),
-    responses((status = 200, body = Items<LatencyRow>), (status = 400, body = Problem)))]
+    responses((status = 200, body = Items<LatencyRow>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn stats_latency(
     State(b): State<Shared>,
     Query(p): Query<LatencyParams>,
@@ -682,7 +687,7 @@ async fn stats_latency(
 /// time range. Pass `nextCursor` back as `cursor` for older rows. Example:
 /// `GET /api/v1/queries?name=doubleclick&status=blocked&from=-1h&limit=50`.
 #[utoipa::path(get, path = "/api/v1/queries", tag = "queries", params(QueryParams),
-    responses((status = 200, body = QueryPage), (status = 400, body = Problem),
+    responses((status = 200, body = QueryPage, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
         (status = 503, body = Problem, description = "The query log is off.")))]
 async fn queries(
     State(b): State<Shared>,
@@ -709,7 +714,7 @@ async fn queries(
 /// every matching rule in every list (with the list line), which rule decides, and where the
 /// query would be forwarded. Example: `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20`.
 #[utoipa::path(get, path = "/api/v1/explain", tag = "queries", params(ExplainParams),
-    responses((status = 200, body = Explanation), (status = 400, body = Problem)))]
+    responses((status = 200, body = Explanation, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn explain(
     State(b): State<Shared>,
     Query(p): Query<ExplainParams>,
@@ -722,7 +727,7 @@ async fn explain(
 /// Every configured list with its kind (block/allow), source, download state (`ok`, `failed`,
 /// `pending`) and last error, size, and how many names it contributes to the active snapshot.
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
-    responses((status = 200, body = Items<ListInfo>)))]
+    responses((status = 200, body = Items<ListInfo>, description = "The result.")))]
 async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
     Json(Items {
         missing_nodes: Vec::new(),
@@ -735,7 +740,7 @@ async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
 /// Groups decide which lists apply to a device and how blocked queries are answered. `lists`
 /// null means every enabled list; `pausedUntilUnixSeconds` is set while blocking is paused.
 #[utoipa::path(get, path = "/api/v1/groups", tag = "config",
-    responses((status = 200, body = Items<GroupInfo>)))]
+    responses((status = 200, body = Items<GroupInfo>, description = "The result.")))]
 async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
     Json(Items {
         missing_nodes: Vec::new(),
@@ -748,15 +753,26 @@ async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
 /// Each device's name, the IPs, CIDRs, MACs, or client IDs that identify it, and its groups in
 /// priority order (the first group's settings apply). Unknown devices use the `default` group.
 #[utoipa::path(get, path = "/api/v1/clients", tag = "config",
-    responses((status = 200, body = Items<ClientInfo>)))]
-async fn clients(State(b): State<Shared>) -> impl IntoResponse {
+    responses((status = 200, body = Items<ClientInfo>, description = "The result.")))]
+async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl IntoResponse {
     // The config version for `If-Match` on writes (ADR-040).
     let etag = format!("\"{}\"", b.config_version());
+    let mut items = b.clients();
+    // REQ: AGT-004 — a group-restricted agent sees its group's devices only.
+    if let Some(g) = ext
+        .get::<auth::Principal>()
+        .and_then(|p| p.agent.as_ref())
+        .and_then(|a| a.group.as_deref())
+    {
+        items.retain(|c| {
+            c.groups.iter().any(|x| x == g) || c.effective_groups.iter().any(|x| x == g)
+        });
+    }
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
             missing_nodes: Vec::new(),
-            items: b.clients(),
+            items,
         }),
     )
 }
@@ -769,7 +785,7 @@ async fn clients(State(b): State<Shared>) -> impl IntoResponse {
 /// Newest first.
 #[utoipa::path(get, path = "/api/v1/analytics/anomalies", tag = "stats",
     params(AnomalyParams),
-    responses((status = 200, body = Items<AnomalyFinding>), (status = 400, body = Problem)))]
+    responses((status = 200, body = Items<AnomalyFinding>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
 async fn anomalies(
     State(b): State<Shared>,
     Query(p): Query<AnomalyParams>,
@@ -792,7 +808,7 @@ async fn anomalies(
 /// Every local name with its records and where it's defined (`file`: read-only here; `api`:
 /// editable with `PUT /records/{name}`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/records", tag = "config",
-    responses((status = 200, body = Items<LocalName>)))]
+    responses((status = 200, body = Items<LocalName>, description = "The result.")))]
 async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
     let etag = format!("\"{}\"", b.config_version());
     (
@@ -809,7 +825,7 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
 /// Each domain whose names are asked of specific servers instead of the public upstreams,
 /// with where it's defined (`file` or `api`). The `ETag` is the config version for `If-Match`.
 #[utoipa::path(get, path = "/api/v1/forwards", tag = "config",
-    responses((status = 200, body = Items<ForwardInfo>)))]
+    responses((status = 200, body = Items<ForwardInfo>, description = "The result.")))]
 async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
     let etag = format!("\"{}\"", b.config_version());
     (
@@ -826,7 +842,7 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
 /// Every upstream with its stable ID, endpoint, groups, circuit-breaker state (`closed` means
 /// healthy), request and failure counts, and smoothed answer time in milliseconds.
 #[utoipa::path(get, path = "/api/v1/upstreams", tag = "config",
-    responses((status = 200, body = Items<UpstreamInfo>)))]
+    responses((status = 200, body = Items<UpstreamInfo>, description = "The result.")))]
 async fn upstreams(State(b): State<Shared>) -> Json<Items<UpstreamInfo>> {
     Json(Items {
         missing_nodes: Vec::new(),

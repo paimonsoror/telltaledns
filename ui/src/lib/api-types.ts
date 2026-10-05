@@ -426,6 +426,9 @@ export interface paths {
          *     - without `emergency`, the cluster takes its configuration from Git and this node isn't
          *       managed from Git.
          *
+         *     With `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`
+         *     (the epoch, whether it would be an emergency primary, and a sentence on what would happen).
+         *
          *     Admin only; audited as `cluster.promote`.
          */
         post: operations["cluster_promote"];
@@ -1014,6 +1017,8 @@ export interface components {
              * @description The configuration version after the change (send it as `If-Match` next time).
              */
             configVersion: number;
+            /** @description What the change does, in one sentence, with the numbers (AGT-002 impact estimate). */
+            impact?: string;
             /**
              * Format: int64
              * @description Queries in the current and previous hour from the addresses it matches: how much
@@ -1332,6 +1337,14 @@ export interface components {
              * @description The configuration version after the change (send it as `If-Match` next time).
              */
             configVersion: number;
+            /** @description What the change does, in one sentence, with the numbers (AGT-002 impact estimate). */
+            impact?: string;
+            /**
+             * Format: int64
+             * @description Queries in the current and previous hour for the name (or names under the domain)
+             *     that the change affects. A lower bound: counted from the busiest names.
+             */
+            recentQueries?: number;
             /** @description Configuration warnings after the change. */
             warnings: string[];
         };
@@ -1341,9 +1354,25 @@ export interface components {
              * @description Default: never expires.
              */
             expiresInDays?: number | null;
-            /** @description What it's for (`grafana`, `homepage-widget`). */
+            /** @description Agent tokens: only this client group's devices and queries. */
+            group?: string | null;
+            kind?: components["schemas"]["TokenKind"] | null;
+            /** @description What it's for (`grafana`, `homepage-widget`, `claude-assistant`). */
             name: string;
+            /**
+             * Format: int32
+             * @description Agent tokens: requests per minute (default: `[agents] rate_per_minute`, 120).
+             */
+            ratePerMinute?: number | null;
             scope?: components["schemas"]["Scope"] | null;
+            /**
+             * @description Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,
+             *     `config:write:clients`, `config:write:records`, `config:write:forwards`
+             *     (`config:write:*` for all three), `ops:pause`, `ops:cache`, `cluster:admin`.
+             *     Default: `analytics:read` and `config:read` (read-only, no query log). Each needs a
+             *     role you have.
+             */
+            scopes?: string[];
         };
         CreateUser: {
             /** @description Allow HTTP Basic on the API for scripts and scrapers (default false). */
@@ -1814,11 +1843,23 @@ export interface components {
                 createdUnixSeconds: number;
                 /** Format: int64 */
                 expiresUnixSeconds?: number | null;
+                /** @description For agent tokens: restricted to this client group. */
+                group?: string | null;
                 id: string;
+                /** @description `user` (acts with `scope`) or `agent` (acts with `scopes`; AGT-004). */
+                kind: components["schemas"]["TokenKind"];
                 /** Format: int64 */
                 lastUsedUnixSeconds?: number | null;
                 name: string;
+                /**
+                 * Format: int32
+                 * @description For agent tokens: requests per minute (default: `[agents] rate_per_minute`).
+                 */
+                ratePerMinute?: number | null;
+                /** @description For user tokens. Agent tokens show the closest equivalent. */
                 scope: components["schemas"]["Scope"];
+                /** @description For agent tokens: what it may do (e.g. `analytics:read`, `config:write:clients`). */
+                scopes?: string[];
             }[];
         };
         /** @description List wrapper. */
@@ -1955,6 +1996,20 @@ export interface components {
             title: string;
             /** @description URI identifying the problem type. */
             type: string;
+        };
+        /** @description What promoting this node would do (`POST /cluster/promote?dryRun=true`, AGT-002). */
+        PromotePlan: {
+            /** @description Always false: nothing changed. */
+            applied: boolean;
+            /** @description It would coordinate without publishing new configuration (ADR-048). */
+            emergency: boolean;
+            /**
+             * Format: int64
+             * @description The epoch this node would take.
+             */
+            epoch: number;
+            /** @description What would happen, in one sentence. */
+            impact: string;
         };
         /** @description `POST /api/v1/cluster/promote`. */
         PromoteRequest: {
@@ -2191,12 +2246,29 @@ export interface components {
             createdUnixSeconds: number;
             /** Format: int64 */
             expiresUnixSeconds?: number | null;
+            /** @description For agent tokens: restricted to this client group. */
+            group?: string | null;
             id: string;
+            /** @description `user` (acts with `scope`) or `agent` (acts with `scopes`; AGT-004). */
+            kind: components["schemas"]["TokenKind"];
             /** Format: int64 */
             lastUsedUnixSeconds?: number | null;
             name: string;
+            /**
+             * Format: int32
+             * @description For agent tokens: requests per minute (default: `[agents] rate_per_minute`).
+             */
+            ratePerMinute?: number | null;
+            /** @description For user tokens. Agent tokens show the closest equivalent. */
             scope: components["schemas"]["Scope"];
+            /** @description For agent tokens: what it may do (e.g. `analytics:read`, `config:write:clients`). */
+            scopes?: string[];
         };
+        /**
+         * @description Whether a token is for a person's scripts or for an agent (AGT-004).
+         * @enum {string}
+         */
+        TokenKind: "user" | "agent";
         /**
          * @description One ranked item. Counts come from a Space-Saving sketch: the true count lies in
          *     `[count - errorBound, count]`.
@@ -2297,6 +2369,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2305,6 +2378,7 @@ export interface operations {
                     "application/json": components["schemas"]["Items_AnomalyFinding"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2333,6 +2407,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2341,6 +2416,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuditPage"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2349,6 +2425,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2368,6 +2445,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2376,6 +2454,7 @@ export interface operations {
                     "application/json": components["schemas"]["AuditVerify"];
                 };
             };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2399,6 +2478,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2407,6 +2487,7 @@ export interface operations {
                     "application/json": components["schemas"]["LoginResponse"];
                 };
             };
+            /** @description Not signed in, or the credentials are wrong. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2415,6 +2496,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Too many requests: wait for Retry-After seconds. */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -2461,6 +2543,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2474,10 +2557,13 @@ export interface operations {
     oidc_callback: {
         parameters: {
             query?: {
+                /** @description The authorization code from the provider. */
                 code?: string;
+                /** @description The value TelltaleDNS sent at the start, checked against the sign-in cookie. */
                 state?: string;
                 /** @description Set instead of `code` when the user cancelled or the provider refused. */
                 error?: string;
+                /** @description The provider's explanation of `error`. */
                 error_description?: string;
             };
             header?: never;
@@ -2520,6 +2606,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2528,6 +2615,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Not available on this node right now. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2558,6 +2646,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not signed in, or the credentials are wrong. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2581,6 +2670,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Created. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -2589,6 +2679,7 @@ export interface operations {
                     "application/json": components["schemas"]["LoginResponse"];
                 };
             };
+            /** @description Not signed in, or the credentials are wrong. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2617,6 +2708,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2647,6 +2739,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not signed in, or the credentials are wrong. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2670,6 +2763,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2678,6 +2772,7 @@ export interface operations {
                     "application/json": components["schemas"]["RecoveryCodes"];
                 };
             };
+            /** @description Not signed in, or the credentials are wrong. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2697,6 +2792,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2705,6 +2801,7 @@ export interface operations {
                     "application/json": components["schemas"]["TotpSetup"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2753,6 +2850,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2835,6 +2933,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2861,6 +2960,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2880,6 +2980,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2892,7 +2993,10 @@ export interface operations {
     };
     cluster_promote: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2903,7 +3007,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Promoted; the cluster as it is now. */
+            /** @description Promoted; the cluster as it is now. With `dryRun=true`: a `PromotePlan` instead, and nothing changed. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2944,6 +3048,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2952,6 +3057,7 @@ export interface operations {
                     "application/json": components["schemas"]["Explanation"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2971,6 +3077,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3009,6 +3116,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3017,6 +3125,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3051,6 +3160,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3059,6 +3169,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConfigChange"];
                 };
             };
+            /** @description Not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3067,6 +3178,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3075,6 +3187,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3094,6 +3207,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3120,6 +3234,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not signed in, or the credentials are wrong. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3128,6 +3243,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3147,6 +3263,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3195,6 +3312,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3203,6 +3321,7 @@ export interface operations {
                     "application/json": components["schemas"]["QueryPage"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3264,6 +3383,7 @@ export interface operations {
                     "text/event-stream": string;
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3272,6 +3392,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Not available on this node right now. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3291,6 +3412,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3338,6 +3460,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3372,6 +3495,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3389,6 +3513,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3397,6 +3522,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -3410,6 +3536,7 @@ export interface operations {
     stats_latency: {
         parameters: {
             query: {
+                /** @description What to break latency down by: `stage`, `upstream`, `client`, or `qtype`. */
                 by: components["schemas"]["LatencyBy"];
                 /** @description Default: `current`. */
                 hour?: components["schemas"]["Hour"];
@@ -3422,6 +3549,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3430,6 +3558,7 @@ export interface operations {
                     "application/json": components["schemas"]["Items_LatencyRow"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3459,6 +3588,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3467,6 +3597,7 @@ export interface operations {
                     "application/json": components["schemas"]["Summary"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3498,6 +3629,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3506,6 +3638,7 @@ export interface operations {
                     "application/json": components["schemas"]["Items_TimeBucket"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3519,6 +3652,7 @@ export interface operations {
     stats_top: {
         parameters: {
             query: {
+                /** @description Which list: `domains`, `blocked`, `nxdomain`, or `clients`. */
                 kind: components["schemas"]["TopKind"];
                 /** @description Items to return (1–100, default 10). */
                 limit?: number;
@@ -3537,6 +3671,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3545,6 +3680,7 @@ export interface operations {
                     "application/json": components["schemas"]["Items_TopItem"];
                 };
             };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -3564,6 +3700,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3583,6 +3720,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3606,6 +3744,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Created. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -3614,6 +3753,7 @@ export interface operations {
                     "application/json": components["schemas"]["NewToken"];
                 };
             };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3643,6 +3783,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3662,6 +3803,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3681,6 +3823,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3689,6 +3832,7 @@ export interface operations {
                     "application/json": components["schemas"]["Listed_UserInfo"];
                 };
             };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3712,6 +3856,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Created. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -3720,6 +3865,7 @@ export interface operations {
                     "application/json": components["schemas"]["UserInfo"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3749,6 +3895,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3757,6 +3904,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3783,6 +3931,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The result. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3791,6 +3940,7 @@ export interface operations {
                     "application/json": components["schemas"]["UserInfo"];
                 };
             };
+            /** @description Not found. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3799,6 +3949,7 @@ export interface operations {
                     "application/json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Conflicts with the current state: problem+json says what to change. */
             409: {
                 headers: {
                     [name: string]: unknown;

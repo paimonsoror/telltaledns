@@ -235,6 +235,16 @@
       "docs": "api"
     },
     {
+      "id": "agent-tokens",
+      "title": "Let an AI assistant help, safely",
+      "term": "Agent tokens",
+      "summary": "A token for an AI agent or automation that can do only what you tick, must say why it changes anything, and can be switched off for the whole cluster at once.",
+      "when": "You want an assistant to answer \"why is the TV slow?\" or tidy up device names, without giving it your account.",
+      "example": "A read-only token for an assistant with statistics and device names; a second token, restricted to the kids group, that can rename those devices.",
+      "caution": "The query log shows who looked up what: tick it only for agents you trust with that. Revoke a token here, or stop all agents with [agents] enabled = false.",
+      "docs": "ai-agents-and-automation"
+    },
+    {
       "id": "users",
       "title": "Who can sign in",
       "term": "Users and roles",

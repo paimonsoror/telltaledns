@@ -343,6 +343,12 @@ impl Backend for Federated {
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
         self.local.promote(req, by)
     }
+    fn promote_plan(
+        &self,
+        req: &PromoteRequest,
+    ) -> Result<telltale_api::model::PromotePlan, Problem> {
+        self.local.promote_plan(req)
+    }
     fn cluster(&self) -> ClusterView {
         self.local.cluster()
     }

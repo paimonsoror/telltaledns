@@ -516,6 +516,37 @@ impl Backend for ApiBackend {
         Ok((name.display().to_string(), bytes))
     }
 
+    // REQ: AGT-002 — the promotion checks without promoting.
+    fn promote_plan(
+        &self,
+        req: &telltale_api::model::PromoteRequest,
+    ) -> Result<telltale_api::model::PromotePlan, Problem> {
+        let c = self
+            .src
+            .cluster
+            .as_ref()
+            .ok_or_else(|| Problem::unavailable("this node isn't in a cluster"))?;
+        let cfg = self.src.config.load_full();
+        let gitops_source = crate::replication::gitops_capable(&cfg);
+        let (epoch, emergency) = crate::cluster::promote_plan(c, gitops_source, req.emergency)
+            .map_err(|e| Problem::new(telltale_api::problem::Code::Conflict, e))?;
+        let impact = if emergency {
+            format!(
+                "This node would become an emergency primary at epoch {epoch}: every node follows it, and the configuration stays at its last version until a Git-managed node takes over."
+            )
+        } else {
+            format!(
+                "This node would become the primary at epoch {epoch}: it publishes the configuration from the last version it applied, every node follows it, and an old primary that comes back steps down."
+            )
+        };
+        Ok(telltale_api::model::PromotePlan {
+            applied: false,
+            epoch,
+            emergency,
+            impact,
+        })
+    }
+
     // REQ: CLU-005 (ADR-051)
     fn promote(
         &self,
@@ -1108,6 +1139,7 @@ impl Backend for ApiBackend {
                     .as_ref()
                     .map(|c| client_info(c, &[c.name.to_string()])),
                 recent_queries: plan.recent_queries,
+                impact: plan.impact.clone(),
                 warnings: plan.warnings.clone(),
             };
             if w.dry_run {
@@ -1273,7 +1305,58 @@ struct ClientPlan {
     /// `None` deletes.
     after: Option<telltale_config::ClientConfig>,
     recent_queries: u64,
+    impact: String,
     warnings: Vec<String>,
+}
+
+/// AGT-002 impact of a device change: recent queries from the addresses it matches (they
+/// get the new label), and a sentence.
+fn client_impact(
+    src: &Sources,
+    name: &str,
+    before: Option<&ClientInfo>,
+    after: Option<&telltale_config::ClientConfig>,
+) -> (u64, String) {
+    let keys: Vec<String> = after
+        .map(|c| c.match_keys.iter().map(ToString::to_string).collect())
+        .or_else(|| before.map(|b| b.matches.clone()))
+        .unwrap_or_default();
+    let nets: Vec<telltale_config::Cidr> = keys
+        .iter()
+        .filter_map(|k| telltale_config::Cidr::parse(k).ok())
+        .collect();
+    let agg = src.pipeline.telemetry.aggregates();
+    let recent_queries = [HourSel::Current, HourSel::Previous]
+        .into_iter()
+        .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Clients, h, 1000))
+        .filter(|t| {
+            t.key
+                .parse::<IpAddr>()
+                .is_ok_and(|ip| nets.iter().any(|n| n.contains(ip)))
+        })
+        .map(|t| t.count)
+        .sum();
+    drop(agg);
+    let impact = match after {
+        None => format!(
+            "Deletes `{name}`: its queries ({recent_queries} in the last two hours) show the address again, and it falls back to its network's group or `default`."
+        ),
+        Some(a) => {
+            let groups: Vec<String> = a.groups.iter().map(ToString::to_string).collect();
+            let groups = if groups.is_empty() {
+                "its network's group (or `default`)".to_owned()
+            } else {
+                groups.join(", ")
+            };
+            format!(
+                "{} `{}` ({} address(es)); its {recent_queries} queries in the last two hours, and all history, show that name, and it gets {groups}.",
+                if before.is_some() { "Changes" } else { "Names" },
+                a.name,
+                a.match_keys.len()
+            )
+        }
+    };
+    (recent_queries, impact)
 }
 
 /// Checks a device write against the running configuration (ADR-040): files win, names are
@@ -1352,32 +1435,12 @@ fn plan_client(
         )
         .hint("GET /api/v1/groups lists the groups a device can join.")
     })?;
-    // AGT-002 impact: recent queries from the addresses it matches (they get the new label).
-    let keys: Vec<String> = after
-        .as_ref()
-        .map(|c| c.match_keys.iter().map(ToString::to_string).collect())
-        .or_else(|| before.as_ref().map(|b| b.matches.clone()))
-        .unwrap_or_default();
-    let nets: Vec<telltale_config::Cidr> = keys
-        .iter()
-        .filter_map(|k| telltale_config::Cidr::parse(k).ok())
-        .collect();
-    let agg = src.pipeline.telemetry.aggregates();
-    let recent_queries = [HourSel::Current, HourSel::Previous]
-        .into_iter()
-        .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Clients, h, 1000))
-        .filter(|t| {
-            t.key
-                .parse::<IpAddr>()
-                .is_ok_and(|ip| nets.iter().any(|n| n.contains(ip)))
-        })
-        .map(|t| t.count)
-        .sum();
-    drop(agg);
+    let (recent_queries, impact) = client_impact(src, &w.name, before.as_ref(), after.as_ref());
     Ok(ClientPlan {
         before,
         after,
         recent_queries,
+        impact,
         warnings,
     })
 }
@@ -1402,6 +1465,8 @@ struct ManagedPlan {
     after: Option<serde_json::Value>,
     /// What to store (`None` deletes).
     body: Option<String>,
+    recent_queries: u64,
+    impact: String,
     warnings: Vec<String>,
 }
 
@@ -1446,6 +1511,38 @@ fn forward_of(v: &serde_json::Value, name: &str) -> Result<crate::managed::Forwa
         ));
     }
     Ok(crate::managed::Forward { servers })
+}
+
+/// AGT-002 impact of a local-name or forward change: recent queries for the name (or names
+/// under the domain), and a sentence.
+fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -> (u64, String) {
+    let agg = src.pipeline.telemetry.aggregates();
+    let under = format!(".{name}");
+    let recent_queries: u64 = [HourSel::Current, HourSel::Previous]
+        .into_iter()
+        .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Domains, h, 1000))
+        .filter(|t| match kind {
+            ManagedKind::Record => t.key == name,
+            ManagedKind::Forward => t.key == name || t.key.ends_with(&under),
+        })
+        .map(|t| t.count)
+        .sum();
+    drop(agg);
+    let impact = match (kind, setting) {
+        (ManagedKind::Record, true) => format!(
+            "TelltaleDNS answers `{name}` itself from now on; {recent_queries} queries for it in the last two hours (at least) went elsewhere."
+        ),
+        (ManagedKind::Record, false) => format!(
+            "`{name}` goes back to the upstreams; {recent_queries} queries for it in the last two hours (at least)."
+        ),
+        (ManagedKind::Forward, true) => format!(
+            "Names under `{name}` go to the servers given; {recent_queries} queries for them in the last two hours (at least)."
+        ),
+        (ManagedKind::Forward, false) => format!(
+            "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
+        ),
+    };
+    (recent_queries, impact)
 }
 
 /// Checks a local-name or forward write (ADR-042): files win, and the files plus every API
@@ -1535,11 +1632,14 @@ fn plan_managed(
             Some(serde_json::json!({ "servers": a["servers"] }).to_string())
         }
     };
+    let (recent_queries, impact) = managed_impact(src, w.kind, &name, body.is_some());
     Ok(ManagedPlan {
         name,
         before,
         after,
         body,
+        recent_queries,
+        impact,
         warnings,
     })
 }
@@ -1720,6 +1820,8 @@ impl ApiBackend {
                 config_version: version,
                 before: plan.before.clone(),
                 after: plan.after.clone(),
+                recent_queries: plan.recent_queries,
+                impact: plan.impact.clone(),
                 warnings: plan.warnings.clone(),
             };
             if w.dry_run {

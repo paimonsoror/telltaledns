@@ -95,6 +95,11 @@ const MIGRATIONS: &[&str] = &[
     );
     INSERT INTO meta (key, value) VALUES ('config_version', '0')
         ON CONFLICT(key) DO NOTHING;",
+    // 5: agent tokens (T6.5, AGT-004, ADR-064): fine-grained scopes, an optional group
+    // restriction, and a rate limit. User tokens keep `scope` and leave these NULL.
+    "ALTER TABLE tokens ADD COLUMN agent_scopes TEXT;
+    ALTER TABLE tokens ADD COLUMN agent_group TEXT;
+    ALTER TABLE tokens ADD COLUMN agent_rate_per_minute INTEGER;",
 ];
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
@@ -151,6 +156,12 @@ pub struct Token {
     pub expires: Option<u64>,
     pub created: u64,
     pub last_used: Option<u64>,
+    /// An agent token (AGT-004): its scopes, space-separated. `None` for user tokens.
+    pub agent_scopes: Option<String>,
+    /// An agent token restricted to one client group.
+    pub agent_group: Option<String>,
+    /// An agent token's own request limit.
+    pub agent_rate_per_minute: Option<u32>,
 }
 
 /// Errors from the state database.
@@ -594,13 +605,37 @@ impl State {
             expires: r.get::<_, Option<i64>>(5)?.map(u),
             created: u(r.get(6)?),
             last_used: r.get::<_, Option<i64>>(7)?.map(u),
+            agent_scopes: r.get(8)?,
+            agent_group: r.get(9)?,
+            agent_rate_per_minute: r
+                .get::<_, Option<i64>>(10)?
+                .and_then(|n| u32::try_from(n).ok()),
+        })
+    }
+
+    /// Makes a token an agent token (AGT-004). Called right after `create_token`.
+    pub fn set_token_agent(
+        &self,
+        id: &str,
+        scopes: &str,
+        group: Option<&str>,
+        rate_per_minute: Option<u32>,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE tokens SET agent_scopes = ?2, agent_group = ?3, agent_rate_per_minute = ?4
+                 WHERE id = ?1",
+                params![id, scopes, group, rate_per_minute.map(i64::from)],
+            )
+            .map(|_| ())
         })
     }
 
     pub fn token(&self, id: &str) -> Result<Option<Token>> {
         self.with(|c| {
             c.query_row(
-                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used
+                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
+                        agent_scopes, agent_group, agent_rate_per_minute
                  FROM tokens WHERE id = ?1",
                 [id],
                 Self::row_token,
@@ -612,7 +647,8 @@ impl State {
     pub fn tokens_for(&self, user_id: i64) -> Result<Vec<Token>> {
         self.with(|c| {
             let mut st = c.prepare(
-                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used
+                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
+                        agent_scopes, agent_group, agent_rate_per_minute
                  FROM tokens WHERE user_id = ?1 ORDER BY created",
             )?;
             st.query_map([user_id], Self::row_token)?.collect()

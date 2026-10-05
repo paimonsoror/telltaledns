@@ -82,6 +82,19 @@
   let tokenName = $state('');
   let tokenScope = $state<S['Scope']>('read');
   let tokenDays = $state('');
+  // REQ: AGT-004 — agent tokens: scopes instead of a role, optional group, rate limit.
+  let tokenKind = $state<'user' | 'agent'>('user');
+  const agentScopes: [string, string][] = [
+    ['analytics:read', 'Statistics, top lists, anomalies, explain'],
+    ['querylog:read', 'The query log (who asked for what)'],
+    ['config:read', 'Lists, groups, devices, names, upstreams'],
+    ['config:write:clients', 'Name and regroup devices'],
+    ['config:write:records', 'Change names on my network'],
+    ['config:write:forwards', 'Send domains to other servers'],
+    ['cluster:admin', 'Promote a node to primary'],
+  ];
+  let tokenScopes = $state<string[]>(['analytics:read', 'config:read']);
+  let tokenGroup = $state('');
   let newToken = $state('');
   let tokenError = $state<unknown>(null);
   async function loadTokens() {
@@ -95,11 +108,21 @@
     e.preventDefault();
     tokenError = null;
     try {
-      const t = await api.createToken({
-        name: tokenName.trim(),
-        scope: tokenScope,
-        expiresInDays: tokenDays ? Number(tokenDays) : undefined,
-      });
+      const t = await api.createToken(
+        tokenKind === 'agent'
+          ? {
+              name: tokenName.trim(),
+              kind: 'agent',
+              scopes: tokenScopes,
+              group: tokenGroup.trim() || undefined,
+              expiresInDays: tokenDays ? Number(tokenDays) : undefined,
+            }
+          : {
+              name: tokenName.trim(),
+              scope: tokenScope,
+              expiresInDays: tokenDays ? Number(tokenDays) : undefined,
+            },
+      );
       newToken = t.token;
       tokenName = '';
       await loadTokens();
@@ -297,11 +320,17 @@
       </p>
       <form class="row" onsubmit={createToken}>
         <input aria-label="Token name" required placeholder="name, e.g. grafana" bind:value={tokenName} />
-        <select aria-label="Scope" bind:value={tokenScope}>
-          <option value="read">read (viewer)</option>
-          <option value="write">write (operator)</option>
-          <option value="admin">admin</option>
+        <select aria-label="Kind" bind:value={tokenKind}>
+          <option value="user">for my scripts</option>
+          <option value="agent">for an AI agent</option>
         </select>
+        {#if tokenKind === 'user'}
+          <select aria-label="Scope" bind:value={tokenScope}>
+            <option value="read">read (viewer)</option>
+            <option value="write">write (operator)</option>
+            <option value="admin">admin</option>
+          </select>
+        {/if}
         <select aria-label="Expires" bind:value={tokenDays}>
           <option value="">never expires</option>
           <option value="7">7 days</option>
@@ -312,6 +341,20 @@
         <HelpButton id="token-scope" />
         <button class="primary" type="submit">Create token</button>
       </form>
+      {#if tokenKind === 'agent'}
+        <fieldset class="agent-scopes">
+          <legend>What the agent may do<HelpButton id="agent-tokens" /></legend>
+          {#each agentScopes as [id, label] (id)}
+            <label><input type="checkbox" value={id} bind:group={tokenScopes} /> {label} <code class="small">{id}</code></label>
+          {/each}
+          <label>Only this group's devices and queries (optional):
+            <input aria-label="Group" placeholder="e.g. kids" bind:value={tokenGroup} /></label>
+          <p class="muted small">
+            Agents must give a reason for every change, are limited to 120 requests a minute, show as
+            <code>agent:&lt;name&gt;</code> in the audit log, and stop at once with <code>[agents] enabled = false</code>.
+          </p>
+        </fieldset>
+      {/if}
       <ErrorNote error={tokenError} />
       {#if newToken}
         <div class="notice ok new-token">
@@ -329,7 +372,14 @@
               {#each tokens as t (t.id)}
                 <tr>
                   <td><strong>{t.name}</strong><div class="muted small mono">tt_{t.id}_…</div></td>
-                  <td><span class="badge">{t.scope}</span></td>
+                  <td>
+                    {#if t.kind === 'agent'}
+                      <span class="badge">agent</span>
+                      <div class="muted small">{(t.scopes ?? []).join(', ')}{t.group ? ` · group ${t.group}` : ''}</div>
+                    {:else}
+                      <span class="badge">{t.scope}</span>
+                    {/if}
+                  </td>
                   <td class="small">{ago(t.createdUnixSeconds)}</td>
                   <td class="small">{ago(t.lastUsedUnixSeconds)}</td>
                   <td class="small">{t.expiresUnixSeconds ? dateTime(t.expiresUnixSeconds) : 'never'}</td>
@@ -488,6 +538,14 @@
 </div>
 
 <style>
+  .agent-scopes {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0.75rem 0;
+    border: 1px solid var(--border, #ddd);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+  }
   .tabs button[aria-selected='true'] {
     background: var(--accent);
     color: var(--accent-text);

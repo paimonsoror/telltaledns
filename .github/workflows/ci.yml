@@ -105,6 +105,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: API types match the OpenAPI document
         run: npm run types && git diff --exit-code src/lib/api-types.ts
+      # REQ: AGT-001 (T6.5) — the OpenAPI document is agent-ready (.spectral.yaml).
+      - name: OpenAPI lint (spectral)
+        run: npx -y @stoplight/spectral-cli@6 lint ../docs/api/openapi.json --ruleset ../.spectral.yaml --fail-severity=warn
       - run: npm run check
       # REQ: API-011 — every "?" in the UI has a glossary topic and every topic is used.
       - run: npm run check:help
@@ -278,6 +281,10 @@ jobs:
       # REQ: API-007 (T6.7) — a backup from a running node restores onto a fresh one.
       - name: Backup and restore
         run: bash deploy/backup-e2e.sh target/bench-fast/telltale
+      # REQ: AGT-002/004/005/009 (T6.5) — agent tokens on a running node: scopes, a dry run for
+      # every change, required reasons, attribution, the kill switch.
+      - name: Agent tokens
+        run: bash deploy/agent-e2e.sh target/bench-fast/telltale
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
       # and v5 images, then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)

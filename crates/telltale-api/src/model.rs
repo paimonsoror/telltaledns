@@ -234,6 +234,7 @@ pub enum Hour {
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct TopParams {
+    /// Which list: `domains`, `blocked`, `nxdomain`, or `clients`.
     pub kind: TopKind,
     /// Items to return (1–100, default 10).
     pub limit: Option<usize>,
@@ -283,6 +284,7 @@ pub enum LatencyBy {
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct LatencyParams {
+    /// What to break latency down by: `stage`, `upstream`, `client`, or `qtype`.
     pub by: LatencyBy,
     /// Default: `current`.
     pub hour: Option<Hour>,
@@ -635,6 +637,9 @@ pub struct ClientChange {
     /// Queries in the current and previous hour from the addresses it matches: how much
     /// history gets the new label (names are resolved when read, so the past is relabelled).
     pub recent_queries: u64,
+    /// What the change does, in one sentence, with the numbers (AGT-002 impact estimate).
+    #[serde(default)]
+    pub impact: String,
     /// Configuration warnings after the change.
     pub warnings: Vec<String>,
 }
@@ -786,6 +791,13 @@ pub struct ConfigChange {
     /// The entry after (absent after a delete).
     #[schema(value_type = Option<Object>)]
     pub after: Option<serde_json::Value>,
+    /// Queries in the current and previous hour for the name (or names under the domain)
+    /// that the change affects. A lower bound: counted from the busiest names.
+    #[serde(default)]
+    pub recent_queries: u64,
+    /// What the change does, in one sentence, with the numbers (AGT-002 impact estimate).
+    #[serde(default)]
+    pub impact: String,
     /// Configuration warnings after the change.
     pub warnings: Vec<String>,
 }
@@ -926,6 +938,20 @@ pub struct PromoteRequest {
     /// cluster and keeps the last version, and publishes nothing new (ADR-048).
     #[serde(default)]
     pub emergency: bool,
+}
+
+/// What promoting this node would do (`POST /cluster/promote?dryRun=true`, AGT-002).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromotePlan {
+    /// Always false: nothing changed.
+    pub applied: bool,
+    /// The epoch this node would take.
+    pub epoch: u64,
+    /// It would coordinate without publishing new configuration (ADR-048).
+    pub emergency: bool,
+    /// What would happen, in one sentence.
+    pub impact: String,
 }
 
 /// One node in [`ClusterView`].

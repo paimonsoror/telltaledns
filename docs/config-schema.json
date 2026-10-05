@@ -21,6 +21,14 @@
         ]
       }
     },
+    "agents": {
+      "description": "AI agents and automation using agent tokens (AGT-004, AGT-009). Shared across a\ncluster, so `enabled = false` switches every agent off everywhere.",
+      "$ref": "#/$defs/AgentsConfig",
+      "default": {
+        "enabled": true,
+        "rate_per_minute": 120
+      }
+    },
     "api": {
       "description": "The REST API (and, later, the web UI).",
       "$ref": "#/$defs/ApiConfig",
@@ -320,6 +328,25 @@
             "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "AgentsConfig": {
+      "description": "`[agents]` (REQ: AGT-009, ADR-064).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "The kill switch: `false` refuses every agent token at once (users and their own\ntokens are unaffected).",
+          "type": "boolean",
+          "default": true
+        },
+        "rate_per_minute": {
+          "description": "Requests per minute per agent token, unless the token sets its own.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 120,
+          "minimum": 0
         }
       },
       "additionalProperties": false

@@ -46,10 +46,25 @@ fn answer(req: &[u8], rc: u16, tag: u8, tc: bool) -> Option<Vec<u8>> {
 
 /// Starts a fake upstream on 127.0.0.1 and returns its UDP address.
 async fn fake(kind: Fake) -> SocketAddr {
-    let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    // The truncating fake needs TCP on the same port as UDP: a random UDP port's TCP twin can
+    // be taken by something else, so try a few.
+    let mut bound = None;
+    for _ in 0..50 {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        if !matches!(kind, Fake::Truncating) {
+            bound = Some((sock, None));
+            break;
+        }
+        if let Ok(tcp) = TcpListener::bind(addr).await {
+            bound = Some((sock, Some(tcp)));
+            break;
+        }
+    }
+    let (sock, tcp) = bound.unwrap();
+    let sock = Arc::new(sock);
     let addr = sock.local_addr().unwrap();
-    if matches!(kind, Fake::Truncating) {
-        let tcp = TcpListener::bind(addr).await.unwrap();
+    if let Some(tcp) = tcp {
         tokio::spawn(async move {
             while let Ok((mut s, _)) = tcp.accept().await {
                 tokio::spawn(async move {

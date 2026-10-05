@@ -122,6 +122,9 @@ pub struct Problem {
     /// What to do about it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Seconds to wait, sent as `Retry-After` (rate limits).
+    #[serde(skip)]
+    pub retry_after: Option<u64>,
 }
 
 impl Problem {
@@ -133,12 +136,20 @@ impl Problem {
             code,
             detail: detail.into(),
             hint: None,
+            retry_after: None,
         }
     }
 
     #[must_use]
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    /// Sends `Retry-After: <seconds>` with the problem.
+    #[must_use]
+    pub fn retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after = Some(seconds);
         self
     }
 
@@ -168,11 +179,17 @@ impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let status = self.code.status();
         let body = serde_json::to_vec(&self).unwrap_or_default();
-        (
+        let mut resp = (
             status,
             [(header::CONTENT_TYPE, "application/problem+json")],
             body,
         )
-            .into_response()
+            .into_response();
+        if let Some(s) = self.retry_after
+            && let Ok(v) = header::HeaderValue::from_str(&s.to_string())
+        {
+            resp.headers_mut().insert(header::RETRY_AFTER, v);
+        }
+        resp
     }
 }

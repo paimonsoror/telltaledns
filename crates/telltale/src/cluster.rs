@@ -540,7 +540,13 @@ fn health_checks(
 
 /// REQ: CLU-005 — manual promotion (ADR-051): this node becomes primary in a new epoch.
 /// `gitops_source` is whether this node's own configuration comes from Git (ADR-048).
-pub(crate) fn promote(c: &Cluster, gitops_source: bool, emergency: bool) -> Result<u64, String> {
+/// Whether this node may be promoted now, and the epoch and mode it would take (AGT-002
+/// dry run): `(epoch, emergency)`.
+pub(crate) fn promote_plan(
+    c: &Cluster,
+    gitops_source: bool,
+    emergency: bool,
+) -> Result<(u64, bool), String> {
     use telltale_cluster::node::Role;
     let id = c.identity.reload();
     if c.is_primary() {
@@ -577,6 +583,19 @@ pub(crate) fn promote(c: &Cluster, gitops_source: bool, emergency: bool) -> Resu
         .map(|m| m.epoch)
         .fold(c.role().1, u64::max)
         + 1;
+    Ok((epoch, role == Role::Emergency))
+}
+
+/// Promotes this node to primary (ADR-051) after the checks in [`promote_plan`].
+pub(crate) fn promote(c: &Cluster, gitops_source: bool, emergency: bool) -> Result<u64, String> {
+    use telltale_cluster::node::Role;
+    let (epoch, frozen) = promote_plan(c, gitops_source, emergency)?;
+    let id = c.identity.reload();
+    let role = if frozen {
+        Role::Emergency
+    } else {
+        Role::Primary
+    };
     c.set_role(role, epoch)?;
     c.event(
         "promoted",

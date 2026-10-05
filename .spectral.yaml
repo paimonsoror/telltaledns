@@ -1,0 +1,29 @@
+# REQ: AGT-001 (T6.5) — the OpenAPI document is written for agents: every operation has a
+# summary, a description, tags, and an operationId; parameters and schemas are described.
+# Run: npx @stoplight/spectral-cli lint docs/api/openapi.json --fail-severity=warn
+extends: ["spectral:oas"]
+rules:
+  operation-description: error
+  operation-tags: error
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-success-response: error
+  info-contact: off
+  # utoipa registers schemas it also inlines (generic `Items<T>`), so this is noise.
+  oas3-unused-component: off
+  oas3-api-servers: off
+  operation-summary:
+    description: Operations need a one-line summary.
+    given: "$.paths[*][get,put,post,patch,delete]"
+    severity: error
+    then:
+      field: summary
+      function: truthy
+  # Every operation parameter says what it's for.
+  parameter-description:
+    description: Parameters need a description.
+    given: "$.paths[*][*].parameters[*]"
+    severity: error
+    then:
+      field: description
+      function: truthy

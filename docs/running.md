@@ -1014,6 +1014,36 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/stats/top?
 curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries?client=192.168.1.20&limit=20'
 ```
 
+## AI agents and automation
+Give an AI assistant (or any automation) an **agent token** instead of your own account. Create one in **Settings → API tokens → for an AI agent**, or with `POST /api/v1/tokens`:
+```json
+{"name": "assistant", "kind": "agent", "scopes": ["analytics:read", "config:read"], "group": "kids", "ratePerMinute": 60}
+```
+
+| Scope | Allows |
+|---|---|
+| `analytics:read` | statistics, top lists, latency, anomalies, explain, cluster status |
+| `querylog:read` | the query log and live tail: who asked for what |
+| `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
+| `config:write:clients`, `config:write:records`, `config:write:forwards` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers |
+| `ops:pause`, `ops:cache` | pause blocking; flush the cache |
+| `cluster:admin` | promote a node to primary |
+
+The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows.
+
+**What an agent can't do:**
+- Anything not listed above is refused. That covers users, tokens, passwords, backups, and the audit log.
+- With `group`, it sees and changes only that group's devices and queries, and other views are refused.
+
+**Every change from an agent:**
+- needs an `X-Telltale-Reason` header (refused with 400 without one);
+- is recorded in the audit log as `agent:<token> (owner: <you>)`, with the agent software from `X-Telltale-Client`;
+- can be tried first with `?dryRun=true`. That works for devices, names, forwarded domains, and promotion; the answer says what would change, with the numbers behind it (`impact`, `recentQueries`), and nothing changes.
+
+**Limits:** agents get 120 requests a minute each (`[agents] rate_per_minute`, or the token's `ratePerMinute`). Over the limit, they get 429 with `Retry-After`.
+
+**Kill switch:** `[agents] enabled = false` refuses every agent token at once, on every node of a cluster, while people and their own tokens keep working.
+
 ## Users and sign-in
 There is no default password. On first start the server logs a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only):
 ```sh

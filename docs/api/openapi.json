@@ -30,6 +30,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -39,6 +40,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -99,6 +101,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -108,6 +111,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -117,6 +121,7 @@
             }
           },
           "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
             "content": {
               "application/json": {
                 "schema": {
@@ -138,6 +143,7 @@
         "operationId": "audit_verify",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -147,6 +153,7 @@
             }
           },
           "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
             "content": {
               "application/json": {
                 "schema": {
@@ -178,6 +185,7 @@
         },
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -187,6 +195,7 @@
             }
           },
           "401": {
+            "description": "Not signed in, or the credentials are wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -196,6 +205,7 @@
             }
           },
           "429": {
+            "description": "Too many requests: wait for Retry-After seconds.",
             "content": {
               "application/json": {
                 "schema": {
@@ -242,6 +252,7 @@
         "operationId": "get_me",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -274,6 +285,7 @@
           {
             "name": "code",
             "in": "query",
+            "description": "The authorization code from the provider.",
             "required": false,
             "schema": {
               "type": "string"
@@ -282,6 +294,7 @@
           {
             "name": "state",
             "in": "query",
+            "description": "The value TelltaleDNS sent at the start, checked against the sign-in cookie.",
             "required": false,
             "schema": {
               "type": "string"
@@ -299,6 +312,7 @@
           {
             "name": "error_description",
             "in": "query",
+            "description": "The provider's explanation of `error`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -345,6 +359,7 @@
             "description": "To the provider's sign-in page."
           },
           "404": {
+            "description": "Not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -354,6 +369,7 @@
             }
           },
           "503": {
+            "description": "Not available on this node right now.",
             "content": {
               "application/json": {
                 "schema": {
@@ -388,6 +404,7 @@
             "description": "Changed."
           },
           "401": {
+            "description": "Not signed in, or the credentials are wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -419,6 +436,7 @@
         },
         "responses": {
           "201": {
+            "description": "Created.",
             "content": {
               "application/json": {
                 "schema": {
@@ -428,6 +446,7 @@
             }
           },
           "401": {
+            "description": "Not signed in, or the credentials are wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -459,6 +478,7 @@
         "operationId": "status",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -493,6 +513,7 @@
             "description": "Off."
           },
           "401": {
+            "description": "Not signed in, or the credentials are wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -524,6 +545,7 @@
         },
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -533,6 +555,7 @@
             }
           },
           "401": {
+            "description": "Not signed in, or the credentials are wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -554,6 +577,7 @@
         "operationId": "totp_setup",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -563,6 +587,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -621,6 +646,7 @@
         "operationId": "clients",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -742,6 +768,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -771,6 +798,7 @@
             }
           },
           "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -792,6 +820,7 @@
         "operationId": "cluster",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -809,8 +838,19 @@
           "system"
         ],
         "summary": "Promote this node to primary.",
-        "description": "Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,\npublishes the cluster's configuration from the last version it applied, and every node\nfollows it. An old primary that comes back steps down, and anything it changed meanwhile\nshows under `conflicts`.\n\nRefused when:\n- the current primary is up;\n- the node isn't eligible or lacks the cluster key;\n- without `emergency`, the cluster takes its configuration from Git and this node isn't\n  managed from Git.\n\nAdmin only; audited as `cluster.promote`.",
+        "description": "Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,\npublishes the cluster's configuration from the last version it applied, and every node\nfollows it. An old primary that comes back steps down, and anything it changed meanwhile\nshows under `conflicts`.\n\nRefused when:\n- the current primary is up;\n- the node isn't eligible or lacks the cluster key;\n- without `emergency`, the cluster takes its configuration from Git and this node isn't\n  managed from Git.\n\nWith `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`\n(the epoch, whether it would be an emergency primary, and a sentence on what would happen).\n\nAdmin only; audited as `cluster.promote`.",
         "operationId": "cluster_promote",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -823,7 +863,7 @@
         },
         "responses": {
           "200": {
-            "description": "Promoted; the cluster as it is now.",
+            "description": "Promoted; the cluster as it is now. With `dryRun=true`: a `PromotePlan` instead, and nothing changed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -894,6 +934,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -903,6 +944,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -924,6 +966,7 @@
         "operationId": "forwards",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -985,6 +1028,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -994,6 +1038,7 @@
             }
           },
           "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1043,6 +1088,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1052,6 +1098,7 @@
             }
           },
           "404": {
+            "description": "Not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1061,6 +1108,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1070,6 +1118,7 @@
             }
           },
           "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1091,6 +1140,7 @@
         "operationId": "groups",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1115,6 +1165,7 @@
             "description": "The ref will be checked now."
           },
           "401": {
+            "description": "Not signed in, or the credentials are wrong.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1124,6 +1175,7 @@
             }
           },
           "404": {
+            "description": "Not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1145,6 +1197,7 @@
         "operationId": "lists",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1299,6 +1352,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1308,6 +1362,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1447,6 +1502,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1456,6 +1512,7 @@
             }
           },
           "503": {
+            "description": "Not available on this node right now.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1477,6 +1534,7 @@
         "operationId": "local_names",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1548,6 +1606,7 @@
             }
           },
           "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1597,6 +1656,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1616,6 +1676,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1625,6 +1686,7 @@
             }
           },
           "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1648,6 +1710,7 @@
           {
             "name": "by",
             "in": "query",
+            "description": "What to break latency down by: `stage`, `upstream`, `client`, or `qtype`.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/LatencyBy"
@@ -1674,6 +1737,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1683,6 +1747,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1733,6 +1798,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1742,6 +1808,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1801,6 +1868,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1810,6 +1878,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1833,6 +1902,7 @@
           {
             "name": "kind",
             "in": "query",
+            "description": "Which list: `domains`, `blocked`, `nxdomain`, or `clients`.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/TopKind"
@@ -1887,6 +1957,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1896,6 +1967,7 @@
             }
           },
           "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1917,6 +1989,7 @@
         "operationId": "system_info",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1938,6 +2011,7 @@
         "operationId": "list_tokens",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1967,6 +2041,7 @@
         },
         "responses": {
           "201": {
+            "description": "Created.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1976,6 +2051,7 @@
             }
           },
           "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2011,6 +2087,7 @@
             "description": "Revoked."
           },
           "404": {
+            "description": "Not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2032,6 +2109,7 @@
         "operationId": "upstreams",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2053,6 +2131,7 @@
         "operationId": "list_users",
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2062,6 +2141,7 @@
             }
           },
           "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2091,6 +2171,7 @@
         },
         "responses": {
           "201": {
+            "description": "Created.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2100,6 +2181,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2136,6 +2218,7 @@
             "description": "Deleted."
           },
           "404": {
+            "description": "Not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2145,6 +2228,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2186,6 +2270,7 @@
         },
         "responses": {
           "200": {
+            "description": "The result.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2195,6 +2280,7 @@
             }
           },
           "404": {
+            "description": "Not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2204,6 +2290,7 @@
             }
           },
           "409": {
+            "description": "Conflicts with the current state: problem+json says what to change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2500,6 +2587,10 @@
             "format": "int64",
             "description": "The configuration version after the change (send it as `If-Match` next time).",
             "minimum": 0
+          },
+          "impact": {
+            "type": "string",
+            "description": "What the change does, in one sentence, with the numbers (AGT-002 impact estimate)."
           },
           "recentQueries": {
             "type": "integer",
@@ -3270,6 +3361,16 @@
             "description": "The configuration version after the change (send it as `If-Match` next time).",
             "minimum": 0
           },
+          "impact": {
+            "type": "string",
+            "description": "What the change does, in one sentence, with the numbers (AGT-002 impact estimate)."
+          },
+          "recentQueries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries in the current and previous hour for the name (or names under the domain)\nthat the change affects. A lower bound: counted from the busiest names.",
+            "minimum": 0
+          },
           "warnings": {
             "type": "array",
             "items": {
@@ -3294,20 +3395,54 @@
             "description": "Default: never expires.",
             "minimum": 0
           },
-          "name": {
-            "type": "string",
-            "description": "What it's for (`grafana`, `homepage-widget`)."
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Agent tokens: only this client group's devices and queries."
           },
-          "scope": {
+          "kind": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/Scope",
-                "description": "Default: `read`."
+                "$ref": "#/components/schemas/TokenKind",
+                "description": "`user` (default) or `agent`: an AI agent or automation, limited to `scopes`, rate\nlimited, attributed as `agent:<name>` in the audit log, and switched off with\n`[agents] enabled = false`."
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "name": {
+            "type": "string",
+            "description": "What it's for (`grafana`, `homepage-widget`, `claude-assistant`)."
+          },
+          "ratePerMinute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Agent tokens: requests per minute (default: `[agents] rate_per_minute`, 120).",
+            "minimum": 0
+          },
+          "scope": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope",
+                "description": "User tokens. Default: `read`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,\n`config:write:clients`, `config:write:records`, `config:write:forwards`\n(`config:write:*` for all three), `ops:pause`, `ops:cache`, `cluster:admin`.\nDefault: `analytics:read` and `config:read` (read-only, no query log). Each needs a\nrole you have."
           }
         }
       },
@@ -4618,6 +4753,7 @@
               "required": [
                 "id",
                 "name",
+                "kind",
                 "scope",
                 "createdUnixSeconds"
               ],
@@ -4635,8 +4771,19 @@
                   "format": "int64",
                   "minimum": 0
                 },
+                "group": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "For agent tokens: restricted to this client group."
+                },
                 "id": {
                   "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/components/schemas/TokenKind",
+                  "description": "`user` (acts with `scope`) or `agent` (acts with `scopes`; AGT-004)."
                 },
                 "lastUsedUnixSeconds": {
                   "type": [
@@ -4649,8 +4796,25 @@
                 "name": {
                   "type": "string"
                 },
+                "ratePerMinute": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "For agent tokens: requests per minute (default: `[agents] rate_per_minute`).",
+                  "minimum": 0
+                },
                 "scope": {
-                  "$ref": "#/components/schemas/Scope"
+                  "$ref": "#/components/schemas/Scope",
+                  "description": "For user tokens. Agent tokens show the closest equivalent."
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "For agent tokens: what it may do (e.g. `analytics:read`, `config:write:clients`)."
                 }
               }
             }
@@ -5002,6 +5166,36 @@
           "status": 400,
           "title": "Invalid parameter",
           "type": "https://telltaledns.dev/problems/invalid_parameter"
+        }
+      },
+      "PromotePlan": {
+        "type": "object",
+        "description": "What promoting this node would do (`POST /cluster/promote?dryRun=true`, AGT-002).",
+        "required": [
+          "applied",
+          "epoch",
+          "emergency",
+          "impact"
+        ],
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "description": "Always false: nothing changed."
+          },
+          "emergency": {
+            "type": "boolean",
+            "description": "It would coordinate without publishing new configuration (ADR-048)."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epoch this node would take.",
+            "minimum": 0
+          },
+          "impact": {
+            "type": "string",
+            "description": "What would happen, in one sentence."
+          }
         }
       },
       "PromoteRequest": {
@@ -5590,6 +5784,7 @@
         "required": [
           "id",
           "name",
+          "kind",
           "scope",
           "createdUnixSeconds"
         ],
@@ -5607,8 +5802,19 @@
             "format": "int64",
             "minimum": 0
           },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For agent tokens: restricted to this client group."
+          },
           "id": {
             "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TokenKind",
+            "description": "`user` (acts with `scope`) or `agent` (acts with `scopes`; AGT-004)."
           },
           "lastUsedUnixSeconds": {
             "type": [
@@ -5621,10 +5827,35 @@
           "name": {
             "type": "string"
           },
+          "ratePerMinute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "For agent tokens: requests per minute (default: `[agents] rate_per_minute`).",
+            "minimum": 0
+          },
           "scope": {
-            "$ref": "#/components/schemas/Scope"
+            "$ref": "#/components/schemas/Scope",
+            "description": "For user tokens. Agent tokens show the closest equivalent."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For agent tokens: what it may do (e.g. `analytics:read`, `config:write:clients`)."
           }
         }
+      },
+      "TokenKind": {
+        "type": "string",
+        "description": "Whether a token is for a person's scripts or for an agent (AGT-004).",
+        "enum": [
+          "user",
+          "agent"
+        ]
       },
       "TopItem": {
         "type": "object",

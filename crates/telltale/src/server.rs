@@ -463,6 +463,8 @@ async fn start_http(
         };
         let _purge = crate::auth_setup::spawn_purge(Arc::clone(&auth));
         let addr = cfg.api.listen;
+        auth.agents()
+            .set(cfg.agents.enabled, cfg.agents.rate_per_minute);
         let _ = sources.auth.set(Arc::clone(&auth));
         let app = http::api_router(Arc::clone(sources), auth);
         let bound = http::serve(addr, app, stopped(stop.clone()))
@@ -825,6 +827,11 @@ async fn reload(
     }
     if let Some(a) = &sources.anomalies {
         a.reconfigure(&new);
+    }
+    // REQ: AGT-009 — the agent kill switch follows the (cluster-shared) configuration.
+    if let Some(a) = sources.auth.get() {
+        a.agents()
+            .set(new.agents.enabled, new.agents.rate_per_minute);
     }
     sources.config.store(Arc::new(new.clone()));
     sources.file_config.store(Arc::new(file));

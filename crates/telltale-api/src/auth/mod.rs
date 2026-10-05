@@ -6,6 +6,7 @@
 //! with single-use recovery codes; login lockout; roles `viewer` < `operator` < `admin`.
 //! First run: no default password, a one-time setup token creates the first admin.
 
+pub mod agent;
 pub mod crypto;
 pub mod oidc;
 pub mod routes;
@@ -103,14 +104,28 @@ pub enum Via {
     Basic,
 }
 
+/// What an agent token may do (REQ: AGT-004, ADR-064).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentGrant {
+    pub token_name: String,
+    pub scopes: std::collections::BTreeSet<String>,
+    /// Restricted to this client group.
+    pub group: Option<String>,
+    pub rate_per_minute: Option<u32>,
+    /// The agent software, from `X-Telltale-Client` (e.g. an MCP client name/version).
+    pub client: Option<String>,
+}
+
 /// Who is making a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
     pub user_id: i64,
     pub username: String,
-    /// The user's role, capped by a token's scope.
+    /// The user's role, capped by a token's scope (or an agent token's scopes).
     pub role: Role,
     pub via: Via,
+    /// Set for agent tokens: what they may do, checked on every request.
+    pub agent: Option<AgentGrant>,
 }
 
 /// Who did something, for the audit log (REQ: API-006, AGT-005 attribution).
@@ -224,6 +239,8 @@ pub struct Auth {
     basic_salt: [u8; 16],
     /// OIDC providers, when configured (API-004).
     oidc: std::sync::OnceLock<Arc<oidc::Oidc>>,
+    /// `[agents]`: the kill switch and rate limits (AGT-009).
+    agents: agent::Policy,
 }
 
 #[allow(clippy::needless_pass_by_value)] // used as `map_err(db)`
@@ -291,7 +308,13 @@ impl Auth {
             basic_cache: Mutex::new(HashMap::new()),
             basic_salt: rand::random(),
             oidc: std::sync::OnceLock::new(),
+            agents: agent::Policy::default(),
         }
+    }
+
+    /// The agent kill switch and rate limits; the server updates them from `[agents]`.
+    pub fn agents(&self) -> &agent::Policy {
+        &self.agents
     }
 
     pub fn state(&self) -> &Arc<State> {
@@ -700,6 +723,7 @@ impl Auth {
                 id_hash,
                 csrf: s.csrf,
             },
+            agent: None,
         }))
     }
 
@@ -719,15 +743,35 @@ impl Auth {
         }
         let user = self.active_user(token.user_id)?;
         let user_role = Role::parse(&user.role).unwrap_or(Role::Viewer);
-        let scope = Scope::parse(&token.scope).unwrap_or(Scope::Read);
         if token.last_used.is_none_or(|t| now.saturating_sub(t) >= 60) {
             let _ = self.state.touch_token(id, now);
         }
+        // REQ: AGT-004 — an agent token acts with its scopes, never above its owner.
+        let (role, agent) = match &token.agent_scopes {
+            Some(list) => {
+                let scopes: std::collections::BTreeSet<String> =
+                    list.split_whitespace().map(str::to_owned).collect();
+                let role = user_role.min(agent::implied_role(&scopes));
+                let grant = AgentGrant {
+                    token_name: token.name.clone(),
+                    scopes,
+                    group: token.agent_group.clone(),
+                    rate_per_minute: token.agent_rate_per_minute,
+                    client: None,
+                };
+                (role, Some(grant))
+            }
+            None => (
+                user_role.min(Scope::parse(&token.scope).unwrap_or(Scope::Read).role()),
+                None,
+            ),
+        };
         Ok(Principal {
             user_id: user.id,
             username: user.username,
-            role: user_role.min(scope.role()),
+            role,
             via: Via::Token { id: id.to_owned() },
+            agent,
         })
     }
 
@@ -810,15 +854,28 @@ impl Auth {
             role: Role::parse(&user.role).unwrap_or(Role::Viewer),
             username: user.username,
             via: Via::Basic,
+            agent: None,
         })
     }
 
     /// The audit actor for a request (token actors name the token and its owner).
     pub fn actor(&self, p: &Principal, remote: IpAddr, reason: Option<String>) -> Actor {
-        let (name, kind) = match &p.via {
-            Via::Session { .. } => (p.username.clone(), "session"),
-            Via::Basic => (p.username.clone(), "basic"),
-            Via::Token { id } => {
+        let (name, kind) = match (&p.via, &p.agent) {
+            // REQ: AGT-005 — `agent:<token> (owner: <user>)`, and the agent software.
+            (_, Some(g)) => {
+                let via = g
+                    .client
+                    .as_deref()
+                    .map(|c| format!(" via {c}"))
+                    .unwrap_or_default();
+                (
+                    format!("agent:{} (owner: {}){via}", g.token_name, p.username),
+                    "agent",
+                )
+            }
+            (Via::Session { .. }, None) => (p.username.clone(), "session"),
+            (Via::Basic, None) => (p.username.clone(), "basic"),
+            (Via::Token { id }, None) => {
                 let token = self
                     .state
                     .token(id)

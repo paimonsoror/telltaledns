@@ -56,6 +56,9 @@ pub struct Config {
     pub cache: CacheConfig,
     /// DNSSEC validation of forwarded answers (DNS-011).
     pub dnssec: DnssecConfig,
+    /// AI agents and automation using agent tokens (AGT-004, AGT-009). Shared across a
+    /// cluster, so `enabled = false` switches every agent off everywhere.
+    pub agents: AgentsConfig,
     /// Telemetry, query log, and metrics.
     pub telemetry: TelemetryConfig,
     /// The REST API (and, later, the web UI).
@@ -94,6 +97,7 @@ impl Default for Config {
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
+            agents: AgentsConfig::default(),
             telemetry: TelemetryConfig::default(),
             api: ApiConfig::default(),
             auth: AuthConfig::default(),
@@ -879,6 +883,26 @@ impl Default for DnssecConfig {
         Self {
             mode: DnssecMode::Off,
             negative_trust_anchors: Vec::new(),
+        }
+    }
+}
+
+/// `[agents]` (REQ: AGT-009, ADR-064).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct AgentsConfig {
+    /// The kill switch: `false` refuses every agent token at once (users and their own
+    /// tokens are unaffected).
+    pub enabled: bool,
+    /// Requests per minute per agent token, unless the token sets its own.
+    pub rate_per_minute: u32,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_per_minute: 120,
         }
     }
 }

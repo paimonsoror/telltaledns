@@ -98,15 +98,20 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
 /// - without `emergency`, the cluster takes its configuration from Git and this node isn't
 ///   managed from Git.
 ///
+/// With `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`
+/// (the epoch, whether it would be an emergency primary, and a sentence on what would happen).
+///
 /// Admin only; audited as `cluster.promote`.
 #[utoipa::path(post, path = "/api/v1/cluster/promote", tag = "system",
+    params(DryRun),
     request_body = crate::model::PromoteRequest,
     responses(
-        (status = 200, body = crate::model::ClusterView, description = "Promoted; the cluster as it is now."),
+        (status = 200, body = crate::model::ClusterView, description = "Promoted; the cluster as it is now. With `dryRun=true`: a `PromotePlan` instead, and nothing changed."),
         (status = 409, body = Problem, description = "Not allowed now (the primary is up, or this node can't be primary)."),
     ))]
 pub(crate) async fn cluster_promote(
     State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
     headers: HeaderMap,
     ext: axum::http::Extensions,
     b: Result<Json<crate::model::PromoteRequest>, JsonRejection>,
@@ -115,6 +120,15 @@ pub(crate) async fn cluster_promote(
         Ok(r) => r,
         Err(p) => return p.into_response(),
     };
+    if dry(&q) {
+        let b2 = Arc::clone(&backend);
+        return tokio::task::spawn_blocking(move || b2.promote_plan(&req))
+            .await
+            .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))))
+            .map_or_else(IntoResponse::into_response, |plan| {
+                Json(plan).into_response()
+            });
+    }
     let p = match principal(&ext) {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -196,6 +210,39 @@ pub(crate) async fn backup_download(
     }
 }
 
+/// REQ: AGT-004 — an agent restricted to a group changes only that group's devices, and
+/// only into that group (ADR-064).
+fn group_guard(
+    p: &crate::auth::Principal,
+    backend: &dyn Backend,
+    name: &str,
+    op: &Op,
+) -> Result<(), Problem> {
+    let Some(g) = p.agent.as_ref().and_then(|a| a.group.as_deref()) else {
+        return Ok(());
+    };
+    let refuse = |why: String| {
+        Err(Problem::new(Code::Forbidden, why)
+            .hint(format!("This token is restricted to group `{g}`.")))
+    };
+    let existing = backend.clients().into_iter().find(|c| c.name == name);
+    if let Some(c) = &existing
+        && !c.groups.iter().any(|x| x == g)
+    {
+        return refuse(format!("`{name}` isn't in group `{g}`"));
+    }
+    match op {
+        Op::Client(Some(input)) if input.groups != [g] => refuse(format!(
+            "devices you change must be in group `{g}` (set \"groups\": [\"{g}\"])"
+        )),
+        Op::Client(None) if existing.is_none() => refuse(format!("`{name}` isn't in group `{g}`")),
+        Op::Client(_) => Ok(()),
+        Op::Managed(..) => {
+            refuse("restricted tokens can't change local names or forwarded domains".into())
+        }
+    }
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -272,10 +319,10 @@ pub(crate) async fn put_client(
 #[utoipa::path(delete, path = "/api/v1/clients/{name}", tag = "config",
     params(("name" = String, Path, description = "The device's name."), DryRun),
     responses(
-        (status = 200, body = ClientChange),
+        (status = 200, body = ClientChange, description = "The result."),
         (status = 404, body = Problem, description = "No device by that name was created through the API."),
         (status = 409, body = Problem, description = "Defined in the config files."),
-        (status = 412, body = Problem),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
     ))]
 pub(crate) async fn delete_client(
     State((backend, auth)): State<Ctx>,
@@ -311,7 +358,7 @@ pub(crate) async fn delete_client(
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
         (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused."),
-        (status = 412, body = Problem),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A value doesn't fit its type (e.g. A with a name), or the result is invalid."),
     ))]
 pub(crate) async fn put_records(
@@ -348,10 +395,10 @@ pub(crate) async fn put_records(
 #[utoipa::path(delete, path = "/api/v1/records/{name}", tag = "config",
     params(("name" = String, Path, description = "The full name."), DryRun),
     responses(
-        (status = 200, body = ConfigChange),
+        (status = 200, body = ConfigChange, description = "The result."),
         (status = 404, body = Problem, description = "No name like that was created through the API."),
-        (status = 409, body = Problem),
-        (status = 412, body = Problem),
+        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
     ))]
 pub(crate) async fn delete_records(
     State((backend, auth)): State<Ctx>,
@@ -385,8 +432,8 @@ pub(crate) async fn delete_records(
     request_body = ForwardInput,
     responses(
         (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
-        (status = 409, body = Problem),
-        (status = 412, body = Problem),
+        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
         (status = 422, body = Problem, description = "A server isn't an address or a supported URL."),
     ))]
 pub(crate) async fn put_forward(
@@ -423,10 +470,10 @@ pub(crate) async fn put_forward(
 #[utoipa::path(delete, path = "/api/v1/forwards/{domain}", tag = "config",
     params(("domain" = String, Path, description = "The domain."), DryRun),
     responses(
-        (status = 200, body = ConfigChange),
-        (status = 404, body = Problem),
-        (status = 409, body = Problem),
-        (status = 412, body = Problem),
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Not found."),
+        (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
     ))]
 pub(crate) async fn delete_forward(
     State((backend, auth)): State<Ctx>,
@@ -464,6 +511,9 @@ async fn write(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
+    if let Err(e) = group_guard(&p, backend.as_ref(), &name, &op) {
+        return e.into_response();
+    }
     let expect = match expected_version(&headers) {
         Ok(v) => v,
         Err(e) => return e.into_response(),

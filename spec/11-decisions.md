@@ -1036,3 +1036,50 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 **Consequences:**
 - **Download:** `GET /api/v1/backup` (admin, audited `backup.create`, without the query log) and a Settings → System button. Restore through the API is deferred: restoring under a running server is risky.
 - `--include-cluster-key` (for disaster recovery of a lone primary) and passphrase encryption are follow-ups.
+
+## ADR-064 — Agent principals v1: scoped tokens, deny by default, a reason for every change (Proposed)
+**Context:** T6.5 (AGT-001..005, AGT-009). `spec/13` §2 asks for:
+- agent tokens with an owner, scopes, an optional group restriction, rate limits, and expiry;
+- attribution `agent:<token> (owner: <user>)` with the client and a required reason;
+- dry runs with impact estimates on every mutation;
+- guardrails and a cluster-wide kill switch;
+- an OpenAPI document written for agents and linted.
+
+Tokens so far had a role-like `scope` (read/write/admin), and the audit log already recorded `token:<name> (owner: <user>)` (ADR-038).
+
+**Decision:**
+- **Agent tokens:** `POST /tokens` with `kind: "agent"`.
+  - The scopes are AGT-004's list: `analytics:read`, `querylog:read`, `config:read`, `config:write:{clients,records,forwards}` (`*` for all), `ops:pause`, `ops:cache`, `cluster:admin`.
+  - The default is `analytics:read` + `config:read`: read-only, without the query log.
+  - Optional `group` and `ratePerMinute`.
+  - Each scope needs a role from the creator (`config:write:*` and `ops:*` need operator, `cluster:admin` needs admin). A token's effective role is the lower of its owner's and its scopes'.
+  - Stored in three new `tokens` columns (migration 5). User tokens are unchanged.
+- **Deny by default:** one table maps method and path to a scope. Anything not in it is refused for agents: users, tokens, passwords, backups, the audit log, and routes added later until they're mapped. The role checks still apply on top.
+- **Group restriction:** honored where a group view exists.
+  - The query log and top lists: the middleware replaces the `group` parameter.
+  - Devices: listed for the group only; writes only into, and only on devices already in, the group.
+  - Everything else is refused for restricted tokens rather than shown unfiltered.
+- **Every change needs a reason:** agents' non-GET requests without `X-Telltale-Reason` get 400.
+- **Attribution:** the actor is `agent:<token> (owner: <user>) via <X-Telltale-Client>`, with kind `agent`.
+- **Rate limits:** a per-token token bucket in memory, refilled per minute, default 120 (`[agents] rate_per_minute`). Over the limit: 429 with `Retry-After`. Per node, so a cluster allows N× in total; documented.
+- **Kill switch:** `[agents] enabled`, a shared section, so it replicates to every node (and, since ADR-059's addendum, doesn't trouble N−1 replicas while unset). It's applied on start and every reload.
+- **Impact estimates:** device, name, and forward changes return `recentQueries` and `impact`, a sentence with the numbers. They're counted from the in-memory top lists for the current and previous hour (a lower bound, cheap, no log scan). Promotion gets `?dryRun=true`, returning a `PromotePlan` (epoch, emergency, impact) from the same checks without acting.
+- **Lint:** `.spectral.yaml` (spectral:oas plus operation summary, description, tags, operationId, success response, and parameter descriptions) runs in CI. Every response now has a description.
+
+**Verification:**
+- Unit tests:
+  - the scope map denies by default;
+  - scope parsing and the roles scopes imply;
+  - the kill switch, rate limit, required reason, and group refusal;
+  - the forced group parameter.
+- API tests: agent tokens over HTTP (scopes, refusals, reason, attribution, kill switch); group-restricted tokens; the promote dry run.
+- `deploy/agent-e2e.sh` (CI) on a running node:
+  - a dry run of every mutation reports an impact and changes nothing;
+  - a real change is attributed with its reason;
+  - a reload with `enabled = false` stops the agent and not the admin.
+
+**Consequences:**
+- MCP (T6.6) builds on these principals.
+- `ops:pause` and `ops:cache` exist ahead of their endpoints.
+- Per-group analytics views beyond top lists would let restricted agents see more.
+- OAuth for agents (AGT-008) stays P1.

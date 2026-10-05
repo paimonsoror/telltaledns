@@ -168,6 +168,17 @@ impl Backend for Fake {
     fn upstreams(&self) -> Vec<UpstreamInfo> {
         Vec::new()
     }
+    fn promote(&self, _: PromoteRequest, _: String) -> Result<ClusterView, Problem> {
+        panic!("a dry run must not promote")
+    }
+    fn promote_plan(&self, req: &PromoteRequest) -> Result<crate::model::PromotePlan, Problem> {
+        Ok(crate::model::PromotePlan {
+            applied: false,
+            epoch: 4,
+            emergency: req.emergency,
+            impact: "would promote".into(),
+        })
+    }
 }
 
 /// A router plus an admin token for authenticated requests.
@@ -243,6 +254,269 @@ fn app() -> (TestApp, Arc<Fake>) {
         fake,
     )
 }
+// REQ: AGT-004, AGT-005, AGT-009 — an agent token over HTTP: its scopes and nothing else,
+// a reason on every change, the kill switch, and `agent:` attribution.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: create, use, refuse, attribute, switch off
+async fn agt_004_agent_tokens_over_http() {
+    let (app, _) = app();
+    let call =
+        |method: &str, uri: &str, bearer: &str, body: serde_json::Value, reason: Option<&str>| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .header("x-telltale-client", "test-agent/1.0");
+            if let Some(r) = reason {
+                b = b.header("x-telltale-reason", r);
+            }
+            b.body(Body::from(body.to_string())).unwrap()
+        };
+    let (s, _, v) = send(
+        &app,
+        call(
+            "POST",
+            "/api/v1/tokens",
+            &app.bearer,
+            serde_json::json!({"name": "helper", "kind": "agent",
+                "scopes": ["analytics:read", "config:write:clients"], "ratePerMinute": 600}),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["info"]["kind"], "agent");
+    assert_eq!(
+        v["info"]["scopes"],
+        serde_json::json!(["analytics:read", "config:write:clients"])
+    );
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let null = serde_json::Value::Null;
+    let status = |r: Request<Body>| async { send(&app, r).await.0 };
+
+    assert_eq!(
+        status(call(
+            "GET",
+            "/api/v1/stats/summary?from=-1h",
+            &agent,
+            null.clone(),
+            None
+        ))
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(call("GET", "/api/v1/queries", &agent, null.clone(), None)).await,
+        StatusCode::FORBIDDEN,
+        "no querylog:read"
+    );
+    assert_eq!(
+        status(call("GET", "/api/v1/users", &agent, null.clone(), None)).await,
+        StatusCode::FORBIDDEN,
+        "people only"
+    );
+    assert_eq!(
+        status(call("GET", "/api/v1/tokens", &agent, null.clone(), None)).await,
+        StatusCode::FORBIDDEN
+    );
+    let put = serde_json::json!({"match": ["192.168.1.40"]});
+    assert_eq!(
+        status(call("PUT", "/api/v1/clients/tv", &agent, put.clone(), None)).await,
+        StatusCode::BAD_REQUEST,
+        "agents must give a reason"
+    );
+    let s = status(call(
+        "PUT",
+        "/api/v1/clients/tv",
+        &agent,
+        put,
+        Some("name the TV"),
+    ))
+    .await;
+    assert!(
+        s != StatusCode::BAD_REQUEST && s != StatusCode::FORBIDDEN,
+        "{s}"
+    );
+
+    // Attribution: the token, its owner, and the agent software.
+    let p = app
+        .auth
+        .authenticate(
+            &auth::Presented {
+                bearer: Some(&agent),
+                ..auth::Presented::default()
+            },
+            NOW,
+        )
+        .unwrap()
+        .unwrap();
+    let mut p2 = p.clone();
+    if let Some(g) = p2.agent.as_mut() {
+        g.client = Some("test-agent/1.0".into());
+    }
+    let actor = app
+        .auth
+        .actor(&p2, "127.0.0.1".parse().unwrap(), Some("why".into()));
+    assert_eq!(actor.name, "agent:helper (owner: root) via test-agent/1.0");
+    assert_eq!(actor.kind, "agent");
+
+    // The kill switch refuses agents, not people.
+    app.auth.agents().set(false, 120);
+    assert_eq!(
+        status(call(
+            "GET",
+            "/api/v1/stats/summary?from=-1h",
+            &agent,
+            null.clone(),
+            None
+        ))
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(call(
+            "GET",
+            "/api/v1/stats/summary?from=-1h",
+            &app.bearer,
+            null,
+            None
+        ))
+        .await,
+        StatusCode::OK
+    );
+}
+
+// REQ: AGT-004 — a token restricted to a group: its group's devices only, other views
+// refused.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one story: create, use, refuse
+async fn agt_004_group_restricted_agent() {
+    let (app, _) = app();
+    let call = |method: &str, uri: &str, bearer: &str, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "test")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (s, _, v) = send(
+        &app,
+        call(
+            "POST",
+            "/api/v1/tokens",
+            &app.bearer,
+            serde_json::json!({"name": "kids-helper", "kind": "agent", "group": "kids",
+                "scopes": ["querylog:read", "analytics:read", "config:read", "config:write:clients"]}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["info"]["group"], "kids");
+    let t = v["token"].as_str().unwrap().to_owned();
+    let null = serde_json::Value::Null;
+    let st = |r| async { send(&app, r).await.0 };
+    assert_eq!(
+        st(call("GET", "/api/v1/stats/summary", &t, null.clone())).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        st(call("GET", "/api/v1/clients", &t, null.clone())).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        st(call(
+            "PUT",
+            "/api/v1/clients/tv",
+            &t,
+            serde_json::json!({"match": ["192.168.1.9"], "groups": ["default"]})
+        ))
+        .await,
+        StatusCode::FORBIDDEN,
+        "only into its own group"
+    );
+    let s = st(call(
+        "PUT",
+        "/api/v1/clients/tablet",
+        &t,
+        serde_json::json!({"match": ["192.168.1.9"], "groups": ["kids"]}),
+    ))
+    .await;
+    assert!(
+        s != StatusCode::FORBIDDEN && s != StatusCode::BAD_REQUEST,
+        "{s}"
+    );
+    assert_eq!(
+        st(call(
+            "DELETE",
+            "/api/v1/clients/someone-else",
+            &t,
+            null.clone()
+        ))
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        st(call("PUT", "/api/v1/records/x.lan", &t, null)).await,
+        StatusCode::FORBIDDEN
+    );
+    // A viewer can't mint a token that writes.
+    let viewer = app
+        .auth
+        .create_user(
+            "kid",
+            "another long password",
+            auth::Role::Viewer,
+            false,
+            NOW,
+        )
+        .unwrap();
+    let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &id,
+            viewer.id,
+            "v",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let vt = format!("tt_{id}_{secret}");
+    let (s, _, _) = send(
+        &app,
+        call(
+            "POST",
+            "/api/v1/tokens",
+            &vt,
+            serde_json::json!({"name": "x", "kind": "agent", "scopes": ["config:write:*"]}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+// REQ: AGT-002 — promotion has a dry run: the checks and what would happen, no change.
+#[tokio::test]
+async fn agt_002_promote_dry_run() {
+    let (app, _) = app();
+    let req = Request::post("/api/v1/cluster/promote?dryRun=true")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"emergency": true}"#))
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["applied"], false);
+    assert_eq!(v["epoch"], 4);
+    assert_eq!(v["emergency"], true);
+}
+
 #[tokio::test]
 async fn api_001_summary_is_derived_from_the_series() {
     let (app, fake) = app();
