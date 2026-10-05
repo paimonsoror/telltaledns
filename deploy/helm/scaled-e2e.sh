@@ -5,7 +5,7 @@
 #   2. DNS answers through a resolver pod;
 #   3. a node outside Kubernetes (like a Pi) joins through the cluster port with a token from
 #      the controller, and both sides see each other;
-#   4. a deleted resolver pod is replaced by a new member, and the old one expires.
+#   4. a deleted resolver pod is replaced by a new member, and the old one leaves at once.
 #
 #   deploy/helm/scaled-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 #   KEEP=1 ...   leave the kind cluster running
@@ -174,13 +174,14 @@ for _ in $(seq 30); do up=$(metric http://127.0.0.1:19153 telltale_cluster_peers
 [[ "$up" == 3 ]] || fail "the controller sees $up peers up, not 3"
 echo "ok"
 
-echo "== 4. a deleted resolver pod is replaced, and the old one expires"
+echo "== 4. a deleted resolver pod is replaced, and the old one leaves at once"
 k delete pod "$pod" --wait=false >/dev/null
 k rollout status deploy/t-telltale-resolver --timeout 180s >/dev/null || fail "the replacement pod never became ready"
-for _ in $(seq 150); do
+# REQ: CLU-009 — it leaves on SIGTERM: well before its 60 s expiry.
+for _ in $(seq 30); do
   total=$({ curl -s --max-time 3 http://127.0.0.1:19153/metrics || true; } | awk '/^telltale_cluster_peers\{/ {s += $2} END {print s+0}')
   [[ "$total" == 3 ]] && break; sleep 1
 done
-[[ "$total" == 3 ]] || fail "the controller still lists $total peers (the deleted pod didn't expire)"
+[[ "$total" == 3 ]] || fail "the controller still lists $total peers 30 s after the pod was deleted (it didn't leave)"
 echo "ok"
 echo PASS

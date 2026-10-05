@@ -414,6 +414,9 @@ pub struct Event {
     pub detail: String,
 }
 
+/// The RPC an ephemeral member sends when it shuts down (CLU-009).
+pub const LEAVE: &str = "cluster.leave";
+
 /// Events kept in memory.
 const MAX_EVENTS: usize = 200;
 
@@ -733,6 +736,44 @@ impl Cluster {
         gone
     }
 
+    /// REQ: CLU-009 — an ephemeral member (a resolver pod) that's shutting down leaves at once
+    /// instead of showing as down until it expires (primary only). Members that aren't
+    /// ephemeral stay: a Pi or a controller restarting is still part of the cluster.
+    pub fn remove_ephemeral(&self, id: &str) -> Result<(), String> {
+        if !self.is_primary() {
+            return Err("only the primary keeps the member list".into());
+        }
+        let mut nodes = self.identity.registry();
+        match nodes.iter().find(|n| n.node_id == id) {
+            Some(n) if !n.ephemeral => {
+                return Err("only ephemeral members (resolver pods) leave this way".into());
+            }
+            Some(_) => {
+                nodes.retain(|n| n.node_id != id);
+                self.identity.save_registry(&nodes)?;
+            }
+            None => {}
+        }
+        self.members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        self.event("left", id, "shut down (scaled in, replaced, or deleted)");
+        Ok(())
+    }
+
+    /// REQ: CLU-009 — on shutdown, an ephemeral member asks the primary to drop it now (see
+    /// [`Self::remove_ephemeral`], which refuses members that aren't ephemeral). Bounded by
+    /// `timeout`.
+    pub async fn leave(&self, timeout: Duration) -> Result<(), String> {
+        let primary = self
+            .reachable_primary()
+            .ok_or("the primary isn't reachable; this member will expire instead")?;
+        self.call(&primary, LEAVE, Vec::new(), timeout)
+            .await
+            .map(|_| ())
+    }
+
     /// Sets what answers peers' federated reads (once).
     pub fn set_rpc_handler(&self, h: RpcHandler) {
         let _ = self.rpc_handler.set(HandlerSlot(h));
@@ -823,10 +864,16 @@ impl Cluster {
         };
         let handler = self.rpc_handler.get().map(|h| Arc::clone(&h.0));
         let peer = peer.to_owned();
+        let me = Arc::clone(self);
         tokio::spawn(async move {
-            let result = match handler {
-                Some(h) => h(peer, req.kind, req.body).await,
-                None => Err("this node doesn't answer federated reads".into()),
+            let result = if req.kind == LEAVE {
+                // The peer's ID comes from its certificate: a member can only remove itself.
+                me.remove_ephemeral(&peer).map(|()| Vec::new())
+            } else {
+                match handler {
+                    Some(h) => h(peer, req.kind, req.body).await,
+                    None => Err("this node doesn't answer federated reads".into()),
+                }
             };
             let (body, error) = match result {
                 Ok(b) if b.len() <= MAX_RPC => (b, String::new()),

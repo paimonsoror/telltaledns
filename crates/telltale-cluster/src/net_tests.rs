@@ -628,3 +628,65 @@ fn clu_005_a_fenced_primary_never_publishes() {
         "the new epoch isn't this node's to publish in"
     );
 }
+
+// REQ: CLU-009 — a resolver pod shutting down leaves at once (no "down" member until it
+// expires); a member that isn't ephemeral can't be removed that way. A pod that dies without
+// leaving still expires as before (see the test above).
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let addr = free_port().await;
+    let url = format!("https://{addr}");
+    let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
+    let primary = Cluster::new(primary, "0.1.0");
+    primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let token = bootstrap_token(&url, "s3cret-shared-by-helm")
+        .await
+        .unwrap();
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: true,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "k8s".into(),
+        eligible: false,
+        version: "0.1.0".into(),
+    };
+    let resp = join(&token, &req).await.unwrap();
+    let pod =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "k8s", false, vec![]).unwrap();
+    let pod = Cluster::new(pod, "0.1.0");
+    let id = pod.identity.meta.node_id.clone();
+    let (pod_stop_tx, pod_stop) = watch::channel(false);
+    tokio::spawn(dial(Arc::clone(&pod), pod_stop));
+    let (p, q) = (Arc::clone(&primary), Arc::clone(&pod));
+    wait_for(|| p.members().iter().any(|m| m.connected)).await;
+    wait_for(|| q.reachable_primary().is_some()).await;
+
+    pod.leave(Duration::from_secs(2)).await.unwrap();
+    assert!(
+        !primary.members().iter().any(|m| m.node_id == id),
+        "gone from the members"
+    );
+    assert!(
+        !primary.identity.registry().iter().any(|n| n.node_id == id),
+        "gone from the registry"
+    );
+    assert!(
+        primary
+            .events()
+            .iter()
+            .any(|e| e.kind == "left" && e.node == id)
+    );
+
+    // The primary itself (not ephemeral) can't be removed that way.
+    let me = primary.identity.meta.node_id.clone();
+    assert!(primary.remove_ephemeral(&me).is_err());
+    let _ = pod_stop_tx.send(true);
+    let _ = stop_tx.send(true);
+}

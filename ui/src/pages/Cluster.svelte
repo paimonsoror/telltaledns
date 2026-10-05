@@ -36,6 +36,7 @@
     rejected: 'Rejected',
     restarted: 'Restarted',
     expired: 'Pod gone',
+    left: 'Left',
     voted: 'Voted',
     cert_issued: 'Certificate',
     ca_rotation: 'CA rotation',
@@ -53,7 +54,8 @@
     const since = Date.now() - 3600_000;
     const recent = (view?.events ?? []).filter((e) => Date.parse(e.at) >= since);
     const count = (k: string) => recent.filter((e) => e.kind === k).length;
-    return { joined: count('joined'), expired: count('expired'), restarted: count('restarted') };
+    // Pods gone: left on shutdown (T6.14), or expired after dying without a word.
+    return { joined: count('joined'), expired: count('expired') + count('left'), restarted: count('restarted') };
   });
   // T6.14 — selecting a node in the topology jumps to its row (opening its pod site).
   let selected = $state<string | null>(null);

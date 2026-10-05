@@ -271,6 +271,12 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
   too, and only the controller has them, so only it gets that traffic. Keep `service.api` on
   `ClusterIP` (it still serves the ingress). The install notes warn when an `api` or cluster
   Service is a LoadBalancer in scaled mode.
+- **Pods that shut down leave the cluster.** On SIGTERM (scaled in, replaced by a rollout,
+  or deleted) a resolver pod tells the controller it's leaving, and it's dropped from the
+  Cluster page at once (event **Left**). A pod that dies without shutting down (a crash, an
+  out-of-memory kill, a lost node) can't say so: it shows as down and expires after
+  `resolvers.ephemeralTtlSeconds`, as before. Only resolver pods leave this way; the
+  controller and nodes outside Kubernetes stay members across restarts.
 - **Rollouts without lost lookups.** On shutdown a pod reports not ready, then keeps answering
   for `drainDelaySeconds` (default 5; passed as `TELLTALE_DRAIN_DELAY_SECS`, which is
   `[node] drain_delay_secs`) while the Service stops
