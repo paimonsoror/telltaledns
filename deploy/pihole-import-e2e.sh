@@ -16,9 +16,11 @@ V5_IMAGE=pihole/pihole:2024.07.0
 E=$(mktemp -d)
 P=
 cleanup() {
+  local rc=$?
   [ -n "$P" ] && kill "$P" 2>/dev/null && wait "$P" 2>/dev/null
   docker rm -f tt-ph6 tt-ph5 >/dev/null 2>&1 || true
   rm -rf "$E"
+  exit "$rc"
 }
 trap cleanup EXIT
 fail() {

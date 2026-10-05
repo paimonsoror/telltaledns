@@ -13,7 +13,12 @@ B=${1:-target/debug/telltale}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
 P=
-cleanup() { [ -n "$P" ] && kill "$P" 2>/dev/null && wait "$P" 2>/dev/null; rm -rf "$E"; }
+cleanup() {
+  local rc=$?
+  [ -n "$P" ] && kill "$P" 2>/dev/null && wait "$P" 2>/dev/null
+  rm -rf "$E"
+  exit "$rc"
+}
 trap cleanup EXIT
 fail() {
   echo "FAIL: $*"

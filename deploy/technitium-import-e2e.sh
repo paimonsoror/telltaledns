@@ -16,9 +16,12 @@ IMAGE=technitium/dns-server:15.6.0
 E=$(mktemp -d)
 P= LISTS=
 cleanup() {
-  for p in $P $LISTS; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null; done
+  local rc=$?
+  trap - ERR TERM INT
+  for p in $P $LISTS; do kill "$p" 2>/dev/null && { wait "$p" 2>/dev/null || true; }; done
   docker rm -f tt-tech >/dev/null 2>&1 || true
   rm -rf "$E"
+  exit "$rc"
 }
 trap cleanup EXIT
 fail() {
@@ -29,12 +32,18 @@ fail() {
 }
 command -v dig >/dev/null || { echo "needs dig"; exit 2; }
 command -v docker >/dev/null || { echo "needs docker"; exit 2; }
+# Say where a command failed or a signal arrived (job logs need a token; annotations don't).
+trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
+trap 'fail "terminated at line $LINENO (\`$BASH_COMMAND\`)"' TERM INT
 
 # A local block list, served to both Technitium and TelltaleDNS.
 mkdir -p "$E/www"
 printf 'listed.example\nalso-allowed.example\n' > "$E/www/block.txt"
 (cd "$E/www" && exec python3 -m http.server 28780 --bind 0.0.0.0 >/dev/null 2>&1) & LISTS=$!
-HOST_IP=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+HOST_IP=$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)
+# Some Docker setups don't report the gateway: the docker0 address is the same thing.
+[ -n "$HOST_IP" ] || HOST_IP=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d/ -f1)
+[ -n "$HOST_IP" ] || fail "can't find the Docker host address"
 LIST_URL="http://$HOST_IP:28780/block.txt"
 
 echo "== Technitium ($IMAGE)"
@@ -62,8 +71,20 @@ api zones/records/add domain=home.arpa zone=home.arpa type=MX preference=10 exch
 api zones/create zone=corp.example type=Forwarder protocol=Udp forwarder=10.0.0.53
 api blocked/add domain=blocked.example
 api allowed/add domain=also-allowed.example
-api apps/downloadAndInstall "name=Advanced Blocking" \
-  url=https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip
+# The app comes from Technitium's store over the internet. If the store doesn't answer, skip
+# only the Advanced Blocking checks (with a warning) rather than fail on someone else's CDN.
+APP=0
+for _ in 1 2 3; do
+  out=$(curl -s -G "$U/api/apps/downloadAndInstall" --data-urlencode "token=$S" \
+    --data-urlencode "name=Advanced Blocking" \
+    --data-urlencode "url=https://download.technitium.com/dns/apps/AdvancedBlockingApp-v11.2.1.zip")
+  echo "$out" | grep -q '"status":"ok"' && { APP=1; break; }
+  sleep 5
+done
+if [ "$APP" = 0 ]; then
+  echo "warning: Technitium's app store didn't answer; skipping the Advanced Blocking checks"
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::warning title=$(basename "$0")::Technitium's app store didn't answer; Advanced Blocking checks skipped"
+fi
 cat > "$E/ab.json" <<'EOF'
 {"enableBlocking": true, "blockingAnswerTtl": 30, "blockListUrlUpdateIntervalHours": 24,
  "localEndPointGroupMap": {},
@@ -79,8 +100,10 @@ cat > "$E/ab.json" <<'EOF'
    "regexAllowListUrls": [], "regexBlockListUrls": [], "adblockListUrls": []}
  ]}
 EOF
-out=$(curl -s "$U/api/apps/config/set?token=$S" --data-urlencode "name=Advanced Blocking" --data-urlencode "config@$E/ab.json")
-echo "$out" | grep -q '"status":"ok"' || fail "Advanced Blocking config: $(echo "$out" | head -c 300)"
+if [ "$APP" = 1 ]; then
+  out=$(curl -s "$U/api/apps/config/set?token=$S" --data-urlencode "name=Advanced Blocking" --data-urlencode "config@$E/ab.json")
+  echo "$out" | grep -q '"status":"ok"' || fail "Advanced Blocking config: $(echo "$out" | head -c 300)"
+fi
 # (Technitium ships a "Default" scope for 192.168.1.0/24, so use another network.)
 api dhcp/scopes/set name=lan startingAddress=10.77.0.100 endingAddress=10.77.0.200 \
   subnetMask=255.255.255.0 "reservedLeases=kids-tablet|aa-bb-cc-dd-ee-01|10.77.0.150|tablet"
@@ -93,11 +116,12 @@ echo "== import"
 TECHNITIUM_TOKEN=$TOKEN "$B" import technitium "$U" -o "$E/t.toml" 2> "$E/import.err" || fail "import failed"
 grep -v '^  - ' "$E/import.err"
 t="$E/t.toml"
-for want in 'url = "udp://9.9.9.9:53"' 'match_suffix = ["corp.example"]' 'url = "udp://10.0.0.53:53"' \
-    'name = "nas.home.arpa"' 'value = "10 mail.home.arpa"' "url = \"$LIST_URL\"" \
-    'rules = ["blocked.example"]' 'rules = ["also-allowed.example"]' 'rules = ["/^tracker[0-9]+\\./"]' \
-    'name = "kids"' 'networks = ["192.168.50.0/24"]' 'block_mode = "nxdomain"' \
-    'match = ["aa:bb:cc:dd:ee:01", "10.77.0.150"]' 'mode = "validate"' 'persist = true'; do
+wants=('url = "udp://9.9.9.9:53"' 'match_suffix = ["corp.example"]' 'url = "udp://10.0.0.53:53"'
+  'name = "nas.home.arpa"' 'value = "10 mail.home.arpa"' "url = \"$LIST_URL\""
+  'rules = ["blocked.example"]' 'rules = ["also-allowed.example"]' 'block_mode = "nxdomain"'
+  'match = ["aa:bb:cc:dd:ee:01", "10.77.0.150"]' 'mode = "validate"' 'persist = true')
+[ "$APP" = 1 ] && wants+=('rules = ["/^tracker[0-9]+\\./"]' 'name = "kids"' 'networks = ["192.168.50.0/24"]')
+for want in "${wants[@]}"; do
   grep -qF -- "$want" "$t" || fail "the import lacks $want"
 done
 grep -q 'dns.quad9.net' "$E/import.err" || fail "the forwarder with no address isn't reported"
@@ -126,7 +150,9 @@ for _ in $(seq 100); do d +short nas.home.arpa A 2>/dev/null | grep -q 192.168.1
 [ "$(d +short nas.home.arpa A)" = 192.168.1.10 ] || fail "nas.home.arpa doesn't answer"
 d media.home.arpa A | grep -q 'media.home.arpa.*300.*CNAME.*nas.home.arpa' || fail "media.home.arpa isn't a CNAME with TTL 300"
 for _ in $(seq 60); do d listed.example A | grep -q 'EDE: 15' && break; sleep 0.5; done
-for n in listed.example blocked.example app-blocked.example tracker7.example; do
+names=(listed.example blocked.example)
+[ "$APP" = 1 ] && names+=(app-blocked.example tracker7.example)
+for n in "${names[@]}"; do
   out=$(d "$n" A)
   echo "$out" | grep -q 'EDE: 15' || fail "$n isn't blocked"
   echo "$out" | grep -q 'status: NXDOMAIN' || fail "$n: blocking mode isn't NXDOMAIN"
