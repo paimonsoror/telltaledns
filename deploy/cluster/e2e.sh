@@ -269,10 +269,15 @@ name = "c.p.test"
 type = "A"
 value = "10.0.0.1"
 EOF
+pubseq() { python3 -c "import json;print(json.load(open('$E/p/cluster/published.json'))['seq'])" 2>/dev/null || echo 0; }
+before=$(pubseq)
 kill -HUP "$P_PID"
 for _ in $(seq 50); do [ "$(q 25301 c.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 [ "$(q 25301 c.p.test)" = 10.0.0.1 ] || fail "the primary didn't apply its own edit"
-sleep 1
+# Wait until the edit is actually published (a slow runner can take longer than a second):
+# only a published version the replica never saw is an orphan.
+for _ in $(seq 150); do [ "$(pubseq)" -gt "$before" ] && break; sleep 0.1; done
+[ "$(pubseq)" -gt "$before" ] || fail "the primary never published its edit (seq still $before)"
 kill "$P_PID"; wait "$P_PID" 2>/dev/null || true; P_PID=
 # Promote the replica while the primary is down.
 "$B" cluster promote -c "$E/r.toml" | head -1
