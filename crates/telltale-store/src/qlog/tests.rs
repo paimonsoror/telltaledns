@@ -61,7 +61,28 @@ fn settings(dir: &Path, privacy: u8) -> Settings {
         fsync: false,
         retention_days: 30,
         retention_bytes: u64::MAX,
+        rotate_after: None,
     }
+}
+
+// REQ: CLU-007 — ship mode closes parts on a timer, so they can be shipped; every row is
+// still found across the parts.
+#[test]
+fn clu_007_rotate_after_closes_parts_on_a_timer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = settings(tmp.path(), 0);
+    s.rotate_after = Some(Duration::ZERO);
+    let mut b = Builder::spawn(s).unwrap();
+    for i in 0..3u64 {
+        b.push(
+            &ev(BASE_HOUR * HOUR_US + i, 1, Status::Forwarded, 100),
+            &wire("a.example"),
+        );
+    }
+    drop(b);
+    let segs = super::list_segments(tmp.path()).unwrap();
+    assert_eq!(segs.len(), 3, "one part per push with a zero interval");
+    assert_eq!(all(tmp.path(), &Filter::default()).len(), 3);
 }
 
 /// Writes `n` rows per hour for `hours` hours: names cycle through 1000 domains, every 10th

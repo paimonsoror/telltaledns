@@ -257,6 +257,147 @@ fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter
     })
 }
 
+impl ApiBackend {
+    /// One query-log directory, as an API page. `node` labels its rows (shipped logs).
+    fn search_dir(
+        &self,
+        dir: &Path,
+        filter: &qlog::Filter,
+        limit: usize,
+        cursor: Option<qlog::Cursor>,
+        node: Option<&str>,
+    ) -> Result<QueryPage, Problem> {
+        let opts = qlog::Options {
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(4)),
+            on_thread_start: Some(telltale_net::background_thread),
+        };
+        let page = qlog::search_with(dir, filter, limit, cursor, &opts)
+            .map_err(|e| Problem::internal(format!("query log: {e}")))?;
+        let lists = self.list_names();
+        let policy = &self.src.pipeline.current().policy;
+        let groups = policy.clients.groups();
+        let items = page
+            .rows
+            .iter()
+            .map(|r| QueryRow {
+                time: format_us(r.ts_us),
+                ts_unix_micros: r.ts_us,
+                client: telltale_telemetry::agg::client_text(r.client_ip),
+                // REQ: API-010 — names are resolved now, from the address, so naming or
+                // renaming a device relabels its history without rewriting the log.
+                client_name: device_name(&self.src, r.client_ip),
+                node: node.map(str::to_owned),
+                group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
+                name: r.name.clone(),
+                qtype: qtype_name(r.qtype),
+                status: r.status.label().to_owned(),
+                rcode: r.rcode.map(rcode_name),
+                proto: r.proto.label().to_owned(),
+                list: r.rule.map(|x| {
+                    lists
+                        .get(usize::from(x.list))
+                        .cloned()
+                        .unwrap_or_else(|| format!("#{}", x.list))
+                }),
+                rule: r
+                    .rule
+                    .map(|x| if x.allow { "allow" } else { x.kind.label() }.to_owned()),
+                total_ms: ms(u64::from(r.t_total_us)),
+                upstream_ms: ms(u64::from(r.t_upstream_us)),
+                response_bytes: r.resp_size,
+                answers: r.answers,
+            })
+            .collect();
+        Ok(QueryPage {
+            items,
+            next_cursor: page.next.map(|c| c.encode()),
+            scanned: ScanStats {
+                segments: page.stats.segments,
+                blocks_read: page.stats.blocks_read,
+                blocks_total: page.stats.blocks_total,
+                rows_scanned: page.stats.rows_scanned,
+            },
+            missing_nodes: Vec::new(),
+        })
+    }
+
+    /// This node's query log plus the logs shipped to it, newest first, paged with a
+    /// federated cursor (one position per source; CLU-007).
+    fn search_with_shipped(
+        &self,
+        filter: &qlog::Filter,
+        limit: usize,
+        cursor: Option<&str>,
+        own: std::path::PathBuf,
+        shipped: Vec<(String, std::path::PathBuf)>,
+    ) -> Result<QueryPage, Problem> {
+        use telltale_api::federation::{self, Bounds, NodePage};
+        let prev: Bounds = match cursor {
+            None => Bounds::new(),
+            Some(c) => federation::decode_cursor(Some(c)).ok_or_else(bad_cursor)?,
+        };
+        let mut sources = vec![("self".to_owned(), own, None)];
+        for (id, dir) in shipped {
+            let label = self.site_of(&id);
+            sources.push((format!("shipped:{id}"), dir, Some(label)));
+        }
+        let mut pages = Vec::new();
+        for (key, dir, label) in sources {
+            let Some(to) = federation::until(&prev, &key, filter.to_us) else {
+                continue;
+            };
+            let mut f = filter.clone();
+            f.to_us = to;
+            let page = self.search_dir(&dir, &f, limit, None, label.as_deref())?;
+            pages.push(NodePage {
+                node: key,
+                label: self.own_site(),
+                page,
+                asked: limit,
+            });
+        }
+        Ok(federation::merge_queries(pages, limit, &prev))
+    }
+
+    /// A cluster node's site (else its ID), for labelling shipped rows.
+    fn site_of(&self, id: &str) -> String {
+        let Some(c) = &self.src.cluster else {
+            return id.to_owned();
+        };
+        c.members()
+            .into_iter()
+            .find(|m| m.node_id == id)
+            .map(|m| m.site)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                c.identity
+                    .registry()
+                    .into_iter()
+                    .find(|n| n.node_id == id)
+                    .map(|n| n.site)
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| id.to_owned())
+    }
+
+    /// This node's own site (else its ID; empty outside a cluster).
+    fn own_site(&self) -> String {
+        self.src.cluster.as_ref().map_or_else(String::new, |c| {
+            let m = &c.identity.meta;
+            if m.site.is_empty() {
+                m.node_id.clone()
+            } else {
+                m.site.clone()
+            }
+        })
+    }
+}
+
+fn bad_cursor() -> Problem {
+    Problem::invalid("`cursor`: not a cursor from this API")
+        .hint("Pass the nextCursor value from the previous page unchanged.")
+}
+
 impl Backend for ApiBackend {
     fn system_info(&self) -> SystemInfo {
         let cfg = self.src.config.load();
@@ -619,66 +760,18 @@ impl Backend for ApiBackend {
         if let Some(g) = &q.group {
             filter.group = Some(self.group_index(g)?);
         }
+        let data_dir = self.src.config.load().node.data_dir.to_string();
+        let dir = Path::new(&data_dir).join("qlog");
+        // REQ: CLU-007 — query logs other nodes shipped here are searched too (ADR-055).
+        let shipped = crate::ship::shipped_dirs(&data_dir);
+        if !shipped.is_empty() {
+            return self.search_with_shipped(&filter, limit, q.cursor.as_deref(), dir, shipped);
+        }
         let cursor = match &q.cursor {
             None => None,
-            Some(c) => Some(qlog::Cursor::decode(c).ok_or_else(|| {
-                Problem::invalid("`cursor`: not a cursor from this API")
-                    .hint("Pass the nextCursor value from the previous page unchanged.")
-            })?),
+            Some(c) => Some(qlog::Cursor::decode(c).ok_or_else(bad_cursor)?),
         };
-        let dir = Path::new(self.src.config.load().node.data_dir.as_str()).join("qlog");
-        let opts = qlog::Options {
-            threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(4)),
-            on_thread_start: Some(telltale_net::background_thread),
-        };
-        let page = qlog::search_with(&dir, &filter, limit, cursor, &opts)
-            .map_err(|e| Problem::internal(format!("query log: {e}")))?;
-        let lists = self.list_names();
-        let policy = &self.src.pipeline.current().policy;
-        let groups = policy.clients.groups();
-        let items = page
-            .rows
-            .iter()
-            .map(|r| QueryRow {
-                time: format_us(r.ts_us),
-                ts_unix_micros: r.ts_us,
-                client: telltale_telemetry::agg::client_text(r.client_ip),
-                // REQ: API-010 — names are resolved now, from the address, so naming or
-                // renaming a device relabels its history without rewriting the log.
-                client_name: device_name(&self.src, r.client_ip),
-                node: None,
-                group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
-                name: r.name.clone(),
-                qtype: qtype_name(r.qtype),
-                status: r.status.label().to_owned(),
-                rcode: r.rcode.map(rcode_name),
-                proto: r.proto.label().to_owned(),
-                list: r.rule.map(|x| {
-                    lists
-                        .get(usize::from(x.list))
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{}", x.list))
-                }),
-                rule: r
-                    .rule
-                    .map(|x| if x.allow { "allow" } else { x.kind.label() }.to_owned()),
-                total_ms: ms(u64::from(r.t_total_us)),
-                upstream_ms: ms(u64::from(r.t_upstream_us)),
-                response_bytes: r.resp_size,
-                answers: r.answers,
-            })
-            .collect();
-        Ok(QueryPage {
-            items,
-            next_cursor: page.next.map(|c| c.encode()),
-            scanned: ScanStats {
-                segments: page.stats.segments,
-                blocks_read: page.stats.blocks_read,
-                blocks_total: page.stats.blocks_total,
-                rows_scanned: page.stats.rows_scanned,
-            },
-            missing_nodes: Vec::new(),
-        })
+        self.search_dir(&dir, &filter, limit, cursor, None)
     }
 
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {

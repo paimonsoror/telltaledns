@@ -115,6 +115,16 @@ fn encode_cursor(b: &Bounds) -> String {
     format!("{CURSOR_PREFIX}{}", base64url(&json))
 }
 
+/// Where `node`'s next page ends (exclusive, Unix µs; 0 = no end), or `None` to skip it: it
+/// ran out, or it wasn't part of the paging when it started.
+pub fn until(prev: &Bounds, node: &str, to_us: u64) -> Option<u64> {
+    match prev.get(node) {
+        None if prev.is_empty() => Some(to_us),
+        None | Some(None) => None,
+        Some(Some(b)) => Some(if to_us == 0 { *b } else { to_us.min(*b) }),
+    }
+}
+
 /// One node's page for a federated read.
 #[derive(Debug)]
 pub struct NodePage {
@@ -140,7 +150,10 @@ pub fn merge_queries(pages: Vec<NodePage>, limit: usize, prev: &Bounds) -> Query
         scanned.rows_scanned += p.page.scanned.rows_scanned;
         returned.insert(p.node.clone(), (p.page.items.len(), p.asked));
         for mut r in p.page.items {
-            r.node = Some(p.label.clone());
+            // Rows a node stores for others (ship mode) already name their node.
+            if r.node.is_none() {
+                r.node = Some(p.label.clone());
+            }
             rows.push((p.node.clone(), r));
         }
     }

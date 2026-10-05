@@ -257,7 +257,12 @@
           "retention_bytes": "2GiB",
           "retention_days": 30
         },
-        "ring_slots": 4096
+        "ring_slots": 4096,
+        "ship": {
+          "buffer_bytes": "64MiB",
+          "interval_secs": 300,
+          "to": null
+        }
       }
     },
     "upstream": {
@@ -1479,6 +1484,43 @@
         "upstream_group"
       ]
     },
+    "ShipConfig": {
+      "description": "Ship mode (`[telemetry] mode = \"ship\"`, CLU-007, ADR-055).",
+      "type": "object",
+      "properties": {
+        "buffer_bytes": {
+          "description": "Most query log kept here while it can't be delivered; the oldest goes first beyond it.\nPut `[node] data_dir` on tmpfs (or accept the writes) on an SD card.",
+          "default": "64MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "interval_secs": {
+          "description": "Close and ship the query log at least this often, in seconds (it's searchable from\nthis node until then, through the cluster).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "to": {
+          "description": "The node that stores this node's query log: a node ID or site. Default: the primary.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
+    },
     "SpecialConfig": {
       "description": "Built-in handling of special names (`spec/03` §3 step 4).",
       "type": "object",
@@ -1561,6 +1603,14 @@
           "format": "uint32",
           "default": 4096,
           "minimum": 0
+        },
+        "ship": {
+          "$ref": "#/$defs/ShipConfig",
+          "default": {
+            "buffer_bytes": "64MiB",
+            "interval_secs": 300,
+            "to": null
+          }
         }
       },
       "additionalProperties": false
@@ -1574,7 +1624,7 @@
           "const": "local"
         },
         {
-          "description": "Ship events to the controller (store-and-forward); good for SD-card nodes.",
+          "description": "Ship the query log to another cluster node (the primary by default), keeping only a\nsmall local buffer until it's delivered (store-and-forward, CLU-007): for nodes with\nlittle or wear-sensitive storage, such as a Pi on an SD card, and ephemeral pods.",
           "type": "string",
           "const": "ship"
         }

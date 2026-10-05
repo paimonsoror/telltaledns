@@ -78,7 +78,14 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *With the primary unreachable, writes get 503 and nothing changes.*
   - *Cluster e2e: a record PUT on the replica resolves on both nodes, the primary's audit shows `bob via r`, and a write with the primary down gets 503.*
   - *Deferred: user/token replication (ADR-045), re-applying conflicts from the UI, and making the "api"/"file" source labels on replicas reflect the primary's state.*
-- [ ] **T5.8 Telemetry ship mode + store-and-forward.** *(CLU-007)*
+- [x] **T5.8 Telemetry ship mode + store-and-forward.** *(CLU-007)* *Done 2026-10-05 (ADR-055):*
+  - *`[telemetry] mode = "ship"` with `[telemetry.ship] to / buffer_bytes / interval_secs`.*
+  - *The writer closes parts on a timer, and the local log is the bounded buffer.*
+  - *The shipper sends closed parts in chunks over the cluster channel. The receiver checks the hash and files them under `qlog-nodes/<id>/`, and the sender deletes its copy after confirmation.*
+  - *The receiver's search includes shipped logs, labelled by node, with a per-source cursor.*
+  - *The peer RPC handler is installed even without the API. New metrics for shipped, pending, errors and received.*
+  - *Tests: chunked receive with checksum and path checks, closed-part selection, rotation; a cluster e2e where the replica in ship mode delivers to the primary and the shipped row is found on the primary.*
+  - *Deferred: rollup shipping and `both` mode (ADR-055).*
 - [x] **T5.9 Cluster health page, metrics, alerts.** *(CLU-008)* *Done 2026-10-05: a Cluster page in the main navigation (standalone explainer; summary; six checks with fixes; per-node role/link/RTT, config version + lag + behind-time, serving: ready/q/s/SERVFAIL %/upstream p90, version, uptime, cert expiry; event timeline; 5 s refresh) and `GET /api/v1/cluster`. Heartbeats gained echo-based RTT and serving stats (added proto fields, N-1 compatible), an immediate first heartbeat, and an event log. Metrics per peer (up, RTT, lag) and per node (seq, behind seconds, sync error, cert expiry); four PrometheusRule alerts (plus a CI lint of the monitoring templates, which caught an unquoted alert summary from T4.2). Deferred: clock-skew check and quorum/lease state (T5.4), cluster-wide federated serving stats (T5.6), the MCP tool (T6.6).* Owner request 2026-10-04: a **Cluster** item in the main navigation with deep technical detail for judging whether the cluster is active, healthy, and serving traffic:
   - **Topology:** cluster name/ID, epoch, election mode, which node is primary, nodes by site, eligible vs replica vs ephemeral.
   - **Per node:** up/down with last heartbeat age, link direction and RTT, version and protocol (N/N-1 warnings), uptime, certificate expiry (renewal due), advertise URLs, and whether its DNS is serving: QPS, answer rate, SERVFAIL rate, p90 latency, readiness.

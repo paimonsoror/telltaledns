@@ -9,7 +9,8 @@
 #      down, follows the new primary, and keeps its unseen edit under Conflicts.
 # Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries;
 # (T5.7): a change made on the replica's API is forwarded to the primary, reaches both
-# nodes, and the primary's audit log names the user and the entry node.
+# nodes, and the primary's audit log names the user and the entry node; (T5.8): the
+# replica's query log, in ship mode, ends up on the primary and is still searchable.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -46,6 +47,7 @@ listen = "127.0.0.1:$3"
 listen = "127.0.0.1:$4"
 [telemetry.qlog]
 enabled = true
+flush_interval_secs = 1
 [cluster]
 listen = "127.0.0.1:$5"
 [[upstream]]
@@ -66,6 +68,13 @@ EOF
 mkdir -p "$E/p" "$E/r"
 node_config p 25301 28001 29001 28441 a.p.test '||ads.p.test^' > "$E/p.toml"
 node_config r 25302 28002 29002 28442 own.r.test '||ads.r.test^' > "$E/r.toml"
+# The replica ships its query log to the primary (CLU-007).
+cat >> "$E/r.toml" <<EOF
+[telemetry]
+mode = "ship"
+[telemetry.ship]
+interval_secs = 10
+EOF
 # A record that stays on the replica (CLU-006).
 cat >> "$E/r.toml" <<EOF
 [[record]]
@@ -166,6 +175,21 @@ for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 
 [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record didn't come back to the replica"
 get '/api/v1/audit' | grep -q 'bob via r' || fail "the primary's audit log doesn't name the user and entry node"
 echo "ok"
+
+echo "== query-log ship mode (CLU-007)"
+q 25302 ship1.r.test >/dev/null
+# A part closes after interval_secs (on the next query), then the shipper delivers it.
+shipped=""
+for i in $(seq 60); do
+  q 25302 "tick$i.r.test" >/dev/null
+  shipped=$(curl -s http://127.0.0.1:29001/metrics | awk '/^telltale_qlog_received_segments_total/ {print $2}')
+  [ "${shipped:-0}" -gt 0 ] && break; sleep 1
+done
+[ "${shipped:-0}" -gt 0 ] || fail "the primary never received the replica's query log"
+ls "$E/p/qlog-nodes/"*/ >/dev/null 2>&1 || fail "no shipped query log under the primary's qlog-nodes"
+node=$(get '/api/v1/queries?name=ship1.r.test&scope=node:local' | field '" ".join(r.get("node","") for r in d["items"])')
+[ "$node" = r ] || fail "the primary's own search doesn't show the shipped row as the replica's (got '$node')"
+echo "ok ($shipped parts received)"
 
 # The cluster's settings travel too: a new authority on the primary reaches the replica.
 "$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null

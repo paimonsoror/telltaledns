@@ -108,6 +108,23 @@ pub(crate) fn rpc_handler(
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
             }
+            if kind == crate::ship::KIND {
+                // REQ: CLU-007 — a node in ship mode delivering its query log.
+                return tokio::task::spawn_blocking(move || {
+                    let cfg = src.config.load();
+                    let q = &cfg.telemetry.qlog;
+                    crate::ship::receive(
+                        cfg.node.data_dir.as_str(),
+                        &peer,
+                        &body,
+                        q.retention_days,
+                        q.retention_bytes.bytes(),
+                        &src.ship,
+                    )
+                })
+                .await
+                .map_err(|e| format!("receive worker failed: {e}"))?;
+            }
             if kind != KIND {
                 return Err(format!("unknown call `{kind}`"));
             }
@@ -364,14 +381,7 @@ impl Backend for Federated {
                     .hint("Pass the nextCursor value from the previous page unchanged.")
             })?,
         };
-        // Where a node's next page ends: `None` skips it (it ran out, or joined mid-paging).
-        let until = |node: &str| -> Option<u64> {
-            match prev.get(node) {
-                None if prev.is_empty() => Some(to_us),
-                None | Some(None) => None,
-                Some(Some(b)) => Some(if to_us == 0 { *b } else { to_us.min(*b) }),
-            }
-        };
+        let until = |node: &str| federation::until(&prev, node, to_us);
         let mut params = q.clone();
         params.cursor = None;
         let me = self.cluster.identity.meta.node_id.clone();

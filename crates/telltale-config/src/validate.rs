@@ -643,6 +643,12 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     if t.qlog.retention_days == 0 {
         r.err("telemetry.qlog.retention_days", "must be at least 1");
     }
+    if t.ship.interval_secs < 10 {
+        r.err("telemetry.ship.interval_secs", "must be at least 10");
+    }
+    if t.ship.buffer_bytes.bytes() < 1 << 20 {
+        r.err("telemetry.ship.buffer_bytes", "must be at least 1 MiB");
+    }
     if t.qlog.flush_interval_secs == 0 {
         r.err("telemetry.qlog.flush_interval_secs", "must be at least 1");
     }

@@ -765,14 +765,41 @@ pub enum TelemetryMode {
     /// Keep the query log on this node.
     #[default]
     Local,
-    /// Ship events to the controller (store-and-forward); good for SD-card nodes.
+    /// Ship the query log to another cluster node (the primary by default), keeping only a
+    /// small local buffer until it's delivered (store-and-forward, CLU-007): for nodes with
+    /// little or wear-sensitive storage, such as a Pi on an SD card, and ephemeral pods.
     Ship,
+}
+
+/// Ship mode (`[telemetry] mode = "ship"`, CLU-007, ADR-055).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ShipConfig {
+    /// The node that stores this node's query log: a node ID or site. Default: the primary.
+    pub to: Option<SafeString>,
+    /// Most query log kept here while it can't be delivered; the oldest goes first beyond it.
+    /// Put `[node] data_dir` on tmpfs (or accept the writes) on an SD card.
+    pub buffer_bytes: ByteSize,
+    /// Close and ship the query log at least this often, in seconds (it's searchable from
+    /// this node until then, through the cluster).
+    pub interval_secs: u32,
+}
+
+impl Default for ShipConfig {
+    fn default() -> Self {
+        Self {
+            to: None,
+            buffer_bytes: ByteSize::mib(64),
+            interval_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct TelemetryConfig {
     pub mode: TelemetryMode,
+    pub ship: ShipConfig,
     /// Event ring size per producing thread, in events of ~128 bytes (power of two, at
     /// least 1024). The default, 4096 (512 KiB), holds about 170 ms of a fully loaded
     /// worker; a full ring drops events (counted), never queries (ADR-026).
@@ -787,6 +814,7 @@ impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             mode: TelemetryMode::Local,
+            ship: ShipConfig::default(),
             ring_slots: 4096,
             qlog: QlogConfig::default(),
             metrics: MetricsConfig::default(),

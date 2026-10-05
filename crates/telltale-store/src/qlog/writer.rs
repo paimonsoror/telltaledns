@@ -44,6 +44,8 @@ pub struct Settings {
     pub fsync: bool,
     pub retention_days: u32,
     pub retention_bytes: u64,
+    /// Start a new part at least this often (ship mode closes parts so they can be shipped).
+    pub rotate_after: Option<Duration>,
 }
 
 /// Write-path counters (for `/metrics`).
@@ -108,6 +110,8 @@ pub struct Builder {
     new_names: Vec<Box<[u8]>>,
     new_clients: Vec<[u8; 16]>,
     opened: Instant,
+    /// When the current part started (for `rotate_after`).
+    part_opened: Instant,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -137,6 +141,7 @@ impl Builder {
             new_names: Vec::new(),
             new_clients: Vec::new(),
             opened: Instant::now(),
+            part_opened: Instant::now(),
             thread,
         })
     }
@@ -155,6 +160,14 @@ impl Builder {
             // A new hour starts a new segment; late events from an earlier hour stay in the
             // current one (search prunes by row time, not by file).
             Some(k) if hour > k.hour => self.rotate(hour),
+            Some(k)
+                if self
+                    .settings
+                    .rotate_after
+                    .is_some_and(|d| self.part_opened.elapsed() >= d) =>
+            {
+                self.rotate(k.hour);
+            }
             Some(_) => {}
             None => self.rotate(hour),
         }
@@ -219,6 +232,7 @@ impl Builder {
             seq: self.next_seq,
         });
         self.next_seq = self.next_seq.wrapping_add(1);
+        self.part_opened = Instant::now();
         self.names.clear();
         self.clients.clear();
     }

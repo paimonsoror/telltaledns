@@ -21,6 +21,7 @@ mod replication;
 mod rollups;
 mod selfupdate;
 mod server;
+mod ship;
 mod tail;
 
 use std::io::{self, Write};

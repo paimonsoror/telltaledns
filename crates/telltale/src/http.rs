@@ -61,6 +61,8 @@ pub(crate) struct Sources {
     pub(crate) masking: crate::masking::Detector,
     /// This node's cluster channel, when it's in a cluster (CLU-001).
     pub(crate) cluster: Option<Arc<telltale_cluster::net::Cluster>>,
+    /// Query-log shipping, both directions (CLU-007).
+    pub(crate) ship: Arc<crate::ship::Stats>,
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
@@ -100,16 +102,10 @@ pub(crate) fn api_router(src: Arc<Sources>, auth: Arc<telltale_api::auth::Auth>)
     let local: telltale_api::Shared = Arc::new(crate::api_backend::ApiBackend {
         src: Arc::clone(&src),
     });
-    // REQ: CLU-002 — in a cluster, reads cover every node, and this node answers its peers'.
+    // REQ: CLU-002 — in a cluster, reads cover every node (peers are answered by the
+    // handler `serve_peers` installs, API or not).
     let backend: telltale_api::Shared = match &src.cluster {
-        Some(c) => {
-            c.set_rpc_handler(crate::federated::rpc_handler(
-                Arc::clone(&src),
-                Arc::clone(&local),
-                Arc::clone(c),
-            ));
-            Arc::new(crate::federated::Federated::new(local, Arc::clone(c)))
-        }
+        Some(c) => Arc::new(crate::federated::Federated::new(local, Arc::clone(c))),
         None => local,
     };
     let metrics = HttpRouter::new()
@@ -297,6 +293,9 @@ pub(crate) fn render(src: &Sources) -> String {
     if let Some(q) = &src.qlog {
         render_qlog(&mut w, q);
     }
+    if src.cluster.is_some() {
+        render_ship(&mut w, &src.ship);
+    }
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
     render_exported(&mut w, src, &state);
@@ -466,6 +465,61 @@ fn render_qlog(w: &mut PromWriter, q: &telltale_store::qlog::Stats) {
     ] {
         w.family(name, "counter", help)
             .sample(name, &[], v.load(Relaxed));
+    }
+}
+
+/// REQ: CLU-007 — query-log ship mode, sending and receiving.
+fn render_ship(w: &mut PromWriter, s: &crate::ship::Stats) {
+    use std::sync::atomic::Ordering::Relaxed;
+    for (name, kind, help, v) in [
+        (
+            "telltale_qlog_ship_segments_total",
+            "counter",
+            "Query-log parts delivered to the ship target.",
+            &s.segments_shipped,
+        ),
+        (
+            "telltale_qlog_ship_bytes_total",
+            "counter",
+            "Query-log bytes delivered to the ship target.",
+            &s.bytes_shipped,
+        ),
+        (
+            "telltale_qlog_ship_errors_total",
+            "counter",
+            "Failed query-log deliveries (retried).",
+            &s.errors,
+        ),
+        (
+            "telltale_qlog_ship_pending_segments",
+            "gauge",
+            "Closed query-log parts waiting to be delivered.",
+            &s.pending,
+        ),
+        (
+            "telltale_qlog_received_segments_total",
+            "counter",
+            "Query-log parts received from nodes in ship mode.",
+            &s.segments_received,
+        ),
+    ] {
+        w.family(name, kind, help)
+            .sample(name, &[], v.load(Relaxed));
+    }
+}
+
+/// Answers peers over the cluster channel (CLU-002, CLU-007): federated reads, forwarded
+/// writes, and shipped query logs. Installed whether or not this node runs the API.
+pub(crate) fn serve_peers(src: &Arc<Sources>) {
+    if let Some(c) = &src.cluster {
+        let local: telltale_api::Shared = Arc::new(crate::api_backend::ApiBackend {
+            src: Arc::clone(src),
+        });
+        c.set_rpc_handler(crate::federated::rpc_handler(
+            Arc::clone(src),
+            local,
+            Arc::clone(c),
+        ));
     }
 }
 
@@ -959,6 +1013,7 @@ mod tests {
             auth: std::sync::OnceLock::new(),
             masking: crate::masking::Detector::default(),
             cluster: None,
+            ship: Arc::default(),
             reload: tokio::sync::mpsc::channel(1).0,
             allowed: Vec::new(),
         }

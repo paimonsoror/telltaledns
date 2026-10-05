@@ -749,3 +749,25 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner can manage the cluster from the Pi's UI as well as the homelab node's, as long as both are on the API authority. Today's cluster is GitOps-managed, so there it stays read-only, by design.
 
+## ADR-055 — Query-log ship mode v1: closed segment files, delivered once, searched where they land (Proposed)
+**Context:** T5.8 (CLU-007). `spec/12` §7 describes `ship` mode: raw events are streamed to a target in batches of columnar blocks, spilled to a 64 MiB buffer when the target is unreachable, and replayed; rollups are shipped as per-minute aggregates; `both` mode does both; receivers keep per-source-node segments.
+
+**Decision:**
+- **Unit of shipping: whole closed segment parts, not blocks.**
+  - In ship mode the writer closes a part at least every `[telemetry.ship] interval_secs` (default 300 s).
+  - The shipper sends each closed part (every part except the newest) to the target in 512 KiB chunks over the cluster channel (RPC `qlog.put`).
+  - The receiver checks the whole file's BLAKE3, then files it unchanged under `qlog-nodes/<sender-id>/`. Nothing is re-encoded, and the sender's footer and bloom filters stay valid.
+  - Only after the receiver confirms does the sender delete its copy. A lost confirmation means the file is sent again and overwritten, never duplicated.
+- **Buffer:** the local log is the store-and-forward buffer, bounded by `buffer_bytes` (default 64 MiB) via the existing retention, which drops the oldest file first. No separate in-memory spill: a RAM disk under `data_dir` gives the memory variant without new code.
+- **Exactly one copy:** a row is either in the sender's buffer or on the receiver. The receiver's search includes shipped logs, labelled by node, and federated reads reach the sender's unshipped rows, so a cluster-wide search sees each row once.
+- **Target:** `[telemetry.ship] to` (a node ID or site), defaulting to the primary. A primary in ship mode with no other target keeps its log (logged once).
+- **Deferred:**
+  - **Rollup shipping.** Per-minute counts stay on each node: they're small, the dashboard already federates them, and shipping them only matters for ephemeral pods (T5.10).
+  - **`both` mode.** It would need dedup between a live sender and its shipped copy. Not needed for the hybrid Pi + k8s setup.
+- **Safety:**
+  - Receivers accept only from cluster members (mTLS), only hex node IDs become paths, and segments over 256 MiB are refused.
+  - Shipping is a background task, and receiving runs on blocking threads, so DNS is never involved (CLU-004).
+  - The peer RPC handler is now installed whether or not the node runs the API, so a node without an API can still receive logs and answer federated reads.
+
+**Consequences:** the owner's Pi can set `mode = "ship"` to move its query log to the homelab node's volume. Rows then appear with up to `interval_secs` of delay in the homelab node's own search; cluster-wide search shows them at once.
+

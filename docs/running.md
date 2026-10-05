@@ -522,7 +522,34 @@ groups, and query log cover every node:
 - `scope=node:local` on a stats or query-log request reads only the node you're asking, for
   example `GET /api/v1/stats/summary?scope=node:local`.
 - The live query stream, settings, and Explain are always this node's own.
-- A node answers its peers' reads only when its API is on (`[api] listen`).
+- Nodes answer each other's reads whether or not their own API is on.
+
+**Keeping a node's query log on another node (ship mode).** A node with little or
+wear-sensitive storage, such as a Pi on an SD card or a pod without a volume, can hand its
+query log to another node:
+```toml
+[telemetry]
+mode = "ship"
+[telemetry.ship]
+# to = "k8s"            # a node ID or site; default: the primary
+# buffer_bytes = "64MiB" # kept here while the target is unreachable; the oldest goes first
+# interval_secs = 300    # how often the log is closed and sent
+```
+- The node writes its query log as usual, but keeps at most `buffer_bytes`. At least every
+  `interval_secs` it closes the current file and sends it to the target over the cluster
+  link. Once the target has checked and stored the whole file, the node deletes its copy.
+- The target keeps shipped logs under `<data_dir>/qlog-nodes/<node-id>/`, with its own
+  retention. Its query-log search includes them, and each row shows the node it came from.
+- Every row lives in one place at a time: the sender's buffer until it's delivered, then the
+  target. So cluster-wide searches never count a row twice, and recent rows are searchable
+  from the sender through the cluster until they're delivered.
+- If the target is down, files wait in the buffer and go out when it's back; beyond
+  `buffer_bytes` the oldest are dropped. Metrics: `telltale_qlog_ship_pending_segments`,
+  `telltale_qlog_ship_errors_total`, and on the target
+  `telltale_qlog_received_segments_total`.
+- Dashboard counts (per-minute rollups) stay on each node; they're small.
+- To spare an SD card entirely, put the buffer on a RAM disk: the query log lives in
+  `<data_dir>/qlog`.
 
 **What's shared and what stays per node.** The primary shares upstreams, routes, local
 records, lists, groups, devices, access rules, rate limits, and special names, including

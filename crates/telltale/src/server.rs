@@ -365,6 +365,9 @@ fn query_log(
     if !q.enabled {
         return (None, None);
     }
+    // REQ: CLU-007 — in ship mode the local log is only a buffer: bounded, and closed on a
+    // timer so the shipper can deliver it (ADR-055).
+    let ship = cfg.telemetry.mode == telltale_config::TelemetryMode::Ship;
     let settings = telltale_store::qlog::Settings {
         dir: std::path::Path::new(cfg.node.data_dir.as_str()).join("qlog"),
         // Cluster node IDs come with membership (T5.x); a standalone node is 0.
@@ -373,7 +376,15 @@ fn query_log(
         flush_interval: Duration::from_secs(u64::from(q.flush_interval_secs.max(1))),
         fsync: q.fsync,
         retention_days: q.retention_days,
-        retention_bytes: q.retention_bytes.bytes(),
+        retention_bytes: if ship {
+            q.retention_bytes
+                .bytes()
+                .min(cfg.telemetry.ship.buffer_bytes.bytes())
+        } else {
+            q.retention_bytes.bytes()
+        },
+        rotate_after: ship
+            .then(|| Duration::from_secs(u64::from(cfg.telemetry.ship.interval_secs))),
     };
     match telltale_store::qlog::Builder::spawn(settings) {
         Ok(b) => {
@@ -537,8 +548,23 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         auth: std::sync::OnceLock::new(),
         masking: crate::masking::Detector::default(),
         cluster,
+        ship: Arc::default(),
         reload: reload_tx,
     });
+    http::serve_peers(&sources);
+    // REQ: CLU-007 — ship mode delivers the query log to another node (ADR-055).
+    if let Some(c) = &sources.cluster
+        && cfg.telemetry.mode == telltale_config::TelemetryMode::Ship
+        && cfg.telemetry.qlog.enabled
+    {
+        tokio::spawn(crate::ship::run(
+            Arc::clone(c),
+            std::path::Path::new(cfg.node.data_dir.as_str()).join("qlog"),
+            cfg.telemetry.ship.to.as_ref().map(ToString::to_string),
+            Arc::clone(&sources.ship),
+            http_stopped.clone(),
+        ));
+    }
     start_http(&cfg, &sources, &http_stopped).await?;
     let neighbors =
         neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));
