@@ -601,6 +601,14 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
   again on the current primary.
 
+**Certificates renew themselves.** Each node's cluster certificate lasts 90 days, and a node
+renews it when fewer than 30 days remain (checked every 6 hours). It keeps its key and node
+ID. Nodes holding the cluster key issue their own; others ask the primary over the cluster
+link, which signs only for the node asking. A renewal that fails (for example, with the primary
+down) is retried every 10 minutes, and shows in the Cluster page's events and in
+`telltale_cluster_cert_expiry_timestamp_seconds`. The certificate check on the Cluster page and the
+Helm chart's alert warn below 14 days.
+
 **Automatic failover (with a witness or three eligible nodes).** Two nodes can't tell "the
 other node is down" from "the link between us is down", so automatic failover needs a third
 vote: another eligible node, or a **witness**, a tiny vote-only process that can run on a NAS,

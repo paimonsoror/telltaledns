@@ -78,6 +78,40 @@ pub fn new_node_key() -> Result<NodeKey, PkiError> {
     })
 }
 
+/// A CSR for an existing node key (certificate renewal keeps the key, so the node ID stays).
+pub fn csr_for(key_pem: &str) -> Result<String, PkiError> {
+    let key = KeyPair::from_pem(key_pem)?;
+    let p = CertificateParams::new(vec![CLUSTER_NAME.to_owned()])?;
+    Ok(p.serialize_request(&key)?.pem()?)
+}
+
+/// Checks that `cert_pem` was signed by the CA in `ca_pem` (Ed25519) and is valid now.
+pub fn verify_issued(cert_pem: &str, ca_pem: &str) -> Result<(), PkiError> {
+    let bad = |m: &str| PkiError::Invalid(m.to_owned());
+    let der = der_of(cert_pem)?;
+    let ca_der = der_of(ca_pem)?;
+    let (_, cert) =
+        x509_parser::parse_x509_certificate(&der).map_err(|e| bad(&format!("certificate: {e}")))?;
+    let (_, ca) =
+        x509_parser::parse_x509_certificate(&ca_der).map_err(|e| bad(&format!("CA: {e}")))?;
+    if cert.issuer() != ca.subject() {
+        return Err(bad("not issued by this cluster's CA"));
+    }
+    let key = ring::signature::UnparsedPublicKey::new(
+        &ring::signature::ED25519,
+        ca.public_key().subject_public_key.data.as_ref(),
+    );
+    key.verify(
+        cert.tbs_certificate.as_ref(),
+        cert.signature_value.data.as_ref(),
+    )
+    .map_err(|_| bad("the CA's signature doesn't verify"))?;
+    if !cert.validity().is_valid() {
+        return Err(bad("the certificate isn't valid now"));
+    }
+    Ok(())
+}
+
 /// The node ID for a public key: the first 16 hex digits of its SHA-256.
 pub fn node_id(public_key_der: &[u8]) -> String {
     hex(&ring::digest::digest(&ring::digest::SHA256, public_key_der).as_ref()[..8])

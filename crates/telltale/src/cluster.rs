@@ -58,6 +58,11 @@ pub(crate) fn start(
         Arc::clone(&cluster),
         stop.clone(),
     ));
+    // REQ: CLU-001 — node certificates renew before they expire (T5.4c).
+    tokio::spawn(telltale_cluster::renew::run(
+        Arc::clone(&cluster),
+        stop.clone(),
+    ));
     Some(cluster)
 }
 
@@ -68,7 +73,7 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let m = &c.identity.meta;
     let sync = c.sync_status();
-    let expires = expiry_unix(&c.identity.cert_pem);
+    let expires = expiry_unix(&c.identity.reload().cert_pem);
     ClusterInfo {
         cluster_id: m.cluster_id.clone(),
         name: m.cluster_name.clone(),
@@ -120,7 +125,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     let me = &c.identity.meta;
     let local = c.local_state();
     let newest = c.newest_seq();
-    let expires = expiry_unix(&c.identity.cert_pem);
+    let expires = expiry_unix(&c.identity.reload().cert_pem);
     let lag_of = |seq: u64, since: Option<u64>| {
         (
             newest.saturating_sub(seq),
@@ -606,7 +611,7 @@ pub(crate) fn status(cfg: &telltale_config::Config, out: &mut impl Write) -> Exi
 
 /// When this node's cluster certificate expires (Unix seconds).
 pub(crate) fn cert_expiry_unix(c: &Cluster) -> u64 {
-    expiry_unix(&c.identity.cert_pem)
+    expiry_unix(&c.identity.reload().cert_pem)
 }
 
 /// When a certificate expires (Unix seconds); `validity` gives (seconds left, lifetime).
@@ -777,6 +782,7 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
         tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(net::mesh(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(telltale_cluster::failover::run(Arc::clone(&cluster), stop.clone()));
+        tokio::spawn(telltale_cluster::renew::run(Arc::clone(&cluster), stop.clone()));
         // The registry and failover mode come with the primary's signed manifests.
         let mut incoming = cluster.incoming();
         let ca = cluster.identity.ca_pem.clone();

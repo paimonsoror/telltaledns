@@ -113,6 +113,14 @@ pub(crate) fn rpc_handler(
                 .await
                 .map_err(|e| format!("vote worker failed: {e}"))?;
             }
+            if kind == telltale_cluster::renew::KIND {
+                // REQ: CLU-001 — a peer renewing its node certificate (T5.4c).
+                return tokio::task::spawn_blocking(move || {
+                    telltale_cluster::renew::answer(&cluster, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("renewal worker failed: {e}"))?;
+            }
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
             }

@@ -22,6 +22,7 @@ async fn wait_for(mut f: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)] // one scenario: join, stream, RPCs, renewal
 async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let addr = free_port().await;
@@ -87,7 +88,15 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
             Ok(b)
         })
     });
-    primary.set_rpc_handler(Arc::clone(&echo));
+    // The primary also signs certificate renewals (T5.4c, below).
+    let (p, e) = (Arc::clone(&primary), Arc::clone(&echo));
+    primary.set_rpc_handler(Arc::new(move |peer, kind, body| {
+        if kind == crate::renew::KIND {
+            let p = Arc::clone(&p);
+            return Box::pin(async move { crate::renew::answer(&p, &peer, &body) });
+        }
+        e(peer, kind, body)
+    }));
     replica.set_rpc_handler(echo);
     let pid = primary.identity.meta.node_id.clone();
     let rid = replica.identity.meta.node_id.clone();
@@ -116,6 +125,40 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let all = primary.call_all("echo", b"x", t).await;
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].1.as_deref().unwrap(), b"x!");
+
+    // REQ: CLU-001 (T5.4c) — certificate renewal. The primary answers `cert.renew` for the
+    // asking peer only; the replica keeps its key and node ID and gets a fresh certificate.
+    // The replica is eligible and holds the cluster key; set it aside so it must ask.
+    let rdir = replica.identity.dir.clone();
+    let key = rdir.join("ca.key");
+    let had_key = key.exists();
+    if had_key {
+        std::fs::rename(&key, rdir.join("ca.key.aside")).unwrap();
+    }
+    let before = replica.identity.reload().cert_pem;
+    std::thread::sleep(Duration::from_millis(1100)); // a later notBefore
+    crate::renew::renew_now(&replica).await.unwrap();
+    if had_key {
+        std::fs::rename(rdir.join("ca.key.aside"), &key).unwrap();
+    }
+    let after = replica.identity.reload();
+    assert!(
+        primary.events().iter().any(|e| e.kind == "cert_issued"),
+        "the primary signed it"
+    );
+    assert_ne!(after.cert_pem, before, "a new certificate");
+    assert_eq!(after.meta.node_id, rid, "same node ID");
+    crate::pki::verify_issued(&after.cert_pem, &after.ca_pem).unwrap();
+    assert_eq!(replica.cert_generation(), 1);
+    assert!(!crate::renew::due(&after.cert_pem));
+    // Someone else's CSR is refused: the certificate names come from the asking peer.
+    let csr = crate::pki::csr_for(&after.key_pem).unwrap();
+    assert!(crate::renew::answer(&primary, "0123456789abcdef", csr.as_bytes()).is_err());
+    // The primary (it holds the key) renews itself.
+    crate::renew::renew_now(&primary).await.unwrap();
+    // A forged certificate (another CA) fails verification.
+    let other = crate::pki::new_ca("other").unwrap();
+    assert!(crate::pki::verify_issued(&other.cert_pem, &after.ca_pem).is_err());
     let _ = stop_tx.send(true);
 }
 

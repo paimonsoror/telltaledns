@@ -318,6 +318,17 @@ impl Identity {
         write(&self.dir.join("cluster.json"), b.as_bytes(), false).map_err(|e| e.to_string())
     }
 
+    /// Signs a node's CSR with the cluster key (renewal, T5.4c): `(node_id, cert_pem)`.
+    pub fn issue_for(&self, csr_pem: &str, hosts: &[String]) -> Result<(String, String), String> {
+        let ca = self.ca()?;
+        pki::issue(&ca, csr_pem, hosts).map_err(|e| e.to_string())
+    }
+
+    /// Replaces this node's certificate (same key) after renewal.
+    pub fn save_cert(&self, cert_pem: &str) -> Result<(), String> {
+        write(&self.dir.join("node.crt"), cert_pem.as_bytes(), false).map_err(|e| e.to_string())
+    }
+
     /// The CA key (primary only), for signing manifests (CLU-003).
     pub fn ca_key_pem(&self) -> Result<String, String> {
         self.ca().map(|c| c.key_pem)

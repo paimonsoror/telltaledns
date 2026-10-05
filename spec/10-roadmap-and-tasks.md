@@ -84,7 +84,7 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *With the primary unreachable, writes get 503 and nothing changes.*
   - *Cluster e2e: a record PUT on the replica resolves on both nodes, the primary's audit shows `bob via r`, and a write with the primary down gets 503.*
   - *Deferred: user/token replication (ADR-045), re-applying conflicts from the UI, and making the "api"/"file" source labels on replicas reflect the primary's state.*
-- [ ] **T5.4c CA rotation.** *(CLU-001, CLU-005)* Rotate the cluster CA (new key, cross-signed transition, node certificate renewal over the channel, old CA retired), re-share the key with eligible nodes, and renew node certificates before expiry. Split from T5.4b (ADR-056).
+- [ ] **T5.4c CA rotation.** *(CLU-001, CLU-005)* Rotate the cluster CA (new key, cross-signed transition, node certificate renewal over the channel, old CA retired), re-share the key with eligible nodes, and renew node certificates before expiry. Split from T5.4b (ADR-056). *Node certificate renewal done 2026-10-05 (ADR-057): nodes renew at under 30 days left, keeping the same key. CA holders self-issue; others use the `cert.renew` RPC, signed only for the asking peer with names from the registry. The new certificate is verified against the CA, and TLS settings are rebuilt for new connections. Tested over the channel (RPC path, refusal for another node, forged-CA rejection). Still open: CA rotation itself.*
 - [x] **T5.8 Telemetry ship mode + store-and-forward.** *(CLU-007)* *Done 2026-10-05 (ADR-055):*
   - *`[telemetry] mode = "ship"` with `[telemetry.ship] to / buffer_bytes / interval_secs`.*
   - *The writer closes parts on a timer, and the local log is the bounded buffer.*

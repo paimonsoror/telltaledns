@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -335,6 +336,8 @@ pub struct Cluster {
     /// Whether this node may publish: a primary holding a valid lease (always, in manual mode).
     lease_ok: std::sync::atomic::AtomicBool,
     failover_view: Mutex<crate::failover::FailoverView>,
+    /// Bumped when this node's certificate is renewed: TLS settings are rebuilt (T5.4c).
+    cert_gen: AtomicU64,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -385,6 +388,7 @@ impl Cluster {
             // ADR-056 — a primary in automatic failover waits for its first renewal.
             lease_ok: std::sync::atomic::AtomicBool::new(!wait_for_lease),
             failover_view: Mutex::new(crate::failover::FailoverView::default()),
+            cert_gen: AtomicU64::new(0),
         })
     }
 
@@ -432,6 +436,16 @@ impl Cluster {
         if let Err(e) = self.identity.save_registry(&nodes) {
             warn!("cluster: can't record {node_id} in the registry: {e}");
         }
+    }
+
+    /// Changes whenever this node's certificate is renewed.
+    pub fn cert_generation(&self) -> u64 {
+        self.cert_gen.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn bump_cert_generation(&self) {
+        self.cert_gen
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// Whether this node may publish configuration now (ADR-056): in automatic failover, only a
@@ -1347,9 +1361,10 @@ pub async fn serve(
     mut stop: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    let tls = tokio_rustls::TlsAcceptor::from(
+    let mut tls = tokio_rustls::TlsAcceptor::from(
         server_config(&cluster.identity).map_err(std::io::Error::other)?,
     );
+    let mut generation = cluster.cert_generation();
     info!(%addr, "cluster port listening");
     loop {
         let (sock, remote) = tokio::select! {
@@ -1359,6 +1374,14 @@ pub async fn serve(
                 continue;
             },
         };
+        // A renewed certificate is served from the next handshake on (T5.4c).
+        if cluster.cert_generation() != generation {
+            generation = cluster.cert_generation();
+            match server_config(&cluster.identity.reload()) {
+                Ok(c) => tls = tokio_rustls::TlsAcceptor::from(c),
+                Err(e) => warn!("cluster: renewed certificate unusable, keeping the old one: {e}"),
+            }
+        }
         let (tls, cluster) = (tls.clone(), Arc::clone(&cluster));
         tokio::spawn(async move {
             let Ok(Ok(stream)) = tokio::time::timeout(CONNECT_TIMEOUT, tls.accept(sock)).await
@@ -1481,9 +1504,6 @@ async fn join_one(
 /// In automatic failover, keeps a stream to every other voter (ADR-056): votes need one.
 /// Of each pair, the node with the lower ID dials; the other side gets an inbound stream.
 pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
-    let Ok(cfg) = client_config(&cluster.identity) else {
-        return;
-    };
     let dialing: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
     loop {
         tokio::select! {
@@ -1491,6 +1511,9 @@ pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
             () = tokio::time::sleep(Duration::from_secs(3)) => {}
         }
         let id = cluster.identity.reload();
+        let Ok(cfg) = client_config(&id) else {
+            continue;
+        };
         if !crate::failover::active(&id) {
             continue;
         }
@@ -1535,15 +1558,24 @@ pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
 }
 
 pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
-    let cfg = match client_config(&cluster.identity) {
+    let mut cfg = match client_config(&cluster.identity) {
         Ok(c) => c,
         Err(e) => {
             warn!("cluster: can't build TLS settings: {e}");
             return;
         }
     };
+    let mut generation = cluster.cert_generation();
     let mut backoff = Duration::from_secs(1);
     loop {
+        // A renewed certificate is used from the next connection on (T5.4c).
+        if cluster.cert_generation() != generation {
+            generation = cluster.cert_generation();
+            match client_config(&cluster.identity.reload()) {
+                Ok(c) => cfg = c,
+                Err(e) => warn!("cluster: renewed certificate unusable, keeping the old one: {e}"),
+            }
+        }
         // The candidates change: a promotion names a new primary, the registry grows.
         for url in cluster.candidate_urls() {
             let started = tokio::time::Instant::now();

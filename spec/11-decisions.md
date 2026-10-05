@@ -814,3 +814,18 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner's Pi + homelab cluster stays `manual` until a witness exists. A witness on any third device (for example the NAS) makes failover automatic, with the Pi as an emergency primary while the configuration authority is GitOps.
 
+## ADR-057 — Node certificate renewal over the cluster channel, same key (Proposed)
+**Context:** T5.4c (CLU-001). Node certificates last 90 days (ADR-044), and nothing renewed them, so a cluster would lose its links about 90 days after its nodes joined. The owner's cluster joined on 2026-10-04. `spec/12` §3 says certificates renew automatically; the CA rotation half of T5.4c is rarer, because the CA lasts 10 years.
+
+**Decision:**
+- **When:** each node checks every 6 hours (first one minute after start) and renews when fewer than 30 days remain, so two thirds of the lifetime has been used. It retries every 10 minutes on failure.
+- **Same key:** the node sends a CSR for its existing key, so its node ID (derived from the key) never changes.
+- **Who signs:**
+  - A node holding the cluster key (the primary, eligible nodes) signs its own.
+  - Others ask the primary with the `cert.renew` RPC on their stream.
+  - The primary signs only when the CSR's key belongs to the peer the stream's certificate names. It takes the certificate's names (advertise hosts) from the signed registry, never from the request.
+- **Checks before use:** the new certificate must name this node and verify against the cluster CA (Ed25519). It's written atomically.
+- **Switch-over:** a certificate generation counter makes the dialer and the listener rebuild their TLS settings for the next connection. Open streams keep their session, since certificates are checked at handshake only.
+- **CA rotation** (new CA, cross-signing, key re-share) stays in T5.4c, still open.
+
+**Consequences:** clusters keep their links indefinitely while a CA holder is reachable at least once every 30 days. A witness or replica cut off from every CA holder for 90 days loses its certificate and must rejoin with a token.
