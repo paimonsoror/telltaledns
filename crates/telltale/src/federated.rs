@@ -663,18 +663,76 @@ impl Backend for Federated {
                 for (l, v) in answered {
                     out.extend(label(v, &l));
                 }
+                // Labelled like the answers (pods by pod name, T6.14), so a pod that answered
+                // isn't also listed as unreachable.
                 for m in self.cluster.members() {
-                    let l = if m.site.is_empty() {
-                        m.node_id.clone()
-                    } else {
-                        m.site.clone()
-                    };
+                    let l = self.label_of(&m.node_id);
                     if !names.contains(&l) {
                         out.push(CacheFlushNode {
                             node: Some(l),
                             removed: None,
                             error: Some("not reachable: flush it when it's back".into()),
                         });
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+    // REQ: DNS-006, OBS-003, CLU-002 (T6.15) — each node's top entries and makeup. (Without
+    // this, the trait's empty default left the Cache page's table empty on clustered nodes.)
+    fn cache_entries(
+        &self,
+        sort: &str,
+        limit: usize,
+        node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::CacheNodeEntries>, Problem> {
+        use telltale_api::model::CacheNodeEntries;
+        let label = |mut v: Vec<CacheNodeEntries>, l: &str| {
+            for r in &mut v {
+                r.node = Some(l.to_owned());
+            }
+            v
+        };
+        let read = || Read::CacheEntries {
+            sort: sort.to_owned(),
+            limit,
+        };
+        let failed = |l: String, e: String| CacheNodeEntries {
+            node: Some(l),
+            error: Some(e),
+            ..CacheNodeEntries::default()
+        };
+        match node.map(|n| self.resolve_node(n)).transpose()? {
+            Some(None) => Ok(label(
+                self.local.cache_entries(sort, limit, None)?,
+                &self.own_label(),
+            )),
+            Some(Some(peer)) => {
+                let l = self.label_of(&peer);
+                Ok(match self.call_one(&peer, &read(), DEADLINE) {
+                    Some(Ok(body)) => label(serde_json::from_slice(&body).unwrap_or_default(), &l),
+                    Some(Err(e)) => vec![failed(l, e)],
+                    None => vec![failed(l, "no runtime".into())],
+                })
+            }
+            None => {
+                let mut out = label(
+                    self.local.cache_entries(sort, limit, None)?,
+                    &self.own_label(),
+                );
+                let answered = self.everyone_labelled::<Vec<CacheNodeEntries>>(read);
+                let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
+                for (l, v) in answered {
+                    out.extend(label(v, &l));
+                }
+                for m in self.cluster.members().into_iter().filter(|m| m.connected) {
+                    let l = self.label_of(&m.node_id);
+                    if !names.contains(&l) {
+                        out.push(failed(
+                            l,
+                            "didn't answer (an older version doesn't list its cache)".into(),
+                        ));
                     }
                 }
                 Ok(out)

@@ -196,6 +196,13 @@ for _ in $(seq 50); do [ "$(q 25302 x.qr1.e2e.test)" != 0.0.0.0 ] && break; slee
 [ "$(q 25302 x.qr1.e2e.test)" != 0.0.0.0 ] || fail "the removed quick rule still blocks on the replica"
 echo "ok"
 
+echo "== the Cache page lists every node's cache (T6.15)"
+# The federated backend once lacked this read: the table came back empty on clustered nodes.
+nodes=$(curl -sf -b "$E/rjar" "$RAPI/api/v1/cache/entries?limit=5" | field 'len([n for n in d["items"] if n.get("makeup") is not None and not n.get("error")])')
+[ "$nodes" = 2 ] || fail "GET /api/v1/cache/entries on the replica listed $nodes nodes' caches, not 2"
+names=$(curl -sf -b "$E/rjar" "$RAPI/api/v1/cache/entries?limit=5" | field '" ".join(sorted(str(n.get("node")) for n in d["items"]))')
+echo "ok ($names)"
+
 echo "== query-log ship mode (CLU-007)"
 q 25302 ship1.r.test >/dev/null
 # A part closes after interval_secs (on the next query), then the shipper delivers it.
