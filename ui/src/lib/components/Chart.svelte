@@ -172,6 +172,16 @@
     font-size: 12px;
     color: var(--muted);
   }
+  /* The legend is a table; keep it out of the data-table header style. */
+  .chart :global(.u-legend th),
+  .chart :global(.u-legend td) {
+    padding: 2px 6px;
+    border: 0;
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: 12px;
+    background: none;
+  }
   .chart :global(.u-legend .u-marker) {
     border-radius: 3px;
   }

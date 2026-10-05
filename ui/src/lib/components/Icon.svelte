@@ -1,0 +1,45 @@
+<script lang="ts" module>
+  // T6.8 — a few line icons drawn here (no icon library: the bundle budget is 400 KiB).
+  // 24×24 viewBox, stroked with currentColor.
+  export const paths: Record<string, string> = {
+    dashboard: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
+    queries: 'M4 6h16M4 12h16M4 18h10',
+    explain: 'M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM20 20l-4.8-4.8M10.5 8v3.5l2 1.5',
+    anomalies: 'M3 17l5-6 4 4 4-7 5 9M3 21h18',
+    clients: 'M4 5h16v10H4zM9 19h6M12 15v4',
+    groups: 'M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3.3 2.7-5 6-5s6 1.7 6 5M14 15.5c.6-.3 1.3-.5 2-.5 3.3 0 6 1.7 6 5',
+    lists: 'M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6zM9 12l2 2 4-4',
+    upstreams: 'M12 3v10M8 9l4 4 4-4M5 21h14M5 17h14',
+    names: 'M3 11l9-7 9 7M5 9.5V20h14V9.5M10 20v-5h4v5',
+    cluster: 'M12 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM5 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM19 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM12 8v4M12 12l-6 4.5M12 12l6 4.5',
+    settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3.1 15H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
+    search: 'M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM20 20l-4.8-4.8',
+    sun: 'M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
+    moon: 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z',
+    auto: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 3v18',
+    menu: 'M4 6h16M4 12h16M4 18h16',
+    logout: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
+  };
+</script>
+
+<script lang="ts">
+  let { name, size = 18 }: { name: string; size?: number } = $props();
+</script>
+
+<svg
+  width={size}
+  height={size}
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.75"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+  class="icon"><path d={paths[name] ?? ''} /></svg>
+
+<style>
+  .icon {
+    flex: none;
+  }
+</style>

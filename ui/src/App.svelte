@@ -7,6 +7,8 @@
   import { poll } from './lib/poll';
   import Logo from './lib/components/Logo.svelte';
   import HelpButton from './lib/components/HelpButton.svelte';
+  import Icon from './lib/components/Icon.svelte';
+  import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
@@ -22,19 +24,40 @@
   import LocalDns from './pages/LocalDns.svelte';
   import Settings from './pages/Settings.svelte';
 
-  const pages: { path: string; label: string; page: Component }[] = [
-    { path: '/', label: 'Dashboard', page: Dashboard },
-    { path: '/queries', label: 'Query log', page: Queries },
-    { path: '/explain', label: 'Explain', page: Explain },
-    { path: '/clients', label: 'Clients', page: Clients },
-    { path: '/anomalies', label: 'Anomalies', page: Anomalies },
-    { path: '/groups', label: 'Groups', page: Groups },
-    { path: '/lists', label: 'Lists', page: Lists },
-    { path: '/upstreams', label: 'Upstreams', page: Upstreams },
-    { path: '/local-dns', label: 'Names on my network', page: LocalDns },
-    { path: '/cluster', label: 'Cluster', page: Cluster },
-    { path: '/settings', label: 'Settings', page: Settings },
+  // T6.8 — the sidebar in sections, each page with an icon.
+  const pages: { path: string; label: string; page: Component; icon: string; section: string }[] = [
+    { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
+    { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },
+    { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },
+    { path: '/anomalies', label: 'Anomalies', page: Anomalies, icon: 'anomalies', section: 'Monitor' },
+    { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },
+    { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
+    { path: '/lists', label: 'Lists', page: Lists, icon: 'lists', section: 'Filtering & DNS' },
+    { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
+    { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
+    { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },
+    { path: '/settings', label: 'Settings', page: Settings, icon: 'settings', section: 'System' },
   ];
+  const sections = [...new Set(pages.map((p) => p.section))];
+
+  // Top bar search: a name or a client, shown in the query log.
+  let search = $state('');
+  function doSearch(e: SubmitEvent) {
+    e.preventDefault();
+    const q = search.trim();
+    if (!q) return;
+    const key = /^[0-9a-f:.]+$/i.test(q) && /[.:]/.test(q) && !/[g-z]/i.test(q) ? 'client' : 'name';
+    navigate('/queries', { [key]: q });
+    search = '';
+  }
+  const initials = $derived(
+    (session.user?.username ?? '?')
+      .split(/[\s._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase())
+      .join(''),
+  );
   const current = $derived(pages.find((p) => p.path === route.path) ?? pages[0]);
 
   let menuOpen = $state(false);
@@ -95,37 +118,52 @@
   <Login />
 {:else}
   <div class="layout" class:open={menuOpen}>
-    <header class="top">
-      <button class="menu" aria-label="Menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>☰</button>
-      <a class="brand" href="#/"><Logo /> <span>TelltaleDNS</span></a>
-      {#if info}<span class="node muted small">{info.node}</span>{/if}
-      <span class="spacer"></span>
-      <span class="mode small" role="group" aria-label="Detail level">
-        <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple</button>
-        <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced</button>
-        <HelpButton id="simple-advanced" />
-      </span>
-      <button class="link small" onclick={() => (theme = nextTheme)} title="Theme">Theme: {theme}</button>
-      <span class="who small">{session.user.username} <span class="badge">{session.user.role}</span></span>
-      <button class="small" onclick={signOut}>Sign out</button>
-    </header>
     <nav class="side" aria-label="Main">
-      {#each pages as p (p.path)}
-        <a href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined}>{p.label}</a>
+      <a class="brand" href="#/"><Logo /> <span>TelltaleDNS</span></a>
+      {#each sections as sec (sec)}
+        <div class="section">{sec}</div>
+        {#each pages.filter((p) => p.section === sec) as p (p.path)}
+          <a class="nav" href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined}>
+            <Icon name={p.icon} /> <span>{p.label}</span>
+          </a>
+        {/each}
       {/each}
       <!-- On phones the header has no room: the detail level lives in the menu. -->
       <span class="mode mode-nav small" role="group" aria-label="Detail level (menu)">
         <button class="link small" aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple view</button>
         <button class="link small" aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced view</button>
       </span>
+      <span class="spacer"></span>
       <!-- REQ: OPS-004 (ADR-046) — which build this is, and whether a newer one exists. -->
       {#if info?.build}
-        <a class="build small muted" href="#/settings?tab=system" data-testid="build-footer" title={`commit ${info.build.commit}, ${info.build.target}`}>
-          {info.build.version} · {info.build.commit}
-          {#if info.update?.state === 'available'}<span class="badge">update</span>{/if}
+        <a class="build small" href="#/settings?tab=system" data-testid="build-footer" title={`commit ${info.build.commit}, ${info.build.target}`}>
+          {#if info.node}<span class="node">{info.node}</span>{/if}
+          <span>{info.build.version} · {info.build.commit}</span>
+          {#if info.update?.state === 'available'}<span class="pill">update</span>{/if}
         </a>
       {/if}
     </nav>
+    <header class="top">
+      <button class="icon-btn menu" aria-label="Menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}><Icon name="menu" /></button>
+      <form class="search" role="search" onsubmit={doSearch}>
+        <Icon name="search" size={16} />
+        <input aria-label="Search names or clients" placeholder="Search a name or client…" bind:value={search} />
+      </form>
+      <span class="spacer"></span>
+      <span class="mode seg small" role="group" aria-label="Detail level">
+        <button aria-pressed={currentMode() === 'simple'} onclick={() => setMode('simple')}>Simple</button>
+        <button aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced</button>
+      </span>
+      <HelpButton id="simple-advanced" />
+      <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
+        <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />
+      </button>
+      <span class="who">
+        <span class="avatar" aria-hidden="true">{initials}</span>
+        <span class="who-text"><strong>{session.user.username}</strong><span class="muted small">{session.user.role}</span></span>
+      </span>
+      <button class="icon-btn" onclick={signOut} title="Sign out" aria-label="Sign out"><Icon name="logout" /></button>
+    </header>
     <main class="content">
       {#if info && !info.queryLog}
         <div class="notice warn banner">The query log is off on this node: the query log and "Why?" from history are unavailable.</div>
@@ -150,79 +188,170 @@
 <style>
   .layout {
     display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: 232px minmax(0, 1fr);
     grid-template-rows: auto 1fr;
-    grid-template-areas: 'top top' 'side content';
+    grid-template-areas: 'side top' 'side content';
     min-height: 100vh;
   }
-  .top {
-    grid-area: top;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 16px;
-    background: var(--brand);
-    color: #e8eef6;
-    position: sticky;
-    top: 0;
-    z-index: 10;
-  }
-  .top .link,
-  .top .muted {
-    color: #b9c7d4;
-  }
-  .top button.small {
-    min-height: 30px;
-    background: transparent;
-    color: #e8eef6;
-    border-color: #3a5263;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #e8eef6;
-    font-weight: 700;
-  }
-  .brand:hover {
-    text-decoration: none;
-  }
-  .who .badge {
-    background: #22394a;
-    color: #b9c7d4;
-  }
-  .menu {
-    display: none;
-    background: transparent;
-    color: #e8eef6;
-    border-color: #3a5263;
-  }
+  /* Sidebar: dark, sectioned, filled pill for the current page. */
   .side {
     grid-area: side;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 12px 8px;
-    border-right: 1px solid var(--border);
-    background: var(--surface);
+    padding: 16px 12px;
+    background: var(--side-bg);
+    color: var(--side-text);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
   }
-  .side a {
-    padding: 8px 12px;
-    border-radius: 8px;
-    color: var(--text);
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 10px 14px;
+    color: #f2f6fa;
+    font-weight: 700;
+    font-size: 15px;
   }
-  .side a:hover {
-    background: var(--surface-2);
+  .brand:hover {
     text-decoration: none;
   }
-  .side a[aria-current='page'] {
-    background: var(--surface-2);
+  .section {
+    margin: 14px 12px 6px;
+    font-size: 11px;
     font-weight: 600;
-    box-shadow: inset 3px 0 0 var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--side-muted);
+  }
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    color: var(--side-text);
+  }
+  .nav:hover {
+    background: var(--side-hover);
+    text-decoration: none;
+  }
+  .nav[aria-current='page'] {
+    background: var(--accent);
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+  .build {
+    display: grid;
+    gap: 2px;
+    margin-top: 16px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--side-hover);
+    color: var(--side-muted);
+  }
+  .build:hover {
+    text-decoration: none;
+    color: var(--side-text);
+  }
+  .build .node {
+    color: var(--side-text);
+    font-weight: 600;
+  }
+  .pill {
+    justify-self: start;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--warn);
+    color: #1b1300;
+    font-weight: 600;
+  }
+  /* Top bar: light, borderless. */
+  .top {
+    grid-area: top;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 24px;
+    background: var(--bg);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    width: min(360px, 40vw);
+    border-radius: 999px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    color: var(--muted);
+  }
+  .search input {
+    border: 0;
+    background: transparent;
+    padding: 6px 0;
+    flex: 1;
+    min-height: 36px;
+  }
+  .search input:focus-visible {
+    outline: none;
+  }
+  .search:focus-within {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+  .icon-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .icon-btn:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .who {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 6px;
+  }
+  .avatar {
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .who-text {
+    display: grid;
+    line-height: 1.2;
+  }
+  .who-text .small {
+    text-transform: capitalize;
+  }
+  .menu {
+    display: none;
   }
   .content {
     grid-area: content;
-    padding: 20px;
+    padding: 8px 24px 32px;
     min-width: 0;
   }
   .mode {
@@ -233,9 +362,12 @@
   .mode-nav {
     display: none;
   }
-  .mode button[aria-pressed="true"] {
+  .mode-nav button[aria-pressed='true'] {
     font-weight: 700;
     text-decoration: underline;
+  }
+  .side .mode-nav button {
+    color: var(--side-text);
   }
   .banner {
     margin-bottom: 16px;
@@ -248,28 +380,65 @@
     padding: 16px;
   }
 
+  /* Medium widths: the sidebar shrinks to icons. */
+  @media (max-width: 1100px) and (min-width: 761px) {
+    .layout {
+      grid-template-columns: 72px minmax(0, 1fr);
+    }
+    .brand span,
+    .nav span,
+    .section,
+    .build {
+      display: none;
+    }
+    .nav {
+      justify-content: center;
+      padding: 10px;
+    }
+    .brand {
+      justify-content: center;
+      padding: 4px 0 14px;
+    }
+  }
   @media (max-width: 760px) {
     .layout {
       grid-template-columns: minmax(0, 1fr);
       grid-template-areas: 'top' 'content';
     }
     .menu {
-      display: inline-block;
+      display: inline-grid;
     }
-    .node,
     .top .mode,
-    .who {
+    .who-text,
+    .top :global(.help-btn) {
+      display: none;
+    }
+    .top {
+      gap: 6px;
+      padding: 10px 12px;
+    }
+    .search {
+      width: auto;
+      flex: 1;
+      min-width: 0;
+    }
+    .search input {
+      width: 100%;
+      min-width: 0;
+    }
+    .spacer {
       display: none;
     }
     .side {
       display: none;
       position: fixed;
-      top: 50px;
+      top: 0;
       left: 0;
       bottom: 0;
-      width: min(260px, 80vw);
+      height: auto;
+      width: min(270px, 82vw);
       z-index: 15;
-      box-shadow: var(--shadow);
+      box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
     }
     .mode-nav {
       display: flex;
@@ -280,7 +449,7 @@
       display: flex;
     }
     .content {
-      padding: 12px;
+      padding: 8px 12px 24px;
     }
   }
 </style>

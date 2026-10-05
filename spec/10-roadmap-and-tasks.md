@@ -184,6 +184,15 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *A signed `releases.json` is published with every release. Nodes check it daily (`[updates] check`, `index_url`), and only a verified index is trusted. `telltale_update_available` reports the result.*
   - *Tests: signature (good, tampered, wrong key) with throwaway-key fixtures; version comparison within a channel; per-install instructions.*
   - *Open: `self-update` reading the index instead of `SHA256SUMS`.*
+- [ ] **T6.10 "For nerds" site page: an interactive architecture and tech-stack view (owner request 2026-10-05).** A page on the project site for people who want the nitty-gritty. Planned content:
+  - an interactive architecture diagram: crates and how they connect, the query pipeline stage by stage, the cluster channel and replication, and the agent/MCP surface. Each part is clickable and opens a panel on what it does, the main types, its performance budget, and the ADRs and requirements behind it;
+  - the tech stack (Rust crates and why each was chosen, the UI stack, CI, packaging);
+  - the data formats (snapshot blobs, query-log segments, `.ttbk`, the release index).
+  *(DOC-004, DOC-006)* *AC:*
+  - static site only (no framework, works without a server, keyboard-accessible, both themes);
+  - generated from data the site build checks against the repo (crate list, ADR and requirement IDs), so it can't drift;
+  - linked from the site header;
+  - passes the site check and the Lighthouse budget.
 - **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
 
 ## M7 — v1.x (post-1.0, priority order)

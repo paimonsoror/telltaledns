@@ -109,7 +109,7 @@ test('live view streams new queries', async () => {
 test('explain page', async () => {
   await page.goto('/#/explain?name=nas.e2e.test&client=127.0.0.1');
   await expect(page.locator('.explain')).toContainText('local');
-  await page.getByRole('textbox', { name: 'Name' }).fill('ads.e2e.test');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ads.e2e.test');
   await page.getByRole('button', { name: 'Explain' }).click();
   await expect(page.locator('.explain')).toContainText('blocked');
 });

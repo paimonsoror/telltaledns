@@ -44,6 +44,8 @@
     place-items: center;
     width: 20px;
     height: 20px;
+    min-height: 20px;
+    flex: none;
     margin-left: 6px;
     padding: 0;
     border-radius: 50%;

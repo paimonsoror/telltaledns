@@ -23,6 +23,8 @@
   let range = $state(ranges[2]);
 
   let summary = $state<S['Summary'] | null>(null);
+  // T6.8 — the previous period of the same length, for the tiles' change.
+  let previous = $state<S['Summary'] | null>(null);
   let buckets = $state<S['TimeBucket'][]>([]);
   let topDomains = $state<S['TopItem'][]>([]);
   let topBlocked = $state<S['TopItem'][]>([]);
@@ -52,6 +54,8 @@
       ]);
       groups = gs.items;
       summary = s;
+      const mins = Math.round(r.secs / 60);
+      previous = await api.summary(`-${2 * mins}m`, `-${mins}m`).catch(() => null);
       buckets = dense(ts.items, { second: 1, minute: 60, hour: 3600, day: 86400 }[r.step], r.secs);
       topDomains = d.items;
       topBlocked = b.items;
@@ -144,6 +148,20 @@
     (summary?.latency ?? []).filter((r) => r.key.startsWith('cache')).sort((a, b) => b.count - a.count)[0] as S['LatencyRow'] | undefined,
   );
 
+  /** Change as a fraction; null when there's nothing to compare with. */
+  function change(now: number | null | undefined, before: number | null | undefined): number | null {
+    if (now == null || before == null || !Number.isFinite(now) || !Number.isFinite(before) || before === 0) return null;
+    return (now - before) / before;
+  }
+  const prevP90 = $derived(
+    (previous?.latency ?? []).filter((r) => r.key.startsWith('upstream')).sort((a, b) => b.count - a.count)[0] as S['LatencyRow'] | undefined,
+  );
+  const share = (b: S['TimeBucket'], k: string) => (b.total ? ((b.byStatus[k] ?? 0) / b.total) * 100 : 0);
+  const sparkTotal = $derived(buckets.map((b) => b.total));
+  const sparkBlocked = $derived(buckets.map((b) => share(b, 'blocked')));
+  const sparkCached = $derived(buckets.map((b) => share(b, 'cached') + share(b, 'stale')));
+  const sparkFailures = $derived(buckets.map((b) => b.upstreamFailures));
+
   const totalUpstream = $derived(upstreams.reduce((a, u) => a + u.requests, 0));
   const maxTop = (items: S['TopItem'][]) => Math.max(1, ...items.map((i) => i.count));
 </script>
@@ -176,12 +194,13 @@
   {/if}
 
   <div class="kpis">
-    <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}`} />
-    <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" />
-    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={`${short(summary?.cached)} answers`} tone="ok" />
-    <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} />
-    <Kpi label="Active clients" value={num(summary?.activeClients)} sub="this hour" />
-    <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} />
+    <!-- More blocking or more queries isn't good or bad, so those changes stay neutral. -->
+    <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}`} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
+    <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" />
+    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={`${short(summary?.cached)} answers`} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" />
+    <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
+    <Kpi label="Active clients" value={num(summary?.activeClients)} sub="this hour" delta={change(summary?.activeClients, previous?.activeClients)} />
+    <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
   </div>
 
   <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />
@@ -277,7 +296,7 @@
   .kpis {
     display: grid;
     gap: 12px;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
   .bars {
     list-style: none;

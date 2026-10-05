@@ -20,9 +20,15 @@
   --s-blocked: #c2413a;
   --s-local: #8a63c7;
   --s-other: #9aa7b4;
-  --radius: 10px;
-  --gap: 16px;
-  --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
+  --radius: 12px;
+  --gap: 20px;
+  --shadow: 0 1px 2px rgb(16 24 40 / 4%), 0 4px 14px rgb(16 24 40 / 6%);
+  /* T6.8 — the shell: a dark sidebar from the brand color, borderless cards. */
+  --side-bg: #123044;
+  --side-text: #c9d6e2;
+  --side-muted: #7f97ab;
+  --side-hover: rgb(255 255 255 / 7%);
+  --card-border: transparent;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
   color-scheme: light;
 }
@@ -49,6 +55,11 @@
     --s-local: #b494ea;
     --s-other: #6b7c8c;
     --shadow: none;
+    --side-bg: #0b1a25;
+    --side-text: #c3d0dc;
+    --side-muted: #6f8597;
+    --side-hover: rgb(255 255 255 / 6%);
+    --card-border: #223140;
     color-scheme: dark;
   }
 }
@@ -73,7 +84,12 @@
   --s-blocked: #ef7067;
   --s-local: #b494ea;
   --s-other: #6b7c8c;
-  --shadow: none;
+    --shadow: none;
+  --side-bg: #0b1a25;
+  --side-text: #c3d0dc;
+  --side-muted: #6f8597;
+  --side-hover: rgb(255 255 255 / 6%);
+  --card-border: #223140;
   color-scheme: dark;
 }
 
@@ -101,12 +117,15 @@ a:hover {
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 h2 {
   font-size: 15px;
-  margin: 0 0 10px;
+  font-weight: 600;
+  margin: 0 0 12px;
 }
 h3 {
   font-size: 14px;
@@ -135,6 +154,7 @@ code,
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding: 6px 0 2px;
 }
 .row {
   display: flex;
@@ -154,21 +174,55 @@ code,
 }
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 14px 16px;
+  padding: 18px 20px;
   min-width: 0;
+}
+/* T6.8 — card titles carry a short accent bar. */
+.card > h2,
+.card-head h2 {
+  position: relative;
+  padding-left: 12px;
+}
+.card > h2::before,
+.card-head h2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
 }
 .card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  margin: -2px 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--surface-2);
 }
 .card-head h2 {
   margin: 0;
+}
+/* Soft tinted pill actions (card headers, "View all"). */
+.card-head a,
+.pill-link {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.card-head a:hover,
+.pill-link:hover {
+  text-decoration: none;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .muted {
   color: var(--muted);
@@ -187,7 +241,7 @@ button,
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 6px 12px;
   cursor: pointer;
   min-height: 34px;
@@ -226,7 +280,7 @@ select {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 6px 10px;
   min-height: 34px;
   min-width: 0;
@@ -251,19 +305,24 @@ form.stack {
 }
 .seg {
   display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface-2);
 }
 .seg button {
   border: 0;
-  border-radius: 0;
-  min-height: 30px;
-  padding: 4px 10px;
+  border-radius: 999px;
+  min-height: 28px;
+  padding: 3px 12px;
+  background: transparent;
+  color: var(--muted);
 }
 .seg button[aria-pressed='true'] {
-  background: var(--accent);
-  color: var(--accent-text);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
 }
 
 /* Tables */
@@ -278,15 +337,20 @@ table {
 th,
 td {
   text-align: left;
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--border);
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--surface-2);
   vertical-align: top;
 }
 th {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--muted);
   white-space: nowrap;
+}
+tbody tr:hover td {
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
 }
 td.num,
 th.num {
@@ -326,10 +390,11 @@ td.name {
 }
 
 .notice {
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border);
   border-left: 4px solid var(--info);
   background: var(--surface);
-  border-radius: 8px;
+  box-shadow: var(--shadow);
+  border-radius: 10px;
   padding: 10px 12px;
 }
 .notice.bad {

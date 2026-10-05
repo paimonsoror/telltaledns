@@ -111,7 +111,7 @@ export const api = {
 
   // Data (API-001)
   info: () => get<S['SystemInfo']>('/system/info'),
-  summary: (from = '-24h') => get<S['Summary']>('/stats/summary', { from }),
+  summary: (from = '-24h', to?: string) => get<S['Summary']>('/stats/summary', { from, to }),
   timeseries: (q: { from?: string; step?: S['Step'] }) => get<S['Items_TimeBucket']>('/stats/timeseries', q),
   top: (kind: S['TopKind'], limit = 10, client?: string, group?: string) =>
     get<S['Items_TopItem']>('/stats/top', { kind, limit, client, group }),
