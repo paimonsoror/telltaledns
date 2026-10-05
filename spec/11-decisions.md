@@ -900,3 +900,43 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - the replica back on N−1 following the N primary.
 
 An edit reaches the replica at every stage, and a client with both servers configured gets an answer to every query.
+
+## ADR-060 — DNSSEC validation v1: hickory's validator over our upstream groups, off by default (Proposed)
+**Context:** T6.1 (DNS-011). `spec/03` §5 asks for:
+- modes `off`, `validate` (the default once stable) and `validate_permissive`;
+- DO=1 upstream, validation from the root trust anchor, and CD=1 clients getting unvalidated data;
+- AD only when validated and the client asked;
+- bogus answers as SERVFAIL with EDE 6;
+- negative trust anchors;
+- `hickory-proto`'s verification primitives behind a `Validator`.
+
+In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 denial proofs, wildcard checks, NSEC3 iteration limits and a validation cache) lives in `hickory-net`. The primitives in `hickory-proto` alone would mean writing that ourselves.
+
+**Decision:**
+- **Use `hickory-net`'s `DnssecDnsHandle`** (`dnssec-ring`, `tokio`; it adds no TLS or HTTP stacks). It wraps a `DnsHandle` we implement over one of our upstream groups.
+  - The question, and every DNSKEY and DS lookup the proof needs, go to the same upstreams with DO=1 and CD=1 (we check, so the upstream mustn't drop what it thinks is bogus).
+  - There's one handle per group, so its validation cache lasts across queries.
+  - It's wrapped as `telltale_upstream::dnssec::Validator`.
+- **Verdict:** the weakest proof among the answer records, or among the authority records for NXDOMAIN and NODATA. Errors from the validator other than upstream failures count as bogus.
+- **Serving:**
+  - Secure gets AD for clients that asked; insecure and indeterminate get no AD.
+  - Bogus becomes SERVFAIL with EDE 6, never a stale answer, and is never cached; in permissive mode it's served and counted.
+  - RRSIG, NSEC and NSEC3 records are stripped for clients without DO.
+  - Validation runs on cache misses only, and validated answers are cached with their AD bit. The cache key already separates DO and CD.
+- **Negative trust anchors:** `[dnssec] negative_trust_anchors` plus every route with `dnssec_nta`.
+- **Mode names and default:** `off`, `validate`, `permissive` (spec's `validate_permissive`). The default stays `off` until it has run on the owner's nodes for a while; then a follow-up makes `validate` the default.
+- **Timing:** a cold chain (root, TLD and zone keys) takes several sequential lookups. Validation gets three times the query budget, so a slow first lookup still lands in the cache even if that client gave up.
+- **Found on the way (all queries):** a truncated UDP answer's TCP retry shared the adaptive per-attempt timeout calibrated on small answers (about 3× average round trip), so large answers (DNSKEY sets with signatures, long TXT) timed out. The TCP retry now gets the configured timeout of its own.
+
+**Verification:** unit tests for verdicts, NTA coverage and stripping. `deploy/dnssec-e2e.sh` (CI, real DNS tree, forwarding to 1.1.1.1 and 9.9.9.10) checks:
+- ietf.org and cloudflare.com are secure with AD;
+- google.com is insecure without AD;
+- dnssec-failed.org is SERVFAIL with EDE 6, and answered with CD;
+- signed NXDOMAIN and NODATA validate;
+- verdicts are counted.
+
+**Deferred:**
+- RFC 5011 trust-anchor updates (the built-in root keys cover KSK-2017 and KSK-2024);
+- aggressive NSEC caching (RFC 8198, with recursion);
+- per-reason EDE codes (7, 9, 10, 12) instead of 6;
+- the `dnssec` field in query events and the Settings UI.

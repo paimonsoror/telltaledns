@@ -118,6 +118,14 @@
       "default": 1,
       "minimum": 0
     },
+    "dnssec": {
+      "description": "DNSSEC validation of forwarded answers (DNS-011).",
+      "$ref": "#/$defs/DnssecConfig",
+      "default": {
+        "mode": "off",
+        "negative_trust_anchors": []
+      }
+    },
     "filter": {
       "description": "List download and compile settings.",
       "$ref": "#/$defs/FilterConfig",
@@ -764,6 +772,46 @@
       "additionalProperties": false,
       "required": [
         "advertise"
+      ]
+    },
+    "DnssecConfig": {
+      "description": "`[dnssec]`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/DnssecMode",
+          "default": "off"
+        },
+        "negative_trust_anchors": {
+          "description": "Domains not validated (negative trust anchors, RFC 7646), e.g. an internal domain\nforwarded to a server that isn't signed. Routes with `dnssec_nta = true` add theirs.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DnssecMode": {
+      "description": "How DNSSEC is checked (DNS-011, `spec/03` §5).",
+      "oneOf": [
+        {
+          "description": "Answers pass through as the upstream sent them (its AD bit is kept for clients that\nask).",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Validate every forwarded answer against the root trust anchor: bogus answers become\nSERVFAIL with EDE 6, and AD is set only on answers proven here.",
+          "type": "string",
+          "const": "validate"
+        },
+        {
+          "description": "Validate and count, but serve bogus answers anyway (for trying validation out).",
+          "type": "string",
+          "const": "permissive"
+        }
       ]
     },
     "EdeKind": {

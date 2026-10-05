@@ -54,6 +54,8 @@ pub struct Config {
     pub special: SpecialConfig,
     /// Response cache.
     pub cache: CacheConfig,
+    /// DNSSEC validation of forwarded answers (DNS-011).
+    pub dnssec: DnssecConfig,
     /// Telemetry, query log, and metrics.
     pub telemetry: TelemetryConfig,
     /// The REST API (and, later, the web UI).
@@ -91,6 +93,7 @@ impl Default for Config {
             ratelimit: RateLimitConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
+            dnssec: DnssecConfig::default(),
             telemetry: TelemetryConfig::default(),
             api: ApiConfig::default(),
             auth: AuthConfig::default(),
@@ -842,6 +845,40 @@ impl Default for CacheConfig {
             prefetch_threshold_pct: 10,
             prefetch_min_hits: 3,
             persist: false,
+        }
+    }
+}
+
+/// How DNSSEC is checked (DNS-011, `spec/03` §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DnssecMode {
+    /// Answers pass through as the upstream sent them (its AD bit is kept for clients that
+    /// ask).
+    #[default]
+    Off,
+    /// Validate every forwarded answer against the root trust anchor: bogus answers become
+    /// SERVFAIL with EDE 6, and AD is set only on answers proven here.
+    Validate,
+    /// Validate and count, but serve bogus answers anyway (for trying validation out).
+    Permissive,
+}
+
+/// `[dnssec]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct DnssecConfig {
+    pub mode: DnssecMode,
+    /// Domains not validated (negative trust anchors, RFC 7646), e.g. an internal domain
+    /// forwarded to a server that isn't signed. Routes with `dnssec_nta = true` add theirs.
+    pub negative_trust_anchors: Vec<SafeString>,
+}
+
+impl Default for DnssecConfig {
+    fn default() -> Self {
+        Self {
+            mode: DnssecMode::Off,
+            negative_trust_anchors: Vec::new(),
         }
     }
 }

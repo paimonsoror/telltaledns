@@ -514,6 +514,32 @@ upstream_group = "lan"
 ```
 The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 
+## DNSSEC validation
+TelltaleDNS can check DNSSEC signatures on forwarded answers itself, instead of trusting the
+upstream:
+```toml
+[dnssec]
+mode = "validate"            # off (default) | validate | permissive
+negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
+```
+- **Signed and valid:** the answer carries AD, for clients that ask (DO or AD set).
+- **Unsigned:** it's answered as usual, without AD.
+- **Signed but broken** (forged, expired, or tampered): SERVFAIL with Extended DNS Error 6
+  (DNSSEC Bogus). In `permissive` mode it's answered anyway and only counted, which is
+  useful for trying validation out.
+- **NXDOMAIN and "no such record"** answers are checked too, using the zone's NSEC or NSEC3
+  proofs.
+- **Opting out:**
+  - a client that sets CD (checking disabled) gets the unvalidated answer;
+  - names under a negative trust anchor, or under a route with `dnssec_nta = true`, aren't
+    validated. Domains forwarded from the UI's "Send a domain to another server" set that
+    automatically.
+- **Speed:** it works on cache misses only, and a validated answer is cached with its AD bit.
+  The first lookup in a new zone fetches its keys, and a cold start fetches the root's and
+  the TLD's; after that they're cached.
+- **Counted** in `telltale_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
+- The trust anchors are the root's 2017 and 2024 keys, built in.
+
 ## Clusters (in progress)
 
 Nodes can form a cluster: the first node creates it and holds the cluster's certificate

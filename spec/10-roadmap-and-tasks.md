@@ -124,7 +124,14 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *Deferred (ADR-049 notes): direct-pull fallback, GPG, "propose change", the chart reading the same file.* `[cluster.config] source = "git"` (repo, ref, path, credentials file, poll + webhook) on the primary; validate-then-publish with commit provenance (SHA, author, time) in the signed manifest; any Git-capable node eligible as primary under a `gitops` authority (ADR-048); guardrails: pinned source, optional signed-commits allow-list, forward-only history, bounded fetch, audit; optional direct-pull fallback for long partitions; `telltale/shared.toml` layout shared with the Helm chart; UI shows the commit per node and "propose change" instead of writes. *(CLU-003, CLU-005, OPS-005)* *AC:* a commit pushed to the repo is served by every node within poll + 5 s, all reporting the same SHA; an invalid commit is never published and raises an alert; with `require_signed`, an unsigned commit is refused; a force-push is refused; with GitHub unreachable, every node keeps serving the last commit; killing the primary and promoting the Pi keeps following the repo.
 
 ## M6 — Protocol depth + migration (weeks 13–16)
-- [ ] **T6.1 DNSSEC validation + NTAs + EDE.** *(DNS-011)*
+- [x] **T6.1 DNSSEC validation + NTAs + EDE.** *(DNS-011)* *Done 2026-10-05 (ADR-060):*
+  - *`[dnssec] mode = off|validate|permissive`, off by default until soaked. Negative trust anchors, including routes with `dnssec_nta`.*
+  - *hickory-net's validating handle runs over our upstream groups (DO and CD upstream, per-group validation cache).*
+  - *AD for secure answers to clients that ask. Bogus answers become SERVFAIL with EDE 6, never stale or cached. CD bypasses validation. DNSSEC records are stripped for clients without DO.*
+  - *`telltale_dnssec_validation_total{result}`.*
+  - *Fixed for all queries: a truncated UDP answer's TCP retry now gets its own timeout.*
+  - *`deploy/dnssec-e2e.sh` (CI, real DNS tree): secure, insecure, bogus, CD, and signed denials.*
+  - *Deferred: RFC 5011, RFC 8198, per-reason EDE codes, query-event field, Settings UI.*
 - [ ] **T6.2 Serve-stale, prefetch, cache persistence.** *(DNS-007, 008, 009)*
 - [ ] **T6.3 Pi-hole importer (v5 + v6 Teleporter).** *(API-007)*
 - [ ] **T6.4 Technitium importer.** Zones (as local names and routes), records, forwarders/conditional forwarders, block and allow lists, with a plain-language report of what was imported and what has no equivalent. *(API-007, API-011)* *Partial 2026-10-04: `telltale import zone FILE [--origin] [-o]` (RFC 1035 zone files incl. Technitium exports: $ORIGIN/$TTL, parentheses, relative names, A/AAAA/CNAME/PTR/TXT/MX/SRV; SOA/NS and unsupported types reported; output validated as config); used to move the owner's `sororlab.dev` zone. ADR-041 (Proposed). Open: forwarders and conditional forwarders, block/allow lists, reading from the Technitium API directly.*

@@ -12,6 +12,7 @@
 
 mod bootstrap;
 mod conn;
+pub mod dnssec;
 mod doh;
 mod endpoint;
 mod group;

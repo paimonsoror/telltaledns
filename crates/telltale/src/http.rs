@@ -363,6 +363,7 @@ pub(crate) fn render(src: &Sources) -> String {
     w.queries(&src.metrics.snapshot());
     render_cache(&mut w, &src.cache);
     render_telemetry(&mut w, &src.pipeline.telemetry);
+    render_dnssec(&mut w, &src.pipeline.dnssec_stats);
     if let Some(q) = &src.qlog {
         render_qlog(&mut w, q);
     }
@@ -538,6 +539,25 @@ fn render_qlog(w: &mut PromWriter, q: &telltale_store::qlog::Stats) {
     ] {
         w.family(name, "counter", help)
             .sample(name, &[], v.load(Relaxed));
+    }
+}
+
+/// REQ: DNS-011 — DNSSEC verdicts on forwarded answers (`spec/06` §5).
+fn render_dnssec(w: &mut PromWriter, s: &telltale_upstream::dnssec::Stats) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let name = "telltale_dnssec_validation_total";
+    let f = w.family(
+        name,
+        "counter",
+        "Forwarded answers DNSSEC-validated, by verdict.",
+    );
+    for (result, v) in [
+        ("secure", &s.secure),
+        ("insecure", &s.insecure),
+        ("bogus", &s.bogus),
+        ("indeterminate", &s.indeterminate),
+    ] {
+        f.sample(name, &[("result", result)], v.load(Relaxed));
     }
 }
 

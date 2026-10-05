@@ -247,6 +247,9 @@ jobs:
             https://github.com/paimonsoror/telltaledns/releases/download/edge/telltale-x86_64-linux
           chmod +x "$RUNNER_TEMP/telltale-old"
           bash deploy/cluster/upgrade-e2e.sh "$RUNNER_TEMP/telltale-old" target/bench-fast/telltale
+      # REQ: DNS-011 (T6.1) — DNSSEC validation against the real DNS tree (needs internet).
+      - name: DNSSEC validation (live)
+        run: bash deploy/dnssec-e2e.sh target/bench-fast/telltale
       # REQ: CLU-003 (T5.12 AC) — the cluster's configuration from a Git repository (served by
       # git upload-pack over HTTP): same commit everywhere, invalid and force-pushed commits
       # refused, outages harmless, a promoted node keeps following.

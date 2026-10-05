@@ -365,9 +365,7 @@ impl Upstream {
         timeout: Duration,
     ) -> Result<Vec<u8>, ExchangeError> {
         let start = Instant::now();
-        let result = tokio::time::timeout(timeout, self.exchange_inner(q))
-            .await
-            .unwrap_or(Err(ExchangeError::Timeout));
+        let result = self.exchange_inner(q, timeout).await;
         let ok = match &result {
             Ok(resp) => {
                 let rc = summarize(resp).map_or(rcode::SERVFAIL, |s| s.rcode);
@@ -384,7 +382,14 @@ impl Upstream {
         result
     }
 
-    async fn exchange_inner(&self, q: &Question) -> Result<Vec<u8>, ExchangeError> {
+    /// One exchange within `timeout`. Over UDP, a truncated answer's TCP retry gets the
+    /// configured timeout of its own: the adaptive one is calibrated on small UDP answers, and
+    /// large ones (DNSKEY sets with signatures, long TXT) would never fit in it.
+    async fn exchange_inner(
+        &self,
+        q: &Question,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, ExchangeError> {
         // DoH uses ID 0 (RFC 8484 §4.1, cache-friendly); the stream identifies the response.
         let id: u16 = if matches!(self.transport, Transport::Https(_)) {
             0
@@ -396,19 +401,25 @@ impl Upstream {
         let query = &buf[..len];
         let resp = match &self.transport {
             Transport::Udp { tcp } => {
-                let addr = self.target.addr().await?;
-                let resp = udp_exchange(addr, query, id).await?;
+                let udp = async {
+                    let addr = self.target.addr().await?;
+                    udp_exchange(addr, query, id).await
+                };
+                let resp = timed(tokio::time::timeout(timeout, udp).await)?;
                 if header::flags(&resp).tc() {
-                    // Truncated: retry over TCP (RFC 7766 §1).
-                    tcp.exchange(query.to_vec(), id).await?
+                    // Truncated: retry over TCP (RFC 7766 §1), with time of its own.
+                    let t = self.timeout.max(timeout);
+                    timed(tokio::time::timeout(t, tcp.exchange(query.to_vec(), id)).await)?
                 } else {
                     resp
                 }
             }
             Transport::Tcp(pool) | Transport::Tls(pool) => {
-                pool.exchange(query.to_vec(), id).await?
+                timed(tokio::time::timeout(timeout, pool.exchange(query.to_vec(), id)).await)?
             }
-            Transport::Https(doh) => doh.exchange(query).await?,
+            Transport::Https(doh) => {
+                timed(tokio::time::timeout(timeout, doh.exchange(query)).await)?
+            }
         };
         if matches_query(&resp, query, id) && summarize(&resp).is_ok() {
             Ok(resp)
@@ -416,6 +427,13 @@ impl Upstream {
             Err(ExchangeError::BadResponse)
         }
     }
+}
+
+/// A timed-out exchange is a timeout.
+fn timed(
+    r: Result<Result<Vec<u8>, ExchangeError>, tokio::time::error::Elapsed>,
+) -> Result<Vec<u8>, ExchangeError> {
+    r.unwrap_or(Err(ExchangeError::Timeout))
 }
 
 async fn udp_exchange(addr: SocketAddr, query: &[u8], id: u16) -> Result<Vec<u8>, ExchangeError> {

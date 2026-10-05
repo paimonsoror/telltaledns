@@ -413,7 +413,9 @@ fn build_pipeline(
         ring_bytes: usize::try_from(cfg.telemetry.ring_slots).unwrap_or(4096) * 128,
         ..Settings::default()
     };
-    Pipeline::new(settings, cache, router, policy)
+    let p = Pipeline::new(settings, cache, router, policy);
+    p.set_dnssec(cfg);
+    p
 }
 
 /// REQ: OBS-005 — per-client query series are opt-in and capped (`[telemetry.metrics]`).
@@ -723,6 +725,7 @@ async fn reload(
         *health = spawn_health_checks(&router);
     }
     pipeline.reload(router, policy);
+    pipeline.set_dnssec(&new);
     let stats = listeners.stats();
     sources.udp.store(Arc::new(stats.udp));
     sources.tcp.store(Arc::new(stats.tcp));

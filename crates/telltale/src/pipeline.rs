@@ -264,6 +264,18 @@ pub(crate) struct Pipeline {
     seed: u64,
     /// The runtime background work (prefetch) is spawned on; `None` when built outside one.
     rt: Option<tokio::runtime::Handle>,
+    /// DNSSEC validation (DNS-011), when `[dnssec] mode` isn't `off`; replaced on reload.
+    dnssec: ArcSwapOption<Dnssec>,
+    /// Validation counters, kept across reloads.
+    pub(crate) dnssec_stats: Arc<telltale_upstream::dnssec::Stats>,
+}
+
+/// The validator and how strictly its verdict is applied.
+#[derive(Debug)]
+pub(crate) struct Dnssec {
+    validator: telltale_upstream::dnssec::Validator,
+    /// Serve bogus answers anyway (counted).
+    permissive: bool,
 }
 
 /// Largest response we build for a deferred answer (TCP may carry up to 64 KiB).
@@ -291,7 +303,39 @@ impl Pipeline {
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
             rt: tokio::runtime::Handle::try_current().ok(),
+            dnssec: ArcSwapOption::empty(),
+            dnssec_stats: Arc::default(),
         })
+    }
+
+    /// REQ: DNS-011 — turns DNSSEC validation on or off for `cfg` (at start and on reload).
+    pub(crate) fn set_dnssec(&self, cfg: &telltale_config::Config) {
+        use telltale_config::DnssecMode;
+        let permissive = match cfg.dnssec.mode {
+            DnssecMode::Off => {
+                self.dnssec.store(None);
+                return;
+            }
+            DnssecMode::Validate => false,
+            DnssecMode::Permissive => true,
+        };
+        // Negative trust anchors: configured, plus every route marked `dnssec_nta` (local
+        // zones forwarded elsewhere are usually unsigned).
+        let mut nta: Vec<String> = cfg
+            .dnssec
+            .negative_trust_anchors
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        for r in cfg.route.iter().filter(|r| r.dnssec_nta) {
+            nta.extend(r.match_suffix.iter().map(ToString::to_string));
+        }
+        let validator =
+            telltale_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats));
+        self.dnssec.store(Some(Arc::new(Dnssec {
+            validator,
+            permissive,
+        })));
     }
 
     /// Explains what this pipeline would do with a query, and why (FLT-013).
@@ -878,6 +922,16 @@ impl Pipeline {
             _ => None,
         };
         match answer {
+            // REQ: DNS-011 — validation failed: SERVFAIL with EDE 6, never a stale answer.
+            Some(resp) if resp.is_empty() => self.fallback(
+                &q,
+                key,
+                false,
+                ede::DNSSEC_BOGUS,
+                "DNSSEC validation failed",
+                &mut out,
+                transport,
+            ),
             Some(resp) => {
                 let client =
                     Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
@@ -941,6 +995,16 @@ impl Pipeline {
         // The view chosen at selection time (by qname, qtype, and client groups) names the group.
         let group = Arc::clone(st.router.group_by_view(view)?);
         let started = Instant::now();
+        // REQ: DNS-011 — validate unless the client set CD or the name is under a negative
+        // trust anchor.
+        if let Some(d) = self.dnssec.load_full()
+            && !q.header.flags.cd()
+            && d.validator.covers(&q.qname.display().to_string())
+        {
+            return self
+                .resolve_validated(q, key, &group, &question, &d, started)
+                .await;
+        }
         let result = group.resolve(question, self.settings.budget).await;
         // REQ: OBS-001 — one event per upstream exchange (prefetches and coalesced misses
         // included), for per-upstream analytics.
@@ -957,6 +1021,53 @@ impl Pipeline {
         let answer = result.ok()?;
         let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
         Some(answer.bytes.into())
+    }
+
+    /// One upstream answer, DNSSEC-validated (DNS-011). Bogus answers come back as an empty
+    /// marker (SERVFAIL + EDE 6) and are never cached; in permissive mode they're served.
+    async fn resolve_validated(
+        &self,
+        q: &Query<'_>,
+        key: CacheKey,
+        group: &Arc<telltale_upstream::Group>,
+        question: &Question,
+        d: &Dnssec,
+        started: Instant,
+    ) -> Option<Arc<[u8]>> {
+        use telltale_upstream::dnssec::Verdict;
+        let client_do = q.edns.is_some_and(|e| e.dnssec_ok);
+        let result = d
+            .validator
+            .resolve(
+                group,
+                *question,
+                self.settings.budget,
+                client_do,
+                q.header.flags.ad(),
+            )
+            .await;
+        let (upstream, attempts) = result
+            .as_ref()
+            .map_or((0, 0), |v| (v.upstream_id, v.attempts));
+        self.telemetry.emit_upstream(&UpstreamEvent {
+            ts_us: self.telemetry.ts_us(started),
+            upstream,
+            latency_us: micros(started.elapsed()),
+            ok: result.is_ok(),
+            attempts,
+        });
+        let v = result.ok()?;
+        if v.verdict == Verdict::Bogus && !d.permissive {
+            return Some(Arc::from(Vec::new()));
+        }
+        if v.verdict == Verdict::Bogus && v.bytes.is_empty() {
+            // Permissive, with nothing to serve: fetch it again, unvalidated.
+            let a = group.resolve(*question, self.settings.budget).await.ok()?;
+            let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
+            return Some(a.bytes.into());
+        }
+        let _ = self.cache.insert(&key, q, &v.bytes, Instant::now());
+        Some(v.bytes.into())
     }
 
     /// Stale answer with EDE 3 if allowed and available; otherwise SERVFAIL with `code`.
