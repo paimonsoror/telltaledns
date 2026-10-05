@@ -44,7 +44,7 @@ for (const id of providers) {
     await signIn(page, id, name, 'alice');
     await expect(page.getByRole('heading', { name: 'Query log' })).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('header .who')).toContainText(/alice/);
-    await expect(page.locator('header .who .badge')).toHaveText('admin');
+    await expect(page.locator('header .who .role')).toHaveText('admin');
     // The account was created on first sign-in and is marked as provider-managed.
     await page.goto('/#/settings?tab=users');
     await expect(page.locator('main table')).toContainText(`signs in with ${id}`);
@@ -70,7 +70,7 @@ for (const id of providers) {
   test(`${id}: groups decide the role`, async ({ browser }) => {
     const page = await browser.newPage();
     await signIn(page, id, name, 'bob');
-    await expect(page.locator('header .who .badge')).toHaveText('viewer', { timeout: 20_000 });
+    await expect(page.locator('header .who .role')).toHaveText('viewer', { timeout: 20_000 });
     await page.close();
   });
 

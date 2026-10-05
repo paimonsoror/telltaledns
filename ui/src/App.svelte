@@ -160,7 +160,7 @@
       </button>
       <span class="who">
         <span class="avatar" aria-hidden="true">{initials}</span>
-        <span class="who-text"><strong>{session.user.username}</strong><span class="muted small">{session.user.role}</span></span>
+        <span class="who-text"><strong>{session.user.username}</strong><span class="role muted small">{session.user.role}</span></span>
       </span>
       <button class="icon-btn" onclick={signOut} title="Sign out" aria-label="Sign out"><Icon name="logout" /></button>
     </header>
