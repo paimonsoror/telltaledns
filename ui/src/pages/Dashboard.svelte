@@ -7,6 +7,7 @@
   import { ms, num, pct, short } from '../lib/format';
   import Kpi from '../lib/components/Kpi.svelte';
   import Chart from '../lib/components/Chart.svelte';
+  import Tip from '../lib/components/Tip.svelte';
   import Donut from '../lib/components/Donut.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
@@ -33,6 +34,32 @@
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let stages = $state<S['LatencyRow'][]>([]);
   let byPath = $state<S['LatencyRow'][]>([]);
+  // What each "Where time goes" row means (path/transport, or a wait stage).
+  const paths: Record<string, string> = {
+    cache: 'Answered from the cache: a repeat question, no upstream asked. Usually well under a millisecond.',
+    upstream:
+      'Not in the cache: asked an upstream resolver and waited for it. Also counts stale answers served because the upstream was slow, and SERVFAIL. Usually the slowest path.',
+    local: 'Answered from names on your network (local records), without asking anyone.',
+    synthesized:
+      "Answered without looking anything up: blocked names, refused or rate-limited queries, malformed ones, and special names (like Firefox's DNS-over-HTTPS canary).",
+  };
+  const protos: Record<string, string> = {
+    udp: 'plain DNS over UDP, what most devices use',
+    tcp: 'plain DNS over TCP, for large answers and some tools',
+    dot: 'DNS over TLS (port 853), e.g. Android Private DNS',
+    doh: 'DNS over HTTPS, e.g. browsers or Apple devices with a profile',
+  };
+  const pathTip = (key: string) => {
+    if (key.startsWith('wait: ')) {
+      const what = key.slice(6);
+      return what === 'upstream'
+        ? "Of the upstream path above: the time spent waiting for upstream resolvers (the rest is this node's own work)."
+        : `Time spent waiting for ${what} when it answered.`;
+    }
+    const [path, proto] = key.split('/');
+    const p = paths[path] ?? 'Answers that took this path.';
+    return proto && protos[proto] ? `${p} Over ${protos[proto]}.` : p;
+  };
   let groups = $state<S['GroupInfo'][]>([]);
   // ADR-050 — the top lists for one kind of device ('' = everyone).
   let group = $state('');
@@ -237,7 +264,7 @@
             <tbody>
               {#each [...byPath, ...stages.map((s) => ({ ...s, key: `wait: ${s.key}` }))] as r (r.key)}
                 <tr>
-                  <td>{r.key}</td>
+                  <td><Tip text={pathTip(r.key)}>{r.key}</Tip></td>
                   <td class="num">{num(r.count)}</td>
                   <td class="num">{ms(r.p50Ms)}</td>
                   <td class="num">{ms(r.p90Ms)}</td>

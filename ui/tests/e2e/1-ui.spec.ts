@@ -65,6 +65,11 @@ test('dashboard shows traffic and top blocked names', async () => {
   // Every chart has a table view.
   await page.getByRole('button', { name: 'Table' }).first().click();
   await expect(page.locator('.table-view table').first()).toBeVisible();
+  // "Where time goes": each path explains itself on hover (and keyboard focus).
+  const local = page.getByRole('button', { name: 'local/udp' });
+  await local.hover();
+  await expect(page.getByRole('tooltip').filter({ hasText: 'names on your network' })).toBeVisible();
+  await expect(local).toHaveAccessibleDescription(/names on your network.*UDP/);
 });
 
 test('query log finds the blocked query and explains it', async () => {
