@@ -210,7 +210,9 @@ devices = ["192.168.1.0/28"]
 /// `cargo test --release -p telltale-policy quick_cost -- --ignored --nocapture`.
 #[test]
 #[ignore = "a timing measurement, not a check"]
+#[allow(clippy::cast_precision_loss)] // nanoseconds, for display
 fn flt_005_quick_cost() {
+    use std::fmt::Write as _;
     let mut rules = String::new();
     for i in 0..1000 {
         let scope = match i % 3 {
@@ -218,9 +220,10 @@ fn flt_005_quick_cost() {
             1 => "groups = [\"kids\"]".to_owned(),
             _ => String::new(),
         };
-        rules.push_str(&format!(
-            "[[rule]]\nid = \"r{i}\"\naction = \"block\"\ndomain = \"r{i}.bench.invalid\"\n{scope}\n"
-        ));
+        let _ = writeln!(
+            rules,
+            "[[rule]]\nid = \"r{i}\"\naction = \"block\"\ndomain = \"r{i}.bench.invalid\"\n{scope}"
+        );
     }
     let names: Vec<Vec<u8>> = [
         "www.example.com",

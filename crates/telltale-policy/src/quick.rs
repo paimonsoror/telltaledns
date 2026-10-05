@@ -60,7 +60,7 @@ pub struct QuickRule {
     wire: Box<[u8]>,
 }
 
-/// Keys are already xxh3 hashes: pass them through (SipHash per suffix cost ~120 ns/query
+/// Keys are already xxh3 hashes: pass them through (`SipHash` per suffix cost ~120 ns/query
 /// with 1,000 rules).
 #[derive(Debug, Default, Clone, Copy)]
 struct PassThrough(u64);
