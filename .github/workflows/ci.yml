@@ -41,6 +41,12 @@ jobs:
         run: |
           set -o pipefail
           cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+      # REQ: CLU-005 — T5.4b AC: the election simulator's 10,000 partition schedules.
+      - name: telltale-sim (10k schedules, release)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release -p telltale-cluster --test sim -- --nocapture 2>&1 | tee -a "$RUNNER_TEMP/test.log"
       # Job logs need a token to read; annotations don't. Surface failing tests there.
       - name: Annotate failing tests
         if: failure()
