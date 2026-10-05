@@ -114,6 +114,17 @@ test('explain page', async () => {
   await expect(page.locator('.explain')).toContainText('blocked');
 });
 
+test('the menu links to the project on GitHub and its site', async () => {
+  await page.goto('/#/');
+  const gh = page.getByRole('link', { name: 'TelltaleDNS on GitHub' });
+  await expect(gh).toHaveAttribute('href', 'https://github.com/paimonsoror/telltaledns');
+  await expect(gh).toHaveAttribute('target', '_blank');
+  await expect(page.getByRole('link', { name: 'Project site and guides' })).toHaveAttribute(
+    'href',
+    'https://paimonsoror.github.io/telltaledns/',
+  );
+});
+
 test('lists, groups, clients, upstreams, local DNS render', async () => {
   for (const [path, text] of [
     ['/#/lists', 'e2e-block'],

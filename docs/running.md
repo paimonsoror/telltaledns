@@ -1136,11 +1136,13 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, and latency |
-| Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), and system information |
+| Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Lists, groups, and local records are read-only in the UI for now; edit the configuration and reload.
 
-The UI is part of the binary (about 60 KiB compressed). The page is served with a strict Content Security Policy and can't be framed.
+The menu ends with links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
+
+The UI is part of the binary (about 100 KiB compressed). The page is served with a strict Content Security Policy and can't be framed.
 
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:
