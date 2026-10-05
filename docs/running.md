@@ -506,9 +506,9 @@ Nodes can form a cluster: the first node creates it and holds the cluster's cert
 authority (it's the **primary**); others join with a token and then keep an encrypted,
 mutually authenticated link (mTLS over HTTP/2) to it. **The primary's configuration and
 blocklists reach every node within seconds.** Failover is manual (below), and **every node's
-dashboard and query log show the whole cluster**. Forwarding changes made on other nodes
-arrives in a later roadmap step (M5). DNS never depends on the cluster: a node answers the
-same whether its peers are up or not.
+dashboard and query log show the whole cluster**. Changes made in any node's UI or API go to
+the primary. DNS never depends on the cluster: a node answers the same whether its peers are
+up or not.
 
 **One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
 groups, and query log cover every node:
@@ -528,9 +528,17 @@ groups, and query log cover every node:
 records, lists, groups, devices, access rules, rate limits, and special names, including
 what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`, `[cluster]`,
 `[api]`, `[auth]`, `[telemetry]`, and `[cache]` from its own config file. So:
-- **Make configuration changes on the primary** (its config file or UI). A replica refuses
-  changes through its own API (409, naming the primary), and the shared sections of a
-  replica's own config file are ignored once it has synced.
+- **Change configuration in any node's UI or API.** On a replica, a change to devices, local
+  names, or forwarded domains is passed to the primary:
+  - the primary applies it, and it reaches every node within seconds;
+  - the answer you get is the primary's;
+  - the primary's audit log shows who made it and where, e.g. `alice via pi`, and the
+    replica's audit log shows it too.
+  - `If-Match` uses the primary's configuration version, so it works the same on every node.
+  - If the primary can't be reached, the change is refused with 503 and nothing changes; DNS
+    keeps answering.
+  - Config *files* are different: edit the primary's file. The shared sections of a
+    replica's own file are ignored once it has synced.
 - **Replicas don't download lists.** The primary compiles them, and replicas fetch only the
   parts that changed.
 - **A replica keeps serving what it last received** if the primary is down, including after a

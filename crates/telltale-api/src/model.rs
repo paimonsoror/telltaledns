@@ -576,7 +576,7 @@ pub struct GroupInfo {
 }
 
 /// A configured client (device).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientInfo {
     pub name: String,
@@ -608,7 +608,7 @@ pub struct ClientInput {
 }
 
 /// What a device change did, or would do with `dryRun=true` (AGT-002).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientChange {
     /// False for a dry run.
@@ -760,7 +760,7 @@ pub struct ForwardInfo {
 }
 
 /// What a change to local names or forwarded domains did (or would do, with `dryRun`).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigChange {
     /// False for a dry run.

@@ -76,7 +76,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     assert!(seen_by_replica.up(now_ms()));
 
     // CLU-002 — federated reads ride the same stream, both ways.
-    let echo: RpcHandler = Arc::new(|kind, body| {
+    let echo: RpcHandler = Arc::new(|_peer, kind, body| {
         Box::pin(async move {
             if kind == "fail" {
                 return Err("asked to fail".to_owned());

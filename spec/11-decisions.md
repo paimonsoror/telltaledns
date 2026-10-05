@@ -731,3 +731,21 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** any node's UI is a full management view for reads. Exact cluster-wide latency, named-node/site scopes and a federated live tail are follow-ups.
 
+## ADR-054 — Write forwarding v1: the entry node vouches for the user over mTLS (Proposed)
+**Context:** T5.7 (CLU-002). `spec/12` §6 says a write on any node is forwarded to the primary with the user's identity, "signed by the receiving node", so the audit log shows both the user and the entry node. Users aren't replicated yet (ADR-045 is still to come), so a user exists only on the node they signed in to.
+
+**Decision:**
+- **What's forwarded:** the configuration writes the API offers (devices, local names, forwarded domains), including dry runs. They go to the primary as the RPC `api.write` over the existing cluster stream, with a 10 s deadline.
+- **Who vouches:**
+  - The entry node authenticates and authorizes the user with its own users and roles, exactly as for a local write.
+  - The primary trusts the entry node's claim because the stream is mutually authenticated with the cluster CA: the peer ID comes from the certificate, never from the request.
+  - No extra signature is added: the mTLS channel already proves which node sent it, and a member node is trusted to replicate configuration anyway.
+- **What's recorded:**
+  - The primary stores the entry as made by `<user> via <site>` and audits it with actor kind `cluster` and `remote = node <id>`.
+  - The entry node audits it under the user's name, with the primary's answer.
+- **Versions:** a replica reports the primary's configuration version (ETag; 1 s deadline, falling back to its own), so `If-Match` works through any node. The primary's answer, including its error code (409, 404, 400), is returned unchanged.
+- **Unreachable primary:** the write is refused with 503 and a hint. It is never queued: a queued write could apply long after the user saw it fail.
+- **Not forwarded:** under a GitOps authority, writes are refused on every node (409 `gitops_managed`, ADR-048). Promotion and the node's own users, tokens and sessions stay local until ADR-045 replicates identities.
+
+**Consequences:** the owner can manage the cluster from the Pi's UI as well as the homelab node's, as long as both are on the API authority. Today's cluster is GitOps-managed, so there it stays read-only, by design.
+

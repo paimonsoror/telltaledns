@@ -166,7 +166,8 @@ pub type Shared = Arc<dyn Backend>;
 pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
 
 /// What kind of entry a [`ManagedWrite`] changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ManagedKind {
     /// A local name and its records (`/records/{name}`).
     Record,

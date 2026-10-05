@@ -26,6 +26,8 @@ use telltale_cluster::net::{Cluster, RpcHandler};
 const KIND: &str = "api.read";
 /// How long a read waits for peers (CLU-002: a dead node costs at most this).
 const DEADLINE: Duration = Duration::from_secs(2);
+/// How long a replica waits for the primary's configuration version before using its own.
+const VERSION_DEADLINE: Duration = Duration::from_secs(1);
 
 /// One read, as sent to peers (already-parsed arguments).
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,6 +60,8 @@ enum Read {
         to_us: u64,
         limit: usize,
     },
+    /// The configuration version (a replica's `If-Match` and `ETag` use the primary's; T5.7).
+    ConfigVersion,
 }
 
 /// Answers a peer's read from this node's own data.
@@ -86,15 +90,24 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             to_us,
             limit,
         } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
+        Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
     }
     .map_err(|e| e.to_string())
 }
 
-/// What answers peers' reads: this node's local backend, on a blocking thread.
-pub(crate) fn rpc_handler(local: Shared) -> RpcHandler {
-    Arc::new(move |kind, body| {
-        let local = Arc::clone(&local);
+/// What answers peers: reads from this node's local backend (on a blocking thread), and
+/// forwarded writes when this node is the primary (T5.7).
+pub(crate) fn rpc_handler(
+    src: Arc<crate::http::Sources>,
+    local: Shared,
+    cluster: Arc<Cluster>,
+) -> RpcHandler {
+    Arc::new(move |peer, kind, body| {
+        let (src, local, cluster) = (Arc::clone(&src), Arc::clone(&local), Arc::clone(&cluster));
         Box::pin(async move {
+            if kind == crate::forward::KIND {
+                return crate::forward::handle(src, local, cluster, peer, body).await;
+            }
             if kind != KIND {
                 return Err(format!("unknown call `{kind}`"));
             }
@@ -104,6 +117,15 @@ pub(crate) fn rpc_handler(local: Shared) -> RpcHandler {
                 .map_err(|e| format!("read worker failed: {e}"))?
         })
     })
+}
+
+/// Where configuration writes go (T5.7).
+enum WriteRoute {
+    /// Applied on this node: it's the primary, or the cluster is configured from Git (which
+    /// refuses API writes on every node).
+    Here,
+    /// Forwarded to the primary (`None`: it isn't reachable now).
+    Primary(Option<String>),
 }
 
 /// The API backend of a clustered node: federated stats and query log over `local`.
@@ -137,6 +159,33 @@ impl Federated {
             .map(|m| m.site)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| node.to_owned())
+    }
+
+    /// Where this node's configuration writes go.
+    fn write_route(&self) -> WriteRoute {
+        if self.cluster.is_primary()
+            || self.cluster.identity.reload().meta.config_authority == "gitops"
+        {
+            return WriteRoute::Here;
+        }
+        WriteRoute::Primary(self.cluster.reachable_primary())
+    }
+
+    /// One RPC to one peer from synchronous code; `None` without a runtime.
+    fn call_one(
+        &self,
+        peer: &str,
+        read: &Read,
+        timeout: Duration,
+    ) -> Option<Result<Vec<u8>, String>> {
+        let body = serde_json::to_vec(read).ok()?;
+        let rt = tokio::runtime::Handle::try_current().ok()?;
+        let cluster = Arc::clone(&self.cluster);
+        std::thread::scope(|s| {
+            s.spawn(|| rt.block_on(cluster.call(peer, KIND, body, timeout)))
+                .join()
+                .ok()
+        })
     }
 
     fn own_label(&self) -> String {
@@ -402,13 +451,35 @@ impl Backend for Federated {
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.local.forwards()
     }
+    // REQ: CLU-002 — a replica forwards configuration writes to the primary (T5.7).
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
-        self.local.write_managed(w)
+        match self.write_route() {
+            WriteRoute::Primary(primary) => Box::pin(crate::forward::managed(
+                Arc::clone(&self.cluster),
+                primary,
+                w,
+            )),
+            WriteRoute::Here => self.local.write_managed(w),
+        }
     }
     fn config_version(&self) -> u64 {
+        // A replica's ETags are the primary's version, so If-Match works through any node.
+        if let WriteRoute::Primary(Some(primary)) = self.write_route()
+            && let Some(Ok(body)) = self.call_one(&primary, &Read::ConfigVersion, VERSION_DEADLINE)
+            && let Ok(v) = serde_json::from_slice::<u64>(&body)
+        {
+            return v;
+        }
         self.local.config_version()
     }
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
-        self.local.write_client(w)
+        match self.write_route() {
+            WriteRoute::Primary(primary) => Box::pin(crate::forward::client(
+                Arc::clone(&self.cluster),
+                primary,
+                w,
+            )),
+            WriteRoute::Here => self.local.write_client(w),
+        }
     }
 }

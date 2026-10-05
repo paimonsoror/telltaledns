@@ -255,9 +255,11 @@ pub struct Event {
 /// Events kept in memory.
 const MAX_EVENTS: usize = 200;
 
-/// Answers federated reads from peers (CLU-002): `(kind, body)` → body, or an error.
+/// Answers peers' RPCs (CLU-002): `(peer node ID, kind, body)` → body, or an error. The peer
+/// ID comes from the stream's mTLS certificate, so a handler can trust it.
 pub type RpcHandler = Arc<
     dyn Fn(
+            String,
             String,
             Vec<u8>,
         )
@@ -511,9 +513,10 @@ impl Cluster {
             return;
         };
         let handler = self.rpc_handler.get().map(|h| Arc::clone(&h.0));
+        let peer = peer.to_owned();
         tokio::spawn(async move {
             let result = match handler {
-                Some(h) => h(req.kind, req.body).await,
+                Some(h) => h(peer, req.kind, req.body).await,
                 None => Err("this node doesn't answer federated reads".into()),
             };
             let (body, error) = match result {
@@ -531,6 +534,15 @@ impl Cluster {
                 })
                 .await;
         });
+    }
+
+    /// The primary's node ID while a stream to it is open.
+    pub fn reachable_primary(&self) -> Option<String> {
+        let reachable = self.reachable_peers();
+        self.members()
+            .into_iter()
+            .find(|m| m.primary && reachable.contains(&m.node_id))
+            .map(|m| m.node_id)
     }
 
     /// This node's role and epoch.

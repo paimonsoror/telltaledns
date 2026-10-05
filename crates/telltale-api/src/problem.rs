@@ -7,7 +7,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 /// Stable error codes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
     /// A parameter is missing, malformed, or out of range.

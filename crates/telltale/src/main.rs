@@ -9,6 +9,7 @@ mod auth_setup;
 mod cluster;
 mod explain;
 mod federated;
+mod forward;
 mod http;
 mod import;
 mod lists;

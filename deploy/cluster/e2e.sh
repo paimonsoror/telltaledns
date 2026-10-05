@@ -7,7 +7,9 @@
 #   5. failover (ADR-051): the eligible replica got the cluster key, is promoted while the
 #      primary is down, and serves the last version it had; the old primary comes back, steps
 #      down, follows the new primary, and keeps its unseen edit under Conflicts.
-# Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries.
+# Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries;
+# (T5.7): a change made on the replica's API is forwarded to the primary, reaches both
+# nodes, and the primary's audit log names the user and the entry node.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -149,6 +151,22 @@ own=$(get '/api/v1/stats/summary?scope=node:local' | field 'd["queries"]')
 [ "$both" -gt "$own" ] || fail "cluster totals ($both) don't exceed this node's ($own)"
 echo "ok (cluster $both queries, primary alone $own)"
 
+echo "== write forwarding (CLU-002)"
+RAPI=http://127.0.0.1:28002
+RST=$(cat "$E/r/setup-token")
+CSRF=$(curl -sf -c "$E/rjar" -H 'content-type: application/json' \
+  -d "{\"setupToken\":\"$RST\",\"username\":\"bob\",\"password\":\"e2e-password-123\"}" \
+  "$RAPI/api/v1/auth/setup" | field 'd["csrfToken"]') || fail "couldn't set up the replica's admin"
+code=$(curl -s -o "$E/fwd.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/json' -d '{"records":[{"type":"A","value":"10.0.0.1"}]}' \
+  "$RAPI/api/v1/records/fwd.e2e.test")
+[ "$code" = 200 ] || fail "a write on the replica wasn't forwarded ($code: $(cat "$E/fwd.json"))"
+for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+[ "$(q 25301 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record isn't on the primary"
+[ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record didn't come back to the replica"
+get '/api/v1/audit' | grep -q 'bob via r' || fail "the primary's audit log doesn't name the user and entry node"
+echo "ok"
+
 # The cluster's settings travel too: a new authority on the primary reaches the replica.
 "$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null
 kill "$P_PID"; wait "$P_PID" 2>/dev/null || true
@@ -182,6 +200,10 @@ wait "$LOAD"
 read -r ok sent < "$E/load.txt"
 echo "answered $ok of $sent"
 [ "$ok" = "$sent" ] || fail "the replica dropped answers while the primary died"
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -b "$E/rjar" -X DELETE \
+  -H "x-csrf-token: $CSRF" "$RAPI/api/v1/records/fwd.e2e.test")
+[ "$code" = 503 ] || fail "a write on the replica with the primary down answered $code, not 503"
+echo "a write with the primary down: 503, as expected"
 
 echo "== 4. replica cold start without the primary (≤ 500 ms)"
 kill "$R_PID"; wait "$R_PID" 2>/dev/null || true; R_PID=
