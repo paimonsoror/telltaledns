@@ -136,6 +136,10 @@ pub struct NodeConfig {
     pub workers: u16,
     /// The only writable directory (snapshots, state.db, query log).
     pub data_dir: SafeString,
+    /// REQ: OPS-007 — on shutdown, keep answering this many seconds after reporting not ready,
+    /// so load balancers and Kubernetes Services stop sending queries first (the Helm charts
+    /// set 5). 0 stops as soon as in-flight lookups finish. At most 60.
+    pub drain_delay_secs: u32,
 }
 
 impl Default for NodeConfig {
@@ -145,6 +149,7 @@ impl Default for NodeConfig {
             name: SafeString::default(),
             workers: 0,
             data_dir: SafeString::from("/var/lib/telltale"),
+            drain_delay_secs: 0,
         }
     }
 }

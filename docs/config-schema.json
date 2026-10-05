@@ -206,6 +206,7 @@
       "$ref": "#/$defs/NodeConfig",
       "default": {
         "data_dir": "/var/lib/telltale",
+        "drain_delay_secs": 0,
         "name": "",
         "role": "all",
         "workers": 0
@@ -1378,6 +1379,13 @@
           "type": "string",
           "default": "/var/lib/telltale",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "drain_delay_secs": {
+          "description": "REQ: OPS-007 — on shutdown, keep answering this many seconds after reporting not ready,\nso load balancers and Kubernetes Services stop sending queries first (the Helm charts\nset 5). 0 stops as soon as in-flight lookups finish. At most 60.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
         },
         "name": {
           "description": "Node name; empty means the hostname.",

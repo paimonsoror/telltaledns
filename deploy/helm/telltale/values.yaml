@@ -209,6 +209,10 @@ affinity: {}
 priorityClassName: ""
 # Draining: readiness turns off first, then TCP and in-flight upstream queries finish.
 terminationGracePeriodSeconds: 30
+# REQ: OPS-007 — on shutdown, pods keep answering this long after turning not ready, so the
+# Service stops sending them queries first (no lost lookups during rollouts). Keep it well
+# under terminationGracePeriodSeconds.
+drainDelaySeconds: 5
 
 podSecurityContext:
   fsGroup: 65532

@@ -688,6 +688,16 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // connections, let in-flight upstream lookups finish (bounded), then stop UDP workers.
     ready.store(false, Ordering::Release);
     let _ = stop_http.send(true);
+    // Keep answering while load balancers notice: a Kubernetes Service takes a moment to drop
+    // a terminating pod, and queries sent to it meanwhile would otherwise be lost.
+    let delay = current.node.drain_delay_secs.min(60);
+    if delay > 0 {
+        info!(
+            seconds = delay,
+            "shutdown: still answering while load balancers move away"
+        );
+        tokio::time::sleep(Duration::from_secs(u64::from(delay))).await;
+    }
     for (_, s) in listeners.streams.drain(..) {
         s.shutdown().await;
     }

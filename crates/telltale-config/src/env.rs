@@ -28,6 +28,8 @@ const RESERVED: &[&str] = &[
     "BOOTSTRAP_ADMIN_PASSWORD",
     "BOOTSTRAP_ADMIN_PASSWORD_HASH",
     "NODE_IPS",
+    // How it was installed, for the update status (ADR-046; image, Helm, install.sh).
+    "INSTALL",
     // T6.14 — the Kubernetes node and pod (downward API, set by the Helm charts).
     "KUBE_NODE",
     "POD",

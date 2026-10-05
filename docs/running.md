@@ -271,6 +271,9 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
   too, and only the controller has them, so only it gets that traffic. Keep `service.api` on
   `ClusterIP` (it still serves the ingress). The install notes warn when an `api` or cluster
   Service is a LoadBalancer in scaled mode.
+- **Rollouts without lost lookups.** On shutdown a pod reports not ready, then keeps answering
+  for `drainDelaySeconds` (default 5; `[node] drain_delay_secs`) while the Service stops
+  sending it queries, and only then stops. Outside Kubernetes the default is 0.
 - **Metrics** (on the controller): `telltale_cluster_peer_info{kube_node, pod}`,
   `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
   `telltale_cluster_peer_restarts`, per member.
