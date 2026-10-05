@@ -1329,7 +1329,10 @@ export interface components {
             /** @description RFC 3339. */
             at: string;
             detail: string;
-            /** @description `joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`. */
+            /**
+             * @description `joined`, `connected`, `disconnected`, `restarted`, `published`, `applied`,
+             *     `sync_failed`, `rejected`.
+             */
             kind: string;
             nodeId: string;
         };
@@ -1413,6 +1416,13 @@ export interface components {
              * @description How long it has been behind (absent when in sync).
              */
             behindSeconds?: number | null;
+            /**
+             * Format: int64
+             * @description Its cache: entries, and the hit rate over the last minute (absent without lookups).
+             */
+            cacheEntries?: number | null;
+            /** Format: double */
+            cacheHitPercent?: number | null;
             /** @description This node only: when its cluster certificate expires (RFC 3339). */
             certExpiresAt?: string | null;
             /**
@@ -1430,11 +1440,17 @@ export interface components {
             /** @description A Kubernetes resolver pod (CLU-009): dropped when no longer heard from. */
             ephemeral: boolean;
             host?: components["schemas"]["HostReport"] | null;
+            /**
+             * @description REQ: CLU-008 (T6.14) — the Kubernetes node and pod it runs in (absent elsewhere and
+             *     from older nodes).
+             */
+            kubeNode?: string | null;
             /** Format: int64 */
             lastSeenSecondsAgo: number;
             /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
             link: string;
             nodeId: string;
+            pod?: string | null;
             /**
              * Format: int32
              * @description The cluster protocol it speaks (CLU-010); nodes within one version work together.
@@ -1445,8 +1461,19 @@ export interface components {
              * @description Queries per second over the last minute.
              */
             qps: number;
+            /**
+             * Format: double
+             * @description Its share of the queries the nodes that are up answered over the last minute, percent
+             *     (absent when there were none).
+             */
+            querySharePercent?: number | null;
             /** @description Serving DNS (listeners bound, not shutting down). */
             ready: boolean;
+            /**
+             * Format: int32
+             * @description Restarts this node has seen since it started itself (0 for this node).
+             */
+            restarts: number;
             /** @description `primary` or `replica`. */
             role: string;
             /**
@@ -1462,6 +1489,8 @@ export interface components {
             site: string;
             /** @description The Git commit of the configuration it serves (ADR-049). */
             sourceCommit?: string | null;
+            /** @description When its process started (RFC 3339); absent from older nodes. */
+            startedAt?: string | null;
             /** @description The node answering this request. */
             thisNode: boolean;
             /** @description Heard from within 15 s (always true for this node). */

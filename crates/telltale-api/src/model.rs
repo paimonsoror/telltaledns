@@ -1216,7 +1216,7 @@ pub struct PromotePlan {
 }
 
 /// One node in [`ClusterView`].
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
 #[allow(clippy::struct_excessive_bools)] // independent flags of one record
 #[serde(rename_all = "camelCase")]
 pub struct ClusterNode {
@@ -1265,6 +1265,20 @@ pub struct ClusterNode {
     pub config_source: Option<String>,
     /// The machine it runs on (T6.11); absent from older nodes and before the first sample.
     pub host: Option<HostReport>,
+    /// REQ: CLU-008 (T6.14) — the Kubernetes node and pod it runs in (absent elsewhere and
+    /// from older nodes).
+    pub kube_node: Option<String>,
+    pub pod: Option<String>,
+    /// When its process started (RFC 3339); absent from older nodes.
+    pub started_at: Option<String>,
+    /// Restarts this node has seen since it started itself (0 for this node).
+    pub restarts: u32,
+    /// Its cache: entries, and the hit rate over the last minute (absent without lookups).
+    pub cache_entries: Option<u64>,
+    pub cache_hit_percent: Option<f64>,
+    /// Its share of the queries the nodes that are up answered over the last minute, percent
+    /// (absent when there were none).
+    pub query_share_percent: Option<f64>,
 }
 
 /// A cluster event (joins, connections, published and applied versions, failures).
@@ -1273,7 +1287,8 @@ pub struct ClusterNode {
 pub struct ClusterEvent {
     /// RFC 3339.
     pub at: String,
-    /// `joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`.
+    /// `joined`, `connected`, `disconnected`, `restarted`, `published`, `applied`,
+    /// `sync_failed`, `rejected`.
     pub kind: String,
     pub node_id: String,
     pub detail: String,

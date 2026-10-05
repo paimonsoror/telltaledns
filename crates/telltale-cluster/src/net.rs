@@ -359,6 +359,14 @@ pub struct Member {
     pub host: Option<crate::wire::HostStats>,
     /// Its clock minus ours, estimated from heartbeat timestamps and the round-trip time.
     pub clock_offset_ms: Option<i64>,
+    /// REQ: CLU-008 (T6.14) — Kubernetes node and pod (empty elsewhere), process start, how
+    /// often we've seen it restart, and its cache, from its heartbeats.
+    pub kube_node: String,
+    pub pod: String,
+    pub started_ms: u64,
+    pub restarts: u32,
+    pub cache_entries: Option<u64>,
+    pub cache_hit_permille: Option<u32>,
 }
 
 impl Member {
@@ -383,6 +391,12 @@ pub struct LocalState {
     pub uptime_s: u64,
     /// The machine this node runs on (T6.11), refreshed by the binary's collector.
     pub host: Option<crate::wire::HostStats>,
+    /// T6.14 — Kubernetes node and pod names, process start (Unix ms), and the cache.
+    pub kube_node: String,
+    pub pod: String,
+    pub started_ms: u64,
+    pub cache_entries: Option<u64>,
+    pub cache_hit_permille: Option<u32>,
 }
 
 /// Host samples kept per peer: one hour at the collector's 15 s interval (T6.11).
@@ -392,7 +406,8 @@ pub const HOST_HISTORY: usize = 240;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub ts_ms: u64,
-    /// `joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`.
+    /// `joined`, `connected`, `disconnected`, `restarted`, `published`, `applied`, `sync_failed`,
+    /// `rejected`.
     pub kind: &'static str,
     /// The node it's about.
     pub node: String,
@@ -1203,6 +1218,11 @@ impl Cluster {
                 p90_us: l.p90_us,
                 uptime_s: l.uptime_s,
                 host: l.host.clone().map(Box::new),
+                kube_node: l.kube_node.clone(),
+                pod: l.pod.clone(),
+                started_ms: l.started_ms,
+                cache_entries: l.cache_entries,
+                cache_hit_permille: l.cache_hit_permille,
             })),
         }
     }
@@ -1272,6 +1292,15 @@ impl Cluster {
                             .unwrap_or_default(),
                         host: prev.as_ref().and_then(|p| p.host.clone()),
                         clock_offset_ms: prev.as_ref().and_then(|p| p.clock_offset_ms),
+                        kube_node: prev
+                            .as_ref()
+                            .map(|p| p.kube_node.clone())
+                            .unwrap_or_default(),
+                        pod: prev.as_ref().map(|p| p.pod.clone()).unwrap_or_default(),
+                        started_ms: prev.as_ref().map_or(0, |p| p.started_ms),
+                        restarts: prev.as_ref().map_or(0, |p| p.restarts),
+                        cache_entries: prev.as_ref().and_then(|p| p.cache_entries),
+                        cache_hit_permille: prev.as_ref().and_then(|p| p.cache_hit_permille),
                     },
                 );
                 drop(members);
@@ -1300,6 +1329,7 @@ impl Cluster {
                         u64::max,
                     )
                     .max(hb.applied_seq);
+                let mut restarted = false;
                 if let Some(m) = members.get_mut(id) {
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
@@ -1314,6 +1344,18 @@ impl Cluster {
                     m.p90_us = hb.p90_us;
                     m.uptime_s = hb.uptime_s;
                     m.source_commit = hb.source_commit;
+                    // T6.14 — a new start time on a node we already knew: it restarted.
+                    if m.started_ms != 0 && hb.started_ms != 0 && hb.started_ms != m.started_ms {
+                        m.restarts = m.restarts.saturating_add(1);
+                        restarted = true;
+                    }
+                    if hb.started_ms != 0 {
+                        m.started_ms = hb.started_ms;
+                    }
+                    m.kube_node = hb.kube_node;
+                    m.pod = hb.pod;
+                    m.cache_entries = hb.cache_entries;
+                    m.cache_hit_permille = hb.cache_hit_permille;
                     if hb.echo_ms > 0 {
                         let rtt = now
                             .saturating_sub(hb.echo_ms)
@@ -1335,6 +1377,9 @@ impl Cluster {
                 }
                 let id = id.clone();
                 drop(members);
+                if restarted {
+                    self.event("restarted", &id, "its process started again");
+                }
                 self.observe_epoch(hb.epoch, &id);
                 return Ok(());
             }

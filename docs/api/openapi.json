@@ -3339,7 +3339,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`joined`, `connected`, `disconnected`, `published`, `applied`, `sync_failed`, `rejected`."
+            "description": "`joined`, `connected`, `disconnected`, `restarted`, `published`, `applied`,\n`sync_failed`, `rejected`."
           },
           "nodeId": {
             "type": "string"
@@ -3516,7 +3516,8 @@
           "qps",
           "servfailPercent",
           "upstreamP90Ms",
-          "uptimeSeconds"
+          "uptimeSeconds",
+          "restarts"
         ],
         "properties": {
           "behindSeconds": {
@@ -3527,6 +3528,22 @@
             "format": "int64",
             "description": "How long it has been behind (absent when in sync).",
             "minimum": 0
+          },
+          "cacheEntries": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Its cache: entries, and the hit rate over the last minute (absent without lookups).",
+            "minimum": 0
+          },
+          "cacheHitPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
           },
           "certExpiresAt": {
             "type": [
@@ -3575,6 +3592,13 @@
               }
             ]
           },
+          "kubeNode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: CLU-008 (T6.14) — the Kubernetes node and pod it runs in (absent elsewhere and\nfrom older nodes)."
+          },
           "lastSeenSecondsAgo": {
             "type": "integer",
             "format": "int64",
@@ -3586,6 +3610,12 @@
           },
           "nodeId": {
             "type": "string"
+          },
+          "pod": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "protocol": {
             "type": "integer",
@@ -3599,9 +3629,23 @@
             "description": "Queries per second over the last minute.",
             "minimum": 0
           },
+          "querySharePercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Its share of the queries the nodes that are up answered over the last minute, percent\n(absent when there were none)."
+          },
           "ready": {
             "type": "boolean",
             "description": "Serving DNS (listeners bound, not shutting down)."
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Restarts this node has seen since it started itself (0 for this node).",
+            "minimum": 0
           },
           "role": {
             "type": "string",
@@ -3630,6 +3674,13 @@
               "null"
             ],
             "description": "The Git commit of the configuration it serves (ADR-049)."
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When its process started (RFC 3339); absent from older nodes."
           },
           "thisNode": {
             "type": "boolean",

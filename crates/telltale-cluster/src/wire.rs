@@ -125,6 +125,20 @@ pub struct Heartbeat {
     /// The machine it runs on, sampled every 15 s (T6.11). Absent from older nodes.
     #[prost(message, optional, boxed, tag = "14")]
     pub host: Option<Box<HostStats>>,
+    /// REQ: CLU-008 (T6.14) — where it runs in Kubernetes (the downward API's node and pod
+    /// names); empty outside Kubernetes or from older nodes.
+    #[prost(string, tag = "15")]
+    pub kube_node: String,
+    #[prost(string, tag = "16")]
+    pub pod: String,
+    /// When this process started (Unix ms): a change means it restarted.
+    #[prost(uint64, tag = "17")]
+    pub started_ms: u64,
+    /// Its cache: entries, and hits per thousand lookups over the last minute.
+    #[prost(uint64, optional, tag = "18")]
+    pub cache_entries: Option<u64>,
+    #[prost(uint32, optional, tag = "19")]
+    pub cache_hit_permille: Option<u32>,
 }
 
 /// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and
@@ -322,6 +336,33 @@ mod tests {
         // A huge length is refused before any allocation.
         let mut bad = (u32::MAX).to_be_bytes().to_vec();
         assert!(decode_all(&mut bad).is_err());
+    }
+
+    /// REQ: CLU-010 (T6.14) — a heartbeat from an older node (no pod, start time, or cache
+    /// fields) decodes with them empty, and an older node skips them.
+    #[test]
+    fn clu_010_t614_fields_are_optional_both_ways() {
+        let old = Heartbeat {
+            qps: 3,
+            ..Heartbeat::default()
+        }
+        .encode_to_vec();
+        let hb = Heartbeat::decode(&old[..]).unwrap();
+        assert_eq!(
+            (hb.pod.as_str(), hb.started_ms, hb.cache_entries),
+            ("", 0, None)
+        );
+        let new = Heartbeat {
+            qps: 3,
+            kube_node: "k3s-1".into(),
+            pod: "telltale-resolver-7d9f".into(),
+            started_ms: 1_759_000_000_000,
+            cache_entries: Some(1200),
+            cache_hit_permille: Some(812),
+            ..Heartbeat::default()
+        };
+        let back = Heartbeat::decode(&new.encode_to_vec()[..]).unwrap();
+        assert_eq!(back, new);
     }
 
     #[test]

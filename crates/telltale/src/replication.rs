@@ -805,14 +805,21 @@ async fn publish_loop(
 }
 
 /// REQ: CLU-008 — what this node reports in its heartbeats: queries per second and SERVFAIL
-/// share over the last minute, upstream p90 this hour, readiness, uptime. Every 5 s, off the
-/// query path (the aggregator's data).
+/// share over the last minute, upstream p90 this hour, readiness, uptime, and (T6.14) where it
+/// runs in Kubernetes, when it started, and its cache. Every 5 s, off the query path (the
+/// aggregator's data and the cache's counters).
 async fn serving_loop(
     cluster: Arc<Cluster>,
     sources: Arc<Sources>,
     mut stop: watch::Receiver<bool>,
 ) {
     use telltale_telemetry::agg::{HourSel, LatencyKey, Resolution};
+    let (kube_node, pod) = kube_names(|k| std::env::var(k).ok());
+    let started_ms =
+        now_ms().saturating_sub(u64::try_from(sources.started.elapsed().as_millis()).unwrap_or(0));
+    // Cache hits and misses at each pass for the last minute (12 passes of 5 s).
+    let mut cache_window: std::collections::VecDeque<(u64, u64)> =
+        std::collections::VecDeque::with_capacity(13);
     loop {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -835,6 +842,15 @@ async fn serving_loop(
         let ready = sources.ready.load(std::sync::atomic::Ordering::Acquire);
         let uptime = sources.started.elapsed().as_secs();
         let host = sources.host.latest();
+        let c = sources.cache.stats();
+        cache_window.push_back((c.hits, c.misses));
+        if cache_window.len() > 13 {
+            cache_window.pop_front();
+        }
+        let cache_hit_permille = cache_window.front().and_then(|&(h0, m0)| {
+            hit_permille(c.hits.saturating_sub(h0), c.misses.saturating_sub(m0))
+        });
+        let cache_entries = u64::try_from(c.entries).ok();
         cluster.set_local(|l| {
             l.qps = total / 60;
             l.servfail_permille =
@@ -843,6 +859,11 @@ async fn serving_loop(
             l.ready = ready;
             l.uptime_s = uptime;
             l.host = host;
+            l.kube_node.clone_from(&kube_node);
+            l.pod.clone_from(&pod);
+            l.started_ms = started_ms;
+            l.cache_entries = cache_entries;
+            l.cache_hit_permille = cache_hit_permille;
         });
         tokio::select! {
             _ = stop.changed() => return,
@@ -851,9 +872,66 @@ async fn serving_loop(
     }
 }
 
+/// REQ: CLU-008 (T6.14) — the Kubernetes node and pod this process runs in: the chart passes
+/// them through the downward API (`TELLTALE_KUBE_NODE`, `TELLTALE_POD`); in a pod without them,
+/// the pod name is the host name. Both are empty outside Kubernetes.
+fn kube_names(env: impl Fn(&str) -> Option<String>) -> (String, String) {
+    let get = |k: &str| {
+        env(k)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    let node = get("TELLTALE_KUBE_NODE").unwrap_or_default();
+    let pod = get("TELLTALE_POD")
+        .or_else(|| get("KUBERNETES_SERVICE_HOST").and_then(|_| get("HOSTNAME")))
+        .unwrap_or_default();
+    (node, pod)
+}
+
+/// Hits per thousand lookups; none without lookups.
+fn hit_permille(hits: u64, misses: u64) -> Option<u32> {
+    let looked = hits.checked_add(misses)?;
+    (looked > 0).then(|| u32::try_from(hits.saturating_mul(1000) / looked).unwrap_or(1000))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: CLU-008 (T6.14) — node and pod names from the chart's variables, the pod name from
+    /// HOSTNAME in other pods, nothing outside Kubernetes.
+    #[test]
+    fn clu_008_kube_names() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                vars.iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert_eq!(
+            kube_names(env(&[
+                ("TELLTALE_KUBE_NODE", "k3s-1"),
+                ("TELLTALE_POD", "telltale-0"),
+                ("HOSTNAME", "x")
+            ])),
+            ("k3s-1".into(), "telltale-0".into())
+        );
+        assert_eq!(
+            kube_names(env(&[
+                ("KUBERNETES_SERVICE_HOST", "10.43.0.1"),
+                ("HOSTNAME", "dns-7f9c")
+            ])),
+            (String::new(), "dns-7f9c".into())
+        );
+        assert_eq!(
+            kube_names(env(&[("HOSTNAME", "pi")])),
+            (String::new(), String::new())
+        );
+        assert_eq!(hit_permille(0, 0), None);
+        assert_eq!(hit_permille(812, 188), Some(812));
+        assert_eq!(hit_permille(5, 0), Some(1000));
+    }
 
     #[test]
     fn clu_003_blob_names_from_the_network_are_plain_file_names() {

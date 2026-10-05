@@ -281,6 +281,73 @@ fn host_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model
     }
 }
 
+fn started_at(ms: u64) -> Option<String> {
+    (ms > 0).then(|| format_us(ms.saturating_mul(1000)))
+}
+
+/// REQ: CLU-008 (T6.14) — each node's share of the queries answered by the nodes that are up.
+#[allow(clippy::cast_precision_loss)] // a percentage for display
+fn query_shares(nodes: &mut [telltale_api::model::ClusterNode]) {
+    let total: u64 = nodes.iter().filter(|n| n.up).map(|n| n.qps).sum();
+    for n in nodes.iter_mut() {
+        n.query_share_percent =
+            (total > 0 && n.up).then(|| (n.qps as f64 * 1000.0 / total as f64).round() / 10.0);
+    }
+}
+
+/// Queries per second below which a site's split isn't judged (too little to mean anything).
+const BALANCE_MIN_QPS: u64 = 5;
+
+/// REQ: CLU-008 (T6.14) — Kubernetes spreads queries over the pods of a site; one pod taking
+/// more than twice its fair share means the spreading isn't working (a sticky client, a
+/// node-local traffic policy with pods bunched on one node, or a pod the Service doesn't see).
+/// Only for sites with two or more ready pods and enough traffic to judge.
+#[allow(clippy::cast_precision_loss)] // ratios for display
+fn balance_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model::ClusterCheck {
+    let mut sites: std::collections::BTreeMap<&str, Vec<&telltale_api::model::ClusterNode>> =
+        std::collections::BTreeMap::new();
+    for n in nodes.iter().filter(|n| n.up && n.ready && n.pod.is_some()) {
+        sites.entry(n.site.as_str()).or_default().push(n);
+    }
+    let mut problems = Vec::new();
+    for (site, pods) in &sites {
+        let total: u64 = pods.iter().map(|n| n.qps).sum();
+        if pods.len() < 2 || total < BALANCE_MIN_QPS {
+            continue;
+        }
+        let fair = total as f64 / pods.len() as f64;
+        if let Some(top) = pods.iter().max_by_key(|n| n.qps)
+            && top.qps as f64 > 2.0 * fair
+        {
+            problems.push(format!(
+                "{site}: {} answers {:.0}% of the site's queries ({} pods, fair share {:.0}%)",
+                top.pod.as_deref().unwrap_or(&top.node_id),
+                top.qps as f64 * 100.0 / total as f64,
+                pods.len(),
+                100.0 / pods.len() as f64
+            ));
+        }
+    }
+    telltale_api::model::ClusterCheck {
+        id: "load_balance".into(),
+        ok: problems.is_empty(),
+        summary: if problems.is_empty() {
+            "Queries are spread evenly over each site's pods (or there's one pod)".into()
+        } else {
+            problems.join("; ")
+        },
+        fix: (!problems.is_empty()).then(|| {
+            concat!(
+                "With `externalTrafficPolicy: Local`, a node only sends queries to its own pods: ",
+                "spread the pods over nodes (the chart's `resolvers.affinity`, e.g. podAntiAffinity on ",
+                "`app.kubernetes.io/component: resolver`). A few busy clients also stick to one pod; ",
+                "that evens out with more clients."
+            )
+            .to_owned()
+        }),
+    }
+}
+
 /// REQ: CLU-008 — the Cluster page's data.
 #[allow(clippy::cast_precision_loss)] // per-mille and microseconds to display units
 #[allow(clippy::too_many_lines)] // one view, field by field
@@ -340,6 +407,13 @@ pub(crate) fn view(
         cert_expires_at: Some(format_us(expires.saturating_mul(1_000_000))),
         config_source: Some(c.config_source()),
         host: crate::host::report(host.latest(), &host.history(), None),
+        kube_node: Some(local.kube_node.clone()).filter(|s| !s.is_empty()),
+        pod: Some(local.pod.clone()).filter(|s| !s.is_empty()),
+        started_at: started_at(local.started_ms),
+        restarts: 0,
+        cache_entries: local.cache_entries,
+        cache_hit_percent: local.cache_hit_permille.map(|p| f64::from(p) / 10.0),
+        query_share_percent: None,
     }];
     let mut peers = c.members();
     peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
@@ -376,14 +450,23 @@ pub(crate) fn view(
                 &c.host_history(&p.node_id),
                 p.clock_offset_ms,
             ),
+            kube_node: Some(p.kube_node.clone()).filter(|s| !s.is_empty()),
+            pod: Some(p.pod.clone()).filter(|s| !s.is_empty()),
+            started_at: started_at(p.started_ms),
+            restarts: p.restarts,
+            cache_entries: p.cache_entries,
+            cache_hit_percent: p.cache_hit_permille.map(|p| f64::from(p) / 10.0),
+            query_share_percent: None,
         });
     }
+    query_shares(&mut nodes);
     let sync = c.sync_status();
     let cert_days = expires.saturating_sub(now / 1000) / 86_400;
     let mut checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
     let failover = failover_view(c, &nodes);
     checks.push(versions_check(&nodes));
     checks.push(host_check(&nodes));
+    checks.push(balance_check(&nodes));
     // T5.4c (ADR-066) — a CA rotation in progress, and whom it waits for.
     if let Some(r) = telltale_cluster::rotation::current(&c.identity.reload()) {
         let waiting = if r.pending.is_empty() {
@@ -1179,6 +1262,55 @@ pub(crate) fn parse_ttl(s: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pod(site: &str, name: &str, qps: u64) -> telltale_api::model::ClusterNode {
+        telltale_api::model::ClusterNode {
+            node_id: format!("id-{name}"),
+            site: site.into(),
+            pod: Some(name.into()),
+            up: true,
+            ready: true,
+            qps,
+            ..Default::default()
+        }
+    }
+
+    /// REQ: CLU-008 (T6.14) — shares add up over the nodes that are up; a site's pods are
+    /// flagged only when one takes more than twice its fair share, with enough traffic.
+    #[test]
+    fn clu_008_query_shares_and_balance() {
+        let mut nodes = vec![
+            pod("k8s", "a", 30),
+            pod("k8s", "b", 10),
+            pod("k8s", "c", 10),
+        ];
+        let mut down = pod("k8s", "d", 99);
+        down.up = false;
+        nodes.push(down);
+        query_shares(&mut nodes);
+        let shares: Vec<Option<f64>> = nodes.iter().map(|n| n.query_share_percent).collect();
+        assert_eq!(shares, [Some(60.0), Some(20.0), Some(20.0), None]);
+        // 30 of 50 over 3 pods: 1.8× the fair share, not flagged.
+        assert!(balance_check(&nodes).ok);
+        nodes[0].qps = 90;
+        let c = balance_check(&nodes);
+        assert!(
+            !c.ok && c.summary.contains("k8s: a answers 82%"),
+            "{}",
+            c.summary
+        );
+        // Too little traffic to judge, or a single pod: fine.
+        let quiet = [pod("k8s", "a", 3), pod("k8s", "b", 0)];
+        assert!(balance_check(&quiet).ok);
+        let one = [pod("k8s", "a", 500), pod("home", "pi", 1)];
+        assert!(balance_check(&one).ok);
+        // Nodes outside Kubernetes (no pod) aren't judged.
+        let mut pis = [pod("home", "x", 90), pod("home", "y", 1)];
+        for n in &mut pis {
+            n.pod = None;
+        }
+        assert!(balance_check(&pis).ok);
+    }
 
     // REQ: CLU-005 (ADR-051, ADR-048) — who may be promoted.
     #[test]

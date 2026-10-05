@@ -71,6 +71,13 @@ spec:
             - name: TELLTALE_NODE_IPS
               valueFrom:
                 fieldRef: { fieldPath: status.hostIP }
+            # REQ: CLU-008 (T6.14) — the Cluster page groups pods by Kubernetes node.
+            - name: TELLTALE_KUBE_NODE
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+            - name: TELLTALE_POD
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
             {{- with .Values.auth.bootstrapAdmin.existingSecret }}
             - name: TELLTALE_BOOTSTRAP_ADMIN_USER
               valueFrom:
