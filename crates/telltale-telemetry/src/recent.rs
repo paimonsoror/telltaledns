@@ -65,22 +65,48 @@ impl RecentClients {
         }
     }
 
-    /// The last complete window if it ended at most one window before `now_s`, else the
-    /// window in progress if it's current. `None` when nothing recent was seen.
+    /// Of the last complete window (if it ended at most one window before `now_s`) and the
+    /// window in progress (if it's current), the one with more queries: the better evidence.
+    /// Preferring the complete window outright hid a busy current window behind a quiet
+    /// previous one for ten minutes (CI 2026-10-05). `None` when nothing recent was seen.
     pub(crate) fn latest(&self, now_s: u64) -> Option<ClientWindow> {
         let current = now_s - now_s % WINDOW_SECS;
-        if let Some(d) = &self.done
-            && d.start_s + WINDOW_SECS >= current.saturating_sub(WINDOW_SECS)
-            && d.start_s < current
-        {
-            return Some(d.clone());
+        let done = self.done.as_ref().filter(|d| {
+            d.start_s + WINDOW_SECS >= current.saturating_sub(WINDOW_SECS) && d.start_s < current
+        });
+        let live = (self.total > 0 && self.start_s == current).then(|| self.summary());
+        match (done, live) {
+            (Some(d), Some(l)) => Some(if l.total > d.total { l } else { d.clone() }),
+            (Some(d), None) => Some(d.clone()),
+            (None, l) => l,
         }
-        (self.total > 0 && self.start_s == current).then(|| self.summary())
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    // REQ: OPS-003 — a quiet previous window mustn't hide a busy current one.
+    #[test]
+    fn ops_003_latest_prefers_the_window_with_more_evidence() {
+        let mut r = RecentClients::default();
+        let ip = [0u8; 16];
+        for _ in 0..5 {
+            r.add(ip, 1_000); // window starting at 600: 5 queries
+        }
+        for _ in 0..150 {
+            r.add(ip, 1_250); // window starting at 1200: 150 queries
+        }
+        assert_eq!(r.latest(1_260).unwrap().total, 150);
+        // Early in a window, the complete one is still the better evidence.
+        let mut r = RecentClients::default();
+        for _ in 0..150 {
+            r.add(ip, 1_000);
+        }
+        r.add(ip, 1_250);
+        assert_eq!(r.latest(1_260).unwrap().total, 150);
+    }
+
     use super::*;
 
     fn ip(last: u8) -> [u8; 16] {
