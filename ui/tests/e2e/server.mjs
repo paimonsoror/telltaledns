@@ -31,6 +31,12 @@ url = "udp://127.0.0.1:9"
 name = "default"
 members = ["nowhere"]
 
+# ADR-050 — every e2e query comes from 127.0.0.1: a network group puts them in "lab".
+[[group]]
+name = "lab"
+networks = ["127.0.0.0/8"]
+color = "#22c55e"
+
 [[list]]
 name = "e2e-block"
 rules = ["||ads.e2e.test^"]

@@ -113,7 +113,8 @@ export const api = {
   info: () => get<S['SystemInfo']>('/system/info'),
   summary: (from = '-24h') => get<S['Summary']>('/stats/summary', { from }),
   timeseries: (q: { from?: string; step?: S['Step'] }) => get<S['Items_TimeBucket']>('/stats/timeseries', q),
-  top: (kind: S['TopKind'], limit = 10, client?: string) => get<S['Items_TopItem']>('/stats/top', { kind, limit, client }),
+  top: (kind: S['TopKind'], limit = 10, client?: string, group?: string) =>
+    get<S['Items_TopItem']>('/stats/top', { kind, limit, client, group }),
   latency: (by: S['LatencyBy']) => get<S['Items_LatencyRow']>('/stats/latency', { by }),
   queries: (q: Query) => get<S['QueryPage']>('/queries', q),
   explain: (q: { name: string; client?: string; qtype?: string }) => get<S['Explanation']>('/explain', q),

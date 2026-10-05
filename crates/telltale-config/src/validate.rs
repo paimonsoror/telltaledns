@@ -494,6 +494,7 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
     let lists: HashSet<&str> = cfg.list.iter().map(|l| l.name.as_str()).collect();
     let mut groups = HashSet::from(["default"]);
     let mut declared = HashSet::new();
+    let mut networks: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
     for (i, g) in cfg.group.iter().enumerate() {
         let p = format!("group[{i}]");
         if g.name.is_empty() {
@@ -523,6 +524,25 @@ fn clients(cfg: &Config, r: &mut Report<'_>) {
         if g.block_ttl > 86_400 {
             r.err(format!("{p}.block_ttl"), "must be at most 86400");
         }
+        // REQ: FLT-005 (ADR-050)
+        if let Some(c) = &g.color
+            && !(c.len() == 7
+                && c.starts_with('#')
+                && c.as_str()[1..].bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            r.err(format!("{p}.color"), "must be a color like #3b82f6");
+        }
+        for (j, n) in g.networks.iter().enumerate() {
+            if let Some(other) = networks.insert(n.to_string(), g.name.as_str()) {
+                r.err(
+                    format!("{p}.networks[{j}]"),
+                    format!("{n} is already a network of group `{other}`"),
+                );
+            }
+        }
+    }
+    if cfg.group.len() > 63 {
+        r.err("group", "at most 63 groups (plus `default`)");
     }
     let mut names = HashSet::new();
     let mut keys: std::collections::HashMap<MatchKey, usize> = std::collections::HashMap::new();

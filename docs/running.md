@@ -370,7 +370,7 @@ groups = ["kids"]
 
 [[client]]
 name = "Office"
-match = ["10.0.5.0/24"]                  # groups default to ["default"]
+match = ["10.0.5.0/24"]                  # no groups: its network's group, else "default"
 ```
 - A device in several groups gets every list of all of them. Other settings, such as block mode (T2.6), come from its highest-priority group.
 - **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
@@ -383,6 +383,42 @@ match = ["10.0.5.0/24"]                  # groups default to ["default"]
 - `$client=` rules match the device's name (`$client='Kids tablet'`), its client ID, or its IP or CIDR.
 - `[[route]] match_group = ["kids"]` sends a group's queries to its own upstreams (for example, a family-filtering resolver).
 - Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
+
+### Groups for your networks (VLANs)
+A group can own networks: every device on them belongs to it, with no per-device setup. That
+makes groups a way to see *which kinds of devices* make which traffic:
+```toml
+[[group]]
+name = "IOT"
+networks = ["192.168.2.0/24"]
+color = "#22c55e"                        # optional: its color in charts and chips
+
+[[group]]
+name = "Surveillance"
+networks = ["192.168.7.0/24"]
+
+[[group]]
+name = "Trust"
+networks = ["192.168.10.0/24"]
+```
+- **Which group a device gets:** the group of the most specific matching network. A
+  `[[client]]` entry with its own `groups` still wins. Naming a device (in the UI or with a
+  `[[client]]` entry without `groups`) keeps it in its network's group. Devices outside every
+  network are in `default`.
+- **Filtering doesn't change** unless you give the group `lists`: a group without `lists` uses
+  every list, like `default`.
+- **A network belongs to one group:** the same CIDR in two groups is a configuration error.
+  Nested networks are fine; the most specific wins.
+- **Where it shows:**
+  - the dashboard's **Traffic by group** chart, and a group selector for its top lists;
+  - each group's card on the **Groups** page: networks, queries and block rate over 24 hours,
+    devices this hour, top names and top blocked;
+  - a group chip on every query-log row, and a **Group** filter;
+  - `group=` on `/api/v1/stats/top` and `/api/v1/queries`, and `byGroup` / `blockedByGroup` in
+    timeseries buckets;
+  - the metric `telltale_group_queries_total{group,status}`.
+- **In a cluster**, groups and networks are shared configuration, so every node attributes devices
+  the same way.
 
 ### Naming devices in the UI
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.

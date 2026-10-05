@@ -39,6 +39,8 @@ pub struct Counts {
     pub proto: [u32; N_PROTO],
     /// By primary group index (the last column also holds every higher index).
     pub groups: Vec<u32>,
+    /// Blocked queries by primary group index (ADR-050), like `groups`.
+    pub group_blocked: Vec<u32>,
     /// Upstream exchanges by upstream index, and how many failed.
     pub upstreams: Vec<u32>,
     pub upstream_failures: u32,
@@ -66,6 +68,9 @@ impl Counts {
         let p = &mut self.proto[e.proto as usize];
         *p = p.saturating_add(1);
         bump(&mut self.groups, usize::from(e.group));
+        if e.status == Status::Blocked {
+            bump(&mut self.group_blocked, usize::from(e.group));
+        }
     }
 
     fn add_upstream(&mut self, e: &UpstreamEvent) {
@@ -182,7 +187,20 @@ struct Hour {
     other_clients: Hist,
     stage_upstream: Hist,
     upstreams: Vec<Hist>,
+    /// Per primary group (ADR-050), allocated when a group first shows up.
+    per_group: Vec<Option<Box<GroupTops>>>,
 }
+
+/// One group's top lists for an hour.
+#[derive(Debug, Clone)]
+struct GroupTops {
+    domains: SpaceSaving<Box<[u8]>>,
+    blocked: SpaceSaving<Box<[u8]>>,
+    clients: SpaceSaving<[u8; 16]>,
+}
+
+/// Entries per group top list (smaller than the overall lists: there are several groups).
+const GROUP_TOP_CAPACITY: usize = 256;
 
 /// A histogram that allocates on first use (most keys never see a value).
 #[derive(Debug, Clone, Default)]
@@ -226,6 +244,7 @@ impl Hour {
             other_clients: Hist::default(),
             stage_upstream: Hist::default(),
             upstreams: Vec::new(),
+            per_group: Vec::new(),
         }
     }
 
@@ -242,6 +261,7 @@ impl Hour {
             self.per_client_domain(e.client_ip, wire, seq);
         }
         self.clients.offer(&e.client_ip, |ip| *ip);
+        self.group_add(e, wire);
         if e.status != Status::Dropped {
             let us = u64::from(e.t_total_us);
             self.total[e.status.path() as usize * Proto::ALL.len() + e.proto as usize].record(us);
@@ -257,6 +277,27 @@ impl Hour {
                 self.stage_upstream.record(u64::from(e.t_upstream_us));
             }
         }
+    }
+
+    fn group_add(&mut self, e: &QueryEvent, wire: &[u8]) {
+        let g = usize::from(e.group).min(MAX_IDS - 1);
+        if self.per_group.len() <= g {
+            self.per_group.resize(g + 1, None);
+        }
+        let t = self.per_group[g].get_or_insert_with(|| {
+            Box::new(GroupTops {
+                domains: SpaceSaving::new(GROUP_TOP_CAPACITY),
+                blocked: SpaceSaving::new(GROUP_TOP_CAPACITY),
+                clients: SpaceSaving::new(GROUP_TOP_CAPACITY),
+            })
+        });
+        if !wire.is_empty() {
+            t.domains.offer(wire, boxed);
+            if e.status == Status::Blocked {
+                t.blocked.offer(wire, boxed);
+            }
+        }
+        t.clients.offer(&e.client_ip, |ip| *ip);
     }
 
     fn per_client_domain(&mut self, client: [u8; 16], wire: &[u8], seq: u64) {
@@ -419,6 +460,57 @@ impl Aggregates {
                 })
                 .collect(),
         }
+    }
+
+    /// The heaviest names (or clients) for `kind` among one group's queries (ADR-050).
+    /// `Nxdomain` isn't tracked per group (empty).
+    pub fn top_names_in_group(
+        &self,
+        kind: TopKind,
+        sel: HourSel,
+        group: u16,
+        n: usize,
+    ) -> Vec<Top<String>> {
+        let Some(t) = self
+            .hour(sel)
+            .and_then(|h| h.per_group.get(usize::from(group)))
+            .and_then(|t| t.as_deref())
+        else {
+            return Vec::new();
+        };
+        let names = |t: &SpaceSaving<Box<[u8]>>| {
+            t.top(n)
+                .into_iter()
+                .map(|x| Top {
+                    key: crate::event::dotted(&x.key),
+                    count: x.count,
+                    error: x.error,
+                })
+                .collect()
+        };
+        match kind {
+            TopKind::Domains => names(&t.domains),
+            TopKind::Blocked => names(&t.blocked),
+            TopKind::Nxdomain => Vec::new(),
+            TopKind::Clients => t
+                .clients
+                .top(n)
+                .into_iter()
+                .map(|x| Top {
+                    key: client_text(x.key),
+                    count: x.count,
+                    error: x.error,
+                })
+                .collect(),
+        }
+    }
+
+    /// Devices seen in a group this hour (up to the tracked capacity).
+    pub fn group_devices(&self, sel: HourSel, group: u16) -> usize {
+        self.hour(sel)
+            .and_then(|h| h.per_group.get(usize::from(group)))
+            .and_then(|t| t.as_deref())
+            .map_or(0, |t| t.clients.len())
     }
 
     /// A client's heaviest domains this hour (if it's among the recently seen clients).

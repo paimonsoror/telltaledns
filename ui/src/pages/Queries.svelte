@@ -30,6 +30,15 @@
   let rcode = $state('');
   let from = $state('-24h');
   let minLatency = $state('');
+  let group = $state('');
+  let groups = $state<S['GroupInfo'][]>([]);
+  $effect(() => {
+    api
+      .groups()
+      .then((g) => (groups = g.items))
+      .catch(() => {});
+  });
+  const groupColor = (n: string | null | undefined) => groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
 
   // Links into the log (dashboard, clients, the nav) change the URL without remounting.
   $effect(() => {
@@ -42,6 +51,7 @@
     rcode = p.get('rcode') ?? '';
     from = p.get('from') === 'all' ? '' : (p.get('from') ?? '-24h');
     minLatency = p.get('minLatencyMs') ?? '';
+    group = p.get('group') ?? '';
   });
 
   let rows = $state<S['QueryRow'][]>([]);
@@ -57,7 +67,7 @@
   function query(): Record<string, string> {
     const q = route.params;
     const o: Record<string, string> = {};
-    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'rcode', 'from', 'minLatencyMs']) {
+    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'rcode', 'from', 'minLatencyMs', 'group']) {
       const v = q.get(k);
       if (v) o[k] = v;
     }
@@ -129,7 +139,7 @@
     };
   });
 
-  const liveIgnores = $derived(live && (route.params.has('rcode') || route.params.has('from')));
+  const liveIgnores = $derived(live && (route.params.has('rcode') || route.params.has('from') || route.params.has('group')));
 
   function search(e?: SubmitEvent) {
     e?.preventDefault();
@@ -142,6 +152,7 @@
       rcode: rcode.trim().toUpperCase() || undefined,
       from: from === '-24h' ? undefined : from || 'all',
       minLatencyMs: minLatency || undefined,
+      group: group || undefined,
     });
   }
 
@@ -162,6 +173,7 @@
     rcode = '';
     from = '-24h';
     minLatency = '';
+    group = '';
     search();
   }
 
@@ -194,7 +206,7 @@
     </label>
   </div>
   {#if liveIgnores}
-    <div class="notice warn small">The live view ignores the Rcode and Since filters; it shows new queries as they happen.</div>
+    <div class="notice warn small">The live view ignores the Rcode, Since, and Group filters; it shows new queries as they happen.</div>
   {/if}
 
   <form class="card filters" onsubmit={search}>
@@ -223,6 +235,14 @@
       <label class="field narrow">Slower than (ms)
         <input name="minLatency" type="number" min="0" bind:value={minLatency} />
       </label>
+      {#if groups.length > 1}
+        <label class="field">Group
+          <select name="group" bind:value={group} onchange={() => search()}>
+            <option value="">any</option>
+            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+          </select>
+        </label>
+      {/if}
       <label class="field">Since
         <select name="from" bind:value={from} onchange={() => search()}>
           {#each RANGES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
@@ -259,7 +279,7 @@
                 <td class="nowrap" title={logDate(r.time)}>{logTime(r.time)}</td>
                 <td class="nowrap">
                   <ClientChip ip={r.client} name={r.clientName} onchanged={(n) => renamed(r.client, n)} />
-                  {#if r.group}<div class="muted small">{r.group}</div>{/if}
+                  {#if r.group}<div class="group-chip small" style:--gc={groupColor(r.group)}>{r.group}</div>{/if}
                 </td>
                 <td class="name mono">{r.name}</td>
                 <td>{r.qtype}</td>
@@ -368,5 +388,14 @@
   }
   .foot {
     margin-top: 10px;
+  }
+  .group-chip {
+    display: inline-block;
+    margin-top: 2px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--gc);
+    color: var(--text);
+    background: color-mix(in srgb, var(--gc) 14%, transparent);
   }
 </style>

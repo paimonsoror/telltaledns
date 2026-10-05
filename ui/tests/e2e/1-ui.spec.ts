@@ -215,6 +215,30 @@ test('ops_003 masked client IPs raise a banner', async () => {
   await expect(page.getByRole('link', { name: 'How to fix it' })).toHaveAttribute('href', /seeing-real-client-ips/);
 });
 
+// REQ: FLT-005 (ADR-050, T3.14 AC) — devices on a group's network are in that group: the
+// Groups card shows the network and traffic, the dashboard charts traffic by group, and the
+// query log filters by group.
+test('flt_005 network groups: cards, chart, and query-log filter', async () => {
+  for (let i = 0; i < 5; i++) await query(`g${i}.nas.e2e.test`).catch(() => -1);
+  await page.goto('/#/groups');
+  const card = page.getByTestId('group-card').filter({ hasText: 'lab' });
+  await expect(card).toContainText('127.0.0.0/8');
+  await expect(async () => {
+    await page.reload();
+    await expect(card.locator('dd').first()).not.toHaveText('0', { timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await page.goto('/#/');
+  await expect(page.getByRole('heading', { name: 'Traffic by group' })).toBeVisible();
+  await page.getByLabel('Group').selectOption('lab');
+  await expect(page.locator('section.card', { hasText: 'Top domains' })).toContainText('nas.e2e.test');
+  await page.goto('/#/queries?group=lab');
+  await expect(page.locator('table.log tbody tr').first().locator('.group-chip')).toHaveText('lab');
+  const r = await page.request.get('/api/v1/queries?group=lab&limit=5');
+  expect(r.status()).toBe(200);
+  expect((await r.json()).items.every((x: { group: string }) => x.group === 'lab')).toBe(true);
+  expect((await page.request.get('/api/v1/queries?group=nope')).status()).toBe(400);
+});
+
 // REQ: CLU-008 — the Cluster page on a standalone node says so and how to start a cluster.
 test('clu_008 cluster page on a standalone node', async () => {
   await page.goto('/#/cluster');

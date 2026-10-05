@@ -82,6 +82,19 @@ pub trait Backend: Send + Sync + 'static {
     }
     /// Heaviest items, heaviest first; `client` narrows `domains` to one client.
     fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem>;
+    /// Top items among one group's queries (ADR-050).
+    fn top_in_group(
+        &self,
+        kind: TopKind,
+        hour: Hour,
+        limit: usize,
+        group: &str,
+    ) -> Result<Vec<TopItem>, Problem> {
+        let _ = (kind, hour, limit, group);
+        Err(Problem::unavailable(
+            "per-group lists aren't available on this node",
+        ))
+    }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
     /// One page of the query log; `from_us`/`to_us` are already parsed.
     fn queries(
@@ -542,6 +555,19 @@ async fn stats_top(
     };
     if client.is_some() && p.kind != TopKind::Domains {
         return Err(Problem::invalid("`client` only applies to kind=domains"));
+    }
+    if let Some(g) = &p.group {
+        if client.is_some() {
+            return Err(Problem::invalid("use either `client` or `group`"));
+        }
+        if p.kind == TopKind::Nxdomain {
+            return Err(Problem::invalid(
+                "`group` isn't available for kind=nxdomain",
+            ));
+        }
+        return Ok(Json(Items {
+            items: b.top_in_group(p.kind, p.hour.unwrap_or_default(), limit, g)?,
+        }));
     }
     Ok(Json(Items {
         items: b.top(p.kind, p.hour.unwrap_or_default(), limit, client),

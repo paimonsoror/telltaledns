@@ -358,6 +358,16 @@ impl Backend for ApiBackend {
     // REQ: OBS-004, `spec/06` §3 — live windows from memory, longer ranges from rollups.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
         let series = self.counts(step, from_s, to_s);
+        let groups: Vec<String> = self
+            .src
+            .pipeline
+            .current()
+            .policy
+            .clients
+            .groups()
+            .iter()
+            .map(|g| g.name.to_string())
+            .collect();
         series
             .into_iter()
             .map(|(start, c)| {
@@ -389,9 +399,57 @@ impl Backend for ApiBackend {
                         b.by_rcode.insert(key, *n);
                     }
                 }
+                // ADR-050 — by group (index → name; indexes past the table are "other").
+                for (i, n) in c.groups.iter().enumerate() {
+                    if *n > 0 {
+                        let key = groups.get(i).cloned().unwrap_or_else(|| "other".into());
+                        *b.by_group.entry(key).or_default() += n;
+                    }
+                }
+                for (i, n) in c.group_blocked.iter().enumerate() {
+                    if *n > 0 {
+                        let key = groups.get(i).cloned().unwrap_or_else(|| "other".into());
+                        *b.blocked_by_group.entry(key).or_default() += n;
+                    }
+                }
                 b
             })
             .collect()
+    }
+
+    // REQ: FLT-005 (ADR-050)
+    fn top_in_group(
+        &self,
+        kind: TopKind,
+        h: Hour,
+        limit: usize,
+        group: &str,
+    ) -> Result<Vec<TopItem>, Problem> {
+        let gi = self.group_index(group)?;
+        let k = match kind {
+            TopKind::Domains => telltale_telemetry::agg::TopKind::Domains,
+            TopKind::Blocked => telltale_telemetry::agg::TopKind::Blocked,
+            TopKind::Nxdomain => telltale_telemetry::agg::TopKind::Nxdomain,
+            TopKind::Clients => telltale_telemetry::agg::TopKind::Clients,
+        };
+        let tops =
+            self.src
+                .pipeline
+                .telemetry
+                .aggregates()
+                .top_names_in_group(k, hour(h), gi, limit);
+        Ok(tops
+            .into_iter()
+            .map(|t| TopItem {
+                name: (kind == TopKind::Clients)
+                    .then(|| t.key.parse::<IpAddr>().ok())
+                    .flatten()
+                    .and_then(|ip| device_name(&self.src, mapped(ip))),
+                key: t.key,
+                count: t.count,
+                error_bound: t.error,
+            })
+            .collect())
     }
 
     fn top(&self, kind: TopKind, h: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
@@ -547,7 +605,10 @@ impl Backend for ApiBackend {
                 ),
             );
         }
-        let filter = qlog_filter(q, from_us, to_us)?;
+        let mut filter = qlog_filter(q, from_us, to_us)?;
+        if let Some(g) = &q.group {
+            filter.group = Some(self.group_index(g)?);
+        }
         let cursor = match &q.cursor {
             None => None,
             Some(c) => Some(qlog::Cursor::decode(c).ok_or_else(|| {
@@ -748,11 +809,45 @@ impl Backend for ApiBackend {
         let pauses = self.src.pipeline.pause.active(now);
         let global = pauses.iter().find(|(g, _)| g.is_none()).map(|(_, u)| *u);
         let policy = &self.src.pipeline.current().policy;
+        // Last 24 hours from the minute series, per group: (queries, blocked).
+        let agg = self.src.pipeline.telemetry.aggregates();
+        let mut day = (Vec::<u64>::new(), Vec::<u64>::new());
+        for (_, c) in agg.series(
+            telltale_telemetry::agg::Resolution::Minute,
+            now.saturating_sub(86_400),
+            now + 60,
+        ) {
+            for (i, n) in c.groups.iter().enumerate() {
+                if day.0.len() <= i {
+                    day.0.resize(i + 1, 0);
+                }
+                day.0[i] += u64::from(*n);
+            }
+            for (i, n) in c.group_blocked.iter().enumerate() {
+                if day.1.len() <= i {
+                    day.1.resize(i + 1, 0);
+                }
+                day.1[i] += u64::from(*n);
+            }
+        }
         policy
             .clients
             .groups()
             .iter()
-            .map(|g| GroupInfo {
+            .enumerate()
+            .map(|(i, g)| GroupInfo {
+                networks: g.networks.iter().map(ToString::to_string).collect(),
+                color: g
+                    .color
+                    .as_deref()
+                    .map_or_else(|| palette(i, &g.name), str::to_owned),
+                queries_24h: day.0.get(i).copied().unwrap_or(0),
+                blocked_24h: day.1.get(i).copied().unwrap_or(0),
+                devices_this_hour: u64::try_from(agg.group_devices(
+                    telltale_telemetry::agg::HourSel::Current,
+                    u16::try_from(i).unwrap_or(u16::MAX),
+                ))
+                .unwrap_or(0),
                 name: g.name.to_string(),
                 priority: g.priority,
                 lists: g
@@ -1257,6 +1352,26 @@ fn plan_managed(
 }
 
 impl ApiBackend {
+    /// A group's index by name, or a 400 naming the groups that exist.
+    fn group_index(&self, name: &str) -> Result<u16, Problem> {
+        let policy = &self.src.pipeline.current().policy;
+        let groups = policy.clients.groups();
+        groups
+            .iter()
+            .position(|g| &*g.name == name)
+            .and_then(|i| u16::try_from(i).ok())
+            .ok_or_else(|| {
+                Problem::invalid(format!("`group`: no group named `{name}`")).hint(format!(
+                    "Groups: {}.",
+                    groups
+                        .iter()
+                        .map(|g| g.name.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })
+    }
+
     /// REQ: CLU-003 — a replica that follows the primary takes configuration only from it;
     /// writes go to the primary (forwarded automatically once T5.7 lands).
     fn replica_read_only(&self) -> Option<Problem> {
@@ -1435,5 +1550,19 @@ impl ApiBackend {
             }
             Ok(change(true, version))
         })
+    }
+}
+
+/// A stable color for a group without one (ADR-050): `default` is neutral; others cycle a
+/// palette by position, so colors don't shift when a group's stats change.
+fn palette(i: usize, name: &str) -> String {
+    const COLORS: [&str; 10] = [
+        "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#ec4899", "#84cc16",
+        "#f97316", "#14b8a6",
+    ];
+    if name == "default" {
+        "#94a3b8".into()
+    } else {
+        COLORS[i % COLORS.len()].into()
     }
 }

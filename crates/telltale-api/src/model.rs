@@ -143,6 +143,12 @@ pub struct TimeBucket {
     /// Upstream exchanges, and how many failed.
     pub upstream_queries: u32,
     pub upstream_failures: u32,
+    /// Queries by the client's group (ADR-050). Empty for buckets read from rollups.
+    #[serde(default)]
+    pub by_group: BTreeMap<String, u32>,
+    /// Blocked queries by group.
+    #[serde(default)]
+    pub blocked_by_group: BTreeMap<String, u32>,
 }
 
 /// Query parameters for `GET /stats/timeseries`.
@@ -232,6 +238,8 @@ pub struct TopParams {
     pub hour: Option<Hour>,
     /// Only this client's domains (an IP address; `kind=domains` only).
     pub client: Option<String>,
+    /// Only this group's queries (a group name; not with `client`, not for `nxdomain`).
+    pub group: Option<String>,
     /// `cluster` (default) or `node:local`.
     pub scope: Option<String>,
 }
@@ -327,6 +335,8 @@ pub struct QueryParams {
     pub rcode: Option<String>,
     /// Upstream ID.
     pub upstream: Option<u16>,
+    /// Only queries from devices in this group (a group name, ADR-050).
+    pub group: Option<String>,
     /// Only queries that took at least this long.
     pub min_latency_ms: Option<u32>,
     /// Start: RFC 3339 or relative (`-1h`). Default: no limit.
@@ -544,6 +554,16 @@ pub struct GroupInfo {
     /// Blocking is paused for this group until then (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paused_until_unix_seconds: Option<u64>,
+    /// Networks (CIDRs) whose devices belong to this group (ADR-050).
+    pub networks: Vec<String>,
+    /// `#rrggbb` for charts and chips (configured, or a stable pick).
+    pub color: String,
+    /// Queries from the group's devices over the last 24 hours.
+    pub queries_24h: u64,
+    /// Of those, blocked.
+    pub blocked_24h: u64,
+    /// Devices seen in the group this hour.
+    pub devices_this_hour: u64,
 }
 
 /// A configured client (device).

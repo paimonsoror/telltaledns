@@ -578,11 +578,8 @@
       "type": "object",
       "properties": {
         "groups": {
-          "description": "Groups it belongs to (default: `[\"default\"]`).",
+          "description": "Groups it belongs to, highest priority first.\nEmpty (the default): the group of the device's network (`[[group]] networks`), else\n`default` (ADR-050).",
           "type": "array",
-          "default": [
-            "default"
-          ],
           "items": {
             "type": "string",
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
@@ -867,6 +864,14 @@
           "default": 60,
           "minimum": 0
         },
+        "color": {
+          "description": "Color for this group in charts and chips (`#rrggbb`); one is picked when unset.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "ede": {
           "description": "Extended DNS Error on block answers: `blocked` (15) or `filtered` (17, RFC 8914: at\nthe client's request, e.g. parental controls).",
           "$ref": "#/$defs/EdeKind",
@@ -892,6 +897,14 @@
           "description": "Unique name; `default` applies to clients that match nothing else.",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "networks": {
+          "description": "Networks whose devices belong to this group (ADR-050), as IPs or CIDRs, e.g.\n`[\"192.168.2.0/24\"]` for a VLAN of smart-home devices. A device gets the group of the most specific\nmatching network; a `[[client]]` entry with its own `groups` still wins.",
+          "type": "array",
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
         },
         "priority": {
           "description": "When a client is in several groups, the union of their lists applies and other\nsettings come from the highest-priority group.",

@@ -1324,9 +1324,23 @@ export interface components {
             blockMode: string;
             /** Format: int32 */
             blockTtlSeconds: number;
+            /**
+             * Format: int64
+             * @description Of those, blocked.
+             */
+            blocked24h: number;
+            /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
+            color: string;
+            /**
+             * Format: int64
+             * @description Devices seen in the group this hour.
+             */
+            devicesThisHour: number;
             /** @description Lists this group uses; null means every enabled list. */
             lists?: string[] | null;
             name: string;
+            /** @description Networks (CIDRs) whose devices belong to this group (ADR-050). */
+            networks: string[];
             /**
              * Format: int64
              * @description Blocking is paused for this group until then (Unix seconds).
@@ -1334,6 +1348,11 @@ export interface components {
             pausedUntilUnixSeconds?: number | null;
             /** Format: int32 */
             priority: number;
+            /**
+             * Format: int64
+             * @description Queries from the group's devices over the last 24 hours.
+             */
+            queries24h: number;
         };
         /**
          * @description Which hour a top-K or latency call reads.
@@ -1412,9 +1431,23 @@ export interface components {
                 blockMode: string;
                 /** Format: int32 */
                 blockTtlSeconds: number;
+                /**
+                 * Format: int64
+                 * @description Of those, blocked.
+                 */
+                blocked24h: number;
+                /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
+                color: string;
+                /**
+                 * Format: int64
+                 * @description Devices seen in the group this hour.
+                 */
+                devicesThisHour: number;
                 /** @description Lists this group uses; null means every enabled list. */
                 lists?: string[] | null;
                 name: string;
+                /** @description Networks (CIDRs) whose devices belong to this group (ADR-050). */
+                networks: string[];
                 /**
                  * Format: int64
                  * @description Blocking is paused for this group until then (Unix seconds).
@@ -1422,6 +1455,11 @@ export interface components {
                 pausedUntilUnixSeconds?: number | null;
                 /** Format: int32 */
                 priority: number;
+                /**
+                 * Format: int64
+                 * @description Queries from the group's devices over the last 24 hours.
+                 */
+                queries24h: number;
             }[];
         };
         /** @description A list wrapper used by every collection endpoint. */
@@ -1483,6 +1521,14 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_TimeBucket: {
             items: {
+                /** @description Blocked queries by group. */
+                blockedByGroup?: {
+                    [key: string]: number;
+                };
+                /** @description Queries by the client's group (ADR-050). Empty for buckets read from rollups. */
+                byGroup?: {
+                    [key: string]: number;
+                };
                 /** @description By query type (`A`, `AAAA`, ..., `other`). */
                 byQtype: {
                     [key: string]: number;
@@ -1935,6 +1981,14 @@ export interface components {
         };
         /** @description Counts for one time bucket. */
         TimeBucket: {
+            /** @description Blocked queries by group. */
+            blockedByGroup?: {
+                [key: string]: number;
+            };
+            /** @description Queries by the client's group (ADR-050). Empty for buckets read from rollups. */
+            byGroup?: {
+                [key: string]: number;
+            };
             /** @description By query type (`A`, `AAAA`, ..., `other`). */
             byQtype: {
                 [key: string]: number;
@@ -2885,6 +2939,8 @@ export interface operations {
                 rcode?: string;
                 /** @description Upstream ID. */
                 upstream?: number;
+                /** @description Only queries from devices in this group (a group name, ADR-050). */
+                group?: string;
                 /** @description Only queries that took at least this long. */
                 minLatencyMs?: number;
                 /** @description Start: RFC 3339 or relative (`-1h`). Default: no limit. */
@@ -3235,6 +3291,8 @@ export interface operations {
                 hour?: components["schemas"]["Hour"];
                 /** @description Only this client's domains (an IP address; `kind=domains` only). */
                 client?: string;
+                /** @description Only this group's queries (a group name; not with `client`, not for `nxdomain`). */
+                group?: string;
                 /** @description `cluster` (default) or `node:local`. */
                 scope?: string;
             };

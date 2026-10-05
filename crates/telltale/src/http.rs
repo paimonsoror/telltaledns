@@ -671,6 +671,35 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
 
 /// REQ: OBS-005, OBS-011 — series built from events by the aggregator: upstream latency
 /// histograms, the upstream-wait stage, blocks by group and list, opt-in per-client counts.
+/// REQ: FLT-005 (ADR-050) — queries per group and status (bounded: at most 64 groups).
+fn render_groups(
+    w: &mut PromWriter,
+    counts: &[[u64; telltale_telemetry::N_STATUS]],
+    groups: &[telltale_policy::Group],
+) {
+    w.family(
+        "telltale_group_queries_total",
+        "counter",
+        "Queries by the client's primary group and how they were answered.",
+    );
+    for (g, row) in counts.iter().enumerate() {
+        let group = groups
+            .get(g)
+            .map_or_else(|| "other".to_owned(), |g| g.name.to_string());
+        for (si, n) in row.iter().enumerate() {
+            if *n > 0
+                && let Some(st) = telltale_telemetry::Status::ALL.get(si)
+            {
+                w.sample(
+                    "telltale_group_queries_total",
+                    &[("group", group.as_str()), ("status", st.label())],
+                    *n,
+                );
+            }
+        }
+    }
+}
+
 fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::Dynamic) {
     let ex = src.pipeline.telemetry.aggregates().exported.clone();
     w.family(
@@ -710,6 +739,7 @@ fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::D
         .and_then(|f| f.matcher.snapshot().cloned())
         .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
         .unwrap_or_default();
+    render_groups(w, &ex.groups, groups);
     w.family(
         "telltale_blocked_total",
         "counter",

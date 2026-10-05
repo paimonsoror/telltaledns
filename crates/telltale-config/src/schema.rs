@@ -426,6 +426,14 @@ pub struct GroupConfig {
     /// Include which list blocked the name in the EDE text.
     #[serde(default = "default_true")]
     pub ede_text: bool,
+    /// Networks whose devices belong to this group (ADR-050), as IPs or CIDRs, e.g.
+    /// `["192.168.2.0/24"]` for a VLAN of smart-home devices. A device gets the group of the most specific
+    /// matching network; a `[[client]]` entry with its own `groups` still wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub networks: Vec<Cidr>,
+    /// Color for this group in charts and chips (`#rrggbb`); one is picked when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<SafeString>,
 }
 
 const fn default_block_ttl() -> u32 {
@@ -465,13 +473,11 @@ pub struct ClientConfig {
     /// (`aa:bb:cc:dd:ee:ff`), or a client ID from DoH/DoT (`id:kids-tablet`).
     #[serde(rename = "match")]
     pub match_keys: Vec<SafeString>,
-    /// Groups it belongs to (default: `["default"]`).
-    #[serde(default = "default_client_groups")]
+    /// Groups it belongs to, highest priority first.
+    /// Empty (the default): the group of the device's network (`[[group]] networks`), else
+    /// `default` (ADR-050).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<SafeString>,
-}
-
-fn default_client_groups() -> Vec<SafeString> {
-    vec![SafeString::from("default")]
 }
 
 /// Client identification (`spec/03` §3 step 2).

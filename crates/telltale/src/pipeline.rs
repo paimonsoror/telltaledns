@@ -106,6 +106,8 @@ pub(crate) struct FilterState {
     pub(crate) client_masks: Vec<ListMask>,
     /// Lists for unknown clients (the `default` group).
     pub(crate) default_mask: ListMask,
+    /// Lists per group, for devices that take their network's group (ADR-050).
+    pub(crate) group_masks: Vec<ListMask>,
     /// EDE text per list ID, built once so blocking doesn't allocate.
     pub(crate) reasons: Vec<String>,
     /// The same for blocks found through a CNAME target (FLT-007).
@@ -185,10 +187,14 @@ impl FilterState {
         let unknown = Identity {
             client: None,
             source: telltale_policy::IdSource::Default,
+            net: None,
         };
         Self {
             client_masks: clients.clients().iter().map(|c| union(&c.groups)).collect(),
             default_mask: union(clients.group_ids(unknown)),
+            group_masks: (0..clients.groups().len())
+                .map(|g| union(&[u16::try_from(g).unwrap_or(0)]))
+                .collect(),
             reasons: names
                 .iter()
                 .map(|n| format!("blocked by list {n}"))
@@ -203,8 +209,18 @@ impl FilterState {
     }
 
     pub(crate) fn mask(&self, id: Identity) -> &ListMask {
-        id.client
-            .and_then(|c| self.client_masks.get(usize::from(c)))
+        if let Some(c) = id.client
+            && self
+                .clients
+                .clients()
+                .get(usize::from(c))
+                .is_some_and(|c| !c.inherit)
+            && let Some(m) = self.client_masks.get(usize::from(c))
+        {
+            return m;
+        }
+        id.net
+            .and_then(|g| self.group_masks.get(usize::from(g)))
             .unwrap_or(&self.default_mask)
     }
 }

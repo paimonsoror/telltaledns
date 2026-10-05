@@ -347,12 +347,46 @@ trust_edns_mac_from = ["192.168.1.1/32"]
     .unwrap();
     let c = &loaded.config;
     assert_eq!(c.group[0].priority, 10);
-    assert_eq!(c.client[1].groups[0].as_str(), "default");
+    // No groups of its own: it takes its network's group, else `default` (ADR-050).
+    assert_eq!(
+        c.client[1].groups,
+        Vec::<telltale_config::SafeString>::new()
+    );
     assert_eq!(
         telltale_config::MatchKey::parse("AA-BB-CC-DD-EE-FF").unwrap(),
         telltale_config::MatchKey::Mac([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])
     );
     assert!(c.clients.neighbor_table);
+}
+
+// REQ: FLT-005 (ADR-050) — a network can belong to one group; colors are #rrggbb.
+#[test]
+fn flt_005_group_networks_validation() {
+    let errs = load_str(
+        r##"
+[[group]]
+name = "iot"
+networks = ["192.168.2.0/24"]
+color = "#22c55e"
+
+[[group]]
+name = "cameras"
+networks = ["192.168.2.0/24", "192.168.7.0/24"]
+color = "green"
+"##,
+    )
+    .unwrap_err();
+    let text: Vec<String> = errs.iter().map(ToString::to_string).collect();
+    assert!(
+        text.iter()
+            .any(|e| e.contains("group[1].networks[0]") && e.contains("`iot`")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter().any(|e| e.contains("group[1].color")),
+        "{text:?}"
+    );
+    assert_eq!(text.len(), 2, "{text:?}");
 }
 
 #[test]

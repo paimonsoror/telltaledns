@@ -30,21 +30,27 @@
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let stages = $state<S['LatencyRow'][]>([]);
   let byPath = $state<S['LatencyRow'][]>([]);
+  let groups = $state<S['GroupInfo'][]>([]);
+  // ADR-050 — the top lists for one kind of device ('' = everyone).
+  let group = $state('');
   let error = $state<unknown>(null);
 
   async function load() {
     const r = range;
     try {
-      const [s, ts, d, b, c, u, st, lp] = await Promise.all([
+      const g = group || undefined;
+      const [s, ts, d, b, c, u, st, lp, gs] = await Promise.all([
         api.summary(r.summary),
         api.timeseries({ from: r.from, step: r.step }),
-        api.top('domains', 10),
-        api.top('blocked', 10),
-        api.top('clients', 10),
+        api.top('domains', 10, undefined, g),
+        api.top('blocked', 10, undefined, g),
+        api.top('clients', 10, undefined, g),
         api.upstreams(),
         api.latency('stage'),
         api.latency('path'),
+        api.groups(),
       ]);
+      groups = gs.items;
       summary = s;
       buckets = dense(ts.items, { second: 1, minute: 60, hour: 3600, day: 86400 }[r.step], r.secs);
       topDomains = d.items;
@@ -76,6 +82,8 @@
           byRcode: {},
           upstreamQueries: 0,
           upstreamFailures: 0,
+          byGroup: {},
+          blockedByGroup: {},
         },
       );
     }
@@ -84,6 +92,7 @@
 
   $effect(() => {
     void range;
+    void group;
     return poll(load, range.step === 'second' ? 5000 : 15000);
   });
 
@@ -110,6 +119,16 @@
     }
     return series.filter((s) => s.values.some((v) => v > 0));
   });
+  // ADR-050 — which kinds of devices make the traffic, in each group's color.
+  const groupSeries = $derived.by(() => {
+    const names = new Set<string>();
+    for (const b of buckets) for (const k of Object.keys(b.byGroup ?? {})) names.add(k);
+    const color = (n: string) => groups.find((g) => g.name === n)?.color ?? '--s-other';
+    return [...names]
+      .sort()
+      .map((n) => ({ label: n, color: color(n), values: buckets.map((b) => b.byGroup?.[n] ?? 0) }))
+      .filter((s) => s.values.some((v) => v > 0));
+  });
   const upstreamSeries = $derived([
     { label: 'upstream queries', color: '--s-forwarded', values: buckets.map((b) => b.upstreamQueries) },
     { label: 'failures', color: '--s-blocked', values: buckets.map((b) => b.upstreamFailures) },
@@ -132,6 +151,15 @@
 <div class="page">
   <div class="page-head">
     <h1>Dashboard<HelpButton id="how-it-works" /></h1>
+    {#if groups.length > 1}
+      <label class="small">
+        Top lists for
+        <select bind:value={group} aria-label="Group">
+          <option value="">every device</option>
+          {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+        </select>
+      </label>
+    {/if}
     <div class="seg" role="group" aria-label="Time range">
       {#each ranges as r (r.id)}
         <button aria-pressed={range.id === r.id} onclick={() => (range = r)}>{r.label}</button>
@@ -151,6 +179,10 @@
   </div>
 
   <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />
+
+  {#if groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default')}
+    <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} />
+  {/if}
 
   <div class="grid-2">
     <section class="card">

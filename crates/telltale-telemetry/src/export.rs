@@ -66,6 +66,8 @@ pub struct Exported {
     pub blocked: HashMap<(u16, u16), u64>,
     /// Blocks past [`MAX_BLOCK_PAIRS`] distinct pairs.
     pub blocked_other: u64,
+    /// Queries by primary group index and status (ADR-050), groups capped at 64.
+    pub groups: Vec<[u64; crate::N_STATUS]>,
     /// Queries per client (v4-mapped), when enabled; at most `client_cap` clients.
     pub clients: HashMap<[u8; 16], u64>,
     /// Queries from clients past the cap.
@@ -76,6 +78,11 @@ pub struct Exported {
 
 impl Exported {
     pub(crate) fn add_query(&mut self, e: &QueryEvent) {
+        let g = usize::from(e.group).min(63);
+        if self.groups.len() <= g {
+            self.groups.resize(g + 1, [0; crate::N_STATUS]);
+        }
+        self.groups[g][e.status as usize] += 1;
         if e.t_upstream_us > 0 && e.status != Status::Dropped {
             self.stage_upstream.record(u64::from(e.t_upstream_us));
         }

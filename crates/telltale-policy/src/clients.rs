@@ -21,6 +21,10 @@ pub struct Group {
     pub lists: Option<Vec<Box<str>>>,
     pub priority: i32,
     pub block: BlockPolicy,
+    /// Networks whose devices belong to it (ADR-050).
+    pub networks: Vec<Cidr>,
+    /// `#rrggbb`, when configured.
+    pub color: Option<Box<str>>,
 }
 
 /// How a group's blocked queries are answered (FLT-008).
@@ -142,6 +146,8 @@ pub struct Client {
     pub groups: Vec<u16>,
     /// The same groups by name (routing `match_group`, `$client`).
     pub group_names: Vec<Box<str>>,
+    /// No groups of its own: it takes its network's group (ADR-050).
+    pub inherit: bool,
 }
 
 /// How a client was recognized (shown in the query log and explain).
@@ -161,6 +167,8 @@ pub struct Identity {
     /// Index into [`ClientTable::clients`], or `None` for an unknown device.
     pub client: Option<u16>,
     pub source: IdSource,
+    /// The group of the most specific network the device is in (ADR-050).
+    pub net: Option<u16>,
 }
 
 /// The kernel neighbor table (IP → MAC), refreshed in the background and read lock-free.
@@ -201,6 +209,11 @@ pub struct ClientTable {
     by_ip: HashMap<IpAddr, u16>,
     /// Most specific first.
     cidrs: Vec<(Cidr, u16)>,
+    /// Group networks → group index, most specific first (ADR-050).
+    group_nets: Vec<(Cidr, u16)>,
+    /// One-group slices for network membership, by group index.
+    single: Vec<[u16; 1]>,
+    single_names: Vec<[Box<str>; 1]>,
     trust_mac: Vec<Cidr>,
     /// Index of the `default` group, and its name for unknown clients.
     default_group: [u16; 1],
@@ -228,6 +241,8 @@ impl ClientTable {
                     .map(|l| l.iter().map(|n| n.as_str().into()).collect()),
                 priority: g.priority,
                 block: BlockPolicy::from_config(g),
+                networks: g.networks.clone(),
+                color: g.color.as_ref().map(|c| c.as_str().into()),
             })
             .collect();
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
@@ -238,6 +253,8 @@ impl ClientTable {
                 lists: None,
                 priority: i32::MIN,
                 block: BlockPolicy::default(),
+                networks: Vec::new(),
+                color: None,
             });
             groups.len() - 1
         };
@@ -251,6 +268,9 @@ impl ClientTable {
             by_mac: HashMap::new(),
             by_ip: HashMap::new(),
             cidrs: Vec::new(),
+            group_nets: Vec::new(),
+            single: Vec::new(),
+            single_names: Vec::new(),
             trust_mac: cfg.clients.trust_edns_mac_from.clone(),
             default_group: [u16::try_from(default_idx).unwrap_or(0)],
             default_names: vec!["default".into()],
@@ -266,7 +286,8 @@ impl ClientTable {
                 .iter()
                 .filter_map(|g| index.get(g.as_str()).copied())
                 .collect();
-            if gs.is_empty() {
+            let inherit = gs.is_empty();
+            if inherit {
                 gs.push(t.default_group[0]);
             }
             gs.sort_by_key(|&g| std::cmp::Reverse(groups[usize::from(g)].priority));
@@ -278,6 +299,7 @@ impl ClientTable {
                     .map(|&g| groups[usize::from(g)].name.clone())
                     .collect(),
                 groups: gs,
+                inherit,
             });
             for key in &c.match_keys {
                 match MatchKey::parse(key) {
@@ -296,6 +318,14 @@ impl ClientTable {
             }
         }
         t.cidrs.sort_by_key(|(n, _)| std::cmp::Reverse(n.prefix));
+        for (i, g) in groups.iter().enumerate() {
+            let Ok(gi) = u16::try_from(i) else { break };
+            t.group_nets.extend(g.networks.iter().map(|n| (*n, gi)));
+            t.single.push([gi]);
+            t.single_names.push([g.name.clone()]);
+        }
+        t.group_nets
+            .sort_by_key(|(n, _)| std::cmp::Reverse(n.prefix));
         t.groups = groups;
         t
     }
@@ -326,9 +356,16 @@ impl ClientTable {
         neighbors: &Neighbors,
     ) -> Identity {
         let peer = peer.to_canonical();
+        // A short scan (a home has a handful of networks), no allocation: query path.
+        let net = self
+            .group_nets
+            .iter()
+            .find(|(n, _)| n.contains(peer))
+            .map(|(_, g)| *g);
         let found = |client, source| Identity {
             client: Some(client),
             source,
+            net,
         };
         if let Some(id) = client_id
             && let Some(&c) = self.by_id.get(id)
@@ -358,18 +395,39 @@ impl ClientTable {
         Identity {
             client: None,
             source: IdSource::Default,
+            net,
         }
+    }
+
+    /// The group a network gives a device, if any (ADR-050).
+    pub fn network_group(&self, ip: IpAddr) -> Option<u16> {
+        let ip = ip.to_canonical();
+        self.group_nets
+            .iter()
+            .find(|(n, _)| n.contains(ip))
+            .map(|(_, g)| *g)
     }
 
     /// Group indices for an identity, highest priority first.
     pub fn group_ids(&self, id: Identity) -> &[u16] {
-        self.client(id).map_or(&self.default_group, |c| &c.groups)
+        match self.client(id) {
+            Some(c) if !c.inherit => &c.groups,
+            _ => id
+                .net
+                .and_then(|g| self.single.get(usize::from(g)))
+                .map_or(&self.default_group, |s| s.as_slice()),
+        }
     }
 
     /// Group names for an identity, highest priority first (for routing `match_group`).
     pub fn group_names(&self, id: Identity) -> &[Box<str>] {
-        self.client(id)
-            .map_or(&self.default_names, |c| &c.group_names)
+        match self.client(id) {
+            Some(c) if !c.inherit => &c.group_names,
+            _ => id
+                .net
+                .and_then(|g| self.single_names.get(usize::from(g)))
+                .map_or(&self.default_names, |s| s.as_slice()),
+        }
     }
 
     /// The group whose settings apply (highest priority).
@@ -386,6 +444,74 @@ impl ClientTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: FLT-005 (ADR-050) — VLANs as groups.
+    #[test]
+    fn flt_005_network_groups() {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[group]]
+name = "iot"
+networks = ["192.168.2.0/24"]
+
+[[group]]
+name = "lab"
+networks = ["192.168.5.0/24"]
+
+[[group]]
+name = "kids"
+priority = 10
+
+[[group]]
+name = "printers"
+networks = ["192.168.2.128/25"]
+
+[[client]]
+name = "Living room TV"
+match = ["192.168.2.40"]
+
+[[client]]
+name = "Kids tablet"
+match = ["192.168.2.41"]
+groups = ["kids"]
+"#,
+            )
+            .load()
+            .unwrap()
+            .config;
+        let t = ClientTable::from_config(&cfg);
+        let n = Neighbors::default();
+        let names = |ip: &str| -> Vec<String> {
+            let id = t.identify(ip.parse().unwrap(), None, None, &n);
+            t.group_names(id).iter().map(ToString::to_string).collect()
+        };
+        // An unknown device on the IoT VLAN is in `iot`.
+        assert_eq!(names("192.168.2.99"), ["iot"]);
+        // Naming a device keeps its network group.
+        assert_eq!(names("192.168.2.40"), ["iot"]);
+        let tv = t.identify("192.168.2.40".parse().unwrap(), None, None, &n);
+        assert_eq!(t.client(tv).unwrap().name.as_ref(), "Living room TV");
+        // Explicit groups win over the network.
+        assert_eq!(names("192.168.2.41"), ["kids"]);
+        // The most specific network wins.
+        assert_eq!(names("192.168.2.200"), ["printers"]);
+        assert_eq!(names("192.168.5.10"), ["lab"]);
+        // Outside every network: `default`.
+        assert_eq!(names("10.1.1.1"), ["default"]);
+        assert_eq!(
+            t.network_group("192.168.5.10".parse().unwrap())
+                .map(|g| &*t.groups()[usize::from(g)].name),
+            Some("lab")
+        );
+        assert_eq!(
+            t.primary_group(t.identify("192.168.5.10".parse().unwrap(), None, None, &n))
+                .name
+                .as_ref(),
+            "lab"
+        );
+    }
 
     fn table() -> ClientTable {
         let cfg: Config = telltale_config::Loader::new()
