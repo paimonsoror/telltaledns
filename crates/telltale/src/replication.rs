@@ -468,6 +468,10 @@ struct Published {
     filter: Option<u64>,
     #[serde(default)]
     created_ms: u64,
+    /// Hash of the cluster-level settings that travel with the configuration (the member
+    /// registry and the config authority): a change there is a new version too.
+    #[serde(default)]
+    meta: String,
 }
 
 /// The newest filter snapshot as replicated blobs (its own manifest included).
@@ -575,8 +579,14 @@ async fn publish_loop(
         };
         let config_hash = hash(&shared);
         let filter_version = filter.as_ref().map(|(f, _)| f.version);
+        let nodes = cluster.identity.registry();
+        let authority = cluster.identity.reload().meta.config_authority;
+        let meta_hash = hash(&serde_json::to_vec(&(&nodes, &authority)).unwrap_or_default());
         let new_epoch = epoch > last.epoch;
-        let changed = new_epoch || config_hash != last.config || filter_version != last.filter;
+        let changed = new_epoch
+            || config_hash != last.config
+            || filter_version != last.filter
+            || meta_hash != last.meta;
         if changed || first {
             let base = inherited
                 .as_ref()
@@ -607,8 +617,8 @@ async fn publish_loop(
                 primary: cluster.identity.meta.node_id.clone(),
                 config,
                 filter: filter.map(|(f, _)| f),
-                nodes: cluster.identity.registry(),
-                authority: cluster.identity.meta.config_authority.clone(),
+                nodes,
+                authority,
                 base: new_epoch.then_some(base),
                 emergency,
             };
@@ -646,6 +656,7 @@ async fn publish_loop(
                         config: config_hash,
                         filter: filter_version,
                         created_ms: now,
+                        meta: meta_hash,
                     };
                     if let Ok(b) = serde_json::to_vec(&last)
                         && let Err(e) = write_atomic(&state_path, &b)

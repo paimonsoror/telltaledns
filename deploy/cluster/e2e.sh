@@ -106,6 +106,19 @@ for _ in $(seq 50); do [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] && break; sleep 0.1
 [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] || fail "replica doesn't block with the primary's list"
 echo "ok"
 
+# The cluster's settings travel too: a new authority on the primary reaches the replica.
+"$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null
+kill "$P_PID"; wait "$P_PID" 2>/dev/null || true
+"$B" run -c "$E/p.toml" > "$E/p1b.log" 2>&1 & P_PID=$!
+for _ in $(seq 100); do grep -q '"gitops"' "$E/r/cluster/cluster.json" && break; sleep 0.1; done
+grep -q '"config_authority": "gitops"' "$E/r/cluster/cluster.json" || fail "the replica didn't learn the new config authority"
+"$B" cluster set-authority api -c "$E/p.toml" >/dev/null
+kill "$P_PID"; wait "$P_PID" 2>/dev/null || true
+"$B" run -c "$E/p.toml" > "$E/p1c.log" 2>&1 & P_PID=$!
+for _ in $(seq 100); do grep -q '"config_authority": "api"' "$E/r/cluster/cluster.json" && break; sleep 0.1; done
+for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+echo "ok: authority propagates"
+
 echo "== 2. an edit on the primary propagates"
 cat >> "$E/p.toml" <<EOF
 [[record]]
