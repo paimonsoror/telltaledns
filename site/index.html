@@ -91,30 +91,43 @@
 </section>
 
 <section>
-  <p class="eyebrow">Compared</p>
-  <h2>The best of Pi-hole and Technitium, without the trade-offs</h2>
-  <p class="legend"><span><b class="y">✓</b> available now</span><span><b class="p">◐</b> partly / in progress</span><span><b class="n">○</b> on the roadmap</span><span>— not offered</span></p>
+  <p class="eyebrow">Standing on the shoulders of giants</p>
+  <h2>Inspired by Pi-hole and Technitium</h2>
+  <p class="muted">TelltaleDNS exists because two projects showed what self-hosted DNS can be. We're grateful to both communities, and if either one already serves you well, keep using it.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Pi-hole</h3>
+      <p>Brought network-wide ad blocking to millions of homes, on a $35 computer, with a dashboard anyone can read. Its blocklist formats, regex rules and Teleporter export are a shared language, and TelltaleDNS reads them as they are.</p>
+    </div>
+    <div class="card">
+      <h3>Technitium DNS Server</h3>
+      <p>Showed how complete a self-hosted DNS server can be: encrypted DNS, real zones, and a capable web console. Its API makes bringing a setup across to TelltaleDNS straightforward.</p>
+    </div>
+  </div>
+  <p class="muted small">TelltaleDNS is an independent, clean-room project under Apache-2.0 OR MIT: it uses their public documentation and data formats, not their code.</p>
+</section>
+
+<section>
+  <p class="eyebrow">Where we put our focus</p>
+  <h2>What TelltaleDNS is built around</h2>
+  <p class="legend"><span><b class="y">✓</b> available now</span><span><b class="p">◐</b> partly done</span></p>
   <div class="table-wrap">
-  <table class="compare">
-    <thead><tr><th></th><th>Pi-hole</th><th>Technitium</th><th class="us">TelltaleDNS</th></tr></thead>
+  <table class="compare focus">
     <tbody>
-      <tr><th scope="row">Uses every CPU core</th><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Encrypted DNS to the internet (DoT / DoH)</th><td>add-ons</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Keeps answering when upstreams fail (serve-stale)</th><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Blocklists &amp; per-device groups</th><td class="y">✓</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">"Why was this blocked?" down to the list line</th><td>—</td><td>—</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Encrypted DNS for your devices (DoT / DoH)</th><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">DNSSEC validation</th><td class="y">✓</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Tiny memory footprint</th><td class="y">✓</td><td>—</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Per-question timing &amp; percentiles</th><td>—</td><td>—</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">One cluster across a Pi and Kubernetes</th><td>—</td><td>heavy</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Prometheus metrics &amp; Grafana dashboard built in</th><td>—</td><td>—</td><td class="us y">✓</td></tr>
-      <tr><th scope="row">Safe AI-agent access (scoped tokens, MCP)</th><td>—</td><td>—</td><td class="us p">◐</td></tr>
-      <tr><th scope="row">Import from Pi-hole and Technitium</th><td>—</td><td>—</td><td class="us y">✓</td></tr>
+      <tr><th scope="row">Every CPU core answering, with no pauses</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">"Why was this blocked?" down to the list and line</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Per-question timing and percentiles, per device</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Encrypted DNS both ways (DoT / DoH), and DNSSEC validation</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Keeps answering when upstreams fail (serve-stale)</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">A small footprint: about 60 MB on a Pi 4 with 2.7 million blocked names</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">One cluster across a Pi and Kubernetes, managed from any node</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Prometheus metrics and a Grafana dashboard built in</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Safe AI-agent access (scoped tokens; read-only MCP tools today)</th><td class="us p">◐</td></tr>
+      <tr><th scope="row">Easy to try: imports a Pi-hole or Technitium setup</th><td class="us y">✓</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="muted">Tiny footprint: our Raspberry Pi 4 node uses about 60 MB of memory with 2.7 million blocked names loaded. AI agents get read-only tools over MCP today; agent-made changes go through the scoped REST API, and MCP write tools come later. Throughput numbers come only from the project's reproducible benchmark (<a href="performance.html">Performance</a>). The full reasoning is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/EXECUTIVE-SUMMARY.md">executive summary</a>.</p>
+  <p class="muted">Throughput numbers come only from the project's reproducible benchmark (<a href="performance.html">Performance</a>). How it all fits together is on the <a href="nerds.html">For nerds</a> page.</p>
 </section>
 
 <section>
