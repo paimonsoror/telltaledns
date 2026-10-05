@@ -766,6 +766,48 @@
         }
       }
     },
+    "/api/v1/cluster/promote": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Promote this node to primary.",
+        "description": "Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,\npublishes the cluster's configuration from the last version it applied, and every node\nfollows it. An old primary that comes back steps down, and anything it changed meanwhile\nshows under `conflicts`.\n\nRefused when:\n- the current primary is up;\n- the node isn't eligible or lacks the cluster key;\n- without `emergency`, the cluster takes its configuration from Git and this node isn't\n  managed from Git.\n\nAdmin only; audited as `cluster.promote`.",
+        "operationId": "cluster_promote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Promoted; the cluster as it is now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not allowed now (the primary is up, or this node can't be primary).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/explain": {
       "get": {
         "tags": [
@@ -2483,6 +2525,48 @@
           }
         }
       },
+      "ClusterConflict": {
+        "type": "object",
+        "description": "A version an old primary published after a newer primary took over: never applied\nanywhere; listed so the change can be re-made on the current primary.",
+        "required": [
+          "epoch",
+          "seq",
+          "publishedAt",
+          "detectedAt",
+          "newPrimary",
+          "changed"
+        ],
+        "properties": {
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Settings that differ from the current primary's version (dotted paths)."
+          },
+          "detectedAt": {
+            "type": "string",
+            "description": "When the newer primary's version arrived (RFC 3339)."
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "newPrimary": {
+            "type": "string"
+          },
+          "publishedAt": {
+            "type": "string",
+            "description": "When this node published it (RFC 3339)."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ClusterEvent": {
         "type": "object",
         "description": "A cluster event (joins, connections, published and applied versions, failures).",
@@ -2648,6 +2732,13 @@
             "format": "int64",
             "minimum": 0
           },
+          "configSource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How the node's own configuration is managed: `gitops` or `file` (ADR-048)."
+          },
           "connected": {
             "type": "boolean",
             "description": "A stream to it is open (this node: n/a, true)."
@@ -2777,9 +2868,17 @@
           "healthy",
           "checks",
           "nodes",
-          "events"
+          "events",
+          "conflicts"
         ],
         "properties": {
+          "authority": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the cluster's configuration comes from: `api` or `gitops` (ADR-048)."
+          },
           "checks": {
             "type": "array",
             "items": {
@@ -2791,6 +2890,13 @@
               "string",
               "null"
             ]
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClusterConflict"
+            },
+            "description": "Versions this node published that the cluster moved on without (ADR-051), newest first."
           },
           "enabled": {
             "type": "boolean",
@@ -2851,7 +2957,8 @@
           "conflict",
           "version_conflict",
           "invalid_config",
-          "rate_limited"
+          "rate_limited",
+          "gitops_managed"
         ]
       },
       "ConfigChange": {
@@ -4439,6 +4546,17 @@
           "title": "Invalid parameter",
           "type": "https://telltaledns.dev/problems/invalid_parameter"
         }
+      },
+      "PromoteRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/cluster/promote`.",
+        "properties": {
+          "emergency": {
+            "type": "boolean",
+            "description": "Promote even though this node can't publish configuration under the cluster's\nauthority (configuration from Git, and no Git-managed node reachable): it coordinates the\ncluster and keeps the last version, and publishes nothing new (ADR-048)."
+          }
+        },
+        "additionalProperties": false
       },
       "QueryPage": {
         "type": "object",

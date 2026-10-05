@@ -304,7 +304,22 @@ impl Backend for ApiBackend {
     // REQ: CLU-008
     fn cluster(&self) -> telltale_api::model::ClusterView {
         match &self.src.cluster {
-            Some(c) => crate::cluster::view(c),
+            Some(c) => {
+                let mut v = crate::cluster::view(c);
+                let cfg = self.src.config.load_full();
+                v.conflicts = crate::replication::conflicts(&cfg)
+                    .into_iter()
+                    .map(|k| telltale_api::model::ClusterConflict {
+                        epoch: k.epoch,
+                        seq: k.seq,
+                        published_at: format_us(k.created_ms.saturating_mul(1000)),
+                        detected_at: format_us(k.detected_ms.saturating_mul(1000)),
+                        new_primary: k.new_primary,
+                        changed: k.changed,
+                    })
+                    .collect();
+                v
+            }
             None => telltale_api::model::ClusterView {
                 enabled: false,
                 cluster_id: None,
@@ -315,8 +330,29 @@ impl Backend for ApiBackend {
                 checks: Vec::new(),
                 nodes: Vec::new(),
                 events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
             },
         }
+    }
+
+    // REQ: CLU-005 (ADR-051)
+    fn promote(
+        &self,
+        req: telltale_api::model::PromoteRequest,
+        by: String,
+    ) -> Result<telltale_api::model::ClusterView, Problem> {
+        let c = self
+            .src
+            .cluster
+            .as_ref()
+            .ok_or_else(|| Problem::unavailable("this node isn't in a cluster"))?;
+        let cfg = self.src.config.load_full();
+        let gitops_source = cfg.cluster.config_source.as_str() == "gitops";
+        crate::cluster::promote(c, gitops_source, req.emergency)
+            .map_err(|e| Problem::new(telltale_api::problem::Code::Conflict, e))?;
+        tracing::info!(by = %by, "promoted to cluster primary through the API");
+        Ok(self.cluster())
     }
 
     // REQ: OBS-004, `spec/06` §3 — live windows from memory, longer ranges from rollups.
@@ -1225,6 +1261,18 @@ impl ApiBackend {
     /// writes go to the primary (forwarded automatically once T5.7 lands).
     fn replica_read_only(&self) -> Option<Problem> {
         let cfg = self.src.config.load_full();
+        // ADR-048 — under a GitOps authority, configuration changes go to Git on every node.
+        if let Some(c) = &self.src.cluster
+            && c.identity.reload().meta.config_authority == "gitops"
+        {
+            return Some(
+                Problem::new(
+                    telltale_api::problem::Code::GitopsManaged,
+                    "this cluster's configuration comes from Git",
+                )
+                .hint("change it in the Git repository; every node follows within seconds of the primary applying it"),
+            );
+        }
         let m = crate::replication::applied(&cfg)?;
         let at = self
             .src

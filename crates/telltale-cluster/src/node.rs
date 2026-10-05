@@ -24,6 +24,40 @@ pub struct Meta {
     pub primary_urls: Vec<String>,
     /// Highest epoch seen (CLU-005).
     pub epoch: u64,
+    /// This node's role in `epoch` (ADR-051). Absent in files from before roles existed:
+    /// [`Identity::load`] then derives it (the CA holder was the primary).
+    #[serde(default)]
+    pub role: Option<Role>,
+    /// Where the cluster's configuration comes from (ADR-048): `api` or `gitops`.
+    #[serde(default = "default_authority")]
+    pub config_authority: String,
+}
+
+fn default_authority() -> String {
+    "api".into()
+}
+
+/// A node's role (ADR-051).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Primary,
+    Replica,
+    /// Promoted while no authority-matching node was reachable (ADR-048): coordinates the
+    /// cluster but publishes no new configuration.
+    Emergency,
+}
+
+/// A member in the signed registry (ADR-051): what every node needs to know to find (and
+/// promote) the others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRecord {
+    pub node_id: String,
+    pub site: String,
+    pub eligible: bool,
+    pub advertise: Vec<String>,
+    /// Unix seconds.
+    pub joined: u64,
 }
 
 /// A stored join-token record.
@@ -117,8 +151,17 @@ impl Identity {
             std::fs::read_to_string(dir.join(n))
                 .map_err(|e| format!("{}: {e}", dir.join(n).display()))
         };
-        let meta: Meta = serde_json::from_str(&read("cluster.json")?)
+        let mut meta: Meta = serde_json::from_str(&read("cluster.json")?)
             .map_err(|e| format!("cluster.json: {e}"))?;
+        if meta.role.is_none() {
+            meta.role = Some(
+                if dir.join("ca.key").exists() && meta.primary_urls.is_empty() {
+                    Role::Primary
+                } else {
+                    Role::Replica
+                },
+            );
+        }
         Ok(Some(Self {
             key_pem: read("node.key")?,
             cert_pem: read("node.crt")?,
@@ -128,9 +171,82 @@ impl Identity {
         }))
     }
 
-    /// Whether this node holds the CA key (can issue certificates and tokens).
+    /// Whether this node holds the CA key (can issue certificates and sign manifests).
     pub fn holds_ca(&self) -> bool {
         self.dir.join("ca.key").exists()
+    }
+
+    /// Whether this node is the primary of the epoch in its `cluster.json` (ADR-051).
+    pub fn is_primary(&self) -> bool {
+        matches!(self.meta.role, Some(Role::Primary | Role::Emergency))
+    }
+
+    /// The member registry this node keeps (the primary's `nodes.json`), this node included.
+    pub fn registry(&self) -> Vec<NodeRecord> {
+        let mut v: Vec<NodeRecord> = std::fs::read(self.dir.join("nodes.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        if !v.iter().any(|n| n.node_id == self.meta.node_id) {
+            v.insert(
+                0,
+                NodeRecord {
+                    node_id: self.meta.node_id.clone(),
+                    site: self.meta.site.clone(),
+                    eligible: self.meta.eligible,
+                    advertise: self.meta.advertise.clone(),
+                    joined: 0,
+                },
+            );
+        }
+        v
+    }
+
+    /// Replaces the registry (a promoted node takes over the one it last received).
+    pub fn save_registry(&self, nodes: &[NodeRecord]) -> Result<(), String> {
+        let b = serde_json::to_vec_pretty(nodes).map_err(|e| e.to_string())?;
+        write(&self.dir.join("nodes.json"), &b, false).map_err(|e| e.to_string())
+    }
+
+    /// Stores the CA key received from the primary (eligible nodes, ADR-051), after checking it
+    /// belongs to this cluster's CA certificate.
+    pub fn store_ca_key(&self, key_pem: &str) -> Result<bool, String> {
+        if self.holds_ca() {
+            return Ok(false);
+        }
+        if crate::sync::public_of(key_pem)? != crate::sync::ca_public_key(&self.ca_pem)? {
+            return Err("the key doesn't belong to this cluster's CA".into());
+        }
+        write(&self.dir.join("ca.key"), key_pem.as_bytes(), true).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// This identity as it is on disk now (another task may have updated `cluster.json`).
+    #[must_use]
+    pub fn reload(&self) -> Self {
+        self.dir
+            .parent()
+            .and_then(|d| Self::load(d).ok().flatten())
+            .unwrap_or_else(|| self.clone())
+    }
+
+    /// Records the cluster's config authority (from the primary's manifests).
+    pub fn save_authority(&self, authority: &str) -> Result<(), String> {
+        let mut id = self.reload();
+        if id.meta.config_authority == authority {
+            return Ok(());
+        }
+        authority.clone_into(&mut id.meta.config_authority);
+        let b = serde_json::to_string_pretty(&id.meta).map_err(|e| e.to_string())?;
+        write(&id.dir.join("cluster.json"), b.as_bytes(), false).map_err(|e| e.to_string())
+    }
+
+    /// Persists a new role and epoch (promotion or fencing).
+    pub fn save_role(&mut self, role: Role, epoch: u64) -> Result<(), String> {
+        self.meta.role = Some(role);
+        self.meta.epoch = epoch;
+        let b = serde_json::to_string_pretty(&self.meta).map_err(|e| e.to_string())?;
+        write(&self.dir.join("cluster.json"), b.as_bytes(), false).map_err(|e| e.to_string())
     }
 
     /// The CA key (primary only), for signing manifests (CLU-003).
@@ -154,6 +270,22 @@ impl Identity {
         advertise: Vec<String>,
         site: &str,
     ) -> Result<Self, String> {
+        Self::init_with(data_dir, name, advertise, site, "api")
+    }
+
+    /// [`Self::init`] with the cluster's config authority (`api` or `gitops`, ADR-048).
+    pub fn init_with(
+        data_dir: &Path,
+        name: &str,
+        advertise: Vec<String>,
+        site: &str,
+        config_authority: &str,
+    ) -> Result<Self, String> {
+        if !matches!(config_authority, "api" | "gitops") {
+            return Err(format!(
+                "config authority must be `api` or `gitops`, not `{config_authority}`"
+            ));
+        }
         let dir = dir_of(data_dir);
         if dir.join("cluster.json").exists() {
             return Err(format!(
@@ -175,6 +307,8 @@ impl Identity {
             advertise,
             primary_urls: Vec::new(),
             epoch: 1,
+            role: Some(Role::Primary),
+            config_authority: config_authority.to_owned(),
         };
         let e = |e: std::io::Error| e.to_string();
         write(&dir.join("ca.key"), ca.key_pem.as_bytes(), true).map_err(e)?;
@@ -250,6 +384,16 @@ impl Identity {
         }
         let (node_id, cert_pem) =
             pki::issue(&ca, &req.csr_pem, &hosts(&req.advertise)).map_err(|e| e.to_string())?;
+        let mut nodes = self.registry();
+        nodes.retain(|n| n.node_id != node_id);
+        nodes.push(NodeRecord {
+            node_id: node_id.clone(),
+            site: req.site.clone(),
+            eligible: req.eligible,
+            advertise: req.advertise.clone(),
+            joined: t,
+        });
+        self.save_registry(&nodes)?;
         let mut primary_urls = self.meta.advertise.clone();
         primary_urls.extend(self.meta.primary_urls.iter().cloned());
         Ok(JoinResponse {
@@ -288,6 +432,8 @@ impl Identity {
             advertise,
             primary_urls: r.primary_urls.clone(),
             epoch: 1,
+            role: Some(Role::Replica),
+            config_authority: default_authority(),
         };
         let e = |e: std::io::Error| e.to_string();
         write(&dir.join("ca.crt"), r.ca_pem.as_bytes(), false).map_err(e)?;

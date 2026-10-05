@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::pki;
 
 /// One content-addressed file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobRef {
     /// The file name it's installed under (e.g. `subtree-0.fst`, `config.json`).
     pub name: String,
@@ -32,7 +32,7 @@ pub struct FilterRef {
 }
 
 /// What the primary publishes. Versions order by `(epoch, seq)`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClusterManifest {
     pub cluster_id: String,
     pub epoch: u64,
@@ -44,6 +44,19 @@ pub struct ClusterManifest {
     /// The shared configuration (`telltale_config::shared::shared_part`) as JSON.
     pub config: BlobRef,
     pub filter: Option<FilterRef>,
+    /// The member registry (ADR-051): every node, its site, eligibility, and URLs.
+    #[serde(default)]
+    pub nodes: Vec<crate::node::NodeRecord>,
+    /// The cluster's config authority (ADR-048): `api` or `gitops`.
+    #[serde(default)]
+    pub authority: String,
+    /// The first manifest of an epoch: the `(epoch, seq)` the new primary had applied when it
+    /// was promoted. Versions the old primary published after it are orphaned (ADR-051).
+    #[serde(default)]
+    pub base: Option<(u64, u64)>,
+    /// Emergency primary (ADR-048): coordinates, publishes no new configuration.
+    #[serde(default)]
+    pub emergency: bool,
 }
 
 impl ClusterManifest {
@@ -89,7 +102,7 @@ impl Signed {
 }
 
 /// The raw Ed25519 public key in a certificate.
-fn ca_public_key(cert_pem: &str) -> Result<Vec<u8>, String> {
+pub fn ca_public_key(cert_pem: &str) -> Result<Vec<u8>, String> {
     let der = pki::der_of(cert_pem).map_err(|e| e.to_string())?;
     let (_, cert) =
         x509_parser::parse_x509_certificate(&der).map_err(|e| format!("CA certificate: {e}"))?;
@@ -199,6 +212,7 @@ mod tests {
                 version: 3,
                 blobs: vec![blob_ref("subtree-0.fst", b"fst")],
             }),
+            ..ClusterManifest::default()
         }
     }
 

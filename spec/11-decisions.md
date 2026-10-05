@@ -660,3 +660,42 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** "which kinds of devices talk to what" becomes one click (e.g. IOT: 38% of queries, 21% blocked, top: amazon devices and Roku telemetry). Per-device names keep working inside each group. The owner's setup needs seven `[[group]]` entries in homelab-charts and nothing else.
 
+## ADR-051 — Manual failover v1: roles and epochs, key sharing with eligible nodes, fencing, orphaned versions (Proposed)
+**Context:** T5.4 implements CLU-005 under `spec/12` §5 and ADR-048. The owner's topology is two eligible nodes and no witness, so the `manual` mode comes first: T5.4 is split into **T5.4a** (manual promotion, fencing, conflicts, config authority) and **T5.4b** (witness and quorum election with leases, plus the `telltale-sim` partition checker). T5.1–T5.2 tied "primary" to "holds the CA key", which makes promotion impossible.
+
+**Decision:**
+- **Role is explicit:**
+  - `cluster.json` gains `role` (`primary` or `replica`) and the `epoch` the role belongs to.
+  - A node publishes only while it's `primary` in the highest epoch it has seen.
+  - Every Hello, heartbeat and manifest carries the sender's epoch.
+- **Signed member registry:** each manifest carries the node registry (ID, site, eligible, advertise URLs), signed with everything else. The primary records nodes as they join (`nodes.json`). Every node then knows every eligible node and its URLs, so replicas can find a new primary without a new token.
+- **Eligible nodes hold the signing key** (`spec/12` §4).
+  - The primary sends the CA key over the mTLS stream to peers that the registry marks eligible and that are connected with a certificate for that node ID.
+  - It's stored owner-only like the primary's.
+  - Non-eligible nodes (Kubernetes resolver pods, CLU-009) never receive it.
+  - A promoted node can then sign manifests and issue certificates. Compromising an eligible node compromises the cluster, which is the same trust the spec gives eligible nodes. Rotation comes with the CA rotation in T5.4b.
+- **Who dials whom:**
+  - Replicas dial the current primary: the highest-epoch node known as primary first, then the other eligible URLs.
+  - Eligible nodes also keep a stream to every other eligible node, so a returning old primary learns about a newer epoch right away.
+- **Manual promotion:**
+  - **How:** `telltale cluster promote` on an eligible node, or the Cluster page's "Promote this node" (admin; T5.7 adds TOTP confirmation).
+  - **What it does:** sets `epoch = max seen + 1` and `role = primary`, then starts publishing at once without a restart. The first manifest of the new epoch records its **base**: the `(epoch, seq)` it had applied.
+  - **Refused when:**
+    - the node isn't eligible;
+    - it lacks the key;
+    - it's not authority-matching under ADR-048: a `gitops` cluster needs `config_source = "gitops"` on the node, unless `--emergency`.
+  - **Emergency primaries** coordinate but publish no new configuration: every node keeps the last authoritative version.
+- **Fencing:** a node that sees a higher epoch (in a Hello, heartbeat or manifest) stops publishing and becomes a replica of that epoch's primary at once. Snapshots and manifests from a lower epoch than a replica's applied one are rejected.
+- **Orphaned versions** (`spec/12` §5 rule 3):
+  - When a fenced old primary had published versions in its epoch after the new primary's base, it keeps the last one under `cluster/conflicts/` (manifest, config blob, and the changed paths compared with the new primary's version).
+  - It shows them on the Cluster page under **Conflicts**, and in `GET /api/v1/cluster`. They are never applied silently.
+  - Re-applying a conflict on the current primary arrives with write forwarding (T5.7); until then the page shows what changed, and the owner re-makes the change on the primary.
+- **Config authority (ADR-048):**
+  - `cluster init --config-authority gitops|api` is recorded in the signed registry (default `api`).
+  - `[cluster] config_source = "gitops" | "file"` is node-local (the Helm chart sets `gitops`), reported in Hello, and shown per node on the Cluster page.
+  - Under `gitops` authority, API config writes return `409 gitops_managed` on every node.
+
+**Consequences:**
+- With the owner's homelab node as the GitOps primary, the Pi becomes an *emergency* primary candidate: if k8s is down for long, promoting the Pi keeps the cluster coordinated while configuration stays frozen. ADR-049 (Git source) later makes the Pi a full candidate.
+- Existing clusters migrate in place: the CA holder becomes `role = primary` at epoch 1, and eligible replicas receive the key on their next connection.
+

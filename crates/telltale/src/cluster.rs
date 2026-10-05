@@ -37,12 +37,7 @@ pub(crate) fn start(
             return None;
         }
     };
-    info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, primary = id.holds_ca(), "cluster member");
-    let dial_to = if id.holds_ca() {
-        Vec::new()
-    } else {
-        id.meta.primary_urls.clone()
-    };
+    info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, primary = id.is_primary(), "cluster member");
     let cluster = Cluster::new(id, VERSION);
     if let Ok(addr) = cfg.cluster.listen.as_str().parse::<SocketAddr>() {
         let (c, stop) = (Arc::clone(&cluster), stop.clone());
@@ -54,9 +49,9 @@ pub(crate) fn start(
     } else {
         warn!("cluster.listen is not an address; the cluster port stays closed");
     }
-    if !dial_to.is_empty() {
-        tokio::spawn(net::dial(Arc::clone(&cluster), dial_to, stop.clone()));
-    }
+    // Every node dials: replicas reach the primary, and eligible nodes reach each other so a
+    // returning old primary learns of a newer epoch (ADR-051).
+    tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
     Some(cluster)
 }
 
@@ -73,7 +68,7 @@ pub(crate) fn info(c: &Cluster) -> ClusterInfo {
         name: m.cluster_name.clone(),
         node_id: m.node_id.clone(),
         site: m.site.clone(),
-        primary: c.identity.holds_ca(),
+        primary: c.is_primary(),
         cert_expires_at: format_us(expires.saturating_mul(1_000_000)),
         config_seq: sync.seq,
         config_created_at: (sync.created_ms > 0)
@@ -130,10 +125,10 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     let mut nodes = vec![ClusterNode {
         node_id: me.node_id.clone(),
         site: me.site.clone(),
-        role: if c.identity.holds_ca() {
-            "primary"
-        } else {
-            "replica"
+        role: match c.role().0 {
+            telltale_cluster::node::Role::Primary => "primary",
+            telltale_cluster::node::Role::Emergency => "emergency primary",
+            telltale_cluster::node::Role::Replica => "replica",
         }
         .into(),
         this_node: true,
@@ -153,6 +148,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         upstream_p90_ms: local.p90_us as f64 / 1000.0,
         uptime_seconds: local.uptime_s,
         cert_expires_at: Some(format_us(expires.saturating_mul(1_000_000))),
+        config_source: Some(c.config_source()),
     }];
     let mut peers = c.members();
     peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
@@ -179,6 +175,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
             upstream_p90_ms: p.p90_us as f64 / 1000.0,
             uptime_seconds: p.uptime_s,
             cert_expires_at: None,
+            config_source: (!p.config_source.is_empty()).then(|| p.config_source.clone()),
         });
     }
     let sync = c.sync_status();
@@ -205,6 +202,8 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         checks,
         nodes,
         events,
+        authority: Some(c.identity.reload().meta.config_authority),
+        conflicts: Vec::new(),
     }
 }
 
@@ -300,6 +299,63 @@ fn health_checks(
     ]
 }
 
+/// REQ: CLU-005 — manual promotion (ADR-051): this node becomes primary in a new epoch.
+/// `gitops_source` is whether this node's own configuration comes from Git (ADR-048).
+pub(crate) fn promote(c: &Cluster, gitops_source: bool, emergency: bool) -> Result<u64, String> {
+    use telltale_cluster::node::Role;
+    let id = c.identity.reload();
+    if c.is_primary() {
+        return Err("this node is already the primary".into());
+    }
+    if !id.meta.eligible {
+        return Err("this node isn't eligible to be primary (it joined without --eligible)".into());
+    }
+    if !id.holds_ca() {
+        return Err("this node doesn't have the cluster key yet: the primary shares it with eligible nodes once they connect".into());
+    }
+    let now = now_ms();
+    if let Some(p) = c.members().iter().find(|m| m.primary && m.up(now)) {
+        return Err(format!(
+            "the primary ({}, site {}) is up: promote a node only when the primary is gone",
+            p.node_id, p.site
+        ));
+    }
+    let gitops = id.meta.config_authority == "gitops";
+    if gitops && !gitops_source && !emergency {
+        return Err("this cluster's configuration comes from Git and this node isn't GitOps-managed: promote with emergency to keep the cluster coordinated on the last version".into());
+    }
+    let role = if emergency || (gitops && !gitops_source) {
+        Role::Emergency
+    } else {
+        Role::Primary
+    };
+    let epoch = c
+        .members()
+        .iter()
+        .map(|m| m.epoch)
+        .fold(c.role().1, u64::max)
+        + 1;
+    c.set_role(role, epoch)?;
+    c.event(
+        "promoted",
+        &id.meta.node_id,
+        format!(
+            "epoch {epoch}{}",
+            if role == Role::Emergency {
+                " (emergency: configuration frozen)"
+            } else {
+                ""
+            }
+        ),
+    );
+    tracing::warn!(
+        epoch,
+        emergency = role == Role::Emergency,
+        "this node is now the cluster primary"
+    );
+    Ok(epoch)
+}
+
 /// `telltale cluster init`.
 pub(crate) fn init(
     cfg: &telltale_config::Config,
@@ -307,9 +363,10 @@ pub(crate) fn init(
     name: &str,
     advertise: Vec<String>,
     site: Option<&str>,
+    authority: &str,
 ) -> ExitCode {
     let site = site.unwrap_or(cfg.cluster.site.as_str());
-    match Identity::init(data_dir(cfg), name, advertise, site) {
+    match Identity::init_with(data_dir(cfg), name, advertise, site, authority) {
         Ok(id) => {
             let _ = writeln!(
                 out,
@@ -434,7 +491,7 @@ pub(crate) fn status(cfg: &telltale_config::Config, out: &mut impl Write) -> Exi
     let _ = writeln!(
         out,
         "role       {}",
-        if id.holds_ca() {
+        if id.is_primary() {
             "primary (holds the cluster CA)"
         } else {
             "replica"
@@ -450,7 +507,7 @@ pub(crate) fn status(cfg: &telltale_config::Config, out: &mut impl Write) -> Exi
             m.advertise.join(", ")
         }
     );
-    if !id.holds_ca() {
+    if !id.is_primary() {
         let _ = writeln!(out, "primary    {}", m.primary_urls.join(", "));
     }
     let _ = writeln!(
@@ -472,6 +529,86 @@ fn expiry_unix(cert_pem: &str) -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     pki::validity(cert_pem).map_or(0, |(left, _)| now.saturating_add_signed(left))
+}
+
+/// `telltale cluster promote`: offline (the running server picks it up when restarted). The
+/// API and UI promote a running node without a restart.
+pub(crate) fn promote_offline(
+    cfg: &telltale_config::Config,
+    out: &mut impl Write,
+    emergency: bool,
+) -> ExitCode {
+    use telltale_cluster::node::Role;
+    let mut id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) => id,
+        Ok(None) => return fail("this node isn't in a cluster"),
+        Err(e) => return fail(&e),
+    };
+    if id.is_primary() {
+        return fail("this node is already the primary");
+    }
+    if !id.meta.eligible || !id.holds_ca() {
+        return fail(
+            "this node can't be primary: it must be eligible and have received the cluster key",
+        );
+    }
+    let gitops = id.meta.config_authority == "gitops";
+    let source = cfg.cluster.config_source.as_str() == "gitops";
+    if gitops && !source && !emergency {
+        return fail(
+            "this cluster's configuration comes from Git and this node isn't GitOps-managed: use --emergency",
+        );
+    }
+    let role = if emergency || (gitops && !source) {
+        Role::Emergency
+    } else {
+        Role::Primary
+    };
+    let epoch = id.meta.epoch + 1;
+    if let Err(e) = id.save_role(role, epoch) {
+        return fail(&e);
+    }
+    let _ = writeln!(
+        out,
+        "This node is now the primary in epoch {epoch}{}. Restart telltale to take over.",
+        if role == Role::Emergency {
+            " (emergency: configuration stays at the last version)"
+        } else {
+            ""
+        }
+    );
+    let _ = writeln!(
+        out,
+        "Only do this when the old primary is gone: if it's still running, it steps down when it sees epoch {epoch}, and its changes since are kept under Conflicts."
+    );
+    ExitCode::SUCCESS
+}
+
+/// `telltale cluster set-authority` (on the primary; restart to publish it).
+pub(crate) fn set_authority(
+    cfg: &telltale_config::Config,
+    out: &mut impl Write,
+    authority: &str,
+) -> ExitCode {
+    let id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) => id,
+        Ok(None) => return fail("this node isn't in a cluster"),
+        Err(e) => return fail(&e),
+    };
+    if !id.is_primary() {
+        return fail("run this on the primary");
+    }
+    if !matches!(authority, "api" | "gitops") {
+        return fail("the authority is `api` or `gitops`");
+    }
+    if let Err(e) = id.save_authority(authority) {
+        return fail(&e);
+    }
+    let _ = writeln!(
+        out,
+        "Config authority is now `{authority}`. Restart telltale to publish it; every node follows."
+    );
+    ExitCode::SUCCESS
 }
 
 fn human(s: u64) -> String {
@@ -508,6 +645,57 @@ pub(crate) fn parse_ttl(s: &str) -> Result<u64, String> {
 mod tests {
     use super::*;
 
+    // REQ: CLU-005 (ADR-051, ADR-048) — who may be promoted.
+    #[test]
+    fn clu_005_promotion_rules() {
+        use telltale_cluster::node::{JoinRequest, Role};
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let primary = Identity::init_with(
+            a.path(),
+            "home",
+            vec!["https://p:8443".into()],
+            "k8s",
+            "gitops",
+        )
+        .unwrap();
+        let p = Cluster::new(primary.clone(), "0.1.0");
+        assert!(
+            promote(&p, true, false)
+                .unwrap_err()
+                .contains("already the primary")
+        );
+        // An eligible replica, joined without the network.
+        let token = primary.create_token(60, None).unwrap();
+        let key = pki::new_node_key().unwrap();
+        let resp = primary
+            .accept_join(&JoinRequest {
+                secret: token.secret,
+                csr_pem: key.csr_pem,
+                advertise: vec![],
+                site: "pi".into(),
+                eligible: true,
+                version: "0.1.0".into(),
+            })
+            .unwrap();
+        let replica =
+            Identity::save_joined(b.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();
+        replica.save_authority("gitops").unwrap();
+        let r = Cluster::new(replica.clone(), "0.1.0");
+        assert!(
+            promote(&r, false, false)
+                .unwrap_err()
+                .contains("cluster key")
+        );
+        let ca_key = std::fs::read_to_string(a.path().join("cluster/ca.key")).unwrap();
+        assert!(replica.store_ca_key(&ca_key).unwrap());
+        // Configuration from Git, and this node isn't Git-managed: only an emergency promotion.
+        assert!(promote(&r, false, false).unwrap_err().contains("emergency"));
+        assert_eq!(promote(&r, false, true).unwrap(), 2);
+        assert_eq!(r.role(), (Role::Emergency, 2));
+        assert_eq!(replica.reload().meta.role, Some(Role::Emergency));
+        assert_eq!(replica.reload().meta.config_authority, "gitops");
+    }
+
     #[test]
     fn clu_001_token_ttl_parses_units() {
         assert_eq!(parse_ttl("90").unwrap(), 90);
@@ -533,7 +721,8 @@ mod tests {
                 &mut out,
                 "home",
                 vec!["https://192.168.3.2:8443".into()],
-                Some("home-pi")
+                Some("home-pi"),
+                "api"
             ),
             ExitCode::SUCCESS
         );
@@ -552,7 +741,7 @@ mod tests {
         );
         // A second init on the same node is refused.
         assert_eq!(
-            init(&cfg, &mut out, "again", vec![], None),
+            init(&cfg, &mut out, "again", vec![], None, "api"),
             ExitCode::FAILURE
         );
     }

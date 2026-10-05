@@ -28,12 +28,13 @@ use utoipa::OpenApi;
 
 use crate::model::{
     AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ClusterCheck,
-    ClusterEvent, ClusterInfo, ClusterNode, ClusterPeer, ClusterView, ConfigChange, ExplainBlock,
-    ExplainClient, ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule,
-    Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items, LatencyBy, LatencyParams,
-    LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, QueryPage, QueryParams, QueryRow,
-    RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped,
-    TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    ClusterConflict, ClusterEvent, ClusterInfo, ClusterNode, ClusterPeer, ClusterView,
+    ConfigChange, ExplainBlock, ExplainClient, ExplainFilter, ExplainLine, ExplainParams,
+    ExplainRoute, ExplainRule, Explanation, ForwardInfo, ForwardInput, GroupInfo, Hour, Items,
+    LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch,
+    PromoteRequest, QueryPage, QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step,
+    Summary, SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket,
+    TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -47,6 +48,11 @@ pub trait Backend: Send + Sync + 'static {
             .map_or(0, |d| d.as_secs())
     }
     fn system_info(&self) -> SystemInfo;
+    /// Makes this node the cluster's primary (ADR-051).
+    fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
+        let _ = (req, by);
+        Err(Problem::unavailable("this node isn't in a cluster"))
+    }
     /// The cluster as this node sees it (CLU-008).
     fn cluster(&self) -> ClusterView {
         ClusterView {
@@ -59,6 +65,8 @@ pub trait Backend: Send + Sync + 'static {
             checks: Vec::new(),
             nodes: Vec::new(),
             events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
         }
     }
     /// Buckets with start in `[from_s, to_s)`, oldest first.
@@ -174,6 +182,7 @@ pub struct ClientWrite {
 /// The `/api/v1` routes (REQ: API-001, API-003). Everything except sign-in, first-run setup,
 /// and the OpenAPI document needs authentication; reads need `viewer`, user management
 /// `admin`.
+#[allow(clippy::needless_pass_by_value)] // shared by every route
 pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     use axum::middleware::{from_fn, from_fn_with_state};
     let data = Router::new()
@@ -199,11 +208,16 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(auth::routes::self_service(Arc::clone(&auth)))
         // REQ: API-002, API-010 — configuration changes need operator (or a `write` token).
         .merge(
-            config_api::routes(backend, Arc::clone(&auth))
+            config_api::routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         .merge(
             auth::routes::admin(Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: CLU-005 — promotion is an admin action (ADR-051).
+        .merge(
+            config_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
         .layer(from_fn_with_state(
@@ -242,7 +256,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, cluster, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, cluster, config_api::cluster_promote, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -256,7 +270,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, PromoteRequest, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,

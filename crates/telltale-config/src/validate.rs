@@ -56,6 +56,9 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
 // REQ: CLU-001 — the cluster port can't share an address with a listener (both default to
 // 8443 for DoH and the cluster channel).
 fn cluster(cfg: &Config, r: &mut Report<'_>) {
+    if !matches!(cfg.cluster.config_source.as_str(), "file" | "gitops") {
+        r.err("cluster.config_source", "must be `file` or `gitops`");
+    }
     let Ok(addr) = cfg.cluster.listen.as_str().parse::<std::net::SocketAddr>() else {
         r.err(
             "cluster.listen",

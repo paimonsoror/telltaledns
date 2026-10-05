@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use telltale_cluster::net::{BlobSource, Cluster};
-use telltale_cluster::node;
+use telltale_cluster::node::{self, Role};
 use telltale_cluster::sync::{
     BlobRef, BlobStore, ClusterManifest, FilterRef, Signed, blob_ref, hash,
 };
@@ -39,28 +39,56 @@ fn data_dir(cfg: &Config) -> &Path {
     Path::new(cfg.node.data_dir.as_str())
 }
 
-/// The manifest this node last applied, if it's a replica that has synced.
-pub(crate) fn applied(cfg: &Config) -> Option<ClusterManifest> {
+/// This node's cluster identity, if it's in a cluster.
+fn identity(cfg: &Config) -> Option<node::Identity> {
+    node::Identity::load(data_dir(cfg)).ok().flatten()
+}
+
+/// The last manifest this node applied as a replica (kept after a promotion: a promoted node
+/// builds on it).
+fn last_applied(cfg: &Config) -> Option<ClusterManifest> {
     let dir = node::dir_of(data_dir(cfg));
-    if !dir.join("cluster.json").is_file() || dir.join("ca.key").exists() {
-        return None; // standalone, or the primary
-    }
     serde_json::from_slice(&std::fs::read(dir.join(APPLIED)).ok()?).ok()
 }
 
-/// Whether this node follows a primary's configuration (a replica that has synced).
+/// The manifest this node follows: a synced replica's, or an emergency primary's (ADR-048: it
+/// keeps the last authoritative version). `None` for a standalone node or a regular primary.
+pub(crate) fn applied(cfg: &Config) -> Option<ClusterManifest> {
+    match identity(cfg)?.meta.role {
+        Some(node::Role::Primary) => None,
+        _ => last_applied(cfg),
+    }
+}
+
+/// Whether this node takes its configuration and lists from the primary.
 pub(crate) fn follows_primary(cfg: &Config) -> bool {
     applied(cfg).is_some()
 }
 
-/// The effective configuration for `file` (the config files + environment): a synced
-/// replica's is its node-local sections plus the primary's shared ones; otherwise the files
-/// plus what the UI/API stored (ADR-040).
+/// The effective configuration for `file` (the config files + environment), by role:
+/// - standalone: the files plus what the UI/API stored (ADR-040);
+/// - replica or emergency primary that has synced: its node-local sections plus the cluster's
+///   shared ones (ADR-047);
+/// - primary: its own files plus UI/API entries, except a primary promoted from replica (not
+///   the Git-managed source itself), which builds on the last cluster version it applied so the
+///   cluster's configuration carries on (ADR-051).
 pub(crate) fn effective(file: &Config) -> Config {
-    let Some(m) = applied(file) else {
+    let Some(id) = identity(file) else {
+        return crate::managed::effective(file);
+    };
+    let base = last_applied(file);
+    let gitops_source =
+        id.meta.config_authority == "gitops" && file.cluster.config_source.as_str() == "gitops";
+    let m = match id.meta.role {
+        Some(node::Role::Primary) if gitops_source => None,
+        Some(node::Role::Primary) => base.map(|m| (m, true)),
+        _ => base.map(|m| (m, false)),
+    };
+    let Some((m, with_managed)) = m else {
         return crate::managed::effective(file);
     };
     match merged(file, &m) {
+        Ok(c) if with_managed => crate::managed::effective(&c),
         Ok(c) => c,
         Err(e) => {
             error!(
@@ -144,7 +172,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Starts replication: the publisher on the primary, the follower on a replica.
+/// Starts replication: a supervisor runs the publisher while this node is primary and the
+/// follower while it's a replica, switching when a promotion or fencing changes the role.
 pub(crate) fn start(
     cluster: &Arc<Cluster>,
     files: Vec<PathBuf>,
@@ -152,20 +181,81 @@ pub(crate) fn start(
     reload: mpsc::Sender<oneshot::Sender<bool>>,
     stop: &watch::Receiver<bool>,
 ) {
+    cluster.set_config_source(sources.config.load().cluster.config_source.as_str());
     tokio::spawn(serving_loop(
         Arc::clone(cluster),
         Arc::clone(sources),
         stop.clone(),
     ));
-    let cfg = sources.config.load_full();
-    if cluster.identity.holds_ca() {
-        tokio::spawn(publish_loop(
-            Arc::clone(cluster),
-            Arc::clone(sources),
-            stop.clone(),
-        ));
-        return;
+    tokio::spawn(supervise(
+        Arc::clone(cluster),
+        files,
+        Arc::clone(sources),
+        reload,
+        stop.clone(),
+    ));
+}
+
+async fn supervise(
+    cluster: Arc<Cluster>,
+    files: Vec<PathBuf>,
+    sources: Arc<Sources>,
+    reload: mpsc::Sender<oneshot::Sender<bool>>,
+    mut stop: watch::Receiver<bool>,
+) {
+    let mut roles = cluster.role_watch();
+    let mut first = true;
+    loop {
+        let (role, epoch) = *roles.borrow_and_update();
+        let (child_stop, child) = watch::channel(false);
+        match role {
+            Role::Primary | Role::Emergency => {
+                info!(
+                    epoch,
+                    emergency = role == Role::Emergency,
+                    "cluster role: primary"
+                );
+                tokio::spawn(publish_loop(
+                    Arc::clone(&cluster),
+                    Arc::clone(&sources),
+                    child,
+                    role == Role::Emergency,
+                ));
+            }
+            Role::Replica => {
+                info!(epoch, "cluster role: replica");
+                start_follower(&cluster, files.clone(), &sources, reload.clone(), &child);
+            }
+        }
+        if !first {
+            // The effective configuration and whether this node fetches lists depend on the
+            // role: re-evaluate both now.
+            let (tx, _rx) = oneshot::channel();
+            let _ = reload.send(tx).await;
+        }
+        first = false;
+        tokio::select! {
+            _ = stop.changed() => {
+                let _ = child_stop.send(true);
+                return;
+            }
+            r = roles.changed() => {
+                let _ = child_stop.send(true);
+                if r.is_err() { return; }
+            }
+        }
     }
+}
+
+/// Follows the primary (replica side, CLU-003).
+fn start_follower(
+    cluster: &Arc<Cluster>,
+    files: Vec<PathBuf>,
+    sources: &Arc<Sources>,
+    reload: mpsc::Sender<oneshot::Sender<bool>>,
+    stop: &watch::Receiver<bool>,
+) {
+    let cfg = sources.config.load_full();
     let store = match BlobStore::open(data_dir(&cfg)) {
         Ok(s) => s,
         Err(e) => {
@@ -175,7 +265,7 @@ pub(crate) fn start(
     };
     let publisher = Publisher::new(Arc::clone(&sources.pipeline));
     // CLU-004 — serve the last applied snapshot right away, before any contact.
-    let last = applied(&cfg);
+    let last = last_applied(&cfg);
     if let Some(f) = last.as_ref().and_then(|m| m.filter.as_ref()) {
         let dir = snapshot_dir(&cfg, f);
         if dir.join(MANIFEST).is_file() {
@@ -186,28 +276,28 @@ pub(crate) fn start(
     let last_filter = Arc::new(std::sync::Mutex::new(
         last.and_then(|m| m.filter).map(|f| f.blobs),
     ));
-    let sources = Arc::clone(sources);
     let store2 = store.clone();
+    let cluster2 = Arc::clone(cluster);
     tokio::spawn(telltale_cluster::net::follow(
         Arc::clone(cluster),
         store,
         at,
         move |m: ClusterManifest| {
-            let (store, files, reload, publisher, last_filter) = (
+            let (store, files, reload, publisher, last_filter, cluster) = (
                 store2.clone(),
                 files.clone(),
                 reload.clone(),
                 publisher.clone(),
                 Arc::clone(&last_filter),
+                Arc::clone(&cluster2),
             );
-            let _ = &sources;
             async move {
                 let blobs = m.filter.as_ref().map(|f| f.blobs.clone());
                 let changed = *last_filter
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     != blobs;
-                apply(m, &store, &files, &reload, &publisher, changed).await?;
+                apply(m, &cluster, &store, &files, &reload, &publisher, changed).await?;
                 *last_filter
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = blobs;
@@ -221,6 +311,7 @@ pub(crate) fn start(
 /// Applies one replicated manifest on a replica.
 async fn apply(
     m: ClusterManifest,
+    cluster: &Cluster,
     store: &BlobStore,
     files: &[PathBuf],
     reload: &mpsc::Sender<oneshot::Sender<bool>>,
@@ -242,8 +333,21 @@ async fn apply(
         }
         None => None,
     };
+    let cdir = node::dir_of(data_dir(&file));
+    // ADR-051 — versions this node published as primary after the new primary's base are
+    // orphaned: keep them for the Conflicts list, never apply them.
+    if let Err(e) = record_orphans(&cdir, store, &m) {
+        warn!("cluster: can't record orphaned versions: {e}");
+    }
+    // The registry and the cluster's authority travel in the manifest.
+    if !m.nodes.is_empty() {
+        let _ = cluster.identity.save_registry(&m.nodes);
+    }
+    if !m.authority.is_empty() {
+        let _ = cluster.identity.save_authority(&m.authority);
+    }
     let json = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
-    write_atomic(&node::dir_of(data_dir(&file)).join(APPLIED), &json).map_err(|e| e.to_string())?;
+    write_atomic(&cdir.join(APPLIED), &json).map_err(|e| e.to_string())?;
     // The normal reload path: validate, swap, audit-free (the primary audited the change).
     let (tx, rx) = oneshot::channel();
     reload
@@ -259,12 +363,111 @@ async fn apply(
     Ok(())
 }
 
+/// A version this node published that the cluster moved on without (ADR-051).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Conflict {
+    pub epoch: u64,
+    pub seq: u64,
+    /// When it was published (Unix ms).
+    pub created_ms: u64,
+    /// When the newer primary's version arrived (Unix ms).
+    pub detected_ms: u64,
+    /// The newer primary and the version it continued from.
+    pub new_primary: String,
+    pub base: (u64, u64),
+    /// Settings that differ from the newer primary's version (dotted paths).
+    pub changed: Vec<String>,
+}
+
+fn record_orphans(cdir: &Path, store: &BlobStore, m: &ClusterManifest) -> Result<(), String> {
+    let path = cdir.join(PUBLISHED);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(()); // never published
+    };
+    let mine: Published = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if m.epoch <= mine.epoch {
+        return Ok(()); // not a newer primary's version
+    }
+    if let Some((be, bs)) = m.base
+        && mine.epoch == be
+        && mine.seq > bs
+    {
+        let old = std::fs::read(cdir.join("published-config.json")).unwrap_or_default();
+        let new = store.read(&m.config).unwrap_or_default();
+        let (a, b) = (
+            serde_json::from_slice::<serde_json::Value>(&old).unwrap_or_default(),
+            serde_json::from_slice::<serde_json::Value>(&new).unwrap_or_default(),
+        );
+        let mut changed = Vec::new();
+        crate::server::changed_paths(&b, &a, String::new(), &mut changed);
+        let c = Conflict {
+            epoch: mine.epoch,
+            seq: mine.seq,
+            created_ms: mine.created_ms,
+            detected_ms: now_ms(),
+            new_primary: m.primary.clone(),
+            base: (be, bs),
+            changed,
+        };
+        let dir = cdir.join("conflicts");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let name = format!("{}-{}", c.epoch, c.seq);
+        write_atomic(
+            &dir.join(format!("{name}.json")),
+            &serde_json::to_vec_pretty(&c).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if !old.is_empty() {
+            write_atomic(&dir.join(format!("{name}.config.json")), &old)
+                .map_err(|e| e.to_string())?;
+        }
+        warn!(
+            epoch = c.epoch,
+            seq = c.seq,
+            "this node's last versions were never seen by the new primary: kept under Conflicts"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// Orphaned versions on this node, newest first.
+pub(crate) fn conflicts(cfg: &Config) -> Vec<Conflict> {
+    let dir = node::dir_of(data_dir(cfg)).join("conflicts");
+    let mut v: Vec<Conflict> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name().to_str().is_some_and(|n| {
+                std::path::Path::new(n)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                    && !n.ends_with(".config.json")
+            })
+        })
+        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
+        .collect();
+    v.sort_by_key(|c: &Conflict| std::cmp::Reverse((c.epoch, c.seq)));
+    v
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
 /// What the primary last published (persisted, so `seq` only grows across restarts).
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Published {
+    #[serde(default)]
+    epoch: u64,
     seq: u64,
     config: String,
     filter: Option<u64>,
+    #[serde(default)]
+    created_ms: u64,
 }
 
 /// The newest filter snapshot as replicated blobs (its own manifest included).
@@ -289,20 +492,35 @@ fn filter_ref(dir: &Path, manifest: &Manifest) -> Option<(FilterRef, Vec<(String
     ))
 }
 
-/// Primary side: republishes whenever the shared configuration or the snapshot changes.
+/// An installed snapshot named by a filter reference (an inherited or emergency filter).
+fn filter_paths(cfg: &Config, f: &FilterRef) -> Option<Vec<(String, PathBuf)>> {
+    let dir = snapshot_dir(cfg, f);
+    dir.join(MANIFEST).is_file().then(|| {
+        f.blobs
+            .iter()
+            .map(|b| (b.hash.clone(), dir.join(&b.name)))
+            .collect()
+    })
+}
+
+/// Primary side: republishes whenever the shared configuration or the snapshot changes. An
+/// emergency primary (ADR-048) republishes the last authoritative version once, in its new
+/// epoch, and never changes it.
 #[allow(clippy::too_many_lines)] // one loop: gather, compare, sign, publish, persist
 async fn publish_loop(
     cluster: Arc<Cluster>,
     sources: Arc<Sources>,
     mut stop: watch::Receiver<bool>,
+    emergency: bool,
 ) {
     let cfg = sources.config.load_full();
-    let state_path = node::dir_of(data_dir(&cfg)).join(PUBLISHED);
+    let cdir = node::dir_of(data_dir(&cfg));
+    let state_path = cdir.join(PUBLISHED);
     let mut last: Published = std::fs::read(&state_path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    let mut first = true;
+    let inherited = last_applied(&cfg);
     let key = match cluster.identity.ca_key_pem() {
         Ok(k) => k,
         Err(e) => {
@@ -310,49 +528,89 @@ async fn publish_loop(
             return;
         }
     };
+    let store = BlobStore::open(data_dir(&cfg)).ok();
+    let mut first = true;
     loop {
+        let (_, epoch) = cluster.role();
         let cfg = sources.config.load_full();
-        let shared = serde_json::to_vec(&shared_part(&cfg)).unwrap_or_default();
+        // What to publish: this node's configuration and newest snapshot, or (emergency) the
+        // last authoritative version unchanged.
+        let (shared, filter) = if emergency {
+            let Some(m) = inherited.as_ref() else {
+                error!(
+                    "cluster: an emergency primary needs a version to keep, and this node never synced"
+                );
+                return;
+            };
+            let Some(bytes) = store.as_ref().and_then(|s| s.read(&m.config).ok()) else {
+                error!("cluster: the last applied configuration is missing from the blob store");
+                return;
+            };
+            let filter = m
+                .filter
+                .as_ref()
+                .and_then(|f| filter_paths(&cfg, f).map(|p| (f.clone(), p)));
+            (bytes, filter)
+        } else {
+            let shared = serde_json::to_vec(&shared_part(&cfg)).unwrap_or_default();
+            let compiled = sources.lists.load_full().and_then(|l| {
+                l.compiled
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            });
+            let filter = compiled
+                .and_then(|c| {
+                    let dir = data_dir(&cfg)
+                        .join("snapshots")
+                        .join(c.manifest.version.to_string());
+                    filter_ref(&dir, &c.manifest)
+                })
+                // A newly promoted node serves the inherited snapshot until it compiles its own.
+                .or_else(|| {
+                    let f = inherited.as_ref()?.filter.as_ref()?;
+                    filter_paths(&cfg, f).map(|p| (f.clone(), p))
+                });
+            (shared, filter)
+        };
         let config_hash = hash(&shared);
-        let compiled = sources.lists.load_full().and_then(|l| {
-            l.compiled
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        });
-        let filter = compiled.and_then(|c| {
-            let dir = data_dir(&cfg)
-                .join("snapshots")
-                .join(c.manifest.version.to_string());
-            filter_ref(&dir, &c.manifest)
-        });
         let filter_version = filter.as_ref().map(|(f, _)| f.version);
-        let changed = config_hash != last.config || filter_version != last.filter;
+        let new_epoch = epoch > last.epoch;
+        let changed = new_epoch || config_hash != last.config || filter_version != last.filter;
         if changed || first {
+            let base = inherited
+                .as_ref()
+                .map_or((last.epoch, last.seq), |m| (m.epoch, m.seq));
             let seq = if changed {
-                last.seq + 1
+                last.seq.max(base.1) + 1
             } else {
                 last.seq.max(1)
             };
             let mut blobs = HashMap::new();
             let config = blob_ref("config.json", &shared);
+            if let Some(s) = &store {
+                let _ = s.put(&config, &shared);
+            }
+            let _ = write_atomic(&cdir.join("published-config.json"), &shared);
             blobs.insert(config.hash.clone(), BlobSource::Bytes(Bytes::from(shared)));
             if let Some((_, paths)) = &filter {
                 for (h, p) in paths {
                     blobs.insert(h.clone(), BlobSource::File(p.clone()));
                 }
             }
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+            let now = now_ms();
             let m = ClusterManifest {
                 cluster_id: cluster.identity.meta.cluster_id.clone(),
-                epoch: cluster.identity.meta.epoch,
+                epoch,
                 seq,
-                created_ms: now_ms,
+                created_ms: now,
                 primary: cluster.identity.meta.node_id.clone(),
                 config,
                 filter: filter.map(|(f, _)| f),
+                nodes: cluster.identity.registry(),
+                authority: cluster.identity.meta.config_authority.clone(),
+                base: new_epoch.then_some(base),
+                emergency,
             };
             match Signed::sign(&m, &key) {
                 Ok(signed) => {
@@ -361,26 +619,33 @@ async fn publish_loop(
                     cluster.set_sync_status(|s| {
                         s.epoch = m.epoch;
                         s.seq = seq;
-                        s.created_ms = now_ms;
-                        s.applied_ms = now_ms;
+                        s.created_ms = now;
+                        s.applied_ms = now;
                         s.error = None;
                     });
                     if changed {
-                        info!(seq, filter = ?filter_version, "published cluster configuration");
+                        info!(epoch, seq, filter = ?filter_version, emergency, "published cluster configuration");
                         cluster.event(
                             "published",
                             &cluster.identity.meta.node_id,
                             format!(
-                                "version {seq}{}",
+                                "version {seq}{}{}",
                                 filter_version
-                                    .map_or(String::new(), |v| format!(", filter snapshot {v}"))
+                                    .map_or(String::new(), |v| format!(", filter snapshot {v}")),
+                                if new_epoch {
+                                    format!(" (epoch {epoch})")
+                                } else {
+                                    String::new()
+                                }
                             ),
                         );
                     }
                     last = Published {
+                        epoch,
                         seq,
                         config: config_hash,
                         filter: filter_version,
+                        created_ms: now,
                     };
                     if let Ok(b) = serde_json::to_vec(&last)
                         && let Err(e) = write_atomic(&state_path, &b)

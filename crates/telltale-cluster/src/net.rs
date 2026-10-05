@@ -33,11 +33,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::node::{Identity, JoinRequest, JoinResponse};
+use crate::node::{Identity, JoinRequest, JoinResponse, Role};
 use crate::pki::CLUSTER_NAME;
 use crate::sync::{BlobRef, BlobStore, ClusterManifest, Signed};
 use crate::token::Token;
-use crate::wire::{self, Body, Frame, Heartbeat, Hello, ManifestMsg, PROTOCOL};
+use crate::wire::{self, Body, Frame, Heartbeat, Hello, KeyShare, ManifestMsg, PROTOCOL};
 
 /// Heartbeat interval; a peer silent for three intervals is down.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -215,6 +215,8 @@ pub struct Member {
     pub uptime_s: u64,
     /// Since when its applied configuration has been older than the newest known (Unix ms).
     pub behind_since_ms: Option<u64>,
+    /// `gitops` or `file` (ADR-048).
+    pub config_source: String,
 }
 
 impl Member {
@@ -288,6 +290,10 @@ pub struct Cluster {
     events: Mutex<VecDeque<Event>>,
     /// Since when this node's own applied version has been behind the newest known.
     behind_since: Mutex<Option<u64>>,
+    /// This node's role and the epoch it holds it in (ADR-051); persisted on change.
+    role: watch::Sender<(Role, u64)>,
+    /// `gitops` or `file`: how this node's own configuration is managed (ADR-048).
+    config_source: Mutex<String>,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -309,6 +315,8 @@ pub struct SyncStatus {
 
 impl Cluster {
     pub fn new(identity: Identity, version: &str) -> Arc<Self> {
+        let identity_role = identity.meta.role.unwrap_or(Role::Replica);
+        let identity_epoch = identity.meta.epoch;
         Arc::new(Self {
             local: Mutex::new(LocalState {
                 epoch: identity.meta.epoch,
@@ -325,7 +333,151 @@ impl Cluster {
             local_changed: watch::Sender::new(0),
             events: Mutex::new(VecDeque::new()),
             behind_since: Mutex::new(None),
+            role: watch::Sender::new((identity_role, identity_epoch)),
+            config_source: Mutex::new("file".into()),
         })
+    }
+
+    /// The key-share frame for `peer`, when this node is the primary, holds the key, and the
+    /// registry marks `peer` eligible.
+    fn key_share_for(&self, peer: &str) -> Option<Frame> {
+        if !self.is_primary() {
+            return None;
+        }
+        let eligible = self
+            .identity
+            .registry()
+            .iter()
+            .any(|n| n.node_id == peer && n.eligible);
+        if !eligible {
+            return None;
+        }
+        let key = self.identity.ca_key_pem().ok()?;
+        Some(Frame {
+            body: Some(Body::KeyShare(KeyShare { ca_key_pem: key })),
+        })
+    }
+
+    /// Adds or updates `node_id` in the primary's registry from what its Hello said.
+    fn record_member(&self, node_id: &str) {
+        let Some(m) = self.members().into_iter().find(|m| m.node_id == node_id) else {
+            return;
+        };
+        let mut nodes = self.identity.registry();
+        let rec = crate::node::NodeRecord {
+            node_id: m.node_id.clone(),
+            site: m.site.clone(),
+            eligible: m.eligible,
+            advertise: m.advertise.clone(),
+            joined: nodes
+                .iter()
+                .find(|n| n.node_id == node_id)
+                .map_or_else(|| now_ms() / 1000, |n| n.joined),
+        };
+        if nodes.contains(&rec) {
+            return;
+        }
+        nodes.retain(|n| n.node_id != node_id);
+        nodes.push(rec);
+        if let Err(e) = self.identity.save_registry(&nodes) {
+            warn!("cluster: can't record {node_id} in the registry: {e}");
+        }
+    }
+
+    /// This node's role and epoch.
+    pub fn role(&self) -> (Role, u64) {
+        *self.role.borrow()
+    }
+
+    /// Role changes (promotion, fencing).
+    pub fn role_watch(&self) -> watch::Receiver<(Role, u64)> {
+        self.role.subscribe()
+    }
+
+    pub fn is_primary(&self) -> bool {
+        matches!(self.role().0, Role::Primary | Role::Emergency)
+    }
+
+    /// Where to reach the primary or other eligible nodes, best first (ADR-051): the advertise
+    /// URLs of the peer that's primary in the highest epoch, then the URLs from joining, then
+    /// every eligible node in the registry. This node's own URLs are left out.
+    pub fn candidate_urls(&self) -> Vec<String> {
+        let own = &self.identity.meta.advertise;
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |u: &String| {
+            if !own.contains(u) && !out.contains(u) {
+                out.push(u.clone());
+            }
+        };
+        let mut members = self.members();
+        members.sort_by_key(|m| std::cmp::Reverse((m.primary, m.epoch)));
+        for m in members.iter().filter(|m| m.primary) {
+            m.advertise.iter().for_each(&mut push);
+        }
+        if !self.is_primary() {
+            self.identity.meta.primary_urls.iter().for_each(&mut push);
+        }
+        for n in self.identity.registry() {
+            if n.eligible && n.node_id != self.identity.meta.node_id {
+                n.advertise.iter().for_each(&mut push);
+            }
+        }
+        out
+    }
+
+    /// The URL to fetch blobs from: the current primary's, else the connected stream's.
+    fn primary_url(&self) -> Option<String> {
+        let mut members = self.members();
+        members.sort_by_key(|m| std::cmp::Reverse(m.epoch));
+        members
+            .iter()
+            .find(|m| m.primary && m.connected)
+            .and_then(|m| m.advertise.first().cloned())
+            .or_else(|| self.connected_primary())
+    }
+
+    /// Changes the role (persisted in `cluster.json`) and tells every stream and task.
+    pub fn set_role(&self, role: Role, epoch: u64) -> Result<(), String> {
+        let mut id = self.identity.reload();
+        id.save_role(role, epoch)?;
+        self.role.send_replace((role, epoch));
+        self.set_local(|l| l.epoch = l.epoch.max(epoch));
+        Ok(())
+    }
+
+    /// How this node's own configuration is managed (`gitops` or `file`), for Hello.
+    pub fn set_config_source(&self, s: &str) {
+        s.clone_into(
+            &mut self
+                .config_source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+
+    pub fn config_source(&self) -> String {
+        self.config_source
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Fencing (ADR-051): a primary that hears of a higher epoch steps down at once.
+    fn observe_epoch(&self, epoch: u64, from: &str) {
+        let (role, mine) = self.role();
+        if epoch > mine {
+            if role == Role::Primary {
+                warn!(epoch, mine, from, "a newer primary exists: stepping down");
+                self.event(
+                    "fenced",
+                    &self.identity.meta.node_id,
+                    format!("epoch {epoch} from {from} is newer than ours ({mine}); now a replica"),
+                );
+            }
+            if let Err(e) = self.set_role(Role::Replica, epoch) {
+                warn!("cluster: can't record the newer epoch: {e}");
+            }
+        }
     }
 
     /// Records an event (newest last; the oldest are dropped past [`MAX_EVENTS`]).
@@ -442,9 +594,7 @@ impl Cluster {
         if missing.is_empty() {
             return Ok(0);
         }
-        let url = self
-            .connected_primary()
-            .ok_or("not connected to the primary")?;
+        let url = self.primary_url().ok_or("not connected to the primary")?;
         let tls = tls_connect(&url, client_config(&self.identity)?).await?;
         let (send, conn) =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
@@ -531,9 +681,10 @@ impl Cluster {
                 site: m.site.clone(),
                 eligible: m.eligible,
                 advertise: m.advertise.clone(),
-                epoch: l.epoch,
+                epoch: l.epoch.max(self.role().1),
                 applied_seq: l.applied_seq,
-                primary: self.identity.holds_ca(),
+                primary: self.is_primary(),
+                config_source: self.config_source(),
             })),
         }
     }
@@ -556,7 +707,7 @@ impl Cluster {
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
                 ts_ms: now_ms(),
-                epoch: l.epoch,
+                epoch: l.epoch.max(self.role().1),
                 applied_seq: l.applied_seq,
                 qps: l.qps,
                 echo_ms,
@@ -569,6 +720,7 @@ impl Cluster {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one match over the frame types
     /// Applies a frame from `peer` (whose ID the TLS certificate proved, when known).
     fn on_frame(
         &self,
@@ -619,10 +771,17 @@ impl Cluster {
                         p90_us: prev.as_ref().map_or(0, |p| p.p90_us),
                         uptime_s: prev.as_ref().map_or(0, |p| p.uptime_s),
                         behind_since_ms: prev.and_then(|p| p.behind_since_ms),
+                        config_source: h.config_source,
                     },
                 );
                 drop(members);
                 self.event("connected", &h.node_id, detail);
+                self.observe_epoch(h.epoch, &h.node_id);
+                // ADR-051 — the primary keeps the registry current: nodes that joined before it
+                // existed, or whose URLs changed, are recorded from their (authenticated) Hello.
+                if self.is_primary() {
+                    self.record_member(&h.node_id);
+                }
                 return Ok(());
             }
             Some(Body::Heartbeat(hb)) => {
@@ -662,6 +821,33 @@ impl Cluster {
                         m.behind_since_ms = Some(now);
                     }
                 }
+                let id = id.clone();
+                drop(members);
+                self.observe_epoch(hb.epoch, &id);
+                return Ok(());
+            }
+            Some(Body::KeyShare(k)) => {
+                let id = peer.as_ref().ok_or("key before Hello")?;
+                let from_primary = members
+                    .get(id)
+                    .is_some_and(|m| m.primary && m.epoch >= self.role().1);
+                drop(members);
+                if !from_primary {
+                    return Err("a cluster key from a node that isn't the primary".into());
+                }
+                match self.identity.store_ca_key(&k.ca_key_pem) {
+                    Ok(true) => {
+                        info!(from = %id, "received the cluster signing key (this node can now be promoted)");
+                        self.event(
+                            "key_received",
+                            &self.identity.meta.node_id,
+                            format!("from {id}"),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(e) => return Err(format!("cluster key refused: {e}")),
+                }
+                return Ok(());
             }
             Some(Body::Manifest(m)) => {
                 peer.as_ref().ok_or("manifest before Hello")?;
@@ -728,6 +914,7 @@ async fn write_frames(
     cluster: Arc<Cluster>,
     mut tx: http_body_util::channel::Sender<Bytes>,
     echo: EchoSlot,
+    peer: Option<String>,
 ) {
     if tx
         .send_data(Bytes::from(wire::encode(&cluster.hello())))
@@ -749,9 +936,22 @@ async fn write_frames(
     {
         return;
     }
+    // ADR-051 — the primary shares the signing key with eligible peers (by certified ID),
+    // as soon as the registry lists them (checked again on every heartbeat).
+    let mut key_shared = false;
     // The current manifest first (a peer that just connected), then whatever happens next.
     let mut pending = manifests.borrow_and_update().clone();
     loop {
+        if !key_shared && let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
+            key_shared = true;
+            if tx
+                .send_data(Bytes::from(wire::encode(&frame)))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
         let frame = if let Some(m) = pending.take() {
             manifest_frame(&m)
         } else {
@@ -844,7 +1044,12 @@ async fn handle(
             let (tx, body) = Channel::<Bytes>::new(16);
             let c = Arc::clone(&cluster);
             let echo = EchoSlot::default();
-            tokio::spawn(write_frames(Arc::clone(&cluster), tx, Arc::clone(&echo)));
+            tokio::spawn(write_frames(
+                Arc::clone(&cluster),
+                tx,
+                Arc::clone(&echo),
+                Some(id.clone()),
+            ));
             tokio::spawn(async move {
                 if let Err(e) =
                     read_frames(&c, req.into_body(), Some(id.clone()), "inbound", &echo).await
@@ -1020,7 +1225,7 @@ async fn join_one(
 
 /// Keeps a stream to the first reachable URL open, reconnecting with jittered backoff until
 /// `stop` changes.
-pub async fn dial(cluster: Arc<Cluster>, urls: Vec<String>, mut stop: watch::Receiver<bool>) {
+pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let cfg = match client_config(&cluster.identity) {
         Ok(c) => c,
         Err(e) => {
@@ -1030,11 +1235,12 @@ pub async fn dial(cluster: Arc<Cluster>, urls: Vec<String>, mut stop: watch::Rec
     };
     let mut backoff = Duration::from_secs(1);
     loop {
-        for url in &urls {
+        // The candidates change: a promotion names a new primary, the registry grows.
+        for url in cluster.candidate_urls() {
             let started = tokio::time::Instant::now();
             tokio::select! {
                 _ = stop.changed() => return,
-                r = stream_once(Arc::clone(&cluster), url, Arc::clone(&cfg)) => match r {
+                r = stream_once(Arc::clone(&cluster), &url, Arc::clone(&cfg)) => match r {
                     Ok(()) => debug!(%url, "cluster stream closed"),
                     Err(e) => debug!(%url, "cluster stream: {e}"),
                 },
@@ -1076,7 +1282,12 @@ async fn stream_once(
     tokio::spawn(conn);
     let (tx, body) = Channel::<Bytes>::new(16);
     let echo = EchoSlot::default();
-    let writer = tokio::spawn(write_frames(Arc::clone(&cluster), tx, Arc::clone(&echo)));
+    let writer = tokio::spawn(write_frames(
+        Arc::clone(&cluster),
+        tx,
+        Arc::clone(&echo),
+        server_id.clone(),
+    ));
     let r = send
         .send_request(
             Request::post(format!("https://{CLUSTER_NAME}/cluster/v1/stream"))
@@ -1145,7 +1356,7 @@ pub async fn follow<F, Fut>(
                     break;
                 }
             };
-            if !m.newer_than(epoch, seq) {
+            if !m.newer_than(epoch, seq) || m.epoch < cluster.role().1 {
                 break;
             }
             let t = tokio::time::Instant::now();

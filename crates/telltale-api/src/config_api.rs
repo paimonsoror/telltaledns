@@ -74,6 +74,70 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         .with_state((backend, auth))
 }
 
+/// Admin-only cluster actions.
+pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/cluster/promote",
+            axum::routing::post(cluster_promote),
+        )
+        .with_state((backend, auth))
+}
+
+/// Promote this node to primary.
+///
+/// Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,
+/// publishes the cluster's configuration from the last version it applied, and every node
+/// follows it. An old primary that comes back steps down, and anything it changed meanwhile
+/// shows under `conflicts`.
+///
+/// Refused when:
+/// - the current primary is up;
+/// - the node isn't eligible or lacks the cluster key;
+/// - without `emergency`, the cluster takes its configuration from Git and this node isn't
+///   managed from Git.
+///
+/// Admin only; audited as `cluster.promote`.
+#[utoipa::path(post, path = "/api/v1/cluster/promote", tag = "system",
+    request_body = crate::model::PromoteRequest,
+    responses(
+        (status = 200, body = crate::model::ClusterView, description = "Promoted; the cluster as it is now."),
+        (status = 409, body = Problem, description = "Not allowed now (the primary is up, or this node can't be primary)."),
+    ))]
+pub(crate) async fn cluster_promote(
+    State((backend, auth)): State<Ctx>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<crate::model::PromoteRequest>, JsonRejection>,
+) -> Response {
+    let req = match body(b) {
+        Ok(r) => r,
+        Err(p) => return p.into_response(),
+    };
+    let p = match principal(&ext) {
+        Ok(p) => p,
+        Err(e) => return e.into_response(),
+    };
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    let emergency = req.emergency;
+    let (b2, by) = (Arc::clone(&backend), actor.name.clone());
+    let result = tokio::task::spawn_blocking(move || b2.promote(req, by))
+        .await
+        .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))));
+    match result {
+        Ok(view) => {
+            auth.record(
+                &actor,
+                "cluster.promote",
+                view.this_node.as_deref().unwrap_or(""),
+                &serde_json::json!({ "emergency": emergency }),
+            );
+            Json(view).into_response()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),

@@ -164,7 +164,21 @@ enum ClusterCommand {
         /// Site label (default: `[cluster] site`).
         #[arg(long)]
         site: Option<String>,
+        /// Where the cluster's configuration comes from (ADR-048): `api` (this node's file and
+        /// UI) or `gitops` (only GitOps-managed nodes may publish it).
+        #[arg(long = "config-authority", default_value = "api")]
+        config_authority: String,
     },
+    /// Make this (eligible) node the primary when the primary is gone (ADR-051). The web UI's
+    /// Cluster page does the same without a restart.
+    Promote {
+        /// Coordinate the cluster but keep the last configuration (a cluster configured from Git
+        /// whose Git-managed nodes are all down).
+        #[arg(long)]
+        emergency: bool,
+    },
+    /// Change where the cluster's configuration comes from: `api` or `gitops` (on the primary).
+    SetAuthority { authority: String },
     /// Join tokens (run on the primary).
     Token {
         #[command(subcommand)]
@@ -482,13 +496,21 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             name,
             advertise,
             site,
+            config_authority,
         } => cluster::init(
             &cfg,
             &mut io::stdout().lock(),
             &name,
             advertise,
             site.as_deref(),
+            &config_authority,
         ),
+        ClusterCommand::Promote { emergency } => {
+            cluster::promote_offline(&cfg, &mut io::stdout().lock(), emergency)
+        }
+        ClusterCommand::SetAuthority { authority } => {
+            cluster::set_authority(&cfg, &mut io::stdout().lock(), &authority)
+        }
         ClusterCommand::Token {
             command: ClusterTokenCommand::Create { ttl, urls },
         } => cluster::token_create(&cfg, &mut io::stdout().lock(), ttl, urls),

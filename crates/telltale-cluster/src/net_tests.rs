@@ -63,7 +63,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
 
     // The replica dials out; each side learns the other.
     let replica = Cluster::new(replica, "0.1.0");
-    tokio::spawn(dial(Arc::clone(&replica), vec![url.clone()], stop.clone()));
+    tokio::spawn(dial(Arc::clone(&replica), stop.clone()));
     let (p, r) = (Arc::clone(&primary), Arc::clone(&replica));
     wait_for(|| p.members().len() == 1 && r.members().len() == 1).await;
     let seen_by_primary = &primary.members()[0];
@@ -249,6 +249,7 @@ fn publish(primary: &Cluster, dir: &std::path::Path, seq: u64, config: &[u8], sh
             version: seq,
             blobs: refs,
         }),
+        ..ClusterManifest::default()
     };
     primary.publish(Signed::sign(&m, &ca_key).unwrap(), blobs);
 }
@@ -308,7 +309,7 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
             stop.clone(),
         ));
     }
-    tokio::spawn(dial(Arc::clone(&replica), vec![url.clone()], stop.clone()));
+    tokio::spawn(dial(Arc::clone(&replica), stop.clone()));
 
     // Manifest 1: config + 8 shards of 512 KiB, all fetched.
     let mut shards: Vec<Vec<u8>> = (0..8).map(|i| random_blob(512 * 1024, i)).collect();
@@ -404,6 +405,7 @@ async fn clu_003_unsigned_manifests_are_ignored() {
         primary: "x".into(),
         config: crate::sync::blob_ref("config.json", b"{}"),
         filter: None,
+        ..ClusterManifest::default()
     };
     let applied = Arc::new(Mutex::new(0));
     let (stop_tx, stop) = watch::channel(false);

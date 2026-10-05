@@ -148,6 +148,10 @@ pub struct ClusterConfig {
     /// joined or created a cluster (`telltale cluster init|join`). Peers dial the URLs given
     /// with `--advertise`, so map this port to those.
     pub listen: SafeString,
+    /// How this node's own configuration is managed (ADR-048): `file` (edited on the node or
+    /// in its UI) or `gitops` (rendered from Git, e.g. by the Helm chart under Argo CD). In a
+    /// cluster whose config authority is `gitops`, only `gitops` nodes may become primary.
+    pub config_source: SafeString,
 }
 
 impl Default for ClusterConfig {
@@ -157,6 +161,7 @@ impl Default for ClusterConfig {
             site: SafeString::from("default"),
             eligible: true,
             listen: SafeString::from("0.0.0.0:8443"),
+            config_source: SafeString::from("file"),
         }
     }
 }

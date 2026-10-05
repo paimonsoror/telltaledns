@@ -98,6 +98,7 @@
       "description": "Cluster identity (full cluster settings arrive with M5).",
       "$ref": "#/$defs/ClusterConfig",
       "default": {
+        "config_source": "file",
         "eligible": true,
         "listen": "0.0.0.0:8443",
         "name": "telltale",
@@ -647,6 +648,12 @@
     "ClusterConfig": {
       "type": "object",
       "properties": {
+        "config_source": {
+          "description": "How this node's own configuration is managed (ADR-048): `file` (edited on the node or\nin its UI) or `gitops` (rendered from Git, e.g. by the Helm chart under Argo CD). In a\ncluster whose config authority is `gitops`, only `gitops` nodes may become primary.",
+          "type": "string",
+          "default": "file",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "eligible": {
           "description": "Whether this node may become the cluster primary.",
           "type": "boolean",

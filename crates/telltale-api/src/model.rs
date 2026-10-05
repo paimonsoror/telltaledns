@@ -801,6 +801,37 @@ pub struct ClusterView {
     pub nodes: Vec<ClusterNode>,
     /// Recent events, newest first.
     pub events: Vec<ClusterEvent>,
+    /// Where the cluster's configuration comes from: `api` or `gitops` (ADR-048).
+    pub authority: Option<String>,
+    /// Versions this node published that the cluster moved on without (ADR-051), newest first.
+    pub conflicts: Vec<ClusterConflict>,
+}
+
+/// A version an old primary published after a newer primary took over: never applied
+/// anywhere; listed so the change can be re-made on the current primary.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterConflict {
+    pub epoch: u64,
+    pub seq: u64,
+    /// When this node published it (RFC 3339).
+    pub published_at: String,
+    /// When the newer primary's version arrived (RFC 3339).
+    pub detected_at: String,
+    pub new_primary: String,
+    /// Settings that differ from the current primary's version (dotted paths).
+    pub changed: Vec<String>,
+}
+
+/// `POST /api/v1/cluster/promote`.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromoteRequest {
+    /// Promote even though this node can't publish configuration under the cluster's
+    /// authority (configuration from Git, and no Git-managed node reachable): it coordinates the
+    /// cluster and keeps the last version, and publishes nothing new (ADR-048).
+    #[serde(default)]
+    pub emergency: bool,
 }
 
 /// One node in [`ClusterView`].
@@ -841,6 +872,8 @@ pub struct ClusterNode {
     pub uptime_seconds: u64,
     /// This node only: when its cluster certificate expires (RFC 3339).
     pub cert_expires_at: Option<String>,
+    /// How the node's own configuration is managed: `gitops` or `file` (ADR-048).
+    pub config_source: Option<String>,
 }
 
 /// A cluster event (joins, connections, published and applied versions, failures).

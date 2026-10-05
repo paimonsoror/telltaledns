@@ -3,6 +3,7 @@
   // configuration version and lag, and DNS serving numbers; pass/fail checks with fixes; and a
   // timeline of joins, disconnects, published and applied versions. Refreshes every 5 s.
   import { api, type S } from '../lib/api';
+  import { can } from '../lib/session.svelte';
   import { poll } from '../lib/poll';
   import { duration, ms, num, pct, logTime, logDate } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -35,6 +36,26 @@
     k === 'disconnected' || k === 'sync_failed' || k === 'rejected' ? 'bad' : k === 'published' || k === 'applied' ? 'ok' : '';
   const shortId = (id: string) => id.slice(0, 8);
   const failing = $derived(view?.checks.filter((c) => !c.ok) ?? []);
+  const me = $derived(view?.nodes.find((n) => n.thisNode));
+  const primaryUp = $derived(view?.nodes.some((n) => n.role.includes('primary') && n.up && !n.thisNode) ?? false);
+
+  // REQ: CLU-005 — manual failover (ADR-051): only when the primary is gone.
+  let confirming = $state(false);
+  let emergency = $state(false);
+  let promoting = $state(false);
+  let promoteError = $state<unknown>(null);
+  async function promote() {
+    promoting = true;
+    promoteError = null;
+    try {
+      view = await api.promoteCluster(emergency);
+      confirming = false;
+    } catch (e) {
+      promoteError = e;
+    } finally {
+      promoting = false;
+    }
+  }
 </script>
 
 <div class="page">
@@ -67,9 +88,55 @@ telltale cluster join tt_join_…</pre>
         <dt>Cluster</dt><dd>{view.name} <span class="muted mono small">{view.clusterId}</span></dd>
         <dt>Nodes</dt><dd>{view.nodes.length} ({view.nodes.filter((n) => n.up).length} up)</dd>
         <dt>Configuration</dt><dd>version {num(view.newestConfigSeq)}</dd>
-        <dt>Primary</dt><dd>{view.nodes.find((n) => n.role === 'primary')?.site ?? 'none'}</dd>
+        <dt>Primary</dt><dd>{view.nodes.find((n) => n.role.includes('primary'))?.site ?? 'none'}</dd>
+        <dt>Configuration from</dt><dd>{view.authority === 'gitops' ? 'Git (only Git-managed nodes may publish it)' : 'the primary (its file and UI)'}</dd>
       </dl>
+      {#if me && me.role === 'replica' && can('admin')}
+        <div class="promote">
+          {#if !confirming}
+            <button onclick={() => (confirming = true)} disabled={primaryUp} title={primaryUp ? 'The primary is up' : ''}>Promote this node…</button>
+            {#if primaryUp}<span class="muted small">Available when the primary is gone.</span>{/if}
+          {:else}
+            <div class="notice" role="alertdialog" aria-label="Promote this node">
+              <p>
+                <strong>Make {me.site} the primary?</strong> Use this only when the primary is gone. This node continues from
+                version {num(me.configSeq)}; if the old primary comes back, it steps down, and anything it changed in the
+                meantime is listed under Conflicts.
+              </p>
+              {#if view.authority === 'gitops' && me.configSource !== 'gitops'}
+                <label class="check"
+                  ><input type="checkbox" bind:checked={emergency} /> Emergency: keep the configuration at version {num(me.configSeq)} (this
+                  node isn't managed from Git, so it can't publish changes)</label
+                >
+              {/if}
+              <ErrorNote error={promoteError} />
+              <div class="row">
+                <button class="primary" onclick={promote} disabled={promoting}>{promoting ? 'Promoting…' : 'Promote'}</button>
+                <button onclick={() => (confirming = false)}>Cancel</button>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </section>
+
+    {#if view.conflicts.length}
+      <section class="card" data-testid="cluster-conflicts">
+        <h2>Conflicts</h2>
+        <p class="muted small">
+          Versions this node published after another node took over as primary. They were never applied anywhere; to keep a
+          change, make it again where the configuration comes from now.
+        </p>
+        <ul class="conflicts">
+          {#each view.conflicts as k (k.epoch * 1e9 + k.seq)}
+            <li>
+              <strong>Version {num(k.seq)}</strong> <span class="muted small">(epoch {k.epoch}, published {logDate(k.publishedAt)} {logTime(k.publishedAt)})</span>
+              <div class="small">Changed: <span class="mono">{k.changed.join(', ') || '—'}</span></div>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
 
     <section class="card">
       <h2>Checks</h2>
@@ -105,9 +172,11 @@ telltale cluster join tt_join_…</pre>
               <tr data-testid="cluster-node">
                 <td>
                   <strong>{n.site}</strong>
-                  <span class="badge {n.role === 'primary' ? 'ok' : ''}">{n.role}</span>
+                  <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.role}</span>
                   {#if n.thisNode}<span class="muted small">this node</span>{/if}
-                  <div class="mono muted small" title={n.nodeId}>{shortId(n.nodeId)}</div>
+                  <div class="mono muted small" title={n.nodeId}>
+                    {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
+                  </div>
                 </td>
                 <td>
                   <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
@@ -216,6 +285,19 @@ telltale cluster join tt_join_…</pre>
     gap: 8px;
     flex-wrap: wrap;
     align-items: baseline;
+  }
+  .promote {
+    margin-top: 12px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .conflicts {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 6px;
   }
   pre {
     overflow-x: auto;

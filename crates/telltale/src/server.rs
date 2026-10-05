@@ -732,7 +732,7 @@ fn audit_reload(sources: &http::Sources, files: &[PathBuf], old: &Config, new: &
 }
 
 /// Dotted paths whose values differ (arrays compare as a whole).
-fn changed_paths(
+pub(crate) fn changed_paths(
     old: &serde_json::Value,
     new: &serde_json::Value,
     at: String,

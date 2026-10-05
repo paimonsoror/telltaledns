@@ -3,7 +3,10 @@
 #   1. the replica takes the primary's configuration and lists (and drops its own);
 #   2. an edit on the primary reaches the replica within 5 s;
 #   3. killing the primary leaves the replica answering 100% of a steady query load;
-#   4. the replica, restarted with the primary down, answers within 500 ms of starting.
+#   4. the replica, restarted with the primary down, answers within 500 ms of starting;
+#   5. failover (ADR-051): the eligible replica got the cluster key, is promoted while the
+#      primary is down, and serves the last version it had; the old primary comes back, steps
+#      down, follows the new primary, and keeps its unseen edit under Conflicts.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -92,7 +95,7 @@ q() { python3 "$E/q.py" one "$@"; }
 "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 T=$("$B" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
-"$B" cluster join "$T" --site r -c "$E/r.toml" >/dev/null
+"$B" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28442 -c "$E/r.toml" >/dev/null
 "$B" run -c "$E/r.toml" > "$E/r.log" 2>&1 & R_PID=$!
 
 echo "== 1. the replica follows the primary"
@@ -134,4 +137,39 @@ echo "first answer ${first} s after launching the process"
 python3 -c "import sys; sys.exit(0 if float('$first') <= 0.5 else 1)" || fail "cold start took ${first} s (> 0.5)"
 for _ in $(seq 40); do [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] && break; sleep 0.05; done
 [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] || fail "the replica forgot the primary's list after a restart"
+echo "== 5. failover: promote the replica, fence the old primary (ADR-051)"
+[ -f "$E/r/cluster/ca.key" ] || fail "the eligible replica never received the cluster key"
+# The old primary comes back and publishes an edit the replica never sees.
+"$B" run -c "$E/p.toml" > "$E/p2.log" 2>&1 & P_PID=$!
+for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+kill "$R_PID"; wait "$R_PID" 2>/dev/null || true; R_PID=
+cat >> "$E/p.toml" <<EOF
+[[record]]
+name = "c.p.test"
+type = "A"
+value = "10.0.0.1"
+EOF
+kill -HUP "$P_PID"
+for _ in $(seq 50); do [ "$(q 25301 c.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+[ "$(q 25301 c.p.test)" = 10.0.0.1 ] || fail "the primary didn't apply its own edit"
+sleep 1
+kill "$P_PID"; wait "$P_PID" 2>/dev/null || true; P_PID=
+# Promote the replica while the primary is down.
+"$B" cluster promote -c "$E/r.toml" | head -1
+"$B" run -c "$E/r.toml" > "$E/r3.log" 2>&1 & R_PID=$!
+for _ in $(seq 50); do [ "$(q 25302 b.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+[ "$(q 25302 b.p.test)" = 10.0.0.1 ] || fail "the promoted node lost the cluster's configuration"
+[ "$(q 25302 c.p.test)" != 10.0.0.1 ] || fail "the promoted node has an edit it never received"
+"$B" cluster status -c "$E/r.toml" | grep -q 'role       primary' || fail "the replica isn't primary after promotion"
+# The old primary returns: it must step down and follow, keeping its edit as a conflict.
+"$B" run -c "$E/p.toml" > "$E/p3.log" 2>&1 & P_PID=$!
+for _ in $(seq 100); do [ -n "$(ls "$E/p/cluster/conflicts/" 2>/dev/null)" ] && break; sleep 0.1; done
+for _ in $(seq 50); do [ "$(q 25301 c.p.test)" != 10.0.0.1 ] && break; sleep 0.1; done
+[ "$(q 25301 c.p.test)" != 10.0.0.1 ] || fail "the old primary still serves its orphaned edit"
+[ "$(q 25301 b.p.test)" = 10.0.0.1 ] || fail "the old primary doesn't serve the cluster's configuration"
+"$B" cluster status -c "$E/p.toml" | grep -q 'role       replica' || fail "the old primary didn't step down"
+ls "$E/p/cluster/conflicts/" | grep -q '^1-.*[0-9]\.json$' || fail "no conflict recorded for the orphaned version"
+grep -q '"record"' "$E/p/cluster/conflicts/"1-*[0-9].json || fail "the conflict doesn't name the changed setting"
+grep -h 'stepping down\|kept under Conflicts' "$E/p3.log" | cut -c1-140
+echo "ok"
 echo "PASS"

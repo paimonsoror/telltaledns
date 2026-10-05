@@ -378,6 +378,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cluster/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promote this node to primary.
+         * @description Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,
+         *     publishes the cluster's configuration from the last version it applied, and every node
+         *     follows it. An old primary that comes back steps down, and anything it changed meanwhile
+         *     shows under `conflicts`.
+         *
+         *     Refused when:
+         *     - the current primary is up;
+         *     - the node isn't eligible or lacks the cluster key;
+         *     - without `emergency`, the cluster takes its configuration from Git and this node isn't
+         *       managed from Git.
+         *
+         *     Admin only; audited as `cluster.promote`.
+         */
+        post: operations["cluster_promote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/explain": {
         parameters: {
             query?: never;
@@ -984,6 +1015,23 @@ export interface components {
             ok: boolean;
             summary: string;
         };
+        /**
+         * @description A version an old primary published after a newer primary took over: never applied
+         *     anywhere; listed so the change can be re-made on the current primary.
+         */
+        ClusterConflict: {
+            /** @description Settings that differ from the current primary's version (dotted paths). */
+            changed: string[];
+            /** @description When the newer primary's version arrived (RFC 3339). */
+            detectedAt: string;
+            /** Format: int64 */
+            epoch: number;
+            newPrimary: string;
+            /** @description When this node published it (RFC 3339). */
+            publishedAt: string;
+            /** Format: int64 */
+            seq: number;
+        };
         /** @description A cluster event (joins, connections, published and applied versions, failures). */
         ClusterEvent: {
             /** @description RFC 3339. */
@@ -1052,6 +1100,8 @@ export interface components {
             configLag: number;
             /** Format: int64 */
             configSeq: number;
+            /** @description How the node's own configuration is managed: `gitops` or `file` (ADR-048). */
+            configSource?: string | null;
             /** @description A stream to it is open (this node: n/a, true). */
             connected: boolean;
             eligible: boolean;
@@ -1116,8 +1166,12 @@ export interface components {
          *     serving state, a timeline, and a pass/fail check list.
          */
         ClusterView: {
+            /** @description Where the cluster's configuration comes from: `api` or `gitops` (ADR-048). */
+            authority?: string | null;
             checks: components["schemas"]["ClusterCheck"][];
             clusterId?: string | null;
+            /** @description Versions this node published that the cluster moved on without (ADR-051), newest first. */
+            conflicts: components["schemas"]["ClusterConflict"][];
             /** @description False on a standalone node (everything else is then empty). */
             enabled: boolean;
             /** @description Recent events, newest first. */
@@ -1139,7 +1193,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -1694,6 +1748,15 @@ export interface components {
             title: string;
             /** @description URI identifying the problem type. */
             type: string;
+        };
+        /** @description `POST /api/v1/cluster/promote`. */
+        PromoteRequest: {
+            /**
+             * @description Promote even though this node can't publish configuration under the cluster's
+             *     authority (configuration from Git, and no Git-managed node reachable): it coordinates the
+             *     cluster and keeps the last version, and publishes nothing new (ADR-048).
+             */
+            emergency?: boolean;
         };
         /** @description A page of query-log rows, newest first. */
         QueryPage: {
@@ -2568,6 +2631,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClusterView"];
+                };
+            };
+        };
+    };
+    cluster_promote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Promoted; the cluster as it is now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterView"];
+                };
+            };
+            /** @description Not allowed now (the primary is up, or this node can't be primary). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

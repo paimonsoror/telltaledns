@@ -122,6 +122,7 @@ export const api = {
   clients: () => get<S['Items_ClientInfo']>('/clients'),
   anomalies: (since = '-7d') => get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since }),
   cluster: () => get<S['ClusterView']>('/cluster'),
+  promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),

@@ -34,6 +34,16 @@ pub struct Hello {
     pub applied_seq: u64,
     #[prost(bool, tag = "10")]
     pub primary: bool,
+    /// How this node's own configuration is managed: `gitops` or `file` (ADR-048).
+    #[prost(string, tag = "11")]
+    pub config_source: String,
+}
+
+/// The cluster CA key, from the primary to an eligible node (ADR-051).
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyShare {
+    #[prost(string, tag = "1")]
+    pub ca_key_pem: String,
 }
 
 /// Sent every few seconds both ways; its absence marks a peer down.
@@ -81,7 +91,7 @@ pub struct ManifestMsg {
 /// One message on a stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Frame {
-    #[prost(oneof = "Body", tags = "1, 2, 3")]
+    #[prost(oneof = "Body", tags = "1, 2, 3, 4")]
     pub body: Option<Body>,
 }
 
@@ -93,6 +103,8 @@ pub enum Body {
     Heartbeat(Heartbeat),
     #[prost(message, tag = "3")]
     Manifest(ManifestMsg),
+    #[prost(message, tag = "4")]
+    KeyShare(KeyShare),
 }
 
 /// A frame with its length prefix.
@@ -140,6 +152,7 @@ mod tests {
                 epoch: 3,
                 applied_seq: 9,
                 primary: false,
+                config_source: String::new(),
             })),
         };
         let hb = Frame {

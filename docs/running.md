@@ -487,6 +487,34 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
 - **Every version is signed** by the cluster's key; a replica rejects anything else.
 - **Sign-in is still per node:** each node has its own users and sessions until ADR-045 lands.
 
+**When the primary is gone: promote another node (manual failover).**
+- **Who can be promoted:** a node joined with `--eligible`. The primary shares the cluster's
+  signing key with eligible nodes once they connect, so one of them can take over. Give eligible
+  nodes `--advertise` URLs, so a returning old primary can be reached and told to step down.
+- **How:** use **Promote this node…** on the Cluster page (admin, live), or stop the node, run
+  `telltale cluster promote`, and start it. It's refused while the primary is up.
+- **What happens:**
+  - the node takes a new *epoch* and continues from the last version it applied;
+  - every node follows it;
+  - an old primary that comes back steps down by itself when it sees the newer epoch.
+- **Changes the old primary made in the meantime aren't applied anywhere.** They're listed under
+  **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
+  again on the current primary.
+
+**Where configuration comes from (config authority).**
+- **Choosing it:** `telltale cluster init --config-authority gitops` (or `telltale cluster
+  set-authority gitops` on the primary, then restart) says the cluster's configuration comes from
+  Git.
+- **What it changes:**
+  - only nodes whose own configuration is Git-managed (`[cluster] config_source = "gitops"`,
+    set for the Kubernetes node by its Helm values) may then publish it;
+  - configuration changes through the API or UI are refused on every node (409
+    `gitops_managed`);
+  - another node can only be promoted as an *emergency* primary, which keeps the cluster
+    coordinated on the last version and publishes nothing new until a Git-managed node is back.
+
+  The default is `api`: the primary's own file and UI.
+
 Run these as the user telltale runs as (`sudo -u telltale` for native installs,
 `docker compose exec telltale` for Compose), then restart telltale.
 

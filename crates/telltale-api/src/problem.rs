@@ -37,6 +37,8 @@ pub enum Code {
     InvalidConfig,
     /// Too many failed sign-ins; wait and retry.
     RateLimited,
+    /// The cluster's configuration comes from Git (ADR-048): change it there.
+    GitopsManaged,
 }
 
 impl Code {
@@ -55,6 +57,7 @@ impl Code {
             Self::RateLimited => "https://telltaledns.dev/problems/rate_limited",
             Self::VersionConflict => "https://telltaledns.dev/problems/version_conflict",
             Self::InvalidConfig => "https://telltaledns.dev/problems/invalid_config",
+            Self::GitopsManaged => "https://telltaledns.dev/problems/gitops_managed",
         }
     }
 
@@ -73,6 +76,7 @@ impl Code {
             Self::RateLimited => "Too many attempts",
             Self::VersionConflict => "Configuration changed",
             Self::InvalidConfig => "Invalid configuration",
+            Self::GitopsManaged => "Managed in Git",
         }
     }
 
@@ -84,7 +88,7 @@ impl Code {
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
-            Self::Conflict => StatusCode::CONFLICT,
+            Self::Conflict | Self::GitopsManaged => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig => StatusCode::UNPROCESSABLE_ENTITY,
