@@ -519,6 +519,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let _aggregator = pipeline
         .telemetry
         .spawn_aggregator(Duration::from_millis(25), sink)?;
+    // REQ: OBS-004 (T6.16) — the current and previous hour's top lists come back after a
+    // restart, from the query log (in the background; DNS doesn't wait).
+    crate::replay::spawn(&cfg, &pipeline);
     let mut listeners = Listeners {
         udp: Vec::new(),
         streams: Vec::new(),

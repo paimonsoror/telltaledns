@@ -1068,6 +1068,17 @@ telltale cluster status
   for over 30 s, failing syncs, and a certificate within 14 days of expiry.
 
 ## Monitoring
+**The dashboard across restarts and upgrades.**
+- Charts over time come from `<data_dir>/rollups.db`, kept by minute (7 days), hour (400 days)
+  and day. That includes traffic by group, which is stored by group name, so renaming or
+  reordering groups doesn't mislabel history. Minutes saved before this release have no group
+  breakdown.
+- The current and previous hour's top lists and latency are rebuilt at start from the query
+  log, in the background within seconds. This needs the query log on, kept locally, at
+  privacy level 0. Otherwise they start empty, and completed hours still come from the
+  rollups.
+- Prometheus counters restart from zero, as Prometheus expects.
+
 An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`) serves:
 
 | Path | Use |

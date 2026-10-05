@@ -44,6 +44,53 @@ pub struct Counts {
     /// Upstream exchanges by upstream index, and how many failed.
     pub upstreams: Vec<u32>,
     pub upstream_failures: u32,
+    /// REQ: OBS-004 (T6.16) — by group name, in buckets read back from the rollups (the
+    /// indexes above only mean something within one process's group table). Empty in live
+    /// buckets.
+    pub named_groups: Vec<NamedGroup>,
+}
+
+/// One group's queries and blocked queries in a stored bucket (T6.16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedGroup {
+    pub name: Box<str>,
+    pub total: u32,
+    pub blocked: u32,
+}
+
+impl Counts {
+    /// REQ: OBS-004 (T6.16) — the per-index group columns as names (from `names`, this
+    /// process's group table; indexes past it are "other"), for storing. Merges equal names.
+    pub fn name_groups(&mut self, names: &[&str]) {
+        let len = self.groups.len().max(self.group_blocked.len());
+        for i in 0..len {
+            let total = self.groups.get(i).copied().unwrap_or(0);
+            let blocked = self.group_blocked.get(i).copied().unwrap_or(0);
+            if total == 0 && blocked == 0 {
+                continue;
+            }
+            let name = names.get(i).copied().unwrap_or("other");
+            add_named(&mut self.named_groups, name, total, blocked);
+        }
+    }
+}
+
+/// Adds to `name`'s entry in `v` (kept sorted by name).
+pub fn add_named(v: &mut Vec<NamedGroup>, name: &str, total: u32, blocked: u32) {
+    match v.binary_search_by(|g| (*g.name).cmp(name)) {
+        Ok(i) => {
+            v[i].total = v[i].total.saturating_add(total);
+            v[i].blocked = v[i].blocked.saturating_add(blocked);
+        }
+        Err(i) => v.insert(
+            i,
+            NamedGroup {
+                name: name.into(),
+                total,
+                blocked,
+            },
+        ),
+    }
 }
 
 fn bump(v: &mut Vec<u32>, id: usize) {
@@ -412,6 +459,28 @@ impl Aggregates {
                     self.current.add_upstream(e);
                 }
             }
+        }
+    }
+
+    /// REQ: OBS-004 (T6.16) — folds one query from before this process started (replayed from
+    /// the query log) into the current or previous hour's top lists and latency histograms, by
+    /// its own timestamp, in any order. The time windows aren't touched (the rollups hold those
+    /// minutes), nor are the Prometheus counters or the masked-client windows (they count this
+    /// process). Queries older than the previous hour are ignored.
+    pub fn replay_hours(&mut self, now_s: u64, e: &QueryEvent, name: &Name) {
+        let now_hour = now_s / 3600;
+        if now_hour > self.current.index {
+            let done = std::mem::replace(&mut self.current, Hour::new(now_hour));
+            self.previous = (done.index + 1 == now_hour).then_some(done);
+        }
+        let hour = e.ts_us / 1_000_000 / 3600;
+        self.seq += 1;
+        if hour == self.current.index {
+            self.current.add_query(e, name, self.seq);
+        } else if hour + 1 == self.current.index {
+            self.previous
+                .get_or_insert_with(|| Hour::new(hour))
+                .add_query(e, name, self.seq);
         }
     }
 

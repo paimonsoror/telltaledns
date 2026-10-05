@@ -26,6 +26,7 @@ mod mcp_stdio;
 mod pihole;
 mod pipeline;
 mod qlog_cli;
+mod replay;
 mod replication;
 mod rollups;
 mod selfupdate;

@@ -96,6 +96,50 @@ pub fn encode(c: &Counts) -> Vec<u8> {
     c.proto.iter().for_each(|v| put(*v));
     put(c.upstreams.iter().fold(0u32, |a, v| a.saturating_add(*v)));
     put(c.upstream_failures);
+    // REQ: OBS-004 (T6.16) — groups by name, after the fixed columns: builds that predate it
+    // stop reading before this section, so the version stays 2 and rows stay readable.
+    if !c.named_groups.is_empty() {
+        out.push(GROUPS_TAG);
+        let n = u16::try_from(c.named_groups.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&n.to_le_bytes());
+        for g in c.named_groups.iter().take(usize::from(n)) {
+            let name = g.name.as_bytes();
+            let len = u8::try_from(name.len()).unwrap_or(u8::MAX);
+            out.push(len);
+            out.extend_from_slice(&name[..usize::from(len)]);
+            out.extend_from_slice(&g.total.to_le_bytes());
+            out.extend_from_slice(&g.blocked.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Marks the named-group section (T6.16).
+const GROUPS_TAG: u8 = b'G';
+
+/// The named-group section at `b` (see [`encode`]); empty when absent or damaged.
+fn decode_groups(b: &[u8]) -> Vec<telltale_telemetry::agg::NamedGroup> {
+    let mut out = Vec::new();
+    let Some((&GROUPS_TAG, rest)) = b.split_first() else {
+        return out;
+    };
+    let Some((n, mut rest)) = rest.split_first_chunk::<2>() else {
+        return out;
+    };
+    for _ in 0..u16::from_le_bytes(*n) {
+        let Some((&len, r)) = rest.split_first() else {
+            return Vec::new();
+        };
+        let len = usize::from(len);
+        if r.len() < len + 8 {
+            return Vec::new();
+        }
+        let name = String::from_utf8_lossy(&r[..len]);
+        let total = u32::from_le_bytes([r[len], r[len + 1], r[len + 2], r[len + 3]]);
+        let blocked = u32::from_le_bytes([r[len + 4], r[len + 5], r[len + 6], r[len + 7]]);
+        telltale_telemetry::agg::add_named(&mut out, &name, total, blocked);
+        rest = &r[len + 8..];
+    }
     out
 }
 
@@ -107,6 +151,10 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
         VERSION => rest.split_first().map(|(np, r)| (*np, r))?,
         _ => return None,
     };
+    // Where the fixed columns end (the named groups follow, T6.16).
+    let words_len =
+        4 * (1 + usize::from(ns) + usize::from(nq) + usize::from(nr) + usize::from(np) + 2);
+    let tail = rest.get(words_len..).unwrap_or_default();
     let mut words = rest
         .as_chunks::<4>()
         .0
@@ -141,6 +189,7 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
     }
     c.upstreams = vec![words.next()?];
     c.upstream_failures = words.next()?;
+    c.named_groups = decode_groups(tail);
     Some(c)
 }
 
@@ -166,6 +215,9 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     let total = a.upstreams.iter().fold(0u32, |s, v| s.saturating_add(*v));
     a.upstreams = vec![total.saturating_add(up)];
     a.upstream_failures = a.upstream_failures.saturating_add(b.upstream_failures);
+    for g in &b.named_groups {
+        telltale_telemetry::agg::add_named(&mut a.named_groups, &g.name, g.total, g.blocked);
+    }
 }
 
 impl Rollups {
@@ -526,5 +578,49 @@ mod tests {
         assert_eq!(r.range(Level::Hour, 0, u64::MAX / 2).unwrap().len(), 0);
         assert_eq!(r.top(h0, "blocked", 10).unwrap(), Vec::new());
         assert_eq!(r.range(Level::Day, 0, u64::MAX / 2).unwrap().len(), 1);
+    }
+
+    /// REQ: OBS-004 (T6.16) — groups are stored by name: they round-trip, merge by name into
+    /// hours and days, and rows without them (older builds) still read; the fixed columns
+    /// come first, so a build that predates the section reads the rest as before.
+    #[test]
+    fn obs_004_group_names_round_trip_and_roll_up() {
+        let mut c = counts(10, 4);
+        c.groups = vec![6, 4];
+        c.group_blocked = vec![1, 3];
+        c.name_groups(&["kids", "lab"]);
+        assert_eq!(c.named_groups.len(), 2);
+        let bytes = encode(&c);
+        let d = decode(&bytes).unwrap();
+        assert_eq!(d.named_groups, c.named_groups);
+        assert_eq!((d.total, d.upstream_failures), (10, 1));
+        // Without the section: the bytes an older build wrote, and what it reads of ours.
+        let mut plain = c.clone();
+        plain.named_groups.clear();
+        let old = encode(&plain);
+        assert_eq!(decode(&old).unwrap().named_groups, Vec::new());
+        assert_eq!(
+            &bytes[..old.len()],
+            &old[..],
+            "the fixed columns are unchanged"
+        );
+        // A damaged section is ignored, not an error.
+        let mut bad = bytes.clone();
+        bad.truncate(old.len() + 4);
+        assert_eq!(decode(&bad).unwrap().named_groups, Vec::new());
+        // Unknown indexes are "other"; minutes roll up by name.
+        let mut other = counts(5, 0);
+        other.groups = vec![0, 2, 3];
+        other.name_groups(&["kids"]);
+        let r = Rollups::in_memory().unwrap();
+        let h0 = 1_759_700_000 - 1_759_700_000 % 3600;
+        r.put_minutes(&[(h0, c), (h0 + 60, other)]).unwrap();
+        let hour = &r.range(Level::Hour, h0, h0 + 3600).unwrap()[0].1;
+        let by: Vec<(&str, u32, u32)> = hour
+            .named_groups
+            .iter()
+            .map(|g| (&*g.name, g.total, g.blocked))
+            .collect();
+        assert_eq!(by, [("kids", 6, 1), ("lab", 4, 3), ("other", 5, 0)]);
     }
 }

@@ -664,6 +664,15 @@ impl Backend for ApiBackend {
                         *b.blocked_by_group.entry(key).or_default() += n;
                     }
                 }
+                // T6.16 — stored buckets carry groups by name.
+                for g in &c.named_groups {
+                    if g.total > 0 {
+                        *b.by_group.entry(g.name.to_string()).or_default() += g.total;
+                    }
+                    if g.blocked > 0 {
+                        *b.blocked_by_group.entry(g.name.to_string()).or_default() += g.blocked;
+                    }
+                }
                 b
             })
             .collect()

@@ -60,7 +60,9 @@ pub(crate) fn spawn(db: Arc<Rollups>, pipeline: Arc<Pipeline>) -> tokio::task::J
         // them with this process's partial view.
         let started_minute = now() - now() % 60;
         let mut flushed_to = started_minute;
-        let mut extras_for: Option<u64> = None;
+        // The hour that closed before this process started was saved by the one before it:
+        // the startup replay (T6.16) refills it in memory, but never rewrites it on disk.
+        let mut extras_for: Option<u64> = Some((started_minute / 3600).saturating_sub(1) * 3600);
         let mut purged_at = 0u64;
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -71,7 +73,21 @@ pub(crate) fn spawn(db: Arc<Rollups>, pipeline: Arc<Pipeline>) -> tokio::task::J
             let from = flushed_to.saturating_sub(REFLUSH_S).max(started_minute);
             let (rows, extras) = {
                 let agg = pipeline.telemetry.aggregates();
-                let rows = agg.series(Resolution::Minute, from, done_to);
+                let mut rows = agg.series(Resolution::Minute, from, done_to);
+                // REQ: OBS-004 (T6.16) — groups by name, so stored minutes keep their meaning
+                // after a restart or a change to the group table.
+                let names: Vec<String> = pipeline
+                    .current()
+                    .policy
+                    .clients
+                    .groups()
+                    .iter()
+                    .map(|g| g.name.to_string())
+                    .collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                for (_, c) in &mut rows {
+                    c.name_groups(&names);
+                }
                 let extras = agg
                     .previous_hour_start()
                     .filter(|h| extras_for != Some(*h))
