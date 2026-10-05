@@ -2623,6 +2623,64 @@
           }
         }
       },
+      "ClusterFailover": {
+        "type": "object",
+        "description": "Automatic failover as this node sees it (ADR-056).",
+        "required": [
+          "mode",
+          "active",
+          "voters",
+          "reachableVoters",
+          "leaseHeld",
+          "votedEpoch"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Whether elections run: `auto`, with three or more voters, this node one of them."
+          },
+          "leaseHeld": {
+            "type": "boolean",
+            "description": "This node is the elected primary and its lease holds."
+          },
+          "leaseSecondsLeft": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "How long its lease still runs, in seconds (primaries only)."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`manual` (promote by hand) or `auto` (elected by vote)."
+          },
+          "reachableVoters": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Voters this node has a stream to (itself included).",
+            "minimum": 0
+          },
+          "votedEpoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epoch and node this node last voted for.",
+            "minimum": 0
+          },
+          "votedFor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "voters": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Eligible nodes plus witnesses.",
+            "minimum": 0
+          }
+        }
+      },
       "ClusterInfo": {
         "type": "object",
         "description": "This node's cluster membership and the peers it holds a stream with.",
@@ -2938,6 +2996,17 @@
               "$ref": "#/components/schemas/ClusterEvent"
             },
             "description": "Recent events, newest first."
+          },
+          "failover": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterFailover",
+                "description": "How the cluster fails over (ADR-056)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "healthy": {
             "type": "boolean",

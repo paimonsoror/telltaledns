@@ -491,6 +491,7 @@ impl Backend for ApiBackend {
                 events: Vec::new(),
                 authority: None,
                 conflicts: Vec::new(),
+                failover: None,
             },
         }
     }

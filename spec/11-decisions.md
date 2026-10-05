@@ -771,3 +771,46 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner's Pi can set `mode = "ship"` to move its query log to the homelab node's volume. Rows then appear with up to `interval_secs` of delay in the homelab node's own search; cluster-wide search shows them at once.
 
+## ADR-056 — Automatic failover v1: one vote per epoch, voter-granted leases, pre-vote, a vote-only witness (Proposed)
+**Context:** T5.4b (CLU-005). `spec/12` §5 has `witness` and `quorum` modes: a candidate needs a majority of eligible nodes plus witness for `epoch + 1`, and promotes only after the old primary's lease (15 s, renewed every 5 s) has expired; "a primary accepts writes only while it holds a valid lease". The AC is a simulator: 10k randomized partition schedules, never two writers in one epoch, orphaned writes always surfaced.
+
+**Decision:**
+- **One protocol for both modes** (`telltale_cluster::election`, pure, no I/O):
+  - Voters are the eligible nodes plus witnesses, from the signed registry.
+  - A voter grants each epoch once (persisted, fsync, before answering). It refuses a newer epoch while the lease it granted to another node runs (15 s on its own clock), and refuses candidates whose applied version is behind its own.
+  - The primary renews with every voter every 5 s. It treats its lease as ending 15 s − 2 s after it *sent* the round a majority granted, so it stops publishing before any voter of that majority can elect someone else, for clock rates within ±1 %.
+  - **Pre-vote:** a node first asks whether it *would* win. A node cut off from the cluster never inflates epochs, and never deposes a healthy primary when the partition heals.
+  - `witness` and `quorum` are the same thing with different voters, so the mode is just `manual` or `auto`.
+- **Mode:**
+  - `telltale cluster set-failover auto|manual` on the primary. It's carried in the signed manifest, like the authority.
+  - `auto` runs elections only with three or more voters, this node one of them; otherwise it behaves as `manual`, and the Cluster page's `failover` check says why.
+  - Manual `promote` is refused while elections run, because it would bypass the votes.
+- **Witness:**
+  - `telltale cluster join <token> --witness --advertise <url>`, then `telltale cluster witness`.
+  - It runs only the cluster channel and the vote handler: no DNS, lists, API or pipeline. It learns the registry and mode from verified manifests.
+  - It never becomes primary and never receives the CA key.
+- **Transport:**
+  - Votes are the `elect.ask` RPC on cluster streams. The candidate is bound to the stream's certificate: a node can only ask for itself.
+  - Voters keep a full mesh in `auto` mode: of each pair, the lower node ID dials.
+- **Gating:**
+  - `Cluster::may_publish()` is false for a primary without a valid lease. The publish loop waits, and API writes get 503 with a hint.
+  - A primary starting in `auto` mode begins with publishing paused until its first renewal.
+  - A restarted primary resumes its epoch if its own ballot is for itself; otherwise it takes part in a normal election.
+  - Only nodes holding the CA key stand as candidates.
+- **Under a `gitops` authority,** an elected node that isn't Git-managed becomes an emergency primary (ADR-048).
+
+**Verification:**
+- `tests/sim.rs` covers 2 + witness, 3, and 4 + witness voter sets under random asymmetric partitions, 0–15 % loss, heavy-tailed delays to 3 s, crashes with persisted ballots and histories, and ±1 % clock drift.
+- It checks:
+  - one primary per epoch;
+  - never two writable primaries at the same real instant;
+  - every write kept, or reported as orphaned;
+  - a primary within 60 s of healing.
+- Results at 10,000 schedules (release, in CI): 43,744 elections, 1.49 M writes, 176,933 orphaned and reported, worst recovery 24.75 s.
+- It's mutation-checked: removing the lease check, or timing the lease from the reply instead of the request, is caught.
+- `deploy/cluster/failover-e2e.sh` (real processes, CI): kill the primary, and the replica is elected in about 14 s with 100 % of DNS queries answered; the old primary returns and follows.
+
+**Deferred:** CA rotation, the other part of T5.4b's title, is now T5.4c. Clocks are assumed not to jump by more than the margin; NTP slews rather than steps in normal operation.
+
+**Consequences:** the owner's Pi + homelab cluster stays `manual` until a witness exists. A witness on any third device (for example the NAS) makes failover automatic, with the Pi as an emergency primary while the configuration authority is GitOps.
+

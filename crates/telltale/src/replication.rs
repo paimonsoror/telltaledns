@@ -355,6 +355,9 @@ async fn apply(
     if !m.authority.is_empty() {
         let _ = cluster.identity.save_authority(&m.authority);
     }
+    if !m.failover.is_empty() {
+        let _ = cluster.identity.save_failover(&m.failover);
+    }
     let json = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
     write_atomic(&cdir.join(APPLIED), &json).map_err(|e| e.to_string())?;
     // The normal reload path: validate, swap, audit-free (the primary audited the change).
@@ -548,6 +551,14 @@ async fn publish_loop(
     let store = BlobStore::open(data_dir(&cfg)).ok();
     let mut first = true;
     loop {
+        // REQ: CLU-005 — in automatic failover, publish only while the lease holds (ADR-056).
+        if !cluster.may_publish() {
+            tokio::select! {
+                r = stop.changed() => if r.is_err() || *stop.borrow() { return; },
+                () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+            continue;
+        }
         let (_, epoch) = cluster.role();
         let cfg = sources.config.load_full();
         // What to publish: this node's configuration and newest snapshot, or (emergency) the
@@ -593,8 +604,10 @@ async fn publish_loop(
         let config_hash = hash(&shared);
         let filter_version = filter.as_ref().map(|(f, _)| f.version);
         let nodes = cluster.identity.registry();
-        let authority = cluster.identity.reload().meta.config_authority;
-        let meta_hash = hash(&serde_json::to_vec(&(&nodes, &authority)).unwrap_or_default());
+        let meta = cluster.identity.reload().meta;
+        let (authority, failover) = (meta.config_authority, meta.failover);
+        let meta_hash =
+            hash(&serde_json::to_vec(&(&nodes, &authority, &failover)).unwrap_or_default());
         let new_epoch = epoch > last.epoch;
         let changed = new_epoch
             || config_hash != last.config
@@ -636,6 +649,7 @@ async fn publish_loop(
                 authority,
                 base: epoch_base,
                 emergency,
+                failover,
             };
             match Signed::sign(&m, &key) {
                 Ok(signed) => {

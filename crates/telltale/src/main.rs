@@ -182,6 +182,11 @@ enum ClusterCommand {
     },
     /// Change where the cluster's configuration comes from: `api` or `gitops` (on the primary).
     SetAuthority { authority: String },
+    /// How the cluster fails over (ADR-056): `manual` (promote by hand) or `auto` (elected by
+    /// vote; needs 3 or more voters, e.g. two eligible nodes and a witness). On the primary.
+    SetFailover { mode: String },
+    /// Run this node as a witness: it only votes in elections (no DNS, no lists, no API).
+    Witness,
     /// Join tokens (run on the primary).
     Token {
         #[command(subcommand)]
@@ -200,6 +205,9 @@ enum ClusterCommand {
         /// May become primary (needs persistent storage).
         #[arg(long)]
         eligible: bool,
+        /// Join as a witness: votes in automatic failover only (needs --advertise).
+        #[arg(long)]
+        witness: bool,
     },
     /// Show this node's cluster identity (offline; live peers are in the API and UI).
     Status,
@@ -514,6 +522,10 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
         ClusterCommand::SetAuthority { authority } => {
             cluster::set_authority(&cfg, &mut io::stdout().lock(), &authority)
         }
+        ClusterCommand::SetFailover { mode } => {
+            cluster::set_failover(&cfg, &mut io::stdout().lock(), &mode)
+        }
+        ClusterCommand::Witness => cluster::witness(&cfg),
         ClusterCommand::Token {
             command: ClusterTokenCommand::Create { ttl, urls },
         } => cluster::token_create(&cfg, &mut io::stdout().lock(), ttl, urls),
@@ -522,6 +534,7 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             advertise,
             site,
             eligible,
+            witness,
         } => cluster::join(
             &cfg,
             &mut io::stdout().lock(),
@@ -529,6 +542,7 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             advertise,
             site.as_deref(),
             eligible,
+            witness,
         ),
         ClusterCommand::Status => cluster::status(&cfg, &mut io::stdout().lock()),
     }

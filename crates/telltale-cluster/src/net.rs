@@ -330,6 +330,11 @@ pub struct Cluster {
     pending: Mutex<PendingCalls>,
     next_rpc: std::sync::atomic::AtomicU64,
     rpc_handler: std::sync::OnceLock<HandlerSlot>,
+    /// The running election, in automatic failover (ADR-056).
+    pub(crate) election: Mutex<Option<crate::election::Elector>>,
+    /// Whether this node may publish: a primary holding a valid lease (always, in manual mode).
+    lease_ok: std::sync::atomic::AtomicBool,
+    failover_view: Mutex<crate::failover::FailoverView>,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -353,6 +358,7 @@ impl Cluster {
     pub fn new(identity: Identity, version: &str) -> Arc<Self> {
         let identity_role = identity.meta.role.unwrap_or(Role::Replica);
         let identity_epoch = identity.meta.epoch;
+        let wait_for_lease = crate::failover::active(&identity) && identity.is_primary();
         Arc::new(Self {
             local: Mutex::new(LocalState {
                 epoch: identity.meta.epoch,
@@ -375,6 +381,10 @@ impl Cluster {
             pending: Mutex::new(HashMap::new()),
             next_rpc: std::sync::atomic::AtomicU64::new(1),
             rpc_handler: std::sync::OnceLock::new(),
+            election: Mutex::new(None),
+            // ADR-056 — a primary in automatic failover waits for its first renewal.
+            lease_ok: std::sync::atomic::AtomicBool::new(!wait_for_lease),
+            failover_view: Mutex::new(crate::failover::FailoverView::default()),
         })
     }
 
@@ -404,15 +414,15 @@ impl Cluster {
             return;
         };
         let mut nodes = self.identity.registry();
+        let known = nodes.iter().find(|n| n.node_id == node_id);
         let rec = crate::node::NodeRecord {
             node_id: m.node_id.clone(),
             site: m.site.clone(),
             eligible: m.eligible,
             advertise: m.advertise.clone(),
-            joined: nodes
-                .iter()
-                .find(|n| n.node_id == node_id)
-                .map_or_else(|| now_ms() / 1000, |n| n.joined),
+            joined: known.map_or_else(|| now_ms() / 1000, |n| n.joined),
+            // Set at join (ADR-056); Hello doesn't carry it.
+            witness: known.is_some_and(|n| n.witness),
         };
         if nodes.contains(&rec) {
             return;
@@ -421,6 +431,50 @@ impl Cluster {
         nodes.push(rec);
         if let Err(e) = self.identity.save_registry(&nodes) {
             warn!("cluster: can't record {node_id} in the registry: {e}");
+        }
+    }
+
+    /// Whether this node may publish configuration now (ADR-056): in automatic failover, only a
+    /// primary whose lease holds.
+    pub fn may_publish(&self) -> bool {
+        self.lease_ok.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_lease_ok(&self, ok: bool) {
+        let was = self.lease_ok.swap(ok, std::sync::atomic::Ordering::AcqRel);
+        if was && !ok && self.is_primary() {
+            warn!(
+                "cluster: this primary's lease lapsed; publishing paused until a majority renews it"
+            );
+            self.event(
+                "lease_lost",
+                &self.identity.meta.node_id.clone(),
+                "publishing paused",
+            );
+        }
+    }
+
+    /// The election as the Cluster page shows it.
+    pub fn failover_view(&self) -> crate::failover::FailoverView {
+        self.failover_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_failover_view(&self, v: crate::failover::FailoverView) {
+        *self
+            .failover_view
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = v;
+    }
+
+    /// Records a vote this node granted, in the event log.
+    pub(crate) fn note_vote(&self, candidate: &str, epoch: u64) {
+        let last = self.events().last().map(|e| (e.kind, e.detail.clone()));
+        let detail = format!("voted for {candidate} in epoch {epoch}");
+        if last != Some(("voted", detail.clone())) {
+            self.event("voted", &self.identity.meta.node_id.clone(), detail);
         }
     }
 
@@ -1424,6 +1478,62 @@ async fn join_one(
 
 /// Keeps a stream to the first reachable URL open, reconnecting with jittered backoff until
 /// `stop` changes.
+/// In automatic failover, keeps a stream to every other voter (ADR-056): votes need one.
+/// Of each pair, the node with the lower ID dials; the other side gets an inbound stream.
+pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
+    let Ok(cfg) = client_config(&cluster.identity) else {
+        return;
+    };
+    let dialing: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
+    loop {
+        tokio::select! {
+            _ = stop.changed() => return,
+            () = tokio::time::sleep(Duration::from_secs(3)) => {}
+        }
+        let id = cluster.identity.reload();
+        if !crate::failover::active(&id) {
+            continue;
+        }
+        let me = id.meta.node_id.clone();
+        let reachable = cluster.reachable_peers();
+        for n in id.registry() {
+            if !n.voter() || n.node_id <= me || reachable.contains(&n.node_id) {
+                continue;
+            }
+            if !dialing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(n.node_id.clone())
+            {
+                continue;
+            }
+            let (c, cfg, dialing, stop) = (
+                Arc::clone(&cluster),
+                Arc::clone(&cfg),
+                Arc::clone(&dialing),
+                stop.clone(),
+            );
+            tokio::spawn(async move {
+                let mut stop = stop;
+                for url in &n.advertise {
+                    tokio::select! {
+                        _ = stop.changed() => break,
+                        r = stream_once(Arc::clone(&c), url, Arc::clone(&cfg), false) => {
+                            if let Err(e) = r {
+                                debug!(%url, "voter stream: {e}");
+                            }
+                        }
+                    }
+                }
+                dialing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&n.node_id);
+            });
+        }
+    }
+}
+
 pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let cfg = match client_config(&cluster.identity) {
         Ok(c) => c,
@@ -1439,7 +1549,7 @@ pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
             let started = tokio::time::Instant::now();
             tokio::select! {
                 _ = stop.changed() => return,
-                r = stream_once(Arc::clone(&cluster), &url, Arc::clone(&cfg)) => match r {
+                r = stream_once(Arc::clone(&cluster), &url, Arc::clone(&cfg), true) => match r {
                     Ok(()) => debug!(%url, "cluster stream closed"),
                     Err(e) => debug!(%url, "cluster stream: {e}"),
                 },
@@ -1464,6 +1574,7 @@ async fn stream_once(
     cluster: Arc<Cluster>,
     url: &str,
     cfg: Arc<ClientConfig>,
+    main: bool,
 ) -> Result<(), String> {
     let tls = tls_connect(url, cfg).await?;
     let server_id = tls
@@ -1499,10 +1610,13 @@ async fn stream_once(
         writer.abort();
         return Err(format!("{url}: {}", r.status()));
     }
-    *cluster
-        .connected
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
+    // Only the main link (to the primary) is what replication fetches from.
+    if main {
+        *cluster
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(url.to_owned());
+    }
     let result = read_frames(&cluster, r.into_body(), server_id, "outbound", &echo).await;
     writer.abort();
     cluster

@@ -31,10 +31,20 @@ pub struct Meta {
     /// Where the cluster's configuration comes from (ADR-048): `api` or `gitops`.
     #[serde(default = "default_authority")]
     pub config_authority: String,
+    /// A witness only votes in elections (ADR-056): never primary, serves no DNS.
+    #[serde(default)]
+    pub witness: bool,
+    /// How the cluster fails over (ADR-056): `manual` or `auto` (from the primary's manifests).
+    #[serde(default = "default_failover")]
+    pub failover: String,
 }
 
 fn default_authority() -> String {
     "api".into()
+}
+
+fn default_failover() -> String {
+    "manual".into()
 }
 
 /// A node's role (ADR-051).
@@ -58,6 +68,16 @@ pub struct NodeRecord {
     pub advertise: Vec<String>,
     /// Unix seconds.
     pub joined: u64,
+    /// Votes in elections only (ADR-056).
+    #[serde(default)]
+    pub witness: bool,
+}
+
+impl NodeRecord {
+    /// Whether it votes in automatic failover: eligible nodes and witnesses.
+    pub fn voter(&self) -> bool {
+        self.eligible || self.witness
+    }
 }
 
 /// A stored join-token record.
@@ -76,6 +96,9 @@ pub struct JoinRequest {
     pub site: String,
     pub eligible: bool,
     pub version: String,
+    /// Joins as a witness (ADR-056).
+    #[serde(default)]
+    pub witness: bool,
 }
 
 /// What it gets back.
@@ -196,6 +219,7 @@ impl Identity {
                     eligible: self.meta.eligible,
                     advertise: self.meta.advertise.clone(),
                     joined: 0,
+                    witness: self.meta.witness,
                 },
             );
         }
@@ -239,6 +263,51 @@ impl Identity {
         authority.clone_into(&mut id.meta.config_authority);
         let b = serde_json::to_string_pretty(&id.meta).map_err(|e| e.to_string())?;
         write(&id.dir.join("cluster.json"), b.as_bytes(), false).map_err(|e| e.to_string())
+    }
+
+    /// Records how the cluster fails over (`manual` or `auto`, ADR-056).
+    pub fn save_failover(&self, mode: &str) -> Result<(), String> {
+        if !matches!(mode, "manual" | "auto") {
+            return Err(format!("failover must be `manual` or `auto`, not `{mode}`"));
+        }
+        let mut id = self.reload();
+        if id.meta.failover == mode {
+            return Ok(());
+        }
+        mode.clone_into(&mut id.meta.failover);
+        let b = serde_json::to_string_pretty(&id.meta).map_err(|e| e.to_string())?;
+        write(&id.dir.join("cluster.json"), b.as_bytes(), false).map_err(|e| e.to_string())
+    }
+
+    /// Marks this node a witness (right after joining as one).
+    pub fn mark_witness(&mut self) -> Result<(), String> {
+        self.meta.witness = true;
+        self.meta.eligible = false;
+        let b = serde_json::to_string_pretty(&self.meta).map_err(|e| e.to_string())?;
+        write(&self.dir.join("cluster.json"), b.as_bytes(), false).map_err(|e| e.to_string())
+    }
+
+    /// This node's election ballot (ADR-056): what it voted, and the lease it granted.
+    pub fn ballot(&self) -> crate::election::Ballot {
+        std::fs::read(self.dir.join("ballot.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Stores the ballot durably before any vote is answered (a vote must survive a crash).
+    pub fn save_ballot(&self, b: &crate::election::Ballot) -> Result<(), String> {
+        let bytes = serde_json::to_vec(b).map_err(|e| e.to_string())?;
+        let path = self.dir.join("ballot.json");
+        let tmp = path.with_extension("tmp");
+        let e = |e: std::io::Error| e.to_string();
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp).map_err(e)?;
+            f.write_all(&bytes).map_err(e)?;
+            f.sync_all().map_err(e)?;
+        }
+        std::fs::rename(&tmp, &path).map_err(e)
     }
 
     /// Persists a new role and epoch (promotion or fencing).
@@ -309,6 +378,8 @@ impl Identity {
             epoch: 1,
             role: Some(Role::Primary),
             config_authority: config_authority.to_owned(),
+            witness: false,
+            failover: default_failover(),
         };
         let e = |e: std::io::Error| e.to_string();
         write(&dir.join("ca.key"), ca.key_pem.as_bytes(), true).map_err(e)?;
@@ -389,9 +460,10 @@ impl Identity {
         nodes.push(NodeRecord {
             node_id: node_id.clone(),
             site: req.site.clone(),
-            eligible: req.eligible,
+            eligible: req.eligible && !req.witness,
             advertise: req.advertise.clone(),
             joined: t,
+            witness: req.witness,
         });
         self.save_registry(&nodes)?;
         let mut primary_urls = self.meta.advertise.clone();
@@ -434,6 +506,8 @@ impl Identity {
             epoch: 1,
             role: Some(Role::Replica),
             config_authority: default_authority(),
+            witness: false,
+            failover: default_failover(),
         };
         let e = |e: std::io::Error| e.to_string();
         write(&dir.join("ca.crt"), r.ca_pem.as_bytes(), false).map_err(e)?;
@@ -481,6 +555,7 @@ mod tests {
         assert_eq!(t.urls, ["https://192.168.3.2:8443"]);
         let key = pki::new_node_key().unwrap();
         let mut req = JoinRequest {
+            witness: false,
             secret: t.secret.clone(),
             csr_pem: key.csr_pem.clone(),
             advertise: vec!["https://10.0.0.5:8443".into()],

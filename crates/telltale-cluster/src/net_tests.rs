@@ -37,6 +37,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     // The replica joins: the token pins the CA; the secret earns a certificate.
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
+        witness: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem.clone(),
         advertise: vec![],
@@ -132,6 +133,7 @@ async fn clu_001_a_token_for_another_ca_is_refused_before_the_secret_is_sent() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
+        witness: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem,
         advertise: vec![],
@@ -313,6 +315,7 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
 
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
+        witness: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem.clone(),
         advertise: vec![],
@@ -418,7 +421,9 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     let p = Arc::clone(&primary);
     wait_for(|| p.members().first().and_then(|m| m.rtt_ms).is_some()).await;
     let rtt = primary.members()[0].rtt_ms.unwrap();
-    assert!((50..2000).contains(&rtt), "rtt {rtt} ms");
+    // At least the proxy's 50 ms. A first echo can queue behind a blob transfer on the same
+    // stream, so the upper bound is loose.
+    assert!((50..10_000).contains(&rtt), "rtt {rtt} ms");
     assert!(primary.members()[0].connected);
     let kinds: Vec<&str> = replica.events().iter().map(|e| e.kind).collect();
     assert!(

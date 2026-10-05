@@ -77,6 +77,7 @@ pub trait Backend: Send + Sync + 'static {
             events: Vec::new(),
             authority: None,
             conflicts: Vec::new(),
+            failover: None,
         }
     }
     /// Buckets with start in `[from_s, to_s)`, oldest first.

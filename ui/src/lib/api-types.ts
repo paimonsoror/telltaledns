@@ -1052,6 +1052,36 @@ export interface components {
             kind: string;
             nodeId: string;
         };
+        /** @description Automatic failover as this node sees it (ADR-056). */
+        ClusterFailover: {
+            /** @description Whether elections run: `auto`, with three or more voters, this node one of them. */
+            active: boolean;
+            /** @description This node is the elected primary and its lease holds. */
+            leaseHeld: boolean;
+            /**
+             * Format: double
+             * @description How long its lease still runs, in seconds (primaries only).
+             */
+            leaseSecondsLeft?: number | null;
+            /** @description `manual` (promote by hand) or `auto` (elected by vote). */
+            mode: string;
+            /**
+             * Format: int32
+             * @description Voters this node has a stream to (itself included).
+             */
+            reachableVoters: number;
+            /**
+             * Format: int64
+             * @description The epoch and node this node last voted for.
+             */
+            votedEpoch: number;
+            votedFor?: string | null;
+            /**
+             * Format: int32
+             * @description Eligible nodes plus witnesses.
+             */
+            voters: number;
+        };
         /** @description This node's cluster membership and the peers it holds a stream with. */
         ClusterInfo: {
             /** @description When this node's cluster certificate expires (RFC 3339). */
@@ -1187,6 +1217,7 @@ export interface components {
             enabled: boolean;
             /** @description Recent events, newest first. */
             events: components["schemas"]["ClusterEvent"][];
+            failover?: components["schemas"]["ClusterFailover"] | null;
             /** @description Every check passed. */
             healthy: boolean;
             name?: string | null;

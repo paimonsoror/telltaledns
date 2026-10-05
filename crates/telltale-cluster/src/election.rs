@@ -177,6 +177,20 @@ impl Elector {
         self.voters.contains(&self.id)
     }
 
+    /// Picks up as primary of `epoch` after a restart (its own ballot is for itself in that
+    /// epoch): it renews at once and writes again once a majority still grants it.
+    pub fn resume(&mut self, epoch: u64) {
+        self.max_epoch = self.max_epoch.max(epoch);
+        let round = self.round();
+        self.phase = Phase::Leader {
+            epoch,
+            round,
+            round_started_ms: 0,
+            grants: BTreeSet::new(),
+            lease_until_ms: 0,
+        };
+    }
+
     /// Whether this node is the primary and may write now.
     pub fn writable(&self, now_ms: u64) -> bool {
         matches!(self.phase, Phase::Leader { lease_until_ms, .. } if now_ms < lease_until_ms)

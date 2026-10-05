@@ -52,6 +52,12 @@ pub(crate) fn start(
     // Every node dials: replicas reach the primary, and eligible nodes reach each other so a
     // returning old primary learns of a newer epoch (ADR-051).
     tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
+    // REQ: CLU-005 — automatic failover (ADR-056): idle unless the cluster is in `auto` mode.
+    tokio::spawn(net::mesh(Arc::clone(&cluster), stop.clone()));
+    tokio::spawn(telltale_cluster::failover::run(
+        Arc::clone(&cluster),
+        stop.clone(),
+    ));
     Some(cluster)
 }
 
@@ -109,7 +115,7 @@ const LAG_WARN_SECS: u64 = 30;
 #[allow(clippy::cast_precision_loss)] // per-mille and microseconds to display units
 /// REQ: CLU-008 — the Cluster page's data.
 pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
-    use telltale_api::model::{ClusterEvent, ClusterNode, ClusterView};
+    use telltale_api::model::{ClusterNode, ClusterView};
     let now = now_ms();
     let me = &c.identity.meta;
     let local = c.local_state();
@@ -180,18 +186,13 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     }
     let sync = c.sync_status();
     let cert_days = expires.saturating_sub(now / 1000) / 86_400;
-    let checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
-    let mut events: Vec<ClusterEvent> = c
-        .events()
-        .into_iter()
-        .map(|e| ClusterEvent {
-            at: format_us(e.ts_ms.saturating_mul(1000)),
-            kind: e.kind.into(),
-            node_id: e.node,
-            detail: e.detail,
-        })
-        .collect();
-    events.reverse();
+    let mut checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
+    let failover = failover_view(c, &nodes);
+    // ADR-056 — `auto` without enough voters is manual in practice: say so.
+    if failover.mode == "auto" {
+        checks.push(failover_check(&failover));
+    }
+    let events = events_view(c);
     ClusterView {
         enabled: true,
         cluster_id: Some(me.cluster_id.clone()),
@@ -204,6 +205,79 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         events,
         authority: Some(c.identity.reload().meta.config_authority),
         conflicts: Vec::new(),
+        failover: Some(failover),
+    }
+}
+
+/// The event log, newest first.
+fn events_view(c: &Cluster) -> Vec<telltale_api::model::ClusterEvent> {
+    use telltale_api::model::ClusterEvent;
+    let mut events: Vec<ClusterEvent> = c
+        .events()
+        .into_iter()
+        .map(|e| ClusterEvent {
+            at: format_us(e.ts_ms.saturating_mul(1000)),
+            kind: e.kind.into(),
+            node_id: e.node,
+            detail: e.detail,
+        })
+        .collect();
+    events.reverse();
+    events
+}
+
+/// Whether automatic failover can work: enough voters, and a majority reachable.
+fn failover_check(f: &telltale_api::model::ClusterFailover) -> telltale_api::model::ClusterCheck {
+    let majority = f.reachable_voters * 2 > f.voters;
+    let (ok, summary, fix) = if f.active {
+        (
+            majority,
+            format!(
+                "{} of {} voters reachable (a majority elects and keeps the primary)",
+                f.reachable_voters, f.voters
+            ),
+            "Bring voters back, or check the cluster port between them: without a majority, no primary keeps its lease and configuration changes pause (DNS keeps answering).",
+        )
+    } else {
+        (
+            false,
+            format!(
+                "Automatic failover needs 3 or more voters; this cluster has {}",
+                f.voters
+            ),
+            "Add a witness (`telltale cluster join <token> --witness`, then `telltale cluster witness`) or another eligible node.",
+        )
+    };
+    telltale_api::model::ClusterCheck {
+        id: "failover".into(),
+        ok,
+        summary,
+        fix: (!ok).then(|| fix.to_owned()),
+    }
+}
+
+/// The election as the API reports it (ADR-056).
+fn failover_view(
+    c: &Cluster,
+    nodes: &[telltale_api::model::ClusterNode],
+) -> telltale_api::model::ClusterFailover {
+    let id = c.identity.reload();
+    let voters = telltale_cluster::failover::voters(&id);
+    let reachable = voters
+        .iter()
+        .filter(|v| **v == id.meta.node_id || nodes.iter().any(|n| n.node_id == **v && n.connected))
+        .count();
+    let v = c.failover_view();
+    telltale_api::model::ClusterFailover {
+        mode: id.meta.failover.clone(),
+        active: telltale_cluster::failover::active(&id),
+        voters: u32::try_from(voters.len()).unwrap_or(u32::MAX),
+        reachable_voters: u32::try_from(reachable).unwrap_or(u32::MAX),
+        lease_held: v.leading.is_some() && v.lease_ms_left > 0,
+        #[allow(clippy::cast_precision_loss)]
+        lease_seconds_left: v.leading.map(|_| v.lease_ms_left as f64 / 1000.0),
+        voted_epoch: v.ballot_epoch,
+        voted_for: (!v.ballot_for.is_empty()).then(|| v.ballot_for.clone()),
     }
 }
 
@@ -309,6 +383,9 @@ pub(crate) fn promote(c: &Cluster, gitops_source: bool, emergency: bool) -> Resu
     }
     if !id.meta.eligible {
         return Err("this node isn't eligible to be primary (it joined without --eligible)".into());
+    }
+    if telltale_cluster::failover::active(&id) {
+        return Err("automatic failover is on: the cluster elects its primary by vote (`telltale cluster set-failover manual` on the primary to promote by hand)".into());
     }
     if !id.holds_ca() {
         return Err("this node doesn't have the cluster key yet: the primary shares it with eligible nodes once they connect".into());
@@ -418,8 +495,13 @@ pub(crate) fn join(
     advertise: Vec<String>,
     site: Option<&str>,
     eligible: bool,
+    witness: bool,
 ) -> ExitCode {
     let dir = data_dir(cfg);
+    if witness && advertise.is_empty() {
+        return fail("a witness needs --advertise: the voters dial it");
+    }
+    let eligible = eligible && !witness;
     match Identity::load(dir) {
         Ok(Some(id)) => {
             return fail(&format!(
@@ -440,6 +522,7 @@ pub(crate) fn join(
     };
     let site = site.unwrap_or(cfg.cluster.site.as_str()).to_owned();
     let req = JoinRequest {
+        witness,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem.clone(),
         advertise: advertise.clone(),
@@ -459,7 +542,10 @@ pub(crate) fn join(
         Err(e) => return fail(&format!("join failed: {e}")),
     };
     match Identity::save_joined(dir, &key.key_pem, &resp, &site, eligible, advertise) {
-        Ok(id) => {
+        Ok(mut id) => {
+            if witness && let Err(e) = id.mark_witness() {
+                return fail(&e);
+            }
             let _ = writeln!(
                 out,
                 "Joined cluster `{}` as node {} (site {site}).",
@@ -611,6 +697,126 @@ pub(crate) fn set_authority(
     ExitCode::SUCCESS
 }
 
+/// `telltale cluster set-failover manual|auto` (ADR-056), on the primary.
+pub(crate) fn set_failover(
+    cfg: &telltale_config::Config,
+    out: &mut impl Write,
+    mode: &str,
+) -> ExitCode {
+    let id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) => id,
+        Ok(None) => return fail("this node isn't in a cluster"),
+        Err(e) => return fail(&e),
+    };
+    if !id.is_primary() {
+        return fail("run this on the primary");
+    }
+    if let Err(e) = id.save_failover(mode) {
+        return fail(&e);
+    }
+    let voters = telltale_cluster::failover::voters(&id).len();
+    let _ = writeln!(
+        out,
+        "Failover is now `{mode}`. Restart telltale to publish it; every node follows."
+    );
+    if mode == "auto" && voters < 3 {
+        let _ = writeln!(
+            out,
+            "Note: the cluster has {voters} voter(s); elections need 3 or more. Add a witness \
+             (`telltale cluster join <token> --witness --advertise <url>`, then `telltale cluster witness`)."
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// `telltale cluster witness`: a vote-only member (ADR-056). Runs the cluster channel and
+/// the election, nothing else: no DNS, no lists, no API.
+pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
+    let id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) if id.meta.witness => id,
+        Ok(Some(_)) => return fail("this node isn't a witness (join with --witness)"),
+        Ok(None) => {
+            return fail(
+                "this node isn't in a cluster: `telltale cluster join <token> --witness` first",
+            );
+        }
+        Err(e) => return fail(&e),
+    };
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => return fail(&e.to_string()),
+    };
+    rt.block_on(async {
+        let (stop_tx, stop) = watch::channel(false);
+        info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, "witness: voting in elections only");
+        let cluster = Cluster::new(id, VERSION);
+        let c = Arc::clone(&cluster);
+        cluster.set_rpc_handler(Arc::new(move |peer, kind, body| {
+            let c = Arc::clone(&c);
+            Box::pin(async move {
+                if kind != telltale_cluster::failover::KIND {
+                    return Err("a witness only votes".to_owned());
+                }
+                tokio::task::spawn_blocking(move || telltale_cluster::failover::answer(&c, &peer, &body))
+                    .await
+                    .map_err(|e| e.to_string())?
+            })
+        }));
+        if let Ok(addr) = cfg.cluster.listen.as_str().parse::<SocketAddr>() {
+            let (c, stop) = (Arc::clone(&cluster), stop.clone());
+            tokio::spawn(async move {
+                if let Err(e) = net::serve(c, addr, stop).await {
+                    warn!(%addr, "cluster port: {e}");
+                }
+            });
+        }
+        tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
+        tokio::spawn(net::mesh(Arc::clone(&cluster), stop.clone()));
+        tokio::spawn(telltale_cluster::failover::run(Arc::clone(&cluster), stop.clone()));
+        // The registry and failover mode come with the primary's signed manifests.
+        let mut incoming = cluster.incoming();
+        let ca = cluster.identity.ca_pem.clone();
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                () = terminated() => break,
+                r = incoming.changed() => {
+                    if r.is_err() { break; }
+                    let signed = incoming.borrow_and_update().clone();
+                    if let Some(m) = signed.and_then(|s| s.verify(&ca).ok()) {
+                        if !m.nodes.is_empty() {
+                            let _ = cluster.identity.save_registry(&m.nodes);
+                        }
+                        if !m.failover.is_empty() {
+                            let _ = cluster.identity.save_failover(&m.failover);
+                        }
+                    }
+                }
+            }
+        }
+        let _ = stop_tx.send(true);
+    });
+    ExitCode::SUCCESS
+}
+
+#[cfg(unix)]
+async fn terminated() {
+    if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        s.recv().await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminated() {
+    std::future::pending::<()>().await;
+}
+
 fn human(s: u64) -> String {
     match s {
         s if s % 86_400 == 0 => format!("{} day(s)", s / 86_400),
@@ -669,6 +875,7 @@ mod tests {
         let key = pki::new_node_key().unwrap();
         let resp = primary
             .accept_join(&JoinRequest {
+                witness: false,
                 secret: token.secret,
                 csr_pem: key.csr_pem,
                 advertise: vec![],

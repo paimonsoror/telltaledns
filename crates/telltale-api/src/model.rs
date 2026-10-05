@@ -850,6 +850,29 @@ pub struct ClusterView {
     pub authority: Option<String>,
     /// Versions this node published that the cluster moved on without (ADR-051), newest first.
     pub conflicts: Vec<ClusterConflict>,
+    /// How the cluster fails over (ADR-056).
+    pub failover: Option<ClusterFailover>,
+}
+
+/// Automatic failover as this node sees it (ADR-056).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterFailover {
+    /// `manual` (promote by hand) or `auto` (elected by vote).
+    pub mode: String,
+    /// Whether elections run: `auto`, with three or more voters, this node one of them.
+    pub active: bool,
+    /// Eligible nodes plus witnesses.
+    pub voters: u32,
+    /// Voters this node has a stream to (itself included).
+    pub reachable_voters: u32,
+    /// This node is the elected primary and its lease holds.
+    pub lease_held: bool,
+    /// How long its lease still runs, in seconds (primaries only).
+    pub lease_seconds_left: Option<f64>,
+    /// The epoch and node this node last voted for.
+    pub voted_epoch: u64,
+    pub voted_for: Option<String>,
 }
 
 /// A version an old primary published after a newer primary took over: never applied

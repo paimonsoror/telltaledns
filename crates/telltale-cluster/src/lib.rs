@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod election;
+pub mod failover;
 pub mod net;
 pub mod node;
 pub mod pki;

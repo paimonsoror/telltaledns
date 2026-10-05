@@ -37,6 +37,7 @@
   const shortId = (id: string) => id.slice(0, 8);
   const failing = $derived(view?.checks.filter((c) => !c.ok) ?? []);
   const me = $derived(view?.nodes.find((n) => n.thisNode));
+  const siteOf = (id: string) => view?.nodes.find((n) => n.nodeId === id)?.site ?? id;
   const primaryUp = $derived(view?.nodes.some((n) => n.role.includes('primary') && n.up && !n.thisNode) ?? false);
 
   // REQ: CLU-005 — manual failover (ADR-051): only when the primary is gone.
@@ -90,8 +91,23 @@ telltale cluster join tt_join_…</pre>
         <dt>Configuration</dt><dd>version {num(view.newestConfigSeq)}</dd>
         <dt>Primary</dt><dd>{view.nodes.find((n) => n.role.includes('primary'))?.site ?? 'none'}</dd>
         <dt>Configuration from</dt><dd>{view.authority === 'gitops' ? 'Git (only Git-managed nodes may publish it)' : 'the primary (its file and UI)'}</dd>
+        <!-- REQ: CLU-005 — how the cluster fails over (ADR-056). -->
+        {#if view.failover}
+          <dt>Failover</dt>
+          <dd data-testid="cluster-failover">
+            {#if view.failover.active}
+              automatic: {view.failover.reachableVoters} of {view.failover.voters} voters reachable
+              {#if view.failover.leaseHeld}<span class="muted small">· this primary's lease: {Math.round(view.failover.leaseSecondsLeft ?? 0)} s left</span>{/if}
+              {#if view.failover.votedFor}<div class="muted small">voted for {siteOf(view.failover.votedFor)} in epoch {view.failover.votedEpoch}</div>{/if}
+            {:else if view.failover.mode === 'auto'}
+              automatic, but waiting for 3 or more voters ({view.failover.voters} now)
+            {:else}
+              manual (promote a node when the primary is gone)
+            {/if}
+          </dd>
+        {/if}
       </dl>
-      {#if me && me.role === 'replica' && can('admin')}
+      {#if me && me.role === 'replica' && can('admin') && !view.failover?.active}
         <div class="promote">
           {#if !confirming}
             <button onclick={() => (confirming = true)} disabled={primaryUp} title={primaryUp ? 'The primary is up' : ''}>Promote this node…</button>

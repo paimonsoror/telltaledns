@@ -505,7 +505,8 @@ The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 Nodes can form a cluster: the first node creates it and holds the cluster's certificate
 authority (it's the **primary**); others join with a token and then keep an encrypted,
 mutually authenticated link (mTLS over HTTP/2) to it. **The primary's configuration and
-blocklists reach every node within seconds.** Failover is manual (below), and **every node's
+blocklists reach every node within seconds.** Failover is manual, or automatic with a third
+voter such as a small witness (below), and **every node's
 dashboard and query log show the whole cluster**. Changes made in any node's UI or API go to
 the primary. DNS never depends on the cluster: a node answers the same whether its peers are
 up or not.
@@ -599,6 +600,36 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
 - **Changes the old primary made in the meantime aren't applied anywhere.** They're listed under
   **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
   again on the current primary.
+
+**Automatic failover (with a witness or three eligible nodes).** Two nodes can't tell "the
+other node is down" from "the link between us is down", so automatic failover needs a third
+vote: another eligible node, or a **witness**, a tiny vote-only process that can run on a NAS,
+router, or small VM.
+```sh
+# On the witness host (a config with [node] data_dir and [cluster] listen is enough):
+telltale cluster join <token> --witness --advertise https://witness.lan:8443 -c witness.toml
+telltale cluster witness -c witness.toml      # run it as a service
+# On the primary, then restart it:
+telltale cluster set-failover auto
+```
+- **How it decides:** every eligible node and witness is a voter. The primary renews a 15 s
+  *lease* with a majority every 5 s, and publishes only while the lease holds. If it disappears,
+  the eligible nodes wait for the lease to run out, and one is elected by a majority vote in a
+  new epoch, typically within 15–25 s.
+- **Never two primaries writing:** a voter votes once per epoch and won't vote for anyone else
+  while the lease it granted runs. A primary that loses its majority (for example, cut off by a
+  network split) stops taking changes before anyone else can be elected. Proven by a simulator
+  that runs 10,000 random partition, crash, and clock-drift schedules on every CI run.
+- **DNS never waits for any of this.** Every node keeps answering from its last configuration;
+  only configuration changes pause (503) until a primary with a lease exists.
+- **Seeing it:** the Cluster page's **Failover** line (voters reachable, the lease, the latest
+  vote) and the `failover` check. Metrics: `telltale_cluster_primary`, `telltale_cluster_epoch`,
+  `telltale_cluster_failover_auto`, `telltale_cluster_lease_held`.
+- **Manual promotion is refused while automatic failover runs**; `telltale cluster
+  set-failover manual` on the primary switches back. With fewer than three voters, `auto` acts
+  as `manual`, and the Cluster page says so.
+- **Under a Git config authority,** an elected node that isn't Git-managed becomes an emergency
+  primary: it keeps the cluster coordinated on the last version.
 
 **Where configuration comes from (config authority).**
 - **Choosing it:** `telltale cluster init --config-authority gitops` (or `telltale cluster

@@ -186,6 +186,32 @@ fn rss_bytes() -> Option<u64> {
 }
 
 /// REQ: CLU-001, CLU-008 — peers this node streams with, by state.
+/// REQ: CLU-005 — role, epoch, and the election (ADR-056).
+fn election_metrics(c: &telltale_cluster::net::Cluster, w: &mut PromWriter) {
+    let (_, epoch) = c.role();
+    let fv = c.failover_view();
+    for (name, help, v) in [
+        (
+            "telltale_cluster_primary",
+            "1 when this node is the primary (or an emergency primary).",
+            u64::from(c.is_primary()),
+        ),
+        ("telltale_cluster_epoch", "This node's epoch.", epoch),
+        (
+            "telltale_cluster_failover_auto",
+            "1 when automatic failover runs on this node (auto mode, 3+ voters).",
+            u64::from(fv.active),
+        ),
+        (
+            "telltale_cluster_lease_held",
+            "1 when this node is the elected primary and its lease holds (it may publish).",
+            u64::from(fv.leading.is_some() && c.may_publish()),
+        ),
+    ] {
+        w.family(name, "gauge", help).sample(name, &[], v);
+    }
+}
+
 fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
     if let Some(c) = &src.cluster {
         let now = std::time::SystemTime::now()
@@ -251,6 +277,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
             "The configuration version this node published (primary) or applied (replica).",
         )
         .sample("telltale_cluster_config_seq", &[], local.applied_seq);
+        election_metrics(c, w);
         w.family(
             "telltale_cluster_behind_seconds",
             "gauge",

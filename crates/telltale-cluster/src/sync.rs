@@ -57,6 +57,9 @@ pub struct ClusterManifest {
     /// Emergency primary (ADR-048): coordinates, publishes no new configuration.
     #[serde(default)]
     pub emergency: bool,
+    /// How the cluster fails over (ADR-056): `manual` or `auto`.
+    #[serde(default)]
+    pub failover: String,
 }
 
 impl ClusterManifest {

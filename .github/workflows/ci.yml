@@ -235,3 +235,7 @@ jobs:
       # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms.
       - name: Cluster (two processes)
         run: bash deploy/cluster/e2e.sh target/bench-fast/telltale
+      # REQ: CLU-005 (T5.4b AC) — automatic failover with a witness: the replica is elected
+      # within 30 s of the primary's death with 100% of DNS answered; the old primary follows.
+      - name: Cluster automatic failover (primary, replica, witness)
+        run: bash deploy/cluster/failover-e2e.sh target/bench-fast/telltale

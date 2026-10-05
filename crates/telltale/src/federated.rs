@@ -105,6 +105,14 @@ pub(crate) fn rpc_handler(
     Arc::new(move |peer, kind, body| {
         let (src, local, cluster) = (Arc::clone(&src), Arc::clone(&local), Arc::clone(&cluster));
         Box::pin(async move {
+            if kind == telltale_cluster::failover::KIND {
+                // REQ: CLU-005 — a vote request (ADR-056); the ballot is written to disk first.
+                return tokio::task::spawn_blocking(move || {
+                    telltale_cluster::failover::answer(&cluster, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("vote worker failed: {e}"))?;
+            }
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
             }
@@ -136,6 +144,11 @@ pub(crate) fn rpc_handler(
     })
 }
 
+fn no_lease() -> Problem {
+    Problem::unavailable("this primary can't reach a majority of voters, so it isn't taking changes")
+        .hint("DNS keeps answering. Changes resume when a majority of voters is reachable again; see the Cluster page.")
+}
+
 /// Where configuration writes go (T5.7).
 enum WriteRoute {
     /// Applied on this node: it's the primary, or the cluster is configured from Git (which
@@ -143,6 +156,8 @@ enum WriteRoute {
     Here,
     /// Forwarded to the primary (`None`: it isn't reachable now).
     Primary(Option<String>),
+    /// Refused: this primary's lease lapsed (ADR-056).
+    NoLease,
 }
 
 /// The API backend of a clustered node: federated stats and query log over `local`.
@@ -180,6 +195,9 @@ impl Federated {
 
     /// Where this node's configuration writes go.
     fn write_route(&self) -> WriteRoute {
+        if self.cluster.is_primary() && !self.cluster.may_publish() {
+            return WriteRoute::NoLease;
+        }
         if self.cluster.is_primary()
             || self.cluster.identity.reload().meta.config_authority == "gitops"
         {
@@ -470,6 +488,7 @@ impl Backend for Federated {
                 w,
             )),
             WriteRoute::Here => self.local.write_managed(w),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
     }
     fn config_version(&self) -> u64 {
@@ -490,6 +509,7 @@ impl Backend for Federated {
                 w,
             )),
             WriteRoute::Here => self.local.write_client(w),
+            WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
     }
 }
