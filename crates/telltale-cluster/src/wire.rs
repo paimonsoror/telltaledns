@@ -77,6 +77,9 @@ pub struct RpcResponse {
 pub struct KeyShare {
     #[prost(string, tag = "1")]
     pub ca_key_pem: String,
+    /// During a CA rotation, the new CA's key (T5.4c).
+    #[prost(string, tag = "2")]
+    pub next_ca_key_pem: String,
 }
 
 /// Sent every few seconds both ways; its absence marks a peer down.
@@ -113,6 +116,12 @@ pub struct Heartbeat {
     /// comes from Git.
     #[prost(string, tag = "11")]
     pub source_commit: String,
+    /// The CAs it trusts, as [`crate::pki::trust_fp`] (CA rotation readiness, T5.4c).
+    #[prost(string, tag = "12")]
+    pub trust_fp: String,
+    /// The fingerprint of the CA that issued its certificate (T5.4c).
+    #[prost(string, tag = "13")]
+    pub issuer_fp: String,
 }
 
 /// A signed cluster manifest (CLU-003, `crate::sync`): the primary sends it on connect and

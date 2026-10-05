@@ -43,10 +43,21 @@ impl std::fmt::Debug for Ca {
 
 /// A new CA for cluster `name`.
 pub fn new_ca(name: &str) -> Result<Ca, PkiError> {
+    new_ca_labeled(name, "")
+}
+
+/// A new CA whose name carries `label` (a rotation's date), so two CAs of one cluster never
+/// share a subject while both are trusted (T5.4c).
+pub fn new_ca_labeled(name: &str, label: &str) -> Result<Ca, PkiError> {
     let key = KeyPair::generate_for(&rcgen::PKCS_ED25519)?;
     let mut p = CertificateParams::new(Vec::<String>::new())?;
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, format!("TelltaleDNS cluster {name} CA"));
+    let cn = if label.is_empty() {
+        format!("TelltaleDNS cluster {name} CA")
+    } else {
+        format!("TelltaleDNS cluster {name} CA ({label})")
+    };
+    dn.push(DnType::CommonName, cn);
     p.distinguished_name = dn;
     p.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
@@ -85,8 +96,86 @@ pub fn csr_for(key_pem: &str) -> Result<String, PkiError> {
     Ok(p.serialize_request(&key)?.pem()?)
 }
 
-/// Checks that `cert_pem` was signed by the CA in `ca_pem` (Ed25519) and is valid now.
+/// The certificates of a CA bundle (`ca.crt` holds two during a rotation), as PEM.
+pub fn certs_of(bundle: &str) -> Vec<String> {
+    use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
+    CertificateDer::pem_slice_iter(bundle.as_bytes())
+        .filter_map(Result::ok)
+        .map(|c| {
+            let b64 = base64_lines(c.as_ref());
+            format!("-----BEGIN CERTIFICATE-----\n{b64}-----END CERTIFICATE-----\n")
+        })
+        .collect()
+}
+
+fn base64_lines(der: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut line = 0;
+    for chunk in der.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+        line += 4;
+        if line == 64 {
+            out.push('\n');
+            line = 0;
+        }
+    }
+    if line != 0 {
+        out.push('\n');
+    }
+    out
+}
+
+/// An order-independent fingerprint of the set of CAs in a bundle: two nodes with the same
+/// trust report the same value (T5.4c readiness).
+pub fn trust_fp(bundle: &str) -> String {
+    let mut fps: Vec<[u8; 32]> = certs_of(bundle)
+        .iter()
+        .filter_map(|c| fingerprint(c).ok())
+        .collect();
+    fps.sort_unstable();
+    let joined: Vec<u8> = fps.concat();
+    hex(&ring::digest::digest(&ring::digest::SHA256, &joined).as_ref()[..16])
+}
+
+/// The fingerprint (hex) of the CA in `bundle` that issued `cert_pem`, if any.
+pub fn issuer_fp(cert_pem: &str, bundle: &str) -> Option<String> {
+    certs_of(bundle)
+        .into_iter()
+        .find(|ca| verify_one(cert_pem, ca).is_ok())
+        .and_then(|ca| fingerprint(&ca).ok())
+        .map(|f| hex(&f))
+}
+
+/// Checks that `cert_pem` was signed by a CA in `ca_pem` (one CA, or a bundle during a
+/// rotation; Ed25519) and is valid now.
 pub fn verify_issued(cert_pem: &str, ca_pem: &str) -> Result<(), PkiError> {
+    let cas = certs_of(ca_pem);
+    if cas.is_empty() {
+        return Err(PkiError::Invalid("no CA certificate".into()));
+    }
+    let mut last = None;
+    for ca in &cas {
+        match verify_one(cert_pem, ca) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| PkiError::Invalid("not issued by this cluster's CA".into())))
+}
+
+fn verify_one(cert_pem: &str, ca_pem: &str) -> Result<(), PkiError> {
     let bad = |m: &str| PkiError::Invalid(m.to_owned());
     let der = der_of(cert_pem)?;
     let ca_der = der_of(ca_pem)?;
@@ -237,5 +326,33 @@ mod tests {
         let csr = CertificateSigningRequestParams::from_pem(&k.csr_pem).unwrap();
         assert_eq!(node_id(csr.public_key.der_bytes()), id);
         assert_eq!(fingerprint(&ca.cert_pem).unwrap().len(), 32);
+    }
+
+    // REQ: CLU-001 (T5.4c) — a bundle of two CAs: certificates from either verify, the issuer
+    // is found, and the trust fingerprint ignores order.
+    #[test]
+    fn clu_001_ca_bundles_during_rotation() {
+        let (old, new) = (
+            new_ca("home").unwrap(),
+            new_ca_labeled("home", "2026-10-05").unwrap(),
+        );
+        let k = new_node_key().unwrap();
+        let (_, a) = issue(&old, &k.csr_pem, &[]).unwrap();
+        let (_, b) = issue(&new, &k.csr_pem, &[]).unwrap();
+        let bundle = format!("{}{}", old.cert_pem, new.cert_pem);
+        let flipped = format!("{}{}", new.cert_pem, old.cert_pem);
+        assert_eq!(certs_of(&bundle).len(), 2);
+        assert_eq!(
+            der_of(&certs_of(&bundle)[1]).unwrap(),
+            der_of(&new.cert_pem).unwrap()
+        );
+        assert!(verify_issued(&a, &bundle).is_ok() && verify_issued(&b, &bundle).is_ok());
+        assert!(verify_issued(&b, &old.cert_pem).is_err());
+        assert_eq!(
+            issuer_fp(&b, &bundle),
+            Some(hex(&fingerprint(&new.cert_pem).unwrap()))
+        );
+        assert_eq!(trust_fp(&bundle), trust_fp(&flipped));
+        assert_ne!(trust_fp(&bundle), trust_fp(&old.cert_pem));
     }
 }

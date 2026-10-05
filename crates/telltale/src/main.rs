@@ -219,6 +219,14 @@ enum ClusterCommand {
     SetFailover { mode: String },
     /// Run this node as a witness: it only votes in elections (no DNS, no lists, no API).
     Witness,
+    /// Rotate the cluster CA (on the primary, while it runs). Every node first trusts the new
+    /// CA next to the old, then gets a certificate from it, then the old CA is retired; each
+    /// step waits until every member is ready, so no link breaks (ADR-066).
+    RotateCa {
+        /// Show the rotation's phase and which members it's waiting for.
+        #[arg(long)]
+        status: bool,
+    },
     /// Join tokens (run on the primary).
     Token {
         #[command(subcommand)]
@@ -623,6 +631,9 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             cluster::set_failover(&cfg, &mut io::stdout().lock(), &mode)
         }
         ClusterCommand::Witness => cluster::witness(&cfg),
+        ClusterCommand::RotateCa { status } => {
+            cluster::rotate_ca(&cfg, &mut io::stdout().lock(), status)
+        }
         ClusterCommand::Token {
             command: ClusterTokenCommand::Create { ttl, urls },
         } => cluster::token_create(&cfg, &mut io::stdout().lock(), ttl, urls),

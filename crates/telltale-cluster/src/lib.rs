@@ -11,6 +11,7 @@ pub mod net;
 pub mod node;
 pub mod pki;
 pub mod renew;
+pub mod rotation;
 pub mod sync;
 pub mod token;
 pub mod wire;

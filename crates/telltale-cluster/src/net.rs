@@ -351,6 +351,10 @@ pub struct Member {
     pub protocol: u32,
     /// The Git commit of the configuration it serves (ADR-049).
     pub source_commit: String,
+    /// The CAs it trusts ([`crate::pki::trust_fp`]) and the CA that issued its certificate
+    /// (hex fingerprint), from its heartbeats: CA rotation readiness (T5.4c).
+    pub trust_fp: String,
+    pub issuer_fp: String,
 }
 
 impl Member {
@@ -545,9 +549,14 @@ impl Cluster {
         if !eligible {
             return None;
         }
-        let key = self.identity.ca_key_pem().ok()?;
+        let id = self.identity.reload();
+        let key = id.ca_key_pem().ok()?;
         Some(Frame {
-            body: Some(Body::KeyShare(KeyShare { ca_key_pem: key })),
+            body: Some(Body::KeyShare(KeyShare {
+                ca_key_pem: key,
+                // During a CA rotation, the new CA's key too (T5.4c).
+                next_ca_key_pem: id.next_ca_key_pem().unwrap_or_default(),
+            })),
         })
     }
 
@@ -1025,7 +1034,8 @@ impl Cluster {
             return Ok(0);
         }
         let url = self.primary_url().ok_or("not connected to the primary")?;
-        let tls = tls_connect(&url, client_config(&self.identity)?).await?;
+        // The current certificate and trusted CAs: they change with renewals and CA rotations.
+        let tls = tls_connect(&url, client_config(&self.identity.reload())?).await?;
         let (send, conn) =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
                 .await
@@ -1135,9 +1145,15 @@ impl Cluster {
                         u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX),
                     )
                 });
+        // T5.4c — what this node trusts, and who issued its certificate.
+        let id = self.identity.reload();
+        let trust_fp = crate::pki::trust_fp(&id.ca_pem);
+        let issuer_fp = crate::pki::issuer_fp(&id.cert_pem, &id.ca_pem).unwrap_or_default();
         Frame {
             body: Some(Body::Heartbeat(Heartbeat {
                 source_commit: l.source_commit.clone(),
+                trust_fp,
+                issuer_fp,
                 ts_ms: now_ms(),
                 epoch: l.epoch.max(self.role().1),
                 applied_seq: l.applied_seq,
@@ -1203,10 +1219,18 @@ impl Cluster {
                         servfail_permille: prev.as_ref().map_or(0, |p| p.servfail_permille),
                         p90_us: prev.as_ref().map_or(0, |p| p.p90_us),
                         uptime_s: prev.as_ref().map_or(0, |p| p.uptime_s),
-                        behind_since_ms: prev.and_then(|p| p.behind_since_ms),
+                        behind_since_ms: prev.as_ref().and_then(|p| p.behind_since_ms),
                         config_source: h.config_source,
                         protocol: h.protocol,
                         source_commit: h.source_commit,
+                        trust_fp: prev
+                            .as_ref()
+                            .map(|p| p.trust_fp.clone())
+                            .unwrap_or_default(),
+                        issuer_fp: prev
+                            .as_ref()
+                            .map(|p| p.issuer_fp.clone())
+                            .unwrap_or_default(),
                     },
                 );
                 drop(members);
@@ -1237,6 +1261,10 @@ impl Cluster {
                     .max(hb.applied_seq);
                 if let Some(m) = members.get_mut(id) {
                     m.last_seen_ms = now;
+                    if !hb.trust_fp.is_empty() {
+                        m.trust_fp.clone_from(&hb.trust_fp);
+                        m.issuer_fp.clone_from(&hb.issuer_fp);
+                    }
                     m.epoch = hb.epoch;
                     m.applied_seq = hb.applied_seq;
                     m.qps = hb.qps;
@@ -1292,6 +1320,11 @@ impl Cluster {
                 drop(members);
                 if !from_primary {
                     return Err("a cluster key from a node that isn't the primary".into());
+                }
+                if !k.next_ca_key_pem.is_empty()
+                    && let Err(e) = self.identity.store_ca_key(&k.next_ca_key_pem)
+                {
+                    warn!("cluster: the next CA key was refused: {e}");
                 }
                 match self.identity.store_ca_key(&k.ca_key_pem) {
                     Ok(true) => {
@@ -1410,19 +1443,19 @@ async fn write_frames(
         return;
     }
     // ADR-051 — the primary shares the signing key with eligible peers (by certified ID),
-    // as soon as the registry lists them (checked again on every heartbeat).
-    let mut key_shared = false;
+    // as soon as the registry lists them (checked again on every heartbeat), and again whenever
+    // the share changes (a CA rotation adds the next key, T5.4c).
+    let mut key_shared: Option<Vec<u8>> = None;
     // The current manifest first (a peer that just connected), then whatever happens next.
     let mut pending = manifests.borrow_and_update().clone();
     loop {
-        if !key_shared && let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
-            key_shared = true;
-            if tx
-                .send_data(Bytes::from(wire::encode(&frame)))
-                .await
-                .is_err()
-            {
-                return;
+        if let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
+            let bytes = wire::encode(&frame);
+            if key_shared.as_deref() != Some(bytes.as_slice()) {
+                if tx.send_data(Bytes::from(bytes.clone())).await.is_err() {
+                    return;
+                }
+                key_shared = Some(bytes);
             }
         }
         let frame = if let Some(m) = pending.take() {
@@ -1478,7 +1511,7 @@ async fn serve_ca(cluster: &Cluster, req: Request<Incoming>) -> Response<HttpBod
         return reply(StatusCode::PAYLOAD_TOO_LARGE, "request too large".into());
     };
     let nonce = String::from_utf8_lossy(&body.to_bytes()).into_owned();
-    let ca_pem = cluster.identity.ca_pem.clone();
+    let ca_pem = cluster.identity.reload().ca_pem;
     let Ok(fp) = crate::pki::fingerprint(&ca_pem) else {
         return reply(StatusCode::INTERNAL_SERVER_ERROR, "CA unreadable".into());
     };
@@ -1802,7 +1835,7 @@ pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
 /// Keeps a stream to the first reachable URL open, reconnecting with jittered backoff until
 /// `stop` changes.
 pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
-    let mut cfg = match client_config(&cluster.identity) {
+    let mut cfg = match client_config(&cluster.identity.reload()) {
         Ok(c) => c,
         Err(e) => {
             warn!("cluster: can't build TLS settings: {e}");
@@ -1932,6 +1965,51 @@ async fn futures_join_all<F: std::future::Future>(
 /// How long a failed fetch or apply waits before trying the same manifest again.
 const SYNC_RETRY: Duration = Duration::from_secs(2);
 
+/// REQ: CLU-001 (T5.4c) — adopts the CAs a verified manifest says to trust (step by step,
+/// never dropping every CA this node trusts) and rebuilds TLS for new connections.
+pub fn adopt_manifest_trust(cluster: &Cluster, m: &ClusterManifest) {
+    if m.ca_bundle.is_empty() {
+        return;
+    }
+    match cluster.identity.adopt_trust(&m.ca_bundle) {
+        Ok(true) => {
+            cluster.bump_cert_generation();
+            let n = crate::pki::certs_of(&m.ca_bundle).len();
+            info!(cas = n, "cluster: trusted CAs updated from the primary");
+            cluster.event(
+                "trust_updated",
+                &cluster.identity.meta.node_id,
+                format!("{n} CA(s) trusted"),
+            );
+        }
+        Ok(false) => {}
+        Err(e) => warn!("cluster: the primary's CA bundle was refused: {e}"),
+    }
+}
+
+/// For nodes that don't apply configuration (witnesses): follows the primary's manifests only
+/// for the CAs to trust, so a CA rotation reaches them too (T5.4c).
+pub async fn follow_trust(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
+    let mut incoming = cluster.incoming();
+    incoming.mark_changed();
+    loop {
+        tokio::select! {
+            _ = stop.changed() => return,
+            r = incoming.changed() => if r.is_err() { return },
+        }
+        let Some(signed) = incoming.borrow_and_update().clone() else {
+            continue;
+        };
+        match signed.verify(&cluster.identity.reload().ca_pem) {
+            Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => {
+                adopt_manifest_trust(&cluster, &m);
+            }
+            Ok(_) => {}
+            Err(e) => warn!("ignoring a cluster manifest: {e}"),
+        }
+    }
+}
+
 /// Replica side of CLU-003: follows the manifests the primary sends, starting after
 /// `(epoch, seq)` (what's already applied). For each newer manifest whose signature verifies,
 /// fetches the missing blobs into `store` and calls `apply`; on success the new version is
@@ -1961,7 +2039,8 @@ pub async fn follow<F, Fut>(
             let Some(signed) = incoming.borrow_and_update().clone() else {
                 break;
             };
-            let m = match signed.verify(&cluster.identity.ca_pem) {
+            // T5.4c — the trusted CAs change during a rotation: read them fresh.
+            let m = match signed.verify(&cluster.identity.reload().ca_pem) {
                 Ok(m) if m.cluster_id == cluster.identity.meta.cluster_id => m,
                 Ok(_) => {
                     warn!("ignoring a manifest from another cluster");
@@ -1974,6 +2053,7 @@ pub async fn follow<F, Fut>(
                     break;
                 }
             };
+            adopt_manifest_trust(&cluster, &m);
             if !m.newer_than(epoch, seq) || m.epoch < cluster.role().1 {
                 break;
             }

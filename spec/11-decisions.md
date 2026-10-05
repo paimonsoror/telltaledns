@@ -1119,3 +1119,42 @@ Tokens so far had a role-like `scope` (read/write/admin), and the audit log alre
 - OAuth for MCP clients (AGT-008) is P1.
 - MCP resources and prompts are later.
 - An SSE stream (`GET /mcp`) would be needed only for server-initiated messages.
+
+## ADR-066 — CA rotation: two trusted CAs, three member-gated phases (Proposed)
+**Context:** T5.4c (CLU-001, CLU-005). `spec/12` and the roadmap ask for:
+- CA rotation: a new key, a cross-signed transition, node certificate renewal over the channel, and the old CA retired;
+- re-sharing the key with eligible nodes.
+
+ADR-057 already renews node certificates (same key) over the channel. A CA rotation changes the trust anchor every TLS handshake and every manifest signature depends on.
+
+**Decision:**
+- **Two trusted CAs instead of cross-signing:** during a rotation `ca.crt` is a bundle of both CAs. TLS trusts every certificate in it, so certificates from either CA verify. Manifest signatures and issued certificates are checked against any CA in the bundle. The bundle's first CA is the one that signs, and `ca.key` is always its key. Cross-signing adds nothing in a cluster whose members all receive the bundle.
+- **Distribution:**
+  - The primary's signed manifest carries `ca_bundle`. A node adopts a new bundle only if it keeps at least one CA the node already trusts, so trust moves step by step and a stolen CA alone can't replace it.
+  - Witnesses follow manifests for this alone.
+  - Eligible nodes get the next CA's key with the existing key share, now re-sent whenever it changes. A key that arrives before its CA is trusted is held (`ca-pending.key`) until a verified bundle includes it.
+- **Phases, driven by the primary, each gated on every non-ephemeral registry member** (heartbeats now carry `trust_fp`, the CAs a node trusts, and `issuer_fp`, the CA of its certificate):
+  1. `trust`: the bundle is old + new; the old CA signs.
+  2. `switch`: once all trust both, the new key becomes `ca.key` (the old is kept as `ca-old.key`) and the bundle becomes new + old. Nodes see that their certificate isn't from the signing CA and renew within a minute (self-issued with the new key, or over `cert.renew`). A node whose `ca.key` doesn't match the signing CA asks the primary rather than sign with the old key.
+  3. `finish`: once every certificate is from the new CA, the bundle is the new CA alone, and the old key and the rotation state are deleted.
+- **Operator interface:** `telltale cluster rotate-ca` starts a rotation on the primary while it runs, and the running primary carries it out (it re-reads its identity every cycle). `--status` and a `ca_rotation` Cluster check show the phase and pending members. Each new CA's name carries a label, so the two trusted CAs never share a subject.
+- **Fixed on the way:**
+  - Configuration fetches used the TLS settings from start-up, so they'd fail after a rotation. They'd also present an old certificate after a renewal. They now read the current identity.
+  - Witnesses never renewed their certificates (ADR-057 gap); they do now.
+  - Cluster files were made owner-only only after being written, and two streams could collide on one temporary name. Each write now uses its own temporary name, and secrets are created owner-only.
+
+**Verification:**
+- Unit tests:
+  - bundles: verify, issuer, order-independent fingerprint;
+  - start: refuses a second rotation;
+  - adoption: refuses unrelated trust, promotes a held key, switches, then retires.
+- `deploy/cluster/rotate-e2e.sh` (CI) with a primary, an eligible replica, and a witness under DNS load:
+  - all three phases complete, and every node ends trusting only the new CA, with a certificate from it;
+  - the replica holds the new key, and no old, next, or pending key is left;
+  - every query was answered during the rotation;
+  - a configuration change replicates afterwards (signed with the new key), and a restarted replica reconnects and syncs.
+
+**Consequences:**
+- A member offline for the whole rotation must rejoin.
+- Join tokens pin the CA fingerprint, so tokens from before a rotation stop working.
+- A forced rotation (with members down) is a possible follow-up.

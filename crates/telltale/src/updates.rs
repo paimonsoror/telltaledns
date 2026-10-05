@@ -139,6 +139,13 @@ pub(crate) async fn run(
     if !check {
         return;
     }
+    // A local build has no channel to compare with.
+    if build_info::CHANNEL == "dev" {
+        let mut st = status.lock().unwrap_or_else(PoisonError::into_inner);
+        st.state = "newer".into();
+        st.error = Some("a development build: not compared with releases".into());
+        return;
+    }
     // Not at start-up: let the node settle (and keep restarts from hammering GitHub).
     let mut wait = Duration::from_secs(60);
     loop {

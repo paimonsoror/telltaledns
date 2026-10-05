@@ -776,6 +776,25 @@ down) is retried every 10 minutes, and shows in the Cluster page's events and in
 `telltale_cluster_cert_expiry_timestamp_seconds`. The certificate check on the Cluster page and the
 Helm chart's alert warn below 14 days.
 
+**Rotating the cluster CA.** The cluster CA lasts 10 years. To replace it (a suspected leak of
+a node holding the cluster key, or policy), run on the primary while it runs:
+```sh
+telltale cluster rotate-ca            # start
+telltale cluster rotate-ca --status   # phase, and which members it waits for
+```
+The primary drives three steps, each only when every member is ready, so no link breaks and
+DNS keeps answering:
+1. Every node trusts the new CA next to the old one (sent in the signed configuration).
+   Eligible nodes also get the new key.
+2. The new CA signs. Every node renews its certificate from it within a minute, keeping its
+   key and node ID.
+3. Every certificate is from the new CA, so the old one is retired and its key is deleted.
+
+A member that's away holds the rotation until it's back; the Cluster page shows the rotation
+and whom it waits for. Ephemeral members (resolver pods) don't hold it up. A node that's away
+for the whole rotation can't connect afterwards and must join again with a token. Join tokens
+made before a rotation pin the old CA, so make new ones afterwards.
+
 **Automatic failover (with a witness or three eligible nodes).** Two nodes can't tell "the
 other node is down" from "the link between us is down", so automatic failover needs a third
 vote: another eligible node, or a **witness**, a tiny vote-only process that can run on a NAS,

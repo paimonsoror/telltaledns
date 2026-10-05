@@ -67,6 +67,10 @@ pub struct ClusterManifest {
     /// keeps its last version when it can't read this one, and says to upgrade.
     #[serde(default)]
     pub schema: u32,
+    /// The CAs every node should trust (T5.4c): one normally, two during a CA rotation, the
+    /// first being the one that signs. Empty from older primaries.
+    #[serde(default)]
+    pub ca_bundle: String,
 }
 
 /// A Git commit as a configuration's provenance (ADR-049). `repo`, `git_ref` and `path` also
@@ -121,12 +125,19 @@ impl Signed {
         Ok(Self { json, sig })
     }
 
-    /// Checks the signature against the CA certificate and returns the manifest.
+    /// Checks the signature against the CA certificate (any CA of a bundle, during a
+    /// rotation) and returns the manifest.
     pub fn verify(&self, ca_cert_pem: &str) -> Result<ClusterManifest, String> {
-        let public = ca_public_key(ca_cert_pem)?;
-        UnparsedPublicKey::new(&ED25519, &public)
-            .verify(&self.json, &self.sig)
-            .map_err(|_| "the cluster manifest's signature doesn't verify".to_owned())?;
+        let ok = pki::certs_of(ca_cert_pem).iter().any(|ca| {
+            ca_public_key(ca).is_ok_and(|public| {
+                UnparsedPublicKey::new(&ED25519, &public)
+                    .verify(&self.json, &self.sig)
+                    .is_ok()
+            })
+        });
+        if !ok {
+            return Err("the cluster manifest's signature doesn't verify".to_owned());
+        }
         serde_json::from_slice(&self.json).map_err(|e| format!("bad cluster manifest: {e}"))
     }
 }

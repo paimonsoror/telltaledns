@@ -686,8 +686,13 @@ async fn publish_loop(
             "gitops".clone_into(&mut authority);
             let _ = cluster.identity.save_authority("gitops");
         }
+        // REQ: CLU-001 (T5.4c) — the trusted CAs travel with every version; a CA rotation
+        // step is a new version.
+        let id_now = cluster.identity.reload();
+        let ca_bundle = id_now.ca_pem.clone();
         let meta_hash = hash(
-            &serde_json::to_vec(&(&nodes, &authority, &failover, &source)).unwrap_or_default(),
+            &serde_json::to_vec(&(&nodes, &authority, &failover, &source, &ca_bundle))
+                .unwrap_or_default(),
         );
         let new_epoch = epoch > last.epoch;
         let changed = new_epoch
@@ -733,7 +738,10 @@ async fn publish_loop(
                 failover,
                 schema: telltale_cluster::sync::SCHEMA,
                 source: source.clone(),
+                ca_bundle,
             };
+            // The signing key changes when a CA rotation switches (T5.4c).
+            let key = id_now.ca_key_pem().unwrap_or_else(|_| key.clone());
             match Signed::sign(&m, &key) {
                 Ok(signed) => {
                     cluster.publish(signed, blobs);

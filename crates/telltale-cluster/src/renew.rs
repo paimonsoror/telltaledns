@@ -35,6 +35,14 @@ pub fn due(cert_pem: &str) -> bool {
     pki::validity(cert_pem).map_or(true, |(left, _)| left < RENEW_DAYS_LEFT * 86_400)
 }
 
+/// Whether a certificate wasn't issued by the bundle's signing CA (the first): after a CA
+/// rotation switches, every node renews (T5.4c).
+pub fn stale_issuer(cert_pem: &str, ca_bundle: &str) -> bool {
+    pki::certs_of(ca_bundle)
+        .first()
+        .is_some_and(|signer| pki::verify_issued(cert_pem, signer).is_err())
+}
+
 /// Signs `peer`'s renewal request (on a node holding the cluster key).
 pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, String> {
     let id = cluster.identity.reload();
@@ -60,7 +68,8 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
 pub async fn renew_now(cluster: &Cluster) -> Result<(), String> {
     let id = cluster.identity.reload();
     let csr = pki::csr_for(&id.key_pem).map_err(|e| e.to_string())?;
-    let cert = if id.holds_ca() {
+    // Self-issue only with the signing CA's key (a node that missed a rotation's new key asks).
+    let cert = if id.holds_ca() && id.signs_now() {
         id.issue_for(&csr, &hosts(&id.meta.advertise))?.1
     } else {
         let primary = cluster
@@ -90,26 +99,48 @@ pub async fn renew_now(cluster: &Cluster) -> Result<(), String> {
     Ok(())
 }
 
-/// Renews this node's certificate whenever it's due, until `stop`.
+/// Renews this node's certificate whenever it's due, or once a CA rotation has switched the
+/// signing CA, until `stop`.
 pub async fn run(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
-    let mut wait = Duration::from_secs(60);
+    // Expiry is checked every 6 hours; a switched CA (cheap to see) every minute.
+    let tick = Duration::from_secs(60);
+    let mut next_expiry_check = tokio::time::Instant::now() + tick;
+    let mut retry_at: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {
             _ = stop.changed() => return,
-            () = tokio::time::sleep(wait) => {}
+            () = tokio::time::sleep(tick) => {}
         }
-        wait = EVERY;
-        if !due(&cluster.identity.reload().cert_pem) {
+        let now = tokio::time::Instant::now();
+        if retry_at.is_some_and(|t| now < t) {
             continue;
         }
+        let id = cluster.identity.reload();
+        let stale = stale_issuer(&id.cert_pem, &id.ca_pem);
+        let expiring = now >= next_expiry_check && due(&id.cert_pem);
+        if now >= next_expiry_check {
+            next_expiry_check = now + EVERY;
+        }
+        if !stale && !expiring {
+            continue;
+        }
+        if stale {
+            info!("cluster: the cluster CA was rotated; renewing this node's certificate");
+        }
+        retry_at = None;
         if let Err(e) = renew_now(&cluster).await {
-            warn!("cluster: node certificate renewal failed (retrying in 10 min): {e}");
+            // A rotation retries every minute (the primary may be mid-switch); expiry every 10.
+            let wait = if stale { tick } else { RETRY };
+            warn!(
+                retry_s = wait.as_secs(),
+                "cluster: node certificate renewal failed: {e}"
+            );
             cluster.event(
                 "cert_renew_failed",
                 &cluster.identity.meta.node_id.clone(),
                 e,
             );
-            wait = RETRY;
+            retry_at = Some(now + wait);
         }
     }
 }

@@ -136,15 +136,31 @@ fn now() -> u64 {
 
 /// Writes `data` to `path` atomically; owner-only when `secret`.
 fn write(path: &Path, data: &[u8], secret: bool) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data)?;
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // A name per write: two streams can store the same thing at once (a key share arrives on
+    // both directions of a link).
+    static N: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    // Secrets are owner-only from the first byte.
     #[cfg(unix)]
     if secret {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
     }
     #[cfg(not(unix))]
     let _ = secret;
+    let result = opts.open(&tmp).and_then(|mut f| f.write_all(data));
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     std::fs::rename(&tmp, path)
 }
 
@@ -240,16 +256,118 @@ impl Identity {
     }
 
     /// Stores the CA key received from the primary (eligible nodes, ADR-051), after checking it
-    /// belongs to this cluster's CA certificate.
+    /// belongs to this cluster's CA certificate: the signing CA's key as `ca.key`, and during a
+    /// rotation the other CA's as `ca-next.key` (T5.4c).
     pub fn store_ca_key(&self, key_pem: &str) -> Result<bool, String> {
-        if self.holds_ca() {
+        let public = crate::sync::public_of(key_pem)?;
+        let cas = pki::certs_of(&self.reload().ca_pem);
+        let Some(pos) = cas
+            .iter()
+            .position(|c| crate::sync::ca_public_key(c).is_ok_and(|k| k == public))
+        else {
+            // A rotation's next key can arrive before the manifest that adds its CA: hold it
+            // until a verified bundle includes it (`adopt_trust`). It came from the primary
+            // over the authenticated channel, and is used only once its CA is trusted.
+            write(&self.dir.join("ca-pending.key"), key_pem.as_bytes(), true)
+                .map_err(|e| e.to_string())?;
+            return Ok(false);
+        };
+        let file = if pos == 0 { "ca.key" } else { "ca-next.key" };
+        let path = self.dir.join(file);
+        if path.exists()
+            && std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|k| crate::sync::public_of(&k).ok())
+                .is_some_and(|k| k == public)
+        {
             return Ok(false);
         }
-        if crate::sync::public_of(key_pem)? != crate::sync::ca_public_key(&self.ca_pem)? {
-            return Err("the key doesn't belong to this cluster's CA".into());
-        }
-        write(&self.dir.join("ca.key"), key_pem.as_bytes(), true).map_err(|e| e.to_string())?;
+        write(&path, key_pem.as_bytes(), true).map_err(|e| e.to_string())?;
         Ok(true)
+    }
+
+    /// Replaces the trusted CAs (`ca.crt`) with `bundle` from a verified manifest (T5.4c). The
+    /// new bundle must keep a CA this node trusts now, so trust only ever moves step by step.
+    /// When a CA held as `ca-next.key` becomes the signing one, its key becomes `ca.key`.
+    /// Returns whether anything changed.
+    pub fn adopt_trust(&self, bundle: &str) -> Result<bool, String> {
+        let me = self.reload();
+        let new = pki::certs_of(bundle);
+        if new.is_empty() || bundle.trim() == me.ca_pem.trim() {
+            return Ok(false);
+        }
+        let old: Vec<[u8; 32]> = pki::certs_of(&me.ca_pem)
+            .iter()
+            .filter_map(|c| pki::fingerprint(c).ok())
+            .collect();
+        if !new
+            .iter()
+            .any(|c| pki::fingerprint(c).is_ok_and(|f| old.contains(&f)))
+        {
+            return Err("the new CA bundle shares no CA with this node's trust".into());
+        }
+        let signer = crate::sync::ca_public_key(&new[0])?;
+        let next = self.dir.join("ca-next.key");
+        // A key received before its CA was trusted (see `store_ca_key`).
+        let pending = self.dir.join("ca-pending.key");
+        if let Some(k) = std::fs::read_to_string(&pending)
+            .ok()
+            .and_then(|k| crate::sync::public_of(&k).ok())
+            && new
+                .iter()
+                .skip(1)
+                .any(|c| crate::sync::ca_public_key(c).is_ok_and(|x| x == k))
+        {
+            std::fs::rename(&pending, &next).map_err(|e| e.to_string())?;
+        }
+        let held = |p: &Path| {
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|k| crate::sync::public_of(&k).ok())
+        };
+        // The signing CA changed to the one whose key this node received ahead of time.
+        if held(&next).is_some_and(|k| k == signer) {
+            let cur = self.dir.join("ca.key");
+            if cur.exists() {
+                let _ = std::fs::rename(&cur, self.dir.join("ca-old.key"));
+            }
+            std::fs::rename(&next, &cur).map_err(|e| e.to_string())?;
+        }
+        // A CA key whose certificate left the bundle is no longer needed.
+        for f in ["ca-old.key", "ca-next.key", "ca-pending.key"] {
+            let p = self.dir.join(f);
+            if let Some(k) = held(&p)
+                && !new
+                    .iter()
+                    .any(|c| crate::sync::ca_public_key(c).is_ok_and(|x| x == k))
+            {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        write(&self.dir.join("ca.crt"), new.concat().as_bytes(), false)
+            .map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// Whether this node holds the key of the CA that signs now (the bundle's first): after a
+    /// CA rotation switches, a node that missed the new key must not sign with the old one.
+    pub fn signs_now(&self) -> bool {
+        let Ok(key) = std::fs::read_to_string(self.dir.join("ca.key")) else {
+            return false;
+        };
+        let signer = pki::certs_of(&self.ca_pem).into_iter().next();
+        match (
+            crate::sync::public_of(&key),
+            signer.map(|c| crate::sync::ca_public_key(&c)),
+        ) {
+            (Ok(k), Some(Ok(s))) => k == s,
+            _ => false,
+        }
+    }
+
+    /// The next CA's key during a rotation, on nodes holding it (T5.4c).
+    pub fn next_ca_key_pem(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("ca-next.key")).ok()
     }
 
     /// This identity as it is on disk now (another task may have updated `cluster.json`).
@@ -342,8 +460,13 @@ impl Identity {
     }
 
     fn ca(&self) -> Result<Ca, String> {
+        // The signing CA is the first of the bundle; `ca.key` is its key.
+        let first = pki::certs_of(&self.ca_pem)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.ca_pem.clone());
         Ok(Ca {
-            cert_pem: self.ca_pem.clone(),
+            cert_pem: first,
             key_pem: std::fs::read_to_string(self.dir.join("ca.key")).map_err(|_| {
                 "this node doesn't hold the cluster CA (run this on the primary)".to_owned()
             })?,

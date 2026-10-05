@@ -242,6 +242,10 @@ jobs:
       # within 30 s of the primary's death with 100% of DNS answered; the old primary follows.
       - name: Cluster automatic failover (primary, replica, witness)
         run: bash deploy/cluster/failover-e2e.sh target/bench-fast/telltale
+      # REQ: CLU-001 (T5.4c AC) — rotate the cluster CA under DNS load, every phase gated on
+      # every member; replication and reconnection afterwards.
+      - name: Cluster CA rotation
+        run: bash deploy/cluster/rotate-e2e.sh target/bench-fast/telltale
       # REQ: CLU-010 (T5.11 AC) — rolling upgrade: the published edge build (N-1) and this
       # build (N) in one cluster, both ways round, with a two-server client never failing.
       - name: Cluster rolling upgrade (edge build and this build)

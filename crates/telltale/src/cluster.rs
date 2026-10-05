@@ -69,6 +69,20 @@ pub(crate) fn start(
         Arc::clone(&cluster),
         stop.clone(),
     ));
+    // REQ: CLU-001 (T5.4c, ADR-066) — a CA rotation advances as members report in.
+    let (c, mut stop_rot) = (Arc::clone(&cluster), stop.clone());
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = stop_rot.changed() => return,
+                () = tokio::time::sleep(Duration::from_secs(10)) => {}
+            }
+            if let Some(msg) = telltale_cluster::rotation::step(&c) {
+                info!("cluster: {msg}");
+                c.event("ca_rotation", &c.identity.meta.node_id, msg);
+            }
+        }
+    });
     // REQ: CLU-009 — ephemeral members that went away leave the registry.
     let ttl = Duration::from_secs(u64::from(cfg.cluster.ephemeral_ttl_secs));
     // Sweep at a quarter of the TTL (5-60 s), so a gone member leaves within ~1.25 × TTL.
@@ -330,6 +344,25 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     let mut checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
     let failover = failover_view(c, &nodes);
     checks.push(versions_check(&nodes));
+    // T5.4c (ADR-066) — a CA rotation in progress, and whom it waits for.
+    if let Some(r) = telltale_cluster::rotation::current(&c.identity.reload()) {
+        let waiting = if r.pending.is_empty() {
+            "the next step comes within seconds".to_owned()
+        } else {
+            format!("waiting for {}", r.pending.join(", "))
+        };
+        checks.push(telltale_api::model::ClusterCheck {
+            id: "ca_rotation".into(),
+            ok: true,
+            summary: format!(
+                "CA rotation in progress (phase `{}`): {waiting}",
+                r.phase
+            ),
+            fix: (!r.pending.is_empty()).then(|| {
+                "A member that's away holds the rotation until it's back; links keep working meanwhile.".to_owned()
+            }),
+        });
+    }
     // ADR-056 — `auto` without enough voters is manual in practice: say so.
     if failover.mode == "auto" {
         checks.push(failover_check(&failover));
@@ -916,6 +949,70 @@ pub(crate) fn set_failover(
     ExitCode::SUCCESS
 }
 
+/// `telltale cluster rotate-ca [--status]` (T5.4c, ADR-066).
+pub(crate) fn rotate_ca(
+    cfg: &telltale_config::Config,
+    out: &mut impl Write,
+    status: bool,
+) -> ExitCode {
+    use telltale_cluster::rotation;
+    let id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) => id,
+        Ok(None) => return fail("this node isn't in a cluster"),
+        Err(e) => return fail(&e),
+    };
+    if status {
+        match rotation::current(&id) {
+            None => {
+                let _ = writeln!(out, "No CA rotation in progress.");
+            }
+            Some(r) => {
+                let waiting = match r.phase.as_str() {
+                    "trust" => "members still to trust the new CA",
+                    _ => "members still to get a certificate from the new CA",
+                };
+                let _ = writeln!(
+                    out,
+                    "CA rotation: phase `{}` (new CA {}).",
+                    r.phase,
+                    &r.new_fp[..r.new_fp.len().min(16)]
+                );
+                if r.pending.is_empty() {
+                    let _ = writeln!(
+                        out,
+                        "Nothing to wait for: the next step comes within a few seconds."
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "Waiting for {} {waiting}: {}",
+                        r.pending.len(),
+                        r.pending.join(", ")
+                    );
+                }
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+    let label = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        format!("rotated {secs}")
+    };
+    match rotation::start(&id, &label) {
+        Ok(r) => {
+            let _ = writeln!(
+                out,
+                "Started a CA rotation (new CA {}). The running primary sends it to every node,                  switches once all trust it, and retires the old CA once all have new certificates.                  Follow it with `telltale cluster rotate-ca --status` or on the Cluster page.",
+                &r.new_fp[..r.new_fp.len().min(16)]
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e),
+    }
+}
+
 /// `telltale cluster witness`: a vote-only member (ADR-056). Runs the cluster channel and
 /// the election, nothing else: no DNS, no lists, no API.
 pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
@@ -964,6 +1061,9 @@ pub(crate) fn witness(cfg: &telltale_config::Config) -> ExitCode {
         tokio::spawn(net::dial(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(net::mesh(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(telltale_cluster::failover::run(Arc::clone(&cluster), stop.clone()));
+        // T5.4c: the CAs to trust (a rotation) and the witness's own certificate renewal.
+        tokio::spawn(net::follow_trust(Arc::clone(&cluster), stop.clone()));
+        tokio::spawn(telltale_cluster::renew::run(Arc::clone(&cluster), stop.clone()));
         tokio::spawn(telltale_cluster::renew::run(Arc::clone(&cluster), stop.clone()));
         // The registry and failover mode come with the primary's signed manifests.
         let mut incoming = cluster.incoming();
