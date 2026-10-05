@@ -632,7 +632,16 @@ async fn publish_loop(
             }
             continue;
         }
-        let (_, epoch) = cluster.role();
+        // ADR-051 — the role and epoch together: a node fenced since the check above must not
+        // publish (least of all in the new primary's epoch); `publish_as` checks again.
+        let (role, epoch) = cluster.role();
+        if !matches!(role, node::Role::Primary | node::Role::Emergency) {
+            tokio::select! {
+                r = stop.changed() => if r.is_err() || *stop.borrow() { return; },
+                () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+            continue;
+        }
         let cfg = sources.config.load_full();
         // What to publish: this node's configuration and newest snapshot, or (emergency) the
         // last authoritative version unchanged.
@@ -744,7 +753,14 @@ async fn publish_loop(
             let key = id_now.ca_key_pem().unwrap_or_else(|_| key.clone());
             match Signed::sign(&m, &key) {
                 Ok(signed) => {
-                    cluster.publish(signed, blobs);
+                    if !cluster.publish_as(epoch, signed, blobs) {
+                        // The next pass finds the new role and waits.
+                        warn!(
+                            epoch,
+                            "cluster: no longer the primary of this epoch; not publishing"
+                        );
+                        continue;
+                    }
                     let commit = m
                         .source
                         .as_ref()

@@ -484,6 +484,9 @@ pub struct Cluster {
     behind_since: Mutex<Option<u64>>,
     /// This node's role and the epoch it holds it in (ADR-051); persisted on change.
     role: watch::Sender<(Role, u64)>,
+    /// ADR-051 — held while the role changes and while a manifest is published, so a primary
+    /// that's being fenced never publishes in the new epoch (see [`Cluster::publish_as`]).
+    fence: Mutex<()>,
     /// `gitops` or `file`: how this node's own configuration is managed (ADR-048).
     config_source: Mutex<String>,
     /// Extra frames to send on the stream to each peer (RPC), by peer node ID.
@@ -547,6 +550,7 @@ impl Cluster {
             host_history: Mutex::new(HashMap::new()),
             behind_since: Mutex::new(None),
             role: watch::Sender::new((identity_role, identity_epoch)),
+            fence: Mutex::new(()),
             config_source: Mutex::new("file".into()),
             outbox: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
@@ -904,6 +908,7 @@ impl Cluster {
 
     /// Changes the role (persisted in `cluster.json`) and tells every stream and task.
     pub fn set_role(&self, role: Role, epoch: u64) -> Result<(), String> {
+        let _fence = self.fence.lock().unwrap_or_else(PoisonError::into_inner);
         let mut id = self.identity.reload();
         id.save_role(role, epoch)?;
         self.role.send_replace((role, epoch));
@@ -1031,6 +1036,25 @@ impl Cluster {
     pub fn publish(&self, signed: Signed, blobs: HashMap<String, BlobSource>) {
         *self.served.lock().unwrap_or_else(PoisonError::into_inner) = blobs;
         self.published.send_replace(Some(Arc::new(signed)));
+    }
+
+    /// REQ: CLU-005 (ADR-051) — publishes `signed` only if this node is still the primary (or
+    /// emergency primary) in `epoch`, checked under the same lock as role changes: a step-down
+    /// either happens first (nothing is published) or after (a version of the old epoch, which
+    /// the new primary's newer epoch outranks). Returns whether it was published.
+    pub fn publish_as(
+        &self,
+        epoch: u64,
+        signed: Signed,
+        blobs: HashMap<String, BlobSource>,
+    ) -> bool {
+        let _fence = self.fence.lock().unwrap_or_else(PoisonError::into_inner);
+        let (role, current) = self.role();
+        if !matches!(role, Role::Primary | Role::Emergency) || current != epoch {
+            return false;
+        }
+        self.publish(signed, blobs);
+        true
     }
 
     /// The manifest this node publishes, if any.

@@ -595,3 +595,36 @@ async fn clu_003_unsigned_manifests_are_ignored() {
     assert_eq!(*applied.lock().unwrap(), 0);
     let _ = stop_tx.send(true);
 }
+
+// REQ: CLU-005 (ADR-051) — a primary that's fenced (stepped down to a newer epoch) can't
+// publish any more, least of all in the new primary's epoch; before that, it publishes as usual.
+#[test]
+fn clu_005_a_fenced_primary_never_publishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    let (role, epoch) = c.role();
+    assert_eq!(role, Role::Primary);
+    let signed = || crate::sync::Signed {
+        json: b"{}".to_vec(),
+        sig: Vec::new(),
+    };
+    assert!(c.publish_as(epoch, signed(), HashMap::new()));
+    assert!(c.published().is_some());
+    // A newer primary appears: this node steps down.
+    c.set_role(Role::Replica, epoch + 1).unwrap();
+    assert!(
+        !c.publish_as(epoch, signed(), HashMap::new()),
+        "old epoch: fenced"
+    );
+    assert!(
+        !c.publish_as(epoch + 1, signed(), HashMap::new()),
+        "the new epoch isn't this node's to publish in"
+    );
+}
