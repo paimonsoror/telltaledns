@@ -356,3 +356,14 @@ td.name {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* A group's name in its color (ADR-050); set --gc to the group's color. */
+.group-chip {
+  display: inline-block;
+  margin: 2px 4px 0 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--gc, var(--muted));
+  color: var(--text);
+  background: color-mix(in srgb, var(--gc, var(--muted)) 14%, transparent);
+}

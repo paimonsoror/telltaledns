@@ -62,6 +62,7 @@ impl Backend for Fake {
             .unwrap()
             .push(format!("top {kind:?} {hour:?} {limit} {client:?}"));
         vec![TopItem {
+            groups: Vec::new(),
             key: "a.example".into(),
             name: None,
             count: 7,

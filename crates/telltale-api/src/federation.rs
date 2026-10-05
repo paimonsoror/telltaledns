@@ -49,6 +49,9 @@ pub fn merge_top(parts: Vec<Vec<TopItem>>, limit: usize) -> Vec<TopItem> {
                 if t.name.is_none() {
                     t.name = item.name;
                 }
+                if t.groups.is_empty() {
+                    t.groups = item.groups;
+                }
             }
             None => {
                 by_key.insert(item.key.clone(), item);
@@ -270,6 +273,7 @@ mod tests {
             name: None,
             count: c,
             error_bound: e,
+            groups: Vec::new(),
         };
         let m = merge_top(
             vec![

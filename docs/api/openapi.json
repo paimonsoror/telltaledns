@@ -2456,12 +2456,24 @@
           "source"
         ],
         "properties": {
+          "effectiveGroups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The groups that actually apply, highest priority first: `groups` when set, else the\ngroup of the network its addresses are in (ADR-050), else the default group. Empty\nwhen it depends on the address it's seen at (a device known only by MAC)."
+          },
           "groups": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Highest priority first."
+          },
+          "groupsFrom": {
+            "type": "string",
+            "description": "Where `effectiveGroups` comes from: `device`, `network`, or `default`.",
+            "example": "network"
           },
           "match": {
             "type": "array",
@@ -3582,12 +3594,24 @@
                 "source"
               ],
               "properties": {
+                "effectiveGroups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The groups that actually apply, highest priority first: `groups` when set, else the\ngroup of the network its addresses are in (ADR-050), else the default group. Empty\nwhen it depends on the address it's seen at (a device known only by MAC)."
+                },
                 "groups": {
                   "type": "array",
                   "items": {
                     "type": "string"
                   },
                   "description": "Highest priority first."
+                },
+                "groupsFrom": {
+                  "type": "string",
+                  "description": "Where `effectiveGroups` comes from: `device`, `network`, or `default`.",
+                  "example": "network"
                 },
                 "match": {
                   "type": "array",
@@ -4103,6 +4127,13 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "For clients: the groups whose settings apply to it, highest priority first (its\ndevice's groups, else its network's group, else the default; ADR-050)."
                 },
                 "key": {
                   "type": "string",
@@ -5367,6 +5398,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For clients: the groups whose settings apply to it, highest priority first (its\ndevice's groups, else its network's group, else the default; ADR-050)."
           },
           "key": {
             "type": "string",

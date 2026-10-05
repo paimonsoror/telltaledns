@@ -458,14 +458,15 @@ impl Backend for ApiBackend {
                 .top_names_in_group(k, hour(h), gi, limit);
         Ok(tops
             .into_iter()
-            .map(|t| TopItem {
-                name: (kind == TopKind::Clients)
-                    .then(|| t.key.parse::<IpAddr>().ok())
-                    .flatten()
-                    .and_then(|ip| device_name(&self.src, mapped(ip))),
-                key: t.key,
-                count: t.count,
-                error_bound: t.error,
+            .map(|t| {
+                let (name, groups) = self.client_labels(kind, &t.key);
+                TopItem {
+                    name,
+                    groups,
+                    key: t.key,
+                    count: t.count,
+                    error_bound: t.error,
+                }
             })
             .collect())
     }
@@ -485,23 +486,13 @@ impl Backend for ApiBackend {
             }
         };
         drop(agg);
-        let policy = &self.src.pipeline.current().policy;
         tops.into_iter()
             .map(|t| {
-                // Clients get their configured device name when they have one.
-                let name = (kind == TopKind::Clients)
-                    .then(|| t.key.parse::<IpAddr>().ok())
-                    .flatten()
-                    .and_then(|ip| {
-                        let id =
-                            policy
-                                .clients
-                                .identify(ip, None, None, &self.src.pipeline.neighbors);
-                        policy.clients.client(id).map(|c| c.name.to_string())
-                    });
+                let (name, groups) = self.client_labels(kind, &t.key);
                 TopItem {
                     key: t.key,
                     name,
+                    groups,
                     count: t.count,
                     error_bound: t.error,
                 }
@@ -888,12 +879,21 @@ impl Backend for ApiBackend {
 
     fn clients(&self) -> Vec<ClientInfo> {
         let managed = managed_names(&self.src);
+        let state = self.src.pipeline.current();
+        let clients = &state.policy.clients;
         self.src
             .config
             .load()
             .client
             .iter()
-            .map(|c| client_info(c, &managed))
+            .map(|c| {
+                let mut info = client_info(c, &managed);
+                // ADR-050 — a device without its own groups takes its network's.
+                let (effective, from) = effective_groups(clients, c);
+                info.effective_groups = effective;
+                from.clone_into(&mut info.groups_from);
+                info
+            })
             .collect()
     }
 
@@ -1084,7 +1084,48 @@ fn client_info(c: &telltale_config::ClientConfig, managed: &[String]) -> ClientI
         } else {
             "file".to_owned()
         },
+        effective_groups: c.groups.iter().map(ToString::to_string).collect(),
+        groups_from: "device".to_owned(),
     }
+}
+
+/// The groups that apply to a configured device and where they come from (ADR-050): its
+/// own, else the network group of the first address or subnet it's matched by, else the
+/// default. A device known only by MAC or client ID gets its group from wherever it's seen.
+fn effective_groups(
+    clients: &telltale_policy::ClientTable,
+    c: &telltale_config::ClientConfig,
+) -> (Vec<String>, &'static str) {
+    if !c.groups.is_empty() {
+        return (c.groups.iter().map(ToString::to_string).collect(), "device");
+    }
+    let names = |g: u16| {
+        clients
+            .groups()
+            .get(usize::from(g))
+            .map(|g| vec![g.name.to_string()])
+            .unwrap_or_default()
+    };
+    let mut addressed = false;
+    for key in &c.match_keys {
+        let ip = key.split('/').next().and_then(|a| a.parse::<IpAddr>().ok());
+        if let Some(ip) = ip {
+            addressed = true;
+            if let Some(g) = clients.network_group(ip) {
+                return (names(g), "network");
+            }
+        }
+    }
+    if addressed || clients.groups().iter().all(|g| g.networks.is_empty()) {
+        let default = clients
+            .groups()
+            .iter()
+            .find(|g| g.name.as_ref() == "default")
+            .map(|g| vec![g.name.to_string()])
+            .unwrap_or_default();
+        return (default, "default");
+    }
+    (Vec::new(), "network")
 }
 
 fn version_conflict(current: u64) -> Problem {
@@ -1373,6 +1414,27 @@ fn plan_managed(
 }
 
 impl ApiBackend {
+    /// For a client row of a top list: its device name and the groups that apply to it now.
+    fn client_labels(&self, kind: TopKind, key: &str) -> (Option<String>, Vec<String>) {
+        let Some(ip) = (kind == TopKind::Clients)
+            .then(|| key.parse::<IpAddr>().ok())
+            .flatten()
+        else {
+            return (None, Vec::new());
+        };
+        let state = self.src.pipeline.current();
+        let clients = &state.policy.clients;
+        let id = clients.identify(ip, None, None, &self.src.pipeline.neighbors);
+        (
+            clients.client(id).map(|c| c.name.to_string()),
+            clients
+                .group_names(id)
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        )
+    }
+
     /// A group's index by name, or a 400 naming the groups that exist.
     fn group_index(&self, name: &str) -> Result<u16, Problem> {
         let policy = &self.src.pipeline.current().policy;

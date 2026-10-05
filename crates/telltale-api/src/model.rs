@@ -259,6 +259,10 @@ pub struct TopItem {
     pub name: Option<String>,
     pub count: u64,
     pub error_bound: u64,
+    /// For clients: the groups whose settings apply to it, highest priority first (its
+    /// device's groups, else its network's group, else the default; ADR-050).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 /// What `GET /stats/latency` groups by.
@@ -589,6 +593,15 @@ pub struct ClientInfo {
     /// through the API: editable with `PUT /clients/{name}`).
     #[schema(example = "api")]
     pub source: String,
+    /// The groups that actually apply, highest priority first: `groups` when set, else the
+    /// group of the network its addresses are in (ADR-050), else the default group. Empty
+    /// when it depends on the address it's seen at (a device known only by MAC).
+    #[serde(default)]
+    pub effective_groups: Vec<String>,
+    /// Where `effectiveGroups` comes from: `device`, `network`, or `default`.
+    #[serde(default)]
+    #[schema(example = "network")]
+    pub groups_from: String,
 }
 
 /// A device to create, rename, or change (`PUT /api/v1/clients/{name}`, API-010).

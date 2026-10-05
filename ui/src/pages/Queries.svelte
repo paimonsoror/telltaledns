@@ -394,13 +394,4 @@
   .foot {
     margin-top: 10px;
   }
-  .group-chip {
-    display: inline-block;
-    margin-top: 2px;
-    padding: 0 6px;
-    border-radius: 999px;
-    border: 1px solid var(--gc);
-    color: var(--text);
-    background: color-mix(in srgb, var(--gc) 14%, transparent);
-  }
 </style>

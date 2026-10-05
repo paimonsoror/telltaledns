@@ -977,8 +977,19 @@ export interface components {
         };
         /** @description A configured client (device). */
         ClientInfo: {
+            /**
+             * @description The groups that actually apply, highest priority first: `groups` when set, else the
+             *     group of the network its addresses are in (ADR-050), else the default group. Empty
+             *     when it depends on the address it's seen at (a device known only by MAC).
+             */
+            effectiveGroups?: string[];
             /** @description Highest priority first. */
             groups: string[];
+            /**
+             * @description Where `effectiveGroups` comes from: `device`, `network`, or `default`.
+             * @example network
+             */
+            groupsFrom?: string;
             /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
             match: string[];
             name: string;
@@ -1402,8 +1413,19 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_ClientInfo: {
             items: {
+                /**
+                 * @description The groups that actually apply, highest priority first: `groups` when set, else the
+                 *     group of the network its addresses are in (ADR-050), else the default group. Empty
+                 *     when it depends on the address it's seen at (a device known only by MAC).
+                 */
+                effectiveGroups?: string[];
                 /** @description Highest priority first. */
                 groups: string[];
+                /**
+                 * @description Where `effectiveGroups` comes from: `device`, `network`, or `default`.
+                 * @example network
+                 */
+                groupsFrom?: string;
                 /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
                 match: string[];
                 name: string;
@@ -1583,6 +1605,11 @@ export interface components {
                 count: number;
                 /** Format: int64 */
                 errorBound: number;
+                /**
+                 * @description For clients: the groups whose settings apply to it, highest priority first (its
+                 *     device's groups, else its network's group, else the default; ADR-050).
+                 */
+                groups?: string[];
                 /** @description Domain name or client address. */
                 key: string;
                 /** @description The configured device name, for clients that have one. */
@@ -2065,6 +2092,11 @@ export interface components {
             count: number;
             /** Format: int64 */
             errorBound: number;
+            /**
+             * @description For clients: the groups whose settings apply to it, highest priority first (its
+             *     device's groups, else its network's group, else the default; ADR-050).
+             */
+            groups?: string[];
             /** @description Domain name or client address. */
             key: string;
             /** @description The configured device name, for clients that have one. */
