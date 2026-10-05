@@ -342,6 +342,12 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - the kind scaled e2e checks node names and per-pod shares;
     - the homelab runs scaled for 24 h with no SERVFAIL increase and every pod in sync;
     - docs, help, and site updated.
+- [x] **T6.15 The Cache page (owner request 2026-10-05).** The T6.13 card grows into its own page under System, worth it once each Kubernetes pod has its own cache. *(DNS-006, DNS-009, OBS-003, API-005, CLU-008)*
+  - Per node: hit rate (last hour and since start), entries and memory against the budget, the last hour's lookups, prefetches, stale answers served, and evictions, the warm start, and the `[cache]` settings in effect.
+  - Charts of hit rate and lookups per node over the last hour.
+  - What each cache holds by kind and its top entries by hits, size, or nearest expiry; lookup and flush below.
+  - *AC:* the page shows each node (pods by name) with its settings and start; the top entries list a cached answer and sort; a flushed name disappears; viewers can see it; the scan stays off the query path with a measured cost.
+  - *Done 2026-10-05: `Cache::top` (one pass, a bounded heap per call, one shard lock at a time; 4.6 ms for 100,000 entries over 64 shards, about 70 µs per lock) with `Makeup` (answers, NXDOMAIN, no data, SERVFAIL, stale, validated); `cache_history` (counters every 15 s for an hour, about 15 KiB) and the warm-start result; `GET /api/v1/cache/stats` gains `settings`, `warmStart`, `history`; new `GET /api/v1/cache/entries?sort&limit&node` (agents `analytics:read`), fanned out per node. Cluster rows are labelled by pod name for Kubernetes pods (they share a site), which also fixes the T6.13 node picker. UI: the Cache page (menu: System), Settings links to it, help topic `cache-page`; docs "Cache tools". Tests: cache top/makeup, history points, scope, Playwright (page, top entry, sort, lookup from a name, 400 on a bad sort, Settings link). Deferred: settings edits from the page (they stay in `[cache]`), per-pod history on the Cluster page.*
 - **v1.0 release gate:** all P0 requirements pass; `00 §5` metrics met on the reference hardware; comparative benchmark report published; security review of auth + cluster + parsers completed.
 
 ## M7 — v1.x (post-1.0, priority order)

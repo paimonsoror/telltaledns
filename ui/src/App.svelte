@@ -18,6 +18,7 @@
   import Clients from './pages/Clients.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
+  import Cache from './pages/Cache.svelte';
   import Groups from './pages/Groups.svelte';
   import Lists from './pages/Lists.svelte';
   import Rules from './pages/Rules.svelte';
@@ -38,6 +39,7 @@
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
     { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
     { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },
+    { path: '/cache', label: 'Cache', page: Cache, icon: 'cache', section: 'System' },
     { path: '/settings', label: 'Settings', page: Settings, icon: 'settings', section: 'System' },
   ];
   const sections = [...new Set(pages.map((p) => p.section))];

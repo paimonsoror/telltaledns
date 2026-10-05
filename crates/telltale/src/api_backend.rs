@@ -1138,7 +1138,60 @@ impl Backend for ApiBackend {
             evictions: s.evictions,
             inserts: s.inserts,
             uncacheable: s.uncacheable,
+            settings: Some(cache_settings(&self.src.config.load().cache)),
+            warm_start: self.src.cache_history.warm_start(),
+            history: self.src.cache_history.points(),
         }]
+    }
+
+    // REQ: DNS-006, OBS-003 (T6.15) — this node's top entries and makeup.
+    fn cache_entries(
+        &self,
+        sort: &str,
+        limit: usize,
+        _node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::CacheNodeEntries>, Problem> {
+        use telltale_cache::TopBy;
+        let by = match sort {
+            "bytes" => TopBy::Bytes,
+            "expiring" => TopBy::Expiring,
+            "hits" => TopBy::Hits,
+            other => return Err(Problem::invalid(format!("`sort`: `{other}`"))),
+        };
+        let (top, m) = self.src.cache.top(by, limit, std::time::Instant::now());
+        Ok(vec![telltale_api::model::CacheNodeEntries {
+            node: None,
+            makeup: telltale_api::model::CacheMakeup {
+                positive: m.positive,
+                nxdomain: m.nxdomain,
+                nodata: m.nodata,
+                servfail: m.servfail,
+                stale: m.stale,
+                validated: m.validated,
+            },
+            entries: top
+                .into_iter()
+                .map(|t| {
+                    let mut name = telltale_proto::NameBuf::default();
+                    let shown = telltale_proto::read_name_uncompressed(&t.name, 0, &mut name)
+                        .map_or_else(|_| "?".to_owned(), |_| name.display().to_string());
+                    let e = t.info;
+                    telltale_api::model::CacheTopEntry {
+                        name: shown,
+                        qtype: qtype_name(e.qtype),
+                        rcode: rcode_name(e.rcode),
+                        answers: e.answers,
+                        authentic: e.authentic,
+                        dnssec_ok: e.dnssec_ok,
+                        ttl_left_seconds: i64::from(e.ttl) - i64::from(e.age_secs),
+                        age_seconds: u64::from(e.age_secs),
+                        bytes: e.bytes as u64,
+                        hits: e.hits,
+                    }
+                })
+                .collect(),
+            error: None,
+        }])
     }
 
     fn cache_lookup(&self, name: &str) -> Result<Vec<telltale_api::model::CacheEntry>, Problem> {
@@ -2247,5 +2300,23 @@ fn palette(i: usize, name: &str) -> String {
         "#94a3b8".into()
     } else {
         COLORS[i % COLORS.len()].into()
+    }
+}
+
+/// REQ: DNS-006 (T6.15) — `[cache]` as the API shows it.
+fn cache_settings(c: &telltale_config::CacheConfig) -> telltale_api::model::CacheSettings {
+    telltale_api::model::CacheSettings {
+        max_bytes: c.max_bytes.bytes(),
+        max_entries: (c.max_entries > 0).then_some(u64::from(c.max_entries)),
+        min_ttl_seconds: c.min_ttl,
+        max_ttl_seconds: c.max_ttl,
+        negative_ttl_max_seconds: c.negative_ttl_max,
+        servfail_ttl_seconds: c.servfail_ttl,
+        serve_stale: c.serve_stale,
+        stale_max_age_seconds: c.stale_max_age,
+        prefetch: c.prefetch,
+        prefetch_threshold_percent: c.prefetch_threshold_pct,
+        prefetch_min_hits: c.prefetch_min_hits,
+        persist: c.persist,
     }
 }

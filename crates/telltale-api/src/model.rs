@@ -832,6 +832,122 @@ pub struct CacheNodeStats {
     pub evictions: u64,
     pub inserts: u64,
     pub uncacheable: u64,
+    /// REQ: DNS-006, OBS-003 (T6.15) — the `[cache]` settings in effect (absent from older
+    /// nodes).
+    #[serde(default)]
+    pub settings: Option<CacheSettings>,
+    /// Whether the cache was reloaded from its dump at the last start (DNS-009).
+    #[serde(default)]
+    pub warm_start: Option<CacheWarmStart>,
+    /// The last hour, every 15 s, oldest first (empty from older nodes).
+    #[serde(default)]
+    pub history: Vec<CachePoint>,
+}
+
+/// REQ: DNS-006 (T6.15) — the `[cache]` settings a node runs with.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSettings {
+    /// Memory budget for cached answers.
+    pub max_bytes: u64,
+    /// Entry cap; absent: limited by memory only.
+    pub max_entries: Option<u64>,
+    pub min_ttl_seconds: u32,
+    pub max_ttl_seconds: u32,
+    /// Cap for negative answers (NXDOMAIN, no data), RFC 2308.
+    pub negative_ttl_max_seconds: u32,
+    /// How long SERVFAIL is cached, RFC 9520.
+    pub servfail_ttl_seconds: u32,
+    /// Serve expired answers when upstreams fail (RFC 8767).
+    pub serve_stale: bool,
+    /// How long expired answers are kept for that.
+    pub stale_max_age_seconds: u32,
+    /// Refresh popular answers before they expire.
+    pub prefetch: bool,
+    /// Prefetch below this share of the TTL left.
+    pub prefetch_threshold_percent: u8,
+    /// ...for answers asked at least this often.
+    pub prefetch_min_hits: u32,
+    /// Keep the cache across restarts.
+    pub persist: bool,
+}
+
+/// REQ: DNS-009 (T6.15) — what happened to the cache dump at the last start.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheWarmStart {
+    /// When (RFC 3339).
+    pub at: String,
+    /// Answers reloaded; absent when nothing was loaded.
+    pub loaded: Option<u64>,
+    /// Why nothing was loaded (no dump, a dump from other upstreams, ...).
+    pub note: Option<String>,
+}
+
+/// REQ: OBS-003 (T6.15) — 15 s of one node's cache.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CachePoint {
+    /// End of the interval (RFC 3339).
+    pub at: String,
+    /// Hits per lookup in the interval, percent; absent without lookups.
+    pub hit_percent: Option<f64>,
+    pub lookups: u64,
+    pub stale_served: u64,
+    pub prefetches: u64,
+    pub evictions: u64,
+    /// At the end of the interval.
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+/// REQ: DNS-006, OBS-003 (T6.15) — what the cache holds by kind (entries).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheMakeup {
+    /// Answers with records.
+    pub positive: u64,
+    /// The name doesn't exist.
+    pub nxdomain: u64,
+    /// The name exists, but not with that type.
+    pub nodata: u64,
+    pub servfail: u64,
+    /// Expired, kept only to serve stale when upstreams fail.
+    pub stale: u64,
+    /// DNSSEC-validated.
+    pub validated: u64,
+}
+
+/// One entry in a node's top list.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheTopEntry {
+    #[schema(example = "www.example.com")]
+    pub name: String,
+    #[schema(example = "A")]
+    pub qtype: String,
+    #[schema(example = "NOERROR")]
+    pub rcode: String,
+    pub answers: u16,
+    pub authentic: bool,
+    pub dnssec_ok: bool,
+    /// Seconds until it goes stale; negative: how long it has been stale.
+    pub ttl_left_seconds: i64,
+    pub age_seconds: u64,
+    pub bytes: u64,
+    pub hits: u32,
+}
+
+/// One node's top entries and makeup (`GET /api/v1/cache/entries`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheNodeEntries {
+    /// The node (absent on a standalone node).
+    pub node: Option<String>,
+    pub makeup: CacheMakeup,
+    pub entries: Vec<CacheTopEntry>,
+    /// Set when the node couldn't be asked.
+    pub error: Option<String>,
 }
 
 /// One cached answer for a name.

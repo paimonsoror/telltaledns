@@ -326,6 +326,16 @@
       "docs": "clusters"
     },
     {
+      "id": "cache-page",
+      "title": "The Cache page",
+      "term": "DNS cache",
+      "summary": "Each node (each Kubernetes pod) keeps its own cache of upstream answers. Here you see, per node: its hit rate over the last hour, how full it is, what it holds (answers, names that don't exist, no data, SERVFAIL, stale answers kept for emergencies), its busiest, largest, or soonest-expiring entries, the settings in effect, and whether it started warm from its saved cache.",
+      "when": "To check the cache is doing its job: a home network usually answers well over half its queries from the cache. A low hit rate on one pod usually means it just started; a cache that's full and evicting a lot may want a bigger memory budget.",
+      "example": "pi: 72% hits in the last hour, 4,210 answers, 2.1 MiB of 32 MiB, started warm with 3,900 answers. Its most-hit entry: connectivity-check.ubuntu.com, 1,204 hits.",
+      "caution": "The top entries walk the whole cache, so they load when you open the page or press Refresh, not every few seconds. Changing the settings is done under [cache] in the configuration.",
+      "docs": "cache-tools"
+    },
+    {
       "id": "cache-tools",
       "title": "What's in the cache, and flushing it",
       "term": "DNS cache",

@@ -121,7 +121,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/cluster"
             | "/api/v1/explain"
             | "/api/v1/cache/stats"
-            | "/api/v1/cache/lookup" => {
+            | "/api/v1/cache/lookup"
+            | "/api/v1/cache/entries" => {
                 return Need::Scope("analytics:read");
             }
             "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
@@ -389,6 +390,11 @@ mod tests {
         assert_eq!(
             required(&Method::POST, "/api/v1/cache/flush"),
             Scope("ops:cache")
+        );
+        // T6.15 — the top entries are analytics too.
+        assert_eq!(
+            required(&Method::GET, "/api/v1/cache/entries"),
+            Scope("analytics:read")
         );
     }
 

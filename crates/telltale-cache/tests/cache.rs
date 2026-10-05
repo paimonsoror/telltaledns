@@ -506,6 +506,109 @@ fn dns_006_inspect_and_counted_flush() {
     assert_eq!(cache.stats().entries, 0);
 }
 
+/// REQ: DNS-006, OBS-003 (T6.15) — the top entries by hits, size, and nearest expiry, bounded
+/// by the limit, and the makeup by kind (positive, NXDOMAIN, NODATA, stale) in one pass.
+#[test]
+fn dns_006_top_entries_and_makeup() {
+    use telltale_cache::{Makeup, TopBy};
+    let cache = Cache::new(CachePolicy::default());
+    let t0 = Instant::now();
+    let mut out = [0u8; 512];
+    // a: TTL 300, 5 hits; b: TTL 60, 2 hits; c: TTL 600, no hits.
+    for (n, ttl, hits) in [
+        ("a.example", 300, 5),
+        ("b.example", 60, 2),
+        ("c.example", 600, 0),
+    ] {
+        let m = query_bytes(n, rtype::A, None, 1);
+        let q = parse_query(&m).unwrap();
+        cache
+            .insert(&key(&q), &q, &upstream_a(&q, &[ttl]), t0)
+            .unwrap();
+        let c = Client::from_query(&q, None);
+        for _ in 0..hits {
+            assert!(matches!(
+                cache.get(&key(&q), &q.qname, &c, t0, &mut out),
+                Lookup::Hit { .. }
+            ));
+        }
+    }
+    let m = query_bytes("gone.example", rtype::A, None, 1);
+    let q = parse_query(&m).unwrap();
+    cache
+        .insert(
+            &key(&q),
+            &q,
+            &upstream_negative(&q, rcode::NXDOMAIN, Some(30)),
+            t0,
+        )
+        .unwrap();
+    let hits_before = cache.stats().hits;
+    let names = |v: &[telltale_cache::TopEntry]| -> Vec<String> {
+        v.iter()
+            .map(|e| {
+                let mut n = NameBuf::default();
+                telltale_proto::read_name_uncompressed(&e.name, 0, &mut n).unwrap();
+                n.display().to_string()
+            })
+            .collect()
+    };
+    let later = t0 + std::time::Duration::from_secs(45);
+    let (top, makeup) = cache.top(TopBy::Hits, 2, later);
+    assert_eq!(names(&top), ["a.example", "b.example"]);
+    assert_eq!(top[0].info.hits, 5);
+    assert_eq!(
+        makeup,
+        Makeup {
+            positive: 3,
+            nxdomain: 1,
+            nodata: 0,
+            servfail: 0,
+            stale: 1,
+            validated: 0
+        },
+        "gone.example (NXDOMAIN, TTL 30) is stale at 45 s"
+    );
+    // Nearest expiry: only fresh entries; b (60 s) before a (300 s) before c (600 s).
+    let (top, _) = cache.top(TopBy::Expiring, 10, later);
+    assert_eq!(names(&top), ["b.example", "a.example", "c.example"]);
+    let (top, _) = cache.top(TopBy::Bytes, 10, later);
+    assert_eq!(top.len(), 4);
+    assert!(top.windows(2).all(|w| w[0].info.bytes >= w[1].info.bytes));
+    // limit 0: the makeup alone.
+    let (top, m0) = cache.top(TopBy::Hits, 0, later);
+    assert!(top.is_empty() && m0 == makeup);
+    assert_eq!(cache.stats().hits, hits_before, "looking isn't a hit");
+}
+
+/// REQ: DNS-006 (T6.15) — what a full scan costs: run with
+/// `cargo test --release -p telltale-cache --test cache dns_006_top_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing: run by hand"]
+fn dns_006_top_cost() {
+    use telltale_cache::TopBy;
+    let cache = Cache::new(CachePolicy {
+        max_bytes: 256 << 20,
+        ..CachePolicy::default()
+    });
+    let t0 = Instant::now();
+    for i in 0..100_000 {
+        let m = query_bytes(&format!("host{i}.example.com"), rtype::A, None, 1);
+        let q = parse_query(&m).unwrap();
+        cache
+            .insert(&key(&q), &q, &upstream_a(&q, &[300]), t0)
+            .unwrap();
+    }
+    let entries = cache.stats().entries;
+    let start = Instant::now();
+    let (top, _) = cache.top(TopBy::Hits, 50, t0);
+    let took = start.elapsed();
+    println!(
+        "top 50 of {entries} entries: {took:?} ({} returned)",
+        top.len()
+    );
+}
+
 #[test]
 fn dns_006_byte_budget_is_respected() {
     let policy = CachePolicy {

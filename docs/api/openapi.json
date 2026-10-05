@@ -636,6 +636,68 @@
         }
       }
     },
+    "/api/v1/cache/entries": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "The cache's top entries and makeup, per node.",
+        "description": "For each node: what its cache holds by kind (answers, NXDOMAIN, no data, SERVFAIL, stale,\nDNSSEC-validated), and its `limit` entries with the most hits, the largest, or the fresh\nones closest to expiring. Each node walks its cache once for this (a few milliseconds per\n100,000 entries, off the query path); looking doesn't count as a hit. A node that couldn't\nbe asked is listed with the error.",
+        "operationId": "entries",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "`hits` (default), `bytes`, or `expiring` (fresh answers closest to expiring).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Entries per node, 1 to 200 (default 25).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "node",
+            "in": "query",
+            "description": "One node only (its site, pod, or ID); absent: every node.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One row per node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_CacheNodeEntries"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An unknown sort or node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cache/flush": {
       "post": {
         "tags": [
@@ -3031,6 +3093,88 @@
           }
         }
       },
+      "CacheMakeup": {
+        "type": "object",
+        "description": "REQ: DNS-006, OBS-003 (T6.15) — what the cache holds by kind (entries).",
+        "required": [
+          "positive",
+          "nxdomain",
+          "nodata",
+          "servfail",
+          "stale",
+          "validated"
+        ],
+        "properties": {
+          "nodata": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The name exists, but not with that type.",
+            "minimum": 0
+          },
+          "nxdomain": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The name doesn't exist.",
+            "minimum": 0
+          },
+          "positive": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers with records.",
+            "minimum": 0
+          },
+          "servfail": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stale": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Expired, kept only to serve stale when upstreams fail.",
+            "minimum": 0
+          },
+          "validated": {
+            "type": "integer",
+            "format": "int64",
+            "description": "DNSSEC-validated.",
+            "minimum": 0
+          }
+        }
+      },
+      "CacheNodeEntries": {
+        "type": "object",
+        "description": "One node's top entries and makeup (`GET /api/v1/cache/entries`).",
+        "required": [
+          "makeup",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CacheTopEntry"
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the node couldn't be asked."
+          },
+          "makeup": {
+            "$ref": "#/components/schemas/CacheMakeup"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (absent on a standalone node)."
+          }
+        }
+      },
       "CacheNodeStats": {
         "type": "object",
         "description": "REQ: DNS-006 (T6.13) — one node's cache counters.",
@@ -3060,6 +3204,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CachePoint"
+            },
+            "description": "The last hour, every 15 s, oldest first (empty from older nodes)."
           },
           "hitPercent": {
             "type": [
@@ -3096,6 +3247,17 @@
             "format": "int64",
             "minimum": 0
           },
+          "settings": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CacheSettings",
+                "description": "REQ: DNS-006, OBS-003 (T6.15) — the `[cache]` settings in effect (absent from older\nnodes)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "staleServed": {
             "type": "integer",
             "format": "int64",
@@ -3105,6 +3267,251 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "warmStart": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CacheWarmStart",
+                "description": "Whether the cache was reloaded from its dump at the last start (DNS-009)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CachePoint": {
+        "type": "object",
+        "description": "REQ: OBS-003 (T6.15) — 15 s of one node's cache.",
+        "required": [
+          "at",
+          "lookups",
+          "staleServed",
+          "prefetches",
+          "evictions",
+          "entries",
+          "bytes"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "End of the interval (RFC 3339)."
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "At the end of the interval.",
+            "minimum": 0
+          },
+          "evictions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hitPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Hits per lookup in the interval, percent; absent without lookups."
+          },
+          "lookups": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "prefetches": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "staleServed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "CacheSettings": {
+        "type": "object",
+        "description": "REQ: DNS-006 (T6.15) — the `[cache]` settings a node runs with.",
+        "required": [
+          "maxBytes",
+          "minTtlSeconds",
+          "maxTtlSeconds",
+          "negativeTtlMaxSeconds",
+          "servfailTtlSeconds",
+          "serveStale",
+          "staleMaxAgeSeconds",
+          "prefetch",
+          "prefetchThresholdPercent",
+          "prefetchMinHits",
+          "persist"
+        ],
+        "properties": {
+          "maxBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Memory budget for cached answers.",
+            "minimum": 0
+          },
+          "maxEntries": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Entry cap; absent: limited by memory only.",
+            "minimum": 0
+          },
+          "maxTtlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "minTtlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "negativeTtlMaxSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Cap for negative answers (NXDOMAIN, no data), RFC 2308.",
+            "minimum": 0
+          },
+          "persist": {
+            "type": "boolean",
+            "description": "Keep the cache across restarts."
+          },
+          "prefetch": {
+            "type": "boolean",
+            "description": "Refresh popular answers before they expire."
+          },
+          "prefetchMinHits": {
+            "type": "integer",
+            "format": "int32",
+            "description": "...for answers asked at least this often.",
+            "minimum": 0
+          },
+          "prefetchThresholdPercent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Prefetch below this share of the TTL left.",
+            "minimum": 0
+          },
+          "serveStale": {
+            "type": "boolean",
+            "description": "Serve expired answers when upstreams fail (RFC 8767)."
+          },
+          "servfailTtlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long SERVFAIL is cached, RFC 9520.",
+            "minimum": 0
+          },
+          "staleMaxAgeSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long expired answers are kept for that.",
+            "minimum": 0
+          }
+        }
+      },
+      "CacheTopEntry": {
+        "type": "object",
+        "description": "One entry in a node's top list.",
+        "required": [
+          "name",
+          "qtype",
+          "rcode",
+          "answers",
+          "authentic",
+          "dnssecOk",
+          "ttlLeftSeconds",
+          "ageSeconds",
+          "bytes",
+          "hits"
+        ],
+        "properties": {
+          "ageSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "answers": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "authentic": {
+            "type": "boolean"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dnssecOk": {
+            "type": "boolean"
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "example": "www.example.com"
+          },
+          "qtype": {
+            "type": "string",
+            "example": "A"
+          },
+          "rcode": {
+            "type": "string",
+            "example": "NOERROR"
+          },
+          "ttlLeftSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until it goes stale; negative: how long it has been stale."
+          }
+        }
+      },
+      "CacheWarmStart": {
+        "type": "object",
+        "description": "REQ: DNS-009 (T6.15) — what happened to the cache dump at the last start.",
+        "required": [
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "When (RFC 3339)."
+          },
+          "loaded": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Answers reloaded; absent when nothing was loaded.",
+            "minimum": 0
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why nothing was loaded (no dump, a dump from other upstreams, ...)."
           }
         }
       },
@@ -4937,6 +5344,58 @@
           }
         }
       },
+      "Items_CacheNodeEntries": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One node's top entries and makeup (`GET /api/v1/cache/entries`).",
+              "required": [
+                "makeup",
+                "entries"
+              ],
+              "properties": {
+                "entries": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CacheTopEntry"
+                  }
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Set when the node couldn't be asked."
+                },
+                "makeup": {
+                  "$ref": "#/components/schemas/CacheMakeup"
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node (absent on a standalone node)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_CacheNodeStats": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -4976,6 +5435,13 @@
                   "format": "int64",
                   "minimum": 0
                 },
+                "history": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CachePoint"
+                  },
+                  "description": "The last hour, every 15 s, oldest first (empty from older nodes)."
+                },
                 "hitPercent": {
                   "type": [
                     "number",
@@ -5011,6 +5477,17 @@
                   "format": "int64",
                   "minimum": 0
                 },
+                "settings": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/CacheSettings",
+                      "description": "REQ: DNS-006, OBS-003 (T6.15) — the `[cache]` settings in effect (absent from older\nnodes)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "staleServed": {
                   "type": "integer",
                   "format": "int64",
@@ -5020,6 +5497,17 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "warmStart": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/CacheWarmStart",
+                      "description": "Whether the cache was reloaded from its dump at the last start (DNS-009)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }

@@ -61,6 +61,8 @@ pub(crate) struct Sources {
     pub(crate) anomalies: Option<Arc<crate::anomaly::Anomalies>>,
     /// The machine this node runs on (T6.11), sampled every 15 s.
     pub(crate) host: Arc<crate::host::HostMonitor>,
+    /// The cache's last hour and warm start (T6.15).
+    pub(crate) cache_history: Arc<crate::cache_history::CacheHistory>,
     /// Sign-in and the audit log, once the API listener has opened `state.db`.
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
     /// Masked-client-IP detector state (OPS-003).
@@ -1188,6 +1190,7 @@ mod tests {
             tail: None,
             anomalies: None,
             host: Arc::default(),
+            cache_history: Arc::default(),
             auth: std::sync::OnceLock::new(),
             masking: crate::masking::Detector::default(),
             cluster: None,

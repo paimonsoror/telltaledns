@@ -734,9 +734,25 @@ instead of a cold one.
   crash never reloads old data.
 
 ## Cache tools
-**Settings → System → Cache** shows each node's cache: entries, memory, hit rate, stale
-answers served, prefetches, and evictions. It also lets you look up what's cached for a name
-and flush it. The query log's **Why?** drawer has the same lookup for the name you clicked.
+The **Cache** page (under System) shows each node's cache. In a cluster that's one card per
+node; Kubernetes pods are told apart by pod name.
+- **Per node:** the hit rate over the last hour and since start. How many answers it holds,
+  and how much of its memory budget that uses. The last hour's lookups, prefetches, stale
+  answers served, and evictions. Whether it started warm (how many answers it reloaded from
+  the dump, or why it didn't). The `[cache]` settings in effect.
+- **Charts:** the hit rate and the lookups per 15 s over the last hour, one line per node. A
+  pod that just started shows a low hit rate while its cache fills.
+- **What's cached:** what each cache holds by kind (answers, names that don't exist, no data,
+  SERVFAIL, stale answers kept for serving stale, DNSSEC-validated), and its top 25 entries
+  by hits, size, or nearest expiry. These walk the whole cache (a few milliseconds per 100,000
+  entries, one shard at a time, off the query path), so they load when you open the page or
+  press **Refresh**, not every few seconds. Select a name to look it up.
+- The query log's **Why?** drawer has the same lookup for the name you clicked.
+
+Each node samples its cache counters every 15 s and keeps an hour of samples (about 15 KiB).
+API: `GET /api/v1/cache/stats` (with `settings`, `warmStart`, and `history`) and
+`GET /api/v1/cache/entries?sort=hits|bytes|expiring&limit=25&node=`, which needs a viewer or
+the agent scope `analytics:read`.
 - **Look up** lists every cached answer for exactly that name: the query type (and the
   variants for clients that set DO or CD), the response code, the number of answers, whether
   DNSSEC validated it, how long it stays fresh (or how long it has been stale), and its hits.

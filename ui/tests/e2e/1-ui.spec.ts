@@ -566,7 +566,7 @@ test('dns_006 cache lookup and flush', async () => {
       timeout: 10_000,
     })
     .toBeGreaterThan(0);
-  await page.goto('/#/settings?tab=system');
+  await page.goto('/#/cache'); // T6.15: its own page (Settings links to it)
   const card = page.getByTestId('cache-card');
   await card.getByRole('textbox', { name: 'Name to look up' }).fill('www.cache.e2e.test');
   await card.getByRole('button', { name: 'Look up' }).click();
@@ -589,4 +589,36 @@ test('dns_006 cache lookup and flush', async () => {
   expect((await vr.get('/api/v1/cache/stats')).status()).toBe(200);
   expect((await vr.post('/api/v1/cache/flush', { headers: { 'x-csrf-token': csrf }, data: {} })).status()).toBe(403);
   await viewer.close();
+});
+
+// REQ: DNS-006, OBS-003 (T6.15) — the Cache page: this node's hit rate, how full it is, its
+// settings and start; what it holds by kind and its top entries (sortable); Settings links here.
+test('dns_006 cache page', async () => {
+  await query('top.cache.e2e.test'); // the stub upstream: one cacheable answer
+  await query('top.cache.e2e.test'); // and a hit
+  await page.goto('/#/cache');
+  const node = page.getByTestId('cache-node');
+  await expect(node).toHaveCount(1);
+  await expect(node).toContainText('Hit rate');
+  await expect(node.getByTestId('cache-warm')).toContainText('cold (keeping the cache across restarts is off)');
+  await node.getByText('Settings', { exact: true }).click();
+  await expect(node.getByTestId('cache-settings')).toContainText('Serve stale');
+  const top = page.getByTestId('cache-top');
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(top).toContainText('top.cache.e2e.test');
+  await expect(page.getByTestId('cache-makeup')).toContainText(/[1-9]\d* answers?/);
+  // The most-hit entry first; sorting by size and expiry also lists it.
+  const firstName = top.locator('tbody tr').first().locator('td').first();
+  await expect(firstName).toHaveText('top.cache.e2e.test');
+  await page.getByLabel('Sort by').selectOption('expiring');
+  await expect(top).toContainText('top.cache.e2e.test');
+  // Clicking a name fills in the lookup below.
+  await top.getByRole('button', { name: 'top.cache.e2e.test' }).first().click();
+  const card = page.getByTestId('cache-card');
+  await expect(card.getByRole('textbox', { name: 'Name to look up' })).toHaveValue('top.cache.e2e.test');
+  await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
+  // The API: top entries need a known sort.
+  expect((await page.request.get('/api/v1/cache/entries?sort=nope')).status()).toBe(400);
+  await page.goto('/#/settings?tab=system');
+  await expect(page.getByRole('link', { name: 'Cache page' })).toHaveAttribute('href', '#/cache');
 });

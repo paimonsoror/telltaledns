@@ -129,6 +129,8 @@ export const api = {
   rules: () => get<S['Items_RuleInfo']>('/rules'),
   cacheStats: () => get<S['Items_CacheNodeStats']>('/cache/stats'),
   cacheLookup: (name: string) => get<S['CacheLookup']>('/cache/lookup', { name }),
+  cacheEntries: (q: { sort?: string; limit?: number; node?: string }) =>
+    get<S['Items_CacheNodeEntries']>('/cache/entries', q),
   cacheFlush: (body: S['CacheFlushRequest']) => post<S['CacheFlushResult']>('/cache/flush', body),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
 

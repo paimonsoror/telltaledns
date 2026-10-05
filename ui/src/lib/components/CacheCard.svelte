@@ -7,7 +7,11 @@
   import ErrorNote from './ErrorNote.svelte';
   import HelpButton from './HelpButton.svelte';
 
-  let { name: initial = '', compact = false }: { name?: string; compact?: boolean } = $props();
+  let {
+    name: initial = '',
+    compact = false,
+    title = 'Cache',
+  }: { name?: string; compact?: boolean; title?: string } = $props();
 
   let stats = $state<S['CacheNodeStats'][]>([]);
   let name = $state('');
@@ -64,7 +68,7 @@
 </script>
 
 <section class="card" data-testid="cache-card">
-  <h2>Cache<HelpButton id="cache-tools" /></h2>
+  <h2>{title}<HelpButton id="cache-tools" /></h2>
   {#if stats.length && !compact}
     <div class="table-wrap">
       <table class="compact">

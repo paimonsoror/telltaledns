@@ -500,9 +500,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
     let pipeline = build_pipeline(&cfg, Arc::clone(&cache), router, policy);
     // REQ: DNS-009 — start warm: reload the cache dumped at the last shutdown.
-    if cfg.cache.persist {
-        load_cache(&cfg, &cache, &pipeline);
-    }
+    let warm = cfg
+        .cache
+        .persist
+        .then(|| load_cache(&cfg, &cache, &pipeline));
     // REQ: OBS-002 — one aggregator thread drains the event rings (`spec/06` §2). It never
     // touches the query path: a stalled aggregator only means dropped (counted) events.
     let (qlog, qlog_stats) = query_log(&cfg);
@@ -567,6 +568,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         rollups: rollups.clone(),
         tail,
         anomalies: anomalies.clone(),
+        cache_history: {
+            // REQ: OBS-003 (T6.15) — the cache's last hour, off the DNS path.
+            let h = Arc::new(crate::cache_history::CacheHistory::new(warm));
+            h.spawn(Arc::clone(&cache), http_stopped.clone());
+            h
+        },
         host: {
             // REQ: CLU-008 (T6.11) — host resources, off the DNS path.
             let h = Arc::new(crate::host::HostMonitor::default());
@@ -718,10 +725,22 @@ fn cache_fingerprint(cfg: &Config) -> u64 {
 }
 
 /// REQ: DNS-009 — loads the dump, then removes it (a crash later shouldn't reload old data).
-fn load_cache(cfg: &Config, cache: &Cache, pipeline: &Pipeline) {
+/// Returns what happened, for the Cache page (T6.15).
+fn load_cache(
+    cfg: &Config,
+    cache: &Cache,
+    pipeline: &Pipeline,
+) -> telltale_api::model::CacheWarmStart {
+    let at = telltale_api::time::format_us(crate::cache_history::now_ms().saturating_mul(1000));
     let path = cache_dump_path(cfg);
     let Ok(data) = std::fs::read(&path) else {
-        return;
+        return telltale_api::model::CacheWarmStart {
+            at,
+            loaded: None,
+            note: Some(
+                "no dump from the last shutdown (first start, or it didn't stop cleanly)".into(),
+            ),
+        };
     };
     let _ = std::fs::remove_file(&path);
     match cache.load(
@@ -730,11 +749,25 @@ fn load_cache(cfg: &Config, cache: &Cache, pipeline: &Pipeline) {
         cache_fingerprint(cfg),
         |n| pipeline.name_hash(n),
     ) {
-        Ok(n) => info!(
-            entries = n,
-            "cache: reloaded the dump from the last shutdown"
-        ),
-        Err(e) => warn!("cache: not reloading the dump: {e}"),
+        Ok(n) => {
+            info!(
+                entries = n,
+                "cache: reloaded the dump from the last shutdown"
+            );
+            telltale_api::model::CacheWarmStart {
+                at,
+                loaded: Some(n as u64),
+                note: None,
+            }
+        }
+        Err(e) => {
+            warn!("cache: not reloading the dump: {e}");
+            telltale_api::model::CacheWarmStart {
+                at,
+                loaded: None,
+                note: Some(e.clone()),
+            }
+        }
     }
 }
 

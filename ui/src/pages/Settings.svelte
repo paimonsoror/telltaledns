@@ -6,7 +6,6 @@
   import { route, navigate } from '../lib/router.svelte';
   import { ago, dateTime, duration } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
-  import CacheCard from '../lib/components/CacheCard.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
 
   const tabs = $derived(
@@ -547,8 +546,11 @@
         <p class="small">{info.update.how}</p>
       </section>
     {/if}
-    <!-- REQ: DNS-006 (T6.13) -->
-    <CacheCard />
+    <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
+    <section class="card">
+      <h2>Cache</h2>
+      <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
+    </section>
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->
       <section class="card">

@@ -166,6 +166,17 @@ pub trait Backend: Send + Sync + 'static {
     fn cache_stats(&self) -> Vec<crate::model::CacheNodeStats> {
         Vec::new()
     }
+    /// REQ: DNS-006, OBS-003 (T6.15) — each node's `limit` top entries by `sort` (`hits`,
+    /// `bytes`, `expiring`) and what its cache holds by kind; `node` limits it to one node.
+    fn cache_entries(
+        &self,
+        sort: &str,
+        limit: usize,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::CacheNodeEntries>, Problem> {
+        let _ = (sort, limit, node);
+        Ok(Vec::new())
+    }
     /// What the cache holds for `name`, on every node (T6.13).
     fn cache_lookup(&self, name: &str) -> Result<Vec<crate::model::CacheEntry>, Problem> {
         let _ = name;
@@ -373,11 +384,11 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::flush, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,

@@ -64,6 +64,11 @@ enum Read {
     ConfigVersion,
     /// REQ: DNS-006 (T6.13) — the peer's own cache: counters, a lookup, a flush.
     CacheStats,
+    /// T6.15 — the top entries and makeup.
+    CacheEntries {
+        sort: String,
+        limit: usize,
+    },
     CacheLookup {
         name: String,
     },
@@ -101,6 +106,9 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
         Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
+        Read::CacheEntries { sort, limit } => {
+            serde_json::to_vec(&b.cache_entries(&sort, limit, None).map_err(text)?)
+        }
         Read::CacheLookup { name } => serde_json::to_vec(&b.cache_lookup(&name).map_err(text)?),
         Read::CacheFlush { name, subtree } => serde_json::to_vec(
             &b.cache_flush(name.as_deref(), subtree, None)
@@ -211,7 +219,7 @@ impl Federated {
             .members()
             .into_iter()
             .find(|m| m.node_id == node)
-            .map(|m| m.site)
+            .map(|m| if m.pod.is_empty() { m.site } else { m.pod })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| node.to_owned())
     }
@@ -247,6 +255,11 @@ impl Federated {
     }
 
     fn own_label(&self) -> String {
+        // T6.14 — Kubernetes pods share a site: their pod name tells them apart.
+        let pod = self.cluster.local_state().pod;
+        if !pod.is_empty() {
+            return pod;
+        }
         let m = &self.cluster.identity.meta;
         if m.site.is_empty() {
             m.node_id.clone()
@@ -348,7 +361,11 @@ impl Federated {
         self.cluster
             .members()
             .into_iter()
-            .find(|m| m.node_id == node || (!m.site.is_empty() && m.site == node))
+            .find(|m| {
+                m.node_id == node
+                    || (!m.pod.is_empty() && m.pod == node)
+                    || (!m.site.is_empty() && m.site == node)
+            })
             .map(|m| Some(m.node_id))
             .ok_or_else(|| Problem::invalid(format!("`node`: no cluster node `{node}`")))
     }

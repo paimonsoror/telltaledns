@@ -15,7 +15,9 @@ use utoipa::IntoParams;
 
 use crate::auth::Auth;
 use crate::auth::routes::{body, principal, reason, remote};
-use crate::model::{CacheFlushRequest, CacheFlushResult, CacheLookup, CacheNodeStats, Items};
+use crate::model::{
+    CacheFlushRequest, CacheFlushResult, CacheLookup, CacheNodeEntries, CacheNodeStats, Items,
+};
 use crate::problem::Problem;
 use crate::{Backend, Shared};
 
@@ -24,6 +26,7 @@ pub(crate) fn read_routes(backend: Shared) -> Router {
     Router::new()
         .route("/api/v1/cache/stats", get(stats))
         .route("/api/v1/cache/lookup", get(lookup))
+        .route("/api/v1/cache/entries", get(entries))
         .with_state(backend)
 }
 
@@ -84,6 +87,51 @@ async fn lookup(State(b): State<Shared>, Query(p): Query<LookupParams>) -> Respo
         .into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(e) => Problem::internal(format!("cache lookup: {e}")).into_response(),
+    }
+}
+
+/// `?sort=&limit=&node=` for the top entries.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EntriesParams {
+    /// `hits` (default), `bytes`, or `expiring` (fresh answers closest to expiring).
+    pub sort: Option<String>,
+    /// Entries per node, 1 to 200 (default 25).
+    pub limit: Option<usize>,
+    /// One node only (its site, pod, or ID); absent: every node.
+    pub node: Option<String>,
+}
+
+/// The cache's top entries and makeup, per node.
+///
+/// For each node: what its cache holds by kind (answers, NXDOMAIN, no data, SERVFAIL, stale,
+/// DNSSEC-validated), and its `limit` entries with the most hits, the largest, or the fresh
+/// ones closest to expiring. Each node walks its cache once for this (a few milliseconds per
+/// 100,000 entries, off the query path); looking doesn't count as a hit. A node that couldn't
+/// be asked is listed with the error.
+#[utoipa::path(get, path = "/api/v1/cache/entries", tag = "system",
+    params(EntriesParams),
+    responses(
+        (status = 200, body = Items<CacheNodeEntries>, description = "One row per node."),
+        (status = 400, body = Problem, description = "An unknown sort or node."),
+    ))]
+async fn entries(State(b): State<Shared>, Query(p): Query<EntriesParams>) -> Response {
+    let sort = p.sort.unwrap_or_else(|| "hits".into());
+    if !["hits", "bytes", "expiring"].contains(&sort.as_str()) {
+        return Problem::invalid(format!("`sort`: `{sort}` isn't hits, bytes, or expiring"))
+            .into_response();
+    }
+    let limit = p.limit.unwrap_or(25).clamp(1, 200);
+    let node = p.node.filter(|n| !n.trim().is_empty());
+    match tokio::task::spawn_blocking(move || b.cache_entries(&sort, limit, node.as_deref())).await
+    {
+        Ok(Ok(items)) => Json(Items {
+            missing_nodes: Vec::new(),
+            items,
+        })
+        .into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => Problem::internal(format!("cache entries: {e}")).into_response(),
     }
 }
 

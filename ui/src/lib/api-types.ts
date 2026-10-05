@@ -331,6 +331,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cache/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The cache's top entries and makeup, per node.
+         * @description For each node: what its cache holds by kind (answers, NXDOMAIN, no data, SERVFAIL, stale,
+         *     DNSSEC-validated), and its `limit` entries with the most hits, the largest, or the fresh
+         *     ones closest to expiring. Each node walks its cache once for this (a few milliseconds per
+         *     100,000 entries, off the query path); looking doesn't count as a hit. A node that couldn't
+         *     be asked is listed with the error.
+         */
+        get: operations["entries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cache/flush": {
         parameters: {
             query?: never;
@@ -1206,6 +1230,45 @@ export interface components {
             entries: components["schemas"]["CacheEntry"][];
             name: string;
         };
+        /** @description REQ: DNS-006, OBS-003 (T6.15) — what the cache holds by kind (entries). */
+        CacheMakeup: {
+            /**
+             * Format: int64
+             * @description The name exists, but not with that type.
+             */
+            nodata: number;
+            /**
+             * Format: int64
+             * @description The name doesn't exist.
+             */
+            nxdomain: number;
+            /**
+             * Format: int64
+             * @description Answers with records.
+             */
+            positive: number;
+            /** Format: int64 */
+            servfail: number;
+            /**
+             * Format: int64
+             * @description Expired, kept only to serve stale when upstreams fail.
+             */
+            stale: number;
+            /**
+             * Format: int64
+             * @description DNSSEC-validated.
+             */
+            validated: number;
+        };
+        /** @description One node's top entries and makeup (`GET /api/v1/cache/entries`). */
+        CacheNodeEntries: {
+            entries: components["schemas"]["CacheTopEntry"][];
+            /** @description Set when the node couldn't be asked. */
+            error?: string | null;
+            makeup: components["schemas"]["CacheMakeup"];
+            /** @description The node (absent on a standalone node). */
+            node?: string | null;
+        };
         /** @description REQ: DNS-006 (T6.13) — one node's cache counters. */
         CacheNodeStats: {
             /** Format: int64 */
@@ -1214,6 +1277,8 @@ export interface components {
             entries: number;
             /** Format: int64 */
             evictions: number;
+            /** @description The last hour, every 15 s, oldest first (empty from older nodes). */
+            history?: components["schemas"]["CachePoint"][];
             /**
              * Format: double
              * @description hits / (hits + misses), percent; absent before any lookup.
@@ -1229,10 +1294,121 @@ export interface components {
             node?: string | null;
             /** Format: int64 */
             prefetches: number;
+            settings?: components["schemas"]["CacheSettings"] | null;
             /** Format: int64 */
             staleServed: number;
             /** Format: int64 */
             uncacheable: number;
+            warmStart?: components["schemas"]["CacheWarmStart"] | null;
+        };
+        /** @description REQ: OBS-003 (T6.15) — 15 s of one node's cache. */
+        CachePoint: {
+            /** @description End of the interval (RFC 3339). */
+            at: string;
+            /** Format: int64 */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description At the end of the interval.
+             */
+            entries: number;
+            /** Format: int64 */
+            evictions: number;
+            /**
+             * Format: double
+             * @description Hits per lookup in the interval, percent; absent without lookups.
+             */
+            hitPercent?: number | null;
+            /** Format: int64 */
+            lookups: number;
+            /** Format: int64 */
+            prefetches: number;
+            /** Format: int64 */
+            staleServed: number;
+        };
+        /** @description REQ: DNS-006 (T6.15) — the `[cache]` settings a node runs with. */
+        CacheSettings: {
+            /**
+             * Format: int64
+             * @description Memory budget for cached answers.
+             */
+            maxBytes: number;
+            /**
+             * Format: int64
+             * @description Entry cap; absent: limited by memory only.
+             */
+            maxEntries?: number | null;
+            /** Format: int32 */
+            maxTtlSeconds: number;
+            /** Format: int32 */
+            minTtlSeconds: number;
+            /**
+             * Format: int32
+             * @description Cap for negative answers (NXDOMAIN, no data), RFC 2308.
+             */
+            negativeTtlMaxSeconds: number;
+            /** @description Keep the cache across restarts. */
+            persist: boolean;
+            /** @description Refresh popular answers before they expire. */
+            prefetch: boolean;
+            /**
+             * Format: int32
+             * @description ...for answers asked at least this often.
+             */
+            prefetchMinHits: number;
+            /**
+             * Format: int32
+             * @description Prefetch below this share of the TTL left.
+             */
+            prefetchThresholdPercent: number;
+            /** @description Serve expired answers when upstreams fail (RFC 8767). */
+            serveStale: boolean;
+            /**
+             * Format: int32
+             * @description How long SERVFAIL is cached, RFC 9520.
+             */
+            servfailTtlSeconds: number;
+            /**
+             * Format: int32
+             * @description How long expired answers are kept for that.
+             */
+            staleMaxAgeSeconds: number;
+        };
+        /** @description One entry in a node's top list. */
+        CacheTopEntry: {
+            /** Format: int64 */
+            ageSeconds: number;
+            /** Format: int32 */
+            answers: number;
+            authentic: boolean;
+            /** Format: int64 */
+            bytes: number;
+            dnssecOk: boolean;
+            /** Format: int32 */
+            hits: number;
+            /** @example www.example.com */
+            name: string;
+            /** @example A */
+            qtype: string;
+            /** @example NOERROR */
+            rcode: string;
+            /**
+             * Format: int64
+             * @description Seconds until it goes stale; negative: how long it has been stale.
+             */
+            ttlLeftSeconds: number;
+        };
+        /** @description REQ: DNS-009 (T6.15) — what happened to the cache dump at the last start. */
+        CacheWarmStart: {
+            /** @description When (RFC 3339). */
+            at: string;
+            /**
+             * Format: int64
+             * @description Answers reloaded; absent when nothing was loaded.
+             */
+            loaded?: number | null;
+            /** @description Why nothing was loaded (no dump, a dump from other upstreams, ...). */
+            note?: string | null;
         };
         /** @description What a device change did, or would do with `dryRun=true` (AGT-002). */
         ClientChange: {
@@ -1943,6 +2119,19 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_CacheNodeEntries: {
+            items: {
+                entries: components["schemas"]["CacheTopEntry"][];
+                /** @description Set when the node couldn't be asked. */
+                error?: string | null;
+                makeup: components["schemas"]["CacheMakeup"];
+                /** @description The node (absent on a standalone node). */
+                node?: string | null;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_CacheNodeStats: {
             items: {
                 /** Format: int64 */
@@ -1951,6 +2140,8 @@ export interface components {
                 entries: number;
                 /** Format: int64 */
                 evictions: number;
+                /** @description The last hour, every 15 s, oldest first (empty from older nodes). */
+                history?: components["schemas"]["CachePoint"][];
                 /**
                  * Format: double
                  * @description hits / (hits + misses), percent; absent before any lookup.
@@ -1966,10 +2157,12 @@ export interface components {
                 node?: string | null;
                 /** Format: int64 */
                 prefetches: number;
+                settings?: components["schemas"]["CacheSettings"] | null;
                 /** Format: int64 */
                 staleServed: number;
                 /** Format: int64 */
                 uncacheable: number;
+                warmStart?: components["schemas"]["CacheWarmStart"] | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -3356,6 +3549,42 @@ export interface operations {
             };
             /** @description Backups aren't available on this node. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    entries: {
+        parameters: {
+            query?: {
+                /** @description `hits` (default), `bytes`, or `expiring` (fresh answers closest to expiring). */
+                sort?: string;
+                /** @description Entries per node, 1 to 200 (default 25). */
+                limit?: number;
+                /** @description One node only (its site, pod, or ID); absent: every node. */
+                node?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One row per node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_CacheNodeEntries"];
+                };
+            };
+            /** @description An unknown sort or node. */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

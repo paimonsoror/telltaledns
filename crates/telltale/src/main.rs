@@ -9,6 +9,7 @@ mod archive;
 mod auth_setup;
 mod backup;
 mod build_info;
+mod cache_history;
 mod cluster;
 mod datadir;
 mod explain;

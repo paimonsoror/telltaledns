@@ -46,8 +46,88 @@ pub struct EntryInfo {
     pub hits: u32,
 }
 
+/// What [`Cache::top`] ranks by (T6.15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopBy {
+    /// Most hits first.
+    Hits,
+    /// Largest first.
+    Bytes,
+    /// Fresh entries closest to expiring first.
+    Expiring,
+}
+
+/// One entry from [`Cache::top`]: its name (wire format, lowercase) and details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopEntry {
+    pub name: Box<[u8]>,
+    pub info: EntryInfo,
+}
+
+/// What the cache holds, by kind, from one pass over it (T6.15). Counts are entries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Makeup {
+    /// Answers with records.
+    pub positive: u64,
+    /// NXDOMAIN: the name doesn't exist.
+    pub nxdomain: u64,
+    /// NOERROR without answers: the name exists, but not with that type.
+    pub nodata: u64,
+    pub servfail: u64,
+    /// Past their TTL, kept only to serve stale when upstreams fail (DNS-007).
+    pub stale: u64,
+    /// DNSSEC-validated (the AD bit).
+    pub validated: u64,
+}
+
+/// A candidate in [`Cache::top`]'s bounded heap, ordered by score then arrival.
+struct Ranked {
+    score: i64,
+    seq: u64,
+    entry: TopEntry,
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        (self.score, self.seq) == (other.score, other.seq)
+    }
+}
+impl Eq for Ranked {}
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Earlier arrivals rank higher on a tie, so results are stable.
+        (self.score, std::cmp::Reverse(self.seq)).cmp(&(other.score, std::cmp::Reverse(other.seq)))
+    }
+}
+
 use crate::entry::Entry;
 use crate::s3fifo::S3Fifo;
+
+/// What [`Cache::inspect`] and [`Cache::top`] report for one entry.
+fn entry_info(k: &CacheKey, e: &Entry, now: Instant) -> EntryInfo {
+    let flags = e.wire.get(3).copied().unwrap_or(0);
+    EntryInfo {
+        qtype: k.qtype,
+        view: k.view,
+        dnssec_ok: k.flags & 1 != 0,
+        checking_disabled: k.flags & 2 != 0,
+        rcode: flags & 0x0f,
+        authentic: flags & 0x20 != 0,
+        answers: e
+            .wire
+            .get(6..8)
+            .map_or(0, |b| u16::from_be_bytes([b[0], b[1]])),
+        ttl: e.ttl,
+        age_secs: e.elapsed_secs(now),
+        bytes: e.weight(),
+        hits: e.hits,
+    }
+}
 
 /// Cache settings (mirrors `[cache]` in `telltale.toml`).
 #[derive(Clone, Debug)]
@@ -374,31 +454,70 @@ impl Cache {
         let mut out = Vec::new();
         for s in &self.shards {
             s.0.lock().fifo.for_each(|k, e| {
-                if *e.name != *name.as_wire() {
-                    return;
+                if *e.name == *name.as_wire() {
+                    out.push(entry_info(k, e, now));
                 }
-                let flags = e.wire.get(3).copied().unwrap_or(0);
-                let age = e.elapsed_secs(now);
-                out.push(EntryInfo {
-                    qtype: k.qtype,
-                    view: k.view,
-                    dnssec_ok: k.flags & 1 != 0,
-                    checking_disabled: k.flags & 2 != 0,
-                    rcode: flags & 0x0f,
-                    authentic: flags & 0x20 != 0,
-                    answers: e
-                        .wire
-                        .get(6..8)
-                        .map_or(0, |b| u16::from_be_bytes([b[0], b[1]])),
-                    ttl: e.ttl,
-                    age_secs: age,
-                    bytes: e.weight(),
-                    hits: e.hits,
-                });
             });
         }
         out.sort_by_key(|e| (e.qtype, e.view, e.dnssec_ok, e.checking_disabled));
         out
+    }
+
+    /// REQ: DNS-006, OBS-003 (T6.15) — the `limit` entries ranking highest `by`, and what the
+    /// cache holds by kind, in one pass. Off the query path (the Cache page): it holds one
+    /// shard lock at a time while it walks that shard, allocating only for entries that make
+    /// the list. Never counts as a hit.
+    pub fn top(&self, by: TopBy, limit: usize, now: Instant) -> (Vec<TopEntry>, Makeup) {
+        use std::collections::BinaryHeap;
+        let mut makeup = Makeup::default();
+        let mut heap: BinaryHeap<std::cmp::Reverse<Ranked>> = BinaryHeap::with_capacity(limit + 1);
+        let mut seq = 0u64;
+        for s in &self.shards {
+            s.0.lock().fifo.for_each(|k, e| {
+                let flags = e.wire.get(3).copied().unwrap_or(0);
+                let answers = e
+                    .wire
+                    .get(6..8)
+                    .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
+                let age = e.elapsed_secs(now);
+                let stale = age >= e.ttl;
+                match (flags & 0x0f, answers) {
+                    (3, _) => makeup.nxdomain += 1,
+                    (2, _) => makeup.servfail += 1,
+                    (0, 0) => makeup.nodata += 1,
+                    _ => makeup.positive += 1,
+                }
+                makeup.stale += u64::from(stale);
+                makeup.validated += u64::from(flags & 0x20 != 0);
+                if limit == 0 {
+                    return;
+                }
+                let score = match by {
+                    TopBy::Hits => i64::from(e.hits),
+                    TopBy::Bytes => i64::try_from(e.weight()).unwrap_or(i64::MAX),
+                    TopBy::Expiring if stale => return,
+                    TopBy::Expiring => -i64::from(e.ttl - age),
+                };
+                seq += 1;
+                if heap.len() >= limit && heap.peek().is_some_and(|m| m.0.score >= score) {
+                    return;
+                }
+                heap.push(std::cmp::Reverse(Ranked {
+                    score,
+                    seq,
+                    entry: TopEntry {
+                        name: e.name.clone(),
+                        info: entry_info(k, e, now),
+                    },
+                }));
+                if heap.len() > limit {
+                    heap.pop();
+                }
+            });
+        }
+        let mut out: Vec<Ranked> = heap.into_iter().map(|r| r.0).collect();
+        out.sort_by(|a, b| b.cmp(a));
+        (out.into_iter().map(|r| r.entry).collect(), makeup)
     }
 
     /// Removes everything; returns how many entries there were.
