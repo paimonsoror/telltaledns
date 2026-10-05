@@ -227,6 +227,67 @@ fn git_metrics(src: &Sources, w: &mut PromWriter) {
     }
 }
 
+/// REQ: CLU-008 (T6.14) — where each peer runs, its load, cache, and restarts (per pod in
+/// Kubernetes: one series per member, which the expiry of gone pods bounds).
+fn peer_detail_metrics(peers: &[telltale_cluster::net::Member], w: &mut PromWriter) {
+    w.family(
+        "telltale_cluster_peer_info",
+        "gauge",
+        "Always 1: the peer's Kubernetes node and pod (empty outside Kubernetes) and version.",
+    );
+    for p in peers {
+        w.sample(
+            "telltale_cluster_peer_info",
+            &[
+                ("node", &p.node_id),
+                ("site", &p.site),
+                ("kube_node", &p.kube_node),
+                ("pod", &p.pod),
+                ("version", &p.version),
+            ],
+            1,
+        );
+    }
+    w.family(
+        "telltale_cluster_peer_queries_per_second",
+        "gauge",
+        "Queries per second the peer answered over the last minute (from its heartbeats).",
+    );
+    for p in peers {
+        w.sample(
+            "telltale_cluster_peer_queries_per_second",
+            &[("node", &p.node_id), ("site", &p.site)],
+            p.qps,
+        );
+    }
+    w.family(
+        "telltale_cluster_peer_cache_hit_ratio",
+        "gauge",
+        "The peer's cache hits per lookup over the last minute (absent without lookups).",
+    );
+    for p in peers {
+        if let Some(h) = p.cache_hit_permille {
+            w.sample(
+                "telltale_cluster_peer_cache_hit_ratio",
+                &[("node", &p.node_id), ("site", &p.site)],
+                f64::from(h) / 1000.0,
+            );
+        }
+    }
+    w.family(
+        "telltale_cluster_peer_restarts",
+        "gauge",
+        "Restarts of the peer this node has seen since it started itself.",
+    );
+    for p in peers {
+        w.sample(
+            "telltale_cluster_peer_restarts",
+            &[("node", &p.node_id), ("site", &p.site)],
+            p.restarts,
+        );
+    }
+}
+
 /// REQ: CLU-005 — role, epoch, and the election (ADR-056).
 fn election_metrics(c: &telltale_cluster::net::Cluster, w: &mut PromWriter) {
     // ADR-049 — the Git commit this node serves (every node should show the same one).
@@ -309,6 +370,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
                 );
             }
         }
+        peer_detail_metrics(&peers, w);
         w.family(
             "telltale_cluster_peer_config_lag",
             "gauge",

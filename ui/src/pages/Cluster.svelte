@@ -9,6 +9,8 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import HostCard from '../lib/components/HostCard.svelte';
+  import Topology, { type Node } from '../lib/components/Topology.svelte';
+  import { tick } from 'svelte';
 
   let view = $state<S['ClusterView'] | null>(null);
   let error = $state<unknown>(null);
@@ -32,9 +34,39 @@
     applied: 'Applied',
     sync_failed: 'Sync failed',
     rejected: 'Rejected',
+    restarted: 'Restarted',
+    expired: 'Pod gone',
+    voted: 'Voted',
+    cert_issued: 'Certificate',
+    ca_rotation: 'CA rotation',
   };
   const kindClass = (k: string) =>
-    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' ? 'bad' : k === 'published' || k === 'applied' ? 'ok' : '';
+    k === 'disconnected' || k === 'sync_failed' || k === 'rejected'
+      ? 'bad'
+      : k === 'restarted'
+        ? 'warn'
+        : k === 'published' || k === 'applied'
+          ? 'ok'
+          : '';
+  // REQ: CLU-009 (T6.14) — pod churn: joins, pods gone, and restarts in the last hour.
+  const churn = $derived.by(() => {
+    const since = Date.now() - 3600_000;
+    const recent = (view?.events ?? []).filter((e) => Date.parse(e.at) >= since);
+    const count = (k: string) => recent.filter((e) => e.kind === k).length;
+    return { joined: count('joined'), expired: count('expired'), restarted: count('restarted') };
+  });
+  // T6.14 — selecting a node in the topology jumps to its row (opening its pod site).
+  let selected = $state<string | null>(null);
+  async function select(n: Node) {
+    if (n.ephemeral && !openSites.includes(n.site)) openSites = [...openSites, n.site];
+    selected = n.nodeId;
+    await tick();
+    document.getElementById(`node-${n.nodeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  const avg = (xs: (number | null | undefined)[]) => {
+    const v = xs.filter((x): x is number => x != null);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
   const shortId = (id: string) => id.slice(0, 8);
   const failing = $derived(view?.checks.filter((c) => !c.ok) ?? []);
   const me = $derived(view?.nodes.find((n) => n.thisNode));
@@ -179,6 +211,12 @@ telltale cluster join tt_join_…</pre>
       {/if}
     </section>
 
+    <!-- REQ: CLU-008 (T6.14) — the cluster at a glance. -->
+    <section class="card">
+      <h2>Topology<HelpButton id="cluster-topology" /></h2>
+      <Topology nodes={view.nodes} onselect={select} />
+    </section>
+
     {#if view.conflicts.length}
       <section class="card" data-testid="cluster-conflicts">
         <h2>Conflicts</h2>
@@ -228,7 +266,7 @@ telltale cluster join tt_join_…</pre>
           </thead>
           <tbody>
             {#snippet row(n: NonNullable<typeof view>['nodes'][number])}
-              <tr data-testid="cluster-node">
+              <tr data-testid="cluster-node" id={`node-${n.nodeId}`} class:selected={selected === n.nodeId}>
                 <td>
                   <strong>{n.site}</strong>
                   <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.witness ? 'witness' : n.role}</span>
@@ -237,6 +275,7 @@ telltale cluster join tt_join_…</pre>
                   <div class="mono muted small" title={n.nodeId}>
                     {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
                   </div>
+                  {#if n.pod}<div class="muted small" data-testid="cluster-node-pod">pod <span class="mono">{n.pod}</span>{#if n.kubeNode}{' on '}<span class="mono">{n.kubeNode}</span>{/if}</div>{/if}
                 </td>
                 <td>
                   <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
@@ -254,12 +293,16 @@ telltale cluster join tt_join_…</pre>
                 <td>
                   <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
                   <div class="muted small">
-                    {num(n.qps)} q/s · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
+                    {num(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
                   </div>
+                  {#if n.cacheEntries != null}
+                    <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
+                  {/if}
                 </td>
                 <td class="small">{n.version}</td>
                 <td class="small">
                   {duration(n.uptimeSeconds)}
+                  {#if n.restarts}<div class="warn-text">{n.restarts} restart{n.restarts === 1 ? '' : 's'}</div>{/if}
                   {#if n.certExpiresAt}<div class="muted">cert until {logDate(n.certExpiresAt)}</div>{/if}
                 </td>
               </tr>
@@ -274,6 +317,7 @@ telltale cluster join tt_join_…</pre>
                   <span class="muted small">
                     {pods.filter((p) => p.up).length} up · {pods.filter((p) => p.ready).length} ready ·
                     {num(pods.reduce((t, p) => t + p.qps, 0))} q/s · {pods.filter((p) => p.configLag > 0).length} behind
+                    {#if avg(pods.map((p) => p.cacheHitPercent)) != null}· cache {pct(avg(pods.map((p) => p.cacheHitPercent)) ?? 0)} hits on average (each pod has its own){/if}
                   </span>
                 </td>
               </tr>
@@ -294,7 +338,7 @@ telltale cluster join tt_join_…</pre>
         <h2>Machines<HelpButton id="host-resources" /></h2>
         <div class="host-grid">
           {#each machines as n (n.nodeId)}
-            {#if n.host}<HostCard title={n.site} sub={`${n.thisNode ? 'this node' : n.role} · ${shortId(n.nodeId)}`} host={n.host} />{/if}
+            {#if n.host}<div class="host-slot" class:selected={selected === n.nodeId}><HostCard title={n.site} sub={`${n.thisNode ? 'this node' : n.role} · ${n.pod ?? shortId(n.nodeId)}`} host={n.host} /></div>{/if}
           {/each}
         </div>
       </section>
@@ -302,6 +346,11 @@ telltale cluster join tt_join_…</pre>
 
     <section class="card">
       <h2>Events</h2>
+      {#if podSites.length || churn.restarted}
+        <p class="muted small" data-testid="cluster-churn">
+          Last hour: {churn.joined} joined · {churn.expired} pod{churn.expired === 1 ? '' : 's'} gone · {churn.restarted} restart{churn.restarted === 1 ? '' : 's'}
+        </p>
+      {/if}
       {#if view.events.length === 0}
         <p class="empty">Nothing yet.</p>
       {:else}
@@ -358,6 +407,11 @@ telltale cluster join tt_join_…</pre>
   }
   .nodes td {
     vertical-align: top;
+  }
+  .nodes tr.selected td,
+  .host-slot.selected :global(.card) {
+    box-shadow: inset 3px 0 0 var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   .warn-text {
     color: var(--warn, darkorange);

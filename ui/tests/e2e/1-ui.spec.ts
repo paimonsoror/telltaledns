@@ -498,6 +498,61 @@ test('flt_005 quick rules expire on their own and are audited', async () => {
   expect(unknownGroup.status()).toBe(422);
 });
 
+// REQ: CLU-008, CLU-009 (T6.14) — the topology matches GET /cluster: a controller with 3 pods on
+// two Kubernetes nodes and a Pi; 8 pods on one node fold into "+3"; a pod down is red; selecting
+// a pod opens its site and highlights its row (pod name, Kubernetes node, share, cache).
+test('clu_008 cluster topology', async () => {
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.1.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, cacheEntries: 500,
+    cacheHitPercent: 80, querySharePercent: 10, ...o,
+  });
+  const pod = (name: string, kube: string, o: Record<string, unknown> = {}) =>
+    node({ nodeId: `id-${name}`, site: 'k8s', ephemeral: true, pod: `telltale-resolver-${name}`, kubeNode: kube, ...o });
+  const view = (pods: ReturnType<typeof node>[]) => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-ctl', newestConfigSeq: 9, healthy: true, checks: [],
+    events: [], conflicts: [], authority: 'primary',
+    nodes: [
+      node({ nodeId: 'id-ctl', site: 'k8s', role: 'primary', thisNode: true, link: 'self', rttMs: null, pod: 'telltale-0', kubeNode: 'k3s-1', qps: 40, querySharePercent: 40 }),
+      node({ nodeId: 'id-pi', site: 'home', rttMs: 4, qps: 30, querySharePercent: 30, restarts: 2 }),
+      ...pods,
+    ],
+  });
+  let current = view([
+    pod('aaaaa', 'k3s-1', { qps: 20, querySharePercent: 20 }),
+    pod('bbbbb', 'k3s-2', { qps: 10, querySharePercent: 10, cacheHitPercent: 55 }),
+    pod('ccccc', 'k3s-2', { up: false, qps: 0, querySharePercent: null }),
+  ]);
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  await page.goto('/#/cluster');
+  const topo = page.getByTestId('cluster-topology');
+  await expect(topo.getByTestId('topology-site')).toHaveCount(2);
+  await expect(topo.getByTestId('topology-node')).toHaveCount(2); // controller and Pi
+  await expect(topo.getByTestId('topology-pod')).toHaveCount(3);
+  await expect(topo).toContainText('node k3s-1 · 1 pod');
+  await expect(topo).toContainText('node k3s-2 · 2 pods');
+  await expect(topo).toContainText('4 ms'); // the Pi's round trip, measured by this node
+  await expect(topo.locator('.pod.bad')).toHaveCount(1);
+  await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
+
+  // Selecting a pod opens its site in the table and highlights its row.
+  await topo.getByRole('button', { name: /telltale-resolver-bbbbb/ }).click();
+  const row = page.locator('#node-id-bbbbb');
+  await expect(row).toHaveClass(/selected/);
+  await expect(row).toContainText('telltale-resolver-bbbbb on k3s-2');
+  await expect(row).toContainText('10.0% of queries');
+  await expect(row).toContainText('cache: 55.0% hits');
+  await expect(page.locator('#node-id-pi')).toContainText('2 restarts');
+
+  // Updates with the page (every 5 s): 8 pods on one node fold into 5 + "+3".
+  current = view(Array.from({ length: 8 }, (_, i) => pod(`p${i}xxx`, 'k3s-1')));
+  await expect(topo.getByTestId('topology-pod')).toHaveCount(6, { timeout: 10_000 });
+  await expect(topo).toContainText('+3');
+  await expect(topo).toContainText('node k3s-1 · 8 pods');
+  await page.unroute('**/api/v1/cluster');
+});
+
 // REQ: DNS-006, API-005 (T6.13) — the cache: a cached answer shows up in a lookup (the UI
 // card and the API), a flush removes it and says how many, and viewers can look but not flush.
 test('dns_006 cache lookup and flush', async () => {

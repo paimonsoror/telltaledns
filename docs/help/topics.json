@@ -346,6 +346,16 @@
       "docs": "quick-rules"
     },
     {
+      "id": "cluster-topology",
+      "title": "The cluster at a glance",
+      "term": "Topology",
+      "summary": "Each site is a box. Inside it are its nodes and, for Kubernetes, its resolver pods grouped by the Kubernetes node they run on (more than six fold into +N). A line runs from the primary to every other node or pod group: as thick as its share of the queries, labelled with the round-trip time when this node measured it.",
+      "when": "To see where queries go and what's unhealthy: green is serving and in sync, amber is not ready or behind on configuration, red and dashed is down. Select a node or pod to jump to its row and its machine.",
+      "example": "home: the Pi (replica, 30% of queries, 4 ms). k8s: the controller (primary) and node k3s-1 with 3 pods, one amber because it's still loading the configuration.",
+      "caution": "Each pod has its own cache and rate limits, so a new pod starts cold. Uneven line thickness between a site's pods means the load balancer isn't spreading queries; the Load balance check explains what to do.",
+      "docs": "scaling-in-kubernetes"
+    },
+    {
       "id": "host-resources",
       "title": "The machines your nodes run on",
       "term": "Host resources",

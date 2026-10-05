@@ -105,6 +105,34 @@ PY
 [[ "$ans" == 10.9.8.7 ]] || fail "resolver pod answered '$ans'"
 echo "ok"
 
+echo "== 2b. the controller knows each pod's name, Kubernetes node, and load (T6.14)"
+# REQ: CLU-008 — 150 more queries to that pod: over 2 q/s for the last minute.
+python3 - <<'PY'
+import socket, struct
+q = struct.pack('>HHHHHH', 8, 0x0100, 1, 0, 0, 0) + b''.join(bytes([len(l)]) + l.encode() for l in 'scaled.e2e.test'.split('.')) + b'\0' + struct.pack('>HH', 1, 1)
+s = socket.create_connection(('127.0.0.1', 15353), 3)
+for _ in range(150):
+    s.sendall(struct.pack('>H', len(q)) + q)
+    n = struct.unpack('>H', s.recv(2))[0]; r = b''
+    while len(r) < n: r += s.recv(n - len(r))
+PY
+knode=$(k get pod "$pod" -o jsonpath='{.spec.nodeName}')
+info=""
+for _ in $(seq 30); do
+  info=$({ curl -s --max-time 3 http://127.0.0.1:19153/metrics || true; } | grep '^telltale_cluster_peer_info{' || true)
+  grep -q "pod=\"$pod\"" <<<"$info" && break; sleep 1
+done
+grep -q "pod=\"$pod\"" <<<"$info" || fail "the controller doesn't report pod $pod: $info"
+grep "pod=\"$pod\"" <<<"$info" | grep -q "kube_node=\"$knode\"" || fail "pod $pod isn't on Kubernetes node $knode: $info"
+id=$(grep "pod=\"$pod\"" <<<"$info" | sed -n 's/.*{node="\([^"]*\)".*/\1/p' | head -1)
+qps=0
+for _ in $(seq 30); do
+  qps=$(metric http://127.0.0.1:19153 telltale_cluster_peer_queries_per_second "node=\"$id\"")
+  [[ "${qps:-0}" -ge 2 ]] && break; sleep 1
+done
+[[ "${qps:-0}" -ge 2 ]] || fail "the controller sees ${qps:-0} q/s from pod $pod, not 2 or more"
+echo "ok ($pod on $knode, $qps q/s)"
+
 echo "== 3. a node outside Kubernetes joins through the cluster port"
 args=(-c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml -c /etc/telltale/20-controller.toml)
 T=$(k exec sts/t-telltale -- telltale cluster token create --ttl 10m --url https://127.0.0.1:19443 "${args[@]}" 2>/dev/null)

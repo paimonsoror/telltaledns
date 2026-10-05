@@ -234,6 +234,38 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
     crash. Use `mode: scaled` for more pods. With your own manifests, give a single-volume
     Deployment `strategy: Recreate`, or the new pod can't start until the old one stops.
 
+### Scaling in Kubernetes
+- **`allInOne` or `scaled`.** `allInOne` is one pod with one volume. It's simple, and it's
+  enough for a home network: one pod answers tens of thousands of queries per second.
+  `scaled` adds resolver pods for availability: a pod can restart or move while the others keep
+  answering. The controller keeps the volume (users, the query log, lists) and the
+  configuration. Resolver pods hold no state, so add or remove them freely
+  (`resolvers.replicas`).
+- **Don't raise `replicas` on a workload with one volume.** The pods would share one node
+  identity, `state.db`, and query log. The data-directory lock stops the second pod (see
+  above), so use `mode: scaled` instead.
+- **Each pod has its own cache and rate limits.** A new pod starts with an empty cache, so its
+  hit rate is low for its first minutes. The Cluster page shows each pod's hit rate. Per-client
+  rate limits apply per pod, so a client spread over three pods can send up to three times the
+  limit.
+- **Spread the pods.** With `externalTrafficPolicy: Local` (needed to see real client
+  addresses), each Kubernetes node sends queries only to its own pods. Use
+  `resolvers.affinity` (for example podAntiAffinity on `app.kubernetes.io/component: resolver`)
+  to put them on different nodes. The Cluster page's **Load balance** check flags a pod that
+  takes more than twice its fair share of its site's queries.
+- **What one Kubernetes node protects against:** a pod crash, an upgrade, or a pod being
+  rescheduled. The other pods keep answering. It doesn't protect against the node itself going
+  down. For that, run pods on several nodes, or add a node outside Kubernetes (a Pi) as a
+  replica that clients use as their second DNS server.
+- **On the Cluster page**, the topology shows each site with its nodes and its pods grouped by
+  Kubernetes node. Each line's thickness is that node's share of the queries; amber means not
+  ready or behind on configuration, and red means down. Select a pod to jump to its row (pod
+  name, Kubernetes node, share of queries, cache, and restarts) and its machine. The events
+  count pods joining, pods gone, and restarts in the last hour.
+- **Metrics** (on the controller): `telltale_cluster_peer_info{kube_node, pod}`,
+  `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
+  `telltale_cluster_peer_restarts`, per member.
+
 ## Seeing real client IPs
 Per-device statistics, groups, and rules need each query's real sender. TelltaleDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `telltale_client_ips_masked` is 1, and the log says so once.
 
