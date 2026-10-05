@@ -8,6 +8,7 @@ mod api_backend;
 mod auth_setup;
 mod cluster;
 mod explain;
+mod federated;
 mod http;
 mod import;
 mod lists;

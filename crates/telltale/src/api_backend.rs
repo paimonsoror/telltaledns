@@ -604,6 +604,7 @@ impl Backend for ApiBackend {
                     upstream_ms: ms(u64::from(e.t_upstream_us)),
                     response_bytes: e.resp_size,
                     answers: e.answers,
+                    node: None,
                 }
             },
         ))
@@ -654,6 +655,7 @@ impl Backend for ApiBackend {
                 // REQ: API-010 — names are resolved now, from the address, so naming or
                 // renaming a device relabels its history without rewriting the log.
                 client_name: device_name(&self.src, r.client_ip),
+                node: None,
                 group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
                 name: r.name.clone(),
                 qtype: qtype_name(r.qtype),
@@ -684,6 +686,7 @@ impl Backend for ApiBackend {
                 blocks_total: page.stats.blocks_total,
                 rows_scanned: page.stats.rows_scanned,
             },
+            missing_nodes: Vec::new(),
         })
     }
 

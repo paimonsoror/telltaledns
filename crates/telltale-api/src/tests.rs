@@ -94,6 +94,7 @@ impl Backend for Fake {
             items: Vec::new(),
             next_cursor: None,
             scanned: ScanStats::default(),
+            missing_nodes: Vec::new(),
         })
     }
     fn tail(
@@ -121,6 +122,7 @@ impl Backend for Fake {
             upstream_ms: 0.0,
             response_bytes: 60,
             answers: 1,
+            node: None,
         })))
         .unwrap();
         tx.try_send(crate::model::TailItem::Dropped(crate::model::TailDropped {

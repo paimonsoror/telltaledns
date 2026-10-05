@@ -168,6 +168,12 @@
   </div>
 
   <ErrorNote {error} />
+  {#if summary?.missingNodes?.length}
+    <!-- REQ: CLU-002 — a node that doesn't answer leaves partial totals, said plainly. -->
+    <div class="notice warn small">
+      Partial results: {summary.missingNodes.join(', ')} didn't answer, so these numbers cover the other cluster nodes.
+    </div>
+  {/if}
 
   <div class="kpis">
     <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}`} />

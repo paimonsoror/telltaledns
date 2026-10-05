@@ -74,6 +74,47 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     assert_eq!(seen_by_replica.node_id, primary.identity.meta.node_id);
     assert!(seen_by_replica.primary);
     assert!(seen_by_replica.up(now_ms()));
+
+    // CLU-002 — federated reads ride the same stream, both ways.
+    let echo: RpcHandler = Arc::new(|kind, body| {
+        Box::pin(async move {
+            if kind == "fail" {
+                return Err("asked to fail".to_owned());
+            }
+            let mut b = body;
+            b.extend_from_slice(b"!");
+            Ok(b)
+        })
+    });
+    primary.set_rpc_handler(Arc::clone(&echo));
+    replica.set_rpc_handler(echo);
+    let pid = primary.identity.meta.node_id.clone();
+    let rid = replica.identity.meta.node_id.clone();
+    let p = Arc::clone(&primary);
+    wait_for(|| p.reachable_peers().contains(&rid)).await;
+    let t = Duration::from_secs(2);
+    assert_eq!(
+        replica.call(&pid, "echo", b"hi".to_vec(), t).await.unwrap(),
+        b"hi!"
+    );
+    assert_eq!(
+        primary.call(&rid, "echo", b"yo".to_vec(), t).await.unwrap(),
+        b"yo!"
+    );
+    assert_eq!(
+        primary.call(&rid, "fail", vec![], t).await.unwrap_err(),
+        "asked to fail"
+    );
+    assert!(
+        primary
+            .call("nobody", "echo", vec![], t)
+            .await
+            .unwrap_err()
+            .contains("no stream")
+    );
+    let all = primary.call_all("echo", b"x", t).await;
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].1.as_deref().unwrap(), b"x!");
     let _ = stop_tx.send(true);
 }
 

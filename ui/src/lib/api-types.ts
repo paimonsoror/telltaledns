@@ -1396,6 +1396,8 @@ export interface components {
                 /** @description The window examined (RFC 3339 start, and length in seconds). */
                 windowStart: string;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_ClientInfo: {
@@ -1412,6 +1414,8 @@ export interface components {
                  */
                 source: string;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_ForwardInfo: {
@@ -1423,6 +1427,8 @@ export interface components {
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_GroupInfo: {
@@ -1461,6 +1467,8 @@ export interface components {
                  */
                 queries24h: number;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_LatencyRow: {
@@ -1480,6 +1488,8 @@ export interface components {
                 /** Format: double */
                 p99Ms: number;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_ListInfo: {
@@ -1507,6 +1517,8 @@ export interface components {
                 /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
                 state: string;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_LocalName: {
@@ -1517,6 +1529,8 @@ export interface components {
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_TimeBucket: {
@@ -1559,6 +1573,8 @@ export interface components {
                  */
                 upstreamQueries: number;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_TopItem: {
@@ -1572,6 +1588,8 @@ export interface components {
                 /** @description The configured device name, for clients that have one. */
                 name?: string | null;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
         Items_UpstreamInfo: {
@@ -1598,6 +1616,8 @@ export interface components {
                 /** Format: int64 */
                 requests: number;
             }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
         };
         /**
          * @description What `GET /stats/latency` groups by.
@@ -1807,6 +1827,8 @@ export interface components {
         /** @description A page of query-log rows, newest first. */
         QueryPage: {
             items: components["schemas"]["QueryRow"][];
+            /** @description Cluster nodes that couldn't be read (CLU-002: partial results, never a hang). */
+            missingNodes?: string[];
             /** @description Pass as `cursor` to get older rows; absent when there are none. */
             nextCursor?: string | null;
             /** @description How much of the log this page looked at. */
@@ -1825,6 +1847,8 @@ export interface components {
             /** @description The list whose rule blocked or allowed the query. */
             list?: string | null;
             name: string;
+            /** @description The node that answered it (federated reads: its site). */
+            node?: string | null;
             proto: string;
             qtype: string;
             /** @description Response code, or null when nothing was sent. */
@@ -1928,6 +1952,8 @@ export interface components {
             fromUnixSeconds: number;
             /** @description Latency percentiles this hour, by answer path (`cache`, `upstream`, ...). */
             latency: components["schemas"]["LatencyRow"][];
+            /** @description Cluster nodes that couldn't be read (CLU-002). */
+            missingNodes?: string[];
             /** Format: int64 */
             nxdomain: number;
             /** Format: int64 */
@@ -3011,7 +3037,7 @@ export interface operations {
                  *     counted and reported in `dropped` events.
                  */
                 rate?: number;
-                /** @description `cluster` (default) or `node:local`. */
+                /** @description `cluster` (default) or `node:local`. The live stream is always this node's queries. */
                 scope?: string;
             };
             header?: never;

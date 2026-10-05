@@ -37,7 +37,9 @@ use crate::node::{Identity, JoinRequest, JoinResponse, Role};
 use crate::pki::CLUSTER_NAME;
 use crate::sync::{BlobRef, BlobStore, ClusterManifest, Signed};
 use crate::token::Token;
-use crate::wire::{self, Body, Frame, Heartbeat, Hello, KeyShare, ManifestMsg, PROTOCOL};
+use crate::wire::{
+    self, Body, Frame, Heartbeat, Hello, KeyShare, ManifestMsg, PROTOCOL, RpcRequest, RpcResponse,
+};
 
 /// Heartbeat interval; a peer silent for three intervals is down.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -253,6 +255,32 @@ pub struct Event {
 /// Events kept in memory.
 const MAX_EVENTS: usize = 200;
 
+/// Answers federated reads from peers (CLU-002): `(kind, body)` → body, or an error.
+pub type RpcHandler = Arc<
+    dyn Fn(
+            String,
+            Vec<u8>,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// The installed [`RpcHandler`] (a closure has no `Debug`).
+struct HandlerSlot(RpcHandler);
+
+impl std::fmt::Debug for HandlerSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RpcHandler")
+    }
+}
+
+/// RPCs awaiting an answer, by request ID.
+type PendingCalls = HashMap<u64, tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>;
+
+/// Largest RPC answer (the frame limit, less framing).
+const MAX_RPC: usize = crate::wire::MAX_FRAME - 1024;
+
 /// The last heartbeat received on a stream, echoed back on the same stream.
 type EchoSlot = Arc<Mutex<Option<(u64, tokio::time::Instant)>>>;
 
@@ -294,6 +322,12 @@ pub struct Cluster {
     role: watch::Sender<(Role, u64)>,
     /// `gitops` or `file`: how this node's own configuration is managed (ADR-048).
     config_source: Mutex<String>,
+    /// Extra frames to send on the stream to each peer (RPC), by peer node ID.
+    outbox: Mutex<HashMap<String, tokio::sync::mpsc::Sender<Frame>>>,
+    /// RPCs awaiting an answer, by request ID.
+    pending: Mutex<PendingCalls>,
+    next_rpc: std::sync::atomic::AtomicU64,
+    rpc_handler: std::sync::OnceLock<HandlerSlot>,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -335,6 +369,10 @@ impl Cluster {
             behind_since: Mutex::new(None),
             role: watch::Sender::new((identity_role, identity_epoch)),
             config_source: Mutex::new("file".into()),
+            outbox: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            next_rpc: std::sync::atomic::AtomicU64::new(1),
+            rpc_handler: std::sync::OnceLock::new(),
         })
     }
 
@@ -382,6 +420,117 @@ impl Cluster {
         if let Err(e) = self.identity.save_registry(&nodes) {
             warn!("cluster: can't record {node_id} in the registry: {e}");
         }
+    }
+
+    /// Sets what answers peers' federated reads (once).
+    pub fn set_rpc_handler(&self, h: RpcHandler) {
+        let _ = self.rpc_handler.set(HandlerSlot(h));
+    }
+
+    /// Peers with an open stream (their node IDs).
+    pub fn reachable_peers(&self) -> Vec<String> {
+        self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Calls `kind` on `peer` over its stream; fails fast when no stream is open, and after
+    /// `timeout` when the peer doesn't answer (CLU-002: a dead node never hangs a read).
+    pub async fn call(
+        &self,
+        peer: &str,
+        kind: &str,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
+        let tx = self
+            .outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(peer)
+            .cloned()
+            .ok_or_else(|| format!("no stream to {peer}"))?;
+        let id = self
+            .next_rpc
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (done, answer) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, done);
+        let frame = Frame {
+            body: Some(Body::RpcRequest(RpcRequest {
+                id,
+                kind: kind.to_owned(),
+                body,
+            })),
+        };
+        let result = async {
+            tx.send(frame)
+                .await
+                .map_err(|_| format!("the stream to {peer} closed"))?;
+            answer
+                .await
+                .map_err(|_| format!("the stream to {peer} closed"))?
+        };
+        let r = tokio::time::timeout(timeout, result).await;
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+        r.unwrap_or_else(|_| Err(format!("{peer} didn't answer within {timeout:?}")))
+    }
+
+    /// Calls `kind` on every reachable peer at once: `(peer, answer)` per peer.
+    pub async fn call_all(
+        &self,
+        kind: &str,
+        body: &[u8],
+        timeout: Duration,
+    ) -> Vec<(String, Result<Vec<u8>, String>)> {
+        let peers = self.reachable_peers();
+        let calls = peers
+            .iter()
+            .map(|p| self.call(p, kind, body.to_vec(), timeout));
+        let answers = futures_join_all(calls).await;
+        peers.into_iter().zip(answers).collect()
+    }
+
+    /// Answers an RPC from a peer on its stream.
+    fn on_rpc(self: &Arc<Self>, peer: &str, req: RpcRequest) {
+        let Some(tx) = self
+            .outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(peer)
+            .cloned()
+        else {
+            return;
+        };
+        let handler = self.rpc_handler.get().map(|h| Arc::clone(&h.0));
+        tokio::spawn(async move {
+            let result = match handler {
+                Some(h) => h(req.kind, req.body).await,
+                None => Err("this node doesn't answer federated reads".into()),
+            };
+            let (body, error) = match result {
+                Ok(b) if b.len() <= MAX_RPC => (b, String::new()),
+                Ok(b) => (Vec::new(), format!("answer too large ({} bytes)", b.len())),
+                Err(e) => (Vec::new(), e),
+            };
+            let _ = tx
+                .send(Frame {
+                    body: Some(Body::RpcResponse(RpcResponse {
+                        id: req.id,
+                        error,
+                        body,
+                    })),
+                })
+                .await;
+        });
     }
 
     /// This node's role and epoch.
@@ -723,7 +872,7 @@ impl Cluster {
     #[allow(clippy::too_many_lines)] // one match over the frame types
     /// Applies a frame from `peer` (whose ID the TLS certificate proved, when known).
     fn on_frame(
-        &self,
+        self: &Arc<Self>,
         peer: &mut Option<String>,
         f: Frame,
         via: &'static str,
@@ -826,6 +975,28 @@ impl Cluster {
                 self.observe_epoch(hb.epoch, &id);
                 return Ok(());
             }
+            Some(Body::RpcRequest(r)) => {
+                let id = peer.as_ref().ok_or("request before Hello")?.clone();
+                drop(members);
+                self.on_rpc(&id, r);
+                return Ok(());
+            }
+            Some(Body::RpcResponse(r)) => {
+                drop(members);
+                if let Some(done) = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&r.id)
+                {
+                    let _ = done.send(if r.error.is_empty() {
+                        Ok(r.body)
+                    } else {
+                        Err(r.error)
+                    });
+                }
+                return Ok(());
+            }
             Some(Body::KeyShare(k)) => {
                 let id = peer.as_ref().ok_or("key before Hello")?;
                 let from_primary = members
@@ -864,13 +1035,19 @@ impl Cluster {
 
 /// Reads frames from `body` into `cluster` until it ends.
 async fn read_frames(
-    cluster: &Cluster,
+    cluster: &Arc<Cluster>,
     body: Incoming,
     mut peer: Option<String>,
     via: &'static str,
     echo: &EchoSlot,
 ) -> Result<(), String> {
     let result = read_loop(cluster, body, &mut peer, via, echo).await;
+    // Streams that ended can't carry RPCs any more.
+    cluster
+        .outbox
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|_, tx| !tx.is_closed());
     if let Some(id) = &peer {
         let mut members = cluster
             .members
@@ -890,7 +1067,7 @@ async fn read_frames(
 }
 
 async fn read_loop(
-    cluster: &Cluster,
+    cluster: &Arc<Cluster>,
     mut body: Incoming,
     peer: &mut Option<String>,
     via: &'static str,
@@ -925,6 +1102,15 @@ async fn write_frames(
     }
     let mut manifests = cluster.published.subscribe();
     let mut changed = cluster.local_changed.subscribe();
+    // RPC frames for this peer go out on this stream (CLU-002).
+    let (out_tx, mut outbox) = tokio::sync::mpsc::channel::<Frame>(64);
+    if let Some(p) = &peer {
+        cluster
+            .outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(p.clone(), out_tx);
+    }
     let mut tick = tokio::time::interval(HEARTBEAT);
     tick.tick().await;
     // A heartbeat right away, so the peer can echo it and both sides know the round-trip
@@ -966,6 +1152,7 @@ async fn write_frames(
                     pending.clone_from(&manifests.borrow_and_update());
                     continue;
                 }
+                Some(f) = outbox.recv() => f,
             }
         };
         if tx
@@ -1312,6 +1499,32 @@ async fn stream_once(
         .unwrap_or_else(PoisonError::into_inner)
         .take_if(|u| u == url);
     result
+}
+
+/// Runs futures concurrently and returns their outputs in order (no `futures` dependency).
+async fn futures_join_all<F: std::future::Future>(
+    fs: impl IntoIterator<Item = F>,
+) -> Vec<F::Output> {
+    let mut pinned: Vec<std::pin::Pin<Box<F>>> = fs.into_iter().map(Box::pin).collect();
+    let mut out: Vec<Option<F::Output>> = pinned.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (i, f) in pinned.iter_mut().enumerate() {
+            if out[i].is_none() {
+                match f.as_mut().poll(cx) {
+                    std::task::Poll::Ready(v) => out[i] = Some(v),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    out.into_iter().flatten().collect()
 }
 
 /// How long a failed fetch or apply waits before trying the same manifest again.

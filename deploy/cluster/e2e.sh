@@ -7,6 +7,7 @@
 #   5. failover (ADR-051): the eligible replica got the cluster key, is promoted while the
 #      primary is down, and serves the last version it had; the old primary comes back, steps
 #      down, follows the new primary, and keeps its unseen edit under Conflicts.
+# Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -41,6 +42,8 @@ addr = "127.0.0.1:$2"
 listen = "127.0.0.1:$3"
 [telemetry.metrics]
 listen = "127.0.0.1:$4"
+[telemetry.qlog]
+enabled = true
 [cluster]
 listen = "127.0.0.1:$5"
 [[upstream]]
@@ -123,6 +126,28 @@ for _ in $(seq 100); do [ "$(q 25302 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1
 for _ in $(seq 50); do [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] && break; sleep 0.1; done
 [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] || fail "replica doesn't block with the primary's list"
 echo "ok"
+
+echo "== federated reads (CLU-002)"
+for i in $(seq 5); do q 25302 "fed$i.r.test" >/dev/null; done
+API=http://127.0.0.1:28001
+ST=$(cat "$E/p/setup-token")
+curl -sf -c "$E/jar" -H 'content-type: application/json' \
+  -d "{\"setupToken\":\"$ST\",\"username\":\"admin\",\"password\":\"e2e-password-123\"}" \
+  "$API/api/v1/auth/setup" >/dev/null || fail "couldn't set up the primary's admin"
+get() { curl -sf -b "$E/jar" "$API$1"; }
+field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
+found=""
+for _ in $(seq 30); do
+  found=$(get '/api/v1/queries?name=fed1.r.test' | field '" ".join(r.get("node","") for r in d["items"])')
+  [ -n "$found" ] && break; sleep 0.5
+done
+[ "$found" = r ] || fail "the primary's query log doesn't show the replica's query (got '$found')"
+[ "$(get '/api/v1/queries?name=fed1.r.test&scope=node:local' | field 'len(d["items"])')" = 0 ] \
+  || fail "scope=node:local returned another node's rows"
+both=$(get '/api/v1/stats/summary' | field 'd["queries"]')
+own=$(get '/api/v1/stats/summary?scope=node:local' | field 'd["queries"]')
+[ "$both" -gt "$own" ] || fail "cluster totals ($both) don't exceed this node's ($own)"
+echo "ok (cluster $both queries, primary alone $own)"
 
 # The cluster's settings travel too: a new authority on the primary reaches the replica.
 "$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null

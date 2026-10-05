@@ -127,7 +127,7 @@ pub struct ScopeParam {
 }
 
 /// Counts for one time bucket.
-#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimeBucket {
     /// Bucket start, Unix seconds.
@@ -167,7 +167,7 @@ pub struct TimeseriesParams {
 }
 
 /// Totals over a time range.
-#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub from_unix_seconds: u64,
@@ -187,6 +187,9 @@ pub struct Summary {
     pub active_clients: u64,
     /// Latency percentiles this hour, by answer path (`cache`, `upstream`, ...).
     pub latency: Vec<LatencyRow>,
+    /// Cluster nodes that couldn't be read (CLU-002).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
 }
 
 /// Query parameters for `GET /stats/summary`.
@@ -246,7 +249,7 @@ pub struct TopParams {
 
 /// One ranked item. Counts come from a Space-Saving sketch: the true count lies in
 /// `[count - errorBound, count]`.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TopItem {
     /// Domain name or client address.
@@ -284,7 +287,7 @@ pub struct LatencyParams {
 }
 
 /// Latency percentiles for one key (HDR histogram, 2 significant digits).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatencyRow {
     /// What the row is for (`cache/udp`, `AAAA`, `quad9-tls-1`, `upstream`).
@@ -315,7 +318,7 @@ pub enum NameMatch {
 }
 
 /// Query parameters for `GET /queries`. Filters combine with AND.
-#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[derive(Debug, Clone, Default, Deserialize, IntoParams, Serialize)]
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryParams {
@@ -352,7 +355,7 @@ pub struct QueryParams {
 }
 
 /// One logged query.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRow {
     /// When the query arrived (RFC 3339, milliseconds).
@@ -382,10 +385,13 @@ pub struct QueryRow {
     pub upstream_ms: f64,
     pub response_bytes: u16,
     pub answers: u16,
+    /// The node that answered it (federated reads: its site).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// A page of query-log rows, newest first.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryPage {
     pub items: Vec<QueryRow>,
@@ -394,9 +400,12 @@ pub struct QueryPage {
     pub next_cursor: Option<String>,
     /// How much of the log this page looked at.
     pub scanned: ScanStats,
+    /// Cluster nodes that couldn't be read (CLU-002: partial results, never a hang).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanStats {
     pub segments: usize,
@@ -637,10 +646,13 @@ pub struct UpstreamInfo {
 }
 
 /// A list wrapper used by every collection endpoint.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Items<T> {
     pub items: Vec<T>,
+    /// Cluster nodes that couldn't be read, for federated reads (CLU-002).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
 }
 
 /// Query parameters for `GET /queries/stream` (OBS-008). Filters combine with AND and are
@@ -670,7 +682,7 @@ pub struct TailParams {
     /// Most events per second sent to this subscriber (1–2000, default 500). The rest are
     /// counted and reported in `dropped` events.
     pub rate: Option<u32>,
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default) or `node:local`. The live stream is always this node's queries.
     pub scope: Option<String>,
 }
 

@@ -97,9 +97,17 @@ pub(crate) fn router(src: Arc<Sources>) -> HttpRouter {
 /// still limited to `allowed_networks` (ADR-029).
 pub(crate) fn api_router(src: Arc<Sources>, auth: Arc<telltale_api::auth::Auth>) -> HttpRouter {
     use telltale_api::auth::routes::{authenticate, require_viewer};
-    let backend = Arc::new(crate::api_backend::ApiBackend {
+    let local: telltale_api::Shared = Arc::new(crate::api_backend::ApiBackend {
         src: Arc::clone(&src),
     });
+    // REQ: CLU-002 — in a cluster, reads cover every node, and this node answers its peers'.
+    let backend: telltale_api::Shared = match &src.cluster {
+        Some(c) => {
+            c.set_rpc_handler(crate::federated::rpc_handler(Arc::clone(&local)));
+            Arc::new(crate::federated::Federated::new(local, Arc::clone(c)))
+        }
+        None => local,
+    };
     let metrics = HttpRouter::new()
         .route("/metrics", get(metrics))
         .with_state(Arc::clone(&src))

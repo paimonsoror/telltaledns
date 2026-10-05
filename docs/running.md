@@ -505,9 +505,24 @@ The longest matching suffix wins; routes can also match `match_qtype = ["PTR"]`.
 Nodes can form a cluster: the first node creates it and holds the cluster's certificate
 authority (it's the **primary**); others join with a token and then keep an encrypted,
 mutually authenticated link (mTLS over HTTP/2) to it. **The primary's configuration and
-blocklists reach every node within seconds.** Failover, forwarding changes made on other
-nodes, and one management plane arrive in the next roadmap steps (M5). DNS never depends on
-the cluster: a node answers the same whether its peers are up or not.
+blocklists reach every node within seconds.** Failover is manual (below), and **every node's
+dashboard and query log show the whole cluster**. Forwarding changes made on other nodes
+arrives in a later roadmap step (M5). DNS never depends on the cluster: a node answers the
+same whether its peers are up or not.
+
+**One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
+groups, and query log cover every node:
+- The node you're on asks its peers over the cluster link and merges what they send:
+  - counts add up;
+  - top lists merge their counts and error bounds;
+  - latency percentiles are weighted by each node's query count (close, but not exact);
+  - query-log rows interleave by time, and each row shows the node that answered it.
+- A node that doesn't answer within 2 seconds is left out, and the page says so ("Partial
+  results: pi didn't answer"). It never hangs. The API lists those nodes in `missingNodes`.
+- `scope=node:local` on a stats or query-log request reads only the node you're asking, for
+  example `GET /api/v1/stats/summary?scope=node:local`.
+- The live query stream, settings, and Explain are always this node's own.
+- A node answers its peers' reads only when its API is on (`[api] listen`).
 
 **What's shared and what stays per node.** The primary shares upstreams, routes, local
 records, lists, groups, devices, access rules, rate limits, and special names, including

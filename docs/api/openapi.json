@@ -1358,7 +1358,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`.",
+            "description": "`cluster` (default) or `node:local`. The live stream is always this node's queries.",
             "required": false,
             "schema": {
               "type": "string"
@@ -3553,6 +3553,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -3599,6 +3606,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -3637,6 +3651,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -3730,6 +3751,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -3786,6 +3814,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -3870,6 +3905,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -3907,6 +3949,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -4017,6 +4066,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -4061,6 +4117,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -4128,6 +4191,13 @@
                 }
               }
             }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
           }
         }
       },
@@ -4682,6 +4752,13 @@
               "$ref": "#/components/schemas/QueryRow"
             }
           },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read (CLU-002: partial results, never a hang)."
+          },
           "nextCursor": {
             "type": [
               "string",
@@ -4744,6 +4821,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that answered it (federated reads: its site)."
           },
           "proto": {
             "type": "string"
@@ -4990,6 +5074,13 @@
               "$ref": "#/components/schemas/LatencyRow"
             },
             "description": "Latency percentiles this hour, by answer path (`cache`, `upstream`, ...)."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read (CLU-002)."
           },
           "nxdomain": {
             "type": "integer",

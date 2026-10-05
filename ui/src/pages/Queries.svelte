@@ -57,6 +57,7 @@
   let rows = $state<S['QueryRow'][]>([]);
   let cursor = $state<string | undefined>();
   let scanned = $state<S['ScanStats'] | null>(null);
+  let missing = $state<string[]>([]);
   let loading = $state(false);
   let error = $state<unknown>(null);
   let live = $state(false);
@@ -84,6 +85,7 @@
       rows = more ? [...rows, ...page.items] : page.items;
       cursor = page.nextCursor ?? undefined;
       scanned = page.scanned;
+      missing = page.missingNodes ?? [];
       error = null;
     } catch (e) {
       error = e;
@@ -276,7 +278,10 @@
           <tbody>
             {#each rows as r, i (r.tsUnixMicros + ':' + i)}
               <tr>
-                <td class="nowrap" title={logDate(r.time)}>{logTime(r.time)}</td>
+                <td class="nowrap" title={logDate(r.time)}>
+                  {logTime(r.time)}
+                  {#if r.node}<div class="muted small" title="The cluster node that answered">{r.node}</div>{/if}
+                </td>
                 <td class="nowrap">
                   <ClientChip ip={r.client} name={r.clientName} onchanged={(n) => renamed(r.client, n)} />
                   {#if r.group}<div class="group-chip small" style:--gc={groupColor(r.group)}>{r.group}</div>{/if}
@@ -307,7 +312,7 @@
         {#if live}
           {`${num(rows.length)} live rows (newest ${MAX_LIVE} kept)`}{#if skipped}{` · ${num(skipped)} matching queries skipped to keep up`}{/if}
         {:else}
-          {num(rows.length)} rows{#if scanned}{` · searched ${num(scanned.blocksRead)} of ${num(scanned.blocksTotal)} blocks in ${num(scanned.segments)} hourly files`}{/if}
+          {num(rows.length)} rows{#if missing.length}{` · not reached: ${missing.join(', ')}`}{/if}{#if scanned}{` · searched ${num(scanned.blocksRead)} of ${num(scanned.blocksTotal)} blocks in ${num(scanned.segments)} hourly files`}{/if}
         {/if}
       </span>
       <span class="spacer"></span>

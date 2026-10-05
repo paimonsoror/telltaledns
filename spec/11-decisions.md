@@ -712,3 +712,22 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner's Pi shows a failing `node_settings` check until its file is trimmed to node-local settings. Promoting to the spec's strict refusal stays possible later, as an opt-in `[cluster] strict_overrides = true`.
 
+## ADR-053 — Federated reads v1: what's exact, what's approximate, and which scopes exist (Proposed)
+**Context:** T5.6 (CLU-002, OBS-012). `spec/12` §6 says analytics reads fan out to the peers in `scope` and merge, with HDR histograms merged exactly, query logs k-way merged with per-node cursors, a 2 s per-peer timeout, and `missing_nodes`. It names the scopes `node:<id>`, `site:<name>` and `cluster`.
+
+**Decision:**
+- **Transport:** reads are RPCs over the existing cluster streams (frame types `RpcRequest`/`RpcResponse`, kind `api.read`, JSON body). No new port, connection, or certificate. Peers are asked concurrently with a 2 s deadline. A peer without a stream is reported missing at once.
+- **Merges:**
+  - counters sum per bucket, across every breakdown;
+  - top lists add counts and error bounds per key (the true count stays within `[count − errorBound, count]`);
+  - query-log pages interleave newest first, with a cursor (`fed:` + base64url JSON) that holds each node's "before" time, or nothing once that node has run out.
+- **Latency is approximate in v1.** Each node sends its percentiles, and they are weighted by query count; the maximum is exact. Shipping histograms for an exact merge needs a serialized HDR format on the wire. It's deferred until a dashboard needs exact cluster-wide tails.
+- **Scopes:** `cluster` (the default) and `node:local`. `node:<id>` and `site:<name>` still answer `400 unsupported_scope`. The live tail, configuration reads, and Explain stay local.
+- **Edge cases (accepted):**
+  - Rows that share the exact microsecond with a page's last row from the same node may be skipped on the next page.
+  - A node that joins while someone is paging appears only from the next fresh search.
+  - `missingNodes` reports the latest federated read on the node; concurrent reads may each see the other's list.
+- **Failure:** a peer error, timeout, or undecodable answer drops that node from the result and names it in `missingNodes`. If this node's own query log is off, but peers answered, their rows are returned and this node is listed as missing. DNS answering is never involved (CLU-004).
+
+**Consequences:** any node's UI is a full management view for reads. Exact cluster-wide latency, named-node/site scopes and a federated live tail are follow-ups.
+

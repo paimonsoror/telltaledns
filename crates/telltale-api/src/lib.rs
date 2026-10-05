@@ -12,6 +12,7 @@
 
 pub mod auth;
 pub mod config_api;
+pub mod federation;
 pub mod model;
 pub mod problem;
 pub mod time;
@@ -48,6 +49,15 @@ pub trait Backend: Send + Sync + 'static {
             .map_or(0, |d| d.as_secs())
     }
     fn system_info(&self) -> SystemInfo;
+    /// This node's own data only, for `scope=node:local` (CLU-002); `None` when reads aren't
+    /// federated (a standalone node).
+    fn local(&self) -> Option<Shared> {
+        None
+    }
+    /// Cluster nodes that couldn't be read just now (shown as `missingNodes`).
+    fn missing_nodes(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Makes this node the cluster's primary (ADR-051).
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
         let _ = (req, by);
@@ -150,7 +160,7 @@ pub trait Backend: Send + Sync + 'static {
     }
 }
 
-type Shared = Arc<dyn Backend>;
+pub type Shared = Arc<dyn Backend>;
 
 /// A boxed future returned by backend writes.
 pub type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
@@ -360,15 +370,25 @@ fn not_found(uri: &axum::http::Uri) -> Problem {
         .hint("See /api/v1/openapi.json for every route.")
 }
 
-/// `scope` must be this node until clustering exists (`spec/12` §6).
+/// The backend a read's `scope` selects (`spec/12` §6, CLU-002): the whole cluster by default
+/// (federated when this node is in one), or `node:local` for this node alone.
+fn pick(b: &Shared, scope: Option<&str>) -> Result<Shared, Problem> {
+    check_scope(scope)?;
+    Ok(match (scope, b.local()) {
+        (Some("node:local"), Some(local)) => local,
+        _ => Arc::clone(b),
+    })
+}
+
+/// `scope` is `cluster` (default) or `node:local`; reading one named peer isn't offered yet.
 fn check_scope(scope: Option<&str>) -> Result<(), Problem> {
     match scope {
         None | Some("" | "cluster" | "node:local") => Ok(()),
         Some(s) => Err(Problem::new(
             problem::Code::UnsupportedScope,
-            format!("scope `{s}` needs clustering, which this node doesn't run"),
+            format!("scope `{s}` isn't supported"),
         )
-        .hint("Use scope=cluster or omit it.")),
+        .hint("Use scope=cluster (or omit it) for every node, or scope=node:local for this one.")),
     }
 }
 
@@ -426,7 +446,7 @@ async fn stats_summary(
     State(b): State<Shared>,
     Query(p): Query<SummaryParams>,
 ) -> Result<Json<Summary>, Problem> {
-    check_scope(p.scope.as_deref())?;
+    let b = pick(&b, p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), now.saturating_sub(86_400), now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
@@ -461,8 +481,17 @@ async fn stats_summary(
     };
     s.blocked_percent = pct(s.blocked, s.queries);
     s.cache_hit_percent = pct(s.cached, s.cached + s.forwarded);
-    s.active_clients = b.top(TopKind::Clients, Hour::Current, 1000, None).len() as u64;
-    s.latency = b.latency(LatencyBy::Path, Hour::Current);
+    let bk = Arc::clone(&b);
+    let (clients, latency) = blocking(move || {
+        Ok((
+            bk.top(TopKind::Clients, Hour::Current, 1000, None).len() as u64,
+            bk.latency(LatencyBy::Path, Hour::Current),
+        ))
+    })
+    .await?;
+    s.active_clients = clients;
+    s.latency = latency;
+    s.missing_nodes = b.missing_nodes();
     Ok(Json(s))
 }
 
@@ -478,7 +507,7 @@ async fn stats_timeseries(
     State(b): State<Shared>,
     Query(p): Query<TimeseriesParams>,
 ) -> Result<Json<Items<TimeBucket>>, Problem> {
-    check_scope(p.scope.as_deref())?;
+    let b = pick(&b, p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let step = p.step.unwrap_or(Step::Minute);
     let default_from = now.saturating_sub(match step {
@@ -489,8 +518,12 @@ async fn stats_timeseries(
     });
     let from = time_param(p.from.as_deref(), default_from, now, "from")?;
     let to = time_param(p.to.as_deref(), now + 1, now, "to")?;
-    let items = blocking(move || Ok(b.timeseries(step, from, to))).await?;
-    Ok(Json(Items { items }))
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.timeseries(step, from, to))).await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
 }
 
 /// Live query stream.
@@ -544,7 +577,7 @@ async fn stats_top(
     State(b): State<Shared>,
     Query(p): Query<TopParams>,
 ) -> Result<Json<Items<TopItem>>, Problem> {
-    check_scope(p.scope.as_deref())?;
+    let b = pick(&b, p.scope.as_deref())?;
     let limit = p.limit.unwrap_or(10).clamp(1, 100);
     let client = match &p.client {
         None => None,
@@ -556,7 +589,7 @@ async fn stats_top(
     if client.is_some() && p.kind != TopKind::Domains {
         return Err(Problem::invalid("`client` only applies to kind=domains"));
     }
-    if let Some(g) = &p.group {
+    if p.group.is_some() {
         if client.is_some() {
             return Err(Problem::invalid("use either `client` or `group`"));
         }
@@ -565,12 +598,17 @@ async fn stats_top(
                 "`group` isn't available for kind=nxdomain",
             ));
         }
-        return Ok(Json(Items {
-            items: b.top_in_group(p.kind, p.hour.unwrap_or_default(), limit, g)?,
-        }));
     }
+    let bk = Arc::clone(&b);
+    let (kind, hour, group) = (p.kind, p.hour.unwrap_or_default(), p.group);
+    let items = blocking(move || match group {
+        Some(g) => bk.top_in_group(kind, hour, limit, &g),
+        None => Ok(bk.top(kind, hour, limit, client)),
+    })
+    .await?;
     Ok(Json(Items {
-        items: b.top(p.kind, p.hour.unwrap_or_default(), limit, client),
+        missing_nodes: b.missing_nodes(),
+        items,
     }))
 }
 
@@ -584,9 +622,13 @@ async fn stats_latency(
     State(b): State<Shared>,
     Query(p): Query<LatencyParams>,
 ) -> Result<Json<Items<LatencyRow>>, Problem> {
-    check_scope(p.scope.as_deref())?;
+    let b = pick(&b, p.scope.as_deref())?;
+    let bk = Arc::clone(&b);
+    let (by, hour) = (p.by, p.hour.unwrap_or_default());
+    let items = blocking(move || Ok(bk.latency(by, hour))).await?;
     Ok(Json(Items {
-        items: b.latency(p.by, p.hour.unwrap_or_default()),
+        missing_nodes: b.missing_nodes(),
+        items,
     }))
 }
 
@@ -603,7 +645,7 @@ async fn queries(
     State(b): State<Shared>,
     Query(p): Query<QueryParams>,
 ) -> Result<Json<QueryPage>, Problem> {
-    check_scope(p.scope.as_deref())?;
+    let b = pick(&b, p.scope.as_deref())?;
     let now = b.now_unix_seconds();
     let from = time_param(p.from.as_deref(), 0, now, "from")?;
     let to = time_param(p.to.as_deref(), 0, now, "to")?;
@@ -612,9 +654,10 @@ async fn queries(
         return Err(Problem::invalid("`match` needs `name`"));
     }
     let (from_us, to_us) = (from.saturating_mul(1_000_000), to.saturating_mul(1_000_000));
-    blocking(move || b.queries(&p, from_us, to_us, limit))
-        .await
-        .map(Json)
+    let bk = Arc::clone(&b);
+    let mut page = blocking(move || bk.queries(&p, from_us, to_us, limit)).await?;
+    page.missing_nodes = b.missing_nodes();
+    Ok(Json(page))
 }
 
 /// Explain a decision.
@@ -638,7 +681,10 @@ async fn explain(
 #[utoipa::path(get, path = "/api/v1/lists", tag = "config",
     responses((status = 200, body = Items<ListInfo>)))]
 async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
-    Json(Items { items: b.lists() })
+    Json(Items {
+        missing_nodes: Vec::new(),
+        items: b.lists(),
+    })
 }
 
 /// Client groups, their lists, block mode, and pause state.
@@ -648,7 +694,10 @@ async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
 #[utoipa::path(get, path = "/api/v1/groups", tag = "config",
     responses((status = 200, body = Items<GroupInfo>)))]
 async fn groups(State(b): State<Shared>) -> Json<Items<GroupInfo>> {
-    Json(Items { items: b.groups() })
+    Json(Items {
+        missing_nodes: Vec::new(),
+        items: b.groups(),
+    })
 }
 
 /// Configured clients (devices) and how they're recognized.
@@ -662,7 +711,10 @@ async fn clients(State(b): State<Shared>) -> impl IntoResponse {
     let etag = format!("\"{}\"", b.config_version());
     (
         [(axum::http::header::ETAG, etag)],
-        Json(Items { items: b.clients() }),
+        Json(Items {
+            missing_nodes: Vec::new(),
+            items: b.clients(),
+        }),
     )
 }
 
@@ -687,6 +739,7 @@ async fn anomalies(
         "since",
     )?;
     Ok(Json(Items {
+        missing_nodes: Vec::new(),
         items: b.anomalies(since),
     }))
 }
@@ -702,6 +755,7 @@ async fn local_names(State(b): State<Shared>) -> impl IntoResponse {
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
+            missing_nodes: Vec::new(),
             items: b.local_names(),
         }),
     )
@@ -718,6 +772,7 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
     (
         [(axum::http::header::ETAG, etag)],
         Json(Items {
+            missing_nodes: Vec::new(),
             items: b.forwards(),
         }),
     )
@@ -731,6 +786,7 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
     responses((status = 200, body = Items<UpstreamInfo>)))]
 async fn upstreams(State(b): State<Shared>) -> Json<Items<UpstreamInfo>> {
     Json(Items {
+        missing_nodes: Vec::new(),
         items: b.upstreams(),
     })
 }

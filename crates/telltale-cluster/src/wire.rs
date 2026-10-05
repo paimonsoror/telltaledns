@@ -39,6 +39,29 @@ pub struct Hello {
     pub config_source: String,
 }
 
+/// A federated read (CLU-002, T5.6): `kind` names the call, `body` carries its arguments
+/// (JSON). Answered on the same stream with the same `id`.
+#[derive(Clone, PartialEq, Message)]
+pub struct RpcRequest {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(string, tag = "2")]
+    pub kind: String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub body: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct RpcResponse {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Empty on success.
+    #[prost(string, tag = "2")]
+    pub error: String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub body: Vec<u8>,
+}
+
 /// The cluster CA key, from the primary to an eligible node (ADR-051).
 #[derive(Clone, PartialEq, Message)]
 pub struct KeyShare {
@@ -91,7 +114,7 @@ pub struct ManifestMsg {
 /// One message on a stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Frame {
-    #[prost(oneof = "Body", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6")]
     pub body: Option<Body>,
 }
 
@@ -105,6 +128,10 @@ pub enum Body {
     Manifest(ManifestMsg),
     #[prost(message, tag = "4")]
     KeyShare(KeyShare),
+    #[prost(message, tag = "5")]
+    RpcRequest(RpcRequest),
+    #[prost(message, tag = "6")]
+    RpcResponse(RpcResponse),
 }
 
 /// A frame with its length prefix.
