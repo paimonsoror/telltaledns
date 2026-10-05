@@ -3227,6 +3227,7 @@ dependencies = [
  "parking_lot",
  "telltale-config",
  "telltale-proto",
+ "xxhash-rust",
 ]
 
 [[package]]

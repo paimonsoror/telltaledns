@@ -204,7 +204,7 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *It's generated from `site/data/architecture.json`. The build checks crates, Cargo dependencies, public types, ADR and requirement IDs, and paths, and CI fails on any drift. Arrows, line counts and budgets come from the repo itself.*
   - *Lighthouse scores 1.0 in all four categories, locally.*
   - *Also done: the site header was reorganised (five links, a Reference menu, icon buttons, ☰ on phones); section eyebrows now meet AA contrast; the home comparison table got row headers.*
-- [ ] **T6.11 Host resources on the Cluster page (proposed, owner request 2026-10-05).** For monitoring and triage, each node reports the machine it runs on. *(CLU-008, OBS-005; a new requirement, proposed CLU-012, is to be added)*
+- [x] **T6.11 Host resources on the Cluster page (proposed, owner request 2026-10-05).** For monitoring and triage, each node reports the machine it runs on. *(CLU-008, OBS-005; a new requirement, proposed CLU-012, is to be added)*
   - **Memory:** host total, available, and swap. In a container, also its cgroup limit, its usage, and OOM kills. Telltale's own RSS.
   - **CPU:** core count, load average (1/5/15 min), and utilisation. In a container, the cgroup quota and throttled time.
   - **Disk:** free and total space on the data directory's filesystem, the query-log and snapshot sizes, and the write rate (SD-card wear).
@@ -233,9 +233,14 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - **Checks:** workspace tests, clippy, the UI suite and bench-smoke all pass.
     - **Measured cost:** about 0.6 MiB idle RSS (22.9 vs 22.3 MiB, five runs each, bench-fast build on the dev laptop).
     - **Separately:** idle RSS without lists is now above the 20 MiB 1.0 gate on that build. That predates this task and should be revisited before the gate.
-    - **Remaining:** the live check of Pi and homelab values against `free` and `/proc/loadavg` (needs a rollout).
+    - **Live check (rollout of 9d2cec8, 2026-10-05):**
+      - Pi: memory total identical and available within 0.1% of `free`; temperature, OS, and data disk reported.
+      - Homelab k3s pod: memory total identical and available within 0.06%; load averages identical to `/proc/loadavg`; its 512 MiB cgroup limit shown; OS name absent (the minimal image has no `/etc/os-release`), as designed.
+    - **Notes:**
+      - The low-disk alert is proven with `promtool` on synthetic series (`deploy/helm/alerts-test.sh`), not by filling a real filesystem.
+      - A kind replica uses the same container code path as the homelab pod and wasn't checked separately.
     - **Deferred:** process restart counts (uptime shows restarts) and Grafana dashboard panels.
-- [ ] **T6.12 Quick rules: per-device and per-group allow/block, optionally expiring (proposed, owner request 2026-10-05).** For everyday cases:
+- [x] **T6.12 Quick rules: per-device and per-group allow/block, optionally expiring (proposed, owner request 2026-10-05).** For everyday cases:
   - unblock a game's server for one person's phone for two hours;
   - block a site for the kids' devices until tomorrow.
 
@@ -285,7 +290,9 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
       - unit tests (policy, pipeline, explain, config, API scopes);
       - Playwright: allow for 1 hour from "Why?", then remove; expiry and audit; bad input refused;
       - the cluster e2e: a rule made on the replica applies on both nodes and is removed from both.
-    - **Remaining:** `make bench-smoke --quick-rules 1000` (the bench harness gained `--quick-rules N`). The run was stopped for memory pressure on 2026-10-05 and waits for the owner's go.
+    - **Performance (2026-10-05):**
+      - `make bench-smoke` with 0 and 1,000 non-matching rules, alternating over four rounds: peak cache-hot throughput is within run-to-run noise (158–249k qps either way); "@50%" latencies are confounded by the different peaks.
+      - Micro-measurement of a decision (`flt_005_quick_cost`): 4 ns with no rules, 120 ns with 1,000 rules using SipHash keys, 52 ns after switching to xxh3 keys with a pass-through hasher (hits confirmed byte for byte).
 - [ ] **T6.13 Cache tools: inspect and flush, across the cluster (proposed, owner request 2026-10-05).** The endpoints `spec/07` §1 already plans (`GET /cache/stats`, `POST /cache/flush` with `{name?, subtree?}`) and the `flush_cache` agent operation (`spec/13` §3, scope `ops:cache`). *(DNS-006, API-005, AGT-004, CLU-002)*
   - **Lookup:** what the cache holds for a name: answer, TTL left, stale or prefetched, DNSSEC status, and which upstream answered.
   - **Flush:** one name, a subtree, or everything. By default it goes to every node over the cluster channel; an option limits it to one node. Every flush is audit-logged.

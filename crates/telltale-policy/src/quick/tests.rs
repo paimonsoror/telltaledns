@@ -204,3 +204,50 @@ devices = ["192.168.1.0/28"]
     assert!(none.rules.is_empty());
     assert_eq!(none.ask(MOM, "anything.example", 0), None);
 }
+
+/// REQ: FLT-005 (ADR-067) — the hot-path cost of quick rules: nanoseconds per decision with
+/// 1,000 rules that don't match (every suffix probed) against none. Run on demand:
+/// `cargo test --release -p telltale-policy quick_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a timing measurement, not a check"]
+fn flt_005_quick_cost() {
+    let mut rules = String::new();
+    for i in 0..1000 {
+        let scope = match i % 3 {
+            0 => format!("devices = [\"192.0.2.{}\"]", i % 250 + 1),
+            1 => "groups = [\"kids\"]".to_owned(),
+            _ => String::new(),
+        };
+        rules.push_str(&format!(
+            "[[rule]]\nid = \"r{i}\"\naction = \"block\"\ndomain = \"r{i}.bench.invalid\"\n{scope}\n"
+        ));
+    }
+    let names: Vec<Vec<u8>> = [
+        "www.example.com",
+        "a.b.cdn.example.net",
+        "api.service.region.cloud.example.org",
+        "x.com",
+    ]
+    .iter()
+    .map(|n| q(n))
+    .collect();
+    for (label, s) in [("none", setup("")), ("1000", setup(&rules))] {
+        let peer: IpAddr = KID.parse().unwrap();
+        let who = s.table.identify(peer, None, None, &s.neighbors);
+        let groups = s.table.group_ids(who).to_vec();
+        let n = 2_000_000u32;
+        let t = std::time::Instant::now();
+        let mut hits = 0u32;
+        for i in 0..n {
+            let name = &names[(i as usize) % names.len()];
+            if s.rules
+                .decide(std::hint::black_box(name), who, peer, &groups, 0)
+                .is_some()
+            {
+                hits += 1;
+            }
+        }
+        let ns = t.elapsed().as_nanos() as f64 / f64::from(n);
+        println!("quick rules {label:>4}: {ns:6.1} ns per decision ({hits} hits)");
+    }
+}

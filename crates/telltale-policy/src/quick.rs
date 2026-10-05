@@ -5,10 +5,14 @@
 //! scope the longer domain wins, then allow beats block.
 //!
 //! Lookups lowercase the query name into a stack buffer and probe each suffix in a hash map
-//! (at most one probe per label); nothing is allocated. With no rules it's one branch.
+//! keyed by the suffix's xxh3 (at most one probe per label; a hit is confirmed byte for byte,
+//! so a hash collision can't misattribute). Nothing is allocated. With no rules it's one branch.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::net::IpAddr;
+
+use xxhash_rust::xxh3::xxh3_64;
 
 use telltale_config::{Cidr, Config, RuleAction};
 
@@ -52,6 +56,28 @@ pub struct QuickRule {
     /// The scope as written (device names, addresses, group names), for explanations.
     pub targets: Vec<Box<str>>,
     labels: u8,
+    /// The domain in lowercase wire format (what a probe's hit is confirmed against).
+    wire: Box<[u8]>,
+}
+
+/// Keys are already xxh3 hashes: pass them through (SipHash per suffix cost ~120 ns/query
+/// with 1,000 rules).
+#[derive(Debug, Default, Clone, Copy)]
+struct PassThrough(u64);
+
+impl Hasher for PassThrough {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        // Only `write_u64` is used; fold anything else in, for correctness.
+        for b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
+        }
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = v;
+    }
 }
 
 /// What decided, for attribution: the rule's index in [`QuickRules::rules`].
@@ -65,7 +91,8 @@ pub struct QuickMatch {
 #[derive(Debug, Default, Clone)]
 pub struct QuickRules {
     rules: Vec<QuickRule>,
-    by_domain: HashMap<Box<[u8]>, Vec<u32>>,
+    /// xxh3 of the lowercase wire-format domain → rule indices.
+    by_domain: HashMap<u64, Vec<u32>, BuildHasherDefault<PassThrough>>,
 }
 
 /// `example.com` → `\x07example\x03com\x00` (the wire form a query name has).
@@ -139,8 +166,9 @@ impl QuickRules {
                     .chain(&r.groups)
                     .map(|s| s.as_str().into())
                     .collect(),
+                wire: key.clone(),
             });
-            t.by_domain.entry(key).or_default().push(idx);
+            t.by_domain.entry(xxh3_64(&key)).or_default().push(idx);
         }
         t
     }
@@ -178,12 +206,15 @@ impl QuickRules {
         let mut best: Option<((u8, u8, bool), u32)> = None;
         let mut at = 0usize;
         while at < name.len() {
-            if let Some(ids) = self.by_domain.get(&name[at..]) {
+            let suffix = &name[at..];
+            if let Some(ids) = self.by_domain.get(&xxh3_64(suffix)) {
                 for &i in ids {
                     let Some(r) = self.rules.get(i as usize) else {
                         continue;
                     };
-                    if r.expires.is_some_and(|e| now >= e) || !applies(&r.scope, who, peer, groups)
+                    if *r.wire != *suffix
+                        || r.expires.is_some_and(|e| now >= e)
+                        || !applies(&r.scope, who, peer, groups)
                     {
                         continue;
                     }

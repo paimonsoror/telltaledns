@@ -1202,6 +1202,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Consequences:**
 - A new rule takes effect on the next query, with no list recompile.
+- Cost: about 52 ns per query with 1,000 rules, about 4 ns with none (xxh3 suffix keys, measured 2026-10-05).
 - Rules are deliberately simpler than list syntax: no regex, no query types. Anything fancier belongs in a list.
 - Device scoping is only as good as recognising the device; the docs say so.
 - Expiry depends on node clocks being roughly right. A node whose clock is off keeps or drops a rule early or late by that offset, and the Cluster page flags offsets of 2 s or more.
