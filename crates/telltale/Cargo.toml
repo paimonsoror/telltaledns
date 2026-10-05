@@ -29,6 +29,10 @@ mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"]
 # REQ: OPS-004 — self-update verifies minisign signatures (tiny, no dependencies).
 minisign-verify = "0.2"
 rand = "0.10.3"
+# REQ: API-007 (T6.3) — Pi-hole keeps groups in SQLite (gravity.db) and Teleporter archives
+# are zip / tar.gz. Both crates are already in the tree (telltale-store, telltale-git).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+miniz_oxide = "0.8"
 # SHA-256 for self-update (already in the tree through rustls).
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }

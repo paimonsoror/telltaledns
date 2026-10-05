@@ -85,6 +85,29 @@ Re-running it upgrades the binary in place. `sudo telltale self-update --restart
 
 Then point your router's DHCP DNS server setting at the Pi's address so every device uses it.
 
+## Moving from Pi-hole
+`telltale import pihole PATH -o pihole.toml` turns a Pi-hole setup into TelltaleDNS configuration. PATH is a Teleporter export (Settings → Teleporter → Export: a `.zip` from Pi-hole v6, a `.tar.gz` from v5), a `gravity.db`, or a copy of `/etc/pihole`. The output is checked to load before it's written.
+
+| Pi-hole | TelltaleDNS |
+|---|---|
+| Upstream DNS servers (`IP#port`) | `[[upstream]]` `pihole-N` in the `default` upstream group, strategy `fastest` (Pi-hole also prefers the fastest server) |
+| Conditional forwarding (rev servers) | an upstream, an upstream group, and a `[[route]]` for the local domain and every reverse zone of the network (a /23 is two /24 zones), with a DNSSEC negative trust anchor |
+| Local DNS records, CNAME records | `[[record]]` A/AAAA and CNAME (with the CNAME's TTL) |
+| Adlists (`https://`, `file://`) | `[[list]]` named `pihole-<id>-<file>`, with `url` or `path`; switched-off ones stay with `enabled = false`; v6 allowlists become `kind = "allow"` |
+| Allowed / denied domains, exact and regex | inline lists `pihole-allow-exact`, `pihole-deny-regex`, ..., one per set of groups. Exact entries match only that name (`match = "exact"`). Regexes keep `;querytype=` and `;invert` |
+| Groups (Default → `default`) | `[[group]]` with exactly the lists Pi-hole gave it. A switched-off group gets no lists |
+| Clients (IP, CIDR, MAC) | `[[client]]` named by the Pi-hole comment, in the same groups. Clients in no group (nothing is blocked for them in Pi-hole) go to `pihole-no-group`, which has no lists |
+| DHCP reservations | named devices: the MAC and IP join a matching client, or become a new one named by the host name |
+| DNSSEC, rate limit, blocking mode (NULL, NXDOMAIN, NODATA) | `[dnssec] mode = "validate"`, `[ratelimit]`, each group's `block_mode` |
+
+The header lists what has no equivalent, by setting name (values, such as password hashes, are never copied):
+- clients matched by host name or network interface (add their IP or MAC instead);
+- the DHCP server itself (keep DHCP on your router or on Pi-hole for now);
+- privacy level, web-server, and other Pi-hole-only settings. From v6, only settings marked as changed from their defaults are listed;
+- the `IP` blocking modes, entries switched off, and domain entries our regex engine can't run (backreferences and lookaround).
+
+Query history, the admin password, and API tokens aren't imported. The output is a complete starting configuration: on a fresh install, use it as is next to your node settings (`telltale run -c telltale.toml -c pihole.toml`). Into an existing one, merge by hand: both define the `default` upstream group and group. Upstreams on the Pi-hole machine itself (`127.0.0.1#5335`, usually unbound) are flagged: keep that resolver running next to TelltaleDNS, or use a `recursive://` upstream. CI imports real exports from the official Pi-hole v6 and v5 images and checks the answers (`deploy/pihole-import-e2e.sh`).
+
 ## Kubernetes (Helm)
 The chart is published with every release as an OCI artifact (k8s 1.26+, amd64 and arm64).
 Use a release version, or `0.1.0-edge.<n>` builds that follow `main`. Its source is in

@@ -942,3 +942,32 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 - aggressive NSEC caching (RFC 8198, with recursion);
 - per-reason EDE codes (7, 9, 10, 12) instead of 6;
 - the `dnssec` field in query events and the Settings UI.
+
+## ADR-061 — Pi-hole import v1: a reviewed starting configuration, faithful group semantics (Proposed)
+**Context:** T6.3 (API-007; `spec/08` §8) asks for an importer of Pi-hole v5 and v6 Teleporter archives covering adlists, domain lists, groups, clients, local DNS/CNAME records, upstreams, and conditional forwarding, with a report of every unmapped setting. The spec doesn't say whether the result is applied or reviewed, how Pi-hole's per-entry group assignments map onto our per-group list sets, or what happens to Pi-hole behaviors we don't have.
+
+**Decision:**
+- **Output, not apply:** `telltale import pihole PATH` writes TOML for review (like `import zone`, ADR-041), validated to load before it's written. Applying through the API (and the UI's import page) waits for T6.7's restore path.
+- **Inputs:** v6 zip (`pihole.toml` and a `gravity.db` of the group tables), v5 tar.gz (JSON per table plus `setupVars.conf`, `pihole-FTL.conf`, `custom.list`, `dnsmasq.d`), a directory, or a bare `gravity.db`. Readers are ours: zip and tar.gz in about 200 lines on `miniz_oxide`, with CRC checks and size limits. SQLite goes through `rusqlite`, already in the tree. Archived databases are read from a private temporary copy.
+- **Groups stay exact:** each group gets exactly the lists Pi-hole gave it, so `default` doesn't fall back to "every list". Domain entries become inline lists, one per (type, set of groups). Disabled groups get no lists. Clients in no group go to a `pihole-no-group` group with no lists, as Pi-hole blocks nothing for them.
+- **Matching:**
+  - exact entries use `match = "exact"`;
+  - a regex our parser would read as a plain name is wrapped as `/regex/`;
+  - entries our engine can't run are reported, not dropped silently.
+- **Upstreams:** they go in the `default` upstream group with strategy `fastest`, matching Pi-hole's preference for the fastest server.
+- **Conditional forwarding:** each rev server becomes its own upstream group and route. The route covers the domain and the network's reverse zones: non-octet prefixes are expanded, so a /23 is two /24 zones, never widened. It gets a negative trust anchor.
+- **Devices:** DHCP reservations become named devices (MAC and IP join a matching client, or a new one named by the host name). The DHCP server is not imported.
+- **Report:**
+  - v6: every setting Pi-hole marks `### CHANGED` that isn't mapped;
+  - v5: every unmapped key in `setupVars.conf` and `pihole-FTL.conf`, except the old install's own plumbing (interface, addresses, web server);
+  - names only, never values, since they include password hashes.
+- **Not imported:** clients matched by host name or interface (we match by address); the `IP` blocking modes; query history; passwords and tokens.
+
+**Verification:**
+- Unit tests on hand-written inputs in both formats.
+- `deploy/pihole-import-e2e.sh` (CI) configures the official `pihole/pihole` images (v6 2026.09.0 = FTL v6.7.1, v5 2024.07.0) through their own tools, exports Teleporter archives, imports them, and serves the result: local names, a CNAME's TTL, exact and regex denies (`;querytype`), the blocking mode, and group scoping.
+- Pi-hole-generated files aren't committed (their comments are Pi-hole's text, NFR-006).
+
+**Consequences:**
+- Merging into an existing configuration is manual (both define `default`).
+- The importer showed that the first blocking snapshot waits for every list's first fetch, including retries: an unreachable adlist delays all blocking at first start. Tracked under T6.3 as an open item.

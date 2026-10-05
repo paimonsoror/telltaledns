@@ -121,11 +121,12 @@ listen = "127.0.0.1:29599"
 listen = "127.0.0.1:28599"
 EOF
 "$B" cluster join "$T" --site pi -c "$E/pi.toml" >/dev/null || fail "the outside node couldn't join"
-# Cluster-link errors are debug-level: keep them for the failure message.
-TELLTALE_LOG=info,telltale_cluster=debug "$B" run -c "$E/pi.toml" > "$E/pi.log" 2>&1 & PIDS+=($!)
+# Cluster-link errors are debug-level: keep them for the failure message (TELLTALE_LOG is
+# a single level).
+TELLTALE_LOG=debug "$B" run -c "$E/pi.toml" > "$E/pi.log" 2>&1 & PIDS+=($!)
 seen=""
 for _ in $(seq 120); do seen=$(metric http://127.0.0.1:29599 telltale_cluster_peer_up 'site="k8s"'); [[ "$seen" == 1 ]] && break; sleep 0.5; done
-[[ "$seen" == 1 ]] || fail "the outside node doesn't see the controller: $(grep -iE 'stream|dial|refused|error' "$E/pi.log" | tail -3 | cut -c1-220 | tr '\n' ' ') | primary_urls: $(grep -o '"primary_urls": \[[^]]*\]' "$E/pi/cluster/cluster.json" | tr -d '\n ')"
+[[ "$seen" == 1 ]] || fail "the outside node doesn't see the controller: $(grep 'telltale_cluster' "$E/pi.log" | grep -viE 'upstream' | grep -iE 'error|fail|refused|dial|connect|tls|cert|reject|timed out' | tail -4 | cut -c1-260 | tr '\n' ' ') | primary_urls: $(grep -o '"primary_urls": \[[^]]*\]' "$E/pi/cluster/cluster.json" | tr -d '\n ')"
 for _ in $(seq 30); do up=$(metric http://127.0.0.1:19153 telltale_cluster_peers 'state="up"'); [[ "$up" == 3 ]] && break; sleep 1; done
 [[ "$up" == 3 ]] || fail "the controller sees $up peers up, not 3"
 echo "ok"

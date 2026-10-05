@@ -154,6 +154,17 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
   <p>Nodes can already form a cluster and keep an mTLS link: <code>telltale cluster init --name home --advertise https://192.168.3.2:8443</code> on the first node, <code>telltale cluster token create</code> there, then <code>telltale cluster join tt_join_…</code> on the other. Only the first node's port 8443 must be reachable; the others connect out. The first node's configuration and blocklists then reach every node within seconds (signed, and only what changed), and each node keeps answering from its last copy if the link drops. Failover and one management plane follow in the next steps.</p>
 </section>
 
+<section id="pihole">
+  <p class="eyebrow">Coming from Pi-hole?</p>
+  <h2>Bring your Pi-hole setup with you</h2>
+  <ol class="guide">
+    <li>In Pi-hole, open <b>Settings → Teleporter</b> and click <b>Export</b> (v6 gives a <code>.zip</code>, v5 a <code>.tar.gz</code>).</li>
+    <li>Run <code>telltale import pihole pi-hole_teleporter.zip -o pihole.toml</code>. It carries over your upstreams, conditional forwarding, local DNS and CNAME records, adlists, allowed and denied domains (exact and regex), groups, clients, and DHCP reservations as named devices.</li>
+    <li>Read the notes at the top of <code>pihole.toml</code>: they list everything that has no equivalent (for example clients matched by host name, or the DHCP server). Then add the file to your configuration.</li>
+  </ol>
+  <p class="muted">Query history and passwords aren't imported. Keep Pi-hole running until TelltaleDNS answers the way you expect, then point your router at TelltaleDNS.</p>
+</section>
+
 <section id="router">
   <p class="eyebrow">Last step</p>
   <h2>Point your network at it</h2>

@@ -5,6 +5,7 @@
 
 mod anomaly;
 mod api_backend;
+mod archive;
 mod auth_setup;
 mod cluster;
 mod explain;
@@ -16,6 +17,7 @@ mod import;
 mod lists;
 mod managed;
 mod masking;
+mod pihole;
 mod pipeline;
 mod qlog_cli;
 mod replication;
@@ -238,6 +240,17 @@ enum ImportCommand {
         /// The zone's name, if the file has no `$ORIGIN` line (e.g. home.arpa).
         #[arg(long)]
         origin: Option<String>,
+        /// Write the TOML here instead of to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Convert a Pi-hole setup (v6 Teleporter zip, v5 Teleporter tar.gz, a gravity.db, or a
+    /// directory like /etc/pihole) into a TelltaleDNS configuration: upstreams, conditional
+    /// forwarding, local DNS and CNAME records, adlists, allow/deny domains, groups, and
+    /// clients. The header lists everything that has no equivalent.
+    Pihole {
+        /// The Teleporter archive, gravity.db, or Pi-hole directory.
+        path: PathBuf,
         /// Write the TOML here instead of to stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -481,6 +494,9 @@ fn main() -> ExitCode {
                     output,
                 },
         } => Ok(run_import_zone(&file, origin.as_deref(), output.as_deref())),
+        Command::Import {
+            command: ImportCommand::Pihole { path, output },
+        } => Ok(run_import_pihole(&path, output.as_deref())),
         Command::Cluster { command, config } => Ok(run_cluster(command, config)),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
@@ -547,6 +563,50 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
         ),
         ClusterCommand::Status => cluster::status(&cfg, &mut io::stdout().lock()),
     }
+}
+
+// REQ: API-007 (T6.3, ADR-061)
+fn run_import_pihole(path: &Path, output: Option<&Path>) -> ExitCode {
+    let im = match pihole::Source::load(path)
+        .and_then(|src| pihole::convert(&src, &path.display().to_string()))
+    {
+        Ok(im) => im,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // The result must load as config, with valid record values.
+    match Loader::new().toml_str("import", im.toml.clone()).load() {
+        Ok(l) => {
+            let (_, report) = LocalData::from_config(&l.config);
+            if !report.errors.is_empty() {
+                for e in &report.errors {
+                    eprintln!("error: {e}");
+                }
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    }
+    let written = match output {
+        Some(p) => std::fs::write(p, &im.toml).map_err(|e| format!("{}: {e}", p.display())),
+        None => write!(io::stdout().lock(), "{}", im.toml).map_err(|e| e.to_string()),
+    };
+    if let Err(e) = written {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+    eprintln!("imported from Pi-hole {}: {}", im.version, im.counts);
+    for n in &im.notes {
+        eprintln!("  - {n}");
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_import_zone(file: &Path, origin: Option<&str>, output: Option<&Path>) -> ExitCode {

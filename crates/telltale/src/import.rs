@@ -235,7 +235,7 @@ fn value_for(rtype: &str, rdata: &[String], origin: &str) -> Option<String> {
     }
 }
 
-fn toml_str(s: &str) -> String {
+pub(crate) fn toml_str(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
