@@ -283,12 +283,17 @@ for _ in $(seq 50); do [ "$(q 25302 b.p.test)" = 10.0.0.1 ] && break; sleep 0.1;
 "$B" cluster status -c "$E/r.toml" | grep -q 'role       primary' || fail "the replica isn't primary after promotion"
 # The old primary returns: it must step down and follow, keeping its edit as a conflict.
 "$B" run -c "$E/p.toml" > "$E/p3.log" 2>&1 & P_PID=$!
-for _ in $(seq 100); do [ -n "$(ls "$E/p/cluster/conflicts/" 2>/dev/null)" ] && break; sleep 0.1; done
+# Up to 30 s: on a slow CI runner the step-down (and the conflict record) can take a while.
+for _ in $(seq 300); do ls "$E/p/cluster/conflicts/" 2>/dev/null | grep -q '\.json$' && break; sleep 0.1; done
 for _ in $(seq 50); do [ "$(q 25301 c.p.test)" != 10.0.0.1 ] && break; sleep 0.1; done
 [ "$(q 25301 c.p.test)" != 10.0.0.1 ] || fail "the old primary still serves its orphaned edit"
 [ "$(q 25301 b.p.test)" = 10.0.0.1 ] || fail "the old primary doesn't serve the cluster's configuration"
 "$B" cluster status -c "$E/p.toml" | grep -q 'role       replica' || fail "the old primary didn't step down"
-ls "$E/p/cluster/conflicts/" | grep -q '^1-.*[0-9]\.json$' || fail "no conflict recorded for the orphaned version"
+ls "$E/p/cluster/conflicts/" 2>/dev/null | grep -q '^1-.*[0-9]\.json$' || {
+  echo "conflicts dir: $(ls -la "$E/p/cluster/conflicts/" 2>&1 | tr '\n' ' ')"
+  grep -iE 'conflict|stepping down|epoch|orphan' "$E/p3.log" | tail -15
+  fail "no conflict recorded for the orphaned version (conflicts: $(ls "$E/p/cluster/conflicts/" 2>&1 | tr '\n' ' '); log: $(grep -iE 'conflict|stepping down' "$E/p3.log" | tail -3 | cut -c1-160 | tr '\n' '|'))"
+}
 grep -q '"record"' "$E/p/cluster/conflicts/"1-*[0-9].json || fail "the conflict doesn't name the changed setting"
 grep -h 'stepping down\|kept under Conflicts' "$E/p3.log" | cut -c1-140
 echo "ok"
