@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For nerds: architecture and tech stack — TelltaleDNS</title>
+<meta name="description" content="An interactive look inside TelltaleDNS: every crate and how they connect, a query stage by stage, the cluster, the agent surface, the tech stack, data formats, and performance budgets.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="nerds">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">For nerds</p>
+  <h1>Inside TelltaleDNS</h1>
+  <p class="lede">Every crate, how a query moves through them, and why each piece of the stack was chosen. Generated from the repository on every site build, so it can't drift from the code.</p>
+  <p class="muted"><!-- @arch-stats --></p>
+  <ul class="toc">
+    <li><a href="#map">The map</a> · <a href="#pipeline">A query, stage by stage</a> · <a href="#cluster">The cluster</a> · <a href="#agents">Agents</a></li>
+    <li><a href="#stack">Tech stack</a> · <a href="#formats">Data formats</a> · <a href="#budgets">Budgets</a></li>
+  </ul>
+</section>
+
+<section id="map">
+  <p class="eyebrow">The map</p>
+  <h2>Crates and how they connect</h2>
+  <p class="muted">One Cargo workspace, one binary. An arrow points from a crate to a crate it uses (read from the <code>Cargo.toml</code> files). Select a crate to see what it does, its main types, its budget, and the decisions behind it.</p>
+  <div class="arch-wrap">
+    <figure class="figure arch-figure">
+      <!-- @arch-diagram -->
+      <figcaption>The binary wires everything together; its arrows are left out to keep the picture readable. With JavaScript off, each crate links to its description below.</figcaption>
+    </figure>
+    <aside class="card arch-panel" id="arch-panel" hidden aria-live="polite">
+      <button type="button" class="arch-close" aria-label="Close the crate details">×</button>
+      <div class="arch-panel-body"></div>
+    </aside>
+  </div>
+</section>
+
+<section id="crates">
+  <p class="eyebrow">Every crate</p>
+  <h2>What each crate does</h2>
+  <div class="arch-details">
+<!-- @arch-details -->
+  </div>
+</section>
+
+<section id="pipeline">
+  <p class="eyebrow">The hot path</p>
+  <h2>A query, stage by stage</h2>
+  <p class="muted">The order in <code>crates/telltale/src/pipeline.rs</code>. Everything up to the cache is synchronous and allocation-free on the worker thread that received the packet; only a cache miss goes async. Open a stage for details.</p>
+  <ol class="pipe">
+<!-- @arch-pipeline -->
+  </ol>
+</section>
+
+<section id="cluster">
+  <p class="eyebrow">Many nodes, one system</p>
+  <h2>The cluster</h2>
+  <div class="grid">
+<!-- @arch-cluster -->
+  </div>
+</section>
+
+<section id="agents">
+  <p class="eyebrow">Built for automation</p>
+  <h2>Agents and MCP</h2>
+  <div class="grid">
+<!-- @arch-agents -->
+  </div>
+</section>
+
+<section id="stack">
+  <p class="eyebrow">Tech stack</p>
+  <h2>What it's built with, and why</h2>
+  <p class="muted">"Used in" comes from the crates' <code>Cargo.toml</code> files. Every dependency passes <code>cargo-deny</code> (licenses and advisories): no copyleft code.</p>
+<!-- @arch-stack -->
+</section>
+
+<section id="formats">
+  <p class="eyebrow">On disk and on the wire</p>
+  <h2>Data formats</h2>
+  <div class="grid">
+<!-- @arch-formats -->
+  </div>
+</section>
+
+<section id="budgets">
+  <p class="eyebrow">Measured, not hoped for</p>
+  <h2>The 1.0 budgets</h2>
+  <p class="muted">The release gates from <a href="https://github.com/paimonsoror/telltaledns/blob/main/spec/00-overview.md">the specification</a>. Current measurements are on the <a href="performance.html">Performance</a> page.</p>
+  <div class="table-wrap">
+    <table><thead><tr><th>Metric</th><th>Target</th></tr></thead><tbody>
+<!-- @arch-gates -->
+    </tbody></table>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+<script src="assets/nerds.js" defer></script>
+</body>
+</html>

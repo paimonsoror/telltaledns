@@ -190,7 +190,7 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *A signed `releases.json` is published with every release. Nodes check it daily (`[updates] check`, `index_url`), and only a verified index is trusted. `telltale_update_available` reports the result.*
   - *Tests: signature (good, tampered, wrong key) with throwaway-key fixtures; version comparison within a channel; per-install instructions.*
   - *Open: `self-update` reading the index instead of `SHA256SUMS`.*
-- [ ] **T6.10 "For nerds" site page: an interactive architecture and tech-stack view (owner request 2026-10-05).** A page on the project site for people who want the nitty-gritty. Planned content:
+- [x] **T6.10 "For nerds" site page: an interactive architecture and tech-stack view (owner request 2026-10-05).** A page on the project site for people who want the nitty-gritty. Planned content:
   - an interactive architecture diagram: crates and how they connect, the query pipeline stage by stage, the cluster channel and replication, and the agent/MCP surface. Each part is clickable and opens a panel on what it does, the main types, its performance budget, and the ADRs and requirements behind it;
   - the tech stack (Rust crates and why each was chosen, the UI stack, CI, packaging);
   - the data formats (snapshot blobs, query-log segments, `.ttbk`, the release index).
@@ -199,6 +199,11 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - generated from data the site build checks against the repo (crate list, ADR and requirement IDs), so it can't drift;
   - linked from the site header;
   - passes the site check and the Lighthouse budget.
+  - *Done 2026-10-05 (ADR-012 addendum).*
+  - *`nerds.html` has an interactive crate map (select a crate to open its panel; dependency edges are highlighted). It also covers the query pipeline stage by stage, the cluster, agents and MCP, the tech stack with where each library is used, data formats, and the 1.0 budgets.*
+  - *It's generated from `site/data/architecture.json`. The build checks crates, Cargo dependencies, public types, ADR and requirement IDs, and paths, and CI fails on any drift. Arrows, line counts and budgets come from the repo itself.*
+  - *Lighthouse scores 1.0 in all four categories, locally.*
+  - *Also done: the site header was reorganised (five links, a Reference menu, icon buttons, ☰ on phones); section eyebrows now meet AA contrast; the home comparison table got row headers.*
 - [ ] **T6.11 Host resources on the Cluster page (proposed, owner request 2026-10-05).** For monitoring and triage, each node reports the machine it runs on. *(CLU-008, OBS-005; a new requirement, proposed CLU-012, is to be added)*
   - **Memory:** host total, available, and swap. In a container, also its cgroup limit, its usage, and OOM kills. Telltale's own RSS.
   - **CPU:** core count, load average (1/5/15 min), and utilisation. In a container, the cgroup quota and throttled time.

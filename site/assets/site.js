@@ -19,6 +19,22 @@
         try { localStorage.setItem("tt-theme", next); } catch (e) {}
       });
     }
+    // T6.10 — the header menu ships open (desktop shows it inline). On narrow screens it
+    // starts closed behind ☰; the Reference menu closes on Escape or a click elsewhere.
+    var menu = document.querySelector(".top .menu");
+    if (menu) {
+      var narrow = matchMedia("(max-width: 860px)");
+      var fit = function () { menu.open = !narrow.matches; };
+      fit();
+      if (narrow.addEventListener) narrow.addEventListener("change", fit);
+    }
+    var sub = document.querySelector(".top .sub");
+    if (sub) {
+      document.addEventListener("click", function (e) { if (sub.open && !sub.contains(e.target)) sub.open = false; });
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && sub.open) { sub.open = false; sub.querySelector("summary").focus(); }
+      });
+    }
     // Tabs: without JS every panel is visible, stacked under its own heading.
     document.querySelectorAll(".tabs").forEach(function (box) {
       box.classList.add("js");

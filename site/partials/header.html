@@ -5,17 +5,30 @@
       <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0b3a5b"/><rect x="17" y="10" width="4" height="44" rx="2" fill="#e8eef6"/><path class="yarn" d="M21 16 C31 13 39 19 49 15 L49 22 C39 26 31 20 21 23 Z" fill="#e4572e"/><path class="yarn" d="M21 28 C29 26 35 30 43 27 L43 32 C35 35 29 31 21 33 Z" fill="#1f9d55"/><circle cx="19" cy="54" r="5" fill="none" stroke="#e8eef6" stroke-width="3"/></svg>
       TelltaleDNS
     </a>
-    <nav class="nav" aria-label="Main">
-      <a href="index.html" data-page="index">Overview</a>
-      <a href="start.html" data-page="start">Get started</a>
-      <a href="install.html" data-page="install">Install</a>
-      <a href="how-it-works.html" data-page="how-it-works">How it works</a>
-      <a href="config.html" data-page="config">Configuration</a>
-      <a href="glossary.html" data-page="glossary">Glossary</a>
-      <a href="performance.html" data-page="performance">Performance</a>
-      <a href="standards.html" data-page="standards">Standards</a>
-      <a href="https://github.com/paimonsoror/telltaledns">GitHub</a>
-    </nav>
-    <button class="theme" type="button" hidden aria-label="Toggle light/dark theme">◐ Theme</button>
+    <!-- T6.10: five main pages, the reference pages in one menu; on phones all of it folds into ☰.
+         Built on <details>, so it works without JavaScript. -->
+    <details class="menu" open>
+      <summary aria-label="Menu"><span aria-hidden="true">☰</span></summary>
+      <nav class="nav" aria-label="Main">
+        <a href="index.html" data-page="index">Overview</a>
+        <a href="start.html" data-page="start">Get started</a>
+        <a href="install.html" data-page="install">Install</a>
+        <a href="how-it-works.html" data-page="how-it-works">How it works</a>
+        <a href="performance.html" data-page="performance">Performance</a>
+        <details class="sub" data-group="config glossary standards nerds">
+          <summary>Reference</summary>
+          <div class="sub-list">
+            <a href="config.html" data-page="config">Configuration</a>
+            <a href="glossary.html" data-page="glossary">Glossary</a>
+            <a href="standards.html" data-page="standards">Standards</a>
+            <a href="nerds.html" data-page="nerds">For nerds</a>
+          </div>
+        </details>
+      </nav>
+    </details>
+    <a class="icon-link" href="https://github.com/paimonsoror/telltaledns" aria-label="TelltaleDNS on GitHub" title="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+    <button class="theme" type="button" hidden aria-label="Toggle light/dark theme" title="Light or dark theme"><span aria-hidden="true">◐</span></button>
   </div>
 </header>

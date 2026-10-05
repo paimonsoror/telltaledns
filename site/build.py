@@ -5,7 +5,9 @@ No dependencies beyond the Python standard library (3.6+). It:
   1. injects the shared header/footer partials into every page,
   2. renders the Standards table and cards from site/data/standards.json,
   3. fails if a ticked roadmap task cites a requirement whose RFCs are missing from that file,
-  4. checks that every internal link and asset reference resolves.
+  4. checks that every internal link and asset reference resolves,
+  5. renders the "For nerds" page from site/data/architecture.json and fails if it disagrees
+     with the repo (crates, Cargo dependencies, public types, ADR/requirement IDs, paths).
 
 Usage: python3 site/build.py [--check]   (--check builds into a temp dir and only validates)
 """
@@ -21,7 +23,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "glossary.html", "performance.html", "standards.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "glossary.html", "performance.html", "standards.html", "nerds.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -323,6 +325,274 @@ def render_glossary(page):
     return page.replace("<!-- @glossary -->", "\n".join(out))
 
 
+# REQ: DOC-004, DOC-006 (T6.10) — the "For nerds" page: an interactive architecture view built
+# from site/data/architecture.json and checked against the repo, so it can't drift. Arrows,
+# "used by", line counts and dependency users come from the code, not from the JSON.
+GH = "https://github.com/paimonsoror/telltaledns/blob/main/"
+GH_TREE = "https://github.com/paimonsoror/telltaledns/tree/main/"
+
+
+def cargo_deps(path):
+    """Normal dependency names in one Cargo.toml (not dev- or build-dependencies)."""
+    deps, on = set(), False
+    for line in read(path).splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            h = s.strip("[]").strip()
+            on = h == "dependencies" or (h.startswith("target.") and h.endswith(".dependencies")) or h == "workspace.dependencies"
+            continue
+        m = re.match(r"^([A-Za-z0-9_-]+)\s*(=|\.)", s)
+        if on and m:
+            deps.add(m.group(1))
+    return deps
+
+
+def gh_anchor(heading):
+    """GitHub's heading anchor: lower case, punctuation dropped, spaces to hyphens."""
+    return re.sub(r"[^a-z0-9 _-]", "", heading.lower()).replace(" ", "-")
+
+
+def repo_ids():
+    adrs = {}
+    for line in read(os.path.join(ROOT, "spec", "11-decisions.md")).splitlines():
+        m = re.match(r"^## (ADR-\d{3})\b(.*)$", line)
+        if m:
+            adrs[m.group(1)] = (line[3:].strip(), gh_anchor(line[3:].strip()))
+    # Requirement rows: spec/01, plus the agent requirements (AGT) defined in spec/13 §2.
+    reqs = {}
+    for spec in ("01-requirements.md", "13-agent-api-and-mcp.md"):
+        for line in read(os.path.join(ROOT, "spec", spec)).splitlines():
+            m = re.match(r"\|\s*([A-Z]{3}-\d{3})\s*\|\s*(P\d)\s*\|\s*(.*?)\s*\|\s*$", line)
+            if m:
+                reqs[m.group(1)] = (m.group(3), spec)
+    return adrs, reqs
+
+
+def rust_stats(src):
+    files, lines = 0, 0
+    for d, _, names in os.walk(src):
+        for n in names:
+            if n.endswith(".rs"):
+                files += 1
+                with open(os.path.join(d, n), encoding="utf-8") as f:
+                    lines += sum(1 for _ in f)
+    return files, lines
+
+
+def public_types(src):
+    names = set()
+    for d, _, files in os.walk(src):
+        for n in files:
+            if n.endswith(".rs"):
+                names |= set(re.findall(r"pub(?:\([a-z]+\))?\s+(?:struct|enum|trait|type)\s+([A-Z][A-Za-z0-9_]*)", read(os.path.join(d, n))))
+    return names
+
+
+def nerds_errors(arch, adrs, reqs):
+    errors = []
+    dirs = {d for d in os.listdir(os.path.join(ROOT, "crates")) if os.path.isfile(os.path.join(ROOT, "crates", d, "Cargo.toml"))}
+    listed = set(arch["crates"])
+    errors += ["architecture.json: crate {} is in crates/ but not described".format(c) for c in sorted(dirs - listed)]
+    errors += ["architecture.json: crate {} is described but not in crates/".format(c) for c in sorted(listed - dirs)]
+    layers = {l["id"] for l in arch["layers"]}
+    all_deps = cargo_deps(os.path.join(ROOT, "Cargo.toml"))
+    for c in dirs:
+        all_deps |= cargo_deps(os.path.join(ROOT, "crates", c, "Cargo.toml"))
+
+    def ids(where, item):
+        for a in item.get("adrs", []):
+            if a not in adrs:
+                errors.append("architecture.json: {} cites {}, which spec/11 doesn't have".format(where, a))
+        for r in item.get("reqs", []):
+            if r not in reqs:
+                errors.append("architecture.json: {} cites {}, which spec/01 doesn't have".format(where, r))
+        code = item.get("code")
+        if code and not os.path.exists(os.path.join(ROOT, code)):
+            errors.append("architecture.json: {} points at {}, which doesn't exist".format(where, code))
+
+    for name, c in arch["crates"].items():
+        ids(name, c)
+        if c["layer"] not in layers:
+            errors.append("architecture.json: {} has unknown layer {}".format(name, c["layer"]))
+        if name in dirs and c.get("types"):
+            have = public_types(os.path.join(ROOT, "crates", name, "src"))
+            errors += ["architecture.json: {} lists type {}, which the crate doesn't define".format(name, t) for t in c["types"] if t not in have]
+    for p in arch["pipeline"]:
+        ids("pipeline " + p["id"], p)
+        if p["crate"] not in arch["crates"]:
+            errors.append("architecture.json: pipeline {} names unknown crate {}".format(p["id"], p["crate"]))
+    for sec in ("cluster", "agents", "formats"):
+        for item in arch[sec]:
+            ids("{} {}".format(sec, item.get("title") or item.get("name")), item)
+    for g in arch["stack"]:
+        for it in g["items"]:
+            if it.get("crate") and it["crate"] not in all_deps:
+                errors.append("architecture.json: stack entry {} names crate {}, which no Cargo.toml depends on".format(it["name"], it["crate"]))
+    return errors
+
+
+def _chips(item, adrs, reqs):
+    out = []
+    for a in item.get("adrs", []):
+        title, anchor = adrs.get(a, (a, ""))
+        out.append('<a class="chip adr" href="{}spec/11-decisions.md#{}" title="{}">{}</a>'.format(GH, anchor, html.escape(title), a))
+    for r in item.get("reqs", []):
+        text, spec = reqs.get(r, ("", "01-requirements.md"))
+        title = re.sub(r"\*\*|`", "", text)
+        out.append('<a class="chip req" href="{}spec/{}" title="{}">{}</a>'.format(GH, spec, html.escape(title[:240]), r))
+    return '<p class="chips">{}</p>'.format(" ".join(out)) if out else ""
+
+
+def render_nerds(page, arch, adrs, reqs):
+    crates = arch["crates"]
+    ws = {}
+    for name in crates:
+        deps = cargo_deps(os.path.join(ROOT, "crates", name, "Cargo.toml"))
+        ws[name] = sorted(d for d in deps if d in crates and d != name)
+    users = {n: sorted(m for m in crates if n in ws[m]) for n in crates}
+
+    # The diagram: one row per layer, crates spread evenly; arrows from a crate to what it uses.
+    W, top, row_h, box_h = 1000, 10, 124, 66
+    pos, labels, y = {}, [], top
+    for layer in arch["layers"]:
+        names = [n for n, c in crates.items() if c["layer"] == layer["id"]]
+        if not names:
+            continue
+        labels.append('<text x="20" y="{}" class="arch-layer">{}</text>'.format(y + 12, html.escape(layer["title"])))
+        n = len(names)
+        bw = min(170.0, (W - 40 - (n - 1) * 14) / n) if layer["id"] != "bin" else W - 40
+        total = n * bw + (n - 1) * 14
+        x0 = (W - total) / 2
+        for i, name in enumerate(names):
+            pos[name] = (x0 + i * (bw + 14), y + 22, bw)
+        y += row_h
+    height = y - row_h + 22 + box_h + 16
+    edges = []
+    for a in crates:
+        if a == "telltale":
+            continue  # the binary uses nearly everything; listed in its panel instead
+        for b in ws[a]:
+            ax, ay, aw = pos[a]
+            bx, by, bw = pos[b]
+            x1, x2 = ax + aw / 2, bx + bw / 2
+            if abs(ay - by) < 1:  # same row: an arc above
+                y1 = ay
+                d = "M{:.0f} {:.0f} C{:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f}".format(x1, y1, x1, y1 - 34, x2, y1 - 34, x2, y1)
+            elif ay > by:  # uses something above
+                y1, y2 = ay, by + box_h
+                d = "M{:.0f} {:.0f} C{:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f}".format(x1, y1, x1, y1 - 40, x2, y2 + 40, x2, y2)
+            else:
+                y1, y2 = ay + box_h, by
+                d = "M{:.0f} {:.0f} C{:.0f} {:.0f} {:.0f} {:.0f} {:.0f} {:.0f}".format(x1, y1, x1, y1 + 40, x2, y2 - 40, x2, y2)
+            edges.append('<path class="arch-edge" data-from="{}" data-to="{}" d="{}" marker-end="url(#arch-arrow)"/>'.format(a, b, d))
+    nodes = []
+    for name, (x, yy, bw) in pos.items():
+        c = crates[name]
+        files, lines = rust_stats(os.path.join(ROOT, "crates", name, "src"))
+        short = name.replace("telltale-", "") if name != "telltale" else "telltale (binary)"
+        nodes.append(
+            '<a class="arch-node layer-{layer}" href="#crate-{n}" data-crate="{n}">'
+            '<rect x="{x:.0f}" y="{y}" width="{w:.0f}" height="{h}" rx="12"/>'
+            # The trailing space keeps "net 2,391 lines" readable as one accessible text.
+            '<text x="{cx:.0f}" y="{ty}" text-anchor="middle" class="arch-name">{short} </text>'
+            '<text x="{cx:.0f}" y="{ty2}" text-anchor="middle" class="arch-meta">{lines:,} lines</text></a>'.format(
+                layer=c["layer"], n=name, sum=html.escape(c["summary"]), x=x, y=yy, w=bw, h=box_h, cx=x + bw / 2,
+                ty=yy + 29, ty2=yy + 51, short=html.escape(short), lines=lines,
+            )
+        )
+    svg = (
+        '<svg class="arch" viewBox="0 0 {W} {H:.0f}" role="group" aria-label="Crates and how they depend on each other">'
+        '<defs><marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
+        '<path d="M0 0 L10 5 L0 10 z" class="arch-arrowhead"/></marker></defs>'
+        "{edges}{labels}{nodes}</svg>"
+    ).format(W=W, H=height, labels="".join(labels), edges="".join(edges), nodes="".join(nodes))
+
+    def link(n):
+        return '<a href="#crate-{0}"><code>{0}</code></a>'.format(n)
+
+    details = []
+    for name, c in crates.items():
+        files, lines = rust_stats(os.path.join(ROOT, "crates", name, "src"))
+        layer = next(l["title"] for l in arch["layers"] if l["id"] == c["layer"])
+        ext = sorted(d for d in cargo_deps(os.path.join(ROOT, "crates", name, "Cargo.toml")) if d not in crates)
+        rows = []
+        if c.get("types"):
+            rows.append("<dt>Main types</dt><dd>{}</dd>".format(" ".join("<code>{}</code>".format(html.escape(t)) for t in c["types"])))
+        if c.get("budget"):
+            rows.append("<dt>Budget</dt><dd>{}</dd>".format(html.escape(c["budget"])))
+        rows.append("<dt>Uses</dt><dd>{}</dd>".format(", ".join(link(d) for d in ws[name]) or "no other TelltaleDNS crate"))
+        rows.append("<dt>Used by</dt><dd>{}</dd>".format(", ".join(link(d) for d in users[name]) or "nothing (it's the top)"))
+        rows.append("<dt>Libraries</dt><dd>{}</dd>".format(", ".join("<code>{}</code>".format(html.escape(d)) for d in ext) or "none"))
+        rows.append('<dt>Code</dt><dd><a href="{}{}">{}</a>: {:,} lines of Rust in {} files</dd>'.format(GH_TREE, c["code"], html.escape(c["code"]), lines, files))
+        details.append(
+            '<article class="card arch-detail" id="crate-{n}"><h3><code>{n}</code> <span class="pill layer">{layer}</span></h3>'
+            "<p><b>{sum}</b></p><p>{detail}</p><dl>{rows}</dl>{chips}</article>".format(
+                n=name, layer=html.escape(layer), sum=html.escape(c["summary"]), detail=html.escape(c["detail"]),
+                rows="".join(rows), chips=_chips(c, adrs, reqs),
+            )
+        )
+
+    pipe = []
+    for i, p in enumerate(arch["pipeline"], 1):
+        pipe.append(
+            '<li><details><summary><span class="step-n">{i}</span> {title} <span class="muted small">{crate}</span></summary>'
+            "<p>{sum}</p>{chips}</details></li>".format(
+                i=i, title=html.escape(p["title"]), crate=html.escape(p["crate"]), sum=html.escape(p["summary"]), chips=_chips(p, adrs, reqs)
+            )
+        )
+
+    def cards(items, key="title"):
+        out = []
+        for it in items:
+            code = ' <a class="small" href="{}{}">code</a>'.format(GH, it["code"]) if it.get("code") else ""
+            out.append('<article class="card"><h3>{}</h3><p>{}{}</p>{}</article>'.format(
+                html.escape(it[key]), html.escape(it["summary"]), code, _chips(it, adrs, reqs)))
+        return "\n".join(out)
+
+    stack = []
+    for g in arch["stack"]:
+        rows = []
+        for it in g["items"]:
+            where = ""
+            if it.get("crate"):
+                used = sorted(n for n in crates if it["crate"] in cargo_deps(os.path.join(ROOT, "crates", n, "Cargo.toml")))
+                where = '<span class="muted small">{}</span>'.format(", ".join(u.replace("telltale-", "") for u in used))
+            rows.append("<tr><td><b>{}</b></td><td>{}</td><td>{}</td></tr>".format(html.escape(it["name"]), html.escape(it["why"]), where))
+        stack.append('<h3>{}</h3><div class="table-wrap"><table class="stack"><thead><tr><th>What</th><th>Why</th><th>Used in</th></tr></thead><tbody>{}</tbody></table></div>'.format(
+            html.escape(g["group"]), "".join(rows)))
+
+    # The release gates, straight from spec/00 §5.
+    gates = []
+    in5 = False
+    for line in read(os.path.join(ROOT, "spec", "00-overview.md")).splitlines():
+        if line.startswith("## 5."):
+            in5 = True
+            continue
+        if in5 and line.startswith("## "):
+            break
+        m = re.match(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$", line)
+        if in5 and m and m.group(1) not in ("Metric",) and not set(m.group(1)) <= set("-: "):
+            gates.append("<tr><td>{}</td><td>{}</td></tr>".format(html.escape(m.group(1)), html.escape(m.group(2))))
+    if not gates:
+        sys.exit("spec/00 §5 has no metrics table")
+
+    total_files, total_lines = 0, 0
+    for name in crates:
+        f, l = rust_stats(os.path.join(ROOT, "crates", name, "src"))
+        total_files, total_lines = total_files + f, total_lines + l
+    page = page.replace("<!-- @arch-stats -->", "{} crates · {:,} lines of Rust in {} files · {} decisions recorded (ADRs)".format(
+        len(crates), total_lines, total_files, len(adrs)))
+    page = page.replace("<!-- @arch-diagram -->", svg)
+    page = page.replace("<!-- @arch-details -->", "\n".join(details))
+    page = page.replace("<!-- @arch-pipeline -->", "\n".join(pipe))
+    page = page.replace("<!-- @arch-cluster -->", cards(arch["cluster"]))
+    page = page.replace("<!-- @arch-agents -->", cards(arch["agents"]))
+    page = page.replace("<!-- @arch-stack -->", "\n".join(stack))
+    page = page.replace("<!-- @arch-formats -->", cards(arch["formats"], "name"))
+    page = page.replace("<!-- @arch-gates -->", "\n".join(gates))
+    return page
+
+
 def expand_ids(text):
     """'UPS-001, 005, 006' -> {'UPS-001','UPS-005','UPS-006'}"""
     ids = set()
@@ -394,10 +664,15 @@ def main():
     for s in data["standards"]:
         if s["status"] not in STATUS_ORDER:
             sys.exit("standards.json: bad status {!r} for RFC {}".format(s["status"], s["rfc"]))
+    arch = json.loads(read(os.path.join(SITE, "data", "architecture.json")))
+    adrs, reqs = repo_ids()
     for name in PAGES:
         page = read(os.path.join(SITE, name))
         slug = name[:-5]
         h = header.replace('data-page="{}"'.format(slug), 'data-page="{}" aria-current="page"'.format(slug))
+        # A page inside the Reference menu marks the menu as current too.
+        h = re.sub(r'<details class="sub" data-group="([^"]*)">',
+                   lambda m: '<details class="sub{}">'.format(" current" if slug in m.group(1).split() else ""), h)
         page = page.replace("<!-- @header -->", h).replace("<!-- @footer -->", footer)
         if name == "config.html":
             page = render_config(page, json.loads(read(os.path.join(ROOT, "docs", "config-schema.json"))))
@@ -410,13 +685,15 @@ def main():
                 shutil.copy(os.path.join(BENCH_DIR, bf), os.path.join(out, "data", "bench", bf))
         if name == "standards.html":
             page = render_standards(page, data)
+        if name == "nerds.html":
+            page = render_nerds(page, arch, adrs, reqs)
         if "<!-- @" in page:
             sys.exit("{}: unreplaced marker".format(name))
         with open(os.path.join(out, name), "w", encoding="utf-8") as f:
             f.write(page)
     with open(os.path.join(out, ".nojekyll"), "w") as f:
         f.write("")
-    errors = coverage_errors(data) + link_errors(out)
+    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + link_errors(out)
     for e in errors:
         print("error: " + e, file=sys.stderr)
     if errors:

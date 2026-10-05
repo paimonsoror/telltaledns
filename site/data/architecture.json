@@ -1,0 +1,225 @@
+{
+  "_comment": "T6.10 (DOC-004, DOC-006): the 'For nerds' page. site/build.py checks this file against the repo: every crate under crates/ must be here and nothing else, dependency arrows come from the crates' Cargo.toml files (not from this file), every ADR and requirement ID must exist in spec/, every 'code' path must exist, and every stack entry with a 'crate' must be a real dependency.",
+  "layers": [
+    { "id": "edge", "title": "Network edge" },
+    { "id": "data", "title": "Data plane: answering a query" },
+    { "id": "obs", "title": "Telemetry and storage" },
+    { "id": "control", "title": "Control plane" },
+    { "id": "bin", "title": "The binary" }
+  ],
+  "crates": {
+    "telltale-net": {
+      "layer": "edge",
+      "summary": "Listeners: UDP worker threads, TCP, DNS over TLS and HTTPS, PROXY protocol v2.",
+      "detail": "One UDP socket per worker thread and listen address (SO_REUSEPORT), so cores never contend for a socket. TCP, DoT and DoH (HTTP/2) run as tokio tasks and call the same synchronous handler, so every transport behaves the same. Certificates reload without a restart; DoT SNI and the DoH path can carry a client ID. This is the only crate allowed to use unsafe (socket options and syscalls), each use with a SAFETY note.",
+      "types": ["UdpListener", "TcpServer", "DohServer", "QueryHandler", "CertStore", "ClientId"],
+      "adrs": ["ADR-015", "ADR-023", "ADR-039"],
+      "reqs": ["DNS-001", "DNS-002"],
+      "code": "crates/telltale-net/src"
+    },
+    "telltale-proto": {
+      "layer": "data",
+      "summary": "Zero-copy DNS wire parser and writer for the hot path.",
+      "detail": "Reads the header, question and EDNS straight from the packet buffer without allocating, fingerprints the name (xxh3) for the cache and filter, and writes answers in place: blocked answers, error answers with extended DNS errors, and TTL patches. Anything it can't parse becomes FORMERR or a drop, never a panic.",
+      "types": ["Query", "Header", "Edns", "ResponseBuilder", "Writer", "NameBuf"],
+      "adrs": ["ADR-002"],
+      "reqs": ["DNS-019"],
+      "budget": "Reading a question and fingerprinting it: about 53 ns.",
+      "code": "crates/telltale-proto/src"
+    },
+    "telltale-policy": {
+      "layer": "data",
+      "summary": "Who is asking, which groups they're in, and the early checks.",
+      "detail": "Identifies the client by address, MAC (from EDNS or the neighbour table), or client ID; resolves its groups (devices and network groups); applies allowed networks, the per-client token-bucket rate limit, pauses, special-use names, and answers local names. The tables are read-mostly behind ArcSwap, so lookups never take a lock.",
+      "types": ["ClientTable", "Identity", "RateLimiter", "LocalData", "Special", "Pause"],
+      "adrs": ["ADR-014", "ADR-021", "ADR-050"],
+      "reqs": ["FLT-005", "FLT-006", "DNS-010", "DNS-014"],
+      "code": "crates/telltale-policy/src"
+    },
+    "telltale-filter": {
+      "layer": "data",
+      "summary": "Blocklists: fetch, parse, compile into a snapshot, and match.",
+      "detail": "Downloads lists with ETag and If-Modified-Since, parses hosts files, AdBlock syntax and Pi-hole regexes, and compiles everything off the DNS path into one compact snapshot: FSTs of names plus a regex DFA, with a hash index for query time. A new snapshot replaces the old one atomically. Every decision keeps its list and line, which is what 'Why?' and explain show.",
+      "types": ["Fetcher", "Snapshot", "Decision", "Explained", "CompileReport", "ListMeta"],
+      "adrs": ["ADR-003", "ADR-016", "ADR-017", "ADR-018", "ADR-020", "ADR-022", "ADR-024", "ADR-025"],
+      "reqs": ["FLT-003", "FLT-013"],
+      "budget": "About 9 bytes per blocked name; a lookup takes under a microsecond.",
+      "code": "crates/telltale-filter/src"
+    },
+    "telltale-cache": {
+      "layer": "data",
+      "summary": "Sharded S3-FIFO cache of finished wire responses.",
+      "detail": "Keeps each upstream reply as bytes plus the offsets of its TTLs, so a hit is a copy and a few small writes (the client's ID, case, and the aged TTLs). Negative answers and SERVFAIL are cached too. Concurrent misses for one name share one upstream request (singleflight); popular names are prefetched before they expire, expired answers can be served while upstreams are down, and the cache can be saved across restarts.",
+      "types": ["Cache", "CacheKey", "S3Fifo", "Lookup", "Singleflight"],
+      "adrs": ["ADR-002"],
+      "reqs": ["DNS-006"],
+      "budget": "Copy and patch a cached answer: about 5 ns; a full cache hit end to end: about 153 ns.",
+      "code": "crates/telltale-cache/src"
+    },
+    "telltale-upstream": {
+      "layer": "data",
+      "summary": "Upstream servers: transports, groups, strategies, hedging, breakers, DNSSEC.",
+      "detail": "Plain DNS, DoT and DoH upstreams with connection pools and bootstrap addresses; groups with failover, round-robin, weighted, fastest, or parallel strategies; routes that send a domain (optionally only for some groups) to a chosen server. A slow server is hedged after about 3x its usual time and a failing one is benched by a circuit breaker. DNSSEC validation uses hickory's validator over the same upstream groups.",
+      "types": ["Router", "Group", "Strategy", "Breaker", "Health", "Endpoint"],
+      "adrs": ["ADR-013", "ADR-060"],
+      "reqs": ["UPS-007", "DNS-011"],
+      "code": "crates/telltale-upstream/src"
+    },
+    "telltale-recursor": {
+      "layer": "data",
+      "summary": "Reserved for full recursive resolution; empty today.",
+      "detail": "A placeholder for iterative resolution from the root (planned after 1.0). DNSSEC validation, which the plan once put here, lives in telltale-upstream instead (ADR-060).",
+      "types": [],
+      "adrs": ["ADR-060"],
+      "reqs": [],
+      "code": "crates/telltale-recursor/src"
+    },
+    "telltale-telemetry": {
+      "layer": "obs",
+      "summary": "QueryEvents, lock-free rings, the aggregator, rollups, and Prometheus.",
+      "detail": "Every answer leaves a fixed-size QueryEvent in its worker's single-producer ring; the hot path never waits on telemetry, and a full ring drops and counts. One aggregator thread turns events into counters, top-K lists, HDR latency histograms, per-device baselines for anomaly detection, the live tail, and the query log.",
+      "types": ["QueryEvent", "Aggregator", "Hub", "Engine", "Finding", "PromWriter"],
+      "adrs": ["ADR-006", "ADR-019", "ADR-026", "ADR-031", "ADR-043"],
+      "reqs": ["OBS-001", "OBS-002", "OBS-004", "OBS-005", "OBS-013"],
+      "code": "crates/telltale-telemetry/src"
+    },
+    "telltale-store": {
+      "layer": "obs",
+      "summary": "The columnar query-log store and SQLite state.",
+      "detail": "The query log is one file per hour: 19 columns in zstd-compressed blocks with a name dictionary and a per-hour name filter, so a search skips hours and columns it doesn't need. SQLite (WAL) holds users, tokens, the hash-chained audit log, rollups, and devices and names made in the UI.",
+      "types": ["Segment", "Reader", "Builder", "NameFilter", "Rollups", "AuditEntry"],
+      "adrs": ["ADR-006", "ADR-027", "ADR-033", "ADR-040"],
+      "reqs": ["OBS-003"],
+      "budget": "About 14 bytes per logged query.",
+      "code": "crates/telltale-store/src"
+    },
+    "telltale-api": {
+      "layer": "control",
+      "summary": "The REST API, sign-in, OpenAPI, live tail, MCP, and the embedded UI.",
+      "detail": "axum on its own listener (8053 by default). Browser sessions with CSRF tokens, scoped API and agent tokens, opt-in HTTP Basic for scrapers, and OIDC; three roles. The OpenAPI document is generated from the code (utoipa). Server-Sent Events stream the live tail, and POST /mcp serves read-only MCP tools that call the same routes with the caller's rights. The Svelte UI is built into the binary.",
+      "types": ["Auth", "AgentGrant", "Backend", "ApiDoc", "Mcp"],
+      "adrs": ["ADR-028", "ADR-029", "ADR-030", "ADR-032", "ADR-034", "ADR-064", "ADR-065"],
+      "reqs": ["API-003", "API-005", "AGT-001", "AGT-006"],
+      "code": "crates/telltale-api/src"
+    },
+    "telltale-cluster": {
+      "layer": "control",
+      "summary": "Membership, PKI, replication, failover, and federation over mTLS.",
+      "detail": "Every node has a certificate from the cluster CA; nodes talk over one HTTP/2 mTLS channel carrying protobuf frames (hello, heartbeats with RTT and config version, manifests, key shares, votes). The primary publishes signed manifests of content-addressed blobs; replicas fetch only what changed and keep answering from their last copy. Failover is manual or elected with fencing epochs; the CA can be rotated without downtime.",
+      "types": ["Cluster", "Identity", "ClusterManifest", "BlobStore", "Elector", "Heartbeat"],
+      "adrs": ["ADR-005", "ADR-044", "ADR-047", "ADR-051", "ADR-056", "ADR-057", "ADR-059", "ADR-066"],
+      "reqs": ["CLU-001", "CLU-003", "CLU-004", "CLU-005", "CLU-010"],
+      "code": "crates/telltale-cluster/src"
+    },
+    "telltale-config": {
+      "layer": "control",
+      "summary": "The TOML schema, validation, defaults, and shared vs node-local sections.",
+      "detail": "One serde schema for every setting, with errors that point at the exact key. It also prints the JSON Schema that the configuration reference on this site is built from, and decides which sections are shared across a cluster and which stay on each node.",
+      "types": ["Config", "ConfigError", "ClusterConfig", "FilterConfig", "GroupConfig"],
+      "adrs": ["ADR-047", "ADR-052"],
+      "reqs": ["CLU-006", "CLU-010"],
+      "code": "crates/telltale-config/src"
+    },
+    "telltale-git": {
+      "layer": "control",
+      "summary": "Reads one file at a ref from a Git server (smart-HTTP v2), no Git binary.",
+      "detail": "A small client for the Git smart-HTTP protocol v2: it asks for one ref, fetches only the objects for one file, inflates them, and can check commit signatures against allowed signers. This is how the cluster's configuration can come from a Git repository.",
+      "types": ["Request", "Fetched", "Commit", "AllowedSigners"],
+      "adrs": ["ADR-049"],
+      "reqs": [],
+      "code": "crates/telltale-git/src"
+    },
+    "telltale": {
+      "layer": "bin",
+      "summary": "The binary: wires every crate together, plus the CLI.",
+      "detail": "Owns the query pipeline that calls the crates above in order, the server roles, replication and the Git source, query-log shipping, the importers (Pi-hole, Technitium), backups, self-update and the update check, the MCP stdio bridge, and every command (run, explain, lists, auth, cluster, import, backup, mcp, self-update).",
+      "types": ["Pipeline"],
+      "adrs": ["ADR-001", "ADR-038", "ADR-046", "ADR-061", "ADR-062", "ADR-063"],
+      "reqs": ["OBS-001"],
+      "code": "crates/telltale/src"
+    }
+  },
+  "pipeline": [
+    { "id": "listen", "title": "Receive", "crate": "telltale-net", "summary": "A worker thread reads a batch of UDP packets from its own socket, or a TCP/DoT/DoH task reads one request.", "reqs": ["DNS-001"], "adrs": ["ADR-023"] },
+    { "id": "parse", "title": "Parse", "crate": "telltale-proto", "summary": "Header, question and EDNS read in place. Malformed input becomes FORMERR or a drop.", "reqs": ["DNS-019"], "adrs": ["ADR-002"] },
+    { "id": "checks", "title": "Early checks", "crate": "telltale-policy", "summary": "Allowed networks (never an open resolver), the per-client rate limit, our own loop tag, ANY (a tiny RFC 8482 answer), and special-use names like localhost.", "reqs": ["DNS-014", "DNS-019"], "adrs": ["ADR-014"] },
+    { "id": "local", "title": "Your names", "crate": "telltale-policy", "summary": "Names on your network are answered right here, before the cache or any upstream.", "reqs": ["DNS-010"], "adrs": ["ADR-041", "ADR-042"] },
+    { "id": "identify", "title": "Who's asking", "crate": "telltale-policy", "summary": "The client by address, MAC, or client ID, and its groups.", "reqs": ["FLT-005", "FLT-006"], "adrs": ["ADR-021", "ADR-050"] },
+    { "id": "filter", "title": "Block or allow", "crate": "telltale-filter", "summary": "The groups' lists decide; a block is answered immediately and records the list and line.", "reqs": ["FLT-003", "FLT-013"], "adrs": ["ADR-020", "ADR-022"] },
+    { "id": "route", "title": "Route", "crate": "telltale-upstream", "summary": "Which upstream group: a route for this domain (optionally only for some groups), else the default. Private reverse lookups stay local.", "reqs": ["UPS-007"], "adrs": [] },
+    { "id": "cache", "title": "Cache", "crate": "telltale-cache", "summary": "A hit is copied and patched, CNAME targets are checked against the lists, and popular names are prefetched. A miss or an expired entry goes on.", "reqs": ["DNS-006"], "adrs": [] },
+    { "id": "upstream", "title": "Ask upstream", "crate": "telltale-upstream", "summary": "Async: the group's strategy picks a server, a slow one is hedged, a failing one is benched. If every server fails, a stale answer is better than none.", "reqs": [], "adrs": ["ADR-013"] },
+    { "id": "dnssec", "title": "Validate", "crate": "telltale-upstream", "summary": "Optional DNSSEC validation; a bogus answer becomes SERVFAIL with an extended error, never a stale answer.", "reqs": ["DNS-011"], "adrs": ["ADR-060"] },
+    { "id": "answer", "title": "Answer and record", "crate": "telltale-telemetry", "summary": "The reply is cached and sent, and a QueryEvent with per-stage timings goes into the worker's ring for the aggregator.", "reqs": ["OBS-001", "OBS-002"], "adrs": ["ADR-026"] }
+  ],
+  "cluster": [
+    { "title": "Joining", "summary": "telltale cluster init makes a CA; a join token pins it; the joining node gets a certificate. Only the primary's port has to be reachable.", "adrs": ["ADR-044"], "reqs": ["CLU-001"] },
+    { "title": "Replication", "summary": "The primary signs a manifest of BLAKE3-addressed blobs (config, compiled lists). Replicas fetch the blobs they lack, verify, and swap atomically.", "adrs": ["ADR-047"], "reqs": ["CLU-003"] },
+    { "title": "DNS independence", "summary": "Every node answers from its last applied snapshot, from disk at cold start, whatever the cluster's state.", "adrs": [], "reqs": ["CLU-004"] },
+    { "title": "Failover", "summary": "Manual promote, or elected with three or more voters (a witness counts). Epochs fence an old primary out.", "adrs": ["ADR-051", "ADR-056"], "reqs": ["CLU-005"] },
+    { "title": "One management plane", "summary": "Any node's UI reads the whole cluster (federated queries) and forwards changes to the primary, vouching for the user over mTLS.", "adrs": ["ADR-053", "ADR-054"], "reqs": ["CLU-002", "CLU-007"] },
+    { "title": "Kubernetes pods", "summary": "Resolver pods join with a shared bootstrap secret, ship their query log to the controller, and are swept when they disappear.", "adrs": ["ADR-055", "ADR-058"], "reqs": ["CLU-009"] },
+    { "title": "Upgrades and keys", "summary": "Versions N and N-1 interoperate; certificates renew over the channel; the CA rotates in three member-gated phases.", "adrs": ["ADR-057", "ADR-059", "ADR-066"], "reqs": ["CLU-010"] }
+  ],
+  "agents": [
+    { "title": "Agent tokens", "summary": "Scoped (analytics:read, config:write:clients, ops:pause, ...), deny by default per route, a reason header on every change, per-token rate limits, and a kill switch.", "adrs": ["ADR-064"], "reqs": ["AGT-004", "AGT-005", "AGT-009"] },
+    { "title": "MCP server", "summary": "POST /mcp on every node, plus telltale mcp --stdio for desktop clients. Read-only tools that call the REST routes in-process with the caller's credentials, so scopes apply inside tools too.", "adrs": ["ADR-065", "ADR-010"], "reqs": ["AGT-006", "AGT-008"] }
+  ],
+  "stack": [
+    { "group": "Runtime and networking", "items": [
+      { "name": "tokio", "crate": "tokio", "why": "Async runtime for TCP, TLS, HTTP and upstream work; the UDP fast path runs on its own threads." },
+      { "name": "socket2", "crate": "socket2", "why": "SO_REUSEPORT and other socket options for one socket per worker." },
+      { "name": "rustls", "crate": "rustls", "why": "TLS for DoT, DoH, upstreams and the cluster channel, without OpenSSL." },
+      { "name": "hyper / h2", "crate": "hyper", "why": "HTTP/2 for DoH and the cluster channel." },
+      { "name": "mimalloc", "crate": "mimalloc", "why": "A fast allocator for the control plane; the hot path barely allocates." },
+      { "name": "arc-swap", "crate": "arc-swap", "why": "Readers of the snapshot and policy tables never lock; a swap is one pointer store." }
+    ]},
+    { "group": "DNS and filtering", "items": [
+      { "name": "fst", "crate": "fst", "why": "Finite-state transducers: millions of blocked names in a few bytes each." },
+      { "name": "regex-automata", "crate": "regex-automata", "why": "Compiles every regex rule into one DFA, checked once per name." },
+      { "name": "xxhash-rust (xxh3)", "crate": "xxhash-rust", "why": "Name fingerprints for the cache key and the snapshot's hash index." },
+      { "name": "hickory-net", "crate": "hickory-net", "why": "DNSSEC chain-of-trust validation: the long tail, not the hot path." },
+      { "name": "idna", "crate": "idna", "why": "Unicode domain names in lists, turned into their wire form." }
+    ]},
+    { "group": "Telemetry and storage", "items": [
+      { "name": "rtrb", "crate": "rtrb", "why": "Wait-free single-producer rings from each worker to the aggregator." },
+      { "name": "hdrhistogram", "crate": "hdrhistogram", "why": "Latency percentiles with fixed memory." },
+      { "name": "zstd", "crate": "zstd", "why": "Compresses query-log blocks, blobs on the wire, and backups." },
+      { "name": "rusqlite (bundled SQLite)", "crate": "rusqlite", "why": "Users, tokens, audit log, rollups; one file, WAL mode." },
+      { "name": "blake3", "crate": "blake3", "why": "Content addresses for snapshot blobs and backup checksums." }
+    ]},
+    { "group": "API, security, cluster", "items": [
+      { "name": "axum", "crate": "axum", "why": "The REST API and the MCP endpoint." },
+      { "name": "utoipa", "crate": "utoipa", "why": "OpenAPI generated from the handlers, so the docs and UI types can't drift." },
+      { "name": "argon2 + totp-rs", "crate": "argon2", "why": "Password hashing and authenticator-app codes." },
+      { "name": "openidconnect", "crate": "openidconnect", "why": "Sign-in with Keycloak, Authentik, or any OIDC provider." },
+      { "name": "rcgen + x509-parser", "crate": "rcgen", "why": "The cluster CA and node certificates." },
+      { "name": "prost", "crate": "prost", "why": "Protobuf frames on the cluster channel, versioned for N/N-1." },
+      { "name": "minisign-verify", "crate": "minisign-verify", "why": "Checks release signatures in self-update and the update check." },
+      { "name": "rust-embed", "crate": "rust-embed", "why": "Builds the UI into the binary." },
+      { "name": "clap", "crate": "clap", "why": "The command line." }
+    ]},
+    { "group": "Web UI", "items": [
+      { "name": "Svelte 5 + Vite", "why": "A small, compiled UI; the bundle budget is 400 KiB gzipped." },
+      { "name": "uPlot", "why": "Fast canvas charts with a table view for each." },
+      { "name": "openapi-typescript", "why": "TypeScript types generated from the API's OpenAPI document." },
+      { "name": "Playwright", "why": "End-to-end tests against a real server, and the screenshots on this site." }
+    ]},
+    { "group": "Build, test, ship", "items": [
+      { "name": "GitHub Actions", "why": "Clippy, tests, fuzzing, kind clusters, a Pi-hole and Technitium import, OIDC against Keycloak and Authentik, upgrade tests." },
+      { "name": "cargo-deny", "why": "License and advisory checks on every dependency (no copyleft code)." },
+      { "name": "cargo-fuzz", "why": "Fuzzes the query and response parsers, list parsing, and query-log segments." },
+      { "name": "musl + FROM scratch", "why": "A static binary in an image of about 9 MiB for amd64, arm64 and armv7." },
+      { "name": "Helm (OCI)", "why": "The chart, published to ghcr.io on every build." },
+      { "name": "minisign", "why": "Signed release binaries and a signed release index." }
+    ]}
+  ],
+  "formats": [
+    { "name": "Filter snapshot", "summary": "Per-group FSTs of names, a regex DFA, rule metadata (list and line), and a hash index; content-addressed blobs listed in a manifest.", "adrs": ["ADR-003", "ADR-018", "ADR-020"], "code": "crates/telltale-filter/src/snapshot.rs" },
+    { "name": "Cluster manifest", "summary": "Version, epoch, config hash, blob hashes and CA bundle, signed by the primary; JSON over the mTLS channel.", "adrs": ["ADR-047", "ADR-066"], "code": "crates/telltale-cluster/src/sync.rs" },
+    { "name": "Query-log segment (.seg)", "summary": "One file per hour: a header, a name dictionary and name filter, then zstd blocks of 19 columns, each block checksummed.", "adrs": ["ADR-027"], "code": "crates/telltale-store/src" },
+    { "name": "QueryEvent", "summary": "A fixed-size record per answer with per-stage timings in microseconds, written into byte rings.", "adrs": ["ADR-026"], "code": "crates/telltale-telemetry/src" },
+    { "name": "Backup (.ttbk)", "summary": "A zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only; restore verifies everything first.", "adrs": ["ADR-063"], "code": "crates/telltale/src/backup.rs" },
+    { "name": "Release index (releases.json)", "summary": "Every published build per channel, signed with minisign; nodes trust it only after checking the signature.", "adrs": ["ADR-046"], "code": "deploy/release/index.py" }
+  ]
+}

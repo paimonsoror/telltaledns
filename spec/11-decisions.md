@@ -80,6 +80,22 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Zero build dependencies and fast pages. The shared header/footer is duplicated across pages (acceptable at ~10 pages; revisit with a minimal generator past ~20). Pages must be enabled once in the repo settings (source: GitHub Actions).
 
+
+**Addendum (2026-10-05, T6.10, Proposed):**
+- **Navigation:** the header keeps five main pages. The reference pages (Configuration, Glossary, Standards, For nerds) go in one "Reference" menu. GitHub and the theme are icon buttons. Below 860 px the nav folds into a ☰ menu. The menu is built on `<details>`, so it works without JS; `site.js` only closes the ☰ menu on narrow screens and the Reference menu on Escape or an outside click. This replaces the wrapping row of nine links.
+- **For nerds page (`nerds.html`):** generated from `site/data/architecture.json`. The build checks it against the repo and fails on any disagreement, and CI runs that check (`site/build.py --check`). The checks:
+  - every crate under `crates/` is described, and nothing else is;
+  - the listed public types exist in their crate;
+  - ADR and requirement IDs exist in `spec/11`, `spec/01` and `spec/13`;
+  - `code` paths exist;
+  - stack entries name real dependencies.
+- **Read from the repo, not the JSON:**
+  - dependency arrows ("uses" and "used by") from the crates' `Cargo.toml` files;
+  - line counts;
+  - the budgets, from `spec/00` §5.
+- **Interaction:** the map's crates are plain links to their descriptions further down. `assets/nerds.js` adds the side panel and edge highlighting.
+- **Pages deploys:** they now also run on `crates/**`, `spec/**` and `Cargo.toml` changes, so the line counts and arrows stay current.
+- **Contrast:** small accent-coloured text (section eyebrows) uses `--accent-text` (5.2:1) in the light theme.
 ## ADR-013 — Hedged upstream attempts and a faster breaker trip (Proposed)
 **Context:** `spec/04` §4–5 retries the next upstream only after an attempt fails or times out (up to 400 ms), and opens a breaker only after ≥ 10 samples with > 50% errors. With one dead upstream that makes the first ~10 queries, and every exploration or half-open probe, wait a full timeout. That breaks T1.5's chaos criterion (p99 within 1.5× of healthy).
 **Decision:**
