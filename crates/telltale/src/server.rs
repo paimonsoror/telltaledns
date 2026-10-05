@@ -466,6 +466,8 @@ async fn start_http(
         auth.agents()
             .set(cfg.agents.enabled, cfg.agents.rate_per_minute);
         let _ = sources.auth.set(Arc::clone(&auth));
+        // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
+        crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
         let app = http::api_router(Arc::clone(sources), auth);
         let bound = http::serve(addr, app, stopped(stop.clone()))
             .await

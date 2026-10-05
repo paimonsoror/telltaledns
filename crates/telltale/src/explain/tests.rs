@@ -68,8 +68,13 @@ groups = ["kids"]
 
 /// A pipeline over `CONFIG` with every list compiled, plus the list sources.
 fn setup() -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
+    setup_with("")
+}
+
+/// The same, with `extra` appended to `CONFIG`.
+fn setup_with(extra: &str) -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
     let cfg = telltale_config::Loader::new()
-        .toml_str("t.toml", CONFIG)
+        .toml_str("t.toml", format!("{CONFIG}{extra}"))
         .env(Vec::<(String, String)>::new())
         .load()
         .unwrap()
@@ -288,4 +293,58 @@ fn flt_013_bad_names_are_errors() {
         client_id: None,
     };
     assert!(p.explain(&req, |n| sources.get(n).cloned()).is_err());
+}
+
+/// REQ: FLT-005, FLT-013 (T6.12, ADR-067) — explain names the quick rule that decides, before
+/// the lists, and agrees with the pipeline.
+#[test]
+fn flt_005_explain_shows_quick_rules_first() {
+    let (p, sources) = setup_with(
+        r#"
+[[rule]]
+id = "tablet-ads"
+action = "allow"
+domain = "ads.example.com"
+devices = ["tablet"]
+note = "tablet game"
+
+[[rule]]
+id = "kids-org"
+action = "block"
+domain = "example.org"
+groups = ["kids"]
+"#,
+    );
+    let e = ask(&p, &sources, "ads.example.com", "10.0.0.5");
+    assert_eq!(e.outcome, Outcome::Allowed, "{}", e.summary);
+    assert!(
+        e.summary.contains("quick rule (tablet game, for tablet)"),
+        "{}",
+        e.summary
+    );
+    assert!(
+        served(&p, "ads.example.com", "10.0.0.5").is_none(),
+        "the pipeline forwards it too"
+    );
+    // Another device: the list still blocks.
+    assert_eq!(
+        ask(&p, &sources, "ads.example.com", "10.0.0.9").outcome,
+        Outcome::Blocked
+    );
+
+    let e = ask(&p, &sources, "www.example.org", "10.0.0.5");
+    assert_eq!(e.outcome, Outcome::Blocked, "{}", e.summary);
+    assert!(
+        e.block
+            .as_ref()
+            .unwrap()
+            .list
+            .starts_with("quick rule: example.org, for kids")
+    );
+    let answer = served(&p, "www.example.org", "10.0.0.5").expect("the pipeline answers it");
+    assert!(contains(&answer, b"quick rule"));
+    assert_eq!(
+        ask(&p, &sources, "www.example.org", "10.0.0.9").outcome,
+        Outcome::Resolved
+    );
 }

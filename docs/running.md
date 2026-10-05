@@ -548,9 +548,61 @@ Devices named this way are stored in `state.db` (next to users and the audit log
 
 The same through the API, for scripts and agents:
 ```sh
-curl -X PUT https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=true \n  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \n  -d '{"match": ["192.168.1.42"], "groups": ["default"]}'       # what would change; nothing is saved
+curl -X PUT 'https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=true' \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"match": ["192.168.1.42"], "groups": ["default"]}'   # what would change; nothing is saved
 ```
 Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
+
+## Quick rules
+A quick rule allows or blocks a site, and everything under it, for one device, a group, or everyone. It can last for a while or until you remove it. Some uses:
+- unblock a game's server on one phone for an evening;
+- block a video site on the kids' tablets until tomorrow;
+- allow something a list blocks by mistake while you report it.
+
+**Making one:**
+- In the **query log**, press **Why?** on a query and use **Make a quick rule**. The site, the device, and its group are filled in.
+- On the **Quick rules** page (Filtering & DNS), which also lists what's in effect with a countdown, who made each rule, and a Remove button.
+
+**How they decide:**
+- Quick rules decide **before any list**, on the next query. The lists aren't recompiled.
+- When several match, a rule for the **device** beats a rule for its **group**, which beats a rule for **everyone**.
+- Within one of those, the more specific site wins (`docs.example.com` over `example.com`), then allow over block.
+- They also decide CNAME targets, so blocking `videos.example` catches a name that's a CNAME to it.
+- A group whose blocking is paused gets no blocks from quick rules either.
+
+**Expiry and history:**
+- A rule with an end time stops applying at that moment on every node, by each node's clock (the Cluster page flags clock drift).
+- Within seconds it's removed, and the audit log records `rule.expire`.
+- The query log shows decisions as **quick allow** or **quick block**, with the rule's note.
+
+**Limits** (DNS can only do so much):
+- DNS sees **sites, not pages**: blocking a page means blocking its whole site.
+- An app often uses many sites, some shared with other apps. Unblocking one game server is precise; blocking a whole app is best done with a list.
+- A rule follows a device only as well as TelltaleDNS **recognizes** it. Give the device a fixed address (a DHCP reservation), or turn off its private Wi-Fi address for your network.
+- Devices keep answers they already have for a few minutes, so a change can take that long to show on the device. Unblocking needs no cache flush, because blocked answers are never cached here.
+- **Mobile data, a VPN, or a hard-coded DNS server** go around TelltaleDNS. To close that, have your router block outgoing DNS (ports 53 and 853) to anything but TelltaleDNS.
+
+Quick rules aren't parental controls: there's no screen time and no content categories.
+
+In a config file (useful with GitOps), `[[rule]]` takes the same fields. The API can't remove these rules.
+```toml
+[[rule]]
+id = "kids-videos"
+action = "block"                 # or "allow"
+domain = "videos.example.com"    # and its subdomains
+groups = ["kids"]                # or devices = ["Mom phone", "192.168.1.40"]; neither = everyone
+expires = "2026-10-06T07:00:00Z" # optional (RFC 3339)
+note = "school night"
+```
+Through the API (operators, or agent tokens with `config:write:rules`):
+```sh
+curl -X PUT https://dns.example.com/api/v1/rules/mom-game \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"action": "allow", "domain": "game.example.com", "devices": ["Mom phone"], "forMinutes": 120, "note": "Mom'"'"'s game"}'
+curl https://dns.example.com/api/v1/rules -H "authorization: Bearer $TOKEN"   # what's in effect
+```
+`?dryRun=true` shows what would change and how many recent queries it affects. `DELETE /api/v1/rules/{id}` removes a rule.
 
 ## Why was it blocked? (explain)
 `telltale explain` shows what happens to a name for a given device, and why. It lists:
@@ -1109,7 +1161,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `analytics:read` | statistics, top lists, latency, anomalies, explain, cluster status |
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
-| `config:write:clients`, `config:write:records`, `config:write:forwards` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers |
+| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules |
 | `ops:pause`, `ops:cache` | pause blocking; flush the cache |
 | `cluster:admin` | promote a node to primary |
 

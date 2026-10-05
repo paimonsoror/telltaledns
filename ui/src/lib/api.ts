@@ -126,6 +126,7 @@ export const api = {
   promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
+  rules: () => get<S['Items_RuleInfo']>('/rules'),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
 
   // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a
@@ -152,6 +153,15 @@ export const api = {
     }),
   deleteForward: (domain: string) =>
     call<S['ConfigChange']>('DELETE', `/forwards/${encodeURIComponent(domain)}`, { headers: { 'idempotency-key': newKey() } }),
+  // REQ: FLT-005 (T6.12) — quick rules.
+  putRule: (id: string, body: S['RuleInput'], dryRun = false) =>
+    call<S['ConfigChange']>('PUT', `/rules/${encodeURIComponent(id)}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
+  deleteRule: (id: string) =>
+    call<S['ConfigChange']>('DELETE', `/rules/${encodeURIComponent(id)}`, { headers: { 'idempotency-key': newKey() } }),
   deleteClient: (name: string) =>
     call<S['ClientChange']>('DELETE', `/clients/${encodeURIComponent(name)}`, {
       headers: { 'idempotency-key': newKey() },

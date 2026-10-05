@@ -7,6 +7,7 @@
 
 pub mod clients;
 pub mod local;
+pub mod quick;
 pub mod ratelimit;
 pub mod special;
 
@@ -16,6 +17,7 @@ use telltale_config::Cidr;
 
 pub use clients::{BlockPolicy, Client, ClientTable, Group, IdSource, Identity, Neighbors, Pause};
 pub use local::{LoadReport, LocalData, reverse_name};
+pub use quick::{QuickMatch, QuickRule, QuickRules, RuleScope, quick_ref};
 pub use ratelimit::RateLimiter;
 pub use special::{Special, classify};
 

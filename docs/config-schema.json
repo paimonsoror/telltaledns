@@ -243,6 +243,14 @@
         "$ref": "#/$defs/Route"
       }
     },
+    "rule": {
+      "description": "Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,\nor everyone, optionally until a time. They decide before any list.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RuleConfig"
+      }
+    },
     "special": {
       "description": "Special-name handling (RFC 6761 etc.).",
       "$ref": "#/$defs/SpecialConfig",
@@ -1733,6 +1741,87 @@
       "additionalProperties": false,
       "required": [
         "upstream_group"
+      ]
+    },
+    "RuleAction": {
+      "description": "What a quick rule does.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "block"
+      ]
+    },
+    "RuleConfig": {
+      "description": "REQ: FLT-005, FLT-006 (T6.12, ADR-067) — a quick rule: allow or block a domain and its\nsubdomains for chosen devices, groups, or everyone, optionally until a time.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/RuleAction"
+        },
+        "created": {
+          "description": "When it was made (RFC 3339), filled in by the API.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "created_by": {
+          "description": "Who made it (a user or `agent:<token>`), filled in by the API.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "devices": {
+          "description": "Devices it applies to: device names (`[[client]] name`), IPs, or CIDRs.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "domain": {
+          "description": "The domain; its subdomains are included (`example.com` covers `www.example.com`).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "expires": {
+          "description": "When it stops applying (RFC 3339, e.g. `2026-10-05T21:30:00Z`). Absent: never.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "groups": {
+          "description": "Groups it applies to. With neither `devices` nor `groups`, it applies to everyone.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "id": {
+          "description": "A unique ID (the API assigns one; in a file, any unique name).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "note": {
+          "description": "Why it exists (\"Mom's game\"), shown with every decision it makes.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "action",
+        "domain"
       ]
     },
     "ShipConfig": {

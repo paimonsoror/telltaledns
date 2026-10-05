@@ -20,6 +20,7 @@
   import Cluster from './pages/Cluster.svelte';
   import Groups from './pages/Groups.svelte';
   import Lists from './pages/Lists.svelte';
+  import Rules from './pages/Rules.svelte';
   import Upstreams from './pages/Upstreams.svelte';
   import LocalDns from './pages/LocalDns.svelte';
   import Settings from './pages/Settings.svelte';
@@ -33,6 +34,7 @@
     { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },
     { path: '/groups', label: 'Groups', page: Groups, icon: 'groups', section: 'Devices' },
     { path: '/lists', label: 'Lists', page: Lists, icon: 'lists', section: 'Filtering & DNS' },
+    { path: '/rules', label: 'Quick rules', page: Rules, icon: 'rules', section: 'Filtering & DNS' },
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
     { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
     { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },

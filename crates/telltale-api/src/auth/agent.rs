@@ -37,6 +37,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "add, change, and remove local names",
     ),
     ("config:write:forwards", "send domains to other servers"),
+    (
+        "config:write:rules",
+        "allow or block a domain for some devices or groups (quick rules)",
+    ),
     ("ops:pause", "pause and resume blocking"),
     ("ops:cache", "flush the cache"),
     ("cluster:admin", "promote a node to primary"),
@@ -118,7 +122,9 @@ pub fn required(method: &Method, path: &str) -> Need {
             }
             "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
             "/api/v1/lists" | "/api/v1/groups" | "/api/v1/clients" | "/api/v1/upstreams"
-            | "/api/v1/records" | "/api/v1/forwards" => return Need::Scope("config:read"),
+            | "/api/v1/records" | "/api/v1/forwards" | "/api/v1/rules" => {
+                return Need::Scope("config:read");
+            }
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -134,6 +140,9 @@ pub fn required(method: &Method, path: &str) -> Need {
         }
         if under("/api/v1/forwards") {
             return Need::Scope("config:write:forwards");
+        }
+        if under("/api/v1/rules") {
+            return Need::Scope("config:write:rules");
         }
     }
     // MCP: each tool's REST calls are checked on their own (ADR-065).
@@ -337,10 +346,35 @@ mod tests {
         }
     }
 
+    /// REQ: AGT-004 (T6.12) — quick rules: reading needs `config:read`, changing needs
+    /// `config:write:rules`.
+    #[test]
+    fn agt_004_quick_rule_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        assert_eq!(
+            required(&Method::GET, "/api/v1/rules"),
+            Scope("config:read")
+        );
+        assert_eq!(
+            required(&Method::PUT, "/api/v1/rules/r1"),
+            Scope("config:write:rules")
+        );
+        assert_eq!(
+            required(&Method::DELETE, "/api/v1/rules/r1"),
+            Scope("config:write:rules")
+        );
+        assert_eq!(required(&Method::PUT, "/api/v1/rules"), Forbidden);
+    }
+
     #[test]
     fn agt_004_scopes_parse_and_imply_roles() {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
-        assert_eq!(s.len(), 4);
+        assert_eq!(
+            s.len(),
+            5,
+            "four write areas (clients, records, forwards, rules) + analytics"
+        );
+        assert!(s.contains("config:write:rules"));
         assert_eq!(implied_role(&s), Role::Operator);
         assert_eq!(
             implied_role(&parse_scopes(&["cluster:admin".into()]).unwrap()),

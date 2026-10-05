@@ -815,6 +815,55 @@ pub struct ForwardInput {
     pub servers: Vec<String>,
 }
 
+/// REQ: FLT-005 (T6.12, ADR-067) — a quick rule to create or replace
+/// (`PUT /api/v1/rules/{id}`).
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuleInput {
+    /// `allow` or `block`.
+    #[schema(example = "allow")]
+    pub action: String,
+    /// The domain; its subdomains are included.
+    #[schema(example = "game.example.com")]
+    pub domain: String,
+    /// Device names, IPs, or CIDRs it applies to.
+    #[serde(default)]
+    pub devices: Vec<String>,
+    /// Groups it applies to. With neither devices nor groups: everyone.
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// When it stops applying (RFC 3339). Use this or `forMinutes`; neither means never.
+    #[serde(default)]
+    pub expires: Option<String>,
+    /// Stop applying this many minutes from now.
+    #[serde(default)]
+    pub for_minutes: Option<u32>,
+    /// Why it exists, shown with every decision it makes.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// A quick rule (files and API), with how long it has left.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleInfo {
+    pub id: String,
+    /// `allow` or `block`.
+    pub action: String,
+    pub domain: String,
+    pub devices: Vec<String>,
+    pub groups: Vec<String>,
+    /// RFC 3339, when it stops applying.
+    pub expires: Option<String>,
+    /// Seconds until it expires (0 once it has).
+    pub expires_in_seconds: Option<u64>,
+    pub note: Option<String>,
+    pub created_by: Option<String>,
+    pub created: Option<String>,
+    /// `file` (read-only here) or `api`.
+    pub source: String,
+}
+
 /// A domain sent to other servers (conditional forwarding).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

@@ -69,17 +69,22 @@ pub(crate) struct Policy {
     pub(crate) local: Arc<LocalData>,
     /// Groups and known clients (FLT-005, FLT-006).
     pub(crate) clients: Arc<ClientTable>,
+    /// Quick rules (T6.12, ADR-067), decided before the lists.
+    pub(crate) quick: Arc<telltale_policy::QuickRules>,
 }
 
 impl Policy {
     pub(crate) fn from_config(cfg: &telltale_config::Config, local: LocalData) -> Self {
+        let clients = ClientTable::from_config(cfg);
+        let quick = Arc::new(telltale_policy::QuickRules::from_config(cfg, &clients));
         Self {
             allowed: cfg.access.allowed_networks.clone(),
             limiter: RateLimiter::new(&cfg.ratelimit),
             limit_action: cfg.ratelimit.action,
             special: cfg.special.clone(),
             local: Arc::new(local),
-            clients: Arc::new(ClientTable::from_config(cfg)),
+            quick,
+            clients: Arc::new(clients),
         }
     }
 
@@ -479,9 +484,26 @@ impl Pipeline {
             .first()
             .copied()
             .unwrap_or(0);
-        // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
-        if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
-            return blocked;
+        // REQ: FLT-005 (T6.12, ADR-067) — quick rules decide before any list.
+        match self.quick_decision(&st.policy, q.qname.as_wire(), ident, who) {
+            Some(m) if m.allow => oc.rule = Some(quick_rule(&st.policy, m)),
+            Some(m) => {
+                oc.status = Status::Blocked;
+                oc.rule = Some(quick_rule(&st.policy, m));
+                let len = self.block_answer(
+                    &q,
+                    out,
+                    st.policy.clients.primary_group(ident),
+                    "quick rule",
+                );
+                return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
+            }
+            // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
+            None => {
+                if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
+                    return blocked;
+                }
+            }
         }
         let groups = st.policy.clients.group_names(ident);
         self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
@@ -609,9 +631,9 @@ impl Pipeline {
                 }
                 oc.status = Status::Cached;
                 let len = match self.cname_block(&q, who, out, len) {
-                    Some((blocked, list)) => {
+                    Some((blocked, rule)) => {
                         oc.status = Status::Blocked;
-                        oc.rule = Some(cname_rule(list));
+                        oc.rule = Some(rule);
                         blocked
                     }
                     None => len,
@@ -766,11 +788,14 @@ impl Pipeline {
         who: Who,
         out: &mut [u8],
         len: usize,
-    ) -> Option<(usize, u16)> {
+    ) -> Option<(usize, Rule)> {
+        let st = self.state.load();
         let guard = self.filter.load();
-        let f = guard.as_ref()?;
+        let f = guard.as_ref();
+        if f.is_none() && st.policy.quick.is_empty() {
+            return None;
+        }
         let mut target = telltale_proto::NameBuf::default();
-        let mut hit = None;
         for r in telltale_proto::records(out.get(..len)?).ok()?.flatten() {
             if r.section != telltale_proto::Section::Answer
                 || r.rtype != telltale_proto::rtype::CNAME
@@ -780,22 +805,64 @@ impl Pipeline {
             if telltale_proto::read_name(&out[..len], r.rdata_off, &mut target).is_err() {
                 continue;
             }
+            // REQ: FLT-005 (ADR-067) — quick rules decide CNAME targets too, before the lists.
+            if !st.policy.quick.is_empty() {
+                let ident = st.policy.clients.identify(
+                    who.peer,
+                    who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+                    who.mac,
+                    &self.neighbors,
+                );
+                if let Some(m) = self.quick_decision(&st.policy, target.as_wire(), ident, who) {
+                    if m.allow {
+                        continue;
+                    }
+                    let group = st.policy.clients.primary_group(ident);
+                    let len = self.block_answer(q, out, group, "quick rule")?;
+                    return Some((len, quick_rule(&st.policy, m)));
+                }
+            }
+            let Some(f) = f else { continue };
             match self.decide_for(f, who, target.as_wire(), q.qtype) {
-                None => return None, // paused (or no filter): nothing to inspect
+                None => return None, // paused: nothing to inspect
                 Some((ident, Decision::Block(a))) => {
-                    hit = Some((ident, a));
-                    break;
+                    let reason = f
+                        .cname_reasons
+                        .get(usize::from(a.list))
+                        .map_or("blocked", String::as_str);
+                    let len = self.block_answer(q, out, f.clients.primary_group(ident), reason)?;
+                    return Some((len, cname_rule(a.list)));
                 }
                 Some(_) => {}
             }
         }
-        let (ident, a) = hit?;
-        let reason = f
-            .cname_reasons
-            .get(usize::from(a.list))
-            .map_or("blocked", String::as_str);
-        self.block_answer(q, out, f.clients.primary_group(ident), reason)
-            .map(|len| (len, a.list))
+        None
+    }
+
+    /// REQ: FLT-005 (T6.12, ADR-067) — the quick rule deciding `name` (wire format) for this
+    /// client, if any. A paused group (FLT-009) gets no blocks from quick rules either.
+    fn quick_decision(
+        &self,
+        policy: &Policy,
+        name: &[u8],
+        ident: Identity,
+        who: Who,
+    ) -> Option<telltale_policy::QuickMatch> {
+        if policy.quick.is_empty() {
+            return None;
+        }
+        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        let m = policy
+            .quick
+            .decide(name, ident, who.peer, policy.clients.group_ids(ident), now)?;
+        if !m.allow
+            && self
+                .pause
+                .is_paused(&policy.clients.primary_group(ident).name, unix_now)
+        {
+            return None;
+        }
+        Some(m)
     }
 
     /// FLT-007 for deferred (upstream or stale) answers: re-checks the final message.
@@ -806,7 +873,7 @@ impl Pipeline {
         transport: Transport,
         mut bytes: Vec<u8>,
         status: Status,
-    ) -> (Vec<u8>, Status, Option<u16>) {
+    ) -> (Vec<u8>, Status, Option<Rule>) {
         if !matches!(status, Status::Forwarded | Status::Stale) {
             return (bytes, status, None);
         }
@@ -815,10 +882,10 @@ impl Pipeline {
         };
         let len = bytes.len();
         bytes.resize(MAX_RESPONSE.max(len), 0);
-        if let Some((l, list)) = self.cname_block(&q, who, &mut bytes, len) {
+        if let Some((l, rule)) = self.cname_block(&q, who, &mut bytes, len) {
             let l = self.finish(&q, &mut bytes, l, transport);
             bytes.truncate(l);
-            (bytes, Status::Blocked, Some(list))
+            (bytes, Status::Blocked, Some(rule))
         } else {
             bytes.truncate(len);
             (bytes, status, None)
@@ -874,9 +941,9 @@ impl Pipeline {
                 });
             let t_upstream = waited.elapsed();
             let (status, rcode) = match &answer {
-                Some((bytes, status, list)) => {
-                    if let Some(list) = list {
-                        oc.rule = Some(cname_rule(*list));
+                Some((bytes, status, rule)) => {
+                    if let Some(rule) = rule {
+                        oc.rule = Some(*rule);
                     }
                     (*status, Some(response_rcode(bytes)))
                 }
@@ -1161,6 +1228,20 @@ fn rule_of(a: &telltale_filter::matcher::Attribution, allow: bool) -> Rule {
             RuleRef::Regex { .. } => RuleKind::Regex,
         },
         allow,
+    }
+}
+
+/// REQ: FLT-013 (ADR-067) — a quick rule's attribution: its stable reference as the "list".
+fn quick_rule(policy: &Policy, m: telltale_policy::QuickMatch) -> Rule {
+    let id = policy
+        .quick
+        .rules()
+        .get(m.rule as usize)
+        .map_or("", |r| &r.id);
+    Rule {
+        list: telltale_policy::quick_ref(id),
+        kind: RuleKind::Quick,
+        allow: m.allow,
     }
 }
 
@@ -1470,6 +1551,104 @@ groups = ["kids"]
             [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01],
         )]);
         assert_eq!(ask("10.0.0.77:1000"), rcode::NXDOMAIN);
+    }
+
+    /// REQ: FLT-005 (T6.12, ADR-067) — quick rules decide before the lists, per device and
+    /// per group; other clients are unaffected.
+    #[test]
+    fn flt_005_quick_rules_decide_before_the_lists() {
+        use telltale_filter::matcher::Lookup;
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||x^"]
+
+[[group]]
+name = "default"
+block_mode = "nxdomain"
+
+[[group]]
+name = "kids"
+block_mode = "nxdomain"
+
+[[client]]
+name = "tablet"
+match = ["10.0.0.5"]
+groups = ["kids"]
+
+[[client]]
+name = "mom"
+match = ["10.0.0.6"]
+
+[[rule]]
+id = "tablet-ads"
+action = "allow"
+domain = "ads.example.com"
+devices = ["tablet"]
+
+[[rule]]
+id = "kids-videos"
+action = "block"
+domain = "videos.example"
+groups = ["kids"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                allowed: Policy::open().allowed,
+                ..Policy::from_config(&cfg, LocalData::default())
+            },
+        );
+        install_filter(
+            &p,
+            "||ads.example.com^
+",
+            Lookup::Indexed,
+        );
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => summarize(&out[..len]).unwrap().rcode,
+                _ => u16::MAX,
+            }
+        };
+        // No upstream is configured: a query that isn't blocked ends in REFUSED.
+        assert_eq!(
+            ask("10.0.0.5:1000", "ads.example.com"),
+            rcode::REFUSED,
+            "the tablet's allow beats the list"
+        );
+        assert_eq!(
+            ask("10.0.0.6:1000", "ads.example.com"),
+            rcode::NXDOMAIN,
+            "mom still gets the list's block"
+        );
+        assert_eq!(
+            ask("10.0.0.5:1000", "cdn.videos.example"),
+            rcode::NXDOMAIN,
+            "the kids group's block, subdomains too"
+        );
+        assert_eq!(
+            ask("10.0.0.6:1000", "videos.example"),
+            rcode::REFUSED,
+            "not in kids"
+        );
     }
 
     /// A pipeline with the given config's clients/groups, a never-contacted upstream (so the

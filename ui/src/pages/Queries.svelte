@@ -10,6 +10,8 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import QuickRuleForm from '../lib/components/QuickRuleForm.svelte';
+  import { can } from '../lib/session.svelte';
 
   const STATUSES = ['blocked', 'cached', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
@@ -332,6 +334,13 @@
         Logged as <strong>{why.status}</strong>{why.list ? ` by ${why.list}` : ''}.
       </p>
       <ExplainView x={explained} />
+      {#if can('operator')}
+        <!-- REQ: FLT-005 (T6.12) — act on it: a quick rule for this device or its group. -->
+        <section class="card quick-card">
+          <h2>Make a quick rule<HelpButton id="quick-rules" /></h2>
+          <QuickRuleForm domain={why.name} device={why.clientName ?? why.client} group={why.group ?? ''} />
+        </section>
+      {/if}
     {:else if !whyError}
       <p class="muted">Loading…</p>
     {/if}
@@ -393,5 +402,8 @@
   }
   .foot {
     margin-top: 10px;
+  }
+  .quick-card {
+    margin-top: 16px;
   }
 </style>

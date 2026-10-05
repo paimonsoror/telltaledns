@@ -42,6 +42,9 @@ pub struct Config {
     pub group: Vec<GroupConfig>,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
+    /// Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,
+    /// or everyone, optionally until a time. They decide before any list.
+    pub rule: Vec<RuleConfig>,
     /// Client identification settings.
     pub clients: ClientsConfig,
     /// List download and compile settings.
@@ -92,6 +95,7 @@ impl Default for Config {
             list: Vec::new(),
             group: Vec::new(),
             client: Vec::new(),
+            rule: Vec::new(),
             clients: ClientsConfig::default(),
             filter: FilterConfig::default(),
             access: AccessConfig::default(),
@@ -581,6 +585,47 @@ pub struct ClientConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<SafeString>,
 }
+
+/// REQ: FLT-005, FLT-006 (T6.12, ADR-067) — a quick rule: allow or block a domain and its
+/// subdomains for chosen devices, groups, or everyone, optionally until a time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RuleConfig {
+    /// A unique ID (the API assigns one; in a file, any unique name).
+    pub id: SafeString,
+    pub action: RuleAction,
+    /// The domain; its subdomains are included (`example.com` covers `www.example.com`).
+    pub domain: SafeString,
+    /// Devices it applies to: device names (`[[client]] name`), IPs, or CIDRs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<SafeString>,
+    /// Groups it applies to. With neither `devices` nor `groups`, it applies to everyone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<SafeString>,
+    /// When it stops applying (RFC 3339, e.g. `2026-10-05T21:30:00Z`). Absent: never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<SafeString>,
+    /// Why it exists ("Mom's game"), shown with every decision it makes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<SafeString>,
+    /// Who made it (a user or `agent:<token>`), filled in by the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<SafeString>,
+    /// When it was made (RFC 3339), filled in by the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<SafeString>,
+}
+
+/// What a quick rule does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleAction {
+    Allow,
+    Block,
+}
+
+/// Most quick rules a configuration may hold (ADR-067).
+pub const MAX_RULES: usize = 1000;
 
 /// Client identification (`spec/03` §3 step 2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

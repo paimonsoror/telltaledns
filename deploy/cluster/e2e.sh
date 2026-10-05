@@ -178,6 +178,22 @@ for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 
 get '/api/v1/audit' | grep -q 'bob via r' || fail "the primary's audit log doesn't name the user and entry node"
 echo "ok"
 
+echo "== quick rules made on the replica apply on every node (T6.12, ADR-067)"
+code=$(curl -s -o "$E/rule.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/json' -d '{"action":"block","domain":"qr1.e2e.test","note":"cluster e2e"}' \
+  "$RAPI/api/v1/rules/e2e-cluster")
+[ "$code" = 200 ] || fail "a quick rule on the replica wasn't forwarded ($code: $(cat "$E/rule.json"))"
+for _ in $(seq 50); do [ "$(q 25302 x.qr1.e2e.test)" = 0.0.0.0 ] && break; sleep 0.1; done
+[ "$(q 25301 x.qr1.e2e.test)" = 0.0.0.0 ] || fail "the quick rule doesn't block on the primary"
+[ "$(q 25302 x.qr1.e2e.test)" = 0.0.0.0 ] || fail "the quick rule doesn't block on the replica"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$E/rjar" -X DELETE -H "x-csrf-token: $CSRF" \
+  "$RAPI/api/v1/rules/e2e-cluster")
+[ "$code" = 200 ] || fail "removing the quick rule through the replica answered $code"
+for _ in $(seq 50); do [ "$(q 25302 x.qr1.e2e.test)" != 0.0.0.0 ] && break; sleep 0.1; done
+[ "$(q 25301 x.qr1.e2e.test)" != 0.0.0.0 ] || fail "the removed quick rule still blocks on the primary"
+[ "$(q 25302 x.qr1.e2e.test)" != 0.0.0.0 ] || fail "the removed quick rule still blocks on the replica"
+echo "ok"
+
 echo "== query-log ship mode (CLU-007)"
 q 25302 ship1.r.test >/dev/null
 # A part closes after interval_secs (on the next query), then the shipper delivers it.

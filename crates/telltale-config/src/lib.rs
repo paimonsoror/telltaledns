@@ -26,7 +26,7 @@ use toml::{Table, Value};
 
 pub use env::ENV_PREFIX;
 pub use schema::*;
-pub use types::{ByteSize, Cidr, SafeString};
+pub use types::{ByteSize, Cidr, SafeString, parse_rfc3339};
 pub use validate::{MAX_LISTS, MatchKey, UPSTREAM_SCHEMES, valid_list_name};
 
 /// A config problem located by its key path (e.g. `upstream[1].url`, `cache.bogus`).

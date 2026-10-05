@@ -166,11 +166,16 @@ fn json_row<'a>(r: &'a Row, lists: &[String]) -> JsonRow<'a> {
         qtype: qtype_text(r.qtype),
         status: r.status.label(),
         rcode: r.rcode,
+        // A quick rule is shown by its reference: the CLI reads the log, not the rules.
         list: r.rule.map(|x| {
-            lists
-                .get(usize::from(x.list))
-                .cloned()
-                .unwrap_or_else(|| format!("#{}", x.list))
+            if x.kind == telltale_telemetry::event::RuleKind::Quick {
+                format!("quick rule #{:04x}", x.list)
+            } else {
+                lists
+                    .get(usize::from(x.list))
+                    .cloned()
+                    .unwrap_or_else(|| format!("#{}", x.list))
+            }
         }),
         rule: r
             .rule

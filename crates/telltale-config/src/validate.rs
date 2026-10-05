@@ -47,10 +47,80 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     routes(cfg, &groups, &mut r);
     lists(cfg, &mut r);
     clients(cfg, &mut r);
+    rules(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     r.warnings
+}
+
+// REQ: FLT-005 (T6.12, ADR-067) — quick rules: a real domain, known groups, devices that are
+// named devices or addresses, a readable expiry, unique IDs, and at most MAX_RULES.
+fn rules(cfg: &Config, r: &mut Report<'_>) {
+    let groups: HashSet<&str> = cfg
+        .group
+        .iter()
+        .map(|g| g.name.as_str())
+        .chain(["default"])
+        .collect();
+    if cfg.rule.len() > crate::schema::MAX_RULES {
+        r.err(
+            "rule",
+            format!("at most {} quick rules", crate::schema::MAX_RULES),
+        );
+    }
+    let devices: HashSet<String> = cfg
+        .client
+        .iter()
+        .map(|c| c.name.to_ascii_lowercase())
+        .collect();
+    let mut ids = HashSet::new();
+    for (i, rule) in cfg.rule.iter().enumerate() {
+        let p = format!("rule[{i}]");
+        if rule.id.is_empty() || !ids.insert(rule.id.as_str()) {
+            r.err(
+                format!("{p}.id"),
+                format!("must be unique and not empty (`{}`)", rule.id),
+            );
+        }
+        let d = rule.domain.trim_end_matches('.');
+        if d.is_empty()
+            || d.len() > 253
+            || d.split('.').any(|l| l.is_empty() || l.len() > 63)
+            || d.contains(['*', '/', ' '])
+        {
+            r.err(
+                format!("{p}.domain"),
+                format!(
+                    "`{}` isn't a domain name (subdomains are included; no wildcards)",
+                    rule.domain
+                ),
+            );
+        }
+        for (j, dev) in rule.devices.iter().enumerate() {
+            let known = devices.contains(&dev.to_ascii_lowercase());
+            let address = crate::Cidr::parse(dev).is_ok();
+            if !known && !address {
+                r.err(
+                    format!("{p}.devices[{j}]"),
+                    format!("`{dev}` is neither a device name nor an IP or CIDR"),
+                );
+            }
+        }
+        for (j, g) in rule.groups.iter().enumerate() {
+            if !groups.contains(g.as_str()) {
+                r.err(format!("{p}.groups[{j}]"), format!("unknown group `{g}`"));
+            }
+        }
+        if let Some(e) = &rule.expires
+            && crate::types::parse_rfc3339(e).is_none()
+        {
+            r.err(
+                format!("{p}.expires"),
+                format!("`{e}` isn't an RFC 3339 time like 2026-10-05T21:30:00Z"),
+            );
+        }
+    }
 }
 
 // REQ: CLU-001 — the cluster port can't share an address with a listener (both default to

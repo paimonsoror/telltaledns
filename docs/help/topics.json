@@ -326,6 +326,16 @@
       "docs": "clusters"
     },
     {
+      "id": "quick-rules",
+      "title": "Allow or block a site for one device or group",
+      "term": "Quick rules",
+      "summary": "A quick rule allows or blocks a site (and everything under it) for one device, a group, or everyone, for a while or until you remove it. It decides before any list: a device's rule beats its group's, which beats everyone's. It takes effect on the next query.",
+      "when": "Unblock a game's server on one phone for an evening; block a site on the kids' tablets until tomorrow; allow something a list blocks by mistake while you report it.",
+      "example": "Allow game.example.com for Mom's phone for 2 hours. Block videos.example.com for the kids group until midnight.",
+      "caution": "DNS sees whole sites, not pages, and an app often uses many sites. A rule follows a device only as well as TelltaleDNS recognizes it (give it a fixed address, or turn off its private Wi-Fi address for your network). Devices may keep an old answer for a few minutes, and mobile data, a VPN, or a hard-coded DNS server get around it.",
+      "docs": "quick-rules"
+    },
+    {
       "id": "host-resources",
       "title": "The machines your nodes run on",
       "term": "Host resources",

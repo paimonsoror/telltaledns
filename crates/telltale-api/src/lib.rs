@@ -157,6 +157,10 @@ pub trait Backend: Send + Sync + 'static {
     fn forwards(&self) -> Vec<ForwardInfo> {
         Vec::new()
     }
+    /// Quick rules (files and API), by ID (T6.12).
+    fn rules(&self) -> Vec<crate::model::RuleInfo> {
+        Vec::new()
+    }
     /// Sets (`body` set) or removes (`body` None) a local name or a forwarded domain made
     /// through the API (ADR-042). Validates the resulting configuration and, unless `dry_run`,
     /// stores and applies it.
@@ -197,6 +201,8 @@ pub enum ManagedKind {
     Record,
     /// A domain sent to other servers (`/forwards/{domain}`).
     Forward,
+    /// A quick rule (`/rules/{id}`, T6.12).
+    Rule,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -269,6 +275,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/analytics/anomalies", get(anomalies))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/forwards", get(forwards))
+        .route("/api/v1/rules", get(rules))
         .route("/api/v1/upstreams", get(upstreams))
         .with_state(Arc::clone(&backend))
         .route_layer(from_fn(auth::routes::require_viewer));
@@ -339,11 +346,11 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, anomalies, config_api::put_records, config_api::delete_records,
+        local_names, forwards, rules, anomalies, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -856,6 +863,25 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
         Json(Items {
             missing_nodes: Vec::new(),
             items: b.forwards(),
+        }),
+    )
+}
+
+/// Quick rules: per-device and per-group allow and block (T6.12, ADR-067).
+///
+/// Every rule with whom it applies to, its expiry and how long it has left, its note, who made
+/// it, and where it's defined (`file` or `api`). Quick rules decide before any list: a device
+/// rule beats a group rule beats an everyone rule. The `ETag` is the config version for
+/// `If-Match`.
+#[utoipa::path(get, path = "/api/v1/rules", tag = "config",
+    responses((status = 200, body = Items<crate::model::RuleInfo>, description = "The result.")))]
+async fn rules(State(b): State<Shared>) -> impl IntoResponse {
+    let etag = format!("\"{}\"", b.config_version());
+    (
+        [(axum::http::header::ETAG, etag)],
+        Json(Items {
+            missing_nodes: Vec::new(),
+            items: b.rules(),
         }),
     )
 }

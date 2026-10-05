@@ -671,6 +671,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Quick rules: per-device and per-group allow and block (T6.12, ADR-067).
+         * @description Every rule with whom it applies to, its expiry and how long it has left, its note, who made
+         *     it, and where it's defined (`file` or `api`). Quick rules decide before any list: a device
+         *     rule beats a group rule beats an everyone rule. The `ETag` is the config version for
+         *     `If-Match`.
+         */
+        get: operations["rules"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace a quick rule (T6.12, ADR-067).
+         * @description Allows or blocks `domain` and its subdomains for `devices`, `groups`, or everyone (neither
+         *     given), before any list: a device rule beats a group rule beats an everyone rule; within one
+         *     scope the longer domain wins, then allow. With `expires` or `forMinutes` it stops applying
+         *     then (and is removed). It takes effect on the next query, without recompiling the lists.
+         *     Rules from the config files are read-only here (409). Needs the operator role (or the
+         *     `config:write:rules` agent scope, with a reason).
+         */
+        put: operations["put_rule"];
+        post?: never;
+        /**
+         * Remove a quick rule made through the API.
+         * @description The lists decide for its domain again. Rules from the config files can't be removed here
+         *     (409).
+         */
+        delete: operations["delete_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/latency": {
         parameters: {
             query?: never;
@@ -1845,6 +1898,31 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_RuleInfo: {
+            items: {
+                /** @description `allow` or `block`. */
+                action: string;
+                created?: string | null;
+                createdBy?: string | null;
+                devices: string[];
+                domain: string;
+                /** @description RFC 3339, when it stops applying. */
+                expires?: string | null;
+                /**
+                 * Format: int64
+                 * @description Seconds until it expires (0 once it has).
+                 */
+                expiresInSeconds?: number | null;
+                groups: string[];
+                id: string;
+                note?: string | null;
+                /** @description `file` (read-only here) or `api`. */
+                source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_TimeBucket: {
             items: {
                 /** @description Blocked queries by group. */
@@ -2242,6 +2320,56 @@ export interface components {
          * @enum {string}
          */
         Role: "viewer" | "operator" | "admin";
+        /** @description A quick rule (files and API), with how long it has left. */
+        RuleInfo: {
+            /** @description `allow` or `block`. */
+            action: string;
+            created?: string | null;
+            createdBy?: string | null;
+            devices: string[];
+            domain: string;
+            /** @description RFC 3339, when it stops applying. */
+            expires?: string | null;
+            /**
+             * Format: int64
+             * @description Seconds until it expires (0 once it has).
+             */
+            expiresInSeconds?: number | null;
+            groups: string[];
+            id: string;
+            note?: string | null;
+            /** @description `file` (read-only here) or `api`. */
+            source: string;
+        };
+        /**
+         * @description REQ: FLT-005 (T6.12, ADR-067) — a quick rule to create or replace
+         *     (`PUT /api/v1/rules/{id}`).
+         */
+        RuleInput: {
+            /**
+             * @description `allow` or `block`.
+             * @example allow
+             */
+            action: string;
+            /** @description Device names, IPs, or CIDRs it applies to. */
+            devices?: string[];
+            /**
+             * @description The domain; its subdomains are included.
+             * @example game.example.com
+             */
+            domain: string;
+            /** @description When it stops applying (RFC 3339). Use this or `forMinutes`; neither means never. */
+            expires?: string | null;
+            /**
+             * Format: int32
+             * @description Stop applying this many minutes from now.
+             */
+            forMinutes?: number | null;
+            /** @description Groups it applies to. With neither devices nor groups: everyone. */
+            groups?: string[];
+            /** @description Why it exists, shown with every decision it makes. */
+            note?: string | null;
+        };
         ScanStats: {
             blocksRead: number;
             blocksTotal: number;
@@ -3689,6 +3817,136 @@ export interface operations {
                 };
             };
             /** @description Conflicts with the current state: problem+json says what to change. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_RuleInfo"];
+                };
+            };
+        };
+    };
+    put_rule: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The rule's ID: any short unique name (the UI makes one). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuleInput"];
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Defined in the config files, or an Idempotency-Key reused. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description An unknown device or group, a bad domain, or an expiry in the past. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_rule: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The rule's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No rule with that ID was created through the API. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Defined in the config files. */
             409: {
                 headers: {
                     [name: string]: unknown;

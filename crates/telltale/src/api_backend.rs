@@ -197,6 +197,42 @@ impl ApiBackend {
     }
 }
 
+/// REQ: FLT-013 (ADR-067) — a decision's list and kind for query-log rows. A quick rule is
+/// named by its note (else its domain) and whom it applies to; one that no longer exists says so.
+pub(crate) fn rule_labels(
+    rule: Option<telltale_telemetry::event::Rule>,
+    lists: &[String],
+    quick: &telltale_policy::QuickRules,
+) -> (Option<String>, Option<String>) {
+    use telltale_telemetry::event::RuleKind;
+    let Some(x) = rule else { return (None, None) };
+    if x.kind == RuleKind::Quick {
+        let list = quick.by_ref(x.list).map_or_else(
+            || "a quick rule (since removed)".to_owned(),
+            |q| {
+                let what = q.note.as_deref().unwrap_or(&q.domain);
+                if q.targets.is_empty() {
+                    format!("quick rule: {what}")
+                } else {
+                    format!("quick rule: {what} ({})", q.targets.join(", "))
+                }
+            },
+        );
+        let kind = if x.allow {
+            "quick allow"
+        } else {
+            "quick block"
+        };
+        return (Some(list), Some(kind.to_owned()));
+    }
+    let list = lists
+        .get(usize::from(x.list))
+        .cloned()
+        .unwrap_or_else(|| format!("#{}", x.list));
+    let kind = if x.allow { "allow" } else { x.kind.label() };
+    (Some(list), Some(kind.to_owned()))
+}
+
 fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter, Problem> {
     let name = q
         .name
@@ -276,36 +312,33 @@ impl ApiBackend {
         let lists = self.list_names();
         let policy = &self.src.pipeline.current().policy;
         let groups = policy.clients.groups();
+        let quick = Arc::clone(&policy.quick);
         let items = page
             .rows
             .iter()
-            .map(|r| QueryRow {
-                time: format_us(r.ts_us),
-                ts_unix_micros: r.ts_us,
-                client: telltale_telemetry::agg::client_text(r.client_ip),
-                // REQ: API-010 — names are resolved now, from the address, so naming or
-                // renaming a device relabels its history without rewriting the log.
-                client_name: device_name(&self.src, r.client_ip),
-                node: node.map(str::to_owned),
-                group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
-                name: r.name.clone(),
-                qtype: qtype_name(r.qtype),
-                status: r.status.label().to_owned(),
-                rcode: r.rcode.map(rcode_name),
-                proto: r.proto.label().to_owned(),
-                list: r.rule.map(|x| {
-                    lists
-                        .get(usize::from(x.list))
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{}", x.list))
-                }),
-                rule: r
-                    .rule
-                    .map(|x| if x.allow { "allow" } else { x.kind.label() }.to_owned()),
-                total_ms: ms(u64::from(r.t_total_us)),
-                upstream_ms: ms(u64::from(r.t_upstream_us)),
-                response_bytes: r.resp_size,
-                answers: r.answers,
+            .map(|r| {
+                let (list, rule) = rule_labels(r.rule, &lists, &quick);
+                QueryRow {
+                    time: format_us(r.ts_us),
+                    ts_unix_micros: r.ts_us,
+                    client: telltale_telemetry::agg::client_text(r.client_ip),
+                    // REQ: API-010 — names are resolved now, from the address, so naming or
+                    // renaming a device relabels its history without rewriting the log.
+                    client_name: device_name(&self.src, r.client_ip),
+                    node: node.map(str::to_owned),
+                    group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
+                    name: r.name.clone(),
+                    qtype: qtype_name(r.qtype),
+                    status: r.status.label().to_owned(),
+                    rcode: r.rcode.map(rcode_name),
+                    proto: r.proto.label().to_owned(),
+                    list,
+                    rule,
+                    total_ms: ms(u64::from(r.t_total_us)),
+                    upstream_ms: ms(u64::from(r.t_upstream_us)),
+                    response_bytes: r.resp_size,
+                    answers: r.answers,
+                }
             })
             .collect();
         Ok(QueryPage {
@@ -772,6 +805,8 @@ impl Backend for ApiBackend {
             filter,
             move |t| {
                 let e = &t.ev;
+                let (list, rule) =
+                    rule_labels(e.rule, &lists, &src.pipeline.current().policy.quick);
                 QueryRow {
                     time: format_us(e.ts_us),
                     ts_unix_micros: e.ts_us,
@@ -783,15 +818,8 @@ impl Backend for ApiBackend {
                     status: e.status.label().to_owned(),
                     rcode: e.rcode.map(rcode_name),
                     proto: e.proto.label().to_owned(),
-                    list: e.rule.map(|x| {
-                        lists
-                            .get(usize::from(x.list))
-                            .cloned()
-                            .unwrap_or_else(|| format!("#{}", x.list))
-                    }),
-                    rule: e
-                        .rule
-                        .map(|x| if x.allow { "allow" } else { x.kind.label() }.to_owned()),
+                    list,
+                    rule,
                     total_ms: ms(u64::from(e.t_total_us)),
                     upstream_ms: ms(u64::from(e.t_upstream_us)),
                     response_bytes: e.resp_size,
@@ -1089,6 +1117,48 @@ impl Backend for ApiBackend {
 
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.list_forwards()
+    }
+
+    // REQ: FLT-005 (T6.12) — quick rules in effect, with how long each has left.
+    fn rules(&self) -> Vec<telltale_api::model::RuleInfo> {
+        let cfg = self.src.config.load();
+        let file = self.src.file_config.load();
+        let now = unix_now_secs();
+        let mut out: Vec<telltale_api::model::RuleInfo> = cfg
+            .rule
+            .iter()
+            .map(|r| {
+                let at = r
+                    .expires
+                    .as_deref()
+                    .and_then(telltale_config::parse_rfc3339);
+                telltale_api::model::RuleInfo {
+                    id: r.id.to_string(),
+                    action: if r.action == telltale_config::RuleAction::Allow {
+                        "allow"
+                    } else {
+                        "block"
+                    }
+                    .to_owned(),
+                    domain: r.domain.to_string(),
+                    devices: r.devices.iter().map(ToString::to_string).collect(),
+                    groups: r.groups.iter().map(ToString::to_string).collect(),
+                    expires: r.expires.as_ref().map(ToString::to_string),
+                    expires_in_seconds: at.map(|a| u64::try_from(a - now).unwrap_or(0)),
+                    note: r.note.as_ref().map(ToString::to_string),
+                    created_by: r.created_by.as_ref().map(ToString::to_string),
+                    created: r.created.as_ref().map(ToString::to_string),
+                    source: if file.rule.iter().any(|f| f.id == r.id) {
+                        "file"
+                    } else {
+                        "api"
+                    }
+                    .to_owned(),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
     }
 
     // REQ: CLU-003 (ADR-049) — a push webhook checks the Git source at once.
@@ -1458,7 +1528,196 @@ fn kind_name(k: ManagedKind) -> &'static str {
     match k {
         ManagedKind::Record => crate::managed::RECORD,
         ManagedKind::Forward => crate::managed::FORWARD,
+        ManagedKind::Rule => crate::managed::RULE,
     }
+}
+
+fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// REQ: FLT-005 (T6.12, ADR-067) — every 5 s, deletes quick rules made through the API whose
+/// expiry has passed, and audit-logs each as `rule.expire`. Only a standalone node or the
+/// primary does this (replicas receive the deletion with the next version, and stop applying
+/// an expired rule on their own anyway). Rules from the config files are left alone: they
+/// simply stop applying.
+pub(crate) fn spawn_rule_sweep(
+    src: Arc<Sources>,
+    auth: Arc<telltale_api::auth::Auth>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    tokio::spawn(async move {
+        let backend = ApiBackend {
+            src: Arc::clone(&src),
+        };
+        loop {
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+            }
+            if src.cluster.as_ref().is_some_and(|c| !c.is_primary()) {
+                continue;
+            }
+            let expired = backend
+                .rules()
+                .into_iter()
+                .filter(|r| r.source == "api" && r.expires_in_seconds == Some(0));
+            for r in expired {
+                let w = ManagedWrite {
+                    kind: ManagedKind::Rule,
+                    name: r.id.clone(),
+                    body: None,
+                    dry_run: false,
+                    expect: None,
+                    by: "rule expiry".into(),
+                };
+                match backend.write_managed(w).await {
+                    Ok(c) if c.applied => auth.record(
+                        &telltale_api::auth::Actor::system("rule expiry"),
+                        "rule.expire",
+                        &r.id,
+                        &serde_json::json!({ "before": c.before, "configVersion": c.config_version }),
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(rule = %r.id, "an expired quick rule wasn't removed: {}", e.detail),
+                }
+            }
+        }
+    });
+}
+
+/// REQ: FLT-005 (T6.12, ADR-067) — a rule body as stored: validated shape, the expiry as an
+/// absolute time (from `expires` or `forMinutes`), and who made it and when.
+fn rule_of(
+    v: &serde_json::Value,
+    id: &str,
+    by: &str,
+) -> Result<telltale_config::RuleConfig, Problem> {
+    use telltale_config::{RuleAction, RuleConfig, SafeString};
+    let input: telltale_api::model::RuleInput =
+        serde_json::from_value(v.clone()).map_err(|e| Problem::invalid(format!("body: {e}")))?;
+    let safe = |what: &str, s: &str| {
+        SafeString::new(s.trim()).map_err(|e| Problem::invalid(format!("`{what}`: {e}")))
+    };
+    let action = match input.action.trim() {
+        "allow" => RuleAction::Allow,
+        "block" => RuleAction::Block,
+        other => {
+            return Err(Problem::invalid(format!(
+                "`action`: `{other}` (use `allow` or `block`)"
+            )));
+        }
+    };
+    let now = unix_now_secs();
+    let expires = match (input.expires.as_deref(), input.for_minutes) {
+        (Some(_), Some(_)) => {
+            return Err(Problem::invalid("give `expires` or `forMinutes`, not both"));
+        }
+        (Some(e), None) => {
+            let at = telltale_config::parse_rfc3339(e).ok_or_else(|| {
+                Problem::invalid(format!("`expires`: `{e}` isn't an RFC 3339 time"))
+                    .hint("For example 2026-10-05T21:30:00Z, or use forMinutes.")
+            })?;
+            if at <= now {
+                return Err(Problem::new(
+                    Code::InvalidConfig,
+                    "`expires` is in the past",
+                ));
+            }
+            Some(safe("expires", e)?)
+        }
+        (None, Some(0)) => return Err(Problem::invalid("`forMinutes` must be at least 1")),
+        (None, Some(m)) => {
+            let at = u64::try_from(now).unwrap_or(0) + u64::from(m) * 60;
+            Some(safe("expires", &format_us(at * 1_000_000))?)
+        }
+        (None, None) => None,
+    };
+    Ok(RuleConfig {
+        id: safe("id", id)?,
+        action,
+        domain: safe("domain", &norm(&input.domain))?,
+        devices: input
+            .devices
+            .iter()
+            .map(|d| safe("devices", d))
+            .collect::<Result<_, _>>()?,
+        groups: input
+            .groups
+            .iter()
+            .map(|g| safe("groups", g))
+            .collect::<Result<_, _>>()?,
+        expires,
+        note: input
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(|n| safe("note", n))
+            .transpose()?,
+        created_by: Some(safe("createdBy", by)?),
+        created: Some(safe(
+            "created",
+            &format_us(u64::try_from(now).unwrap_or(0) * 1_000_000),
+        )?),
+    })
+}
+
+/// AGT-002 impact of a quick rule: recent queries for its domain (or names under it) and a
+/// sentence saying for whom it changes.
+fn rule_impact(src: &Sources, rule: &telltale_config::RuleConfig, setting: bool) -> (u64, String) {
+    let domain = rule.domain.as_str();
+    let under = format!(".{domain}");
+    let agg = src.pipeline.telemetry.aggregates();
+    let recent_queries: u64 = [HourSel::Current, HourSel::Previous]
+        .into_iter()
+        .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Domains, h, 1000))
+        .filter(|t| t.key == domain || t.key.ends_with(&under))
+        .map(|t| t.count)
+        .sum();
+    drop(agg);
+    let whom = if !rule.devices.is_empty() {
+        format!(
+            "for {}",
+            rule.devices
+                .iter()
+                .map(telltale_config::SafeString::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else if !rule.groups.is_empty() {
+        format!(
+            "for the group(s) {}",
+            rule.groups
+                .iter()
+                .map(telltale_config::SafeString::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        "for everyone".to_owned()
+    };
+    let action = if rule.action == telltale_config::RuleAction::Allow {
+        "allowed"
+    } else {
+        "blocked"
+    };
+    let until = rule
+        .expires
+        .as_deref()
+        .map_or(String::new(), |e| format!(" until {e}"));
+    let impact = if setting {
+        format!(
+            "`{domain}` and its subdomains are {action} {whom}{until}, before any list; {recent_queries} queries for them in the last two hours (at least)."
+        )
+    } else {
+        format!(
+            "`{domain}` goes back to the lists {whom}; {recent_queries} queries for it in the last two hours (at least)."
+        )
+    };
+    (recent_queries, impact)
 }
 
 /// A local name or domain as stored: lowercase, no trailing dot.
@@ -1531,7 +1790,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         .flat_map(|h| agg.top_names(telltale_telemetry::agg::TopKind::Domains, h, 1000))
         .filter(|t| match kind {
             ManagedKind::Record => t.key == name,
-            ManagedKind::Forward => t.key == name || t.key.ends_with(&under),
+            ManagedKind::Forward | ManagedKind::Rule => t.key == name || t.key.ends_with(&under),
         })
         .map(|t| t.count)
         .sum();
@@ -1549,12 +1808,14 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Forward, false) => format!(
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
         ),
+        (ManagedKind::Rule, _) => String::new(), // rule_impact says it better
     };
     (recent_queries, impact)
 }
 
-/// Checks a local-name or forward write (ADR-042): files win, and the files plus every API
-/// entry with this change must validate, record values included.
+/// Checks a local-name, forward, or quick-rule write (ADR-042): files win, and the files plus
+/// every API entry with this change must validate, record values included.
+#[allow(clippy::too_many_lines)] // one branch per kind of entry
 fn plan_managed(
     src: &Sources,
     state: &telltale_store::state::State,
@@ -1574,6 +1835,7 @@ fn plan_managed(
             .route
             .iter()
             .any(|r| r.match_suffix.iter().any(|s| s.eq_ignore_ascii_case(&name))),
+        ManagedKind::Rule => file.rule.iter().any(|r| r.id.eq_ignore_ascii_case(&name)),
     };
     if in_files {
         return Err(Problem::new(
@@ -1624,6 +1886,26 @@ fn plan_managed(
                 after.map(|a| serde_json::json!({ "domain": name, "servers": a.servers })),
             )
         }
+        ManagedKind::Rule => {
+            let before = entries
+                .rules
+                .iter()
+                .find(|r| r.id.as_str() == name)
+                .cloned();
+            entries.rules.retain(|r| r.id.as_str() != name);
+            let after = match &w.body {
+                None => None,
+                Some(v) => {
+                    let r = rule_of(v, &name, &w.by)?;
+                    entries.rules.push(r.clone());
+                    Some(r)
+                }
+            };
+            (
+                before.map(|b| serde_json::to_value(b).unwrap_or_default()),
+                after.map(|a| serde_json::to_value(a).unwrap_or_default()),
+            )
+        }
     };
     if w.body.is_none() && before.is_none() {
         return Err(Problem::not_found(format!(
@@ -1639,8 +1921,17 @@ fn plan_managed(
         (ManagedKind::Forward, Some(a)) => {
             Some(serde_json::json!({ "servers": a["servers"] }).to_string())
         }
+        (ManagedKind::Rule, Some(a)) => Some(a.to_string()),
     };
-    let (recent_queries, impact) = managed_impact(src, w.kind, &name, body.is_some());
+    let (recent_queries, impact) = if w.kind == ManagedKind::Rule {
+        let rule = after
+            .as_ref()
+            .or(before.as_ref())
+            .and_then(|v| serde_json::from_value::<telltale_config::RuleConfig>(v.clone()).ok());
+        rule.map_or((0, String::new()), |r| rule_impact(src, &r, body.is_some()))
+    } else {
+        managed_impact(src, w.kind, &name, body.is_some())
+    };
     Ok(ManagedPlan {
         name,
         before,

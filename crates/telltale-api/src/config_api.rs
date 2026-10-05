@@ -71,6 +71,7 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/forwards/{domain}",
             put(put_forward).delete(delete_forward),
         )
+        .route("/api/v1/rules/{id}", put(put_rule).delete(delete_rule))
         .with_state((backend, auth))
 }
 
@@ -237,9 +238,9 @@ fn group_guard(
         )),
         Op::Client(None) if existing.is_none() => refuse(format!("`{name}` isn't in group `{g}`")),
         Op::Client(_) => Ok(()),
-        Op::Managed(..) => {
-            refuse("restricted tokens can't change local names or forwarded domains".into())
-        }
+        Op::Managed(..) => refuse(
+            "restricted tokens can't change local names, forwarded domains, or quick rules".into(),
+        ),
     }
 }
 
@@ -255,6 +256,7 @@ impl Op {
             Self::Client(_) => "client",
             Self::Managed(ManagedKind::Record, _) => "record",
             Self::Managed(ManagedKind::Forward, _) => "forward",
+            Self::Managed(ManagedKind::Rule, _) => "rule",
         }
     }
     fn deleting(&self) -> bool {
@@ -492,6 +494,83 @@ pub(crate) async fn delete_forward(
         request,
         domain,
         Op::Managed(ManagedKind::Forward, None),
+    )
+    .await
+}
+
+/// Create or replace a quick rule (T6.12, ADR-067).
+///
+/// Allows or blocks `domain` and its subdomains for `devices`, `groups`, or everyone (neither
+/// given), before any list: a device rule beats a group rule beats an everyone rule; within one
+/// scope the longer domain wins, then allow. With `expires` or `forMinutes` it stops applying
+/// then (and is removed). It takes effect on the next query, without recompiling the lists.
+/// Rules from the config files are read-only here (409). Needs the operator role (or the
+/// `config:write:rules` agent scope, with a reason).
+#[utoipa::path(put, path = "/api/v1/rules/{id}", tag = "config",
+    params(("id" = String, Path, description = "The rule's ID: any short unique name (the UI makes one)."), DryRun),
+    request_body = crate::model::RuleInput,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 409, body = Problem, description = "Defined in the config files, or an Idempotency-Key reused."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "An unknown device or group, a bad domain, or an expiry in the past."),
+    ))]
+pub(crate) async fn put_rule(
+    State((backend, auth)): State<Ctx>,
+    Path(id): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<crate::model::RuleInput>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /rules/{id} {}", json_of(&input));
+    let v = serde_json::to_value(&input).unwrap_or_default();
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        id,
+        Op::Managed(ManagedKind::Rule, Some(v)),
+    )
+    .await
+}
+
+/// Remove a quick rule made through the API.
+///
+/// The lists decide for its domain again. Rules from the config files can't be removed here
+/// (409).
+#[utoipa::path(delete, path = "/api/v1/rules/{id}", tag = "config",
+    params(("id" = String, Path, description = "The rule's ID."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No rule with that ID was created through the API."),
+        (status = 409, body = Problem, description = "Defined in the config files."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+    ))]
+pub(crate) async fn delete_rule(
+    State((backend, auth)): State<Ctx>,
+    Path(id): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /rules/{id}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        id,
+        Op::Managed(ManagedKind::Rule, None),
     )
     .await
 }

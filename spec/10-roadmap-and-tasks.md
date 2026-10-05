@@ -269,6 +269,23 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - adding a rule doesn't trigger a list recompile;
     - `make bench-smoke` stays within budget with 1,000 rules;
     - the Playwright suite covers "allow for 1 hour" from the query log.
+  - *Built 2026-10-05, not yet ticked.*
+    - **Done:**
+      - `[[rule]]` in the config, validated, plus the RFC 3339 parser;
+      - `telltale_policy::QuickRules` (device > group > everyone, longer domain, then allow; allocation-free suffix probes);
+      - the pipeline decides before the lists and in CNAME inspection; pause applies;
+      - `RuleKind::Quick` in query events, with a stable 16-bit reference per rule;
+      - explain names the rule;
+      - `GET /api/v1/rules`, `PUT` and `DELETE /api/v1/rules/{id}` (dry run, If-Match, idempotency, audit, impact);
+      - the `config:write:rules` agent scope and cluster write forwarding;
+      - the expiry sweep (`rule.expire` in the audit log);
+      - a Quick rules page and "Make a quick rule" in the "Why?" drawer;
+      - help topic, docs, and ADR-067.
+    - **Verified:**
+      - unit tests (policy, pipeline, explain, config, API scopes);
+      - Playwright: allow for 1 hour from "Why?", then remove; expiry and audit; bad input refused;
+      - the cluster e2e: a rule made on the replica applies on both nodes and is removed from both.
+    - **Remaining:** `make bench-smoke --quick-rules 1000` (the bench harness gained `--quick-rules N`). The run was stopped for memory pressure on 2026-10-05 and waits for the owner's go.
 - [ ] **T6.13 Cache tools: inspect and flush, across the cluster (proposed, owner request 2026-10-05).** The endpoints `spec/07` §1 already plans (`GET /cache/stats`, `POST /cache/flush` with `{name?, subtree?}`) and the `flush_cache` agent operation (`spec/13` §3, scope `ops:cache`). *(DNS-006, API-005, AGT-004, CLU-002)*
   - **Lookup:** what the cache holds for a name: answer, TTL left, stale or prefetched, DNSSEC status, and which upstream answered.
   - **Flush:** one name, a subtree, or everything. By default it goes to every node over the cluster channel; an option limits it to one node. Every flush is audit-logged.

@@ -357,3 +357,100 @@ mod tests {
         assert_eq!(ByteSize(1000).to_string(), "1000B");
     }
 }
+
+/// REQ: FLT-005 (T6.12) — an RFC 3339 time (`2026-10-05T21:30:00Z`, `…+02:00`, fractional
+/// seconds allowed) as Unix seconds. `None` if it isn't one.
+pub fn parse_rfc3339(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b'T' | b't' | b' ')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = text.get(range)?;
+        digits
+            .bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| digits.parse().ok())
+            .flatten()
+    };
+    let year = num(0..4)?;
+    let month = num(5..7)?;
+    let day = num(8..10)?;
+    let hour = num(11..13)?;
+    let minute = num(14..16)?;
+    let second = num(17..19)?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let mut rest = &text[19..];
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        rest = &frac[digits..];
+    }
+    let offset = match rest {
+        "Z" | "z" => 0,
+        zone if zone.len() == 6
+            && matches!(zone.as_bytes()[0], b'+' | b'-')
+            && zone.as_bytes()[3] == b':' =>
+        {
+            let hours: i64 = zone[1..3].parse().ok()?;
+            let minutes: i64 = zone[4..6].parse().ok()?;
+            let total = hours * 3600 + minutes * 60;
+            if zone.starts_with('-') { -total } else { total }
+        }
+        _ => return None,
+    };
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let shifted_year = if month <= 2 { year - 1 } else { year };
+    let era = shifted_year.div_euclid(400);
+    let year_of_era = shifted_year - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+#[cfg(test)]
+mod rfc3339_tests {
+    use super::parse_rfc3339;
+
+    #[test]
+    fn flt_005_rfc3339_times() {
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339("2026-10-05T21:30:00Z"), Some(1_791_235_800));
+        assert_eq!(
+            parse_rfc3339("2026-10-05T23:30:00+02:00"),
+            Some(1_791_235_800)
+        );
+        assert_eq!(
+            parse_rfc3339("2026-10-05T21:30:00.123Z"),
+            Some(1_791_235_800)
+        );
+        assert_eq!(parse_rfc3339("2024-02-29T12:00:00Z"), Some(1_709_208_000));
+        for bad in [
+            "",
+            "2026-10-05",
+            "2026-13-05T00:00:00Z",
+            "2026-10-05T21:30:00",
+            "tomorrow",
+            "2026-10-05T21:30:00+0200",
+        ] {
+            assert_eq!(parse_rfc3339(bad), None, "{bad}");
+        }
+    }
+}

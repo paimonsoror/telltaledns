@@ -1698,6 +1698,180 @@
         }
       }
     },
+    "/api/v1/rules": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Quick rules: per-device and per-group allow and block (T6.12, ADR-067).",
+        "description": "Every rule with whom it applies to, its expiry and how long it has left, its note, who made\nit, and where it's defined (`file` or `api`). Quick rules decide before any list: a device\nrule beats a group rule beats an everyone rule. The `ETag` is the config version for\n`If-Match`.",
+        "operationId": "rules",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_RuleInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rules/{id}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Create or replace a quick rule (T6.12, ADR-067).",
+        "description": "Allows or blocks `domain` and its subdomains for `devices`, `groups`, or everyone (neither\ngiven), before any list: a device rule beats a group rule beats an everyone rule; within one\nscope the longer domain wins, then allow. With `expires` or `forMinutes` it stops applying\nthen (and is removed). It takes effect on the next query, without recompiling the lists.\nRules from the config files are read-only here (409). Needs the operator role (or the\n`config:write:rules` agent scope, with a reason).",
+        "operationId": "put_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The rule's ID: any short unique name (the UI makes one).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the config files, or an Idempotency-Key reused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An unknown device or group, a bad domain, or an expiry in the past.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a quick rule made through the API.",
+        "description": "The lists decide for its domain again. Rules from the config files can't be removed here\n(409).",
+        "operationId": "delete_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The rule's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No rule with that ID was created through the API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Defined in the config files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/latency": {
       "get": {
         "tags": [
@@ -4770,6 +4944,99 @@
           }
         }
       },
+      "Items_RuleInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A quick rule (files and API), with how long it has left.",
+              "required": [
+                "id",
+                "action",
+                "domain",
+                "devices",
+                "groups",
+                "source"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "`allow` or `block`."
+                },
+                "created": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "devices": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "expires": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "RFC 3339, when it stops applying."
+                },
+                "expiresInSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "Seconds until it expires (0 once it has).",
+                  "minimum": 0
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "id": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`file` (read-only here) or `api`."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_TimeBucket": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -5822,6 +6089,138 @@
           "operator",
           "admin"
         ]
+      },
+      "RuleInfo": {
+        "type": "object",
+        "description": "A quick rule (files and API), with how long it has left.",
+        "required": [
+          "id",
+          "action",
+          "domain",
+          "devices",
+          "groups",
+          "source"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`allow` or `block`."
+          },
+          "created": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "domain": {
+            "type": "string"
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, when it stops applying."
+          },
+          "expiresInSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds until it expires (0 once it has).",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (read-only here) or `api`."
+          }
+        }
+      },
+      "RuleInput": {
+        "type": "object",
+        "description": "REQ: FLT-005 (T6.12, ADR-067) — a quick rule to create or replace\n(`PUT /api/v1/rules/{id}`).",
+        "required": [
+          "action",
+          "domain"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`allow` or `block`.",
+            "example": "allow"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Device names, IPs, or CIDRs it applies to."
+          },
+          "domain": {
+            "type": "string",
+            "description": "The domain; its subdomains are included.",
+            "example": "game.example.com"
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it stops applying (RFC 3339). Use this or `forMinutes`; neither means never."
+          },
+          "forMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Stop applying this many minutes from now.",
+            "minimum": 0
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups it applies to. With neither devices nor groups: everyone."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it exists, shown with every decision it makes."
+          }
+        },
+        "additionalProperties": false
       },
       "ScanStats": {
         "type": "object",

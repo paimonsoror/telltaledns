@@ -124,6 +124,7 @@ pub(crate) struct State<'a> {
 
 /// Explains `req` against `st`, reading list sources through `source(list name)`.
 // REQ: FLT-013
+#[allow(clippy::too_many_lines)] // the pipeline's steps, in order
 pub(crate) fn explain(
     st: &State<'_>,
     req: &Request<'_>,
@@ -206,7 +207,40 @@ pub(crate) fn explain(
             .notes
             .push("no filter snapshot is loaded yet, so nothing is blocked".into()),
     }
-    if decide(&mut e, winner, group, st.pause) {
+    // REQ: FLT-005 (T6.12, ADR-067) — quick rules decide before the lists shown above.
+    let quick = quick_decision(
+        policy,
+        q.qname.as_wire(),
+        ident,
+        req.client,
+        clients,
+        st.pause,
+    );
+    if let Some((allow, desc)) = quick {
+        if allow {
+            e.outcome = Outcome::Allowed;
+            e.summary =
+                format!("allowed by a quick rule ({desc}), before any list; resolved normally");
+        } else {
+            e.outcome = Outcome::Blocked;
+            e.summary = format!(
+                "blocked by a quick rule ({desc}) for group {}: answered {}",
+                group.name,
+                block_answer_text(group.block.mode)
+            );
+            e.block = Some(BlockInfo {
+                list: format!("quick rule: {desc}"),
+                mode: group.block.mode,
+                ttl: group.block.ttl,
+                ede_code: group.block.ede_code,
+            });
+            return Ok(e);
+        }
+        if e.filter.is_some() {
+            e.notes
+                .push("quick rules decide before lists: the list matches below don't apply".into());
+        }
+    } else if decide(&mut e, winner, group, st.pause) {
         return Ok(e);
     }
 
@@ -233,6 +267,40 @@ pub(crate) fn explain(
         );
     }
     Ok(e)
+}
+
+/// The quick rule deciding `name` for this client, as (allow, a description), or `None`. A
+/// paused group gets no blocks from quick rules (the pipeline's rule).
+fn quick_decision(
+    policy: &crate::pipeline::Policy,
+    name: &[u8],
+    ident: telltale_policy::Identity,
+    client: IpAddr,
+    clients: &ClientTable,
+    pause: &Pause,
+) -> Option<(bool, String)> {
+    use std::fmt::Write as _;
+    let now = unix_now();
+    let m = policy.quick.decide(
+        name,
+        ident,
+        client,
+        clients.group_ids(ident),
+        i64::try_from(now).unwrap_or(i64::MAX),
+    )?;
+    if !m.allow && pause.is_paused(&clients.primary_group(ident).name, || now) {
+        return None;
+    }
+    let r = policy.quick.rules().get(m.rule as usize)?;
+    let mut desc = r.note.as_deref().unwrap_or(&r.domain).to_owned();
+    if !r.targets.is_empty() {
+        let _ = write!(desc, ", for {}", r.targets.join(", "));
+    }
+    if let Some(at) = r.expires {
+        let left = at - i64::try_from(now).unwrap_or(0);
+        let _ = write!(desc, ", ends in {} min", (left + 59) / 60);
+    }
+    Some((m.allow, desc))
 }
 
 /// `spec/03` §3 steps 2–5 (access, ANY, special names, local records): the outcome if one

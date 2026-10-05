@@ -35,6 +35,8 @@ pub enum RuleKind {
     Regex = 3,
     /// A CNAME target in the answer was blocked (FLT-007).
     Cname = 4,
+    /// A quick rule decided (T6.12, ADR-067); `list` holds the rule's 16-bit reference.
+    Quick = 5,
 }
 
 impl RuleKind {
@@ -44,6 +46,7 @@ impl RuleKind {
             2 => Self::Modifier,
             3 => Self::Regex,
             4 => Self::Cname,
+            5 => Self::Quick,
             _ => return None,
         })
     }
@@ -53,6 +56,7 @@ impl RuleKind {
             Self::Modifier => "modifier",
             Self::Regex => "regex",
             Self::Cname => "cname",
+            Self::Quick => "quick",
         }
     }
 }

@@ -1174,3 +1174,35 @@ ADR-057 already renews node certificates (same key) over the channel. A CA rotat
 - A member offline for the whole rotation must rejoin.
 - Join tokens pin the CA fingerprint, so tokens from before a rotation stop working.
 - A forced rotation (with members down) is a possible follow-up.
+
+## ADR-067 — Quick rules: their own layer, the most specific scope wins, expiry on the server (Proposed)
+**Context:** T6.12 (owner request 2026-10-05) wants everyday per-person rules:
+- unblock a game's server for one phone for two hours;
+- block a site for the kids' devices until tomorrow.
+
+The engine can already express device-scoped rules (`$client` in the manual-rules overlay, ADR-003), but the overlay uses the lists' four tiers (important allow > important block > allow > block). Those can't say "this device's rule beats its group's rule beats the lists": a group-wide allow would override a parent's block for one child. Nothing expires on its own.
+
+**Decision:**
+- **A quick rule:**
+  - allow or block a domain and its subdomains;
+  - for listed devices (by name, IP, or MAC, as `[[client]]` keys), listed groups, or everyone;
+  - an optional expiry (an absolute time; the UI offers durations);
+  - a note, who made it (user or agent), and when.
+- **Storage:** in `state.db` as a managed entry of kind `rule` (ADR-040). In a cluster, rules travel with the shared configuration the primary publishes (ADR-047), and a replica's UI forwards the write to the primary (ADR-054). Rules are capped at 1,000 per cluster.
+- **Matching:** quick rules are their own layer, checked before the lists:
+  1. Among rules matching the query name (any suffix of it) whose scope includes the client, a device rule beats a group rule, which beats an everyone rule.
+  2. Within one scope, the longer (more specific) domain wins, then allow beats block.
+  3. A match decides allow or block outright. Otherwise the lists decide as before.
+
+  CNAME inspection (FLT-007) uses the same decision, so a block also catches a CNAME to the blocked name.
+- **Hot path:** the rules sit in a read-mostly table behind `ArcSwap`, keyed by the hash of each rule's reversed domain. A lookup probes the query's suffixes, at most one probe per label, with no allocation. With no rules it costs one branch.
+- **Expiry:** each node ignores a rule from the moment its expiry passes, by its own clock (T6.11 shows clock offsets). A sweep every 5 s on the primary deletes expired rules and audit-logs each expiry. A replica never needs the sweep to stop applying a rule.
+- **Explanations:** an answer decided by a quick rule is attributed to it ("allowed by a quick rule for Mom's phone, expires 21:30"). The query log records it, and "Why?" and explain show it above the list matches.
+- **Agents:** the scope `config:write:rules`, with the usual reason header, dry run, and impact estimate (recent queries the rule would change).
+
+**Consequences:**
+- A new rule takes effect on the next query, with no list recompile.
+- Rules are deliberately simpler than list syntax: no regex, no query types. Anything fancier belongs in a list.
+- Device scoping is only as good as recognising the device; the docs say so.
+- Expiry depends on node clocks being roughly right. A node whose clock is off keeps or drops a rule early or late by that offset, and the Cluster page flags offsets of 2 s or more.
+- **Mixed versions (CLU-010):** the config schema rejects unknown keys, and an empty `rule` list is left out of the shared configuration. So an N−1 replica follows the cluster as long as nobody has made a quick rule. Once one exists, the replica refuses that version and keeps serving its last good one until it's upgraded. Quick rules therefore wait for a cluster-wide upgrade, as any new shared section does.

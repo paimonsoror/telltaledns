@@ -147,6 +147,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             let action = match kind {
                 ManagedKind::Record => "record",
                 ManagedKind::Forward => "forward",
+                ManagedKind::Rule => "rule",
             };
             let deleting = body.is_none();
             let r = local

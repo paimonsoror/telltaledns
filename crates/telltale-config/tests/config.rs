@@ -472,3 +472,65 @@ fn doc_002_committed_schema_matches_the_code() {
         "docs/config-schema.json is out of date: run UPDATE_SCHEMA=1 cargo test -p telltale-config doc_002_committed_schema"
     );
 }
+
+/// REQ: FLT-005 (T6.12, ADR-067) — quick rules: a valid one loads; each kind of mistake is
+/// reported at its path.
+#[test]
+fn flt_005_quick_rules_validate() {
+    let ok = load_str(
+        r#"
+[[group]]
+name = "kids"
+[[client]]
+name = "Mom phone"
+match = ["192.168.1.20"]
+[[rule]]
+id = "r1"
+action = "allow"
+domain = "game.example.com"
+devices = ["Mom phone"]
+expires = "2026-10-05T21:30:00Z"
+note = "Mom's game"
+[[rule]]
+id = "r2"
+action = "block"
+domain = "videos.example.com"
+groups = ["kids"]
+[[rule]]
+id = "r3"
+action = "block"
+domain = "ads.example.net"
+devices = ["192.168.1.0/24"]
+"#,
+    )
+    .unwrap();
+    assert_eq!(ok.config.rule.len(), 3);
+    assert_eq!(ok.config.rule[0].action, telltale_config::RuleAction::Allow);
+
+    let errs = load_str(
+        r#"
+[[rule]]
+id = "a"
+action = "block"
+domain = "*.bad"
+[[rule]]
+id = "a"
+action = "allow"
+domain = "ok.example"
+groups = ["nope"]
+devices = ["Nobody"]
+expires = "tomorrow"
+"#,
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    for want in [
+        "rule[0].domain",
+        "rule[1].id",
+        "rule[1].groups[0]",
+        "rule[1].devices[0]",
+        "rule[1].expires",
+    ] {
+        assert!(p.contains(&want), "{want} missing from {p:?}");
+    }
+}

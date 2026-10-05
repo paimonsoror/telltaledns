@@ -22,6 +22,8 @@ use tracing::{error, warn};
 pub(crate) const CLIENT: &str = "client";
 pub(crate) const RECORD: &str = "record";
 pub(crate) const FORWARD: &str = "forward";
+/// Quick rules (T6.12, ADR-067), stored by ID.
+pub(crate) const RULE: &str = "rule";
 
 /// One record of a local name (a name's records are stored together).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +49,7 @@ pub(crate) struct Entries {
     pub(crate) clients: Vec<ClientConfig>,
     pub(crate) records: Vec<(String, Vec<RecordValue>)>,
     pub(crate) forwards: Vec<(String, Forward)>,
+    pub(crate) rules: Vec<telltale_config::RuleConfig>,
 }
 
 /// Where the state database lives.
@@ -82,6 +85,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .collect(),
         records: decode(state, RECORD),
         forwards: decode(state, FORWARD),
+        rules: decode::<telltale_config::RuleConfig>(state, RULE)
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect(),
     }
 }
 
@@ -110,6 +117,12 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());
+        }
+    }
+    // A rule ID the files use wins (ADR-067).
+    for r in &e.rules {
+        if !cfg.rule.iter().any(|f| f.id == r.id) {
+            cfg.rule.push(r.clone());
         }
     }
     let mut errs = Vec::new();

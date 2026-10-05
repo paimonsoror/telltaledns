@@ -410,3 +410,79 @@ test('api_011 names on my network: wizards, DNS, and the API', async () => {
   expect((await r.delete('/api/v1/records/nas.home.arpa', { headers: h })).status()).toBe(200);
   expect(await query('nas.home.arpa').catch(() => -1)).not.toBe(0);
 });
+
+// REQ: FLT-005 (T6.12, ADR-067) — a quick rule from "Why?": allow a blocked name for this
+// device for an hour; DNS stops blocking it at once, the Rules page shows it with its
+// countdown, and removing it blocks the name again. No list is recompiled.
+test('flt_005 quick rule: allow for 1 hour from the query log', async () => {
+  expect(await query('ads.e2e.test')).toBe(0); // blocked: 0.0.0.0
+  await page.goto('/#/queries?status=blocked&name=ads.e2e.test&match=exact');
+  await page.getByRole('button', { name: 'Why?' }).first().click();
+  const form = page.getByTestId('quick-rule-form');
+  await expect(form.getByRole('textbox', { name: 'Domain' })).toHaveValue('ads.e2e.test');
+  await expect(form.getByRole('combobox', { name: 'Duration' })).toHaveValue('60');
+  await form.getByRole('textbox', { name: 'Note' }).fill('e2e game');
+  await form.getByRole('button', { name: 'Save rule' }).click();
+  await expect(page.getByTestId('quick-rule-saved')).toContainText('allowed for');
+  await page.keyboard.press('Escape');
+
+  // Not blocked any more: it goes upstream (unreachable in this test, so not a 0.0.0.0 answer).
+  expect(await query('ads.e2e.test').catch(() => -1)).not.toBe(0);
+
+  await page.goto('/#/rules');
+  const table = page.getByTestId('rules-table');
+  await expect(table).toContainText('ads.e2e.test');
+  await expect(table).toContainText('e2e game');
+  await expect(table).toContainText(/in (59m|1h)/);
+
+  // The query log attributes the decision to the rule.
+  // (The allowed query is logged once its upstream attempt ends, a few seconds later here.)
+  await page.goto('/#/queries?name=ads.e2e.test&match=exact');
+  await expect
+    .poll(
+      async () => {
+        await page.reload();
+        return page.locator('table.log tbody').innerText();
+      },
+      { timeout: 20_000, intervals: [1000] },
+    )
+    .toContain('quick allow');
+
+  // Removing it: the lists decide again.
+  await page.goto('/#/rules');
+  await page.getByTestId('rules-table').getByRole('button', { name: 'Remove' }).click();
+  await expect(page.locator('main')).toContainText('No quick rules');
+  expect(await query('ads.e2e.test')).toBe(0);
+});
+
+// REQ: FLT-005 (ADR-067) — an expiring rule stops applying at its expiry without a restart,
+// the sweep removes it within seconds, and the audit log records `rule.expire`.
+test('flt_005 quick rules expire on their own and are audited', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = { 'x-csrf-token': csrf };
+  const expires = new Date(Date.now() + 4000).toISOString().replace(/\.\d+Z$/, 'Z');
+  const put = await r.put('/api/v1/rules/e2e-expiring', {
+    headers: h,
+    data: { action: 'allow', domain: 'ads.e2e.test', devices: ['127.0.0.1'], expires },
+  });
+  expect(put.status()).toBe(200);
+  expect(await query('ads.e2e.test').catch(() => -1)).not.toBe(0); // allowed while it lasts
+  await expect
+    .poll(async () => (await (await r.get('/api/v1/rules')).json()).items.length, { timeout: 20_000, intervals: [1000] })
+    .toBe(0);
+  expect(await query('ads.e2e.test')).toBe(0); // the list blocks it again
+  const audit = await (await r.get('/api/v1/audit?limit=20')).json();
+  expect(JSON.stringify(audit)).toContain('rule.expire');
+  // Mistakes are refused with a reason.
+  const past = await r.put('/api/v1/rules/e2e-past', {
+    headers: h,
+    data: { action: 'block', domain: 'x.e2e.test', expires: '2020-01-01T00:00:00Z' },
+  });
+  expect(past.status()).toBe(422);
+  const unknownGroup = await r.put('/api/v1/rules/e2e-bad', {
+    headers: h,
+    data: { action: 'block', domain: 'x.e2e.test', groups: ['nope'] },
+  });
+  expect(unknownGroup.status()).toBe(422);
+});
