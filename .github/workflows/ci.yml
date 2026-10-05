@@ -225,3 +225,7 @@ jobs:
           bash deploy/compose/e2e.sh telltale:ci
       - name: install.sh + systemd unit
         run: sudo bash deploy/systemd/e2e.sh target/bench-fast/telltale
+      # REQ: CLU-003, CLU-004 (T5.2/T5.3 AC) — a primary and a replica as real processes:
+      # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms.
+      - name: Cluster (two processes)
+        run: bash deploy/cluster/e2e.sh target/bench-fast/telltale
