@@ -186,6 +186,8 @@ code=$(curl -s -o "$E/rule.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csr
 for _ in $(seq 50); do [ "$(q 25302 x.qr1.e2e.test)" = 0.0.0.0 ] && break; sleep 0.1; done
 [ "$(q 25301 x.qr1.e2e.test)" = 0.0.0.0 ] || fail "the quick rule doesn't block on the primary"
 [ "$(q 25302 x.qr1.e2e.test)" = 0.0.0.0 ] || fail "the quick rule doesn't block on the replica"
+listed=$(curl -sf -b "$E/rjar" "$RAPI/api/v1/rules" | field '" ".join(r["id"] for r in d["items"])')
+[ "$listed" = e2e-cluster ] || fail "the replica's GET /api/v1/rules doesn't list the rule (got '$listed')"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b "$E/rjar" -X DELETE -H "x-csrf-token: $CSRF" \
   "$RAPI/api/v1/rules/e2e-cluster")
 [ "$code" = 200 ] || fail "removing the quick rule through the replica answered $code"

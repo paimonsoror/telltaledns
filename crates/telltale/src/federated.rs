@@ -500,6 +500,11 @@ impl Backend for Federated {
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.local.forwards()
     }
+    // REQ: FLT-005 (T6.12) — quick rules are shared configuration: this node's copy is the
+    // cluster's. (Without this, the trait's empty default hid them on clustered nodes.)
+    fn rules(&self) -> Vec<telltale_api::model::RuleInfo> {
+        self.local.rules()
+    }
     // REQ: CLU-002 — a replica forwards configuration writes to the primary (T5.7).
     fn write_managed(&self, w: ManagedWrite) -> BoxFuture<Result<ConfigChange, Problem>> {
         match self.write_route() {
