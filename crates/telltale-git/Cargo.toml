@@ -1,0 +1,23 @@
+[package]
+name = "telltale-git"
+description = "Reads one file at a ref from a Git repository over the smart-HTTP v2 protocol (no git binary): ADR-049."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# REQ: CLU-003 (ADR-049) — packfile objects are zlib streams: miniz_oxide is pure Rust and
+# small. SHA-1 object IDs and Ed25519 commit signatures use ring, already in the tree.
+miniz_oxide = "0.8"
+ring = "0.17.14"
+base64 = "0.22.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["rt", "macros", "process", "io-util"] }

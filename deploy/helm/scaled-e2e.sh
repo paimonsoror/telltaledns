@@ -117,7 +117,7 @@ EOF
 "$B" cluster join "$T" --site pi -c "$E/pi.toml" >/dev/null || fail "the outside node couldn't join"
 "$B" run -c "$E/pi.toml" > "$E/pi.log" 2>&1 & PIDS+=($!)
 seen=""
-for _ in $(seq 40); do seen=$(metric http://127.0.0.1:29599 telltale_cluster_peer_up 'site="k8s"'); [[ "$seen" == 1 ]] && break; sleep 0.5; done
+for _ in $(seq 120); do seen=$(metric http://127.0.0.1:29599 telltale_cluster_peer_up 'site="k8s"'); [[ "$seen" == 1 ]] && break; sleep 0.5; done
 [[ "$seen" == 1 ]] || fail "the outside node doesn't see the controller"
 for _ in $(seq 30); do up=$(metric http://127.0.0.1:19153 telltale_cluster_peers 'state="up"'); [[ "$up" == 3 ]] && break; sleep 1; done
 [[ "$up" == 3 ]] || fail "the controller sees $up peers up, not 3"

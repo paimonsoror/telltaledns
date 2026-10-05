@@ -1690,7 +1690,13 @@ pub async fn join(token: &Token, req: &JoinRequest) -> Result<JoinResponse, Stri
     let mut last = String::from("the token lists no URLs");
     for url in &token.urls {
         match join_one(url, Arc::clone(&cfg), req).await {
-            Ok(r) => return Ok(r),
+            // The URL that worked is the first to dial afterwards (CLU-009: a node outside
+            // Kubernetes joined through an address that reaches the controller).
+            Ok(mut r) => {
+                r.primary_urls.retain(|u| u != url);
+                r.primary_urls.insert(0, url.clone());
+                return Ok(r);
+            }
             Err(e) => last = e,
         }
     }
