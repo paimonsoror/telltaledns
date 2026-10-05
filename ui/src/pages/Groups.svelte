@@ -45,7 +45,7 @@
     {#each groups as g (g.name)}
       <section class="card group" data-testid="group-card" style:--gc={g.color}>
         <div class="card-head">
-          <h2><span class="swatch" aria-hidden="true"></span>{g.name}</h2>
+          <h2>{g.name}</h2>
           {#if g.pausedUntilUnixSeconds}
             <span class="badge warn">paused until {dateTime(g.pausedUntilUnixSeconds)}</span>
           {/if}
@@ -116,20 +116,12 @@
     margin-bottom: 16px;
   }
   .group {
-    border-top: 4px solid var(--gc);
     margin: 0;
   }
-  .group h2 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .swatch {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
+  /* T6.8 — the title's accent bar carries the group's color. */
+  .group h2::before {
     background: var(--gc);
-    display: inline-block;
+    width: 4px;
   }
   .stats {
     display: grid;
@@ -143,13 +135,18 @@
   }
   .stats dd {
     margin: 0;
-    font-size: 1.2em;
+    font-size: 1.35em;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
   }
   .tops {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
     margin-bottom: 8px;
+  }
+  .tops > div {
+    min-width: 0;
   }
   .tops ol {
     margin: 4px 0 0;

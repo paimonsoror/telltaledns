@@ -99,6 +99,21 @@
     }
   });
 
+  // T6.8 — count badges in the sidebar: anomalies found in the last day, lists that fail to
+  // download. Best effort: a failed call just hides the badge.
+  let badges = $state<Record<string, number>>({});
+  $effect(() => {
+    if (session.user) {
+      return poll(async () => {
+        const [a, l] = await Promise.all([api.anomalies('-24h').catch(() => null), api.lists().catch(() => null)]);
+        badges = {
+          '/anomalies': a?.items.length ?? 0,
+          '/lists': l?.items.filter((x) => x.state === 'failed').length ?? 0,
+        };
+      }, 60_000);
+    }
+  });
+
   $effect(() => {
     void route.path;
     menuOpen = false;
@@ -125,6 +140,9 @@
         {#each pages.filter((p) => p.section === sec) as p (p.path)}
           <a class="nav" href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined}>
             <Icon name={p.icon} /> <span>{p.label}</span>
+            {#if badges[p.path]}
+              <b class="count" class:alert={p.path === '/lists'} title={p.path === '/lists' ? 'lists failing to download' : 'anomalies in the last 24 hours'}>{badges[p.path]}</b>
+            {/if}
           </a>
         {/each}
       {/each}
@@ -240,9 +258,27 @@
     text-decoration: none;
   }
   .nav[aria-current='page'] {
-    background: var(--accent);
+    background: var(--accent-strong);
     color: var(--accent-text);
     font-weight: 600;
+  }
+  .nav {
+    position: relative;
+  }
+  .count {
+    margin-left: auto;
+    min-width: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--warn);
+    color: #1b1300;
+    font-size: 11px;
+    line-height: 18px;
+    text-align: center;
+  }
+  .count.alert {
+    background: var(--bad);
+    color: var(--on-bad);
   }
   .build {
     display: grid;
@@ -387,6 +423,7 @@
     }
     .brand span,
     .nav span,
+    .count,
     .section,
     .build {
       display: none;

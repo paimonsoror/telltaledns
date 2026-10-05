@@ -8,6 +8,7 @@
 /ui/.e2e/
 /ui/test-results/
 /ui/playwright-report/
+/ui/.shots/
 /fuzz/artifacts/
 /fuzz/corpus/
 /fuzz/target/

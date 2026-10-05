@@ -5,6 +5,7 @@ import { test } from '@playwright/test';
 import { resolve } from 'node:path';
 
 const shot = (name: string) => resolve(import.meta.dirname, '../../../site/assets/shots', `${name}.jpg`);
+const review = (name: string) => resolve(import.meta.dirname, '../../.shots', `${name}.jpg`);
 
 test.skip(!process.env.SHOTS, 'set SHOTS=1 to capture screenshots');
 
@@ -41,5 +42,26 @@ for (const theme of ['light', 'dark'] as const) {
     await page.getByRole('button', { name: 'Why?' }).first().click();
     await page.waitForTimeout(400);
     await page.screenshot({ path: shot(`why-${theme}`), type: 'jpeg', quality: 80 });
+    // T6.8 — every other page too, for design review: written to ui/.shots/ (git-ignored),
+    // not to the site.
+    for (const [name, path] of [
+      ['dashboard-full', '/#/'],
+      ['explain', '/#/explain?name=ads.e2e.test&client=127.0.0.1'],
+      ['anomalies', '/#/anomalies'],
+      ['clients', '/#/clients'],
+      ['groups', '/#/groups'],
+      ['upstreams', '/#/upstreams'],
+      ['local-dns', '/#/local-dns'],
+      ['cluster', '/#/cluster'],
+      ['settings-system', '/#/settings?tab=system'],
+    ]) {
+      await page.goto(path);
+      await page.waitForTimeout(600);
+      await page.screenshot({ path: review(`${name}-${theme}`), type: 'jpeg', quality: 80, fullPage: true });
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/#/');
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: review(`phone-dashboard-${theme}`), type: 'jpeg', quality: 80 });
   });
 }

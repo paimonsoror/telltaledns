@@ -26,7 +26,13 @@
   /* T6.8 — the shell: a dark sidebar from the brand color, borderless cards. */
   --side-bg: #123044;
   --side-text: #c9d6e2;
-  --side-muted: #7f97ab;
+  --side-muted: #9fb3c4;
+  /* T6.8 — WCAG AA text on tinted chips, pills, and the active nav pill (4.5:1 or more). */
+  --accent-strong: #18775f;
+  --ok-strong: #156b55;
+  --bad-strong: #a3322c;
+  --warn-strong: #8a5a14;
+  --on-bad: #ffffff;
   --side-hover: rgb(255 255 255 / 7%);
   --card-border: transparent;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
@@ -57,7 +63,12 @@
     --shadow: none;
     --side-bg: #0b1a25;
     --side-text: #c3d0dc;
-    --side-muted: #6f8597;
+    --side-muted: #8aa0b2;
+    --accent-strong: #2fb594;
+    --ok-strong: #3cc49f;
+    --bad-strong: #ef7067;
+    --warn-strong: #e0a84e;
+    --on-bad: #1b0705;
     --side-hover: rgb(255 255 255 / 6%);
     --card-border: #223140;
     color-scheme: dark;
@@ -87,7 +98,12 @@
     --shadow: none;
   --side-bg: #0b1a25;
   --side-text: #c3d0dc;
-  --side-muted: #6f8597;
+  --side-muted: #8aa0b2;
+  --accent-strong: #2fb594;
+  --ok-strong: #3cc49f;
+  --bad-strong: #ef7067;
+  --warn-strong: #e0a84e;
+  --on-bad: #1b0705;
   --side-hover: rgb(255 255 255 / 6%);
   --card-border: #223140;
   color-scheme: dark;
@@ -215,7 +231,7 @@ code,
   padding: 3px 10px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
+  color: var(--accent-strong);
   font-size: 12px;
   font-weight: 600;
 }
@@ -349,6 +365,11 @@ th {
   color: var(--muted);
   white-space: nowrap;
 }
+/* Dense tables in half-width cards. */
+table.compact th,
+table.compact td {
+  padding: 8px 6px;
+}
 tbody tr:hover td {
   background: color-mix(in srgb, var(--surface-2) 55%, transparent);
 }
@@ -377,13 +398,13 @@ td.name {
   white-space: nowrap;
 }
 .badge.ok {
-  color: var(--ok);
+  color: var(--ok-strong);
 }
 .badge.bad {
-  color: var(--bad);
+  color: var(--bad-strong);
 }
 .badge.warn {
-  color: var(--warn);
+  color: var(--warn-strong);
 }
 .badge.info {
   color: var(--info);

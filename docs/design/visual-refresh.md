@@ -40,3 +40,26 @@ template, so it isn't stored here. We borrow these general patterns from it, not
 - Bundle ≤ 400 KiB gzipped. No new UI framework or chart library unless one is measured to
   fit; the current Svelte components get restyled.
 - The shots suite regenerates before/after screenshots of every page, and the site uses them.
+
+## What shipped (2026-10-05)
+- **Pass 1:** the shell (sectioned dark sidebar, top bar with search, avatar and role), shared
+  tokens (12 px radius, soft shadow, borderless cards, accent-bar titles, pill controls, roomier
+  tables), and KPI tiles with changes against the previous period and sparklines.
+- **Pass 2:**
+  - charts with smooth lines, gradient fills, rounded bars (upstream exchanges), light gridlines,
+    and a dot legend above the plot;
+  - an "Answers by status" donut with a breakdown grid;
+  - progress rings on the Blocked and Cache hits tiles;
+  - inline share bars in the Lists and Upstreams tables (`ShareBar`);
+  - group cards with the title bar in the group's color;
+  - sidebar count badges (anomalies in the last day, lists failing to download).
+- **Contrast:** text on tinted chips, pills, and the active nav pill uses `--accent-strong`,
+  `--ok-strong`, `--bad-strong`, and `--warn-strong` (dark mode keeps its colors), so every
+  pair is at least 4.5:1 in both themes. That also fixes the light-theme "ok" and "warn"
+  badges, which were below AA before the refresh.
+- **Not done:**
+  - breadcrumbs, because every page is one level deep;
+  - an alerts bell, because the sidebar badges cover it;
+  - icons in table first columns.
+- **Review:** `SHOTS=1 npx playwright test` writes the site pictures to `site/assets/shots/` and
+  every other page (plus a phone view) to `ui/.shots/`, which is git-ignored.

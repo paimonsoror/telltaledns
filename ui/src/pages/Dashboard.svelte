@@ -7,6 +7,7 @@
   import { ms, num, pct, short } from '../lib/format';
   import Kpi from '../lib/components/Kpi.svelte';
   import Chart from '../lib/components/Chart.svelte';
+  import Donut from '../lib/components/Donut.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
@@ -162,6 +163,11 @@
   const sparkCached = $derived(buckets.map((b) => share(b, 'cached') + share(b, 'stale')));
   const sparkFailures = $derived(buckets.map((b) => b.upstreamFailures));
 
+  // T6.8 — the same statuses as the chart, as totals over the range.
+  const statusParts = $derived(
+    statusSeries.map((s) => ({ label: s.label, color: s.color, value: s.values.reduce((a, v) => a + v, 0) })),
+  );
+
   const totalUpstream = $derived(upstreams.reduce((a, u) => a + u.requests, 0));
   const maxTop = (items: S['TopItem'][]) => Math.max(1, ...items.map((i) => i.count));
 </script>
@@ -196,14 +202,24 @@
   <div class="kpis">
     <!-- More blocking or more queries isn't good or bad, so those changes stay neutral. -->
     <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}`} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
-    <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" />
-    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={`${short(summary?.cached)} answers`} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" />
+    <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" ring={summary?.blockedPercent} />
+    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={`${short(summary?.cached)} answers`} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
     <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
     <Kpi label="Active clients" value={num(summary?.activeClients)} sub="this hour" delta={change(summary?.activeClients, previous?.activeClients)} />
     <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
   </div>
 
-  <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />
+  <div class="status-row">
+    <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />
+    <section class="card">
+      <h2>Answers by status</h2>
+      {#if statusParts.length === 0}
+        <p class="empty">No answers in this range.</p>
+      {:else}
+        <Donut parts={statusParts} center={`answers · ${range.label}`} format={short} />
+      {/if}
+    </section>
+  </div>
 
   {#if groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default')}
     <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} />
@@ -216,7 +232,7 @@
         <p class="empty">No answers yet this hour.</p>
       {:else}
         <div class="table-wrap">
-          <table>
+          <table class="compact">
             <thead><tr><th>Path</th><th class="num">Answers</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num">max</th></tr></thead>
             <tbody>
               {#each [...byPath, ...stages.map((s) => ({ ...s, key: `wait: ${s.key}` }))] as r (r.key)}
@@ -257,7 +273,7 @@
     </section>
   </div>
 
-  <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} seconds={range.step === 'second'} />
+  <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} />
 
   <div class="grid-3">
     {#each [
@@ -293,6 +309,16 @@
 </div>
 
 <style>
+  .status-row {
+    display: grid;
+    gap: var(--gap);
+    grid-template-columns: minmax(0, 2.2fr) minmax(240px, 1fr);
+  }
+  @media (max-width: 1000px) {
+    .status-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
   .kpis {
     display: grid;
     gap: 12px;
@@ -310,15 +336,16 @@
     min-width: 0;
   }
   .bar {
-    height: 4px;
+    height: 5px;
     background: var(--surface-2);
-    border-radius: 2px;
+    border-radius: 999px;
     margin-top: 3px;
     overflow: hidden;
   }
   .bar span {
     display: block;
     height: 100%;
+    border-radius: 999px;
     background: var(--accent);
   }
   .num {

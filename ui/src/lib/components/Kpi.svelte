@@ -10,7 +10,10 @@
     good = 'neutral',
     spark = [],
     sparkColor = '--accent',
+    ring = null,
   }: {
+    /** T6.8 — a small progress ring for a ratio, 0–100 (drawn in the spark color). */
+    ring?: number | null;
     label: string;
     value: string;
     sub?: string;
@@ -50,6 +53,14 @@
 </script>
 
 <div class="card kpi">
+  {#if ring != null && Number.isFinite(ring)}
+    {@const r = 15}
+    {@const c = 2 * Math.PI * r}
+    <svg class="ring" viewBox="0 0 40 40" aria-hidden="true">
+      <circle cx="20" cy="20" {r} class="track" />
+      <circle cx="20" cy="20" {r} class="fill" stroke={`var(${sparkColor})`} stroke-dasharray={`${(Math.min(100, Math.max(0, ring)) / 100) * c} ${c}`} transform="rotate(-90 20 20)" />
+    </svg>
+  {/if}
   <div class="label">{label}</div>
   <div class="value {tone}">{value}</div>
   <div class="foot">
@@ -107,12 +118,29 @@
     color: var(--muted);
   }
   .delta.up-good {
-    color: var(--ok);
+    color: var(--ok-strong);
     background: color-mix(in srgb, var(--ok) 13%, transparent);
   }
   .delta.up-bad {
-    color: var(--bad);
+    color: var(--bad-strong);
     background: color-mix(in srgb, var(--bad) 13%, transparent);
+  }
+  .ring {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 34px;
+    height: 34px;
+  }
+  .ring circle {
+    fill: none;
+    stroke-width: 5;
+  }
+  .ring .track {
+    stroke: var(--surface-2);
+  }
+  .ring .fill {
+    stroke-linecap: round;
   }
   .spark {
     width: 100%;

@@ -17,6 +17,7 @@
     times,
     series,
     stacked = false,
+    bars = false,
     height = 220,
     seconds = false,
     format = num,
@@ -26,10 +27,17 @@
     times: number[];
     series: Series[];
     stacked?: boolean;
+    /** T6.8 — rounded bars instead of lines (counts per bucket). */
+    bars?: boolean;
     height?: number;
     seconds?: boolean;
     format?: (n: number) => string;
   } = $props();
+
+  // T6.8 — smooth lines, and rounded bars drawn over each other at the same time (later series
+  // on top: use it where each series is a part of the one before, like failures of queries).
+  const spline = uPlot.paths.spline?.();
+  const roundBars = uPlot.paths.bars?.({ size: [0.65, 18], radius: 0.3 });
 
   let el = $state<HTMLDivElement | undefined>();
   let width = $state(0);
@@ -53,10 +61,19 @@
     plot = undefined;
     if (!el || width < 50 || showTable) return;
     const muted = color('--muted');
-    const grid = color('--border');
+    const grid = color('--surface-2');
     // Stacked: plot running sums, drawn top band first so lower bands paint over it.
     let ys = series.map((s) => s.values);
     let order = series.map((_, i) => i);
+    // A fill that fades towards the baseline.
+    const fade = (c: string) => (u: uPlot) => {
+      // uPlot asks for the fill before the plot box is measured on its first draw.
+      if (!Number.isFinite(u.bbox?.top) || !Number.isFinite(u.bbox?.height)) return c + '80';
+      const g = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
+      g.addColorStop(0, c + 'b3');
+      g.addColorStop(1, c + '33');
+      return g;
+    };
     if (stacked) {
       const acc = new Array(times.length).fill(0);
       ys = series.map((s) => s.values.map((v, i) => (acc[i] += v ?? 0)));
@@ -67,13 +84,18 @@
       height,
       padding: [8, 8, 0, 0],
       cursor: { points: { show: false } },
-      legend: { show: true, live: true },
+      legend: {
+        show: true,
+        live: true,
+        // Solid dots in the series color (fills can be gradients, which a marker can't show).
+        markers: { width: 0, fill: (_u: uPlot, si: number) => (si > 0 ? color(series[order[si - 1]]?.color ?? '--muted') : 'transparent') },
+      },
       scales: { x: { time: true } },
       axes: [
         {
           stroke: muted,
           grid: { stroke: grid, width: 1 },
-          ticks: { stroke: grid },
+          ticks: { show: false },
           // Room for "12:34 PM" so labels never run together.
           space: 80,
           // Over two days: label with the date.
@@ -87,7 +109,7 @@
         {
           stroke: muted,
           grid: { stroke: grid, width: 1 },
-          ticks: { stroke: grid },
+          ticks: { show: false },
           size: 52,
           values: (_u, vals) => vals.map((v) => format(v)),
         },
@@ -99,9 +121,11 @@
           return {
             label: series[i].label,
             stroke: c,
-            width: 1.5,
-            fill: stacked ? c + '99' : undefined,
-            points: { show: times.length < 3 },
+            width: bars ? 0 : 2,
+            fill: bars ? c : stacked ? fade(c) : undefined,
+            // Stacked bands keep straight edges so they meet exactly.
+            paths: bars ? roundBars : stacked ? undefined : spline,
+            points: { show: !bars && times.length < 3 },
             value: (_u: uPlot, _v: number | null, _si: number, idx: number | null) =>
               // Not hovering: the total over the shown range.
               format(idx == null ? series[i].values.reduce((a, v) => a + (v ?? 0), 0) : (series[i].values[idx] ?? 0)),
@@ -182,7 +206,21 @@
     font-size: 12px;
     background: none;
   }
+  /* T6.8 — a dot legend above the plot. */
+  .chart :global(.uplot) {
+    display: flex;
+    flex-direction: column;
+  }
+  .chart :global(.u-legend) {
+    order: -1;
+    margin: 0 0 6px;
+    text-align: left;
+  }
   .chart :global(.u-legend .u-marker) {
-    border-radius: 3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 0 !important;
+    margin-right: 6px;
   }
 </style>

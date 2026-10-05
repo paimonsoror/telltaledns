@@ -6,6 +6,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import ShareBar from '../lib/components/ShareBar.svelte';
   import { currentMode } from '../lib/mode.svelte';
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
@@ -27,6 +28,7 @@
 
   const byKey = $derived(new Map(latency.map((r) => [r.key, r])));
   const advanced = $derived(currentMode() === 'advanced');
+  const totalRequests = $derived(upstreams.reduce((a, u) => a + u.requests, 0));
 </script>
 
 <div class="page">
@@ -48,8 +50,8 @@
               <td><strong>{u.name}</strong>{#if advanced}<div class="muted small mono">{u.endpoint}</div>{/if}</td>
               <td>{u.groups.join(', ')}</td>
               <td><StatusBadge value={u.breaker} /></td>
-              <td class="num">{num(u.requests)}</td>
-              <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span></td>
+              <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>
+              <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" /></td>
               {#if advanced}<td class="num">{ms(u.latencyEwmaMs)}</td>{/if}
               <td class="num">{ms(l?.p50Ms)}</td>
               {#if advanced}<td class="num">{ms(l?.p99Ms)}</td>{/if}

@@ -6,6 +6,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import ShareBar from '../lib/components/ShareBar.svelte';
   import { currentMode } from '../lib/mode.svelte';
 
   let lists = $state<S['ListInfo'][]>([]);
@@ -56,7 +57,7 @@
                 </td>
                 <td><span class="badge {l.kind === 'allow' ? 'ok' : 'bad'}">{l.kind}</span></td>
                 <td><StatusBadge value={l.state} /></td>
-                <td class="num">{num(l.entries)}</td>
+                <td class="num">{num(l.entries)}{#if info?.filterNames && l.kind !== 'allow'}<ShareBar value={(l.entries / info.filterNames) * 100} color="--s-blocked" label="share of the blocked names in the snapshot" />{/if}</td>
                 {#if advanced}
                   <td class="num">{num(l.lines)}</td>
                   <td class="num">{bytes(l.bytes)}</td>
