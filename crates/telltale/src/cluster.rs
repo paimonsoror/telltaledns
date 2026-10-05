@@ -71,12 +71,14 @@ pub(crate) fn start(
     ));
     // REQ: CLU-009 — ephemeral members that went away leave the registry.
     let ttl = Duration::from_secs(u64::from(cfg.cluster.ephemeral_ttl_secs));
+    // Sweep at a quarter of the TTL (5-60 s), so a gone member leaves within ~1.25 × TTL.
+    let every = (ttl / 4).clamp(Duration::from_secs(5), Duration::from_secs(60));
     let (c, mut stop) = (Arc::clone(&cluster), stop.clone());
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = stop.changed() => return,
-                () = tokio::time::sleep(Duration::from_secs(60)) => {}
+                () = tokio::time::sleep(every) => {}
             }
             let gone = c.gc_ephemeral(ttl);
             if !gone.is_empty() {

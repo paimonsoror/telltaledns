@@ -517,6 +517,140 @@ async fn agt_002_promote_dry_run() {
     assert_eq!(v["emergency"], true);
 }
 
+// REQ: AGT-006 — MCP over HTTP: initialize, list tools, call one; a tool needing a scope the
+// agent lacks reports an error, not data (the REST checks apply inside).
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one MCP session
+async fn agt_006_mcp_over_http() {
+    let (app, _) = app();
+    let rpc = |bearer: &str, session: Option<&str>, body: serde_json::Value| {
+        let mut b = Request::post("/mcp")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream");
+        if let Some(sid) = session {
+            b = b.header("mcp-session-id", sid);
+        }
+        b.body(Body::from(body.to_string())).unwrap()
+    };
+    let (s, h, v) = send(
+        &app,
+        rpc(&app.bearer, None, serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test-agent", "version": "1.0"}}})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["result"]["serverInfo"]["name"], "telltaledns");
+    assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+    let sid = h
+        .get("mcp-session-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let (s, _, _) = send(
+        &app,
+        rpc(
+            &app.bearer,
+            Some(&sid),
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    let (_, _, v) = send(
+        &app,
+        rpc(
+            &app.bearer,
+            Some(&sid),
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ),
+    )
+    .await;
+    let names: Vec<&str> = v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"get_overview") && names.contains(&"search_queries"),
+        "{names:?}"
+    );
+
+    let (_, _, v) = send(
+        &app,
+        rpc(
+            &app.bearer,
+            Some(&sid),
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "get_overview", "arguments": {"window": "-1h"}}}),
+        ),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert_eq!(v["result"]["structuredContent"]["overview"]["queries"], 200);
+
+    // An agent without querylog:read gets an error from search_queries.
+    let req = Request::post("/api/v1/tokens")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"mcp-agent","kind":"agent","scopes":["analytics:read"]}"#,
+        ))
+        .unwrap();
+    let (_, _, v) = send(&app, req).await;
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(
+        &app,
+        rpc(
+            &agent,
+            None,
+            serde_json::json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "search_queries", "arguments": {}}}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["result"]["isError"], true, "{v}");
+    assert!(
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("querylog:read"),
+        "{v}"
+    );
+    let (_, _, v) = send(
+        &app,
+        rpc(
+            &agent,
+            None,
+            serde_json::json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "get_overview", "arguments": {}}}),
+        ),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    // Unknown methods are JSON-RPC errors; bad JSON is a parse error.
+    let (_, _, v) = send(
+        &app,
+        rpc(
+            &agent,
+            None,
+            serde_json::json!({"jsonrpc": "2.0", "id": 6, "method": "resources/list"}),
+        ),
+    )
+    .await;
+    assert_eq!(v["error"]["code"], -32601);
+    // Without credentials, nothing.
+    let req = Request::post("/mcp")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(send(&app, req).await.0, StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn api_001_summary_is_derived_from_the_series() {
     let (app, fake) = app();

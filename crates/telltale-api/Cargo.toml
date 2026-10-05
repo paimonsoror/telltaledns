@@ -28,9 +28,11 @@ telltale-store = { version = "0.1.0", path = "../telltale-store" }
 tokio = { version = "1.53.2", features = ["rt", "sync"] }
 tracing = "0.1"
 totp-rs = { version = "6.0.0", default-features = false, features = ["std"] }
+# REQ: AGT-006 (ADR-065) — MCP tools call the REST routes in-process (already in the tree via
+# axum).
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
 utoipa = { version = "6.0.0", features = ["macros"] }
 
 [dev-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio = { version = "1.53.2", features = ["rt", "macros"] }
-tower = { version = "0.5.3", features = ["util"] }

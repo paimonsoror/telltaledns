@@ -18,6 +18,7 @@ mod import;
 mod lists;
 mod managed;
 mod masking;
+mod mcp_stdio;
 mod pihole;
 mod pipeline;
 mod qlog_cli;
@@ -125,6 +126,24 @@ enum Command {
     Import {
         #[command(subcommand)]
         command: ImportCommand,
+    },
+    /// Serve MCP to an AI agent over stdin/stdout (the `stdio` transport), relaying to a
+    /// running node's `/mcp` with an API token (`TELLTALE_TOKEN`, or `--token-file`).
+    /// Agents that speak HTTP can use `http://<node>:8053/mcp` directly.
+    // REQ: AGT-006
+    Mcp {
+        /// Use the stdio transport (the only one this command offers).
+        #[arg(long)]
+        stdio: bool,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long)]
+        url: Option<String>,
+        /// Read the API token from this file instead of `TELLTALE_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Config files (same defaults as `telltale run`), to find the API address.
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
     },
     /// Back up this node's configuration and data to one file, or restore one.
     // REQ: API-007
@@ -550,6 +569,12 @@ fn main() -> ExitCode {
         } => Ok(run_self_update(channel, check, restart)),
         Command::Import { command } => Ok(run_import(command)),
         Command::Backup { command } => Ok(run_backup(command)),
+        Command::Mcp {
+            stdio,
+            url,
+            token_file,
+            config,
+        } => Ok(run_mcp(stdio, url, token_file.as_deref(), config)),
         Command::Cluster { command, config } => Ok(run_cluster(command, config)),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
@@ -615,6 +640,69 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             witness,
         ),
         ClusterCommand::Status => cluster::status(&cfg, &mut io::stdout().lock()),
+    }
+}
+
+/// The local API's URL from the config files' `[api] listen` (warnings stay off stdout,
+/// which is the MCP channel).
+fn api_url(config: Vec<PathBuf>) -> Result<String, Vec<telltale_config::ConfigError>> {
+    let files = config_files(config);
+    let l = files
+        .iter()
+        .fold(Loader::new(), Loader::file)
+        .process_env()
+        .load()?;
+    let a = l.config.api.listen;
+    let host = if a.ip().is_unspecified() {
+        "127.0.0.1".to_owned()
+    } else if a.is_ipv6() {
+        format!("[{}]", a.ip())
+    } else {
+        a.ip().to_string()
+    };
+    Ok(format!("http://{host}:{}", a.port()))
+}
+
+// REQ: AGT-006 (T6.6, ADR-065)
+fn run_mcp(
+    stdio: bool,
+    url: Option<String>,
+    token_file: Option<&Path>,
+    config: Vec<PathBuf>,
+) -> ExitCode {
+    if !stdio {
+        eprintln!("error: say --stdio (HTTP agents use http://<node>:8053/mcp directly)");
+        return ExitCode::FAILURE;
+    }
+    let url = match url.map_or_else(|| api_url(config), Ok) {
+        Ok(u) => u,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let token = match token_file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())),
+        None => std::env::var("TELLTALE_TOKEN").map_err(|_| {
+            "set TELLTALE_TOKEN to an API token (an agent token is best), or use --token-file"
+                .to_owned()
+        }),
+    };
+    let result = token.and_then(|t| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(mcp_stdio::run(&url, t.trim()))
+    });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

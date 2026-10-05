@@ -285,6 +285,10 @@ jobs:
       # every change, required reasons, attribution, the kill switch.
       - name: Agent tokens
         run: bash deploy/agent-e2e.sh target/bench-fast/telltale
+      # REQ: AGT-006 (T6.6) — the MCP server with the official TypeScript SDK client, over HTTP
+      # and `telltale mcp --stdio`, including the "why is the TV slow?" story.
+      - name: MCP server
+        run: bash deploy/mcp-e2e.sh target/bench-fast/telltale
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
       # and v5 images, then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)

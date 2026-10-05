@@ -1044,6 +1044,35 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 
 **Kill switch:** `[agents] enabled = false` refuses every agent token at once, on every node of a cluster, while people and their own tokens keep working.
 
+### MCP (Model Context Protocol)
+Every node serves MCP at `http://<node>:8053/mcp` (Streamable HTTP), so agents like Claude can use TelltaleDNS directly. Authenticate with an agent token (`Authorization: Bearer tt_…`).
+
+For agents that start their tools as a subprocess, use the stdio transport. It relays to a node (`TELLTALE_TOKEN` or `--token-file`; the address comes from `--url` or the config files):
+```json
+{"mcpServers": {"telltale": {"command": "telltale", "args": ["mcp", "--stdio", "--url", "http://192.168.1.2:8053"],
+                             "env": {"TELLTALE_TOKEN": "tt_…"}}}}
+```
+
+| Tool | What it answers |
+|---|---|
+| `get_overview` | queries, blocked %, cache hits, NXDOMAIN, clients, latency for a window |
+| `top_items` | top domains / blocked / NXDOMAIN / clients, per client or group |
+| `search_queries` | the query log, filtered and paged (needs `querylog:read`) |
+| `explain_decision` | why a name was blocked or routed for a client |
+| `get_client_profile` | a device: identity, groups, recent and slow queries |
+| `latency_breakdown` | percentiles by stage, upstream, client, or query type |
+| `upstream_health` | upstream health, breakers, latency |
+| `list_effectiveness` | list sizes, updates, errors, and blocks |
+| `find_anomalies` | device anomalies with evidence |
+| `cluster_status` | members, roles, sync, versions, checks |
+| `get_config` | one configuration section (no secrets) |
+
+**How the tools behave:**
+- **Read-only.** Writes with a plan-and-approve step come later.
+- **Same checks as REST.** Every tool calls the REST API with the agent's own token, so its scopes, group restriction, rate limit, privacy level, and the kill switch all apply. A tool the token can't use answers with an error.
+- **Capped results.** Results stop at 200 rows / 32 KiB, with a note to narrow or page.
+- **Stable catalog.** It's committed as `docs/api/mcp-tools.json`, and CI checks it with the official MCP SDK (`deploy/mcp-e2e.sh`).
+
 ## Users and sign-in
 There is no default password. On first start the server logs a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only):
 ```sh

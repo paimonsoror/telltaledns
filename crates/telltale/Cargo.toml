@@ -53,7 +53,8 @@ telltale-policy = { version = "0.1.0", path = "../telltale-policy" }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
 telltale-telemetry = { version = "0.1.0", path = "../telltale-telemetry" }
 telltale-upstream = { version = "0.1.0", path = "../telltale-upstream" }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time"] }
+# io-std/io-util: `telltale mcp --stdio` (AGT-006).
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }

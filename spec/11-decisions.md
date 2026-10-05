@@ -1083,3 +1083,31 @@ Tokens so far had a role-like `scope` (read/write/admin), and the audit log alre
 - `ops:pause` and `ops:cache` exist ahead of their endpoints.
 - Per-group analytics views beyond top lists would let restricted agents see more.
 - OAuth for agents (AGT-008) stays P1.
+
+## ADR-065 — MCP server v1: read-only tools over the REST routes, one implementation for two transports (Proposed)
+**Context:** T6.6 (AGT-006, AGT-008 bearer part, AGT-009; ADR-010). `spec/13` §3.1 lists the read-only tools, and §4 suggests a `telltale-mcp` crate with schemas generated from the Rust types (`schemars`) and a catalog snapshot test. The AC asks for:
+- an MCP conformance test;
+- scope and privacy authorization tests;
+- a scripted agent completing the "why is the TV slow" story.
+
+**Decision:**
+- **Where:** a module of `telltale-api` (`mcp.rs`), mounted at `/mcp` on every node's API listener behind the same authentication. A separate crate would add nothing at this size. `POST /mcp` takes JSON-RPC 2.0 (single or batch) and answers JSON (Streamable HTTP without SSE; `GET /mcp` is 405). Protocol `2025-06-18`, also answering `2025-03-26` and `2024-11-05`. Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Notifications get 202.
+- **Tools call REST in-process:** each tool builds one or more `GET /api/v1/...` requests and sends them through the REST router with the caller's own `Authorization`/cookie. Scopes, group restriction, rate limits (one per inner call), privacy levels, and the kill switch apply exactly as for REST, with no second authorization model. The REST problem+json becomes the tool's error text.
+- **Catalog (read-only):** `get_overview`, `top_items`, `search_queries`, `explain_decision`, `get_client_profile` (the device, then its queries by IP), `latency_breakdown`, `upstream_health`, `list_effectiveness`, `find_anomalies`, `cluster_status`, `get_config` (one section).
+  - Each description starts "Read-only.", and each tool carries `readOnlyHint`.
+  - `test_resolution` is deferred: it needs resolution without cache or log, which the pipeline doesn't offer yet.
+- **Schemas:** hand-written JSON Schemas, frozen in the committed `docs/api/mcp-tools.json` and diffed by a test (`UPDATE_MCP=1` to regenerate). Generating them from the REST parameter types would tie tool arguments to query-string shapes; the snapshot still prevents drift.
+- **Guardrails:** results are capped at 32 KiB (with a note) and 200 rows. Each `initialize` starts a session (`Mcp-Session-Id`), and the client name/version from it is passed on as `X-Telltale-Client`, so agent actions are attributed to the MCP client (AGT-005).
+- **stdio:** `telltale mcp --stdio` relays newline-delimited JSON-RPC between stdin/stdout and a node's `/mcp` with a token, so there's one implementation of the tools. The node address comes from `--url` or the config files; nothing but protocol goes to stdout.
+- **Agents and `/mcp`:** `POST /mcp` needs no scope of its own and no reason header (the tools are read-only; the inner calls are checked). Group-restricted tokens may use it, since their inner calls are narrowed.
+
+**Verification:**
+- Unit tests: the catalog snapshot; side-effect statements and caps; arguments become queries.
+- An API test: initialize with a session, list, call, scope error inside a tool, unknown method, no credentials.
+- `deploy/mcp-e2e.sh` (CI) runs the official `@modelcontextprotocol/sdk` client against a live node. Over Streamable HTTP, the listed tools must match the committed catalog. The test then plays the "why is the TV slow?" story (device profile with recent queries, upstream health, explain on a blocked name), repeats it over `telltale mcp --stdio`, and checks that a token without `querylog:read` gets an error from `search_queries`.
+
+**Consequences:**
+- Write tools with plan/apply and approvals (§3.2) are P1.
+- OAuth for MCP clients (AGT-008) is P1.
+- MCP resources and prompts are later.
+- An SSE stream (`GET /mcp`) would be needed only for server-initiated messages.

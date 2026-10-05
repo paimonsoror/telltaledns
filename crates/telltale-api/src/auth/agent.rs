@@ -112,7 +112,7 @@ pub fn required(method: &Method, path: &str) -> Need {
     };
     if read {
         match p {
-            "/api/v1/auth/me" | "/api/v1/auth/status" => return Need::Any,
+            "/api/v1/auth/me" | "/api/v1/auth/status" | "/mcp" => return Need::Any,
             "/api/v1/system/info" | "/api/v1/cluster" | "/api/v1/explain" => {
                 return Need::Scope("analytics:read");
             }
@@ -136,6 +136,10 @@ pub fn required(method: &Method, path: &str) -> Need {
             return Need::Scope("config:write:forwards");
         }
     }
+    // MCP: each tool's REST calls are checked on their own (ADR-065).
+    if *method == Method::POST && p == "/mcp" {
+        return Need::Any;
+    }
     if *method == Method::POST && p == "/api/v1/cluster/promote" {
         return Need::Scope("cluster:admin");
     }
@@ -152,6 +156,7 @@ pub fn group_aware(method: &Method, path: &str) -> bool {
         | "/api/v1/queries"
         | "/api/v1/stats/top"
         | "/api/v1/clients" => read,
+        "/mcp" => true,
         _ => {
             (*method == Method::PUT || *method == Method::DELETE)
                 && p.strip_prefix("/api/v1/clients/")
@@ -266,7 +271,9 @@ pub fn check(
         )
         .hint("Restricted tokens can read the query log, top lists, and devices, and change devices, for their group."));
     }
-    let changes = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
+    // MCP messages are POSTs, but the tools are read-only (their REST calls are GETs).
+    let changes = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+        && path.trim_end_matches('/') != "/mcp";
     if changes && reason.is_none_or(|r| r.trim().is_empty()) {
         return Err(
             Problem::invalid("agents must say why they change something").hint(

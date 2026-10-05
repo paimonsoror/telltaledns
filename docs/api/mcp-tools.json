@@ -1,0 +1,326 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms). Start here to see whether anything is off.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "window": {
+          "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "get_overview"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, or most active clients. Optionally for one client (domains only) or one client group.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "A client IP: its top domains (kind=domains only).",
+          "type": "string"
+        },
+        "group": {
+          "description": "A client group's top items.",
+          "type": "string"
+        },
+        "hour": {
+          "description": "Which hour (default current).",
+          "enum": [
+            "current",
+            "previous"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "description": "Which list.",
+          "enum": [
+            "domains",
+            "blocked",
+            "nxdomain",
+            "clients"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "description": "Items (default 10).",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "top_items"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time. Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "Client IP or device name.",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "From the previous page's nextCursor.",
+          "type": "string"
+        },
+        "from": {
+          "description": "Start (relative like -1h, or RFC 3339). Default: all retained.",
+          "type": "string"
+        },
+        "group": {
+          "description": "Client group.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Rows (default 50).",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "minLatencyMs": {
+          "description": "Only queries slower than this.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Part of the queried name.",
+          "type": "string"
+        },
+        "qtype": {
+          "description": "A, AAAA, HTTPS, ...",
+          "type": "string"
+        },
+        "rcode": {
+          "description": "NOERROR, NXDOMAIN, SERVFAIL, ...",
+          "type": "string"
+        },
+        "status": {
+          "description": "blocked, cached, forwarded, local, refused, error, ...",
+          "type": "string"
+        },
+        "to": {
+          "description": "End (default now).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "search_queries"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Why a name is (or isn't) blocked or routed for a client: the client's identity and groups, the rules that match, which one wins, and the upstream route. Answers 'why was X blocked for Y?'.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "Client IP (default: as if from the API caller).",
+          "type": "string"
+        },
+        "name": {
+          "description": "The domain name.",
+          "type": "string"
+        },
+        "qtype": {
+          "description": "Query type (default A).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "explain_decision"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. A device's profile: its identity, groups, top domains this hour, and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "Device name (as in the device list) or IP.",
+          "type": "string"
+        },
+        "window": {
+          "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "type": "object"
+    },
+    "name": "get_client_profile"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "by": {
+          "description": "Break down by.",
+          "enum": [
+            "stage",
+            "upstream",
+            "client",
+            "qtype"
+          ],
+          "type": "string"
+        },
+        "hour": {
+          "description": "Which hour (default current).",
+          "enum": [
+            "current",
+            "previous"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "by"
+      ],
+      "type": "object"
+    },
+    "name": "latency_breakdown"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Every upstream resolver: health, circuit-breaker state, error counts, and latency percentiles. Answers 'is the upstream the problem?'.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "upstream_health"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Filter lists: size, last update, errors, and how many blocks each caused. Find dead or useless lists.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_effectiveness"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, and beaconing (regular call-home patterns). Alert-only; nothing is blocked automatically.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "since": {
+          "description": "Findings since (relative like -7d, or RFC 3339). Default -7d.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "find_anomalies"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, and recent events. On a standalone node it says so.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "cluster_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. One section of the running configuration, as the API shows it (no secrets): groups, lists, devices (clients), upstreams, local names (records), or forwarded domains (forwards). Also returns system information.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "section": {
+          "description": "Which section.",
+          "enum": [
+            "groups",
+            "lists",
+            "clients",
+            "upstreams",
+            "records",
+            "forwards"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "section"
+      ],
+      "type": "object"
+    },
+    "name": "get_config"
+  }
+]

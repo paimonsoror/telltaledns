@@ -13,6 +13,7 @@
 pub mod auth;
 pub mod config_api;
 pub mod federation;
+pub mod mcp;
 pub mod model;
 pub mod problem;
 pub mod time;
@@ -229,6 +230,26 @@ pub struct ClientWrite {
 /// `admin`.
 #[allow(clippy::needless_pass_by_value)] // shared by every route
 pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
+    // REQ: AGT-006 (ADR-065) — MCP at /mcp, calling the REST routes with the caller's
+    // credentials.
+    let api = rest_router(Arc::clone(&backend), Arc::clone(&auth));
+    let mcp = mcp::Mcp {
+        api: api.clone(),
+        sessions: Arc::new(mcp::Sessions::default()),
+    };
+    let mcp_routes = Router::new()
+        .route("/mcp", axum::routing::post(mcp::post).get(mcp::get))
+        .with_state(mcp)
+        .layer(axum::middleware::from_fn_with_state(
+            auth,
+            auth::routes::authenticate,
+        ));
+    api.merge(mcp_routes)
+}
+
+/// The `/api/v1` routes without MCP.
+#[allow(clippy::needless_pass_by_value)] // shared by every route
+fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     use axum::middleware::{from_fn, from_fn_with_state};
     let data = Router::new()
         .route("/api/v1/system/info", get(system_info))
