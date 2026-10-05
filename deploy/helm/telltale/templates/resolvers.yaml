@@ -63,6 +63,10 @@ spec:
             - name: TELLTALE_POD
               valueFrom:
                 fieldRef: { fieldPath: metadata.name }
+            # REQ: OPS-007 — keep answering briefly on shutdown while the Service moves away.
+            # An environment variable, not a config key: an older image only warns about it.
+            - name: TELLTALE_DRAIN_DELAY_SECS
+              value: {{ .Values.drainDelaySeconds | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

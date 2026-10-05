@@ -17,8 +17,6 @@ data:
 
     [node]
     data_dir = "/var/lib/telltale"
-    # REQ: OPS-007 — keep answering briefly on shutdown while the Service moves away.
-    drain_delay_secs = {{ .Values.drainDelaySeconds }}
 
     [[listen]]
     proto = "udp"
