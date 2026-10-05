@@ -514,8 +514,8 @@ test('clu_008 cluster topology', async () => {
     enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-ctl', newestConfigSeq: 9, healthy: true, checks: [],
     events: [], conflicts: [], authority: 'primary',
     nodes: [
-      node({ nodeId: 'id-ctl', site: 'k8s', role: 'primary', thisNode: true, link: 'self', rttMs: null, pod: 'telltale-0', kubeNode: 'k3s-1', qps: 40, querySharePercent: 40 }),
-      node({ nodeId: 'id-pi', site: 'home', rttMs: 4, qps: 30, querySharePercent: 30, restarts: 2 }),
+      node({ nodeId: 'id-ctl', site: 'k8s', role: 'primary', thisNode: true, link: 'self', rttMs: null, pod: 'telltaledns-756965cdc7-8j9h9', kubeNode: 'k3s-node-with-a-long-name-1', qps: 40, querySharePercent: 40 }),
+      node({ nodeId: 'id-pi', site: 'home-raspberry-pi-in-the-hall-closet', rttMs: 4, qps: 30, querySharePercent: 30, restarts: 2 }),
       ...pods,
     ],
   });
@@ -533,6 +533,9 @@ test('clu_008 cluster topology', async () => {
   await expect(topo).toContainText('node k3s-1 · 1 pod');
   await expect(topo).toContainText('node k3s-2 · 2 pods');
   await expect(topo).toContainText('4 ms'); // the Pi's round trip, measured by this node
+  // Long pod and site names are shortened in the middle to fit (the full name is in the tooltip).
+  await expect(topo.getByTestId('topology-node').first()).toContainText(/telltale.*….*-8j9h9/);
+  await expect(topo.getByTestId('topology-site').nth(1).locator('text').first()).toHaveText(/^home-.*….*closet$/);
   await expect(topo.locator('.pod.bad')).toHaveCount(1);
   await expect(topo.locator('path.link.bad')).toHaveCount(1); // the k3s-2 group has a pod down
 

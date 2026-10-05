@@ -48,6 +48,19 @@ spec:
       targetPort: dns-doh
       protocol: TCP
     {{- end }}
+    {{- /* T6.14 — named ports only the controller has: resolver pods get none of this. */}}
+    {{- if $dns.alsoServe.api }}
+    - name: api
+      port: {{ .Values.service.api.port }}
+      targetPort: api
+      protocol: TCP
+    {{- end }}
+    {{- if and $dns.alsoServe.cluster (include "telltale.scaled" .) }}
+    - name: cluster
+      port: {{ .Values.cluster.port }}
+      targetPort: cluster
+      protocol: TCP
+    {{- end }}
 ---
 {{- $api := .Values.service.api }}
 # The web UI and REST API.

@@ -84,6 +84,15 @@ service:
     loadBalancerClass: ""
     # e.g. metallb.universe.tf/loadBalancerIPs, io.cilium/lb-ipam-ips, kube-vip.io/loadbalancerIPs
     annotations: {}
+    # REQ: OPS-003 (T6.14) — one address for everything: the DNS Service also carries the UI/API
+    # port and (scaled) the cluster port. Only the controller has those ports, so only it gets
+    # that traffic. Use this instead of giving the api or cluster Service the DNS Service's IP:
+    # with externalTrafficPolicy Local, MetalLB and Cilium share an IP only between Services
+    # that select the same pods, and in `mode: scaled` they don't (the DNS Service would lose
+    # its IP). See docs/running.md, "Scaling in Kubernetes".
+    alsoServe:
+      api: false
+      cluster: false
   api:
     # The web UI and REST API. ClusterIP plus `ingress`, or LoadBalancer on the LAN.
     type: ClusterIP

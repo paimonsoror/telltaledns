@@ -32,3 +32,13 @@ First admin:
 {{- else }}
   kubectl -n {{ .Release.Namespace }} exec {{ include "telltale.fullname" . }}-0 -- /usr/local/bin/telltale auth setup-token -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml
 {{- end }}
+{{- if include "telltale.scaled" . }}
+{{- if or (eq .Values.service.api.type "LoadBalancer") (eq .Values.cluster.service.type "LoadBalancer") }}
+
+NOTE (mode: scaled): the {{ if eq .Values.service.api.type "LoadBalancer" }}api{{ end }}{{ if and (eq .Values.service.api.type "LoadBalancer") (eq .Values.cluster.service.type "LoadBalancer") }} and {{ end }}{{ if eq .Values.cluster.service.type "LoadBalancer" }}cluster{{ end }} Service is a LoadBalancer.
+  Don't give it the DNS Service's IP: with externalTrafficPolicy Local, MetalLB and Cilium only
+  share an IP between Services that select the same pods, and the DNS Service also selects the
+  resolver pods, so it would lose the IP. For one address, set service.dns.alsoServe.api
+  (and .cluster) instead, and leave those Services on ClusterIP.
+{{- end }}
+{{- end }}

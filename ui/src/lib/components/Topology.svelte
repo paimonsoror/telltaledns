@@ -15,7 +15,7 @@
   export const worstOf = (ns: Node[]): Health => worst(ns.map(health));
 
   export const MAX_PODS = 6;
-  const SITE_W = 202;
+  const SITE_W = 232;
   const PAD = 12;
   const CHIP_W = SITE_W - 2 * PAD;
   const CHIP_H = 40;
@@ -163,6 +163,27 @@
 
   const L = $derived(layout(nodes));
   const label = (n: Node) => n.pod ?? n.nodeId.slice(0, 8);
+  // Long names (Kubernetes pods: telltaledns-756965cdc7-8j9h9) are shortened in the middle to
+  // fit: the end tells pods apart. The full name is in the tooltip. Widths are estimates per
+  // character for the UI font at that size.
+  const fit = (text: string, px: number, perChar: number) => {
+    const max = Math.max(4, Math.floor(px / perChar));
+    if (text.length <= max) return text;
+    const head = Math.ceil((max - 1) * 0.45);
+    return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
+  };
+  // The second line: role, then load; whole items are left out (round trip first, then
+  // share) when they don't fit, rather than cutting words.
+  const sub = (n: Node, px: number) => {
+    const parts = [
+      `${role(n)}${n.thisNode ? ' (you)' : ''}`,
+      `${n.qps} q/s`,
+      n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
+      n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
+    ].filter(Boolean);
+    while (parts.length > 1 && parts.join(' · ').length * 5.6 > px) parts.pop();
+    return parts.join(' · ');
+  };
   const podLabel = (n: Node) => (n.pod ? n.pod.slice(-5) : n.nodeId.slice(0, 5));
   const role = (n: Node) => (n.witness ? 'witness' : n.role);
   const describe = (n: Node) =>
@@ -191,7 +212,7 @@
     {#each L.sites as s (s.name)}
       <g data-testid="topology-site">
         <rect class="site" x={s.x} y={s.y} width={s.w} height={s.h} rx="10" />
-        <text class="site-name" x={s.x + PAD} y={s.y + 18}>{s.name}</text>
+        <text class="site-name" x={s.x + PAD} y={s.y + 18}>{fit(s.name, s.w - 2 * PAD, 7.5)}<title>{s.name}</title></text>
       </g>
     {/each}
     {#each L.links as l (l.key)}
@@ -214,16 +235,14 @@
             <title>{describe(c.node)}</title>
             <rect x={c.x} y={c.y} width={c.w} height={c.h} rx="8" />
             <circle class="dot" cx={c.x + 12} cy={c.y + 14} r="4" />
-            <text class="name" x={c.x + 22} y={c.y + 17}>{label(c.node)}</text>
-            <text class="role" x={c.x + c.w - 8} y={c.y + 17} text-anchor="end">{role(c.node)}{c.node.thisNode ? ' · you' : ''}</text>
-            <text class="sub" x={c.x + 22} y={c.y + 32}
-              >{c.node.qps} q/s{c.node.querySharePercent != null ? ` · ${Math.round(c.node.querySharePercent)}%` : ''}{c.node.rttMs != null && !c.node.thisNode ? ` · ${Math.round(c.node.rttMs)} ms` : ''}</text
-            >
+            <text class="name" x={c.x + 22} y={c.y + 17}>{fit(label(c.node), c.w - 30, 7.2)}</text>
+            <text class="sub" x={c.x + 22} y={c.y + 32}>{sub(c.node, c.w - 30)}</text>
           </g>
         {/each}
         {#each s.groups as g (g.label)}
           <rect class="group" x={g.x} y={g.y} width={g.w} height={g.h} rx="6" />
-          <text class="group-name" x={g.x + 8} y={g.y + 14}>{g.label} · {g.nodes.length} pod{g.nodes.length === 1 ? '' : 's'}</text>
+          {@const count = ` · ${g.nodes.length} pod${g.nodes.length === 1 ? '' : 's'}`}
+          <text class="group-name" x={g.x + 8} y={g.y + 14}>{fit(g.label, g.w - 16 - count.length * 6, 6)}{count}<title>{g.label}</title></text>
           {#each g.pods as p, i (p.node?.nodeId ?? `more-${i}`)}
             {@const n = p.node ?? p.more?.[0]}
             {#if n}
@@ -339,7 +358,6 @@
     font-weight: 600;
     fill: var(--text);
   }
-  .role,
   .sub {
     font-size: 11px;
     fill: var(--muted);

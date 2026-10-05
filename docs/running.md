@@ -262,6 +262,15 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
   ready or behind on configuration, and red means down. Select a pod to jump to its row (pod
   name, Kubernetes node, share of queries, cache, and restarts) and its machine. The events
   count pods joining, pods gone, and restarts in the last hour.
+- **One IP for DNS, the UI, and the cluster port.** Don't give the `api` or cluster Service
+  the DNS Service's IP (Cilium's `lb-ipam-sharing-key`, MetalLB's `allow-shared-ip`). With
+  `externalTrafficPolicy: Local`, both only share an IP between Services that select the same
+  pods. In `mode: scaled` the DNS Service also selects the resolver pods, so it loses the IP
+  and DNS stops on that address. Instead set `service.dns.alsoServe.api: true` (and
+  `.cluster: true` for a node outside Kubernetes). The DNS Service then carries those ports
+  too, and only the controller has them, so only it gets that traffic. Keep `service.api` on
+  `ClusterIP` (it still serves the ingress). The install notes warn when an `api` or cluster
+  Service is a LoadBalancer in scaled mode.
 - **Metrics** (on the controller): `telltale_cluster_peer_info{kube_node, pod}`,
   `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
   `telltale_cluster_peer_restarts`, per member.
