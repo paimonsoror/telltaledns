@@ -19,6 +19,8 @@ cleanup() {
 trap cleanup EXIT
 fail() {
   echo "FAIL: $*"
+  # Annotations are readable without a token (job logs aren't).
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=$(basename "$0")::FAIL: $*"
   for n in p r w p2; do [ -f "$E/$n.log" ] && { echo "--- $n log"; tail -25 "$E/$n.log"; }; done
   [ "${KEEP:-}" = 1 ] && echo "logs kept in $E"
   exit 1

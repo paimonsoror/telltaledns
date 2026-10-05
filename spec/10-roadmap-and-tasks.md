@@ -109,7 +109,12 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - *Fixed: a follower missed a manifest that arrived before it subscribed.*
   - *`deploy/helm/scaled-e2e.sh` (CI, kind, this build): pods join and sync, DNS through a pod, an outside node joins through the cluster port, and a deleted pod expires.*
   - *Promote both ways is covered by the process-level failover suites.* *AC:* e2e: Pi-like container (outside kind) + kind cluster form one cluster; UI on either shows both; promote works both ways.
-- [ ] **T5.11 Version compatibility N/N-1 + rolling upgrade test.** *(CLU-010)*
+- [x] **T5.11 Version compatibility N/N-1 + rolling upgrade test.** *(CLU-010)* *Done 2026-10-05 (ADR-059):*
+  - *Peers within one protocol version interoperate. Manifests carry a config `schema`.*
+  - *A replica that can't read a newer schema keeps its last version and says to upgrade.*
+  - *Per-node protocol and a `versions` check on the Cluster page.*
+  - *`deploy/cluster/upgrade-e2e.sh` (CI) runs the published edge binary as N−1 against this build, in both directions, with live two-server traffic: 76/76 answered locally.*
+  - *Deferred: per-field down-conversion, and distinguishable build versions (T6.9).*
 - [ ] **T5.12 Git as the cluster's config source (proposed, owner request 2026-10-04; ADR-049).** `[cluster.config] source = "git"` (repo, ref, path, credentials file, poll + webhook) on the primary; validate-then-publish with commit provenance (SHA, author, time) in the signed manifest; any Git-capable node eligible as primary under a `gitops` authority (ADR-048); guardrails: pinned source, optional signed-commits allow-list, forward-only history, bounded fetch, audit; optional direct-pull fallback for long partitions; `telltale/shared.toml` layout shared with the Helm chart; UI shows the commit per node and "propose change" instead of writes. *(CLU-003, CLU-005, OPS-005)* *AC:* a commit pushed to the repo is served by every node within poll + 5 s, all reporting the same SHA; an invalid commit is never published and raises an alert; with `require_signed`, an unsigned commit is refused; a force-push is refused; with GitHub unreachable, every node keeps serving the last commit; killing the primary and promoting the Pi keeps following the repo.
 
 ## M6 — Protocol depth + migration (weeks 13–16)

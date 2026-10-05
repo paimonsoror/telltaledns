@@ -615,6 +615,15 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   **Conflicts** on that node's Cluster page, with the settings they touched, so you can make them
   again on the current primary.
 
+**Upgrading a cluster.** Upgrade one node at a time, **replicas first, then the primary**.
+DNS keeps answering throughout if your clients have two DNS servers (each node is one).
+- Versions one cluster protocol apart work together (N and N−1, either way round), so a
+  half-upgraded cluster is fine.
+- The Cluster page's **versions** check lists the mix until the last node is upgraded.
+- A replica older than its primary keeps working, unless the primary starts using settings
+  the older version doesn't know. Then the replica keeps serving its last version, and its
+  sync status says to upgrade it.
+
 **Certificates renew themselves.** Each node's cluster certificate lasts 90 days, and a node
 renews it when fewer than 30 days remain (checked every 6 hours). It keeps its key and node
 ID. Nodes holding the cluster key issue their own; others ask the primary over the cluster

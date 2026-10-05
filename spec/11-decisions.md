@@ -860,3 +860,23 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 **Consequences:**
 - `deploy/helm/scaled-e2e.sh` (CI, this build's binary on kind) proves the controller and two pods join and sync, a pod answers DNS, an outside node joins through the cluster port, and a deleted pod is replaced and expires.
 - A pod restart is a new member, by design. A registry of long-gone pods is cleaned within `ttl + 1 min`.
+
+## ADR-059 — Version compatibility v1: a protocol window, a schema stamp, and refusal over guessing (Proposed)
+**Context:** T5.11 (CLU-010). `spec/12` §9 says RPC carries a protocol version and manifests a schema version; nodes accept N and N−1; the primary refuses to emit features the oldest connected node doesn't support, and warns. Until now, peers needed the exact same protocol, and manifests carried no schema. The shared configuration is parsed strictly (`deny_unknown_fields`), so an older replica would reject a newer primary's new settings.
+
+**Decision:**
+- **Protocol window:** a stream is accepted when the peers' protocols differ by at most one. Frames are protobuf, and fields are only ever added, so unknown fields are ignored. `PROTOCOL` is raised only when a message changes meaning.
+- **Schema stamp:** manifests carry `schema`, the configuration schema the primary writes (now 1; 0 means from before stamping). It's raised when the shared configuration gains settings an older build would reject.
+- **No down-converting:** the primary does not try to strip settings an older replica wouldn't know. It publishes what it has.
+  - A replica that can't read it keeps serving its last version, so DNS is unaffected.
+  - The replica records a sync error naming both schemas and saying to upgrade.
+  - Per-field feature gating is deferred: the documented upgrade order (replicas first) makes it rarely matter, and guessing which settings are safe to drop could silently change filtering.
+- **Visibility:** each node's protocol is on the Cluster page, and a `versions` check fails while versions or protocols are mixed, with the upgrade order as the fix. Build versions become fully distinguishable with T6.9's stamped build identity; today edge builds all say 0.1.0.
+
+**Verification:** `deploy/cluster/upgrade-e2e.sh` (CI) runs the published `edge` binary as N−1 against this build:
+- both nodes on N−1;
+- the replica on N following the N−1 primary;
+- the primary on N;
+- the replica back on N−1 following the N primary.
+
+An edit reaches the replica at every stage, and a client with both servers configured gets an answer to every query.

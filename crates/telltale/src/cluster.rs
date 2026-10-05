@@ -262,6 +262,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     let mut nodes = vec![ClusterNode {
         ephemeral: flags(&me.node_id).0,
         witness: me.witness,
+        protocol: telltale_cluster::wire::PROTOCOL,
         node_id: me.node_id.clone(),
         site: me.site.clone(),
         role: match c.role().0 {
@@ -296,6 +297,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         nodes.push(ClusterNode {
             ephemeral: flags(&p.node_id).0,
             witness: flags(&p.node_id).1,
+            protocol: p.protocol,
             node_id: p.node_id.clone(),
             site: p.site.clone(),
             role: if p.primary { "primary" } else { "replica" }.into(),
@@ -323,6 +325,7 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     let cert_days = expires.saturating_sub(now / 1000) / 86_400;
     let mut checks = health_checks(&nodes, peers.is_empty(), newest, sync.error, cert_days);
     let failover = failover_view(c, &nodes);
+    checks.push(versions_check(&nodes));
     // ADR-056 — `auto` without enough voters is manual in practice: say so.
     if failover.mode == "auto" {
         checks.push(failover_check(&failover));
@@ -359,6 +362,30 @@ fn events_view(c: &Cluster) -> Vec<telltale_api::model::ClusterEvent> {
         .collect();
     events.reverse();
     events
+}
+
+/// REQ: CLU-010 — mixed versions work (within one protocol version) but are meant to be
+/// brief: an upgrade in progress.
+fn versions_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model::ClusterCheck {
+    let mut versions: Vec<String> = nodes
+        .iter()
+        .map(|n| format!("{} (protocol {})", n.version, n.protocol))
+        .collect();
+    versions.sort();
+    versions.dedup();
+    let ok = versions.len() <= 1;
+    telltale_api::model::ClusterCheck {
+        id: "versions".into(),
+        ok,
+        summary: if ok {
+            format!("Every node runs {}", versions.first().map_or("the same version", String::as_str))
+        } else {
+            format!("Mixed versions: {}", versions.join(", "))
+        },
+        fix: (!ok).then(|| {
+            "Finish the upgrade: replicas first, then the primary. Nodes one protocol version apart keep working together meanwhile.".to_owned()
+        }),
+    }
 }
 
 /// Whether automatic failover can work: enough voters, and a majority reachable.

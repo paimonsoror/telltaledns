@@ -330,7 +330,19 @@ async fn apply(
     // Check the merged configuration before anything changes on disk.
     let file = crate::server::load_files(files)
         .ok_or("this node's own configuration files are invalid")?;
-    merged(&file, &m)?;
+    // REQ: CLU-010 — a newer primary's settings this build doesn't know: keep serving the
+    // last version and say what to do.
+    merged(&file, &m).map_err(|e| {
+        if m.schema > telltale_cluster::sync::SCHEMA {
+            format!(
+                "the primary publishes configuration schema {} and this node reads up to {}: upgrade this node ({e})",
+                m.schema,
+                telltale_cluster::sync::SCHEMA
+            )
+        } else {
+            e
+        }
+    })?;
     let dir = match &m.filter {
         Some(f) => {
             let (cfg, store, f) = (file.clone(), store.clone(), f.clone());
@@ -650,6 +662,7 @@ async fn publish_loop(
                 base: epoch_base,
                 emergency,
                 failover,
+                schema: telltale_cluster::sync::SCHEMA,
             };
             match Signed::sign(&m, &key) {
                 Ok(signed) => {

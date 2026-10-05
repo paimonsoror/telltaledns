@@ -4,8 +4,15 @@
 
 use prost::Message;
 
-/// The protocol version this build speaks. A peer with a different major version is refused.
+/// The protocol version this build speaks (CLU-010). Raised when a message changes meaning,
+/// not when fields are added.
 pub const PROTOCOL: u32 = 1;
+
+/// Whether a peer's protocol works with ours: N and N-1 interoperate (`spec/12` §9), so a
+/// rolling upgrade never splits the cluster. Further apart, the stream is refused.
+pub fn protocol_compatible(peer: u32) -> bool {
+    peer.abs_diff(PROTOCOL) <= 1
+}
 /// Largest frame accepted (snapshot manifests arrive later; blobs go over their own requests).
 pub const MAX_FRAME: usize = 1 << 20;
 
@@ -164,6 +171,15 @@ pub fn decode_all(buf: &mut Vec<u8>) -> Result<Vec<Frame>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: CLU-010 — N and N-1 interoperate both ways; two versions apart don't.
+    #[test]
+    fn clu_010_protocols_one_version_apart_interoperate() {
+        assert!(protocol_compatible(PROTOCOL));
+        assert!(protocol_compatible(PROTOCOL + 1));
+        assert!(protocol_compatible(PROTOCOL - 1));
+        assert!(!protocol_compatible(PROTOCOL + 2));
+    }
 
     #[test]
     fn clu_010_frames_round_trip_in_pieces() {

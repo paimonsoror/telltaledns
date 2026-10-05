@@ -913,6 +913,8 @@ pub struct ClusterNode {
     pub ephemeral: bool,
     /// Votes in automatic failover only (ADR-056).
     pub witness: bool,
+    /// The cluster protocol it speaks (CLU-010); nodes within one version work together.
+    pub protocol: u32,
     /// `primary` or `replica`.
     pub role: String,
     /// The node answering this request.

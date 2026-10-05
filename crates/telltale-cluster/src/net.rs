@@ -347,6 +347,8 @@ pub struct Member {
     pub behind_since_ms: Option<u64>,
     /// `gitops` or `file` (ADR-048).
     pub config_source: String,
+    /// The cluster protocol it speaks (CLU-010).
+    pub protocol: u32,
 }
 
 impl Member {
@@ -1156,9 +1158,10 @@ impl Cluster {
         let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
         match f.body {
             Some(Body::Hello(h)) => {
-                if h.protocol != PROTOCOL {
+                // REQ: CLU-010 — N and N-1 interoperate.
+                if !crate::wire::protocol_compatible(h.protocol) {
                     return Err(format!(
-                        "peer speaks protocol {}, we speak {PROTOCOL}",
+                        "peer speaks protocol {}, we speak {PROTOCOL}: more than one version apart (upgrade it)",
                         h.protocol
                     ));
                 }
@@ -1196,6 +1199,7 @@ impl Cluster {
                         uptime_s: prev.as_ref().map_or(0, |p| p.uptime_s),
                         behind_since_ms: prev.and_then(|p| p.behind_since_ms),
                         config_source: h.config_source,
+                        protocol: h.protocol,
                     },
                 );
                 drop(members);

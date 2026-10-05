@@ -29,6 +29,8 @@ cleanup() {
 trap cleanup EXIT
 fail() {
   echo "FAIL: $*"
+  # Annotations are readable without a token (job logs aren't).
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error title=$(basename "$0")::FAIL: $*"
   kubectl -n "$ns" get pods -o wide || true
   for p in $(kubectl -n "$ns" get pods -o name 2>/dev/null); do echo "--- $p"; kubectl -n "$ns" logs "$p" --tail=20 || true; done
   [[ -f "$E/pi.log" ]] && { echo "--- outside node"; tail -20 "$E/pi.log"; }

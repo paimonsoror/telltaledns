@@ -1154,6 +1154,11 @@ export interface components {
             link: string;
             nodeId: string;
             /**
+             * Format: int32
+             * @description The cluster protocol it speaks (CLU-010); nodes within one version work together.
+             */
+            protocol: number;
+            /**
              * Format: int64
              * @description Queries per second over the last minute.
              */

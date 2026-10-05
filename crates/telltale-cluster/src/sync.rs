@@ -60,7 +60,15 @@ pub struct ClusterManifest {
     /// How the cluster fails over (ADR-056): `manual` or `auto`.
     #[serde(default)]
     pub failover: String,
+    /// The configuration schema of `config` (CLU-010): a replica that reads an older schema
+    /// keeps its last version when it can't read this one, and says to upgrade.
+    #[serde(default)]
+    pub schema: u32,
 }
+
+/// The configuration schema this build writes and reads (CLU-010). Raised when the shared
+/// configuration gains settings an older build would reject.
+pub const SCHEMA: u32 = 1;
 
 impl ClusterManifest {
     /// Every blob it references.
