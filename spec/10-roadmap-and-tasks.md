@@ -101,7 +101,14 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
   - **Diagnosis:** a "Cluster check" summary (every node heard from, all in sync, quorum/lease state, clocks within tolerance) with plain-language fixes; the same data at `GET /api/v1/cluster` and as an MCP tool.
   - **Metrics/alerts:** `telltale_cluster_peers`, peer RTT, sync lag (changes, seconds), cert expiry, epoch; alerts for a peer down > 1 min, lag > 30 s, a cert expiring in < 14 days, and a node not serving DNS.
   *AC:* the page and API agree with `telltale cluster status` on every node; a killed peer shows down within 15 s; a partition shows lag and recovers; Playwright covers the page.
-- [ ] **T5.10 Ephemeral k8s members + site grouping; Helm values for hybrid.** *(CLU-009)* *AC:* e2e: Pi-like container (outside kind) + kind cluster form one cluster; UI on either shows both; promote works both ways.
+- [x] **T5.10 Ephemeral k8s members + site grouping; Helm values for hybrid.** *(CLU-009)* *Done 2026-10-05 (ADR-058):*
+  - *Helm `mode: scaled`: a controller StatefulSet that creates the cluster on first start (`[cluster.init]`), resolver pods that join with a generated bootstrap Secret, a cluster Service, and `cluster.advertise` for nodes outside Kubernetes.*
+  - *The bootstrap secret is verified by HMAC proof of possession before the CA is pinned.*
+  - *Ephemeral members (never eligible or voters) expire after `ephemeral_ttl_secs`. Pods are ready only once synced, and their query logs ship to the controller.*
+  - *The Cluster page groups pods by site.*
+  - *Fixed: a follower missed a manifest that arrived before it subscribed.*
+  - *`deploy/helm/scaled-e2e.sh` (CI, kind, this build): pods join and sync, DNS through a pod, an outside node joins through the cluster port, and a deleted pod expires.*
+  - *Promote both ways is covered by the process-level failover suites.* *AC:* e2e: Pi-like container (outside kind) + kind cluster form one cluster; UI on either shows both; promote works both ways.
 - [ ] **T5.11 Version compatibility N/N-1 + rolling upgrade test.** *(CLU-010)*
 - [ ] **T5.12 Git as the cluster's config source (proposed, owner request 2026-10-04; ADR-049).** `[cluster.config] source = "git"` (repo, ref, path, credentials file, poll + webhook) on the primary; validate-then-publish with commit provenance (SHA, author, time) in the signed manifest; any Git-capable node eligible as primary under a `gitops` authority (ADR-048); guardrails: pinned source, optional signed-commits allow-list, forward-only history, bounded fetch, audit; optional direct-pull fallback for long partitions; `telltale/shared.toml` layout shared with the Helm chart; UI shows the commit per node and "propose change" instead of writes. *(CLU-003, CLU-005, OPS-005)* *AC:* a commit pushed to the repo is served by every node within poll + 5 s, all reporting the same SHA; an invalid commit is never published and raises an alert; with `require_signed`, an unsigned commit is refused; a force-push is refused; with GitHub unreachable, every node keeps serving the last commit; killing the primary and promoting the Pi keeps following the repo.
 

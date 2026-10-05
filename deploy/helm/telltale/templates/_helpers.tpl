@@ -44,3 +44,24 @@ app.kubernetes.io/component: all
 {{- define "telltale.dohPort" -}}
 {{- if .Values.hostNetwork }}{{ .Values.encrypted.doh.port }}{{ else }}8443{{ end }}
 {{- end }}
+
+{{/* REQ: CLU-009 — mode: scaled. */}}
+{{- define "telltale.scaled" -}}
+{{- if eq .Values.mode "scaled" }}true{{ end }}
+{{- end }}
+{{/* Every TelltaleDNS pod of this release (DNS goes to all of them in scaled mode). */}}
+{{- define "telltale.podLabels" -}}
+app.kubernetes.io/name: {{ include "telltale.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- define "telltale.resolverLabels" -}}
+{{ include "telltale.podLabels" . }}
+app.kubernetes.io/component: resolver
+{{- end }}
+{{- define "telltale.clusterSecret" -}}
+{{- .Values.cluster.bootstrapSecret.existingSecret | default (printf "%s-cluster" (include "telltale.fullname" .)) }}
+{{- end }}
+{{/* The controller's in-cluster cluster URL (what resolver pods join). */}}
+{{- define "telltale.clusterURL" -}}
+https://{{ include "telltale.fullname" . }}-cluster.{{ .Release.Namespace }}.svc:{{ .Values.cluster.port }}
+{{- end }}

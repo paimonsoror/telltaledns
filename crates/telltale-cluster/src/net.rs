@@ -30,6 +30,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme};
 use rustls_pki_types::pem::PemObject;
+use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -106,6 +107,132 @@ pub fn client_config(id: &Identity) -> Result<Arc<ClientConfig>, String> {
         .map_err(|e| e.to_string())?;
     cfg.alpn_protocols = vec![b"h2".to_vec()];
     Ok(Arc::new(cfg))
+}
+
+/// Where the bootstrap secret comes from.
+#[derive(Debug)]
+enum BootstrapSecret {
+    Value(String),
+    File(PathBuf),
+}
+
+/// What `POST /cluster/v1/ca` returns: the CA, and proof the server knows the bootstrap secret.
+#[derive(Debug, Serialize, Deserialize)]
+struct BootstrapCa {
+    cluster_id: String,
+    cluster_name: String,
+    ca_pem: String,
+    /// HMAC-SHA256(secret, nonce + ":" + CA fingerprint), hex.
+    proof: String,
+}
+
+fn bootstrap_proof(secret: &str, nonce: &str, ca_fp_hex: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    let tag = ring::hmac::sign(&key, format!("{nonce}:{ca_fp_hex}").as_bytes());
+    crate::pki::hex(tag.as_ref())
+}
+
+/// Accepts any server certificate: used only to fetch the CA, which is then checked by the
+/// bootstrap proof before anything trusts it.
+#[derive(Debug)]
+struct AnyServer(Arc<CryptoProvider>);
+
+impl ServerCertVerifier for AnyServer {
+    fn verify_server_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// Builds a join token from a bootstrap secret (CLU-009): fetches the CA from `url` and
+/// trusts it only if the server proves it knows `secret` (HMAC over a fresh nonce and the CA's
+/// fingerprint). The token never expires; it's never stored.
+pub async fn bootstrap_token(url: &str, secret: &str) -> Result<crate::token::Token, String> {
+    let p = provider();
+    let mut cfg = ClientConfig::builder_with_provider(Arc::clone(&p))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AnyServer(p)))
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    let tls = tls_connect(url, Arc::new(cfg)).await?;
+    let (mut send, conn) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+            .await
+            .map_err(|e| e.to_string())?;
+    tokio::spawn(conn);
+    let nonce = crate::pki::hex(&rand::random::<[u8; 16]>());
+    let r = send
+        .send_request(
+            Request::post(format!("https://{CLUSTER_NAME}/cluster/v1/ca"))
+                .body(Full::new(Bytes::from(nonce.clone())))
+                .map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = r.status();
+    let bytes = Limited::new(r.into_body(), 64 * 1024)
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .to_bytes();
+    if !status.is_success() {
+        return Err(format!("{url}: {}", String::from_utf8_lossy(&bytes)));
+    }
+    let b: BootstrapCa =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{url}: bad answer: {e}"))?;
+    let fp = crate::pki::hex(&crate::pki::fingerprint(&b.ca_pem).map_err(|e| e.to_string())?);
+    let want = bootstrap_proof(secret, &nonce, &fp);
+    if !crate::node::same(want.as_bytes(), b.proof.as_bytes()) {
+        return Err(format!(
+            "{url} didn't prove it knows the bootstrap secret; not trusting its CA"
+        ));
+    }
+    Ok(crate::token::Token {
+        v: 1,
+        cluster_id: b.cluster_id,
+        cluster_name: b.cluster_name,
+        ca_fp: fp,
+        urls: vec![url.to_owned()],
+        secret: secret.to_owned(),
+        exp: u64::MAX,
+    })
 }
 
 /// Verifies a server by the CA fingerprint in a join token: the CA must be in the chain the
@@ -338,6 +465,10 @@ pub struct Cluster {
     failover_view: Mutex<crate::failover::FailoverView>,
     /// Bumped when this node's certificate is renewed: TLS settings are rebuilt (T5.4c).
     cert_gen: AtomicU64,
+    /// The shared join secret this node accepts (CLU-009).
+    bootstrap: std::sync::OnceLock<BootstrapSecret>,
+    /// When this process started (Unix ms), for expiring ephemeral members.
+    started_ms: u64,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -389,6 +520,8 @@ impl Cluster {
             lease_ok: std::sync::atomic::AtomicBool::new(!wait_for_lease),
             failover_view: Mutex::new(crate::failover::FailoverView::default()),
             cert_gen: AtomicU64::new(0),
+            bootstrap: std::sync::OnceLock::new(),
+            started_ms: now_ms(),
         })
     }
 
@@ -425,8 +558,9 @@ impl Cluster {
             eligible: m.eligible,
             advertise: m.advertise.clone(),
             joined: known.map_or_else(|| now_ms() / 1000, |n| n.joined),
-            // Set at join (ADR-056); Hello doesn't carry it.
+            // Set at join (ADR-056, CLU-009); Hello doesn't carry them.
             witness: known.is_some_and(|n| n.witness),
+            ephemeral: known.is_some_and(|n| n.ephemeral),
         };
         if nodes.contains(&rec) {
             return;
@@ -490,6 +624,67 @@ impl Cluster {
         if last != Some(("voted", detail.clone())) {
             self.event("voted", &self.identity.meta.node_id.clone(), detail);
         }
+    }
+
+    /// The shared bootstrap secret this node accepts for joins (CLU-009), once.
+    pub fn set_bootstrap_secret(&self, secret: String) {
+        let _ = self.bootstrap.set(BootstrapSecret::Value(secret));
+    }
+
+    /// Like [`Self::set_bootstrap_secret`], read from `path` at every use, so a rotated
+    /// Kubernetes Secret takes effect without a restart.
+    pub fn set_bootstrap_file(&self, path: PathBuf) {
+        let _ = self.bootstrap.set(BootstrapSecret::File(path));
+    }
+
+    /// The bootstrap secret, now.
+    fn bootstrap_secret(&self) -> Option<String> {
+        let s = match self.bootstrap.get()? {
+            BootstrapSecret::Value(v) => v.clone(),
+            BootstrapSecret::File(p) => std::fs::read_to_string(p).ok()?,
+        };
+        let s = s.trim();
+        (!s.is_empty()).then(|| s.to_owned())
+    }
+
+    /// Drops ephemeral members not heard from for `ttl` from the registry (primary only, CLU-009).
+    /// Returns the IDs dropped.
+    pub fn gc_ephemeral(&self, ttl: Duration) -> Vec<String> {
+        if !self.is_primary() {
+            return Vec::new();
+        }
+        let now = now_ms();
+        let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+        let members = self.members();
+        let mut nodes = self.identity.registry();
+        let mut gone = Vec::new();
+        nodes.retain(|n| {
+            if !n.ephemeral {
+                return true;
+            }
+            // Last heard: from its stream, else when it joined, else when this node started.
+            let heard = members.iter().find(|m| m.node_id == n.node_id).map_or_else(
+                || (n.joined * 1000).max(self.started_ms),
+                |m| m.last_seen_ms,
+            );
+            let keep = members
+                .iter()
+                .any(|m| m.node_id == n.node_id && m.connected)
+                || now.saturating_sub(heard) < ttl_ms;
+            if !keep {
+                gone.push(n.node_id.clone());
+            }
+            keep
+        });
+        if !gone.is_empty() {
+            let _ = self.identity.save_registry(&nodes);
+            let mut m = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+            for id in &gone {
+                m.remove(id);
+                self.event("expired", id, "ephemeral member not heard from");
+            }
+        }
+        gone
     }
 
     /// Sets what answers peers' federated reads (once).
@@ -1262,6 +1457,31 @@ fn reply(status: StatusCode, text: String) -> Response<HttpBody> {
     r
 }
 
+/// `POST /cluster/v1/ca` (CLU-009): the CA, with proof this node knows the bootstrap secret.
+async fn serve_ca(cluster: &Cluster, req: Request<Incoming>) -> Response<HttpBody> {
+    let (Some(secret), true) = (cluster.bootstrap_secret(), cluster.identity.holds_ca()) else {
+        return reply(StatusCode::NOT_FOUND, "no bootstrap secret here".into());
+    };
+    let Ok(body) = Limited::new(req.into_body(), 1024).collect().await else {
+        return reply(StatusCode::PAYLOAD_TOO_LARGE, "request too large".into());
+    };
+    let nonce = String::from_utf8_lossy(&body.to_bytes()).into_owned();
+    let ca_pem = cluster.identity.ca_pem.clone();
+    let Ok(fp) = crate::pki::fingerprint(&ca_pem) else {
+        return reply(StatusCode::INTERNAL_SERVER_ERROR, "CA unreadable".into());
+    };
+    let r = BootstrapCa {
+        cluster_id: cluster.identity.meta.cluster_id.clone(),
+        cluster_name: cluster.identity.meta.cluster_name.clone(),
+        proof: bootstrap_proof(&secret, &nonce, &crate::pki::hex(&fp)),
+        ca_pem,
+    };
+    reply(
+        StatusCode::OK,
+        serde_json::to_string(&r).unwrap_or_default(),
+    )
+}
+
 async fn handle(
     cluster: Arc<Cluster>,
     peer: Option<String>,
@@ -1282,7 +1502,10 @@ async fn handle(
             let Ok(jr) = serde_json::from_slice::<JoinRequest>(&body) else {
                 return reply(StatusCode::BAD_REQUEST, "bad join request".into());
             };
-            match cluster.identity.accept_join(&jr) {
+            match cluster
+                .identity
+                .accept_join(&jr, cluster.bootstrap_secret().as_deref())
+            {
                 Ok(resp) => {
                     info!(node = %resp.node_id, site = %jr.site, "a node joined the cluster");
                     cluster.event(
@@ -1301,6 +1524,9 @@ async fn handle(
                 }
             }
         }
+        // REQ: CLU-009 — a node joining with the bootstrap secret asks for the CA first, and
+        // trusts it only if this node proves it knows the secret too.
+        (&Method::POST, "/cluster/v1/ca") => serve_ca(&cluster, req).await,
         (&Method::POST, "/cluster/v1/stream") => {
             let Some(id) = peer else {
                 return reply(
@@ -1499,8 +1725,6 @@ async fn join_one(
     serde_json::from_slice(&bytes).map_err(|e| format!("{url}: bad join response: {e}"))
 }
 
-/// Keeps a stream to the first reachable URL open, reconnecting with jittered backoff until
-/// `stop` changes.
 /// In automatic failover, keeps a stream to every other voter (ADR-056): votes need one.
 /// Of each pair, the node with the lower ID dials; the other side gets an inbound stream.
 pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
@@ -1557,6 +1781,8 @@ pub async fn mesh(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     }
 }
 
+/// Keeps a stream to the first reachable URL open, reconnecting with jittered backoff until
+/// `stop` changes.
 pub async fn dial(cluster: Arc<Cluster>, mut stop: watch::Receiver<bool>) {
     let mut cfg = match client_config(&cluster.identity) {
         Ok(c) => c,
@@ -1705,6 +1931,9 @@ pub async fn follow<F, Fut>(
     let (mut epoch, mut seq) = applied;
     cluster.set_local(|l| l.applied_seq = seq);
     let mut incoming = cluster.incoming();
+    // A manifest that arrived before this follower started counts too: without this, a
+    // replica whose stream came up first waited for the primary's next change (CLU-003).
+    incoming.mark_changed();
     loop {
         tokio::select! {
             _ = stop.changed() => return,

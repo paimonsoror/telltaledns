@@ -59,6 +59,37 @@ fn cluster(cfg: &Config, r: &mut Report<'_>) {
     if !matches!(cfg.cluster.config_source.as_str(), "file" | "gitops") {
         r.err("cluster.config_source", "must be `file` or `gitops`");
     }
+    // REQ: CLU-009 — automatic cluster creation and joining (Helm).
+    let c = &cfg.cluster;
+    if let Some(init) = &c.init {
+        if init.advertise.is_empty() {
+            r.err(
+                "cluster.init.advertise",
+                "needs at least one URL peers can reach",
+            );
+        }
+        if !matches!(init.config_authority.as_str(), "api" | "gitops") {
+            r.err("cluster.init.config_authority", "must be `api` or `gitops`");
+        }
+        if c.join_url.is_some() {
+            r.err(
+                "cluster.join_url",
+                "a node either creates a cluster (init) or joins one",
+            );
+        }
+    }
+    if c.join_url.is_some() && c.bootstrap_secret_file.is_none() {
+        r.err(
+            "cluster.join_url",
+            "needs bootstrap_secret_file (the shared join secret)",
+        );
+    }
+    if c.ephemeral && c.join_url.is_none() {
+        r.warn("cluster.ephemeral only applies when joining with join_url");
+    }
+    if c.ephemeral_ttl_secs < 60 {
+        r.err("cluster.ephemeral_ttl_secs", "must be at least 60");
+    }
     let Ok(addr) = cfg.cluster.listen.as_str().parse::<std::net::SocketAddr>() else {
         r.err(
             "cluster.listen",

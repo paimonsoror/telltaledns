@@ -38,6 +38,16 @@
   const failing = $derived(view?.checks.filter((c) => !c.ok) ?? []);
   const me = $derived(view?.nodes.find((n) => n.thisNode));
   const siteOf = (id: string) => view?.nodes.find((n) => n.nodeId === id)?.site ?? id;
+  // REQ: CLU-009 — Kubernetes resolver pods come and go: shown per site, collapsed.
+  const fixed = $derived(view?.nodes.filter((n) => !n.ephemeral) ?? []);
+  const podSites = $derived.by(() => {
+    const by = new Map<string, NonNullable<typeof view>['nodes']>();
+    for (const n of view?.nodes ?? []) if (n.ephemeral) by.set(n.site, [...(by.get(n.site) ?? []), n]);
+    return [...by.entries()];
+  });
+  let openSites = $state<string[]>([]);
+  const toggleSite = (s: string) =>
+    (openSites = openSites.includes(s) ? openSites.filter((x) => x !== s) : [...openSites, s]);
   const primaryUp = $derived(view?.nodes.some((n) => n.role.includes('primary') && n.up && !n.thisNode) ?? false);
 
   // REQ: CLU-005 — manual failover (ADR-051): only when the primary is gone.
@@ -184,11 +194,12 @@ telltale cluster join tt_join_…</pre>
             </tr>
           </thead>
           <tbody>
-            {#each view.nodes as n (n.nodeId)}
+            {#snippet row(n: NonNullable<typeof view>['nodes'][number])}
               <tr data-testid="cluster-node">
                 <td>
                   <strong>{n.site}</strong>
-                  <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.role}</span>
+                  <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.witness ? 'witness' : n.role}</span>
+                  {#if n.ephemeral}<span class="muted small">pod</span>{/if}
                   {#if n.thisNode}<span class="muted small">this node</span>{/if}
                   <div class="mono muted small" title={n.nodeId}>
                     {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
@@ -218,6 +229,21 @@ telltale cluster join tt_join_…</pre>
                   {#if n.certExpiresAt}<div class="muted">cert until {logDate(n.certExpiresAt)}</div>{/if}
                 </td>
               </tr>
+            {/snippet}
+            {#each fixed as n (n.nodeId)}{@render row(n)}{/each}
+            {#each podSites as [site, pods] (site)}
+              <tr class="pods" data-testid="cluster-pods">
+                <td colspan="6">
+                  <button class="link" onclick={() => toggleSite(site)} aria-expanded={openSites.includes(site)}>
+                    {openSites.includes(site) ? '▾' : '▸'} <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
+                  </button>
+                  <span class="muted small">
+                    {pods.filter((p) => p.up).length} up · {pods.filter((p) => p.ready).length} ready ·
+                    {num(pods.reduce((t, p) => t + p.qps, 0))} q/s · {pods.filter((p) => p.configLag > 0).length} behind
+                  </span>
+                </td>
+              </tr>
+              {#if openSites.includes(site)}{#each pods as n (n.nodeId)}{@render row(n)}{/each}{/if}
             {/each}
           </tbody>
         </table>

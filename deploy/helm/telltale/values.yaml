@@ -1,9 +1,51 @@
 # TelltaleDNS Helm chart (REQ: OPS-002, OPS-003, spec/08 §3, ADR-035).
 
-# Shape. `allInOne`: one StatefulSet (resolver, API, UI, query log). `scaled` (controller +
-# resolver replicas) and `daemonSet` (host-network resolvers) need clustering (milestone M5)
-# and are refused until then.
+# Shape.
+# - `allInOne`: one StatefulSet (resolver, API, UI, query log).
+# - `scaled` (CLU-009): that StatefulSet becomes the cluster's controller (primary, with the
+#   volume), plus `resolvers.replicas` resolver pods. The pods join the controller
+#   automatically with a generated Secret, take its configuration and lists, ship their query
+#   log to it, and come and go freely (ephemeral members). DNS is spread over every pod; the
+#   UI and API stay on the controller. A node outside Kubernetes (a Pi) can join too: see
+#   `cluster.advertise`.
+# - `daemonSet` (host-network resolvers) comes later.
 mode: allInOne
+
+# REQ: CLU-009 — clustering (mode: scaled).
+cluster:
+  # Site label for these pods (the Cluster page groups resolver pods by site).
+  site: k8s
+  # The cluster port inside the pods (mTLS between nodes).
+  port: 9443
+  service:
+    # ClusterIP for pods only. LoadBalancer (or NodePort) lets a node outside Kubernetes join.
+    type: ClusterIP
+    annotations: {}
+  # Extra URLs for the controller's cluster port that nodes outside Kubernetes dial, e.g.
+  # ["https://192.168.5.100:9443"] behind a LoadBalancer. In-cluster URLs are added for you.
+  advertise: []
+  # The shared join secret. Empty: the chart creates one (kept across upgrades). With Argo CD
+  # (no `lookup`), create the Secret yourself and name it here.
+  bootstrapSecret:
+    existingSecret: ""
+    key: bootstrap
+
+resolvers:
+  replicas: 2
+  # Seconds the controller keeps a resolver pod it no longer hears from.
+  ephemeralTtlSeconds: 600
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  # e.g. spread the pods: podAntiAffinity on app.kubernetes.io/component: resolver
+  affinity: {}
 
 image:
   repository: ghcr.io/paimonsoror/telltale

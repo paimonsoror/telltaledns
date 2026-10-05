@@ -2776,6 +2776,8 @@
         "required": [
           "nodeId",
           "site",
+          "ephemeral",
+          "witness",
           "role",
           "thisNode",
           "eligible",
@@ -2833,6 +2835,10 @@
           },
           "eligible": {
             "type": "boolean"
+          },
+          "ephemeral": {
+            "type": "boolean",
+            "description": "A Kubernetes resolver pod (CLU-009): dropped when no longer heard from."
           },
           "lastSeenSecondsAgo": {
             "type": "integer",
@@ -2897,6 +2903,10 @@
           },
           "version": {
             "type": "string"
+          },
+          "witness": {
+            "type": "boolean",
+            "description": "Votes in automatic failover only (ADR-056)."
           }
         }
       },

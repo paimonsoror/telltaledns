@@ -11,7 +11,11 @@ metadata:
 spec:
   podSelector:
     matchLabels:
+      {{- if include "telltale.scaled" . }}
+      {{- include "telltale.podLabels" . | nindent 6 }}
+      {{- else }}
       {{- include "telltale.selectorLabels" . | nindent 6 }}
+      {{- end }}
   policyTypes: [Ingress]
   ingress:
     - ports:
@@ -37,6 +41,11 @@ spec:
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       {{- end }}
+    {{- if include "telltale.scaled" . }}
+    # REQ: CLU-009 — the cluster port: resolver pods and nodes outside Kubernetes join here.
+    - ports:
+        - { port: cluster, protocol: TCP }
+    {{- end }}
     - ports:
         - { port: metrics, protocol: TCP }
       {{- with $np.metricsFrom }}

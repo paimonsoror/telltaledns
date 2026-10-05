@@ -1146,6 +1146,8 @@ export interface components {
             /** @description A stream to it is open (this node: n/a, true). */
             connected: boolean;
             eligible: boolean;
+            /** @description A Kubernetes resolver pod (CLU-009): dropped when no longer heard from. */
+            ephemeral: boolean;
             /** Format: int64 */
             lastSeenSecondsAgo: number;
             /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
@@ -1183,6 +1185,8 @@ export interface components {
             /** Format: int64 */
             uptimeSeconds: number;
             version: string;
+            /** @description Votes in automatic failover only (ADR-056). */
+            witness: boolean;
         };
         /** @description A peer node, as last heard over the cluster channel. */
         ClusterPeer: {

@@ -1,5 +1,8 @@
-{{- if ne .Values.mode "allInOne" }}
-{{- fail "mode: only allInOne is available until clustering (M5)" }}
+{{- if not (has .Values.mode (list "allInOne" "scaled")) }}
+{{- fail "mode: allInOne or scaled (daemonSet comes later)" }}
+{{- end }}
+{{- if and (include "telltale.scaled" .) .Values.hostNetwork }}
+{{- fail "mode: scaled with hostNetwork isn't supported yet: resolver pods would compete for port 53 on a node" }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -52,3 +55,29 @@ data:
   # From values.config (later files override earlier ones).
   10-values.toml: |
     {{- .Values.config | nindent 4 }}
+  {{- if include "telltale.scaled" . }}
+  # REQ: CLU-009 — the controller creates the cluster on first start and accepts the shared
+  # bootstrap secret; resolver pods join with it as ephemeral members.
+  20-controller.toml: |
+    [cluster]
+    site = {{ .Values.cluster.site | quote }}
+    eligible = true
+    listen = "0.0.0.0:{{ .Values.cluster.port }}"
+    bootstrap_secret_file = "/etc/telltale-cluster/{{ .Values.cluster.bootstrapSecret.key }}"
+    ephemeral_ttl_secs = {{ .Values.resolvers.ephemeralTtlSeconds }}
+
+    [cluster.init]
+    advertise = [{{ include "telltale.clusterURL" . | quote }}{{ range .Values.cluster.advertise }}, {{ . | quote }}{{ end }}]
+  20-resolver.toml: |
+    [cluster]
+    site = {{ .Values.cluster.site | quote }}
+    eligible = false
+    listen = "0.0.0.0:{{ .Values.cluster.port }}"
+    bootstrap_secret_file = "/etc/telltale-cluster/{{ .Values.cluster.bootstrapSecret.key }}"
+    join_url = {{ include "telltale.clusterURL" . | quote }}
+    ephemeral = true
+
+    # The query log goes to the controller's volume (CLU-007).
+    [telemetry]
+    mode = "ship"
+  {{- end }}

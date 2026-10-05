@@ -152,6 +152,37 @@ pub struct ClusterConfig {
     /// in its UI) or `gitops` (rendered from Git, e.g. by the Helm chart under Argo CD). In a
     /// cluster whose config authority is `gitops`, only `gitops` nodes may become primary.
     pub config_source: SafeString,
+    /// Create a cluster on first start when this node isn't in one (CLU-009; the Helm chart's
+    /// controller). Same as `telltale cluster init`.
+    pub init: Option<ClusterInitConfig>,
+    /// A shared join secret, in a file (e.g. a Kubernetes Secret). A node holding the cluster
+    /// key accepts it like a join token that never expires; a node with `join_url` joins with
+    /// it on first start.
+    pub bootstrap_secret_file: Option<SafeString>,
+    /// On first start, join the cluster at this URL with `bootstrap_secret_file` (resolver
+    /// pods). The node checks the primary proves it knows the secret before trusting its CA.
+    pub join_url: Option<SafeString>,
+    /// Join as an ephemeral member (CLU-009): never primary, never a voter, dropped from the
+    /// registry `ephemeral_ttl_secs` after it was last heard from, shown grouped by site.
+    /// An ephemeral node reports ready only once it has the cluster's configuration.
+    pub ephemeral: bool,
+    /// How long the primary keeps an ephemeral member it no longer hears from.
+    pub ephemeral_ttl_secs: u32,
+}
+
+/// `[cluster.init]`: create a cluster on first start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterInitConfig {
+    /// URLs other nodes reach this node's cluster port at.
+    pub advertise: Vec<SafeString>,
+    /// `api` or `gitops` (ADR-048).
+    #[serde(default = "default_init_authority")]
+    pub config_authority: SafeString,
+}
+
+fn default_init_authority() -> SafeString {
+    SafeString::from("api")
 }
 
 impl Default for ClusterConfig {
@@ -162,6 +193,11 @@ impl Default for ClusterConfig {
             eligible: true,
             listen: SafeString::from("0.0.0.0:8443"),
             config_source: SafeString::from("file"),
+            init: None,
+            bootstrap_secret_file: None,
+            join_url: None,
+            ephemeral: false,
+            ephemeral_ttl_secs: 600,
         }
     }
 }

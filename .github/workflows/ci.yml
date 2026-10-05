@@ -239,3 +239,10 @@ jobs:
       # within 30 s of the primary's death with 100% of DNS answered; the old primary follows.
       - name: Cluster automatic failover (primary, replica, witness)
         run: bash deploy/cluster/failover-e2e.sh target/bench-fast/telltale
+      # REQ: CLU-009 (T5.10 AC) — Helm mode: scaled on kind with this build: resolver pods join
+      # and sync, answer DNS; a node outside Kubernetes joins; a deleted pod expires.
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with: { install_only: true }
+      - name: Helm scaled mode on kind
+        run: bash deploy/helm/scaled-e2e.sh target/bench-fast/telltale

@@ -909,6 +909,10 @@ pub struct PromoteRequest {
 pub struct ClusterNode {
     pub node_id: String,
     pub site: String,
+    /// A Kubernetes resolver pod (CLU-009): dropped when no longer heard from.
+    pub ephemeral: bool,
+    /// Votes in automatic failover only (ADR-056).
+    pub witness: bool,
     /// `primary` or `replica`.
     pub role: String,
     /// The node answering this request.

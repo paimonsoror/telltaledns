@@ -829,3 +829,34 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **CA rotation** (new CA, cross-signing, key re-share) stays in T5.4c, still open.
 
 **Consequences:** clusters keep their links indefinitely while a CA holder is reachable at least once every 30 days. A witness or replica cut off from every CA holder for 90 days loses its certificate and must rejoin with a token.
+
+## ADR-058 — Kubernetes resolver pods: a shared bootstrap secret with proof of possession, ephemeral members, sync-gated readiness (Proposed)
+**Context:** T5.10 (CLU-009). `spec/12` §2 says resolver pods join with a long-lived token from a Secret, get a fresh identity per start, expire after `ephemeral_ttl` (10 min) without heartbeats, and display under their site. A join token pins the CA fingerprint, which only exists after the controller creates the cluster. So a chart can't put a token in a Secret without the controller writing to the Kubernetes API, which needs RBAC and a client library.
+
+**Decision:**
+- **Bootstrap secret instead of a pre-made token:**
+  - The chart generates a random secret in a Secret (kept with `lookup` and `resource-policy: keep`, or the user's own via `existingSecret`), mounted in every pod.
+  - The controller accepts it like a join token that never expires: `[cluster] bootstrap_secret_file`, re-read at every join, so rotations apply without a restart.
+- **Proof of possession instead of trust on first use:**
+  - A pod with `join_url` first calls `POST /cluster/v1/ca` with a fresh nonce.
+  - It trusts the returned CA only if the server answers HMAC-SHA256(secret, nonce : CA fingerprint), proving it holds the same secret.
+  - It then pins that CA and joins exactly as with a token.
+  - A man in the middle without the secret can't pass this.
+- **First start creates or joins:**
+  - `[cluster.init]` (advertise URLs, authority) creates the cluster on the controller's first start, the same as `telltale cluster init`.
+  - `join_url` joins on a pod's first start, retrying for 2 minutes. An ephemeral pod that can't join exits, so Kubernetes retries it (CrashLoopBackOff while the controller starts).
+- **Ephemeral members:**
+  - `[cluster] ephemeral = true` joins as ephemeral: never eligible, never a voter, no CA key.
+  - The registry records `ephemeral`. The primary drops ephemeral members not connected and not heard from for `ephemeral_ttl_secs`, checked every minute. A pod that never connected is measured from when it joined, or from the controller's start.
+  - The Cluster page groups them by site with counts (up, ready, q/s, behind).
+- **Readiness:** an ephemeral node is ready only once it has applied the cluster's configuration. A new pod never serves an unfiltered answer, and the Service routes to it only after sync.
+- **Helm `mode: scaled`:**
+  - The allInOne StatefulSet becomes the controller and keeps its labels, so switching modes needs no reinstall.
+  - Adds a resolver Deployment (`emptyDir` data, ship-mode query log, `maxUnavailable: 0`), a `-cluster` Service for the cluster port, the join Secret, and a NetworkPolicy rule for the cluster port.
+  - The DNS Service selects every pod; the API and metrics Services select the controller.
+  - `hostNetwork` with `scaled` is refused, since pods would compete for port 53; that's `daemonSet`, later.
+- **Found on the way:** a replica's follower ignored a manifest that arrived before it subscribed, and waited for the primary's next change. It now processes the current one at start.
+
+**Consequences:**
+- `deploy/helm/scaled-e2e.sh` (CI, this build's binary on kind) proves the controller and two pods join and sync, a pod answers DNS, an outside node joins through the cluster port, and a deleted pod is replaced and expires.
+- A pod restart is a new member, by design. A registry of long-gone pods is cleaned within `ttl + 1 min`.

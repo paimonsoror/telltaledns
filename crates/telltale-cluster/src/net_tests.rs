@@ -21,6 +21,79 @@ async fn wait_for(mut f: impl FnMut() -> bool) {
     panic!("condition not met in time");
 }
 
+// REQ: CLU-009 — resolver pods join with the shared bootstrap secret: they trust the CA only
+// after the primary proves it knows the secret, join as ephemeral members, and leave the
+// registry once they're gone for the TTL.
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_009_bootstrap_secret_joins_ephemeral_members_that_expire() {
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let addr = free_port().await;
+    let url = format!("https://{addr}");
+    let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
+    let primary = Cluster::new(primary, "0.1.0");
+    primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The wrong secret: the primary's proof doesn't match, so its CA isn't trusted.
+    let e = bootstrap_token(&url, "guess").await.unwrap_err();
+    assert!(e.contains("didn't prove"), "{e}");
+    let token = bootstrap_token(&url, "s3cret-shared-by-helm")
+        .await
+        .unwrap();
+    assert_eq!(
+        token.ca_fp,
+        pki::hex(&pki::fingerprint(&primary.identity.ca_pem).unwrap())
+    );
+
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: true,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "k8s".into(),
+        eligible: true,
+        version: "0.1.0".into(),
+    };
+    let resp = join(&token, &req).await.unwrap();
+    let pod =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "k8s", false, vec![]).unwrap();
+    let rec = primary
+        .identity
+        .registry()
+        .into_iter()
+        .find(|n| n.node_id == pod.meta.node_id)
+        .unwrap();
+    assert!(rec.ephemeral && !rec.eligible && !rec.voter(), "{rec:?}");
+
+    // A second pod joins but never connects (it died at once).
+    let key2 = pki::new_node_key().unwrap();
+    let mut req2 = req.clone();
+    req2.csr_pem = key2.csr_pem.clone();
+    let ghost = join(&token, &req2).await.unwrap().node_id;
+    // The connected pod stays; the one never heard from goes once the TTL passes.
+    let pod = Cluster::new(pod, "0.1.0");
+    let (pod_stop_tx, pod_stop) = watch::channel(false);
+    tokio::spawn(dial(Arc::clone(&pod), pod_stop));
+    let p = Arc::clone(&primary);
+    wait_for(|| p.members().iter().any(|m| m.connected)).await;
+    assert_eq!(primary.gc_ephemeral(Duration::ZERO), vec![ghost.clone()]);
+    let ids: Vec<String> = primary
+        .identity
+        .registry()
+        .into_iter()
+        .map(|n| n.node_id)
+        .collect();
+    assert!(ids.contains(&pod.identity.meta.node_id) && !ids.contains(&ghost));
+    // Within the TTL, nothing goes.
+    assert_eq!(primary.gc_ephemeral(Duration::from_secs(600)).len(), 0);
+    let _ = pod_stop_tx.send(true);
+    let _ = stop_tx.send(true);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::too_many_lines)] // one scenario: join, stream, RPCs, renewal
 async fn clu_001_join_then_mutual_stream_registers_both_peers() {
@@ -39,6 +112,7 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
         witness: false,
+        ephemeral: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem.clone(),
         advertise: vec![],
@@ -177,6 +251,7 @@ async fn clu_001_a_token_for_another_ca_is_refused_before_the_secret_is_sent() {
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
         witness: false,
+        ephemeral: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem,
         advertise: vec![],
@@ -359,6 +434,7 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     let key = pki::new_node_key().unwrap();
     let req = JoinRequest {
         witness: false,
+        ephemeral: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem.clone(),
         advertise: vec![],

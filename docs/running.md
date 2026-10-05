@@ -103,7 +103,21 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
 - **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
 - **Encrypted DNS**: `encrypted.dot.enabled` (853) and `encrypted.doh.enabled` (443) add DoT and DoH to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
-- One replica (`mode: allInOne`, a StatefulSet with a volume for lists, the query log, and users). Several resolver replicas (`scaled`, `daemonSet`) arrive with clustering.
+- **One replica or many.** `mode: allInOne` (the default) is one StatefulSet with a volume for lists, the query log, and users. **`mode: scaled`** adds resolver pods:
+  ```sh
+  helm install telltale deploy/helm/telltale -n telltale --set mode=scaled --set resolvers.replicas=3
+  ```
+  - The StatefulSet becomes the cluster's **controller**: it creates the cluster on first start, keeps the volume, and serves the UI and API.
+  - Each **resolver pod** joins it automatically with a Secret the chart generates. It takes the controller's configuration and compiled lists, and ships its query log to the controller's volume.
+  - A resolver pod reports ready only once it has the configuration, so it never answers unfiltered. Pods come and go: one that's gone for `resolvers.ephemeralTtlSeconds` (default 600) leaves the cluster's list of nodes. The Cluster page shows them grouped by site ("k8s: 3 resolver pods").
+  - The DNS Service spreads queries over the controller and every resolver pod.
+  - **A node outside Kubernetes** (a Pi) can join the same cluster:
+    - expose the cluster port with `cluster.service.type: LoadBalancer`;
+    - list that address in `cluster.advertise` (e.g. `["https://192.168.5.100:9443"]`);
+    - create a token on the controller (`kubectl exec sts/telltale -- telltale cluster token create --url https://192.168.5.100:9443 -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml -c /etc/telltale/20-controller.toml`);
+    - then run `telltale cluster join <token>` on the Pi.
+  - With Argo CD (which can't keep a generated Secret stable), create the join Secret yourself and set `cluster.bootstrapSecret.existingSecret`. A changed secret applies without restarting the controller.
+  - `daemonSet` (host-network resolvers on every node) comes later.
 
 ## Seeing real client IPs
 Per-device statistics, groups, and rules need each query's real sender. TelltaleDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `telltale_client_ips_masked` is 1, and the log says so once.

@@ -98,8 +98,13 @@
       "description": "Cluster identity (full cluster settings arrive with M5).",
       "$ref": "#/$defs/ClusterConfig",
       "default": {
+        "bootstrap_secret_file": null,
         "config_source": "file",
         "eligible": true,
+        "ephemeral": false,
+        "ephemeral_ttl_secs": 600,
+        "init": null,
+        "join_url": null,
         "listen": "0.0.0.0:8443",
         "name": "telltale",
         "site": "default"
@@ -650,6 +655,15 @@
     "ClusterConfig": {
       "type": "object",
       "properties": {
+        "bootstrap_secret_file": {
+          "description": "A shared join secret, in a file (e.g. a Kubernetes Secret). A node holding the cluster\nkey accepts it like a join token that never expires; a node with `join_url` joins with\nit on first start.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "config_source": {
           "description": "How this node's own configuration is managed (ADR-048): `file` (edited on the node or\nin its UI) or `gitops` (rendered from Git, e.g. by the Helm chart under Argo CD). In a\ncluster whose config authority is `gitops`, only `gitops` nodes may become primary.",
           "type": "string",
@@ -660,6 +674,39 @@
           "description": "Whether this node may become the cluster primary.",
           "type": "boolean",
           "default": true
+        },
+        "ephemeral": {
+          "description": "Join as an ephemeral member (CLU-009): never primary, never a voter, dropped from the\nregistry `ephemeral_ttl_secs` after it was last heard from, shown grouped by site.\nAn ephemeral node reports ready only once it has the cluster's configuration.",
+          "type": "boolean",
+          "default": false
+        },
+        "ephemeral_ttl_secs": {
+          "description": "How long the primary keeps an ephemeral member it no longer hears from.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 600,
+          "minimum": 0
+        },
+        "init": {
+          "description": "Create a cluster on first start when this node isn't in one (CLU-009; the Helm chart's\ncontroller). Same as `telltale cluster init`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClusterInitConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "join_url": {
+          "description": "On first start, join the cluster at this URL with `bootstrap_secret_file` (resolver\npods). The node checks the primary proves it knows the secret before trusting its CA.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "listen": {
           "description": "The cluster port (mTLS, node-to-node; REQ: CLU-001). Opened only once this node has\njoined or created a cluster (`telltale cluster init|join`). Peers dial the URLs given\nwith `--advertise`, so map this port to those.",
@@ -681,6 +728,30 @@
         }
       },
       "additionalProperties": false
+    },
+    "ClusterInitConfig": {
+      "description": "`[cluster.init]`: create a cluster on first start.",
+      "type": "object",
+      "properties": {
+        "advertise": {
+          "description": "URLs other nodes reach this node's cluster port at.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "config_authority": {
+          "description": "`api` or `gitops` (ADR-048).",
+          "type": "string",
+          "default": "api",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "advertise"
+      ]
     },
     "EdeKind": {
       "description": "EDE code on block answers.",

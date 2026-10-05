@@ -71,6 +71,9 @@ pub struct NodeRecord {
     /// Votes in elections only (ADR-056).
     #[serde(default)]
     pub witness: bool,
+    /// A Kubernetes resolver pod (CLU-009): dropped when no longer heard from.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 impl NodeRecord {
@@ -99,6 +102,9 @@ pub struct JoinRequest {
     /// Joins as a witness (ADR-056).
     #[serde(default)]
     pub witness: bool,
+    /// Joins as an ephemeral member (CLU-009).
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// What it gets back.
@@ -220,6 +226,7 @@ impl Identity {
                     advertise: self.meta.advertise.clone(),
                     joined: 0,
                     witness: self.meta.witness,
+                    ephemeral: false,
                 },
             );
         }
@@ -450,7 +457,11 @@ impl Identity {
 
     /// Checks a join request's secret against the stored tokens (constant time over the
     /// hash) and issues the node's certificate.
-    pub fn accept_join(&self, req: &JoinRequest) -> Result<JoinResponse, String> {
+    pub fn accept_join(
+        &self,
+        req: &JoinRequest,
+        bootstrap: Option<&str>,
+    ) -> Result<JoinResponse, String> {
         let ca = self.ca()?;
         let recs: Vec<TokenRecord> = std::fs::read(self.dir.join("tokens.json"))
             .ok()
@@ -458,9 +469,12 @@ impl Identity {
             .unwrap_or_default();
         let h = Token::secret_hash(&req.secret);
         let t = now();
+        // REQ: CLU-009 — the shared bootstrap secret works like a token that never expires.
         let ok = recs
             .iter()
-            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()));
+            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()))
+            || bootstrap
+                .is_some_and(|b| !b.is_empty() && same(b.as_bytes(), req.secret.as_bytes()));
         if !ok {
             return Err("the join token is unknown or expired".into());
         }
@@ -471,10 +485,11 @@ impl Identity {
         nodes.push(NodeRecord {
             node_id: node_id.clone(),
             site: req.site.clone(),
-            eligible: req.eligible && !req.witness,
+            eligible: req.eligible && !req.witness && !req.ephemeral,
             advertise: req.advertise.clone(),
             joined: t,
-            witness: req.witness,
+            witness: req.witness && !req.ephemeral,
+            ephemeral: req.ephemeral,
         });
         self.save_registry(&nodes)?;
         let mut primary_urls = self.meta.advertise.clone();
@@ -537,7 +552,7 @@ impl Identity {
 }
 
 /// Compares secrets in time independent of where they differ.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
@@ -567,6 +582,7 @@ mod tests {
         let key = pki::new_node_key().unwrap();
         let mut req = JoinRequest {
             witness: false,
+            ephemeral: false,
             secret: t.secret.clone(),
             csr_pem: key.csr_pem.clone(),
             advertise: vec!["https://10.0.0.5:8443".into()],
@@ -574,7 +590,7 @@ mod tests {
             eligible: true,
             version: "0.1.0".into(),
         };
-        let resp = p.accept_join(&req).unwrap();
+        let resp = p.accept_join(&req, None).unwrap();
         assert_eq!(resp.primary_urls, ["https://192.168.3.2:8443"]);
         let r = Identity::save_joined(
             b.path(),
@@ -594,7 +610,7 @@ mod tests {
         );
         // A wrong secret is refused.
         req.secret = token::new_secret();
-        assert!(p.accept_join(&req).is_err());
+        assert!(p.accept_join(&req, None).is_err());
         // Keys are owner-only.
         #[cfg(unix)]
         {

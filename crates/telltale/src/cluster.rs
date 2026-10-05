@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use telltale_api::model::{ClusterInfo, ClusterPeer};
 use telltale_api::time::format_us;
@@ -39,6 +40,11 @@ pub(crate) fn start(
     };
     info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, primary = id.is_primary(), "cluster member");
     let cluster = Cluster::new(id, VERSION);
+    // REQ: CLU-009 — the shared bootstrap secret works as a join token here (Helm). It's
+    // re-read at every join, so a rotated Secret applies without a restart.
+    if let Some(path) = &cfg.cluster.bootstrap_secret_file {
+        cluster.set_bootstrap_file(std::path::PathBuf::from(path.as_str()));
+    }
     if let Ok(addr) = cfg.cluster.listen.as_str().parse::<SocketAddr>() {
         let (c, stop) = (Arc::clone(&cluster), stop.clone());
         tokio::spawn(async move {
@@ -63,7 +69,119 @@ pub(crate) fn start(
         Arc::clone(&cluster),
         stop.clone(),
     ));
+    // REQ: CLU-009 — ephemeral members that went away leave the registry.
+    let ttl = Duration::from_secs(u64::from(cfg.cluster.ephemeral_ttl_secs));
+    let (c, mut stop) = (Arc::clone(&cluster), stop.clone());
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = stop.changed() => return,
+                () = tokio::time::sleep(Duration::from_secs(60)) => {}
+            }
+            let gone = c.gc_ephemeral(ttl);
+            if !gone.is_empty() {
+                info!(
+                    count = gone.len(),
+                    "cluster: dropped ephemeral members no longer heard from"
+                );
+            }
+        }
+    });
     Some(cluster)
+}
+
+/// The shared bootstrap secret from `[cluster] bootstrap_secret_file`, if set and readable.
+fn bootstrap_secret(cfg: &telltale_config::Config) -> Option<String> {
+    let path = cfg.cluster.bootstrap_secret_file.as_ref()?;
+    match std::fs::read_to_string(path.as_str()) {
+        Ok(s) if !s.trim().is_empty() => Some(s.trim().to_owned()),
+        Ok(_) => {
+            warn!(path = %path, "cluster: the bootstrap secret file is empty");
+            None
+        }
+        Err(e) => {
+            warn!(path = %path, "cluster: can't read the bootstrap secret: {e}");
+            None
+        }
+    }
+}
+
+/// REQ: CLU-009 — on first start, create the cluster (`[cluster.init]`) or join it
+/// (`join_url` + bootstrap secret), as the Helm chart's controller and resolver pods do.
+/// Joining retries for up to `wait`; `Err` when it never succeeded.
+pub(crate) async fn bootstrap(cfg: &telltale_config::Config, wait: Duration) -> Result<(), String> {
+    let dir = data_dir(cfg);
+    if Identity::load(dir)?.is_some() {
+        return Ok(());
+    }
+    let c = &cfg.cluster;
+    if let Some(init) = &c.init {
+        let advertise = init.advertise.iter().map(ToString::to_string).collect();
+        let id = Identity::init_with(
+            dir,
+            c.name.as_str(),
+            advertise,
+            c.site.as_str(),
+            init.config_authority.as_str(),
+        )?;
+        info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, "created the cluster ([cluster.init])");
+        return Ok(());
+    }
+    let Some(url) = &c.join_url else {
+        return Ok(());
+    };
+    let secret = bootstrap_secret(cfg).ok_or("join_url needs a readable bootstrap_secret_file")?;
+    let started = tokio::time::Instant::now();
+    let mut last = String::new();
+    while started.elapsed() < wait {
+        match bootstrap_join(cfg, url.as_str(), &secret).await {
+            Ok(id) => {
+                info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, ephemeral = c.ephemeral, "joined the cluster (join_url)");
+                return Ok(());
+            }
+            Err(e) => {
+                if e != last {
+                    warn!(%url, "cluster: joining failed, retrying: {e}");
+                }
+                last = e;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Err(format!(
+        "couldn't join {url} within {}s: {last}",
+        wait.as_secs()
+    ))
+}
+
+async fn bootstrap_join(
+    cfg: &telltale_config::Config,
+    url: &str,
+    secret: &str,
+) -> Result<Identity, String> {
+    let c = &cfg.cluster;
+    let token = net::bootstrap_token(url, secret).await?;
+    let key = pki::new_node_key().map_err(|e| e.to_string())?;
+    let eligible = c.eligible && !c.ephemeral;
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: c.ephemeral,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: Vec::new(),
+        site: c.site.to_string(),
+        eligible,
+        version: VERSION.to_owned(),
+    };
+    let resp = net::join(&token, &req).await?;
+    Identity::save_joined(
+        data_dir(cfg),
+        &key.key_pem,
+        &resp,
+        c.site.as_str(),
+        eligible,
+        Vec::new(),
+    )
 }
 
 /// The API's view of the cluster.
@@ -119,6 +237,7 @@ const LAG_WARN_SECS: u64 = 30;
 
 #[allow(clippy::cast_precision_loss)] // per-mille and microseconds to display units
 /// REQ: CLU-008 — the Cluster page's data.
+#[allow(clippy::too_many_lines)] // one view, field by field
 pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     use telltale_api::model::{ClusterNode, ClusterView};
     let now = now_ms();
@@ -133,7 +252,16 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
         )
     };
     let (my_lag, my_behind) = lag_of(local.applied_seq, c.behind_since());
+    let registry = c.identity.reload().registry();
+    let flags = |id: &str| {
+        registry
+            .iter()
+            .find(|n| n.node_id == id)
+            .map_or((false, false), |n| (n.ephemeral, n.witness))
+    };
     let mut nodes = vec![ClusterNode {
+        ephemeral: flags(&me.node_id).0,
+        witness: me.witness,
         node_id: me.node_id.clone(),
         site: me.site.clone(),
         role: match c.role().0 {
@@ -166,6 +294,8 @@ pub(crate) fn view(c: &Cluster) -> telltale_api::model::ClusterView {
     for p in &peers {
         let (lag, behind) = lag_of(p.applied_seq, p.behind_since_ms);
         nodes.push(ClusterNode {
+            ephemeral: flags(&p.node_id).0,
+            witness: flags(&p.node_id).1,
             node_id: p.node_id.clone(),
             site: p.site.clone(),
             role: if p.primary { "primary" } else { "replica" }.into(),
@@ -528,6 +658,7 @@ pub(crate) fn join(
     let site = site.unwrap_or(cfg.cluster.site.as_str()).to_owned();
     let req = JoinRequest {
         witness,
+        ephemeral: false,
         secret: token.secret.clone(),
         csr_pem: key.csr_pem.clone(),
         advertise: advertise.clone(),
@@ -880,15 +1011,19 @@ mod tests {
         let token = primary.create_token(60, None).unwrap();
         let key = pki::new_node_key().unwrap();
         let resp = primary
-            .accept_join(&JoinRequest {
-                witness: false,
-                secret: token.secret,
-                csr_pem: key.csr_pem,
-                advertise: vec![],
-                site: "pi".into(),
-                eligible: true,
-                version: "0.1.0".into(),
-            })
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral: false,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: "pi".into(),
+                    eligible: true,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
             .unwrap();
         let replica =
             Identity::save_joined(b.path(), &key.key_pem, &resp, "pi", true, vec![]).unwrap();

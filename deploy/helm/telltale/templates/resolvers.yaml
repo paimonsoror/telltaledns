@@ -1,0 +1,135 @@
+{{- if include "telltale.scaled" . }}
+# REQ: CLU-009 — resolver pods: they join the controller on start (ephemeral members), serve
+# its configuration and lists, ship their query log to it, and turn ready only once synced.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "telltale.fullname" . }}-resolver
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.resolvers.replicas }}
+  selector:
+    matchLabels:
+      {{- include "telltale.resolverLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels:
+        {{- include "telltale.resolverLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.resolvers.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: telltale
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "-c", "/etc/telltale/00-chart.toml", "-c", "/etc/telltale/10-values.toml", "-c", "/etc/telltale/20-resolver.toml"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: TELLTALE_LOG
+              value: info
+            - name: TELLTALE_NODE_IPS
+              valueFrom:
+                fieldRef: { fieldPath: status.hostIP }
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: dns-udp
+              containerPort: {{ include "telltale.dnsPort" . }}
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: {{ include "telltale.dnsPort" . }}
+              protocol: TCP
+            {{- if .Values.encrypted.dot.enabled }}
+            - name: dns-dot
+              containerPort: {{ include "telltale.dotPort" . }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.encrypted.doh.enabled }}
+            - name: dns-doh
+              containerPort: {{ include "telltale.dohPort" . }}
+              protocol: TCP
+            {{- end }}
+            - name: metrics
+              containerPort: {{ .Values.service.metrics.port }}
+              protocol: TCP
+          # Ready once joined and synced (it never serves unfiltered); joining retries for
+          # two minutes, then the pod exits and Kubernetes restarts it.
+          startupProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /livez, port: metrics }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resolvers.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/telltale
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/telltale
+            - name: cluster-secret
+              mountPath: /etc/telltale-cluster
+              readOnly: true
+            {{- if include "telltale.encrypted" . }}
+            - name: dns-tls
+              mountPath: /etc/telltale-tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "telltale.fullname" . }}
+        # A fresh identity per pod: it joins as a new ephemeral member each start.
+        - name: data
+          emptyDir: {}
+        - name: cluster-secret
+          secret:
+            secretName: {{ include "telltale.clusterSecret" . }}
+        {{- if include "telltale.encrypted" . }}
+        - name: dns-tls
+          secret:
+            secretName: {{ include "telltale.tlsSecret" . }}
+        {{- end }}
+      {{- with .Values.resolvers.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.resolvers.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.resolvers.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

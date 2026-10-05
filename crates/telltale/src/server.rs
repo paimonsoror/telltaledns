@@ -526,6 +526,14 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let (reload_tx, mut reload_rx) =
         tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(8);
     let (stop_http, http_stopped) = tokio::sync::watch::channel(false);
+    // REQ: CLU-009 — create or join the cluster on first start (the Helm chart's controller
+    // and resolver pods). A resolver pod that can't join exits, so Kubernetes retries it.
+    if let Err(e) = crate::cluster::bootstrap(&cfg, Duration::from_secs(120)).await {
+        if cfg.cluster.ephemeral {
+            return Err(io::Error::other(format!("cluster: {e}")));
+        }
+        warn!("cluster: {e}; running standalone");
+    }
     // REQ: CLU-001, CLU-004 — the cluster channel runs beside DNS and never gates it.
     let cluster = crate::cluster::start(&cfg, &http_stopped);
     let sources = Arc::new(http::Sources {
@@ -568,8 +576,21 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     start_http(&cfg, &sources, &http_stopped).await?;
     let neighbors =
         neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));
-    // Every listener is bound: ready for traffic (OPS-006).
-    ready.store(true, Ordering::Release);
+    // Every listener is bound: ready for traffic (OPS-006). An ephemeral resolver pod waits
+    // for the cluster's configuration too, so it never serves unfiltered (CLU-009).
+    match &sources.cluster {
+        Some(c) if cfg.cluster.ephemeral => {
+            let (c, ready) = (Arc::clone(c), Arc::clone(&ready));
+            tokio::spawn(async move {
+                while c.sync_status().applied_ms == 0 {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                info!("cluster configuration applied: ready");
+                ready.store(true, Ordering::Release);
+            });
+        }
+        _ => ready.store(true, Ordering::Release),
+    }
 
     // REQ: FLT-004 — lists download in the background once DNS is up (rule 5: DNS never
     // waits for, or depends on, a list).

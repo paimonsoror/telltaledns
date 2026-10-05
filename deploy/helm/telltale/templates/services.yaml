@@ -22,7 +22,11 @@ spec:
   loadBalancerClass: {{ . }}
   {{- end }}
   selector:
+    {{- if include "telltale.scaled" . }}
+    {{- include "telltale.podLabels" . | nindent 4 }}
+    {{- else }}
     {{- include "telltale.selectorLabels" . | nindent 4 }}
+    {{- end }}
   ports:
     - name: dns-udp
       port: {{ $dns.port }}
@@ -90,3 +94,26 @@ spec:
       port: {{ .Values.service.metrics.port }}
       targetPort: metrics
       protocol: TCP
+{{- if include "telltale.scaled" . }}
+---
+# REQ: CLU-009 — the controller's cluster port: resolver pods join and stream here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "telltale.fullname" . }}-cluster
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+  {{- with .Values.cluster.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.cluster.service.type }}
+  selector:
+    {{- include "telltale.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: cluster
+      port: {{ .Values.cluster.port }}
+      targetPort: cluster
+      protocol: TCP
+{{- end }}

@@ -4,28 +4,91 @@
   "type": "object",
   "properties": {
     "mode": {
-      "description": "allInOne only until clustering (M5): scaled and daemonSet need a controller to share filter snapshots and sign-in state.",
-      "enum": ["allInOne"]
+      "description": "allInOne (one StatefulSet) or scaled (a controller StatefulSet plus resolver pods that join it, CLU-009). daemonSet comes later.",
+      "enum": [
+        "allInOne",
+        "scaled"
+      ]
     },
-    "hostNetwork": { "type": "boolean" },
-    "dnsPort": { "type": "integer", "minimum": 1024, "maximum": 65535 },
-    "config": { "type": "string" },
+    "hostNetwork": {
+      "type": "boolean"
+    },
+    "dnsPort": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65535
+    },
+    "config": {
+      "type": "string"
+    },
     "encrypted": {
       "type": "object",
       "properties": {
-        "dot": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
-        "doh": { "type": "object", "properties": { "enabled": { "type": "boolean" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "path": { "type": "string", "pattern": "^/" } } },
-        "proxyProtocol": { "type": "boolean" },
+        "dot": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
+        "doh": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/"
+            }
+          }
+        },
+        "proxyProtocol": {
+          "type": "boolean"
+        },
         "tls": {
           "type": "object",
           "properties": {
-            "secretName": { "type": "string" },
+            "secretName": {
+              "type": "string"
+            },
             "certManager": {
               "type": "object",
               "properties": {
-                "enabled": { "type": "boolean" },
-                "issuerRef": { "type": "object", "properties": { "name": { "type": "string" }, "kind": { "enum": ["Issuer", "ClusterIssuer"] } } },
-                "dnsNames": { "type": "array", "items": { "type": "string" } }
+                "enabled": {
+                  "type": "boolean"
+                },
+                "issuerRef": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "Issuer",
+                        "ClusterIssuer"
+                      ]
+                    }
+                  }
+                },
+                "dnsNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }
@@ -38,16 +101,37 @@
         "dns": {
           "type": "object",
           "properties": {
-            "type": { "enum": ["LoadBalancer", "NodePort", "ClusterIP"] },
-            "externalTrafficPolicy": { "enum": ["Local", "Cluster"] },
-            "port": { "type": "integer" }
+            "type": {
+              "enum": [
+                "LoadBalancer",
+                "NodePort",
+                "ClusterIP"
+              ]
+            },
+            "externalTrafficPolicy": {
+              "enum": [
+                "Local",
+                "Cluster"
+              ]
+            },
+            "port": {
+              "type": "integer"
+            }
           }
         },
         "api": {
           "type": "object",
           "properties": {
-            "type": { "enum": ["LoadBalancer", "NodePort", "ClusterIP"] },
-            "port": { "type": "integer" }
+            "type": {
+              "enum": [
+                "LoadBalancer",
+                "NodePort",
+                "ClusterIP"
+              ]
+            },
+            "port": {
+              "type": "integer"
+            }
           }
         }
       }
@@ -55,23 +139,105 @@
     "ingress": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "host": { "type": "string" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        }
       }
     },
     "persistence": {
       "type": "object",
-      "properties": { "enabled": { "type": "boolean" }, "size": { "type": "string" } }
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "size": {
+          "type": "string"
+        }
+      }
     },
     "secretMounts": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "secretName"],
+        "required": [
+          "name",
+          "secretName"
+        ],
         "properties": {
-          "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
-          "secretName": { "type": "string" },
-          "optional": { "type": "boolean" }
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "secretName": {
+            "type": "string"
+          },
+          "optional": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "ClusterIP",
+                "NodePort",
+                "LoadBalancer"
+              ]
+            },
+            "annotations": {
+              "type": "object"
+            }
+          }
+        },
+        "advertise": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https://"
+          }
+        },
+        "bootstrapSecret": {
+          "type": "object",
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "resolvers": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ephemeralTtlSeconds": {
+          "type": "integer",
+          "minimum": 60
         }
       }
     }
