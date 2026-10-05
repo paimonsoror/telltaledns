@@ -373,6 +373,10 @@ pub struct LocalRecord {
     /// TTL in seconds (default: `[local] default_ttl`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
+    /// Keep this record on this node only (CLU-006): a cluster primary doesn't share it, and
+    /// a replica keeps it next to the cluster's records.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub node_only: bool,
 }
 
 /// Local data settings (`spec/03` §3 step 5).

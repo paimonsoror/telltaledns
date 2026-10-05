@@ -31,8 +31,26 @@ pub fn shared_part(cfg: &Config) -> Value {
         for k in NODE_LOCAL {
             m.remove(*k);
         }
+        // Node-only records stay on their node (CLU-006).
+        if let Some(Value::Array(records)) = m.get_mut("record") {
+            records.retain(|r| r.get("node_only") != Some(&Value::Bool(true)));
+        }
     }
     v
+}
+
+/// Shared sections a replica's own configuration sets, which the primary's replace
+/// (CLU-006): they're ignored, and the node says so. Node-only records don't count.
+pub fn ignored_on_replica(own: &Config) -> Vec<String> {
+    let (Value::Object(mine), Value::Object(defaults)) =
+        (shared_part(own), shared_part(&Config::default()))
+    else {
+        return Vec::new();
+    };
+    mine.iter()
+        .filter(|(k, v)| defaults.get(*k) != Some(v))
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 
 /// `local` with every shared section replaced by the primary's `shared`, validated as a
@@ -54,6 +72,15 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
             )]);
         }
     };
+    // This node's node-only records survive the merge (CLU-006).
+    let own_records: Vec<Value> = match merged.get("record") {
+        Some(Value::Array(r)) => r
+            .iter()
+            .filter(|r| r.get("node_only") == Some(&Value::Bool(true)))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
     for (k, v) in shared {
         if NODE_LOCAL.contains(&k.as_str()) {
             continue;
@@ -65,6 +92,13 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
             )]);
         }
         merged.insert(k.clone(), v.clone());
+    }
+    if !own_records.is_empty() {
+        if let Some(Value::Array(r)) = merged.get_mut("record") {
+            r.extend(own_records);
+        } else {
+            merged.insert("record".into(), Value::Array(own_records));
+        }
     }
     let cfg: Config = serde_json::from_value(Value::Object(merged)).map_err(|e| {
         vec![ConfigError::new(
@@ -136,6 +170,64 @@ max_bytes = "128 MiB"
         assert_eq!(
             serde_json::to_vec(&shared_part(&primary)).unwrap(),
             serde_json::to_vec(&shared).unwrap()
+        );
+    }
+
+    // REQ: CLU-006 — node-only records stay put; a replica's own shared settings are listed.
+    #[test]
+    fn clu_006_node_only_records_and_ignored_settings() {
+        let primary = load(
+            r#"
+[[record]]
+name = "nas.home.arpa"
+type = "A"
+value = "192.168.1.10"
+
+[[record]]
+name = "primary-only.home.arpa"
+type = "A"
+value = "10.0.0.1"
+node_only = true
+"#,
+        );
+        let replica = load(
+            r#"
+[[record]]
+name = "pi.home.arpa"
+type = "A"
+value = "192.168.3.2"
+node_only = true
+
+[[record]]
+name = "old.home.arpa"
+type = "A"
+value = "192.168.1.99"
+
+[[list]]
+name = "mine"
+rules = ["||x.test^"]
+"#,
+        );
+        let shared = shared_part(&primary);
+        let names = |c: &Config| {
+            c.record
+                .iter()
+                .map(|r| r.name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            shared["record"].as_array().unwrap().len(),
+            1,
+            "node-only records aren't shared"
+        );
+        let merged = with_shared(&replica, &shared).unwrap();
+        assert_eq!(names(&merged), ["nas.home.arpa", "pi.home.arpa"]);
+        assert_eq!(ignored_on_replica(&replica), ["list", "record"]);
+        assert_eq!(
+            ignored_on_replica(&load(
+                "[[record]]\nname = \"pi.home.arpa\"\ntype = \"A\"\nvalue = \"192.168.3.2\"\nnode_only = true\n"
+            )),
+            Vec::<String>::new()
         );
     }
 

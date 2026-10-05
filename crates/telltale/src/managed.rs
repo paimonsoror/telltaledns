@@ -128,6 +128,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
                     rtype: t,
                     value: v,
                     ttl: r.ttl,
+                    node_only: false,
                 }),
                 _ => errs.push(format!("record `{name}`: invalid characters")),
             }

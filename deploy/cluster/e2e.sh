@@ -61,6 +61,14 @@ EOF
 mkdir -p "$E/p" "$E/r"
 node_config p 25301 28001 29001 28441 a.p.test '||ads.p.test^' > "$E/p.toml"
 node_config r 25302 28002 29002 28442 own.r.test '||ads.r.test^' > "$E/r.toml"
+# A record that stays on the replica (CLU-006).
+cat >> "$E/r.toml" <<EOF
+[[record]]
+name = "mine.r.test"
+type = "A"
+value = "10.0.0.1"
+node_only = true
+EOF
 
 # One A query over UDP; prints the first answer address (empty if none) — no dig needed.
 cat > "$E/q.py" <<'PY'
@@ -110,6 +118,8 @@ echo "== 1. the replica follows the primary"
 for _ in $(seq 100); do [ "$(q 25302 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 [ "$(q 25302 a.p.test)" = 10.0.0.1 ] || fail "replica doesn't serve the primary's record"
 [ "$(q 25302 own.r.test)" != 10.0.0.1 ] || fail "replica still serves its own record"
+[ "$(q 25302 mine.r.test)" = 10.0.0.1 ] || fail "replica lost its node-only record (CLU-006)"
+[ "$(q 25301 mine.r.test)" != 10.0.0.1 ] || fail "a node-only record reached the primary"
 for _ in $(seq 50); do [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] && break; sleep 0.1; done
 [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] || fail "replica doesn't block with the primary's list"
 echo "ok"

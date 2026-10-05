@@ -1049,6 +1049,10 @@
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "node_only": {
+          "description": "Keep this record on this node only (CLU-006): a cluster primary doesn't share it, and\na replica keeps it next to the cluster's records.",
+          "type": "boolean"
+        },
         "ttl": {
           "description": "TTL in seconds (default: `[local] default_ttl`).",
           "type": [

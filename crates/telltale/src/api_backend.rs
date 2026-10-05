@@ -307,6 +307,24 @@ impl Backend for ApiBackend {
             Some(c) => {
                 let mut v = crate::cluster::view(c);
                 let cfg = self.src.config.load_full();
+                // REQ: CLU-006 — settings in this node's file that the primary's replace.
+                if crate::replication::follows_primary(&cfg) {
+                    let ignored =
+                        telltale_config::shared::ignored_on_replica(&self.src.file_config.load());
+                    v.checks.push(telltale_api::model::ClusterCheck {
+                        id: "node_settings".into(),
+                        ok: ignored.is_empty(),
+                        summary: if ignored.is_empty() {
+                            "This node's file holds only node-local settings".into()
+                        } else {
+                            format!("Ignored in this node's file (the primary's apply): {}", ignored.join(", "))
+                        },
+                        fix: (!ignored.is_empty()).then(|| {
+                            "Remove them from this node's file, or mark records that should stay on this node with node_only = true.".to_owned()
+                        }),
+                    });
+                    v.healthy = v.checks.iter().all(|c| c.ok);
+                }
                 v.conflicts = crate::replication::conflicts(&cfg)
                     .into_iter()
                     .map(|k| telltale_api::model::ClusterConflict {

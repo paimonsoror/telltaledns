@@ -87,6 +87,15 @@ pub(crate) fn effective(file: &Config) -> Config {
     let Some((m, with_managed)) = m else {
         return crate::managed::effective(file);
     };
+    if !with_managed {
+        let ignored = telltale_config::shared::ignored_on_replica(file);
+        if !ignored.is_empty() {
+            warn!(
+                sections = ?ignored,
+                "this node's configuration file sets shared settings that the cluster's primary replaces; they're ignored (CLU-006)"
+            );
+        }
+    }
     match merged(file, &m) {
         Ok(c) if with_managed => crate::managed::effective(&c),
         Ok(c) => c,

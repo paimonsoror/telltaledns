@@ -522,6 +522,19 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   restart (it starts answering from `<data_dir>/cluster/applied.json` in milliseconds).
 - **Every version is signed** by the cluster's key; a replica rejects anything else.
 - **Sign-in is still per node:** each node has its own users and sessions until ADR-045 lands.
+- **Records for one node only:** `node_only = true` on a `[[record]]` keeps it on the node whose
+  file has it. The primary doesn't share it, and a replica keeps it next to the cluster's records.
+  An example is a name that should only resolve on the Pi:
+  ```toml
+  [[record]]
+  name = "pi.home.arpa"
+  type = "A"
+  value = "192.168.3.2"
+  node_only = true
+  ```
+- **Leftovers in a replica's file:** if its file still sets shared sections (upstreams, lists,
+  records, groups…), the primary's replace them. The node logs a warning naming them, and the
+  Cluster page's **node_settings** check fails until they're removed.
 
 **When the primary is gone: promote another node (manual failover).**
 - **Who can be promoted:** a node joined with `--eligible`. The primary shares the cluster's

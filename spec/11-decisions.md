@@ -699,3 +699,16 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - With the owner's homelab node as the GitOps primary, the Pi becomes an *emergency* primary candidate: if k8s is down for long, promoting the Pi keeps the cluster coordinated while configuration stays frozen. ADR-049 (Git source) later makes the Pi a full candidate.
 - Existing clusters migrate in place: the CA holder becomes `role = primary` at epoch 1, and eligible replicas receive the key on their next connection.
 
+## ADR-052 — Node-local overrides: node-only records, and warn (not refuse) on shared settings in a replica's file (Proposed)
+**Context:** T5.5 (CLU-006). `spec/12` §4 says a node's own overrides allow listen addresses, cache size, query-log retention, worker count, site, and local-only records, and that overriding anything else is "rejected at startup with a clear error". ADR-047 already makes the node-local sections (`node`, `cluster`, `listen`, `api`, `auth`, `telemetry`, `cache`) stay with each node, and replaces everything else with the primary's.
+
+**Decision:**
+- **Node-only records:** `[[record]] node_only = true` keeps a record on the node whose file has it. A primary leaves it out of the shared configuration, and a replica keeps its own node-only records next to the cluster's.
+- **Shared settings in a replica's file are ignored and reported, not refused.**
+  - At every load the replica logs a warning naming the sections.
+  - The Cluster page gains a failing `node_settings` check with the fix (remove them, or mark node-only records).
+  - The spec's "reject at startup" would make a node's upgrade, or a cluster join, refuse to start over settings that have no effect. DNS would stop over a cosmetic problem, against rule 5 and CLU-004. The owner's Pi is exactly this case: its file predates joining.
+- No separate `node.toml` file is needed: a node's own config file plays that role, and the node-local sections are already defined by ADR-047.
+
+**Consequences:** the owner's Pi shows a failing `node_settings` check until its file is trimmed to node-local settings. Promoting to the spec's strict refusal stays possible later, as an opt-in `[cluster] strict_overrides = true`.
+
