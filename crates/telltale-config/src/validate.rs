@@ -277,7 +277,7 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
         }
     }
     if cfg.upstream.is_empty() {
-        r.warn("upstream: none configured; only local, blocked, and cached answers can be served");
+        r.warn("upstream: none configured; only local, blocked, and cached answers can be served (on a cluster replica, the primary's upstreams apply)");
     }
     names
 }
