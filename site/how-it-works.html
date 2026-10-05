@@ -263,7 +263,7 @@
       <p class="eyebrow">Sign-in</p>
       <h2>Locked until you set it up</h2>
       <p class="muted">There is no default password. On first start TelltaleDNS prints a one-time setup token, and whoever has it creates the first admin. Kubernetes and Ansible installs can create that admin from a secret instead.</p>
-      <p class="muted">The web UI is part of the binary, about 60 KiB compressed: a dashboard, a searchable query log with a "Why?" button on every row and a live view that streams queries as they happen, and pages for lists, devices, upstreams, users, and API tokens. It follows your light or dark theme and works on a phone. Charts reach back 400 days from a small on-disk history, and a ready-made Grafana dashboard covers the Prometheus metrics.</p>
+      <p class="muted">The web UI is part of the binary, about 90 KiB compressed: a dashboard, a searchable query log with a "Why?" button on every row and a live view that streams queries as they happen, and pages for lists, devices and groups, upstreams, names on your network, the cluster, users, and API tokens. It follows your light or dark theme and works on a phone. Charts reach back 400 days from a small on-disk history, and a ready-made Grafana dashboard covers the Prometheus metrics.</p>
       <p class="muted">People sign in with a password and, if they like, an authenticator app, or with the identity provider they already use (Keycloak, Authentik, any OpenID Connect provider), which also decides their role. Scripts, dashboards, and AI agents get their own tokens, limited to reading if that is all they need. Prometheus and home dashboards can use HTTP Basic, but only for accounts where an admin turned it on. Each user is a viewer, an operator, or an admin, and every change they make lands in a tamper-evident audit log.</p>
     </div>
   </div>
@@ -290,8 +290,23 @@
       <text x="440" y="94" text-anchor="middle" class="svg-sub">mTLS · signed config snapshots</text>
       <text x="440" y="126" text-anchor="middle" class="svg-sub">manage &amp; analyze from either side</text>
     </svg>
-    <figcaption>In progress (roadmap M5): signed configuration replication, manual failover, one dashboard and query log across every node, and changes from any node's UI (forwarded to the primary) work today. DNS answering never depends on the cluster being healthy: every node serves from its last good snapshot.</figcaption>
+    <figcaption>Signed configuration replication, one dashboard and query log across every node, changes from any node's UI (forwarded to the primary), manual or elected failover with fencing, and CA rotation without downtime. DNS answering never depends on the cluster being healthy: every node serves from its last good snapshot.</figcaption>
   </figure>
+</section>
+
+<section>
+  <p class="eyebrow">Also built in</p>
+  <h2>The rest of the toolbox</h2>
+  <div class="grid">
+    <div class="card"><h3>DNSSEC</h3><p>Validates signatures itself, with negative trust anchors for broken domains, and says why a lookup failed (extended DNS errors).</p></div>
+    <div class="card"><h3>Serve-stale and prefetch</h3><p>Popular names are refreshed before they expire, expired answers keep flowing while upstreams are down, and the cache survives a restart.</p></div>
+    <div class="card"><h3>Encrypted DNS for devices</h3><p>DNS over TLS and HTTPS listeners with certificates reloaded on the fly, and PROXY protocol v2 so a load balancer doesn't hide clients.</p></div>
+    <div class="card"><h3>Moving in</h3><p><code>telltale import pihole</code> reads a Teleporter export; <code>telltale import technitium</code> reads a live server. Both write a config file with notes on what didn't carry over.</p></div>
+    <div class="card"><h3>Backups</h3><p>One <code>.ttbk</code> archive with your configuration, users, devices, audit log, and statistics history (the query log optional), checksummed so a restore verifies every file before it writes any.</p></div>
+    <div class="card"><h3>AI agents</h3><p>Agent tokens with narrow scopes, a reason on every change, rate limits, and a kill switch. An MCP server (<code>/mcp</code>) gives assistants read-only tools.</p></div>
+    <div class="card"><h3>Versions and updates</h3><p>Every build knows its version and commit, checks a signed release index daily (optional), and tells you how to update for the way you installed it.</p></div>
+    <div class="card"><h3>Anomalies</h3><p>Learns each device's normal pattern and points out query spikes, bursts of new domains, and regular phone-home beacons, with the evidence. Findings never block anything on their own.</p></div>
+  </div>
 </section>
 
 </div>

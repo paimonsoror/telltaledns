@@ -218,12 +218,12 @@
     {
       "rfc": "6761",
       "title": "Special-use domain names",
-      "status": "planned",
+      "status": "supported",
       "reqs": [
         "DNS-019"
       ],
-      "summary": "Correct local handling of localhost, invalid, and other reserved names.",
-      "diagram": "planned"
+      "summary": "localhost answers with loopback, .invalid and the Firefox canary get NXDOMAIN, CHAOS queries are refused, and reverse lookups for private addresses (RFC 6303) stay local unless a route covers them.",
+      "diagram": "rfc6761"
     }
   ]
 }

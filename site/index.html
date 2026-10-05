@@ -15,7 +15,7 @@
 
 <section class="hero">
   <div>
-    <span class="badge"><span class="dot"></span> Early preview — resolving &amp; caching today, filtering next</span>
+    <span class="badge"><span class="dot"></span> Pre-1.0 — blocking, the web UI, and clustering all work today</span>
     <h1>See every question.<br>Answer on your terms.</h1>
     <p class="lede">Every app, TV, and gadget on your network starts with a DNS lookup. TelltaleDNS answers them in microseconds, blocks what you don't want, and shows you exactly who asked what.</p>
     <div class="cta">
@@ -101,17 +101,30 @@
       <tr><td>Uses every CPU core</td><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
       <tr><td>Encrypted DNS to the internet (DoT / DoH)</td><td>add-ons</td><td class="y">✓</td><td class="us y">✓</td></tr>
       <tr><td>Keeps answering when upstreams fail (serve-stale)</td><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
-      <tr><td>Blocklists &amp; per-device groups</td><td class="y">✓</td><td class="y">✓</td><td class="us n">○</td></tr>
-      <tr><td>Encrypted DNS for your devices</td><td>—</td><td class="y">✓</td><td class="us n">○</td></tr>
-      <tr><td>Tiny memory footprint</td><td class="y">✓</td><td>—</td><td class="us p">◐</td></tr>
-      <tr><td>Per-question timing &amp; percentiles</td><td>—</td><td>—</td><td class="us n">○</td></tr>
-      <tr><td>One cluster across a Pi and Kubernetes</td><td>—</td><td>heavy</td><td class="us n">○</td></tr>
-      <tr><td>Prometheus / OpenTelemetry built in</td><td>—</td><td>—</td><td class="us n">○</td></tr>
-      <tr><td>Safe AI-agent management (MCP)</td><td>—</td><td>—</td><td class="us n">○</td></tr>
+      <tr><td>Blocklists &amp; per-device groups</td><td class="y">✓</td><td class="y">✓</td><td class="us y">✓</td></tr>
+      <tr><td>"Why was this blocked?" down to the list line</td><td>—</td><td>—</td><td class="us y">✓</td></tr>
+      <tr><td>Encrypted DNS for your devices (DoT / DoH)</td><td>—</td><td class="y">✓</td><td class="us y">✓</td></tr>
+      <tr><td>DNSSEC validation</td><td class="y">✓</td><td class="y">✓</td><td class="us y">✓</td></tr>
+      <tr><td>Tiny memory footprint</td><td class="y">✓</td><td>—</td><td class="us y">✓</td></tr>
+      <tr><td>Per-question timing &amp; percentiles</td><td>—</td><td>—</td><td class="us y">✓</td></tr>
+      <tr><td>One cluster across a Pi and Kubernetes</td><td>—</td><td>heavy</td><td class="us y">✓</td></tr>
+      <tr><td>Prometheus metrics &amp; Grafana dashboard built in</td><td>—</td><td>—</td><td class="us y">✓</td></tr>
+      <tr><td>Safe AI-agent access (scoped tokens, MCP)</td><td>—</td><td>—</td><td class="us p">◐</td></tr>
+      <tr><td>Import from Pi-hole and Technitium</td><td>—</td><td>—</td><td class="us y">✓</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="muted">Performance claims will only be published from the project's reproducible side-by-side benchmark. The full reasoning is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/EXECUTIVE-SUMMARY.md">executive summary</a>.</p>
+  <p class="muted">Tiny footprint: our Raspberry Pi 4 node uses about 60 MB of memory with 2.7 million blocked names loaded. AI agents get read-only tools over MCP today; agent-made changes go through the scoped REST API, and MCP write tools come later. Throughput numbers come only from the project's reproducible benchmark (<a href="performance.html">Performance</a>). The full reasoning is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/EXECUTIVE-SUMMARY.md">executive summary</a>.</p>
+</section>
+
+<section>
+  <p class="eyebrow">The web UI</p>
+  <h2>Built into the binary</h2>
+  <p class="muted">A dashboard, a searchable query log with a "Why?" on every row, devices and groups, lists, upstreams, local names, and the cluster, in light or dark, on a desktop or a phone. <a href="performance.html#screens">More screenshots →</a></p>
+  <div class="shots">
+    <figure><img src="assets/shots/dashboard-light.jpg" alt="Dashboard: KPI tiles with changes and sparklines, and queries by status" width="1280" height="860" loading="lazy"><figcaption>Dashboard</figcaption></figure>
+    <figure><img src="assets/shots/queries-dark.jpg" alt="Query log with filters, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Query log (dark theme)</figcaption></figure>
+  </div>
 </section>
 
 <section>
@@ -125,7 +138,7 @@
     <figure class="figure">
       <svg viewBox="0 0 440 210" role="img">
         <title>Micro-benchmark timings of the hot path</title>
-        <text x="0" y="18" class="svg-text">Time per operation (micro-benchmarks, x86, preview build)</text>
+        <text x="0" y="18" class="svg-text">Time per operation (micro-benchmarks, x86)</text>
         <g>
           <text x="0" y="58" class="svg-sub">Copy + patch a cached answer</text>
           <rect x="190" y="44" width="10" height="20" rx="4" class="svg-ok"/><text x="206" y="59" class="svg-mono">5 ns</text>

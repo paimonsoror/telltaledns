@@ -67,11 +67,11 @@ cargo build --release
         </div>
         <div class="panel"><h3>Docker (preview: <code>edge</code>, built from main)</h3>
 <pre><code>docker run -d --name telltale --read-only --cap-drop ALL \
-  -p 53:53/udp -p 53:53/tcp -p 9153:9153 \
+  -p 53:53/udp -p 53:53/tcp -p 8053:8053 -p 9153:9153 \
   -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
   -v telltale-data:/var/lib/telltale \
   ghcr.io/paimonsoror/telltale:edge</code></pre>
-        <p class="muted">amd64, arm64 and arm/v7; about 3 MiB; runs as a non-root user.</p>
+        <p class="muted">amd64, arm64 and arm/v7; about 9 MiB compressed, web UI included; runs as a non-root user.</p>
         </div>
         <div class="panel"><h3>Raspberry Pi (Docker Compose or native)</h3>
 <pre><code># Docker Compose: host network, so every device shows up as itself
@@ -85,8 +85,8 @@ sudo sh install.sh --edge</code></pre>
         <p class="muted">Pi 3, 4, 5, and Zero 2 W. The installer checks the release signature and checksum before it installs anything; <code>telltale self-update</code> does the same later.</p>
         </div>
         <div class="panel"><h3>Kubernetes (Helm, one replica)</h3>
-<pre><code>git clone https://github.com/paimonsoror/telltaledns
-helm install telltale telltaledns/deploy/helm/telltale -n telltale --create-namespace
+<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --devel \
+  -n telltale --create-namespace        # --devel: pre-1.0 builds from main
 kubectl -n telltale get svc telltale-dns   # EXTERNAL-IP: hand this out in DHCP</code></pre>
         <p class="muted">One LoadBalancer for UDP and TCP 53 with <code>externalTrafficPolicy: Local</code>, so every device shows up with its own address. If something hides them anyway (a node, a Docker bridge, a router forwarding DNS), the UI says "client IPs appear masked" and links to the fix.</p>
         </div>
@@ -114,7 +114,7 @@ strategy = "fastest"</code></pre>
       <h3>Run and test</h3>
 <pre><code>sudo ./target/release/telltale run -c telltale.toml
 dig @127.0.0.1 example.com</code></pre>
-      <p class="muted">Then point your router's DHCP "DNS server" setting at this machine so every device uses it.</p>
+      <p class="muted">The first start prints a one-time setup token: open the web UI (port 8053 by default) and use it to create your admin. Then point your router's DHCP "DNS server" setting at this machine so every device uses it.</p>
     </div>
   </div>
 </section>
@@ -136,7 +136,7 @@ dig @127.0.0.1 example.com</code></pre>
     </figure>
     <div>
       <h2>Make it network-wide</h2>
-      <p class="muted">Most routers have a <b>DNS server</b> field under DHCP or LAN settings. Put TelltaleDNS's address there (and a second instance's, once clustering lands, for redundancy).</p>
+      <p class="muted">Most routers have a <b>DNS server</b> field under DHCP or LAN settings. Put TelltaleDNS's address there, and a second node's for redundancy: the two can form a <a href="install.html#hybrid">cluster</a> that shares one configuration.</p>
       <p><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">Full running guide →</a></p>
     </div>
   </div>
