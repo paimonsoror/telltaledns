@@ -415,6 +415,19 @@ tls_server_name = "dns.adguard-dns.com"
 - `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
 - Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`.
 
+### Client subnet (ECS)
+Some CDNs pick a server near the client by the subnet a resolver sends along (EDNS Client Subnet, RFC 7871). TelltaleDNS never sends your devices' subnets. When a far-away public resolver gets you slow CDN answers, you can send a subnet of your choice instead, for example your ISP's public block:
+```toml
+[[upstream]]
+name = "quad9-ecs"
+url = "tls://9.9.9.11"            # Quad9's ECS-enabled service
+tls_server_name = "dns11.quad9.net"
+ecs = "203.0.113.0/24"            # sent with every query (default: "strip", nothing sent)
+```
+- The same subnet goes with every query, so cached answers stay valid for everyone and no device's address leaves your network.
+- ECS options from your devices are never forwarded, and an upstream's ECS reply never reaches them.
+- *Not supported:* passing each client's own subnet through (`pass`).
+
 ### Through a proxy (Tor)
 Send an upstream's traffic through a SOCKS5 or HTTP proxy, for example Tor, so the resolver never sees your address:
 ```toml

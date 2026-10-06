@@ -1,0 +1,6 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>ECS: devices' subnets never leave; an upstream can be sent one fixed subnet instead</title>
+<rect x="20" y="14" width="280" height="30" rx="6" class="svg-box"/><text x="160" y="34" text-anchor="middle" class="svg-sub">device query (its ECS is dropped)</text>
+<rect x="20" y="50" width="280" height="30" rx="6" class="svg-ok" opacity=".75"/><text x="160" y="70" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">upstream query + ECS 203.0.113.0/24</text>
+<rect x="20" y="86" width="280" height="30" rx="6" class="svg-box"/><text x="160" y="106" text-anchor="middle" class="svg-sub">answer cached for everyone (same subnet)</text>
+<text x="160" y="138" text-anchor="middle" class="svg-sub">strip by default · fixed subnet per upstream</text>
+</svg>

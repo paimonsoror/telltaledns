@@ -450,5 +450,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* names in the zone answer AA; names it doesn't have get NXDOMAIN with an SOA; the apex and empty non-terminals get no data; a group view hides the zone from other groups (who get the public answer); the most specific zone wins; a zone file loads; config errors for unknown groups, records outside the zone, a zone with nothing in it.
   - *Done 2026-10-06:* `Zone` in the pipeline policy, loaded by `server::load_zones` (zone files through the importer's parser, inline records through `LocalData`), answered after identification and before filtering; `LocalData::has_below`; config and validation; test `dns_018_local_zones`; docs. *Not done:* serving SOA and NS records for the apex (a synthetic SOA is in negative answers), zone transfers.
 
+- [x] **T7.23 ECS.** *(DNS-015)* Per upstream: `ecs = "strip"` (default) or a subnet sent instead of the client's.
+  - *AC:* clients' ECS is never forwarded; with a subnet, every upstream query carries an RFC 7871 option with the address cut to the prefix (scope 0); upstream ECS replies never reach clients (the cache strips OPT); invalid values are config errors.
+  - *Done 2026-10-06:* `encode_query_with` and `ecs_option` in `telltale-upstream`, the option per upstream, router and validation; test `dns_015_ecs_substitute`; docs; standards (RFC 7871 supported). *Deferred:* `pass` (each client's subnet, which needs ECS-scoped cache keys).
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

@@ -178,12 +178,12 @@
     {
       "rfc": "7871",
       "title": "Client subnet in DNS queries (ECS)",
-      "status": "planned",
+      "status": "supported",
       "reqs": [
         "DNS-015"
       ],
-      "summary": "Strip (default), pass, or substitute per upstream. Never leaked by default — today it's always stripped.",
-      "diagram": "planned"
+      "summary": "Never leaked: clients' ECS is stripped, and an upstream can be given a fixed subnet to send instead (cache-safe). Passing each client's own subnet through isn't supported.",
+      "diagram": "rfc7871"
     },
     {
       "rfc": "9156",

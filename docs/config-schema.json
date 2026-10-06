@@ -2879,7 +2879,7 @@
           }
         },
         "ecs": {
-          "description": "ECS handling: `strip` (default), `pass`, or a CIDR to substitute (P1).",
+          "description": "REQ: DNS-015 (T7.23) — EDNS Client Subnet: `strip` (default: clients' subnets are\nnever sent) or a subnet to send instead (`203.0.113.0/24`), so CDNs answer for that\narea without learning client addresses.",
           "type": [
             "string",
             "null"

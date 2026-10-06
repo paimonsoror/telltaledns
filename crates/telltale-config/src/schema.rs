@@ -415,7 +415,9 @@ pub struct Upstream {
     /// `socks5://host:port` or `http://host:port` proxy (P1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<SafeString>,
-    /// ECS handling: `strip` (default), `pass`, or a CIDR to substitute (P1).
+    /// REQ: DNS-015 (T7.23) — EDNS Client Subnet: `strip` (default: clients' subnets are
+    /// never sent) or a subnet to send instead (`203.0.113.0/24`), so CDNs answer for that
+    /// area without learning client addresses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ecs: Option<SafeString>,
     /// Free-form labels.

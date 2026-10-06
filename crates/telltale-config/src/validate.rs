@@ -855,6 +855,16 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                         format!("use an absolute path, e.g. `{s}:///run/plugin`"),
                     );
                 }
+                // REQ: DNS-015 (T7.23)
+                if let Some(e) = &u.ecs
+                    && e.as_str() != "strip"
+                    && crate::Cidr::parse(e).is_err()
+                {
+                    r.err(
+                        format!("{p}.ecs"),
+                        "`strip` (the default: never sent) or a subnet to send instead of the client's, e.g. 203.0.113.0/24",
+                    );
+                }
                 // REQ: UPS-010 (T7.16)
                 if u.proxy.is_some() && !matches!(s, "tcp" | "tls" | "https") {
                     r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams (use tcp:// instead of udp://)");

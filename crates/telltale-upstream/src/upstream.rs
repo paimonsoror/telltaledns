@@ -83,6 +83,16 @@ pub fn is_own_loop_tag(q: &telltale_proto::Query<'_>) -> bool {
 /// Builds the outbound query: fresh ID, RD=1, our own OPT (client EDNS options such as ECS,
 /// cookies, and MAC are never forwarded) with the loop tag, CD copied from the client.
 pub fn encode_query(q: &Question, id: u16, out: &mut [u8]) -> Option<usize> {
+    encode_query_with(q, id, out, &[])
+}
+
+/// [`encode_query`] with `extra` EDNS options (already encoded) after the loop tag.
+pub(crate) fn encode_query_with(
+    q: &Question,
+    id: u16,
+    out: &mut [u8],
+    extra: &[u8],
+) -> Option<usize> {
     let edns = EdnsOut {
         udp_payload: UPSTREAM_EDNS_PAYLOAD,
         dnssec_ok: q.dnssec_ok,
@@ -93,17 +103,49 @@ pub fn encode_query(q: &Question, id: u16, out: &mut [u8]) -> Option<usize> {
         let f = header::flags(out).with(FlagBit::Cd, true);
         header::set_flags(out, f);
     }
+    // The OPT record is last with RDLENGTH 0 in its final two bytes: append the options.
+    let rdlen_at = len - 2;
+    let mut rdlen = 0u16;
     if let Some(tag) = NODE_TAG.get() {
-        // The OPT record is last with RDLENGTH 0 in its final two bytes: append the option.
-        const OPT_LEN: u16 = 4 + 8;
-        let dst = out.get_mut(len..len + usize::from(OPT_LEN))?;
+        let dst = out.get_mut(len..len + 12)?;
         dst[..2].copy_from_slice(&opt::TELLTALE_LOOP.to_be_bytes());
         dst[2..4].copy_from_slice(&8u16.to_be_bytes());
         dst[4..].copy_from_slice(tag);
-        out[len - 2..len].copy_from_slice(&OPT_LEN.to_be_bytes());
-        len += usize::from(OPT_LEN);
+        len += 12;
+        rdlen += 12;
     }
+    if !extra.is_empty() {
+        out.get_mut(len..len + extra.len())?.copy_from_slice(extra);
+        len += extra.len();
+        rdlen += u16::try_from(extra.len()).ok()?;
+    }
+    out[rdlen_at..rdlen_at + 2].copy_from_slice(&rdlen.to_be_bytes());
     Some(len)
+}
+
+/// REQ: DNS-015 (T7.23) — the EDNS Client Subnet option (RFC 7871 §6) announcing `subnet`
+/// instead of the client: family, source prefix, scope 0, and the address cut to the prefix.
+pub(crate) fn ecs_option(addr: std::net::IpAddr, prefix: u8) -> Vec<u8> {
+    let (family, bytes, max): (u16, Vec<u8>, u8) = match addr {
+        std::net::IpAddr::V4(a) => (1, a.octets().to_vec(), 32),
+        std::net::IpAddr::V6(a) => (2, a.octets().to_vec(), 128),
+    };
+    let prefix = prefix.min(max);
+    let n = usize::from(prefix.div_ceil(8));
+    let mut a = bytes[..n].to_vec();
+    if prefix % 8 != 0
+        && let Some(last) = a.last_mut()
+    {
+        *last &= 0xff << (8 - prefix % 8);
+    }
+    let mut o = Vec::with_capacity(8 + n);
+    o.extend_from_slice(&opt::ECS.to_be_bytes());
+    o.extend_from_slice(&u16::try_from(4 + n).unwrap_or(0).to_be_bytes());
+    o.extend_from_slice(&family.to_be_bytes());
+    o.push(prefix);
+    o.push(0);
+    o.extend(a);
+    o
 }
 
 /// Accepts a response only if it answers exactly our query: same ID, QR=1, QUERY opcode,
@@ -146,6 +188,8 @@ pub struct UpstreamOptions {
     pub recursive: telltale_recursor::Settings,
     /// REQ: UPS-010 — connect through this proxy (TCP-based protocols).
     pub proxy: Option<Arc<crate::proxy::Proxy>>,
+    /// REQ: DNS-015 (T7.23) — an ECS option sent instead of the client's subnet.
+    pub ecs: Option<Vec<u8>>,
     /// REQ: UPS-011 — this upstream's CA, client certificate, and pins.
     pub tls: crate::tls::UpstreamTls,
     /// REQ: UPS-011 — `exec://`: the program's arguments, and the directory for its socket.
@@ -166,6 +210,7 @@ impl Default for UpstreamOptions {
             bootstrap: None,
             recursive: telltale_recursor::Settings::default(),
             proxy: None,
+            ecs: None,
             plugin_args: Vec::new(),
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
@@ -247,6 +292,8 @@ pub struct Upstream {
     pub health: Health,
     target: Arc<Target>,
     transport: Transport,
+    /// REQ: DNS-015 — the ECS option added to every query (substitute mode).
+    ecs: Option<Vec<u8>>,
 }
 
 /// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
@@ -484,6 +531,7 @@ impl Upstream {
             health: Health::default(),
             target,
             transport,
+            ecs: opts.ecs.clone(),
         })
     }
 
@@ -566,7 +614,8 @@ impl Upstream {
             rand::random()
         };
         let mut buf = [0u8; 512];
-        let len = encode_query(q, id, &mut buf).ok_or(ExchangeError::BadResponse)?;
+        let len = encode_query_with(q, id, &mut buf, self.ecs.as_deref().unwrap_or_default())
+            .ok_or(ExchangeError::BadResponse)?;
         let query = &buf[..len];
         let resp = match &self.transport {
             Transport::Udp { tcp } => {
@@ -634,5 +683,42 @@ async fn udp_exchange(addr: SocketAddr, query: &[u8], id: u16) -> Result<Vec<u8>
             return Ok(buf);
         }
         // Mismatched or malformed: ignore and keep waiting (possible spoofing attempt).
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REQ: DNS-015 (T7.23) — the substitute ECS option (RFC 7871 §6): family, prefix, scope
+    /// 0, the address cut to the prefix; appended to the query's OPT with the right length.
+    #[test]
+    fn dns_015_ecs_substitute() {
+        let o = ecs_option("203.0.113.77".parse().unwrap(), 24);
+        assert_eq!(o, vec![0, 8, 0, 7, 0, 1, 24, 0, 203, 0, 113]);
+        let o = ecs_option("2001:db8:abcd:ef01::1".parse().unwrap(), 50);
+        assert_eq!(&o[4..8], &[0, 2, 50, 0]);
+        assert_eq!(
+            &o[8..],
+            &[0x20, 0x01, 0x0d, 0xb8, 0xab, 0xcd, 0xc0],
+            "the last byte keeps 2 bits"
+        );
+        let q = Question {
+            name: telltale_proto::NameBuf::from_presentation("example.com").unwrap(),
+            qtype: telltale_proto::rtype::A,
+            qclass: 1,
+            dnssec_ok: false,
+            checking_disabled: false,
+        };
+        let mut buf = [0u8; 512];
+        let ecs = ecs_option("203.0.113.0".parse().unwrap(), 24);
+        let len = encode_query_with(&q, 7, &mut buf, &ecs).unwrap();
+        let parsed = telltale_proto::parse_query(&buf[..len]).unwrap();
+        let edns = parsed.edns.unwrap();
+        assert_eq!(edns.client_subnet(), Some(&ecs[4..]));
+        // Without an option, no ECS (strip).
+        let len = encode_query(&q, 7, &mut buf).unwrap();
+        let parsed = telltale_proto::parse_query(&buf[..len]).unwrap();
+        assert!(parsed.edns.unwrap().client_subnet().is_none());
     }
 }

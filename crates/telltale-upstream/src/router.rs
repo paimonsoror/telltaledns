@@ -60,6 +60,17 @@ impl Router {
     }
 }
 
+/// REQ: DNS-015 (T7.23) — the ECS option to send: none for `strip` (the default), else the
+/// configured subnet's.
+fn ecs_option_for(u: &telltale_config::Upstream) -> Result<Option<Vec<u8>>, ()> {
+    match u.ecs.as_deref() {
+        None | Some("strip") => Ok(None),
+        Some(cidr) => telltale_config::Cidr::parse(cidr)
+            .map(|c| Some(crate::upstream::ecs_option(c.addr, c.prefix)))
+            .map_err(|_| ()),
+    }
+}
+
 /// REQ: UPS-011 (T7.16) — an upstream's TLS files, read now (a reload re-reads them).
 fn upstream_tls(u: &telltale_config::Upstream) -> Result<crate::tls::UpstreamTls, String> {
     use rustls::pki_types::pem::PemObject;
@@ -136,9 +147,13 @@ fn build_upstreams<'c>(
                 continue;
             }
         };
-        if u.ecs.as_deref().is_some_and(|e| e != "strip") {
-            errors.push(format!("upstream `{}`: `ecs` is not supported yet", u.name));
-        }
+        let Ok(ecs) = ecs_option_for(u) else {
+            errors.push(format!(
+                "upstream `{}`: `ecs` is `strip` or a subnet to send instead of the client's (e.g. `203.0.113.0/24`)",
+                u.name
+            ));
+            continue;
+        };
         let bootstrap = match (&ep.host, u.bootstrap.is_empty()) {
             (Host::Ip(_), _) => None,
             // The proxy resolves the name (REQ: UPS-010).
@@ -175,6 +190,7 @@ fn build_upstreams<'c>(
                 .collect(),
             bootstrap,
             proxy,
+            ecs,
             // REQ: UPS-011 (T7.16)
             tls: up_tls,
             plugin_args: u.args.iter().map(ToString::to_string).collect(),
