@@ -733,6 +733,9 @@ impl Backend for Federated {
     fn local_names(&self) -> Vec<LocalName> {
         self.local.local_names()
     }
+    fn zones(&self) -> Vec<telltale_api::model::ZoneInfo> {
+        self.local.zones()
+    }
     // REQ: AGT-012 — this node's log and the logs shipped to it (CLU-007).
     fn vqlog(
         &self,

@@ -1444,6 +1444,28 @@ export interface paths {
         patch: operations["update_user"];
         trace?: never;
     };
+    "/api/v1/zones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Authoritative zones (DNS-018).
+         * @description The zones from `[[zone]]` in the configuration files: TelltaleDNS answers everything under
+         *     each one itself (NXDOMAIN for names it doesn't have), for the listed groups only when
+         *     `groups` is set (split horizon). Read-only here; zones live in the files.
+         */
+        get: operations["zones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2278,7 +2300,10 @@ export interface components {
             mac: string;
             /** @description A reservation (`[[dhcp.reservation]]`). */
             reserved: boolean;
-            /** @description `dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`). */
+            /**
+             * @description `dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the
+             *     name the device announces, `[clients] mdns`; no MAC).
+             */
             source: string;
         };
         ExplainBlock: {
@@ -2374,6 +2399,7 @@ export interface components {
         };
         /** @description A client group. */
         GroupInfo: {
+            blockAnswerIps: string[];
             /** @description `null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`. */
             blockMode: string;
             /** Format: int32 */
@@ -2392,6 +2418,12 @@ export interface components {
              * @description Devices seen in the group this hour.
              */
             devicesThisHour: number;
+            /**
+             * @description REQ: DNS-016 (T7.21) — AAAA answers synthesized for IPv4-only names (DNS64), and the
+             *     prefix (`64:ff9b::/96` unless set).
+             */
+            dns64: boolean;
+            dns64Prefix?: string | null;
             /** @description Lists this group uses; null means every enabled list. */
             lists?: string[] | null;
             name: string;
@@ -2409,6 +2441,13 @@ export interface components {
              * @description Queries from the group's devices over the last 24 hours.
              */
             queries24h: number;
+            /**
+             * @description REQ: FLT-014 (T7.20) — private addresses in public answers are blocked (DNS
+             *     rebinding protection), and the networks whose answers are filtered.
+             */
+            rebindingProtection: boolean;
+            /** @description REQ: FLT-015 (T7.20) — names answered with a fixed address or name. */
+            rewrites: components["schemas"]["RewriteInfo"][];
             /**
              * @description REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,
              *     or `off` (absent when safe search is off).
@@ -2718,7 +2757,10 @@ export interface components {
                 mac: string;
                 /** @description A reservation (`[[dhcp.reservation]]`). */
                 reserved: boolean;
-                /** @description `dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`). */
+                /**
+                 * @description `dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the
+                 *     name the device announces, `[clients] mdns`; no MAC).
+                 */
                 source: string;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
@@ -2740,6 +2782,7 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_GroupInfo: {
             items: {
+                blockAnswerIps: string[];
                 /** @description `null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`. */
                 blockMode: string;
                 /** Format: int32 */
@@ -2758,6 +2801,12 @@ export interface components {
                  * @description Devices seen in the group this hour.
                  */
                 devicesThisHour: number;
+                /**
+                 * @description REQ: DNS-016 (T7.21) — AAAA answers synthesized for IPv4-only names (DNS64), and the
+                 *     prefix (`64:ff9b::/96` unless set).
+                 */
+                dns64: boolean;
+                dns64Prefix?: string | null;
                 /** @description Lists this group uses; null means every enabled list. */
                 lists?: string[] | null;
                 name: string;
@@ -2775,6 +2824,13 @@ export interface components {
                  * @description Queries from the group's devices over the last 24 hours.
                  */
                 queries24h: number;
+                /**
+                 * @description REQ: FLT-014 (T7.20) — private addresses in public answers are blocked (DNS
+                 *     rebinding protection), and the networks whose answers are filtered.
+                 */
+                rebindingProtection: boolean;
+                /** @description REQ: FLT-015 (T7.20) — names answered with a fixed address or name. */
+                rewrites: components["schemas"]["RewriteInfo"][];
                 /**
                  * @description REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,
                  *     or `off` (absent when safe search is off).
@@ -3054,6 +3110,32 @@ export interface components {
                 name: string;
                 /** Format: int64 */
                 requests: number;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_ZoneInfo: {
+            items: {
+                /** @description The zone file, when it has one. */
+                file?: string | null;
+                /** @description Groups that see it (split horizon); empty: everyone. */
+                groups: string[];
+                /**
+                 * @description The apex.
+                 * @example home.example.com
+                 */
+                name: string;
+                /**
+                 * Format: int32
+                 * @description TTL of its NXDOMAIN and no-data answers.
+                 */
+                negativeTtlSeconds: number;
+                /**
+                 * Format: int64
+                 * @description Records loaded (from the file and inline).
+                 */
+                records: number;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -3438,6 +3520,16 @@ export interface components {
         /** @description Single-use recovery codes, shown once. */
         RecoveryCodes: {
             codes: string[];
+        };
+        /** @description A group's rewrite: `domain` (or `*.domain`) answered with `answer`. */
+        RewriteInfo: {
+            /**
+             * @description An address, or a name (answered as a CNAME).
+             * @example 192.168.1.20
+             */
+            answer: string;
+            /** @example nas.example.com */
+            domain: string;
         };
         /**
          * @description What a user may do (`spec/08` §6).
@@ -3830,6 +3922,28 @@ export interface components {
             /** @description The scan stopped early (`truncatedReason` says why); the numbers cover what it read. */
             truncated: boolean;
             truncatedReason?: string | null;
+        };
+        /** @description REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`. */
+        ZoneInfo: {
+            /** @description The zone file, when it has one. */
+            file?: string | null;
+            /** @description Groups that see it (split horizon); empty: everyone. */
+            groups: string[];
+            /**
+             * @description The apex.
+             * @example home.example.com
+             */
+            name: string;
+            /**
+             * Format: int32
+             * @description TTL of its NXDOMAIN and no-data answers.
+             */
+            negativeTtlSeconds: number;
+            /**
+             * Format: int64
+             * @description Records loaded (from the file and inline).
+             */
+            records: number;
         };
     };
     responses: never;
@@ -6471,6 +6585,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    zones: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ZoneInfo"];
                 };
             };
         };

@@ -135,6 +135,12 @@ export const api = {
   // REQ: OBS-009 (T7.14)
   newDomains: (since = '-24h', limit = 200) =>
     get<S['Items_NewDomain']>('/analytics/new-domains', { since, limit: String(limit) }),
+  // REQ: AGT-012 (T8.6) — vqlog, from the Analyze page.
+  vqlog: (q: string, dryRun = false) => get<S['VqlogResult']>('/analytics/vqlog', { q, dryRun: dryRun ? 'true' : undefined }),
+  // REQ: OPS-008, T8.2, T8.3 — device names from DHCP, routers, and mDNS.
+  dhcpLeases: () => get<S['Items_DhcpLease']>('/dhcp/leases'),
+  // REQ: DNS-018 (T8.6)
+  zones: () => get<S['Items_ZoneInfo']>('/zones'),
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
   localNames: () => get<S['Items_LocalName']>('/records'),

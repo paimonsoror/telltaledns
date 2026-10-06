@@ -51,10 +51,12 @@
     done = '';
     loading = true;
     try {
-      const [c, g] = await Promise.all([api.clients(), api.groups()]);
+      // REQ: API-010 (T8.6) — suggest the name the device gave DHCP, the router, or mDNS.
+      const [c, g, leases] = await Promise.all([api.clients(), api.groups(), api.dhcpLeases().catch(() => null)]);
       groups = g.items;
       existing = c.items.find((x) => x.match.includes(ip)) ?? null;
-      newName = existing?.name ?? name ?? '';
+      const suggested = leases?.items.find((l) => l.ip === ip)?.hostname;
+      newName = existing?.name ?? name ?? suggested ?? '';
       chosen = existing ? [...existing.groups] : ['default'];
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);

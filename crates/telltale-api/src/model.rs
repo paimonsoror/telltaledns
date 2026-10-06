@@ -651,6 +651,46 @@ pub struct GroupInfo {
     pub safe_search: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub youtube_restrict: Option<String>,
+    /// REQ: FLT-014 (T7.20) — private addresses in public answers are blocked (DNS
+    /// rebinding protection), and the networks whose answers are filtered.
+    pub rebinding_protection: bool,
+    pub block_answer_ips: Vec<String>,
+    /// REQ: FLT-015 (T7.20) — names answered with a fixed address or name.
+    pub rewrites: Vec<RewriteInfo>,
+    /// REQ: DNS-016 (T7.21) — AAAA answers synthesized for IPv4-only names (DNS64), and the
+    /// prefix (`64:ff9b::/96` unless set).
+    pub dns64: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns64_prefix: Option<String>,
+}
+
+/// A group's rewrite: `domain` (or `*.domain`) answered with `answer`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteInfo {
+    #[schema(example = "nas.example.com")]
+    pub domain: String,
+    /// An address, or a name (answered as a CNAME).
+    #[schema(example = "192.168.1.20")]
+    pub answer: String,
+}
+
+/// REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneInfo {
+    /// The apex.
+    #[schema(example = "home.example.com")]
+    pub name: String,
+    /// Groups that see it (split horizon); empty: everyone.
+    pub groups: Vec<String>,
+    /// Records loaded (from the file and inline).
+    pub records: u64,
+    /// The zone file, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// TTL of its NXDOMAIN and no-data answers.
+    pub negative_ttl_seconds: u32,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.
@@ -1219,7 +1259,8 @@ pub struct DhcpLease {
     pub expires_unix_seconds: u64,
     /// A reservation (`[[dhcp.reservation]]`).
     pub reserved: bool,
-    /// `dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`).
+    /// `dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the
+    /// name the device announces, `[clients] mdns`; no MAC).
     pub source: String,
 }
 

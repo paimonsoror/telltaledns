@@ -337,10 +337,10 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "get_config",
-            description: "Read-only. One section of the running configuration, as the API shows it (no secrets): groups, lists, devices (clients), upstreams, local names (records), or forwarded domains (forwards). Also returns system information.",
+            description: "Read-only. One section of the running configuration, as the API shows it (no secrets): groups, lists, devices (clients), upstreams, local names (records), authoritative zones (zones), or forwarded domains (forwards). Also returns system information.",
             input_schema: || {
                 json!({"type": "object", "properties": {
-                "section": {"type": "string", "enum": ["groups", "lists", "clients", "upstreams", "records", "forwards"], "description": "Which section."}
+                "section": {"type": "string", "enum": ["groups", "lists", "clients", "upstreams", "records", "zones", "forwards"], "description": "Which section."}
             }, "required": ["section"], "additionalProperties": false})
             },
             calls: |a| {
@@ -351,6 +351,7 @@ pub fn tools() -> Vec<Tool> {
                     "clients",
                     "upstreams",
                     "records",
+                    "zones",
                     "forwards",
                 ]
                 .contains(&section.as_str())

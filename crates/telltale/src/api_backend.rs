@@ -1179,6 +1179,30 @@ impl Backend for ApiBackend {
                     .find(|(n, _)| n.as_deref() == Some(&*g.name))
                     .map(|(_, u)| *u)
                     .max(global),
+                rebinding_protection: false,
+                block_answer_ips: Vec::new(),
+                rewrites: Vec::new(),
+                dns64: false,
+                dns64_prefix: None,
+            })
+            // REQ: T8.6 — answer filtering, rewrites, DNS64 (from the group's config).
+            .map(|mut info| {
+                if let Some(c) = cfg.group.iter().find(|x| x.name.as_str() == info.name) {
+                    info.rebinding_protection = c.rebinding_protection;
+                    info.block_answer_ips =
+                        c.block_answer_ips.iter().map(ToString::to_string).collect();
+                    info.rewrites = c
+                        .rewrite
+                        .iter()
+                        .map(|r| telltale_api::model::RewriteInfo {
+                            domain: r.domain.to_string(),
+                            answer: r.answer.to_string(),
+                        })
+                        .collect();
+                    info.dns64 = c.dns64;
+                    info.dns64_prefix = c.dns64_prefix.as_ref().map(ToString::to_string);
+                }
+                info
             })
             .collect()
     }
@@ -1269,6 +1293,22 @@ impl Backend for ApiBackend {
                 source: "router".to_owned(),
             });
         }
+        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (leases and routers win).
+        let known: std::collections::HashSet<String> = v.iter().map(|l| l.ip.clone()).collect();
+        for l in self.src.pipeline.mdns_names.load().values() {
+            if known.contains(&l.ip.to_string()) {
+                continue;
+            }
+            v.push(telltale_api::model::DhcpLease {
+                mac: String::new(),
+                ip: l.ip.to_string(),
+                hostname: l.hostname.clone(),
+                client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
+                expires_unix_seconds: 0,
+                reserved: false,
+                source: "mdns".to_owned(),
+            });
+        }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
         v
     }
@@ -1355,6 +1395,41 @@ impl Backend for ApiBackend {
     // REQ: API-011 — names on my network and domains sent elsewhere (ADR-042).
     fn local_names(&self) -> Vec<LocalName> {
         self.list_local_names()
+    }
+
+    // REQ: DNS-018 (T8.6) — the zones as loaded.
+    fn zones(&self) -> Vec<telltale_api::model::ZoneInfo> {
+        let cfg = self.src.config.load();
+        let mut v: Vec<telltale_api::model::ZoneInfo> = self
+            .src
+            .pipeline
+            .current()
+            .policy
+            .zones
+            .iter()
+            .map(|z| {
+                let name = z.apex.display().to_string().trim_end_matches('.').to_owned();
+                let file = cfg
+                    .zone
+                    .iter()
+                    .find(|c| {
+                        c.name
+                            .as_str()
+                            .trim_end_matches('.')
+                            .eq_ignore_ascii_case(&name)
+                    })
+                    .and_then(|c| c.file.as_ref().map(ToString::to_string));
+                telltale_api::model::ZoneInfo {
+                    groups: z.groups.iter().map(ToString::to_string).collect(),
+                    records: z.data.len() as u64,
+                    file,
+                    negative_ttl_seconds: z.negative_ttl,
+                    name,
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        v
     }
 
     fn forwards(&self) -> Vec<ForwardInfo> {

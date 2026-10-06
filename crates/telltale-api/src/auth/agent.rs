@@ -147,6 +147,7 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/clients"
             | "/api/v1/upstreams"
             | "/api/v1/records"
+            | "/api/v1/zones"
             | "/api/v1/forwards"
             | "/api/v1/rules"
             | "/api/v1/config/entries" => {

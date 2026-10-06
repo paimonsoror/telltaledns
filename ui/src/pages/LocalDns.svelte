@@ -14,6 +14,8 @@
 
   let names = $state<S['LocalName'][]>([]);
   let forwards = $state<S['ForwardInfo'][]>([]);
+  // REQ: DNS-018 (T7.22) — zones from the config files (shown since T8.6).
+  let zones = $state<S['ZoneInfo'][]>([]);
   let error = $state<unknown>(null);
   const canEdit = $derived(session.user?.role === 'admin' || session.user?.role === 'operator');
   const advanced = $derived(currentMode() === 'advanced');
@@ -27,6 +29,10 @@
         error = null;
       })
       .catch((e) => (error = e));
+    api
+      .zones()
+      .then((z) => (zones = z.items))
+      .catch(() => (zones = []));
   }
   $effect(load);
 
@@ -193,6 +199,32 @@
       </div>
     </section>
   {/each}
+
+  {#if zones.length}
+    <section class="card" data-testid="zones">
+      <h2>Zones</h2>
+      <p class="muted small">
+        TelltaleDNS answers everything under these domains itself, from the configuration files (<code>[[zone]]</code>):
+        names it doesn't have get “no such name”. A zone limited to groups is seen only by their devices.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Zone</th><th class="num">Records</th><th>Seen by</th><th>From</th><th></th></tr></thead>
+          <tbody>
+            {#each zones as z (z.name)}
+              <tr>
+                <td class="mono">{z.name}</td>
+                <td class="num">{z.records}</td>
+                <td class="small">{z.groups.length ? z.groups.join(', ') : 'everyone'}</td>
+                <td class="small mono">{z.file ?? 'config file'}</td>
+                <td class="num"><a class="small" href={href('/explain', { name: z.name, client: '127.0.0.1' })}>Test</a></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {/if}
 
   <section class="card">
     <h2>Domains sent to other servers<HelpButton id="routes" /></h2>

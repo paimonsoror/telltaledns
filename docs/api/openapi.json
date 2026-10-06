@@ -3680,6 +3680,28 @@
           }
         }
       }
+    },
+    "/api/v1/zones": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Authoritative zones (DNS-018).",
+        "description": "The zones from `[[zone]]` in the configuration files: TelltaleDNS answers everything under\neach one itself (NXDOMAIN for names it doesn't have), for the listed groups only when\n`groups` is set (split horizon). Read-only here; zones live in the files.",
+        "operationId": "zones",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ZoneInfo"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5690,7 +5712,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`)."
+            "description": "`dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the\nname the device announces, `[clients] mdns`; no MAC)."
           }
         }
       },
@@ -6015,9 +6037,19 @@
           "blockedServices",
           "schedules",
           "schedulesOn",
-          "safeSearch"
+          "safeSearch",
+          "rebindingProtection",
+          "blockAnswerIps",
+          "rewrites",
+          "dns64"
         ],
         "properties": {
+          "blockAnswerIps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "blockMode": {
             "type": "string",
             "description": "`null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`."
@@ -6049,6 +6081,16 @@
             "format": "int64",
             "description": "Devices seen in the group this hour.",
             "minimum": 0
+          },
+          "dns64": {
+            "type": "boolean",
+            "description": "REQ: DNS-016 (T7.21) — AAAA answers synthesized for IPv4-only names (DNS64), and the\nprefix (`64:ff9b::/96` unless set)."
+          },
+          "dns64Prefix": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "lists": {
             "type": [
@@ -6088,6 +6130,17 @@
             "format": "int64",
             "description": "Queries from the group's devices over the last 24 hours.",
             "minimum": 0
+          },
+          "rebindingProtection": {
+            "type": "boolean",
+            "description": "REQ: FLT-014 (T7.20) — private addresses in public answers are blocked (DNS\nrebinding protection), and the networks whose answers are filtered."
+          },
+          "rewrites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RewriteInfo"
+            },
+            "description": "REQ: FLT-015 (T7.20) — names answered with a fixed address or name."
           },
           "safeSearch": {
             "type": "boolean",
@@ -6948,7 +7001,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "description": "`dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`)."
+                  "description": "`dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the\nname the device announces, `[clients] mdns`; no MAC)."
                 }
               }
             }
@@ -7032,9 +7085,19 @@
                 "blockedServices",
                 "schedules",
                 "schedulesOn",
-                "safeSearch"
+                "safeSearch",
+                "rebindingProtection",
+                "blockAnswerIps",
+                "rewrites",
+                "dns64"
               ],
               "properties": {
+                "blockAnswerIps": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
                 "blockMode": {
                   "type": "string",
                   "description": "`null_ip`, `nxdomain`, `nodata`, `refused`, or `custom_ip`."
@@ -7066,6 +7129,16 @@
                   "format": "int64",
                   "description": "Devices seen in the group this hour.",
                   "minimum": 0
+                },
+                "dns64": {
+                  "type": "boolean",
+                  "description": "REQ: DNS-016 (T7.21) — AAAA answers synthesized for IPv4-only names (DNS64), and the\nprefix (`64:ff9b::/96` unless set)."
+                },
+                "dns64Prefix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "lists": {
                   "type": [
@@ -7105,6 +7178,17 @@
                   "format": "int64",
                   "description": "Queries from the group's devices over the last 24 hours.",
                   "minimum": 0
+                },
+                "rebindingProtection": {
+                  "type": "boolean",
+                  "description": "REQ: FLT-014 (T7.20) — private addresses in public answers are blocked (DNS\nrebinding protection), and the networks whose answers are filtered."
+                },
+                "rewrites": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RewriteInfo"
+                  },
+                  "description": "REQ: FLT-015 (T7.20) — names answered with a fixed address or name."
                 },
                 "safeSearch": {
                   "type": "boolean",
@@ -7908,6 +7992,68 @@
                 "requests": {
                   "type": "integer",
                   "format": "int64",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_ZoneInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`.",
+              "required": [
+                "name",
+                "groups",
+                "records",
+                "negativeTtlSeconds"
+              ],
+              "properties": {
+                "file": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The zone file, when it has one."
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Groups that see it (split horizon); empty: everyone."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "The apex.",
+                  "example": "home.example.com"
+                },
+                "negativeTtlSeconds": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "TTL of its NXDOMAIN and no-data answers.",
+                  "minimum": 0
+                },
+                "records": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Records loaded (from the file and inline).",
                   "minimum": 0
                 }
               }
@@ -8910,6 +9056,25 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "RewriteInfo": {
+        "type": "object",
+        "description": "A group's rewrite: `domain` (or `*.domain`) answered with `answer`.",
+        "required": [
+          "domain",
+          "answer"
+        ],
+        "properties": {
+          "answer": {
+            "type": "string",
+            "description": "An address, or a name (answered as a CNAME).",
+            "example": "192.168.1.20"
+          },
+          "domain": {
+            "type": "string",
+            "example": "nas.example.com"
           }
         }
       },
@@ -9918,6 +10083,49 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ZoneInfo": {
+        "type": "object",
+        "description": "REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`.",
+        "required": [
+          "name",
+          "groups",
+          "records",
+          "negativeTtlSeconds"
+        ],
+        "properties": {
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The zone file, when it has one."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Groups that see it (split horizon); empty: everyone."
+          },
+          "name": {
+            "type": "string",
+            "description": "The apex.",
+            "example": "home.example.com"
+          },
+          "negativeTtlSeconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "TTL of its NXDOMAIN and no-data answers.",
+            "minimum": 0
+          },
+          "records": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Records loaded (from the file and inline).",
+            "minimum": 0
           }
         }
       }

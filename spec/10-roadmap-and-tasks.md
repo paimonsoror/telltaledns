@@ -467,7 +467,11 @@ M7 is complete apart from the deferrals noted in each task (and T6.14's soak che
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).
 
-Beaconing detection shipped in T3.13 (the anomaly engine). io_uring was measured against the batched `recvmmsg`/`sendmmsg` path and not adopted (ADR-083, Proposed: no measurable gain). WASM upstream plugins: the size measurement is pending; the process plugins from T7.16 cover the use case meanwhile.
+Beaconing detection shipped in T3.13 (the anomaly engine). io_uring was measured against the batched `recvmmsg`/`sendmmsg` path and not adopted (ADR-083, Proposed: no measurable gain). WASM upstream plugins were measured and deferred (ADR-084, Proposed: wasmtime would add 3.3 MiB compressed, wasmi 0.6 MiB; the process plugins from T7.16 cover the use case). **M8 is complete.**
+
+- [x] **T8.6 The newer features in the UI.** *(AGT-012, API-010, FLT-014, FLT-015, DNS-016, DNS-018)* An Analyze page for vqlog; devices found by DHCP, routers, and mDNS on Clients, with their names suggested when naming a device (the suggestion T3.10 deferred); answer filtering, rewrites, and DNS64 on group cards and in the group editor; zones on "Names on my network".
+  - *AC:* Playwright: Analyze runs a query (linked results, "as understood", cost), estimates without scanning, and shows a mistake's hint; an mDNS announcement shows under Discovered and its name is suggested; a group's DNS64, rewrites, and rebinding settings show on its card; a zone lists with its groups.
+  - *Done 2026-10-06:* `ui/src/pages/Analyze.svelte`; Clients, ClientChip, Groups, and LocalDns changes; API: mDNS names in `GET /dhcp/leases` (`source = mdns`), `GroupInfo` gains `rebindingProtection`, `blockAnswerIps`, `rewrites`, `dns64`, `dns64Prefix`, and `GET /api/v1/zones` (also a `get_config` section for agents); OpenAPI, MCP catalog, and UI types regenerated; Playwright `agt_012 analyze page` and `t8_6 discovered devices, group settings, and zones`; docs.
 
 - [x] **T8.1 Cache-warm hints.** *(CLU-011)* A node joining a cluster resolves the cluster's hot names in the background.
   - *AC:* once the cluster's configuration is applied, the node takes the merged top queried names (this hour and the last, from the other nodes) and resolves up to `[cache] warm_names` of them, A and AAAA, paced, through the normal upstream path without query events; off with `0`; never on the DNS path.

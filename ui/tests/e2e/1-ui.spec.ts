@@ -69,7 +69,7 @@ test('dashboard shows traffic and top blocked names', async () => {
   for (let i = 0; i < 3; i++) expect(await query('nas.e2e.test')).toBe(0);
   await expect(async () => {
     await page.reload();
-    await expect(page.getByRole('link', { name: 'ads.e2e.test' }).first()).toBeVisible({ timeout: 2000 });
+    await expect(page.getByRole('link', { name: 'ads.e2e.test', exact: true }).first()).toBeVisible({ timeout: 2000 });
   }).toPass({ timeout: 20_000 });
   await expect(page.getByText('Queries by status')).toBeVisible();
   // Every chart has a table view.
@@ -859,4 +859,68 @@ test('api_002 upstreams and lists can be added, overridden, and reverted', async
   expect(await overrides()).toEqual(['list:e2e-extra:added']);
   expect((await r.delete('/api/v1/lists/e2e-extra', { headers: h })).status()).toBe(200);
   expect(await overrides()).toEqual([]);
+});
+
+// REQ: AGT-012 (T8.6) — the Analyze page runs vqlog: a top list linked to the query log, a cost
+// estimate without scanning, and a mistake shown with its hint.
+test('agt_012 analyze page', async () => {
+  for (let i = 0; i < 3; i++) await query('ads.e2e.test').catch(() => -1);
+  await page.goto('/#/analyze?q=' + encodeURIComponent('from -1h | where status = blocked | top 5 name'));
+  const result = page.getByTestId('vqlog-result');
+  await expect(async () => {
+    await page.getByRole('button', { name: 'Run' }).click();
+    await expect(result.getByRole('link', { name: 'ads.e2e.test', exact: true })).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(result).toContainText('As understood: from -1h | where status = blocked | by name | stats count');
+  await expect(page.getByTestId('vqlog-cost')).toContainText('Matched');
+  await page.getByRole('button', { name: 'Estimate cost' }).click();
+  await expect(page.getByTestId('vqlog-cost')).toContainText('Estimate: up to');
+  await page.getByLabel('vqlog query').fill('top 5 colour');
+  await page.getByLabel('vqlog query').press('Control+Enter');
+  await expect(page.getByRole('alert')).toContainText('unknown key');
+  await expect(page.getByRole('alert')).toContainText('Keys: name, domain');
+  // The browser logs that 400; it's the expected answer to the typo, not a page problem.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 400')) problems.splice(i, 1);
+  // An example chip fills the box and runs it.
+  await page.getByRole('button', { name: 'Queries per hour, with latency' }).click();
+  await expect(result.locator('thead')).toContainText('p95(latency)');
+});
+
+// REQ: T8.3, API-010 (T8.6) — a device found over mDNS shows under Discovered and its name is
+// suggested when naming it; groups show answer settings; zones are listed.
+test('t8_6 discovered devices, group settings, and zones', async () => {
+  const { createSocket } = await import('node:dgram');
+  const label = (s: string) => [Buffer.from([s.length]), Buffer.from(s)];
+  const msg = Buffer.concat([
+    Buffer.from([0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
+    ...label('printer-e2e'),
+    ...label('local'),
+    Buffer.from([0, 0, 1, 0x80, 1, 0, 0, 0, 120, 0, 4, 127, 0, 0, 9]),
+  ]);
+  const sock = createSocket('udp4');
+  await new Promise<void>((done) => sock.send(msg, 15353, '127.0.0.1', () => done()));
+  sock.close();
+  await page.goto('/#/clients');
+  const found = page.getByTestId('discovered');
+  await expect(async () => {
+    await page.reload();
+    await expect(found.locator('tbody tr', { hasText: 'printer-e2e' })).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  const row = found.locator('tbody tr', { hasText: 'printer-e2e' });
+  await expect(row).toContainText('mDNS');
+  await expect(row).toContainText('not named yet');
+  await row.getByRole('button', { name: '127.0.0.9' }).click();
+  await row.getByRole('menuitem', { name: 'Name this device…' }).click();
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('printer-e2e');
+  await page.keyboard.press('Escape');
+
+  await page.goto('/#/groups');
+  const card = page.getByTestId('group-card').filter({ hasText: 'ipv6only' });
+  await expect(card.getByTestId('group-dns64')).toContainText('DNS64 on (64:ff9b::/96)');
+  await expect(card.getByTestId('group-rewrites')).toContainText('tv.e2e.test → 192.168.1.30');
+  await expect(card.getByTestId('group-answers')).toContainText('Rebinding protection on; blocks answers in 203.0.113.0/24');
+
+  await page.goto('/#/local-dns');
+  const zones = page.getByTestId('zones');
+  await expect(zones.locator('tbody tr', { hasText: 'zone.e2e.test' })).toContainText('ipv6only');
 });

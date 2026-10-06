@@ -17,6 +17,10 @@
     default: 'default: no network group matches',
   };
   let seen = $state<S['TopItem'][]>([]);
+  // REQ: OPS-008, T8.2, T8.3 (T8.6) — devices found by DHCP, the routers, or mDNS.
+  let found = $state<S['DhcpLease'][]>([]);
+  const sourceText: Record<string, string> = { dhcp: 'DHCP', router: 'router', mdns: 'mDNS' };
+  const named = (ip: string) => configured.some((c) => c.match.includes(ip));
   let error = $state<unknown>(null);
   const canEdit = $derived(session.user?.role === 'admin' || session.user?.role === 'operator');
 
@@ -28,6 +32,10 @@
         groups = g.items;
       })
       .catch((e) => (error = e));
+    api
+      .dhcpLeases()
+      .then((l) => (found = l.items))
+      .catch(() => (found = []));
   }
 
   $effect(load);
@@ -107,4 +115,32 @@
       {/if}
     </section>
   </div>
+  <section class="card" data-testid="discovered">
+    <h2>Discovered on your network</h2>
+    <p class="muted small">
+      Names devices gave TelltaleDNS's DHCP server, your router (<code>[[router]]</code>: UniFi, OPNsense), or announced
+      themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
+      one, change it, or put the device in a group.
+    </p>
+    {#if found.length === 0}
+      <p class="empty">Nothing discovered yet. Turn on the DHCP server, connect your router, or set <code>[clients] mdns = true</code>.</p>
+    {:else}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+          <tbody>
+            {#each found as l (l.ip)}
+              <tr>
+                <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
+                <td>{l.hostname ?? ''}</td>
+                <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
+                <td class="mono small">{l.mac}</td>
+                <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
 </div>

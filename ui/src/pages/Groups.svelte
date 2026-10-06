@@ -29,6 +29,14 @@
     // REQ: FLT-012 (T7.9)
     { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
       help: 'Block a whole service (all its domains) for this group, on top of its lists.' },
+    // REQ: FLT-014 (T7.20), DNS-016 (T7.21) — answer filtering and DNS64 (T8.6).
+    { key: 'rebinding_protection', label: 'Rebinding protection', type: 'bool', advanced: true,
+      help: 'Block answers from the internet that point at private addresses (DNS rebinding).' },
+    { key: 'block_answer_ips', label: 'Block answers in', type: 'lines', placeholder: '203.0.113.0/24', advanced: true,
+      help: 'Answers with an address in these networks are blocked, whatever the name.' },
+    { key: 'dns64', label: 'DNS64', type: 'bool', advanced: true,
+      help: 'Make IPv6 addresses for IPv4-only names, for IPv6-only networks with NAT64.' },
+    { key: 'dns64_prefix', label: 'DNS64 prefix', type: 'text', placeholder: '64:ff9b::/96', advanced: true },
     { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
     { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
       help: 'When a device matches several groups, the highest priority wins.' },
@@ -93,6 +101,27 @@
         {#if g.blockedServices.length}
           <div class="small" data-testid="group-services">
             Blocks {g.blockedServices.map(serviceName).join(', ')}<HelpButton id="blocked-services" />
+          </div>
+        {/if}
+        <!-- REQ: FLT-014, FLT-015 (T7.20), DNS-016 (T7.21) — shown since T8.6. -->
+        {#if g.rebindingProtection || g.blockAnswerIps.length}
+          <div class="small" data-testid="group-answers">
+            {[
+              g.rebindingProtection ? 'Rebinding protection on' : '',
+              g.blockAnswerIps.length ? `blocks answers in ${g.blockAnswerIps.join(', ')}` : '',
+            ]
+              .filter(Boolean)
+              .join('; ')}<HelpButton id="rebinding" />
+          </div>
+        {/if}
+        {#if g.rewrites.length}
+          <div class="small" data-testid="group-rewrites">
+            Rewrites: {#each g.rewrites as r, i (r.domain)}{i ? ', ' : ''}<span class="mono">{r.domain} → {r.answer}</span>{/each}<HelpButton id="rewrites" />
+          </div>
+        {/if}
+        {#if g.dns64}
+          <div class="small" data-testid="group-dns64">
+            DNS64 on (<span class="mono">{g.dns64Prefix ?? '64:ff9b::/96'}</span>)<HelpButton id="dns64" />
           </div>
         {/if}
         <dl class="stats">

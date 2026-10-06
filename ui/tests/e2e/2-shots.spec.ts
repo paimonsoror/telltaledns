@@ -55,6 +55,7 @@ for (const theme of ['light', 'dark'] as const) {
     for (const [name, path] of [
       ['dashboard-full', '/#/'],
       ['explain', '/#/explain?name=ads.e2e.test&client=127.0.0.1'],
+      ['analyze', '/#/analyze?q=' + encodeURIComponent('from -1h | by name, status | stats count, p95(latency)')],
       ['anomalies', '/#/anomalies'],
       ['clients', '/#/clients'],
       ['groups', '/#/groups'],

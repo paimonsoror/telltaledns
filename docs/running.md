@@ -933,6 +933,7 @@ mdns = true
 - Listen only: TelltaleDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
 - It has to hear the LAN: a native install, the Pi bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
 - Names you give devices win, then DHCP leases (TelltaleDNS's, then the routers'), then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
+- `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered on your network** shows every device found by DHCP, a router, or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
 - Changing it needs a restart.
 
 ### Naming devices in the UI
@@ -1819,6 +1820,8 @@ from -1h | where latency > 200 | by upstream | stats count, p50(latency), p99(la
 | `stats …` | `count`, `distinct(KEY)`, and `avg`, `min`, `max`, `p50`, `p90`, `p95`, `p99` of `latency`, `upstream_latency`, `answers`, or `bytes` |
 | `top N KEY` | the same as `by KEY \| stats count \| sort count desc \| limit N` |
 | `sort COLUMN [asc\|desc]`, `limit N` | by any column; at most 200 rows (default 50) |
+
+In the web UI, **Analyze** (under Monitor) runs vqlog: type a query or pick an example, run it or only estimate its cost, and click a name, domain, or client in the result to open those queries in the query log. The URL keeps the query, so a result can be shared.
 
 `GET /api/v1/analytics/vqlog?q=…` (or the MCP tool `vqlog`) answers with a table (`columns`, `rows`; a `client` column comes with `clientName`), the query as it was understood (`query`, with the defaults filled in), and what it cost (`cost`: the rows it could read at most, then the rows scanned and matched). `dryRun=true` (`estimateOnly` in MCP) only estimates. Mistakes come back as 400 with a hint listing the choices (the groups, the statuses, …).
 

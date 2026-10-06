@@ -52,6 +52,26 @@ name = "lab"
 networks = ["127.0.0.0/8"]
 color = "#22c55e"
 
+# T8.6 — a group no test device is in, carrying the answer settings the Groups page shows.
+[[group]]
+name = "ipv6only"
+networks = ["10.99.0.0/16"]
+dns64 = true
+rebinding_protection = true
+block_answer_ips = ["203.0.113.0/24"]
+[[group.rewrite]]
+domain = "tv.e2e.test"
+answer = "192.168.1.30"
+
+# T8.6 — a zone for the Names page (only ipv6only sees it, so DNS tests aren't affected).
+[[zone]]
+name = "zone.e2e.test"
+groups = ["ipv6only"]
+[[zone.record]]
+name = "www.zone.e2e.test"
+type = "A"
+value = "192.168.1.40"
+
 [[list]]
 name = "e2e-block"
 rules = ["||ads.e2e.test^"]
@@ -63,6 +83,11 @@ value = "192.168.1.10"
 
 [telemetry.metrics]
 listen = "127.0.0.1:19154"
+
+# T8.6 — mDNS naming on a test port (the test sends an announcement there).
+[clients]
+mdns = true
+mdns_port = 15353
 
 [telemetry.qlog]
 flush_interval_secs = 1

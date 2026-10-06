@@ -18,6 +18,7 @@
   import Dashboard from './pages/Dashboard.svelte';
   import Queries from './pages/Queries.svelte';
   import Explain from './pages/Explain.svelte';
+  import Analyze from './pages/Analyze.svelte';
   import Clients from './pages/Clients.svelte';
   import Anomalies from './pages/Anomalies.svelte';
   import Cluster from './pages/Cluster.svelte';
@@ -33,6 +34,7 @@
   const pages: { path: string; label: string; page: Component; icon: string; section: string }[] = [
     { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
     { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },
+    { path: '/analyze', label: 'Analyze', page: Analyze, icon: 'analyze', section: 'Monitor' },
     { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },
     { path: '/anomalies', label: 'Anomalies', page: Anomalies, icon: 'anomalies', section: 'Monitor' },
     { path: '/clients', label: 'Clients', page: Clients, icon: 'clients', section: 'Devices' },

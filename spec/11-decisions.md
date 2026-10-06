@@ -1258,6 +1258,27 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-084 — WASM upstream plugins: deferred, and wasmi rather than wasmtime if built (Proposed)
+**Context:** M8 lists WASM upstream plugins; `04` §3 and ADR-007 name wasmtime behind a feature flag. T7.16 shipped the out-of-process plugins (`unix://` and `exec://`, DNS wire format), which already let any language implement an upstream.
+
+**Measured (2026-10-06):** stripped, LTO, `panic = "abort"` release binaries of a program that compiles one module, against an empty program, on x86_64 Linux:
+
+| Engine | Adds (raw) | Adds (gzip -9) |
+|---|---|---|
+| wasmtime 49 (Cranelift JIT, component model) | 9.4 MiB | 3.3 MiB |
+| wasmi 2.0 (interpreter, pure Rust) | 1.7 MiB | 0.6 MiB |
+
+The release binaries are 19–23 MiB raw today, and the image budget is 15 MiB compressed (OPS-001).
+
+**Decision:**
+- Don't build WASM plugins now. There's no user request; the process plugins cover the use case; and a sandboxed host networking API is a design of its own.
+- If they're built, use **wasmi** behind an off-by-default `wasm` feature. It costs about a fifth of wasmtime's size, is pure Rust (no JIT, so it runs on armv7 and under seccomp profiles that forbid executable memory), and is fast enough for a per-query function that mostly waits on the network.
+- Revisit on a concrete request, for example a resolver protocol that people want to ship as one file.
+
+**Consequences:**
+- M8 closes without code here.
+- The plugin story stays the process boundary: crash isolation, and any language.
+
 ## ADR-083 — io_uring UDP: measured, not adopted (Proposed)
 **Context:** M8 lists io_uring; `02` §3 calls it "a P2 experiment behind a feature flag". The UDP listener already batches with `recvmmsg`/`sendmmsg` on one `SO_REUSEPORT` socket per worker, so the syscall cost per query is already amortized.
 
