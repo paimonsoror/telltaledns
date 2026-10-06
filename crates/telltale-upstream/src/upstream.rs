@@ -17,6 +17,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use crate::bootstrap::Bootstrap;
 use crate::conn::{BoxIo, Connector, Pool};
 use crate::doh::Doh;
+use crate::doq::Doq;
 use crate::endpoint::{Endpoint, Host, Protocol};
 use crate::health::Health;
 use crate::tls::{TlsOptions, client_config, server_name};
@@ -188,6 +189,8 @@ enum Transport {
     Tcp(Pool),
     Tls(Pool),
     Https(Doh),
+    /// REQ: UPS-002 (T7.7) — DNS over QUIC.
+    Quic(Box<Doq>),
 }
 
 impl std::fmt::Debug for Transport {
@@ -197,6 +200,7 @@ impl std::fmt::Debug for Transport {
             Self::Tcp(_) => "Tcp",
             Self::Tls(_) => "Tls",
             Self::Https(_) => "Https",
+            Self::Quic(_) => "Quic",
         })
     }
 }
@@ -317,6 +321,21 @@ impl Upstream {
                 let conn = tls_connector(Arc::clone(&target), cfg, server_name(&tls_name)?);
                 Transport::Https(Doh::new(conn, &authority, &endpoint.path, &opts.headers)?)
             }
+            Protocol::Quic => {
+                let cfg = client_config(tls, &[b"doq"], opts.tls_insecure_skip_verify)
+                    .map_err(|e| e.to_string())?;
+                let t = Arc::clone(&target);
+                let resolve: crate::doq::Resolve = Arc::new(move || {
+                    let t = Arc::clone(&t);
+                    Box::pin(async move { t.addr().await })
+                });
+                Transport::Quic(Box::new(Doq::new(
+                    resolve,
+                    cfg,
+                    &server_name(&tls_name)?,
+                    opts.idle_timeout,
+                )?))
+            }
         };
         Ok(Self {
             id,
@@ -353,7 +372,7 @@ impl Upstream {
         match &self.transport {
             Transport::Udp { tcp } => tcp.len(),
             Transport::Tcp(p) | Transport::Tls(p) => p.len(),
-            Transport::Https(_) => 0,
+            Transport::Https(_) | Transport::Quic(_) => 0,
         }
     }
 
@@ -390,8 +409,9 @@ impl Upstream {
         q: &Question,
         timeout: Duration,
     ) -> Result<Vec<u8>, ExchangeError> {
-        // DoH uses ID 0 (RFC 8484 §4.1, cache-friendly); the stream identifies the response.
-        let id: u16 = if matches!(self.transport, Transport::Https(_)) {
+        // DoH uses ID 0 (RFC 8484 §4.1, cache-friendly) and DoQ must (RFC 9250 §4.2.1); the
+        // stream identifies the response.
+        let id: u16 = if matches!(self.transport, Transport::Https(_) | Transport::Quic(_)) {
             0
         } else {
             rand::random()
@@ -419,6 +439,9 @@ impl Upstream {
             }
             Transport::Https(doh) => {
                 timed(tokio::time::timeout(timeout, doh.exchange(query)).await)?
+            }
+            Transport::Quic(doq) => {
+                timed(tokio::time::timeout(timeout, doq.exchange(query)).await)?
             }
         };
         if matches_query(&resp, query, id) && summarize(&resp).is_ok() {

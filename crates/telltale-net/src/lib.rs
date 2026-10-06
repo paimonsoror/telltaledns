@@ -6,6 +6,7 @@
 //! block carries a `// SAFETY:` justification (enforced by `clippy::undocumented_unsafe_blocks`).
 
 pub mod doh;
+pub mod doq;
 pub mod handler;
 pub mod neigh;
 pub mod proxy;
@@ -16,6 +17,7 @@ pub mod tls;
 pub mod udp;
 
 pub use doh::{DohConfig, DohServer, DohStats};
+pub use doq::{DoqConfig, DoqServer, DoqStats};
 pub use handler::{ClientId, Deferred, QueryHandler, RequestMeta, Response, Transport};
 pub use neigh::{Neighbor, neighbors};
 pub use tcp::{TcpConfig, TcpServer, TcpStats};

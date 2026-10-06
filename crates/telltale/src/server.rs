@@ -163,6 +163,8 @@ enum Stream {
     /// Plain TCP or DoT.
     Tcp(TcpServer, Option<JoinHandle<()>>),
     Doh(DohServer, JoinHandle<()>),
+    /// REQ: DNS-004 (T7.7) — DNS over QUIC.
+    Doq(telltale_net::DoqServer, JoinHandle<()>),
 }
 
 impl Stream {
@@ -175,6 +177,10 @@ impl Stream {
                 s.shutdown().await;
             }
             Self::Doh(s, watch) => {
+                watch.abort();
+                s.shutdown().await;
+            }
+            Self::Doq(s, watch) => {
                 watch.abort();
                 s.shutdown().await;
             }
@@ -217,7 +223,7 @@ impl Listeners {
                     info!(addr = %listener.local_addr(), workers = self.workers, "listening (udp)");
                     self.udp.push((l.addr, listener));
                 }
-                ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh
+                ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh | ListenProto::Doq
                     if !self.streams.iter().any(|(c, _)| c == l) =>
                 {
                     // Same protocol and address with other settings: replace it.
@@ -232,8 +238,12 @@ impl Listeners {
                     let stream = self.bind_stream(l).map_err(ctx)?;
                     self.streams.push((l.clone(), stream));
                 }
-                ListenProto::Udp | ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh => {}
-                other => {
+                ListenProto::Udp
+                | ListenProto::Tcp
+                | ListenProto::Dot
+                | ListenProto::Doh
+                | ListenProto::Doq => {}
+                other @ ListenProto::Doh3 => {
                     warn!(addr = %l.addr, proto = ?other, "listener type not implemented yet; skipping");
                 }
             }
@@ -277,6 +287,14 @@ impl Listeners {
                 info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening (doh)");
                 Ok(Stream::Doh(s, watch_cert(store)))
             }
+            (ListenProto::Doq, Some(store)) => {
+                let s = telltale_net::DoqServer::bind(
+                    &telltale_net::DoqConfig::new(l.addr, Arc::clone(&store)),
+                    handler,
+                )?;
+                info!(addr = %s.local_addr(), "listening (doq)");
+                Ok(Stream::Doq(s, watch_cert(store)))
+            }
             (proto, store) => {
                 let mut cfg = TcpConfig::new(l.addr);
                 cfg.proxy_protocol = l.proxy_protocol;
@@ -308,7 +326,7 @@ impl Listeners {
                 .iter()
                 .filter_map(|(_, s)| match s {
                     Stream::Tcp(t, _) => Some(t.stats_handle()),
-                    Stream::Doh(..) => None,
+                    Stream::Doh(..) | Stream::Doq(..) => None,
                 })
                 .collect(),
             doh: self
@@ -316,7 +334,15 @@ impl Listeners {
                 .iter()
                 .filter_map(|(_, s)| match s {
                     Stream::Doh(d, _) => Some(d.stats_handle()),
-                    Stream::Tcp(..) => None,
+                    Stream::Tcp(..) | Stream::Doq(..) => None,
+                })
+                .collect(),
+            doq: self
+                .streams
+                .iter()
+                .filter_map(|(_, s)| match s {
+                    Stream::Doq(d, _) => Some(d.stats_handle()),
+                    Stream::Tcp(..) | Stream::Doh(..) => None,
                 })
                 .collect(),
         }
@@ -328,6 +354,7 @@ struct ListenerStats {
     udp: Vec<Arc<telltale_net::WorkerStats>>,
     tcp: Vec<Arc<telltale_net::TcpStats>>,
     doh: Vec<Arc<telltale_net::DohStats>>,
+    doq: Vec<Arc<telltale_net::DoqStats>>,
 }
 
 /// Settings a reload can't change without a restart; returns what differs.
@@ -559,6 +586,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         udp: ArcSwap::from_pointee(stats.udp),
         tcp: ArcSwap::from_pointee(stats.tcp),
         doh: ArcSwap::from_pointee(stats.doh),
+        doq: ArcSwap::from_pointee(stats.doq),
         ready: Arc::clone(&ready),
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
@@ -876,6 +904,7 @@ async fn reload(
     sources.udp.store(Arc::new(stats.udp));
     sources.tcp.store(Arc::new(stats.tcp));
     sources.doh.store(Arc::new(stats.doh));
+    sources.doq.store(Arc::new(stats.doq));
     if crate::replication::follows_primary(&new) {
         // REQ: CLU-003 — a synced replica serves the primary's compiled lists.
         if let Some(l) = lists.take() {

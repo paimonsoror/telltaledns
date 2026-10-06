@@ -14,13 +14,15 @@ pub enum Protocol {
     Tls,
     /// DNS over HTTPS (RFC 8484).
     Https,
+    /// REQ: UPS-002 (T7.7) — DNS over QUIC (RFC 9250).
+    Quic,
 }
 
 impl Protocol {
     pub const fn default_port(self) -> u16 {
         match self {
             Self::Udp | Self::Tcp => 53,
-            Self::Tls => 853,
+            Self::Tls | Self::Quic => 853,
             Self::Https => 443,
         }
     }
@@ -33,6 +35,7 @@ impl fmt::Display for Protocol {
             Self::Tcp => "tcp",
             Self::Tls => "tls",
             Self::Https => "https",
+            Self::Quic => "quic",
         })
     }
 }
@@ -66,6 +69,7 @@ impl Endpoint {
             "tcp" => Protocol::Tcp,
             "tls" => Protocol::Tls,
             "https" => Protocol::Https,
+            "quic" => Protocol::Quic,
             other => return Err(format!("`{url}`: scheme `{other}://` is not supported yet")),
         };
         let (authority, path) = match rest.find('/') {
@@ -173,6 +177,10 @@ mod tests {
         assert!(Endpoint::parse("udp://9.9.9.9:99999").is_err());
         assert!(Endpoint::parse("udp://bad_host!").is_err());
         assert!(Endpoint::parse("udp://9.9.9.9/path").is_err());
-        assert!(Endpoint::parse("quic://dns.adguard.com").is_err());
+        // UPS-002 (T7.7) — DoQ.
+        let e = Endpoint::parse("quic://dns.adguard-dns.com").unwrap();
+        assert_eq!((e.protocol, e.port), (Protocol::Quic, 853));
+        assert!(Endpoint::parse("quic://9.9.9.9/path").is_err());
+        assert!(Endpoint::parse("h3://dns.google/dns-query").is_err());
     }
 }

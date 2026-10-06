@@ -274,7 +274,13 @@ fn api_007_technitium_forwarder_formats() {
         f("https://cloudflare-dns.com/dns-query (1.1.1.1)", "Https").unwrap(),
         ("https://cloudflare-dns.com/dns-query".into(), None)
     );
-    assert!(f("dns.adguard-dns.com (94.140.14.14:853)", "Quic").is_err());
+    assert_eq!(
+        f("dns.adguard-dns.com (94.140.14.14:853)", "Quic").unwrap(),
+        (
+            "quic://94.140.14.14:853".into(),
+            Some("dns.adguard-dns.com".into())
+        )
+    );
     assert!(f("dns.example", "Udp").is_err(), "a name with no address");
 }
 

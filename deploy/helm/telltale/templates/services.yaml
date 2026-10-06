@@ -48,6 +48,12 @@ spec:
       targetPort: dns-doh
       protocol: TCP
     {{- end }}
+    {{- if .Values.encrypted.doq.enabled }}
+    - name: dns-doq
+      port: {{ .Values.encrypted.doq.port }}
+      targetPort: dns-doq
+      protocol: UDP
+    {{- end }}
     {{- /* T6.14 — named ports only the controller has: resolver pods get none of this. */}}
     {{- if $dns.alsoServe.api }}
     - name: api

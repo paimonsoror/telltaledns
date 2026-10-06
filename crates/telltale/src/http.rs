@@ -37,6 +37,8 @@ pub(crate) struct Sources {
     pub(crate) udp: ArcSwap<Vec<Arc<WorkerStats>>>,
     pub(crate) tcp: ArcSwap<Vec<Arc<TcpStats>>>,
     pub(crate) doh: ArcSwap<Vec<Arc<DohStats>>>,
+    /// REQ: DNS-004 (T7.7) — DoQ listeners' counters.
+    pub(crate) doq: ArcSwap<Vec<Arc<telltale_net::DoqStats>>>,
     /// Set once every listener is bound; cleared at the start of shutdown.
     pub(crate) ready: Arc<AtomicBool>,
     pub(crate) started: Instant,
@@ -1047,6 +1049,33 @@ fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::D
     .sample("telltale_ratelimited_total", &[], limited);
 }
 
+/// REQ: DNS-004 (T7.7) — DoQ listener counters.
+fn write_doq_metrics(w: &mut PromWriter, src: &Sources) {
+    use std::sync::atomic::Ordering::Relaxed;
+    // Queries are also in telltale_queries_total{proto="doq"}.
+    let doq = src.doq.load();
+    let qsum = |f: fn(&telltale_net::DoqStats) -> u64| doq.iter().map(|s| f(s)).sum::<u64>();
+    for (name, help, v) in [
+        (
+            "telltale_doq_connections_total",
+            "DoQ connections accepted.",
+            qsum(|s| s.connections.load(Relaxed)),
+        ),
+        (
+            "telltale_doq_queries_total",
+            "DoQ queries received (one per stream).",
+            qsum(|s| s.queries.load(Relaxed)),
+        ),
+        (
+            "telltale_doq_protocol_errors_total",
+            "DoQ streams that broke RFC 9250 (the connection was closed).",
+            qsum(|s| s.protocol_errors.load(Relaxed)),
+        ),
+    ] {
+        w.family(name, "counter", help).sample(name, &[], v);
+    }
+}
+
 fn render_listeners(w: &mut PromWriter, src: &Sources) {
     use std::sync::atomic::Ordering::Relaxed;
     let udp = src.udp.load();
@@ -1123,6 +1152,7 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
+    write_doq_metrics(w, src);
     // REQ: DNS-003 — DoH requests (queries are also in telltale_queries_total{proto="doh"}).
     let doh = src.doh.load();
     let dsum = |f: fn(&DohStats) -> u64| doh.iter().map(|s| f(s)).sum::<u64>();
@@ -1178,6 +1208,7 @@ mod tests {
             udp: ArcSwap::from_pointee(Vec::new()),
             tcp: ArcSwap::from_pointee(Vec::new()),
             doh: ArcSwap::from_pointee(Vec::new()),
+            doq: ArcSwap::from_pointee(Vec::new()),
             ready: Arc::new(AtomicBool::new(true)),
             started: Instant::now(),
             lists: ArcSwapOption::empty(),

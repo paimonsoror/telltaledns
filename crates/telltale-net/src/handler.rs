@@ -19,6 +19,8 @@ pub enum Transport {
     Dot,
     /// DNS over HTTPS (one request per HTTP exchange).
     Doh,
+    /// DNS over QUIC (RFC 9250; one query per stream).
+    Doq,
 }
 
 /// Facts about a request that the pipeline may need.

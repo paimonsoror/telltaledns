@@ -136,10 +136,12 @@ pub enum Proto {
     Dot,
     /// DNS over HTTPS (RFC 8484).
     Doh,
+    /// DNS over QUIC (RFC 9250).
+    Doq,
 }
 
 impl Proto {
-    pub const ALL: [Self; N_PROTO] = [Self::Udp, Self::Tcp, Self::Dot, Self::Doh];
+    pub const ALL: [Self; N_PROTO] = [Self::Udp, Self::Tcp, Self::Dot, Self::Doh, Self::Doq];
     pub fn from_u8(v: u8) -> Option<Self> {
         Self::ALL.get(usize::from(v)).copied()
     }
@@ -149,6 +151,7 @@ impl Proto {
             Self::Tcp => "tcp",
             Self::Dot => "dot",
             Self::Doh => "doh",
+            Self::Doq => "doq",
         }
     }
 }
@@ -178,7 +181,7 @@ pub const QTYPES: [(u16, &str); 12] = [
 pub const N_QTYPE: usize = QTYPES.len() + 1;
 pub const N_RCODE: usize = 17; // 0..=15, then "other" (extended)
 pub const N_STATUS: usize = Status::ALL.len();
-pub const N_PROTO: usize = 4;
+pub const N_PROTO: usize = 5;
 
 /// Index of `qtype` in [`QTYPES`], or the "other" column.
 pub fn qtype_index(qtype: u16) -> usize {

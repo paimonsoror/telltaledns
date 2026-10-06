@@ -157,13 +157,12 @@
     {
       "rfc": "9250",
       "title": "DNS over dedicated QUIC (DoQ)",
-      "status": "planned",
+      "status": "supported",
       "reqs": [
         "DNS-004",
         "UPS-002"
       ],
-      "summary": "QUIC transport for clients and upstreams.",
-      "diagram": "planned"
+      "summary": "QUIC transport for clients (a doq listener, UDP 853) and upstreams (quic:// URLs), one stream per query, 0-RTT off."
     },
     {
       "rfc": "7871",

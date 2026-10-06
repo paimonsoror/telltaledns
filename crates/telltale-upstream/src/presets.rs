@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn ups_004_templated_presets_need_params_and_skip_doq() {
+    fn ups_004_templated_presets_need_params_and_include_doq() {
         let p = find("nextdns").unwrap();
         assert!(
             p.expand(&ExpandOptions::default())
@@ -369,7 +369,13 @@ mod tests {
         opts.params.insert("profile".into(), "a1b2c3".into());
         let exp = p.expand(&opts).unwrap();
         assert_eq!(exp.upstream[0].url, "tls://a1b2c3.dns.nextdns.io");
-        assert_eq!(exp.skipped.len(), 1, "quic:// skipped until DoQ lands");
+        // UPS-002 (T7.7) — DoQ endpoints expand like the rest.
+        assert!(exp.skipped.is_empty(), "{:?}", exp.skipped);
+        assert!(
+            exp.upstream
+                .iter()
+                .any(|u| u.url == "quic://a1b2c3.dns.nextdns.io")
+        );
         opts.params.insert("profile".into(), "bad/../x".into());
         assert!(p.expand(&opts).is_err(), "parameters are validated");
     }

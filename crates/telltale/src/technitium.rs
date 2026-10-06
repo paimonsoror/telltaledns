@@ -231,7 +231,7 @@ fn strs(v: &Value, k: &str) -> Vec<String> {
 
 /// A Technitium name-server address (`1.1.1.1`, `1.1.1.1:853`, `[::1]:53`,
 /// `dns.quad9.net (9.9.9.9:853)`, `https://host/dns-query (1.1.1.1)`) as an upstream URL and
-/// TLS name. QUIC isn't supported yet.
+/// TLS name (DoT and DoQ).
 pub(crate) fn forwarder_url(
     addr: &str,
     protocol: &str,
@@ -244,6 +244,8 @@ pub(crate) fn forwarder_url(
         "udp" | "" => ("udp", 53),
         "tcp" => ("tcp", 53),
         "tls" => ("tls", 853),
+        // UPS-002 (T7.7) — DNS over QUIC.
+        "quic" => ("quic", 853),
         "https" => return Ok((main.to_owned(), None)),
         other => return Err(format!("{other} forwarders aren't supported yet")),
     };
@@ -275,7 +277,8 @@ pub(crate) fn forwarder_url(
         IpAddr::V4(a) => format!("{a}:{port}"),
         IpAddr::V6(a) => format!("[{a}]:{port}"),
     };
-    let name = (scheme == "tls" && host.parse::<IpAddr>().is_err()).then_some(host);
+    let name =
+        (matches!(scheme, "tls" | "quic") && host.parse::<IpAddr>().is_err()).then_some(host);
     Ok((format!("{scheme}://{hostport}"), name))
 }
 

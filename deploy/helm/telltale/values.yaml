@@ -116,6 +116,11 @@ encrypted:
     enabled: false
     port: 443
     path: /dns-query
+  # REQ: DNS-004 — DNS over QUIC (RFC 9250) on UDP 853: Android and iOS apps and some
+  # resolvers prefer it. Uses the same certificate.
+  doq:
+    enabled: false
+    port: 853
   # REQ: DNS-020 — accept PROXY protocol v2 on TCP, DoT, and DoH (only when a balancer in
   # front sends it: every connection must then start with the header).
   proxyProtocol: false

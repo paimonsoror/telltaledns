@@ -32,7 +32,7 @@ app.kubernetes.io/component: all
 
 {{/* REQ: DNS-002/003 — encrypted DNS is on, and the TLS Secret that serves it. */}}
 {{- define "telltale.encrypted" -}}
-{{- if or .Values.encrypted.dot.enabled .Values.encrypted.doh.enabled }}true{{ end }}
+{{- if or .Values.encrypted.dot.enabled .Values.encrypted.doh.enabled .Values.encrypted.doq.enabled }}true{{ end }}
 {{- end }}
 {{- define "telltale.tlsSecret" -}}
 {{- if .Values.encrypted.tls.certManager.enabled }}{{ include "telltale.fullname" . }}-dns-tls{{ else }}{{ .Values.encrypted.tls.secretName }}{{ end }}
@@ -43,6 +43,9 @@ app.kubernetes.io/component: all
 {{- end }}
 {{- define "telltale.dohPort" -}}
 {{- if .Values.hostNetwork }}{{ .Values.encrypted.doh.port }}{{ else }}8443{{ end }}
+{{- end }}
+{{- define "telltale.doqPort" -}}
+{{- if .Values.hostNetwork }}{{ .Values.encrypted.doq.port }}{{ else }}8853{{ end }}
 {{- end }}
 
 {{/* REQ: CLU-009 — mode: scaled. */}}

@@ -32,11 +32,14 @@ http-body-util = "0.1.3"
 hyper = { version = "1.11.1", default-features = false, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 libc = "0.2.190"
+# REQ: DNS-004 (T7.7) — DoQ (RFC 9250); `02` §7 names quinn for QUIC.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pki-types = "1.15"
 socket2 = { version = "0.6.5", features = ["all"] }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
 tokio = { version = "1.53.1", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+tracing = "0.1"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
 # Certificate names (wildcards → client IDs from SNI).
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "ring"] }

@@ -46,6 +46,13 @@ data:
     tls = {{ $tls }}
     proxy_protocol = {{ .Values.encrypted.proxyProtocol }}
     {{- end }}
+    {{- if .Values.encrypted.doq.enabled }}
+
+    [[listen]]
+    proto = "doq"
+    addr = "0.0.0.0:{{ include "telltale.doqPort" . }}"
+    tls = {{ $tls }}
+    {{- end }}
 
     [telemetry.metrics]
     listen = "0.0.0.0:{{ .Values.service.metrics.port }}"

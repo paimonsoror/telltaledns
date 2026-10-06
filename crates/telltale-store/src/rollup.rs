@@ -508,10 +508,10 @@ mod tests {
         }
         let d = decode(&v1).unwrap();
         assert_eq!(d.total, 10);
-        assert_eq!(d.proto, [10, 3, 0, 0]);
+        assert_eq!(d.proto, [10, 3, 0, 0, 0]);
         assert_eq!(d.upstreams, vec![5]);
         assert_eq!(d.upstream_failures, 1);
-        assert_eq!(decode(&v2).unwrap().proto, [10, 3, 0, 0]);
+        assert_eq!(decode(&v2).unwrap().proto, [10, 3, 0, 0, 0]);
     }
 
     // REQ: OBS-004, `spec/06` §3 — minutes roll up into hours and days; rewriting a minute

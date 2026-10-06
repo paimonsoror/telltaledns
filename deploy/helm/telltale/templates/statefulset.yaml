@@ -113,6 +113,11 @@ spec:
               containerPort: {{ include "telltale.dohPort" . }}
               protocol: TCP
             {{- end }}
+            {{- if .Values.encrypted.doq.enabled }}
+            - name: dns-doq
+              containerPort: {{ include "telltale.doqPort" . }}
+              protocol: UDP
+            {{- end }}
             - name: api
               containerPort: {{ .Values.service.api.port }}
               protocol: TCP

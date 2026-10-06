@@ -12,6 +12,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# REQ: UPS-002 (T7.7) — DoQ upstreams (RFC 9250).
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # REQ: DNS-011 — DNSSEC validation: hickory's validating handle and primitives (`spec/03` §5).
 hickory-net = { version = "0.26.3", default-features = false, features = ["dnssec-ring", "tokio"] }

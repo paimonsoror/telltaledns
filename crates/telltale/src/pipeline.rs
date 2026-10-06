@@ -422,7 +422,7 @@ impl Pipeline {
                 len,
                 udp_limit(q.edns.as_ref(), self.settings.edns_payload),
             ),
-            Transport::Tcp | Transport::Dot | Transport::Doh => len,
+            Transport::Tcp | Transport::Dot | Transport::Doh | Transport::Doq => len,
         }
     }
 
@@ -1306,6 +1306,7 @@ fn proto(t: Transport) -> Proto {
         Transport::Tcp => Proto::Tcp,
         Transport::Dot => Proto::Dot,
         Transport::Doh => Proto::Doh,
+        Transport::Doq => Proto::Doq,
     }
 }
 

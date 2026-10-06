@@ -27,6 +27,9 @@ spec:
         {{- if .Values.encrypted.doh.enabled }}
         - { port: dns-doh, protocol: TCP }
         {{- end }}
+        {{- if .Values.encrypted.doq.enabled }}
+        - { port: dns-doq, protocol: UDP }
+        {{- end }}
       {{- with $np.dnsFrom }}
       from:
         {{- range . }}
