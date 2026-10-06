@@ -311,7 +311,7 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - flushing while the cache is under load causes no SERVFAIL and no measurable p99 change;
     - docs and help panels are updated.
   - *Done 2026-10-05: `Cache::inspect` (every cached variant of a name: type, DO/CD, rcode, answers, validated, TTL left or stale for, age, size, hits; read-only, no hit counted) and `flush_all_counted`; `GET /api/v1/cache/stats`, `GET /api/v1/cache/lookup?name=` (viewer, agents `analytics:read`), `POST /api/v1/cache/flush` `{name?, subtree?, node?}` (operator, agents `ops:cache`, audit `cache.flush`). In a cluster the federated backend fans each one out over the cluster channel (`api.read`), labels rows by node, lists unreachable nodes with the error, and `node` limits a flush to one. UI: a Cache card in Settings → System (per-node stats, lookup, flush name/subtree, flush everything with a confirmation, node picker) and a compact one in the query log's "Why?" drawer; help topic `cache-tools`; docs/running.md "Cache tools". Tests: cache inspect and counted flush, scope mapping, path count, Playwright (lookup through a stub upstream, flush, viewer 403). Deferred: which upstream answered and a prefetched flag (not stored per entry; would add bytes to every entry), the Explain page panel (the Why? drawer has it), the `flush_cache` MCP tool (MCP is read-only until plan/apply, `spec/13` §3.2), and a flush-under-load p99 measurement (a lookup or flush walks one shard at a time under its lock, like the existing name flush; to measure in the T6.14 scaled run).*
-- [ ] **T6.14 Multi-pod awareness and a live topology on the Cluster page (proposed, owner request 2026-10-05).** Running several pods should be safe, visible, and understandable at a glance. *(CLU-008, CLU-009, OPS-002)*
+- [x] **T6.14 Multi-pod awareness and a live topology on the Cluster page (proposed, owner request 2026-10-05).** Running several pods should be safe, visible, and understandable at a glance. *(CLU-008, CLU-009, OPS-002)*
   - **Safety: one process per data directory.** On start a node takes an exclusive lock on its data directory. A second process pointing at the same directory refuses to start with a clear message. This guards the real risk of scaling a single-volume Deployment: shared identity, `state.db`, and query-log files across replicas.
   - **What each node reports** (new optional heartbeat fields, N−1 safe):
     - the Kubernetes node name (downward API `NODE_NAME`) and pod name;
@@ -342,6 +342,7 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
     - the kind scaled e2e checks node names and per-pod shares;
     - the homelab runs scaled for 24 h with no SERVFAIL increase and every pod in sync;
     - docs, help, and site updated.
+  - *Soak passed 2026-10-06:* scaled since 2026-10-05 18:26Z; the primary's cluster-wide query log shows 0 SERVFAIL in 8,207 queries in the 24 h after the move (1 in 7,031 in the 24 h before), and every resolver pod applied the same configuration version (seq 124) after the day's rollouts.
 - [x] **T6.15 The Cache page (owner request 2026-10-05).** The T6.13 card grows into its own page under System, worth it once each Kubernetes pod has its own cache. *(DNS-006, DNS-009, OBS-003, API-005, CLU-008)*
   - Per node: hit rate (last hour and since start), entries and memory against the budget, the last hour's lookups, prefetches, stale answers served, and evictions, the warm start, and the `[cache]` settings in effect.
   - Charts of hit rate and lookups per node over the last hour.
@@ -462,7 +463,7 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* against a running node with a token: status; a blocked name is blocked in DNS and the rule is listed and removable; pause/resume; flush; lists; the query log; a raw GET; `--json` is the API's JSON; a bad token is a clear error with a non-zero exit.
   - *Done 2026-10-06:* `crates/telltale/src/ctl.rs`; `deploy/ctl-e2e.sh` in CI; unit test `api_008_helpers`; docs.
 
-M7 is complete apart from the deferrals noted in each task (and T6.14's soak check).
+M7 is complete apart from the deferrals noted in each task (T6.14's soak passed on 2026-10-06).
 
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).
