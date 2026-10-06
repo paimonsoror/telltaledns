@@ -184,4 +184,23 @@ for _ in $(seq 30); do
 done
 [[ "$total" == 3 ]] || fail "the controller still lists $total peers 30 s after the pod was deleted (it didn't leave)"
 echo "ok"
+
+echo "== 5. scaling: the controller's view follows within 5 s (the Cluster page polls every 5 s)"
+# REQ: CLU-008 (T6.14 AC) — the topology updates within 10 s when a pod is added or removed.
+peers() { { curl -s --max-time 3 http://127.0.0.1:19153/metrics || true; } | awk '/^telltale_cluster_peers\{state="up"\}/ {print $2+0}'; }
+since() { python3 -c "import time; print(f'{time.time() - $1:.1f}')"; }
+k scale deploy/t-telltale-resolver --replicas=3 >/dev/null
+k rollout status deploy/t-telltale-resolver --timeout 180s >/dev/null || fail "the third resolver pod never became ready"
+t0=$(date +%s.%N)
+for _ in $(seq 100); do [[ "$(peers)" == 4 ]] && break; sleep 0.1; done
+[[ "$(peers)" == 4 ]] || fail "the controller doesn't show the new pod 10 s after it turned ready"
+added=$(since "$t0")
+t0=$(date +%s.%N)
+k scale deploy/t-telltale-resolver --replicas=2 >/dev/null
+for _ in $(seq 100); do [[ "$(peers)" == 3 ]] && break; sleep 0.1; done
+[[ "$(peers)" == 3 ]] || fail "the controller still shows the removed pod 10 s after scaling in"
+removed=$(since "$t0")
+python3 -c "import sys; sys.exit(0 if $added <= 5 and $removed <= 5 else 1)" \
+  || fail "the controller took ${added} s (added) / ${removed} s (removed), over 5 s"
+echo "ok (a new pod shows ${added} s after it's ready; a removed one is gone ${removed} s after scaling in)"
 echo PASS
