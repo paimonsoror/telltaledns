@@ -260,3 +260,18 @@ svg.has-sel .arch-node:not(.hov-node):not(.hov-linked):not(.sel-node):not(.sel-l
 .stack-list .used { font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 6px !important; }
 .chip.crate { background: var(--surface-2); color: var(--ink-2); font-weight: 500; }
 .small { font-size: 13px; }
+
+/* Agents page (DOC-006): example conversations as chat transcripts. */
+.chat-grid { display: grid; gap: 22px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; }
+.chat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); display: grid; gap: 8px; }
+.chat h3 { margin: 0 0 6px; font-size: 1.05rem; }
+.chat p { margin: 0; font-size: 15px; line-height: 1.5; }
+.msg { padding: 10px 14px; border-radius: 12px; max-width: 92%; }
+.msg.user { justify-self: end; background: var(--brand-fill); color: #e8eef6; border-bottom-right-radius: 4px; }
+.msg.agent { justify-self: start; background: var(--surface-2); border-bottom-left-radius: 4px; }
+.call { font: 13px/1.5 var(--mono); color: var(--ink-2); padding-left: 12px; border-left: 3px solid var(--accent); overflow-wrap: anywhere; }
+.call span { color: var(--accent-text); font-weight: 700; margin-right: 6px; }
+.result { font-size: 13.5px !important; color: var(--ink-2); padding-left: 15px; overflow-wrap: anywhere; }
+.result::before { content: "↳ "; color: var(--ok); font-weight: 700; }
+/* Grid items with code blocks: let <pre> scroll instead of widening the page. */
+.steps > *, .chat-grid > *, .two > * { min-width: 0; }

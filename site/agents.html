@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI agents — TelltaleDNS</title>
+<meta name="description" content="Connect AI agents to TelltaleDNS: a built-in MCP server, an agent-ready REST API, scoped tokens or SSO, changes as plans you approve, and a full audit trail. With example conversations.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="agents">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">Built for AI agents</p>
+    <h1>Ask your network.<br>Approve what changes.</h1>
+    <p class="lede">TelltaleDNS treats AI assistants as first-class clients: every node speaks the Model Context Protocol, every API answer is written to be read by a model, and every change an agent wants waits as a plan you can see, approve, or throw away.</p>
+    <div class="cta">
+      <a class="btn primary" href="#connect">Connect an agent</a>
+      <a class="btn" href="#examples">See example conversations</a>
+    </div>
+  </div>
+  <figure class="figure" aria-label="How an agent works with TelltaleDNS">
+    <svg viewBox="0 0 460 300" role="img" width="460"><title>An agent asks questions through MCP; changes become plans, a person approves, and everything is audited</title>
+      <rect x="14" y="20" width="120" height="46" rx="10" class="svg-box"/><text x="74" y="40" text-anchor="middle" class="svg-text">AI agent</text><text x="74" y="56" text-anchor="middle" class="svg-sub">Claude, scripts, …</text>
+      <path d="M134 43 H182" class="svg-stroke-brand" stroke-width="2"/><text x="158" y="36" text-anchor="middle" class="svg-sub">MCP</text>
+      <rect x="182" y="14" width="140" height="58" rx="10" class="svg-brand"/><text x="252" y="38" text-anchor="middle" fill="#e8eef6" font-size="14" font-weight="700">any node</text><text x="252" y="56" text-anchor="middle" fill="#e8eef6" font-size="12">/mcp · REST · scopes</text>
+      <path d="M322 43 H360" class="svg-stroke-brand" stroke-width="2"/>
+      <rect x="360" y="20" width="88" height="46" rx="10" class="svg-ok" opacity=".85"/><text x="404" y="40" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">answers</text><text x="404" y="56" text-anchor="middle" fill="#fff" font-size="11">read-only</text>
+      <path d="M252 72 V108" class="svg-stroke-accent" stroke-width="2"/><text x="262" y="94" class="svg-sub">wants a change</text>
+      <rect x="182" y="108" width="140" height="46" rx="10" class="svg-box"/><text x="252" y="128" text-anchor="middle" class="svg-text">plan + preview</text><text x="252" y="144" text-anchor="middle" class="svg-sub">before · after · impact</text>
+      <path d="M252 154 V190" class="svg-stroke-accent" stroke-width="2"/>
+      <rect x="182" y="190" width="140" height="46" rx="10" class="svg-box"/><text x="252" y="210" text-anchor="middle" class="svg-text">you approve</text><text x="252" y="226" text-anchor="middle" class="svg-sub">or reject, in the UI</text>
+      <path d="M252 236 V262" class="svg-stroke-ok" stroke-width="2"/>
+      <rect x="132" y="262" width="240" height="30" rx="8" class="svg-ok" opacity=".85"/><text x="252" y="282" text-anchor="middle" fill="#fff" font-size="12.5" font-weight="700">applied on every node · audited</text>
+      <rect x="14" y="108" width="140" height="128" rx="10" fill="none" class="svg-ink" stroke-dasharray="3 3"/>
+      <text x="84" y="132" text-anchor="middle" class="svg-sub">always on</text>
+      <text x="84" y="156" text-anchor="middle" class="svg-sub">scoped tokens</text>
+      <text x="84" y="176" text-anchor="middle" class="svg-sub">rate limits</text>
+      <text x="84" y="196" text-anchor="middle" class="svg-sub">privacy level</text>
+      <text x="84" y="216" text-anchor="middle" class="svg-sub">kill switch</text>
+    </svg>
+  </figure>
+</section>
+
+<section id="connect">
+  <p class="eyebrow">Connectivity</p>
+  <h2>Ways to connect</h2>
+  <p class="muted">Pick whatever your agent speaks. They all go through the same API, so the same permissions, limits, and audit apply everywhere.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>MCP over HTTP</h3>
+      <p>Every node serves the Model Context Protocol at <code>/mcp</code> (Streamable HTTP). Point an MCP client at any node: in a cluster, each one is an entry point to the whole system.</p>
+    </div>
+    <div class="card">
+      <h3>MCP over stdio</h3>
+      <p>For desktop assistants that start their tools as a subprocess: <code>telltale mcp --stdio</code> relays to a node with your agent token.</p>
+    </div>
+    <div class="card">
+      <h3>Sign in with SSO</h3>
+      <p>Instead of pasting a token, an MCP client can sign you in through your OIDC provider (MCP's OAuth 2.1 flow). You choose which scopes the agent gets; it never goes above your own role.</p>
+    </div>
+    <div class="card">
+      <h3>REST and OpenAPI</h3>
+      <p>The whole API is described in OpenAPI, written for models: units in field names (<code>latencyMs</code>), examples, and errors that say how to fix the request. Every change can be tried with <code>?dryRun=true</code>.</p>
+    </div>
+    <div class="card">
+      <h3>The shell</h3>
+      <p><code>telltale ctl</code> gives scripts and terminal agents the API as commands: status, the query log, top lists, explain, quick rules, pause, cache, and approving plans.</p>
+    </div>
+    <div class="card">
+      <h3>Events out</h3>
+      <p>A live query stream (server-sent events), alerts to webhooks, ntfy, Gotify, or Slack-compatible channels, and query events to files, syslog, webhooks, or OpenTelemetry, for agents that react instead of ask.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Two minutes</p>
+  <h2>Connect an assistant</h2>
+  <ol class="steps">
+    <li class="step"><h3>Make an agent token</h3>
+      <p>In <b>Settings → API tokens → for an AI agent</b>, or through the API. The default is read-only and leaves out the query log; add scopes only for what the agent should do.</p>
+<pre><code>POST /api/v1/tokens
+{"name": "assistant", "kind": "agent",
+ "scopes": ["analytics:read", "config:read", "querylog:read"]}</code></pre></li>
+    <li class="step"><h3>Add TelltaleDNS to your MCP client</h3>
+      <p>Over HTTP, use <code>http://&lt;node&gt;:8053/mcp</code> with <code>Authorization: Bearer tt_…</code>. For clients that start a subprocess:</p>
+<pre><code>{"mcpServers": {"telltale": {
+  "command": "telltale",
+  "args": ["mcp", "--stdio", "--url", "http://192.168.1.2:8053"],
+  "env": {"TELLTALE_TOKEN": "tt_…"}}}}</code></pre></li>
+    <li class="step"><h3>Ask</h3>
+      <p>"Why is the TV slow tonight?" "What did the kids' tablets get blocked on this week?" The assistant picks the tools; you see every change before it happens.</p></li>
+  </ol>
+</section>
+
+<section id="examples">
+  <p class="eyebrow">How interactions work</p>
+  <h2>Example conversations</h2>
+  <p class="muted">Illustrative transcripts. The tool names and the shape of the answers are the real ones; the numbers are made up.</p>
+
+  <div class="chat-grid">
+  <article class="chat" aria-label="Example: a slow TV">
+    <h3>"Why is the living-room TV slow tonight?"</h3>
+    <p class="msg user">Why is the living-room TV slow tonight?</p>
+    <p class="call"><span>get_client_profile</span> client="living-room-tv", window="-6h"</p>
+    <p class="result">p95 latency 840 ms (usually about 30) · 92% of its uncached questions go to <code>quad9-doh</code></p>
+    <p class="call"><span>upstream_health</span></p>
+    <p class="result"><code>quad9-doh</code>: circuit breaker opening and closing since 19:40 · <code>cloudflare-dot</code>: healthy, p95 18 ms</p>
+    <p class="call"><span>plan_update_upstreams</span> kind="upstream_group", name="default", strategy="fastest", reason="quad9 degraded"</p>
+    <p class="result">Plan <code>pl_7f3c</code>: upstream group <code>default</code>, strategy <code>failover → fastest</code> · affects about 41,000 questions a day · waiting for approval</p>
+    <p class="msg agent">Quad9's DoH endpoint has been flapping since 19:40, and the TV sends almost everything there. I've proposed switching the default group to the fastest healthy upstream. It's waiting for you under <b>Agent changes</b>.</p>
+  </article>
+
+  <article class="chat" aria-label="Example: analytics with vqlog">
+    <h3>"What did the kids' tablets get blocked on this week?"</h3>
+    <p class="msg user">What did the kids' tablets get blocked on this week, and when?</p>
+    <p class="call"><span>vqlog</span> from -7d | where group = kids and status = blocked | top 5 domain</p>
+    <p class="result">tiktokv.com 1,912 · doubleclick.net 806 · roblox-ads.example 377 · app-measurement.com 301 · unityads.unity3d.com 244</p>
+    <p class="call"><span>vqlog</span> from -7d | where group = kids and domain = tiktokv.com | bucket 1d | stats count</p>
+    <p class="result">Mon 12 · Tue 9 · Wed 301 · Thu 655 · Fri 588 · Sat 214 · Sun 133</p>
+    <p class="msg agent">Mostly TikTok and ad networks. The TikTok attempts jumped on Wednesday, the day the new tablet joined. Everything was blocked, as your schedule says. Want me to look at that tablet's other new domains?</p>
+  </article>
+
+  <article class="chat" aria-label="Example: a new camera">
+    <h3>"Block whatever the new camera keeps calling home to."</h3>
+    <p class="msg user">The new camera in the garage keeps phoning home. Block that.</p>
+    <p class="call"><span>new_domains</span> client="192.168.1.57"</p>
+    <p class="result">cam-telemetry.vendor.example (DGA score 0.12) · p2p-relay.vendor.example (0.18) · firmware.vendor.example (0.10)</p>
+    <p class="call"><span>explain_decision</span> name="p2p-relay.vendor.example", client="192.168.1.57"</p>
+    <p class="result">outcome: allowed · no list matches · forwarded to <code>cloudflare-dot</code></p>
+    <p class="call"><span>plan_block_domain</span> domain="cam-telemetry.vendor.example", devices=["garage-camera"], reason="camera telemetry"</p>
+    <p class="result">Plan <code>pl_91aa</code>: blocks it for the garage camera only · 2,880 questions in the last day would have been blocked · waiting for approval</p>
+    <p class="msg agent">I planned a block on the telemetry domain for the camera only. I left the firmware server alone, so it still gets updates. Approve it under <b>Agent changes</b>, and I'll check tomorrow that the camera still works.</p>
+  </article>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">The catalog</p>
+  <h2>What an agent can do</h2>
+  <div class="two">
+    <div>
+      <h3>Ask (read-only)</h3>
+      <div class="table-wrap"><table class="std">
+        <tbody>
+          <tr><th scope="row"><code>get_overview</code></th><td>queries, blocked %, cache hits, clients, latency for a window</td></tr>
+          <tr><th scope="row"><code>top_items</code></th><td>top domains, blocked names, NXDOMAIN, clients</td></tr>
+          <tr><th scope="row"><code>search_queries</code></th><td>the query log, filtered and paged</td></tr>
+          <tr><th scope="row"><code>explain_decision</code></th><td>why a name was blocked or routed, for a device</td></tr>
+          <tr><th scope="row"><code>get_client_profile</code></th><td>a device: identity, groups, recent and slow queries</td></tr>
+          <tr><th scope="row"><code>latency_breakdown</code></th><td>percentiles by stage, upstream, client, or type</td></tr>
+          <tr><th scope="row"><code>upstream_health</code></th><td>health, circuit breakers, latency per upstream</td></tr>
+          <tr><th scope="row"><code>list_effectiveness</code></th><td>list hits, unique names, overlap</td></tr>
+          <tr><th scope="row"><code>find_anomalies</code></th><td>rate spikes, beaconing, NXDOMAIN storms, DGA-like names</td></tr>
+          <tr><th scope="row"><code>new_domains</code></th><td>first-seen domains per device</td></tr>
+          <tr><th scope="row"><code>vqlog</code></th><td>any count, top list, percentile, or time series (below)</td></tr>
+          <tr><th scope="row"><code>cluster_status</code></th><td>members, roles, sync, versions, health</td></tr>
+          <tr><th scope="row"><code>get_config</code></th><td>a configuration section, without secrets</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+    <div>
+      <h3>Change (as plans)</h3>
+      <div class="table-wrap"><table class="std">
+        <tbody>
+          <tr><th scope="row"><code>plan_block_domain</code>, <code>plan_allow_domain</code></th><td>a quick rule, for everyone, devices, or groups, optionally for a while</td></tr>
+          <tr><th scope="row"><code>plan_rename_client</code>, <code>plan_assign_client</code></th><td>name devices and put them in groups</td></tr>
+          <tr><th scope="row"><code>plan_set_local_name</code>, <code>plan_remove_local_name</code></th><td>answer local names with your own records</td></tr>
+          <tr><th scope="row"><code>plan_forward_domain</code></th><td>send a domain to other DNS servers</td></tr>
+          <tr><th scope="row"><code>plan_add_list</code>, <code>plan_update_group</code></th><td>filter lists and groups</td></tr>
+          <tr><th scope="row"><code>plan_update_upstreams</code></th><td>upstream servers and strategies</td></tr>
+          <tr><th scope="row"><code>apply_plan</code>, <code>discard_plan</code>, <code>list_plans</code></th><td>make, drop, or review planned changes</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Act at once (low risk, audited)</h3>
+      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>.</p>
+      <h3>Resources and prompts</h3>
+      <p class="muted">Resources an assistant can attach: <code>telltale://cluster/status</code>, <code>telltale://config</code> (no secrets), <code>telltale://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
+    </div>
+  </div>
+  <p class="muted">The catalog is committed in the repository (<a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/api/mcp-tools.json">mcp-tools.json</a>) and checked in CI with the official MCP SDK, so what you read here is what the server offers.</p>
+</section>
+
+<section id="vqlog">
+  <p class="eyebrow">One tool for analytics</p>
+  <h2>vqlog: questions as one line</h2>
+  <p class="muted">Instead of dozens of narrow tools, agents (and you) can ask the query log anything in a small pipe language: filter, group, top lists, percentiles, and time series. It's parsed into a fixed plan, so it can't run code or SQL, and every answer says what it cost to compute.</p>
+<pre><code>from -24h | where status = blocked and group = kids | top 10 name
+from -7d  | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)
+where name under roku.com | by client | stats count, distinct(name)
+from -1h  | where latency &gt; 200 | by upstream | stats count, p50(latency), p99(latency)</code></pre>
+  <p class="muted">Agents can check the cost first (<code>estimateOnly</code>). Over-broad questions are refused with a hint on how to narrow them, and long scans stop and say so instead of slowing DNS down. Full syntax: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#analytics-in-one-query-vqlog">Analytics in one query</a>.</p>
+</section>
+
+<section>
+  <p class="eyebrow">Safe by design</p>
+  <h2>Guardrails that are always on</h2>
+  <div class="grid">
+    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>. A token can also be limited to one group of devices.</p></div>
+    <div class="card"><h3>Preview before change</h3><p>Every change is a plan with before and after, how many recent questions it would affect, and warnings. A plan made against an older configuration goes stale instead of overwriting newer work.</p></div>
+    <div class="card"><h3>A person in the loop</h3><p>Turn on <code>[agents] require_approval</code>, and plans wait in the UI's <b>Agent changes</b> inbox. Agents can't approve anything, their own plans included.</p></div>
+    <div class="card"><h3>Full audit</h3><p>Changes are recorded as <code>agent:&lt;token&gt; (owner: &lt;you&gt;)</code>, with the MCP client and the reason the agent gave. Every write needs a reason.</p></div>
+    <div class="card"><h3>Limits and a kill switch</h3><p>Per-token rate limits, results capped at 200 rows or 32 KiB, the same privacy level as the UI, and <code>[agents] enabled = false</code> to turn every agent off on every node at once.</p></div>
+    <div class="card"><h3>DNS comes first</h3><p>Agents use the same API as people, off the query path. Searches run at background priority, so a busy agent never slows down an answer.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Go further</h2>
+  <div class="cta">
+    <a class="btn primary" href="start.html">Get started</a>
+    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#ai-agents-and-automation">Agent documentation</a>
+    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/api/openapi.json">OpenAPI document</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>
