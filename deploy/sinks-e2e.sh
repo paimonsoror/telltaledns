@@ -147,7 +147,8 @@ print(f"webhook sink: {events} events")
 EOF
 
 # Alert: the failing list, as JSON to the alert webhook.
-for _ in $(seq 60); do grep -lq '^/alert' "$E"/posts/* 2>/dev/null && break; sleep 0.5; done
+# The list's failure is recorded once the fetcher's retries are over (about 40 s).
+for _ in $(seq 180); do grep -lq '^/alert' "$E"/posts/* 2>/dev/null && break; sleep 0.5; done
 python3 - "$E/posts" <<'EOF' || fail "alert"
 import json, os, sys
 d = sys.argv[1]
