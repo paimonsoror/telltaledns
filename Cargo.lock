@@ -3293,6 +3293,7 @@ dependencies = [
 name = "telltale-config"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "schemars 1.2.2",
  "serde",
  "serde_json",

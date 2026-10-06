@@ -5819,7 +5819,9 @@
           "queries24h",
           "blocked24h",
           "devicesThisHour",
-          "blockedServices"
+          "blockedServices",
+          "schedules",
+          "schedulesOn"
         ],
         "properties": {
           "blockMode": {
@@ -5892,6 +5894,19 @@
             "format": "int64",
             "description": "Queries from the group's devices over the last 24 hours.",
             "minimum": 0
+          },
+          "schedules": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now."
+          },
+          "schedulesOn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -6745,7 +6760,9 @@
                 "queries24h",
                 "blocked24h",
                 "devicesThisHour",
-                "blockedServices"
+                "blockedServices",
+                "schedules",
+                "schedulesOn"
               ],
               "properties": {
                 "blockMode": {
@@ -6818,6 +6835,19 @@
                   "format": "int64",
                   "description": "Queries from the group's devices over the last 24 hours.",
                   "minimum": 0
+                },
+                "schedules": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now."
+                },
+                "schedulesOn": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               }
             }

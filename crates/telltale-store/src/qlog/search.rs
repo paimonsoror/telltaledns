@@ -746,6 +746,7 @@ fn row(
         3 => Some(RuleKind::Regex),
         4 => Some(RuleKind::Cname),
         5 => Some(RuleKind::Quick),
+        6 => Some(RuleKind::Schedule),
         _ => None,
     };
     let rule = rule_kind.filter(|_| list > 0).map(|k| Rule {

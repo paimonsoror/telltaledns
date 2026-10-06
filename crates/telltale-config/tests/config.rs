@@ -567,3 +567,45 @@ fn flt_012_blocked_services_are_validated() {
     );
     assert!(err.contains("kept for blocked services"), "{err}");
 }
+
+/// REQ: FLT-010 (T7.10) — schedules: known schedules, lists, and services; readable windows
+/// and time zones.
+#[test]
+fn flt_010_schedules_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = r#"
+[[group]]
+name = "kids"
+schedules = ["bedtime"]
+[[schedule]]
+name = "bedtime"
+action = "block_all"
+tz = "UTC"
+window = [{ days = ["weekdays"], start = "21:00", end = "07:00" }]
+"#;
+    assert!(load(ok).is_ok());
+    for (bad, why) in [
+        (
+            ok.replace("schedules = [\"bedtime\"]", "schedules = [\"nap\"]"),
+            "no schedule `nap`",
+        ),
+        (ok.replace("\"weekdays\"", "\"someday\""), "day `someday`"),
+        (ok.replace("\"21:00\"", "\"9pm\""), "use HH:MM"),
+        (
+            ok.replace("\"UTC\"", "\"Mars/Base\""),
+            "time zone `Mars/Base`",
+        ),
+        (
+            ok.replace("\"block_all\"", "\"enable_lists\""),
+            "needs at least one list",
+        ),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}

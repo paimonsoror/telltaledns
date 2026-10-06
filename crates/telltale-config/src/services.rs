@@ -77,7 +77,11 @@ pub fn expand(cfg: &Config) -> Config {
         let used = cfg
             .group
             .iter()
-            .any(|g| g.blocked_services.iter().any(|b| b.as_str() == s.id));
+            .any(|g| g.blocked_services.iter().any(|b| b.as_str() == s.id))
+            || cfg
+                .schedule
+                .iter()
+                .any(|x| x.services.iter().any(|b| b.as_str() == s.id));
         let name = list_name(&s.id);
         if !used || cfg.list.iter().any(|l| l.name.as_str() == name) {
             continue;

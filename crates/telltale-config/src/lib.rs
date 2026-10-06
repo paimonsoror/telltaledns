@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 mod env;
+pub mod schedule;
 pub mod schema;
 pub mod services;
 pub mod shared;

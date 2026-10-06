@@ -197,15 +197,36 @@ impl ApiBackend {
     }
 }
 
+/// REQ: FLT-010 (T7.10) — the group's schedules that are on at `now`.
+fn schedules_on(cfg: &telltale_config::Config, group: &str, now: i64) -> Vec<String> {
+    let Some(g) = cfg.group.iter().find(|x| x.name.as_str() == group) else {
+        return Vec::new();
+    };
+    telltale_config::schedule::compile(cfg)
+        .into_iter()
+        .filter(|s| g.schedules.iter().any(|n| n.as_str() == s.name) && s.is_on(now))
+        .map(|s| s.name)
+        .collect()
+}
+
 /// REQ: FLT-013 (ADR-067) — a decision's list and kind for query-log rows. A quick rule is
 /// named by its note (else its domain) and whom it applies to; one that no longer exists says so.
 pub(crate) fn rule_labels(
     rule: Option<telltale_telemetry::event::Rule>,
     lists: &[String],
     quick: &telltale_policy::QuickRules,
+    schedules: &[(u16, String)],
 ) -> (Option<String>, Option<String>) {
     use telltale_telemetry::event::RuleKind;
     let Some(x) = rule else { return (None, None) };
+    // REQ: FLT-010 (T7.10) — a block-everything schedule.
+    if x.kind == RuleKind::Schedule {
+        let name = schedules.iter().find(|(r, _)| *r == x.list).map_or_else(
+            || "a schedule (since removed)".to_owned(),
+            |(_, n)| format!("schedule {n}"),
+        );
+        return (Some(name), Some("schedule".to_owned()));
+    }
     if x.kind == RuleKind::Quick {
         let list = quick.by_ref(x.list).map_or_else(
             || "a quick rule (since removed)".to_owned(),
@@ -313,11 +334,12 @@ impl ApiBackend {
         let policy = &self.src.pipeline.current().policy;
         let groups = policy.clients.groups();
         let quick = Arc::clone(&policy.quick);
+        let schedules = self.src.pipeline.schedules.load().names.clone();
         let items = page
             .rows
             .iter()
             .map(|r| {
-                let (list, rule) = rule_labels(r.rule, &lists, &quick);
+                let (list, rule) = rule_labels(r.rule, &lists, &quick, &schedules);
                 QueryRow {
                     time: format_us(r.ts_us),
                     ts_unix_micros: r.ts_us,
@@ -814,8 +836,12 @@ impl Backend for ApiBackend {
             filter,
             move |t| {
                 let e = &t.ev;
-                let (list, rule) =
-                    rule_labels(e.rule, &lists, &src.pipeline.current().policy.quick);
+                let (list, rule) = rule_labels(
+                    e.rule,
+                    &lists,
+                    &src.pipeline.current().policy.quick,
+                    &src.pipeline.schedules.load().names,
+                );
                 QueryRow {
                     time: format_us(e.ts_us),
                     ts_unix_micros: e.ts_us,
@@ -1007,6 +1033,8 @@ impl Backend for ApiBackend {
     }
 
     fn groups(&self) -> Vec<GroupInfo> {
+        let cfg = self.src.config.load();
+        let now_s = i64::try_from(crate::pipeline::unix_now()).unwrap_or(i64::MAX);
         let now = crate::pipeline::unix_now();
         let pauses = self.src.pipeline.pause.active(now);
         let global = pauses.iter().find(|(g, _)| g.is_none()).map(|(_, u)| *u);
@@ -1052,6 +1080,13 @@ impl Backend for ApiBackend {
                 .unwrap_or(0),
                 name: g.name.to_string(),
                 blocked_services: g.services.iter().map(ToString::to_string).collect(),
+                schedules: cfg
+                    .group
+                    .iter()
+                    .find(|x| x.name.as_str() == &*g.name)
+                    .map(|x| x.schedules.iter().map(ToString::to_string).collect())
+                    .unwrap_or_default(),
+                schedules_on: schedules_on(&cfg, &g.name, now_s),
                 priority: g.priority,
                 lists: g
                     .lists

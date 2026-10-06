@@ -637,6 +637,9 @@ pub struct GroupInfo {
     pub devices_this_hour: u64,
     /// REQ: FLT-012 (T7.9) — services this group blocks (IDs from `GET /api/v1/services`).
     pub blocked_services: Vec<String>,
+    /// REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now.
+    pub schedules: Vec<String>,
+    pub schedules_on: Vec<String>,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.

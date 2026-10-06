@@ -40,6 +40,8 @@ pub struct Config {
     pub list: Vec<FilterList>,
     /// Client groups (FLT-005). A `default` group (every list) exists even if not declared.
     pub group: Vec<GroupConfig>,
+    /// REQ: FLT-010 (T7.10) — weekly schedules that groups use (`schedules` in a group).
+    pub schedule: Vec<ScheduleConfig>,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
     /// Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,
@@ -94,6 +96,7 @@ impl Default for Config {
             local: LocalConfig::default(),
             list: Vec::new(),
             group: Vec::new(),
+            schedule: Vec::new(),
             client: Vec::new(),
             rule: Vec::new(),
             clients: ClientsConfig::default(),
@@ -549,6 +552,58 @@ pub struct GroupConfig {
     /// `telltale services list`), on top of its lists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_services: Vec<SafeString>,
+    /// REQ: FLT-010 (T7.10) — `[[schedule]]` names that apply to this group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<SafeString>,
+}
+
+/// REQ: FLT-010 (T7.10, `spec/05` §3) — a weekly schedule: during its windows, the groups
+/// that name it block everything, or get extra lists or blocked services.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleConfig {
+    /// Unique name, used in a group's `schedules`.
+    pub name: SafeString,
+    /// What happens during the windows.
+    pub action: ScheduleAction,
+    /// `enable_lists`: these lists apply during the windows, and not outside them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lists: Vec<SafeString>,
+    /// `block_services`: these services (`telltale services list`) are blocked during the
+    /// windows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<SafeString>,
+    /// IANA time zone, e.g. `Europe/Berlin`. Default: the system's (`TZ`, `/etc/localtime`),
+    /// else UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<SafeString>,
+    /// When it's on.
+    pub window: Vec<ScheduleWindow>,
+}
+
+/// One weekly window: the days it starts on, and local start and end times. An end at or
+/// before the start runs past midnight (`21:00` to `07:00`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleWindow {
+    /// `mon` … `sun`, or `weekdays`, `weekends`, `daily`.
+    pub days: Vec<SafeString>,
+    /// `HH:MM`, 24-hour.
+    pub start: SafeString,
+    /// `HH:MM`, 24-hour (`24:00` is the end of the day).
+    pub end: SafeString,
+}
+
+/// What a schedule does during its windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleAction {
+    /// Block every name (bedtime), except quick allow rules and local names.
+    BlockAll,
+    /// Apply extra lists.
+    EnableLists,
+    /// Block extra services.
+    BlockServices,
 }
 
 const fn default_block_ttl() -> u32 {

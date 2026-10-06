@@ -75,6 +75,12 @@
         <div class="muted small mono">
           {g.networks.length ? g.networks.join(', ') : g.name === 'default' ? 'devices that match nothing else' : 'named devices only'}
         </div>
+        {#if g.schedules.length}
+          <div class="small" data-testid="group-schedules">
+            Schedules: {#each g.schedules as s, i (s)}{i ? ', ' : ''}{s}{#if g.schedulesOn.includes(s)}
+                <span class="badge warn">on now</span>{/if}{/each}<HelpButton id="schedules" />
+          </div>
+        {/if}
         {#if g.blockedServices.length}
           <div class="small" data-testid="group-services">
             Blocks {g.blockedServices.map(serviceName).join(', ')}<HelpButton id="blocked-services" />

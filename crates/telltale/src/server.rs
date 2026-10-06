@@ -194,6 +194,40 @@ impl Stream {
     }
 }
 
+/// REQ: FLT-010 (T7.10) — every 15 s: which schedules are on. A change rebuilds the filter's
+/// list masks (no recompile) and turns block-everything on or off for the groups concerned.
+async fn schedule_ticker(
+    sources: Arc<crate::http::Sources>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut compiled_for: Option<Arc<Config>> = None;
+    let mut compiled = Vec::new();
+    loop {
+        let cfg = sources.config.load_full();
+        if compiled_for.as_ref().is_none_or(|c| !Arc::ptr_eq(c, &cfg)) {
+            compiled = telltale_config::schedule::compile(&cfg);
+            compiled_for = Some(Arc::clone(&cfg));
+        }
+        let clients = Arc::clone(&sources.pipeline.current().policy.clients);
+        let now = i64::try_from(crate::pipeline::unix_now()).unwrap_or(i64::MAX);
+        let state = crate::pipeline::ScheduleNow::compute(&cfg, &compiled, clients.groups(), now);
+        if **sources.pipeline.schedules.load() != state {
+            let on: Vec<&str> = compiled
+                .iter()
+                .filter(|s| s.is_on(now))
+                .map(|s| s.name.as_str())
+                .collect();
+            info!(on = ?on, "schedules changed");
+            sources.pipeline.schedules.store(Arc::new(state));
+            sources.pipeline.set_filter(None);
+        }
+        tokio::select! {
+            _ = stop.changed() => return,
+            () = tokio::time::sleep(Duration::from_secs(15)) => {}
+        }
+    }
+}
+
 /// REQ: DNS-004 (T7.8) — the `Alt-Svc` an HTTP/2 DoH listener sends when an HTTP/3 DoH listener is
 /// configured: clients that speak HTTP/3 switch to it for the same name.
 fn alt_svc(listen: &[Listener]) -> Option<String> {
@@ -675,6 +709,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             http_stopped.clone(),
         ));
     }
+    // REQ: FLT-010 (T7.10) — schedules: which are on, every 15 s.
+    tokio::spawn(schedule_ticker(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).
     tokio::spawn(crate::updates::run(
         Arc::clone(&sources.update),

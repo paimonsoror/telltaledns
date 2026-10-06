@@ -37,6 +37,8 @@ pub enum RuleKind {
     Cname = 4,
     /// A quick rule decided (T6.12, ADR-067); `list` holds the rule's 16-bit reference.
     Quick = 5,
+    /// REQ: FLT-010 (T7.10) — a schedule blocked everything; `list` holds its reference.
+    Schedule = 6,
 }
 
 impl RuleKind {
@@ -47,6 +49,7 @@ impl RuleKind {
             3 => Self::Regex,
             4 => Self::Cname,
             5 => Self::Quick,
+            6 => Self::Schedule,
             _ => return None,
         })
     }
@@ -57,6 +60,7 @@ impl RuleKind {
             Self::Regex => "regex",
             Self::Cname => "cname",
             Self::Quick => "quick",
+            Self::Schedule => "schedule",
         }
     }
 }

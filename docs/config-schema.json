@@ -255,6 +255,14 @@
         "$ref": "#/$defs/RuleConfig"
       }
     },
+    "schedule": {
+      "description": "REQ: FLT-010 (T7.10) — weekly schedules that groups use (`schedules` in a group).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ScheduleConfig"
+      }
+    },
     "special": {
       "description": "Special-name handling (RFC 6761 etc.).",
       "$ref": "#/$defs/SpecialConfig",
@@ -1194,6 +1202,14 @@
           "type": "integer",
           "format": "int32",
           "default": 0
+        },
+        "schedules": {
+          "description": "REQ: FLT-010 (T7.10) — `[[schedule]]` names that apply to this group.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
         }
       },
       "additionalProperties": false,
@@ -1860,6 +1876,108 @@
         "id",
         "action",
         "domain"
+      ]
+    },
+    "ScheduleAction": {
+      "description": "What a schedule does during its windows.",
+      "oneOf": [
+        {
+          "description": "Block every name (bedtime), except quick allow rules and local names.",
+          "type": "string",
+          "const": "block_all"
+        },
+        {
+          "description": "Apply extra lists.",
+          "type": "string",
+          "const": "enable_lists"
+        },
+        {
+          "description": "Block extra services.",
+          "type": "string",
+          "const": "block_services"
+        }
+      ]
+    },
+    "ScheduleConfig": {
+      "description": "REQ: FLT-010 (T7.10, `spec/05` §3) — a weekly schedule: during its windows, the groups\nthat name it block everything, or get extra lists or blocked services.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "What happens during the windows.",
+          "$ref": "#/$defs/ScheduleAction"
+        },
+        "lists": {
+          "description": "`enable_lists`: these lists apply during the windows, and not outside them.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "name": {
+          "description": "Unique name, used in a group's `schedules`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "services": {
+          "description": "`block_services`: these services (`telltale services list`) are blocked during the\nwindows.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "tz": {
+          "description": "IANA time zone, e.g. `Europe/Berlin`. Default: the system's (`TZ`, `/etc/localtime`),\nelse UTC.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "window": {
+          "description": "When it's on.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScheduleWindow"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "action",
+        "window"
+      ]
+    },
+    "ScheduleWindow": {
+      "description": "One weekly window: the days it starts on, and local start and end times. An end at or\nbefore the start runs past midnight (`21:00` to `07:00`).",
+      "type": "object",
+      "properties": {
+        "days": {
+          "description": "`mon` … `sun`, or `weekdays`, `weekends`, `daily`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "end": {
+          "description": "`HH:MM`, 24-hour (`24:00` is the end of the day).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "start": {
+          "description": "`HH:MM`, 24-hour.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "days",
+        "start",
+        "end"
       ]
     },
     "ShipConfig": {

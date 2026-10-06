@@ -414,6 +414,16 @@
       "example": "The kids group blocks TikTok and Fortnite; the rest of the house is unaffected.",
       "caution": "Apps change domains over time; the catalog is updated with TelltaleDNS. Add a quick rule for anything it misses.",
       "docs": "blocked-services"
+    },
+    {
+      "id": "schedules",
+      "title": "Filter by the time of day",
+      "term": "Schedules",
+      "summary": "A schedule changes a group's filtering during weekly windows: block everything (bedtime), or add lists or blocked services only at certain times.",
+      "when": "Devices should be offline at night, or a game blocked during school hours.",
+      "example": "The kids group blocks everything from 21:00 to 07:00 on school nights; a quick allow keeps the homework site reachable.",
+      "caution": "Windows use the schedule's time zone (tz), else the server's. Changes take effect within 15 seconds of the window's time.",
+      "docs": "schedules"
     }
   ]
 }

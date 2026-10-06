@@ -101,6 +101,79 @@ impl Policy {
     }
 }
 
+/// REQ: FLT-010 (T7.10) — which schedules are on, per group (`ClientTable` order), as the
+/// 15-second ticker last computed it. Empty vectors when nothing is on.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ScheduleNow {
+    /// Per group: the block-everything schedule that's on (its block reason and query-log
+    /// reference).
+    pub(crate) block_all: Vec<Option<(String, u16)>>,
+    /// Per group: the lists (and `svc-` service lists) schedules add right now.
+    pub(crate) extras: Vec<Vec<String>>,
+    /// Lists and services that only schedules turn on: off for a group outside its windows,
+    /// even when it uses every list.
+    pub(crate) scheduled: Vec<String>,
+    /// Every schedule's query-log reference and name.
+    pub(crate) names: Vec<(u16, String)>,
+}
+
+impl ScheduleNow {
+    /// The state at `now` for `groups` (`ClientTable` order).
+    pub(crate) fn compute(
+        cfg: &telltale_config::Config,
+        compiled: &[telltale_config::schedule::Compiled],
+        groups: &[telltale_policy::Group],
+        now: i64,
+    ) -> Self {
+        let on: Vec<bool> = compiled.iter().map(|s| s.is_on(now)).collect();
+        let mut block_all = vec![None; groups.len()];
+        let mut extras = vec![Vec::new(); groups.len()];
+        for (i, g) in groups.iter().enumerate() {
+            let Some(gc) = cfg.group.iter().find(|x| x.name.as_str() == &*g.name) else {
+                continue;
+            };
+            for (s, on) in compiled.iter().zip(&on) {
+                if !*on || !gc.schedules.iter().any(|n| n.as_str() == s.name) {
+                    continue;
+                }
+                if s.action == telltale_config::ScheduleAction::BlockAll {
+                    if block_all[i].is_none() {
+                        block_all[i] = Some((
+                            format!("blocked by schedule {}", s.name),
+                            telltale_policy::quick_ref(&s.name),
+                        ));
+                    }
+                } else {
+                    extras[i].extend(s.list_names());
+                }
+            }
+        }
+        let mut scheduled: Vec<String> = compiled
+            .iter()
+            .flat_map(telltale_config::schedule::Compiled::list_names)
+            .collect();
+        scheduled.sort();
+        scheduled.dedup();
+        Self {
+            block_all: if block_all.iter().any(Option::is_some) {
+                block_all
+            } else {
+                Vec::new()
+            },
+            extras: if extras.iter().any(|e| !e.is_empty()) {
+                extras
+            } else {
+                Vec::new()
+            },
+            scheduled,
+            names: compiled
+                .iter()
+                .map(|s| (telltale_policy::quick_ref(&s.name), s.name.clone()))
+                .collect(),
+        }
+    }
+}
+
 /// The active filter (`spec/03` §3 step 6): a matcher plus, per client, which lists apply.
 #[derive(Debug)]
 pub(crate) struct FilterState {
@@ -150,7 +223,11 @@ pub(crate) fn unix_now() -> u64 {
 }
 
 impl FilterState {
-    pub(crate) fn new(matcher: Arc<Matcher>, clients: Arc<ClientTable>) -> Self {
+    pub(crate) fn new(
+        matcher: Arc<Matcher>,
+        clients: Arc<ClientTable>,
+        sched: &ScheduleNow,
+    ) -> Self {
         let names: Vec<String> = matcher
             .snapshot()
             .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
@@ -159,19 +236,27 @@ impl FilterState {
         // compiled yet simply doesn't get it until it is). REQ: FLT-012 (T7.9) — blocked
         // services (`svc-<id>` lists) apply only to the groups that name them, also when a
         // group uses every list.
+        // REQ: FLT-010 (T7.10) — lists and services a schedule turns on apply during its
+        // windows only (unless the group always uses them).
         let group_masks: Vec<ListMask> = clients
             .groups()
             .iter()
-            .map(|g| {
+            .enumerate()
+            .map(|(gi, g)| {
+                let extra = sched.extras.get(gi);
                 let mut m = ListMask::default();
                 for (i, n) in names.iter().enumerate() {
-                    let wanted = match telltale_config::services::of_list(n) {
-                        Some(s) => g.services.iter().any(|x| **x == *s.id),
-                        None => g
-                            .lists
-                            .as_ref()
-                            .is_none_or(|l| l.iter().any(|l| **l == **n)),
-                    };
+                    let now = extra.is_some_and(|e| e.iter().any(|x| x == n));
+                    let explicit = g
+                        .lists
+                        .as_ref()
+                        .is_some_and(|l| l.iter().any(|l| **l == **n));
+                    let wanted = now
+                        || match telltale_config::services::of_list(n) {
+                            Some(s) => g.services.iter().any(|x| **x == *s.id),
+                            None if sched.scheduled.iter().any(|x| x == n) => explicit,
+                            None => g.lists.is_none() || explicit,
+                        };
                     if wanted && let Ok(id) = u16::try_from(i) {
                         m.set(id);
                     }
@@ -267,6 +352,8 @@ pub(crate) struct Pipeline {
     pub(crate) neighbors: Arc<Neighbors>,
     /// Blocking paused globally or per group (FLT-009). Kept across reloads.
     pub(crate) pause: Pause,
+    /// REQ: FLT-010 (T7.10) — schedules on now (the ticker in `server` updates it).
+    pub(crate) schedules: arc_swap::ArcSwap<ScheduleNow>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
@@ -314,6 +401,7 @@ impl Pipeline {
             filter_lock: std::sync::Mutex::new(()),
             neighbors: Arc::new(Neighbors::default()),
             pause: Pause::default(),
+            schedules: arc_swap::ArcSwap::from_pointee(ScheduleNow::default()),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -400,9 +488,10 @@ impl Pipeline {
             },
         };
         let clients = Arc::clone(&self.state.load().policy.clients);
+        let sched = self.schedules.load();
         retire(
             self.filter
-                .swap(Some(Arc::new(FilterState::new(matcher, clients)))),
+                .swap(Some(Arc::new(FilterState::new(matcher, clients, &sched)))),
         );
     }
 
@@ -510,6 +599,10 @@ impl Pipeline {
             }
             // REQ: FLT-003 — the filter decision (`spec/03` §3 step 6), before the cache.
             None => {
+                // REQ: FLT-010 (T7.10) — a schedule blocking everything for the group (bedtime).
+                if let Some(len) = self.schedule_block(&q, out, &st.policy, ident, oc) {
+                    return ready(Some(self.finish(&q, out, len, meta.transport)));
+                }
                 if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
                     return blocked;
                 }
@@ -755,6 +848,35 @@ impl Pipeline {
             r.authority_soa(b.ttl).ok()?;
         }
         r.finish(edns).ok()
+    }
+
+    /// REQ: FLT-010 (T7.10) — the block answer when a block-everything schedule is on for the
+    /// client's group (and blocking isn't paused). One load and an index when nothing is on.
+    fn schedule_block(
+        &self,
+        q: &Query<'_>,
+        out: &mut [u8],
+        policy: &Policy,
+        ident: Identity,
+        oc: &mut Outcome,
+    ) -> Option<usize> {
+        let now = self.schedules.load();
+        if now.block_all.is_empty() {
+            return None;
+        }
+        let g = *policy.clients.group_ids(ident).first()?;
+        let (reason, r) = now.block_all.get(usize::from(g))?.as_ref()?;
+        let group = policy.clients.primary_group(ident);
+        if self.pause.is_paused(&group.name, unix_now) {
+            return None;
+        }
+        oc.status = Status::Blocked;
+        oc.rule = Some(Rule {
+            list: *r,
+            kind: RuleKind::Schedule,
+            allow: false,
+        });
+        self.block_answer(q, out, group, reason)
     }
 
     /// REQ: FLT-003, FLT-008 — answers a blocked query, or returns `None` to resolve normally.
@@ -1550,6 +1672,137 @@ blocked_services = ["tiktok"]
             "every list still applies"
         );
         assert!(blocked(&ask("10.0.1.5:1000", "ads.example.com")));
+    }
+
+    /// REQ: FLT-010 (T7.10) — schedules: bedtime blocks everything for its group during the
+    /// window (a quick allow still wins), and a list a schedule turns on is off outside it,
+    /// even for a group that uses every list.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario across the week
+    fn flt_010_schedules_block_all_and_enable_lists() {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+
+[[list]]
+name = "games"
+rules = ["||game.example.com^"]
+
+[[group]]
+name = "default"
+schedules = ["weekend-games"]
+
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+schedules = ["bedtime"]
+
+[[schedule]]
+name = "bedtime"
+action = "block_all"
+tz = "UTC"
+window = [{ days = ["daily"], start = "21:00", end = "07:00" }]
+
+[[schedule]]
+name = "weekend-games"
+action = "enable_lists"
+lists = ["games"]
+tz = "UTC"
+window = [{ days = ["weekends"], start = "12:00", end = "18:00" }]
+
+[[rule]]
+id = "homework"
+action = "allow"
+domain = "school.example.com"
+groups = ["kids"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let clients = Arc::new(ClientTable::from_config(&cfg));
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                clients: Arc::clone(&clients),
+                quick: Arc::new(telltale_policy::QuickRules::from_config(&cfg, &clients)),
+                ..Policy::open()
+            },
+        );
+        install_lists(
+            &p,
+            &[
+                ("ads", "||ads.example.com^\n"),
+                ("games", "||game.example.com^\n"),
+            ],
+        );
+        let compiled = telltale_config::schedule::compile(&cfg);
+        let at = |now: i64| {
+            p.schedules.store(Arc::new(ScheduleNow::compute(
+                &cfg,
+                &compiled,
+                clients.groups(),
+                now,
+            )));
+            p.set_filter(None);
+        };
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => Vec::new(),
+            }
+        };
+        let blocked =
+            |r: &[u8]| summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1);
+        // Monday 2026-10-05 22:00 UTC: bedtime is on.
+        let monday_2200: i64 = 1_791_237_600;
+        at(monday_2200);
+        let r = ask("10.0.1.5:1000", "www.example.org");
+        assert!(blocked(&r), "bedtime blocks everything for kids");
+        let text = b"blocked by schedule bedtime";
+        assert!(
+            r.windows(text.len()).any(|w| w == text),
+            "EDE names the schedule"
+        );
+        assert!(
+            !blocked(&ask("10.0.1.5:1000", "school.example.com")),
+            "a quick allow wins"
+        );
+        assert!(
+            !blocked(&ask("10.0.0.9:1000", "www.example.org")),
+            "other groups are unaffected"
+        );
+        // Noon: bedtime is off.
+        at(monday_2200 - 10 * 3600);
+        assert!(!blocked(&ask("10.0.1.5:1000", "www.example.org")));
+        // The games list is off on a weekday, even for the every-list default group, and on
+        // during its weekend window; the ads list applies throughout.
+        assert!(!blocked(&ask("10.0.0.9:1000", "game.example.com")));
+        assert!(blocked(&ask("10.0.0.9:1000", "ads.example.com")));
+        let saturday_1300 = monday_2200 + 4 * 86_400 + 15 * 3600;
+        at(saturday_1300);
+        assert!(
+            blocked(&ask("10.0.0.9:1000", "game.example.com")),
+            "weekend games list on"
+        );
+        assert!(
+            !blocked(&ask("10.0.1.5:1000", "game.example.com")),
+            "only for its own group"
+        );
     }
 
     #[test]

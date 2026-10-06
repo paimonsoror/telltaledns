@@ -49,10 +49,78 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     clients(cfg, &mut r);
     rules(cfg, &mut r);
     services(cfg, &mut r);
+    schedules(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     r.warnings
+}
+
+// REQ: FLT-010 (T7.10) — schedules: unique names, known lists and services for their
+// action, readable windows, and groups that name schedules that exist.
+fn schedules(cfg: &Config, r: &mut Report<'_>) {
+    use crate::schema::ScheduleAction;
+    let mut names = HashSet::new();
+    for (i, s) in cfg.schedule.iter().enumerate() {
+        let p = format!("schedule[{i}]");
+        if s.name.is_empty() || !names.insert(s.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        match s.action {
+            ScheduleAction::EnableLists if s.lists.is_empty() => {
+                r.err(
+                    format!("{p}.lists"),
+                    "`enable_lists` needs at least one list",
+                );
+            }
+            ScheduleAction::BlockServices if s.services.is_empty() => {
+                r.err(
+                    format!("{p}.services"),
+                    "`block_services` needs at least one service",
+                );
+            }
+            _ => {}
+        }
+        for (j, l) in s.lists.iter().enumerate() {
+            if !cfg.list.iter().any(|x| x.name == *l) {
+                r.err(
+                    format!("{p}.lists[{j}]"),
+                    format!("no list `{}`", l.as_str()),
+                );
+            }
+        }
+        for (j, x) in s.services.iter().enumerate() {
+            if crate::services::find(x.as_str()).is_none() {
+                r.err(
+                    format!("{p}.services[{j}]"),
+                    format!("no service `{}` (see `telltale services list`)", x.as_str()),
+                );
+            }
+        }
+        if s.window.is_empty() {
+            r.err(format!("{p}.window"), "needs at least one window");
+        }
+        for (j, w) in s.window.iter().enumerate() {
+            if let Err(e) = crate::schedule::parse_window(w) {
+                r.err(format!("{p}.window[{j}]"), e);
+            }
+        }
+        if let Some(tz) = &s.tz
+            && let Err(e) = crate::schedule::time_zone(Some(tz.as_str()))
+        {
+            r.err(format!("{p}.tz"), e);
+        }
+    }
+    for (i, g) in cfg.group.iter().enumerate() {
+        for (j, s) in g.schedules.iter().enumerate() {
+            if !cfg.schedule.iter().any(|x| x.name == *s) {
+                r.err(
+                    format!("group[{i}].schedules[{j}]"),
+                    format!("no schedule `{}`", s.as_str()),
+                );
+            }
+        }
+    }
 }
 
 // REQ: FLT-012 (T7.9) — blocked services exist; `svc-` list names are theirs.

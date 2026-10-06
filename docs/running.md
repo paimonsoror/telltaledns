@@ -658,6 +658,35 @@ blocked_services = ["tiktok", "roblox", "fortnite"]
 - In the UI: **Groups → Manage groups → Edit → Blocked services**.
 - The catalog is part of the binary (`presets/services/*.toml`); services change with updates. To block one service's extra domain, add a quick rule.
 
+### Schedules
+Change a group's filtering by the time of day and the day of the week: block everything at bedtime, or add a list or a service only at certain times.
+```toml
+[[group]]
+name = "kids"
+networks = ["192.168.20.0/24"]
+schedules = ["bedtime", "school-hours"]
+
+[[schedule]]
+name = "bedtime"
+action = "block_all"                        # everything is blocked during the windows
+tz = "Europe/Berlin"                        # default: the system's time zone
+window = [
+  { days = ["sun", "mon", "tue", "wed", "thu"], start = "21:00", end = "07:00" },
+  { days = ["fri", "sat"], start = "22:30", end = "08:00" },
+]
+
+[[schedule]]
+name = "school-hours"
+action = "block_services"                   # or "enable_lists" with `lists = [...]`
+services = ["tiktok", "youtube", "roblox"]
+window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
+```
+- **Windows** are weekly: the days they start on (`mon` … `sun`, `weekdays`, `weekends`, `daily`) and local `HH:MM` times. An end at or before the start runs past midnight, so `21:00`–`07:00` on Sunday covers Sunday night into Monday morning.
+- **`block_all`** blocks every name for the group (the answer says `blocked by schedule bedtime`). Quick allow rules still win, so a homework site can stay reachable, and local names (`nas.home.arpa`) still answer. Pausing a group's blocking pauses its schedules too.
+- **`enable_lists`** and **`block_services`** add lists or services during the windows. A list a schedule turns on is off outside its windows for every group, even one that uses every list, unless a group names it in its own `lists`.
+- Schedules are checked every 15 seconds, so a window starts or ends within 15 s of its time. No query does any time maths, and nothing is recompiled.
+- The Groups page shows each group's schedules and which are **on now**; the query log shows blocks as **schedule**.
+
 ### Naming devices in the UI
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 
