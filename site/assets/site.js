@@ -35,6 +35,21 @@
         if (e.key === "Escape" && sub.open) { sub.open = false; sub.querySelector("summary").focus(); }
       });
     }
+    // A filter box over table rows (Helm values): rows that don't match, and sections left
+    // empty, are hidden. Without JS the box stays hidden and every row shows.
+    document.querySelectorAll("input[data-filter]").forEach(function (input) {
+      var rows = document.querySelectorAll(input.getAttribute("data-filter"));
+      input.closest(".filter").hidden = false;
+      input.addEventListener("input", function () {
+        var q = input.value.trim().toLowerCase();
+        rows.forEach(function (r) { r.hidden = q !== "" && r.textContent.toLowerCase().indexOf(q) < 0; });
+        document.querySelectorAll(".reference .cfg").forEach(function (s) {
+          var head = s.querySelector("h3").textContent.toLowerCase();
+          var any = s.querySelectorAll("tbody tr:not([hidden])").length > 0;
+          s.hidden = q !== "" && !any && head.indexOf(q) < 0;
+        });
+      });
+    });
     // Tabs: without JS every panel is visible, stacked under its own heading.
     document.querySelectorAll(".tabs").forEach(function (box) {
       box.classList.add("js");

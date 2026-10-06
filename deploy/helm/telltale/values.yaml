@@ -136,8 +136,8 @@ ingress:
   enabled: false
   className: ""
   host: ""
+  # e.g. with cert-manager: {cert-manager.io/cluster-issuer: letsencrypt}
   annotations: {}
-  # e.g. with cert-manager: annotations: {cert-manager.io/cluster-issuer: letsencrypt}
   tls:
     secretName: ""
 

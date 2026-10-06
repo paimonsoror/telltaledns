@@ -203,6 +203,12 @@ helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --version <versi
   --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
 kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (DHCP) here
 ```
+**Every option** is in the chart's commented values file:
+`helm show values oci://ghcr.io/paimonsoror/charts/telltale --version <version> > values.yaml`
+(or [`deploy/helm/telltale/values.yaml`](../deploy/helm/telltale/values.yaml); the site's
+[Helm values](https://paimonsoror.github.io/telltaledns/helm-values.html) page lists each key
+with its default). Keep only what you change in your own file and install with `-f my-values.yaml`;
+the chart's schema rejects a mistyped value with its path.
 - **One LoadBalancer Service, UDP and TCP 53**, with `externalTrafficPolicy: Local` so the query log and per-device rules see real client addresses (verified in CI: a query through the LoadBalancer is logged with the sender's address). `Cluster` hides clients behind node addresses, and the install notes warn about it. Use your LB's annotation for a fixed IP: MetalLB `metallb.universe.tf/loadBalancerIPs`, Cilium `io.cilium/lb-ipam-ips`, kube-vip `kube-vip.io/loadbalancerIPs`.
 - **`hostNetwork: true`** answers on port 53 of the node itself (no LoadBalancer, MAC addresses visible). Binding 53 there needs root with only `NET_BIND_SERVICE` kept; on Ubuntu nodes turn off systemd-resolved's stub listener first. k3s's CoreDNS doesn't conflict.
 - **The UI and API**: `service.api.type: LoadBalancer`, or `ingress.enabled` with `ingress.host` (set `[api] trusted_proxies` in `config` to your ingress's network).

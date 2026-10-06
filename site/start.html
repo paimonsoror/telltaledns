@@ -100,6 +100,7 @@ sudo sh install.sh --edge</code></pre>
   -n telltale --create-namespace        # --devel: pre-1.0 builds from main
 kubectl -n telltale get svc telltale-dns   # EXTERNAL-IP: hand this out in DHCP</code></pre>
         <p class="muted">One LoadBalancer for UDP and TCP 53 with <code>externalTrafficPolicy: Local</code>, so every device shows up with its own address. If something hides them anyway (a node, a Docker bridge, a router forwarding DNS), the UI says "client IPs appear masked" and links to the fix.</p>
+        <p class="muted">Every option: <code>helm show values oci://ghcr.io/paimonsoror/charts/telltale --devel</code>, or the <a href="helm-values.html">Helm values reference</a>.</p>
         </div>
       </div>
     </div>

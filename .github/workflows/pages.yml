@@ -9,7 +9,7 @@ on:
     branches: [main]
     # T6.10: the "For nerds" page reads the crates (arrows, line counts, types) and the specs
     # (ADRs, requirements, budgets), so changes there redeploy it too.
-    paths: ["site/**", "docs/config-schema.json", "docs/help/**", "spec/**", "crates/**", "Cargo.toml", ".github/workflows/pages.yml"]
+    paths: ["site/**", "docs/config-schema.json", "docs/help/**", "deploy/helm/telltale/values.yaml", "deploy/helm/telltale/values.schema.json", "spec/**", "crates/**", "Cargo.toml", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:

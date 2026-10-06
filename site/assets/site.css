@@ -143,6 +143,10 @@ section + section { border-top: 1px solid var(--line); }
 pre { background: var(--code-bg); color: var(--code-ink); border-radius: 12px; padding: 14px 16px; overflow-x: auto; font: 14px/1.55 var(--mono); }
 code { font-family: var(--mono); font-size: .92em; }
 p code, li code, td code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+pre code { background: none; padding: 0; border-radius: 0; }
+/* Helm values: column 3 is the meaning (on the config page it's the default). */
+.cfg.helm td:nth-child(3) { white-space: normal; }
+.cfg.helm td pre { margin: 6px 0 0; font-size: 13px; }
 
 /* Tabs (work without JS: all panels show stacked) */
 .tabs [role="tablist"] { display: none; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }

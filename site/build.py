@@ -23,7 +23,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "glossary.html", "performance.html", "standards.html", "nerds.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "nerds.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -226,6 +226,128 @@ def render_config(page, schema):
         _section(k, props[k], defs, array, out)
     page = page.replace("<!-- @config-toc -->", " · ".join(toc))
     return page.replace("<!-- @config-reference -->", "\n".join(out))
+
+
+# REQ: DOC-006, OPS-003 — every Helm chart value with its default and meaning, read from the
+# chart's own values.yaml (its comments are the documentation), so the page can't drift.
+HELM_VALUES = os.path.join(ROOT, "deploy", "helm", "telltale", "values.yaml")
+HELM_SCHEMA = os.path.join(ROOT, "deploy", "helm", "telltale", "values.schema.json")
+_KEY = re.compile(r'^( *)([A-Za-z0-9_.-]+|"[^"]+"):(?: +(.*))?$')
+_REQ = re.compile(r"^REQ: [^—]+— ")
+
+
+def _desc(lines):
+    text = " ".join(x.strip() for x in lines).strip()
+    text = _REQ.sub("", text)
+    return text[:1].upper() + text[1:]
+
+
+def parse_values(text):
+    """values.yaml → [[path, default or None, description, example]], standard library only.
+
+    Covers what the chart uses: nested maps, scalars, flow lists and maps, and `|` blocks. A
+    comment block directly above a key describes it; one directly below a key and followed by
+    a blank line is that key's example (commented-out YAML)."""
+    lines = text.split("\n")
+    rows, stack, pending, last = [], [], [], None
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        s = raw.strip()
+        if not s:
+            if pending and last is not None and pending[0] == "after":
+                rows[last][3] = "\n".join(pending[1:])
+            pending, last = [], None
+            i += 1
+            continue
+        if s.startswith("#"):
+            if not pending:
+                pending = ["after" if last is not None else "before"]
+            pending.append(s[1:])
+            i += 1
+            continue
+        m = _KEY.match(raw)
+        if not m:
+            i += 1
+            continue
+        ind, key, val = len(m.group(1)), m.group(2).strip('"'), (m.group(3) or "").strip()
+        while stack and stack[-1][0] >= ind:
+            stack.pop()
+        path = ".".join([k for _, k in stack] + [key])
+        desc = _desc(pending[1:]) if pending else ""
+        pending = []
+        if val.startswith("|"):
+            block, i = [], i + 1
+            while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > ind):
+                block.append(lines[i])
+                i += 1
+            while block and not block[-1].strip():
+                block.pop()
+            cut = min((len(b) - len(b.lstrip()) for b in block if b.strip()), default=0)
+            rows.append([path, "\n".join(b[cut:] for b in block), desc, ""])
+            last = len(rows) - 1
+            continue
+        if val:
+            rows.append([path, val, desc, ""])
+        else:
+            stack.append((ind, key))
+            rows.append([path, None, desc, ""])
+        last = len(rows) - 1
+        i += 1
+    return rows
+
+
+def helm_values_errors(rows):
+    """Every key the chart's schema knows must be in values.yaml (and so on the page)."""
+    schema = json.loads(read(HELM_SCHEMA))
+    paths = {r[0] for r in rows}
+    errs = []
+
+    def walk(prefix, s):
+        for k, p in s.get("properties", {}).items():
+            path = prefix + k
+            if path not in paths:
+                errs.append("helm-values: {} is in values.schema.json but not in values.yaml".format(path))
+            walk(path + ".", p)
+
+    walk("", schema)
+    return errs
+
+
+def render_helm_values(page, rows):
+    def cell(v):
+        if v is None:
+            return ""
+        if "\n" in v:
+            return "<pre><code>{}</code></pre>".format(html.escape(v))
+        return "<code>{}</code>".format(html.escape(v))
+
+    def row(r, rel):
+        ex = '<pre class="ex"><code>{}</code></pre>'.format(html.escape(r[3])) if r[3] else ""
+        return '<tr id="v-{}"><td><code>{}</code></td><td>{}</td><td>{}{}</td></tr>'.format(
+            r[0].replace(".", "-"), html.escape(rel), cell(r[1]), _md(r[2]), ex)
+
+    head = '<div class="table-wrap"><table><thead><tr><th>Key</th><th>Default</th><th>Meaning</th></tr></thead><tbody>'
+    tops = [r for r in rows if "." not in r[0]]
+    out, toc = [], []
+    out.append('<section class="cfg helm" id="v-top"><h3><a href="#v-top">Top level</a></h3>' + head)
+    out += [row(r, r[0]) for r in tops if r[1] is not None]
+    out.append("</tbody></table></div></section>")
+    for t in tops:
+        if t[1] is not None:
+            continue
+        toc.append('<a href="#v-{0}"><code>{0}</code></a>'.format(t[0]))
+        out.append('<section class="cfg helm" id="v-{0}"><h3><a href="#v-{0}"><code>{0}</code></a></h3>'.format(t[0]))
+        if t[2]:
+            out.append("<p>{}</p>".format(_md(t[2])))
+        inner = [r for r in rows if r[0].startswith(t[0] + ".") and (r[1] is not None or r[2])]
+        if inner:
+            out.append(head)
+            out += [row(r, r[0][len(t[0]) + 1:]) for r in inner]
+            out.append("</tbody></table></div>")
+        out.append("</section>")
+    page = page.replace("<!-- @values-toc -->", " · ".join(toc))
+    return page.replace("<!-- @values-reference -->", "\n".join(out))
 
 
 # REQ: DOC-002/003 (T4.7) — the performance page shows the newest bench-full result in
@@ -671,6 +793,7 @@ def main():
             sys.exit("standards.json: bad status {!r} for RFC {}".format(s["status"], s["rfc"]))
     arch = json.loads(read(os.path.join(SITE, "data", "architecture.json")))
     adrs, reqs = repo_ids()
+    values_rows = parse_values(read(HELM_VALUES))
     for name in PAGES:
         page = read(os.path.join(SITE, name))
         slug = name[:-5]
@@ -681,6 +804,8 @@ def main():
         page = page.replace("<!-- @header -->", h).replace("<!-- @footer -->", footer)
         if name == "config.html":
             page = render_config(page, json.loads(read(os.path.join(ROOT, "docs", "config-schema.json"))))
+        if name == "helm-values.html":
+            page = render_helm_values(page, values_rows)
         if name == "glossary.html":
             page = render_glossary(page)
         if name == "performance.html":
@@ -698,7 +823,7 @@ def main():
             f.write(page)
     with open(os.path.join(out, ".nojekyll"), "w") as f:
         f.write("")
-    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + link_errors(out)
+    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out)
     for e in errors:
         print("error: " + e, file=sys.stderr)
     if errors:
