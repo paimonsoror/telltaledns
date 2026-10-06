@@ -464,7 +464,8 @@
       "when": "Asking a question no dashboard answers, yourself or through an AI agent (the MCP tool vqlog).",
       "example": "from -7d | where group = kids and status = blocked | top 10 domain",
       "caution": "Long windows over busy networks read a lot: check with a dry run (dryRun=true) first. Agents need the querylog:read scope.",
-      "docs": "analytics-in-one-query-vqlog"
+      "docs": "analytics-in-one-query-vqlog",
+      "general": true
     },
     {
       "id": "list-overlap",
