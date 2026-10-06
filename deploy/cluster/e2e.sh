@@ -182,6 +182,21 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -b "$E/jar" "$API/api/v1/stats/sum
 [ "$code" = 400 ] || fail "an unknown site answered $code"
 echo "ok (site r: $site_r of $both)"
 
+# REQ: OBS-008, CLU-002 (T9.2) — the primary's live tail shows the replica's queries, labelled,
+# and latency percentiles cover both nodes (exact histogram merge).
+echo "== cluster-wide live tail and latency (T9.2)"
+curl -sN --max-time 8 -b "$E/jar" "$API/api/v1/queries/stream?name=tail.r.test" > "$E/tail.txt" &
+TAILP=$!
+sleep 2.5
+for _ in $(seq 3); do q 25302 tail.r.test >/dev/null; sleep 0.3; done
+wait "$TAILP" 2>/dev/null || true
+grep -q 'tail.r.test' "$E/tail.txt" || fail "the primary's live tail didn't show the replica's query"
+grep -q '"node":"r"' "$E/tail.txt" || fail "the replica's rows in the tail don't name it ($(head -c 300 "$E/tail.txt"))"
+lat_all=$(get '/api/v1/stats/latency?by=path' | field 'sum(r["count"] for r in d["items"])')
+lat_own=$(get '/api/v1/stats/latency?by=path&scope=node:local' | field 'sum(r["count"] for r in d["items"])')
+[ "$lat_all" -gt "$lat_own" ] || fail "cluster latency counts ($lat_all) don't exceed this node's ($lat_own)"
+echo "ok (tail labelled; latency over $lat_all queries, $lat_own here)"
+
 # REQ: CLU-003, API-003 (T9.1, ADR-045) — the primary's users and tokens reach the replica.
 echo "== users and tokens replicate (T9.1)"
 RAPI=http://127.0.0.1:28002
@@ -246,16 +261,17 @@ echo "ok ($names)"
 
 echo "== query-log ship mode (CLU-007)"
 q 25302 ship1.r.test >/dev/null
-# A part closes after interval_secs (on the next query), then the shipper delivers it.
-shipped=""
+# A part closes after interval_secs (on the next query), then the shipper delivers it. Wait
+# for the part holding ship1 (an earlier part may already have arrived).
+shipped="" node=""
 for i in $(seq 60); do
   q 25302 "tick$i.r.test" >/dev/null
-  shipped=$(curl -s http://127.0.0.1:29001/metrics | awk '/^telltale_qlog_received_segments_total/ {print $2}')
-  [ "${shipped:-0}" -gt 0 ] && break; sleep 1
+  node=$(get '/api/v1/queries?name=ship1.r.test&scope=node:local' | field '" ".join(r.get("node","") for r in d["items"])')
+  [ "$node" = r ] && break; sleep 1
 done
+shipped=$(curl -s http://127.0.0.1:29001/metrics | awk '/^telltale_qlog_received_segments_total/ {print $2}')
 [ "${shipped:-0}" -gt 0 ] || fail "the primary never received the replica's query log"
 ls "$E/p/qlog-nodes/"*/ >/dev/null 2>&1 || fail "no shipped query log under the primary's qlog-nodes"
-node=$(get '/api/v1/queries?name=ship1.r.test&scope=node:local' | field '" ".join(r.get("node","") for r in d["items"])')
 [ "$node" = r ] || fail "the primary's own search doesn't show the shipped row as the replica's (got '$node')"
 echo "ok ($shipped parts received)"
 

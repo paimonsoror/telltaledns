@@ -1161,11 +1161,13 @@ the primary. DNS never depends on the cluster: a node answers the same whether i
 up or not.
 
 **One view of the whole cluster.** Open any node's UI and the dashboard, top lists, latency,
-groups, and query log cover every node:
+groups, query log, and live query stream cover every node:
 - The node you're on asks its peers over the cluster link and merges what they send:
   - counts add up;
   - top lists merge their counts and error bounds;
-  - latency percentiles are weighted by each node's query count (close, but not exact);
+  - latency percentiles are exact: the nodes send their latency histograms, and the merged
+    histogram gives the percentiles (a node on an older version sends percentiles, which are
+    weighted by its query count instead);
   - query-log rows interleave by time, and each row shows the node that answered it.
 - A node that doesn't answer within 2 seconds is left out, and the page says so ("Partial
   results: pi didn't answer"). It never hangs. The API lists those nodes in `missingNodes`.
@@ -1174,7 +1176,10 @@ groups, and query log cover every node:
   site, pod, or node ID), or `node:local` (the node you're asking). For example
   `GET /api/v1/stats/summary?scope=site:home-pi`. An unknown site or node is a 400;
   `missingNodes` lists only nodes inside the scope that didn't answer.
-- The live query stream, settings, and Explain are always this node's own.
+- The live query stream follows every node too, about half a second behind for other nodes,
+  each row naming its node. The rate cap is shared between the nodes. `scope=node:local`
+  watches only the node you're on.
+- Settings and Explain are always this node's own.
 - Nodes answer each other's reads whether or not their own API is on.
 
 **Keeping a node's query log on another node (ship mode).** A node with little or

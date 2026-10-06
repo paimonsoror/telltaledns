@@ -2350,7 +2350,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`. The live stream is always this node's queries.",
+            "description": "`cluster` (default: every reachable node's queries, each row naming its node),\n`site:<name>`, `node:<id or site>`, or `node:local` (this node only).",
             "required": false,
             "schema": {
               "type": "string"

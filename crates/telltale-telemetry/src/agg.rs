@@ -274,6 +274,35 @@ impl Hist {
             max: h.max(),
         })
     }
+
+    /// REQ: CLU-002 (T9.2) — the recorded `(value, count)` pairs, to merge across nodes.
+    fn buckets(&self) -> Option<Vec<(u64, u64)>> {
+        let h = self.0.as_ref().filter(|h| !h.is_empty())?;
+        Some(
+            h.iter_recorded()
+                .map(|v| (v.value_iterated_to(), v.count_at_value().into()))
+                .collect(),
+        )
+    }
+}
+
+/// REQ: CLU-002 (T9.2) — percentiles of several nodes' histograms together (exact to the
+/// histograms' precision, unlike averaging their percentiles).
+pub fn merged_percentiles(parts: &[&[(u64, u64)]]) -> Option<Percentiles> {
+    let mut h = Histogram::<u64>::new_with_bounds(1, HIST_MAX_US, HIST_DIGITS).ok()?;
+    for part in parts {
+        for &(v, n) in *part {
+            h.saturating_record_n(v.clamp(1, HIST_MAX_US), n);
+        }
+    }
+    (!h.is_empty()).then(|| Percentiles {
+        count: h.len(),
+        p50: h.value_at_quantile(0.50),
+        p90: h.value_at_quantile(0.90),
+        p99: h.value_at_quantile(0.99),
+        p999: h.value_at_quantile(0.999),
+        max: h.max(),
+    })
 }
 
 impl Hour {
@@ -612,19 +641,25 @@ impl Aggregates {
 
     /// Latency percentiles for `key` in the selected hour.
     pub fn latency(&self, key: LatencyKey, sel: HourSel) -> Option<Percentiles> {
+        self.hist(key, sel)?.percentiles()
+    }
+
+    /// REQ: CLU-002 (T9.2) — the histogram behind [`Self::latency`], as `(value, count)`
+    /// pairs for [`merged_percentiles`].
+    pub fn latency_buckets(&self, key: LatencyKey, sel: HourSel) -> Option<Vec<(u64, u64)>> {
+        self.hist(key, sel)?.buckets()
+    }
+
+    fn hist(&self, key: LatencyKey, sel: HourSel) -> Option<&Hist> {
         let h = self.hour(sel)?;
         match key {
             LatencyKey::Total(p, proto) => {
-                h.total[p as usize * Proto::ALL.len() + proto as usize].percentiles()
+                h.total.get(p as usize * Proto::ALL.len() + proto as usize)
             }
-            LatencyKey::Qtype(i) => h.qtype.get(i)?.percentiles(),
-            LatencyKey::Client(ip) => h
-                .clients_hist
-                .get(&ip)
-                .unwrap_or(&h.other_clients)
-                .percentiles(),
-            LatencyKey::StageUpstream => h.stage_upstream.percentiles(),
-            LatencyKey::Upstream(u) => h.upstreams.get(usize::from(u))?.percentiles(),
+            LatencyKey::Qtype(i) => h.qtype.get(i),
+            LatencyKey::Client(ip) => Some(h.clients_hist.get(&ip).unwrap_or(&h.other_clients)),
+            LatencyKey::StageUpstream => Some(&h.stage_upstream),
+            LatencyKey::Upstream(u) => h.upstreams.get(usize::from(u)),
         }
     }
 }
@@ -638,4 +673,31 @@ pub fn client_text(ip: [u8; 16]) -> String {
     let v6 = std::net::Ipv6Addr::from(ip);
     v6.to_ipv4_mapped()
         .map_or_else(|| v6.to_string(), |v4| v4.to_string())
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// REQ: CLU-002 (T9.2) — merging nodes' histograms gives the percentiles of all their
+    /// values together, which averaging each node's percentiles doesn't.
+    #[test]
+    fn clu_002_latency_histograms_merge_exactly() {
+        let (mut fast, mut slow, mut all) = (Hist::default(), Hist::default(), Hist::default());
+        for us in 1..=9_000u64 {
+            fast.record(100 + us % 50);
+            all.record(100 + us % 50);
+        }
+        for us in 1..=1_000u64 {
+            slow.record(40_000 + us);
+            all.record(40_000 + us);
+        }
+        let (f, s) = (fast.buckets().unwrap(), slow.buckets().unwrap());
+        let merged = merged_percentiles(&[&f, &s]).unwrap();
+        assert_eq!(merged, all.percentiles().unwrap());
+        assert_eq!(merged.count, 10_000);
+        // The top 1% are all from the slow node.
+        assert!(merged.p99 > 40_000, "{merged:?}");
+        assert!(merged_percentiles(&[]).is_none());
+    }
 }

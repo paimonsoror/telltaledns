@@ -144,6 +144,11 @@ pub trait Backend: Send + Sync + 'static {
         ))
     }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
+    /// REQ: CLU-002 (T9.2) — the histograms behind `latency`, for an exact cluster merge.
+    fn latency_hists(&self, by: LatencyBy, hour: Hour) -> Vec<model::LatencyHist> {
+        let _ = (by, hour);
+        Vec::new()
+    }
     /// One page of the query log; `from_us`/`to_us` are already parsed.
     fn queries(
         &self,

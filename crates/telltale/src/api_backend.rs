@@ -134,7 +134,7 @@ fn hour(h: Hour) -> HourSel {
     }
 }
 
-fn latency_row(key: String, p: Percentiles) -> LatencyRow {
+pub(crate) fn latency_row(key: String, p: Percentiles) -> LatencyRow {
     LatencyRow {
         key,
         count: p.count,
@@ -159,6 +159,38 @@ fn csv(v: Option<&String>) -> Vec<String> {
 }
 
 impl ApiBackend {
+    /// The latency keys `by` breaks down into, with their names.
+    fn latency_keys(&self, by: LatencyBy) -> Vec<(String, LatencyKey)> {
+        match by {
+            LatencyBy::Path => AnswerPath::ALL
+                .into_iter()
+                .flat_map(|p| {
+                    Proto::ALL.into_iter().map(move |proto| {
+                        (
+                            format!("{}/{}", p.label(), proto.label()),
+                            LatencyKey::Total(p, proto),
+                        )
+                    })
+                })
+                .collect(),
+            LatencyBy::Qtype => (0..=QTYPES.len())
+                .map(|i| {
+                    let key = QTYPES.get(i).map_or("other", |(_, n)| n);
+                    (key.to_owned(), LatencyKey::Qtype(i))
+                })
+                .collect(),
+            LatencyBy::Stage => vec![("upstream".to_owned(), LatencyKey::StageUpstream)],
+            LatencyBy::Upstream => {
+                let router = Arc::clone(&self.src.pipeline.current().router);
+                router
+                    .upstreams()
+                    .iter()
+                    .map(|u| (u.name.clone(), LatencyKey::Upstream(u.id)))
+                    .collect()
+            }
+        }
+    }
+
     /// Count buckets at `step`: seconds from memory; minutes from the rollup database
     /// overlaid with memory (memory is fresher); hours and days from the rollup database,
     /// or summed from memory minutes when it isn't available.
@@ -799,40 +831,23 @@ impl Backend for ApiBackend {
     fn latency(&self, by: LatencyBy, h: Hour) -> Vec<LatencyRow> {
         let sel = hour(h);
         let agg = self.src.pipeline.telemetry.aggregates();
-        let mut rows = Vec::new();
-        match by {
-            LatencyBy::Path => {
-                for p in AnswerPath::ALL {
-                    for proto in Proto::ALL {
-                        if let Some(v) = agg.latency(LatencyKey::Total(p, proto), sel) {
-                            rows.push(latency_row(format!("{}/{}", p.label(), proto.label()), v));
-                        }
-                    }
-                }
-            }
-            LatencyBy::Qtype => {
-                for i in 0..=QTYPES.len() {
-                    if let Some(v) = agg.latency(LatencyKey::Qtype(i), sel) {
-                        let key = QTYPES.get(i).map_or("other", |(_, n)| n);
-                        rows.push(latency_row(key.to_owned(), v));
-                    }
-                }
-            }
-            LatencyBy::Stage => {
-                if let Some(v) = agg.latency(LatencyKey::StageUpstream, sel) {
-                    rows.push(latency_row("upstream".to_owned(), v));
-                }
-            }
-            LatencyBy::Upstream => {
-                let router = Arc::clone(&self.src.pipeline.current().router);
-                for u in router.upstreams() {
-                    if let Some(v) = agg.latency(LatencyKey::Upstream(u.id), sel) {
-                        rows.push(latency_row(u.name.clone(), v));
-                    }
-                }
-            }
-        }
-        rows
+        self.latency_keys(by)
+            .into_iter()
+            .filter_map(|(name, key)| agg.latency(key, sel).map(|v| latency_row(name, v)))
+            .collect()
+    }
+
+    // REQ: CLU-002 (T9.2) — the same keys' histograms, for an exact cluster merge.
+    fn latency_hists(&self, by: LatencyBy, h: Hour) -> Vec<telltale_api::model::LatencyHist> {
+        let sel = hour(h);
+        let agg = self.src.pipeline.telemetry.aggregates();
+        self.latency_keys(by)
+            .into_iter()
+            .filter_map(|(name, key)| {
+                agg.latency_buckets(key, sel)
+                    .map(|buckets| telltale_api::model::LatencyHist { key: name, buckets })
+            })
+            .collect()
     }
 
     // REQ: OBS-008 — live tail: filter, rate-cap, and format on a per-subscriber task.

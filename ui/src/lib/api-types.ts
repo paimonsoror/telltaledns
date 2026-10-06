@@ -5601,7 +5601,10 @@ export interface operations {
                  *     counted and reported in `dropped` events.
                  */
                 rate?: number;
-                /** @description `cluster` (default) or `node:local`. The live stream is always this node's queries. */
+                /**
+                 * @description `cluster` (default: every reachable node's queries, each row naming its node),
+                 *     `site:<name>`, `node:<id or site>`, or `node:local` (this node only).
+                 */
                 scope?: string;
             };
             header?: never;

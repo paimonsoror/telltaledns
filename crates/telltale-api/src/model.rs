@@ -802,7 +802,7 @@ pub struct Items<T> {
 
 /// Query parameters for `GET /queries/stream` (OBS-008). Filters combine with AND and are
 /// applied on the server, before the rate cap.
-#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct TailParams {
@@ -827,12 +827,13 @@ pub struct TailParams {
     /// Most events per second sent to this subscriber (1–2000, default 500). The rest are
     /// counted and reported in `dropped` events.
     pub rate: Option<u32>,
-    /// `cluster` (default) or `node:local`. The live stream is always this node's queries.
+    /// `cluster` (default: every reachable node's queries, each row naming its node),
+    /// `site:<name>`, `node:<id or site>`, or `node:local` (this node only).
     pub scope: Option<String>,
 }
 
 /// Sent as an SSE `dropped` event when matching queries weren't delivered.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TailDropped {
     /// How many matching queries were skipped since the last report.
@@ -841,11 +842,20 @@ pub struct TailDropped {
     pub reason: String,
 }
 
-/// What a live tail delivers.
-#[derive(Debug, Clone)]
+/// What a live tail delivers (also sent between cluster nodes, T9.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "item", rename_all = "snake_case")]
 pub enum TailItem {
     Query(Box<QueryRow>),
     Dropped(TailDropped),
+}
+
+/// REQ: CLU-002 (T9.2) — one latency histogram, as `(microseconds, count)` pairs: what
+/// cluster nodes send each other so percentiles merge exactly. Internal (not an API route).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyHist {
+    pub key: String,
+    pub buckets: Vec<(u64, u64)>,
 }
 
 /// One record of a local name.

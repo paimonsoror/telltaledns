@@ -54,6 +54,22 @@ enum Read {
         by: LatencyBy,
         hour: Hour,
     },
+    /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
+    LatencyHist {
+        by: LatencyBy,
+        hour: Hour,
+    },
+    /// REQ: OBS-008, CLU-002 (T9.2) — a live tail session on the peer for a cluster-wide
+    /// tail: open it, poll it (what matched since), close it.
+    TailOpen {
+        params: Box<TailParams>,
+    },
+    TailPoll {
+        id: u64,
+    },
+    TailClose {
+        id: u64,
+    },
     Queries {
         params: Box<QueryParams>,
         from_us: u64,
@@ -107,6 +123,13 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             group,
         } => serde_json::to_vec(&b.top_in_group(kind, hour, limit, &group).map_err(text)?),
         Read::Latency { by, hour } => serde_json::to_vec(&b.latency(by, hour)),
+        Read::LatencyHist { by, hour } => serde_json::to_vec(&b.latency_hists(by, hour)),
+        Read::TailOpen { params } => serde_json::to_vec(&tail_open(b, &params).map_err(text)?),
+        Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
+        Read::TailClose { id } => {
+            tail_sessions().remove(&id);
+            serde_json::to_vec(&true)
+        }
         Read::Queries {
             params,
             from_us,
@@ -195,6 +218,175 @@ pub(crate) fn rpc_handler(
 fn no_lease() -> Problem {
     Problem::unavailable("this primary can't reach a majority of voters, so it isn't taking changes")
         .hint("DNS keeps answering. Changes resume when a majority of voters is reachable again; see the Cluster page.")
+}
+
+/// REQ: CLU-002 (T9.2) — one row per key from every node's histogram.
+fn merge_hists(parts: Vec<Vec<telltale_api::model::LatencyHist>>) -> Vec<LatencyRow> {
+    let mut by_key: std::collections::BTreeMap<String, Vec<Vec<(u64, u64)>>> =
+        std::collections::BTreeMap::new();
+    for h in parts.into_iter().flatten() {
+        by_key.entry(h.key).or_default().push(h.buckets);
+    }
+    by_key
+        .into_iter()
+        .filter_map(|(key, hs)| {
+            let refs: Vec<&[(u64, u64)]> = hs.iter().map(Vec::as_slice).collect();
+            telltale_telemetry::agg::merged_percentiles(&refs)
+                .map(|p| crate::api_backend::latency_row(key, p))
+        })
+        .collect()
+}
+
+/// A peer's live tail opened for another node (T9.2): what matched, waiting to be polled.
+struct TailSession {
+    rx: tokio::sync::mpsc::Receiver<TailItem>,
+    polled: std::time::Instant,
+}
+
+/// Unpolled this long, a session is closed (its subscriber stops).
+const TAIL_IDLE: Duration = Duration::from_secs(15);
+/// Remote tail sessions a node holds at most (as many as its own live tails).
+const TAIL_SESSIONS: usize = 16;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TailBatch {
+    /// The session is gone (expired, or the peer restarted): open a new one.
+    gone: bool,
+    items: Vec<TailItem>,
+}
+
+fn tail_sessions() -> std::sync::MutexGuard<'static, std::collections::HashMap<u64, TailSession>> {
+    static S: std::sync::OnceLock<Mutex<std::collections::HashMap<u64, TailSession>>> =
+        std::sync::OnceLock::new();
+    let mut m = S
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    m.retain(|_, s| s.polled.elapsed() < TAIL_IDLE);
+    m
+}
+
+fn tail_open(b: &dyn Backend, params: &TailParams) -> Result<u64, Problem> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    if tail_sessions().len() >= TAIL_SESSIONS {
+        return Err(Problem::unavailable(
+            "too many remote live tails on this node",
+        ));
+    }
+    let rx = b.tail(params)?;
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tail_sessions().insert(
+        id,
+        TailSession {
+            rx,
+            polled: std::time::Instant::now(),
+        },
+    );
+    Ok(id)
+}
+
+fn tail_poll(id: u64) -> TailBatch {
+    let mut m = tail_sessions();
+    let Some(s) = m.get_mut(&id) else {
+        return TailBatch {
+            gone: true,
+            items: Vec::new(),
+        };
+    };
+    s.polled = std::time::Instant::now();
+    let mut items = Vec::new();
+    let mut gone = false;
+    while items.len() < 2000 {
+        match s.rx.try_recv() {
+            Ok(it) => items.push(it),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                gone = true;
+                break;
+            }
+        }
+    }
+    if gone {
+        m.remove(&id);
+    }
+    TailBatch { gone, items }
+}
+
+/// Names the node a row came from (a peer's rows arrive unlabelled).
+fn label_item(it: &mut TailItem, label: &str) {
+    if let TailItem::Query(row) = it
+        && row.node.is_none()
+    {
+        row.node = Some(label.to_owned());
+    }
+}
+
+/// Polls one peer's tail session into `tx` until the subscriber goes away; reopens it when
+/// the peer restarts, and backs off while it's unreachable (or too old to tail).
+async fn remote_tail(
+    cluster: Arc<Cluster>,
+    label: String,
+    peer: String,
+    params: TailParams,
+    tx: tokio::sync::mpsc::Sender<TailItem>,
+) {
+    const POLL: Duration = Duration::from_millis(500);
+    let mut id: Option<u64> = None;
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let read = match id {
+            None => Read::TailOpen {
+                params: Box::new(params.clone()),
+            },
+            Some(id) => Read::TailPoll { id },
+        };
+        let Ok(body) = serde_json::to_vec(&read) else {
+            return;
+        };
+        let wait = match cluster
+            .call(&peer, KIND, body, Duration::from_secs(3))
+            .await
+        {
+            Ok(b) if id.is_none() => {
+                id = serde_json::from_slice::<u64>(&b).ok();
+                backoff = Duration::from_secs(1);
+                POLL
+            }
+            Ok(b) => {
+                if let Ok(batch) = serde_json::from_slice::<TailBatch>(&b) {
+                    if batch.gone {
+                        id = None;
+                    }
+                    for mut it in batch.items {
+                        label_item(&mut it, &label);
+                        if tx.send(it).await.is_err() {
+                            return close_remote_tail(&cluster, &peer, id).await;
+                        }
+                    }
+                } else {
+                    id = None;
+                }
+                POLL
+            }
+            Err(_) => {
+                id = None;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff
+            }
+        };
+        tokio::select! {
+            () = tx.closed() => return close_remote_tail(&cluster, &peer, id).await,
+            () = tokio::time::sleep(wait) => {}
+        }
+    }
+}
+
+async fn close_remote_tail(cluster: &Cluster, peer: &str, id: Option<u64>) {
+    if let Some(id) = id
+        && let Ok(body) = serde_json::to_vec(&Read::TailClose { id })
+    {
+        let _ = cluster.call(peer, KIND, body, Duration::from_secs(2)).await;
+    }
 }
 
 /// Where configuration writes go (T5.7).
@@ -585,8 +777,54 @@ impl Backend for Federated {
         }
         federation::merge_timeseries(parts)
     }
+    // REQ: OBS-008, CLU-002 (T9.2) — the live tail covers the cluster: a session on each
+    // peer (same filter, a share of the rate cap), polled twice a second.
     fn tail(&self, p: &TailParams) -> Result<tokio::sync::mpsc::Receiver<TailItem>, Problem> {
-        self.local.tail(p)
+        let reachable = self.cluster.reachable_peers();
+        let (me, peers): (bool, Vec<String>) = match p.scope.as_deref() {
+            Some("node:local") => return self.local.tail(p),
+            None | Some("" | "cluster") => (true, reachable),
+            Some(s) => {
+                let o = self.narrow(s)?;
+                (
+                    o.me,
+                    o.peers
+                        .into_iter()
+                        .filter(|x| reachable.contains(x))
+                        .collect(),
+                )
+            }
+        };
+        if peers.is_empty() {
+            return self.local.tail(p);
+        }
+        let n = u32::try_from(peers.len() + usize::from(me)).unwrap_or(u32::MAX);
+        let mut share = p.clone();
+        share.rate = Some((p.rate.unwrap_or(500) / n).max(1));
+        share.scope = Some("node:local".to_owned());
+        let (tx, rx) = tokio::sync::mpsc::channel(4096);
+        if me {
+            let mut local = self.local.tail(&share)?;
+            let (tx, label) = (tx.clone(), self.own_label());
+            tokio::spawn(async move {
+                while let Some(mut it) = local.recv().await {
+                    label_item(&mut it, &label);
+                    if tx.send(it).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+        for peer in peers {
+            tokio::spawn(remote_tail(
+                Arc::clone(&self.cluster),
+                self.label_of(&peer),
+                peer,
+                share.clone(),
+                tx.clone(),
+            ));
+        }
+        Ok(rx)
     }
     // REQ: OBS-012 — Space-Saving lists merge by key.
     fn top(&self, kind: TopKind, hour: Hour, limit: usize, client: Option<IpAddr>) -> Vec<TopItem> {
@@ -622,12 +860,45 @@ impl Backend for Federated {
         parts.push(own);
         Ok(federation::merge_top(parts, limit))
     }
+    // REQ: CLU-002 (T9.2) — exact: the nodes' histograms merged; a peer on an older build
+    // answers percentiles, blended approximately as before.
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
-        let mut parts: Vec<Vec<LatencyRow>> = self.everyone(|| Read::Latency { by, hour });
-        if self.with_me() {
-            parts.push(self.local.latency(by, hour));
+        let peers = self.peers();
+        let answers = self.gather(
+            peers
+                .iter()
+                .map(|p| (p.clone(), Read::LatencyHist { by, hour }))
+                .collect(),
+        );
+        let mut hists: Vec<Vec<telltale_api::model::LatencyHist>> = Vec::new();
+        let mut answered = std::collections::HashSet::new();
+        for (peer, body) in answers {
+            if let Ok(v) = serde_json::from_slice(&body) {
+                hists.push(v);
+                answered.insert(peer);
+            }
         }
-        federation::merge_latency(parts)
+        if self.with_me() {
+            hists.push(self.local.latency_hists(by, hour));
+        }
+        let mut rows = merge_hists(hists);
+        let older: Vec<(String, Read)> = peers
+            .into_iter()
+            .filter(|p| !answered.contains(p))
+            .map(|p| (p, Read::Latency { by, hour }))
+            .collect();
+        if !older.is_empty() {
+            let mut parts: Vec<Vec<LatencyRow>> = self
+                .gather(older)
+                .into_iter()
+                .filter_map(|(_, b)| serde_json::from_slice(&b).ok())
+                .collect();
+            if !parts.is_empty() {
+                parts.push(rows);
+                rows = federation::merge_latency(parts);
+            }
+        }
+        rows
     }
 
     // REQ: CLU-002 — one query log across nodes, newest first, paged with a cursor that
