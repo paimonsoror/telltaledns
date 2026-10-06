@@ -52,6 +52,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     schedules(cfg, &mut r);
     alerts(cfg, &mut r);
     sinks(cfg, &mut r);
+    otlp(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
@@ -96,6 +97,22 @@ fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_
 }
 
 // REQ: OBS-010 (T7.13) — event sinks: unique names and what each kind needs.
+// REQ: OBS-006 (T7.17) — OTLP: an http(s) endpoint, a sane interval.
+fn otlp(cfg: &Config, r: &mut Report<'_>) {
+    let o = &cfg.telemetry.otlp;
+    if let Some(e) = &o.endpoint
+        && !(e.starts_with("http://") || e.starts_with("https://"))
+    {
+        r.err(
+            "telemetry.otlp.endpoint",
+            "an http:// or https:// URL, e.g. http://otel-collector:4318",
+        );
+    }
+    if o.interval_secs < 5 {
+        r.err("telemetry.otlp.interval_secs", "at least 5 seconds");
+    }
+}
+
 fn sinks(cfg: &Config, r: &mut Report<'_>) {
     use crate::SinkKind;
     const STATUSES: &[&str] = &[
@@ -160,6 +177,9 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
                     r.err(format!("{p}.flush_secs"), "at least 1");
                 }
             }
+        }
+        if s.format == crate::SinkFormat::OtlpLogs && s.kind != SinkKind::Webhook {
+            r.err(format!("{p}.format"), "otlp_logs is for webhook sinks");
         }
         if s.max_buffer < 100 {
             r.err(format!("{p}.max_buffer"), "at least 100");

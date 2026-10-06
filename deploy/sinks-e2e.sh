@@ -93,6 +93,16 @@ name = "collector"
 type = "webhook"
 url = "http://127.0.0.1:25580/ingest"
 flush_secs = 1
+# REQ: OBS-006 (T7.17) — query events as OpenTelemetry logs, and metrics over OTLP/HTTP.
+[[telemetry.sink]]
+name = "otel-logs"
+type = "webhook"
+url = "http://127.0.0.1:25580/v1/logs"
+format = "otlp_logs"
+flush_secs = 1
+[telemetry.otlp]
+endpoint = "http://127.0.0.1:25580"
+interval_secs = 5
 
 [alerts]
 interval_secs = 5
@@ -144,6 +154,30 @@ for f in sorted(os.listdir(d)):
         events += len([json.loads(l) for l in body.splitlines() if l])
 assert events >= 6, events
 print(f"webhook sink: {events} events")
+EOF
+
+# OTLP: metrics every 5 s, and query events as log records.
+for _ in $(seq 60); do grep -lq '^/v1/metrics' "$E"/posts/* 2>/dev/null && break; sleep 0.5; done
+python3 - "$E/posts" <<'EOF' || fail "OTLP"
+import json, os, sys
+d = sys.argv[1]
+metrics, logs = None, []
+for f in sorted(os.listdir(d)):
+    path, ct, body = open(os.path.join(d, f)).read().split("\n", 2)
+    if path == "/v1/metrics":
+        assert ct == "application/json", ct
+        metrics = json.loads(body)
+    elif path == "/v1/logs":
+        logs += json.loads(body)["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+assert metrics, "no OTLP metrics"
+rm = metrics["resourceMetrics"][0]
+names = {m["name"]: m for m in rm["scopeMetrics"][0]["metrics"]}
+assert names["telltale_queries_total"]["sum"]["isMonotonic"], names["telltale_queries_total"]
+assert "histogram" in names["telltale_query_duration_seconds"]
+assert any(a["key"] == "service.name" for a in rm["resource"]["attributes"])
+attrs = [{a["key"]: a["value"].get("stringValue") for a in r["attributes"]} for r in logs]
+assert any(a.get("dns.question.name") == "ads.sinks.test" and a.get("telltale.status") == "blocked" for a in attrs), attrs[:3]
+print(f"OTLP: {len(names)} metrics, {len(logs)} log records")
 EOF
 
 # Alert: the failing list, as JSON to the alert webhook.

@@ -24,6 +24,7 @@ mod lists;
 mod managed;
 mod masking;
 mod mcp_stdio;
+mod otlp;
 mod pihole;
 mod pipeline;
 mod qlog_cli;

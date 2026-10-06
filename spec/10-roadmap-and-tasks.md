@@ -426,5 +426,11 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* SOCKS5 (with credentials) and HTTP CONNECT tunnels carry DoT/DoH/TCP, a hostname goes to the proxy by name, credentials never logged; a Unix-socket plugin answers; an `exec://` plugin is started, restarted after being killed, and stopped with its upstream; the right pin passes and any other fails (also with verification off); a server requiring a client certificate answers only with one.
   - *Done 2026-10-06:* `telltale-upstream/src/proxy.rs`, `plugin.rs`, pins and mTLS in `tls.rs` (ADR-075, Proposed); config fields and validation; tests: proxy handshakes (unit), `tests/plugin.rs` (Unix socket; a Python plugin killed and restarted), `tests/encrypted.rs` (pins, mTLS); docs. *Deferred:* UDP through SOCKS5; DoH GET; the WASM upstream ABI (P2).
 
+- [x] **T7.17 OpenTelemetry export.** *(OBS-006)* `[telemetry.otlp]`: the `/metrics` set pushed over OTLP/HTTP (JSON) every interval; query events as OTLP log records through an event sink (`format = "otlp_logs"`).
+  - *AC:* counters arrive as monotonic cumulative sums, gauges as gauges, histograms with per-bucket counts and bounds; resource attributes name the service and node; log records carry the event's fields as attributes and a severity (blocks WARN); a collector outage never touches DNS.
+  - *Done 2026-10-06:* `crates/telltale/src/otlp.rs` (ADR-076, Proposed): exposition parser and OTLP mapping, the export task, `logs_body` for the sink; config and validation; unit tests `obs_006_*`; `deploy/sinks-e2e.sh` checks both against a running node. *Not done:* OTLP/gRPC.
+
+- [ ] **T7.18 dnstap.** *(OBS-007)* CLIENT_QUERY/CLIENT_RESPONSE (and FORWARDER_*) over Frame Streams (Unix socket or TCP), with sampling. Needs the query and response wire messages, which query events don't carry: a sampled capture on the query path, so a benchmark comes first.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

@@ -1375,6 +1375,19 @@ fsync = false                # true: sync every write (slower on SD cards)
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
+### OpenTelemetry (OTLP)
+Push the metrics to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) instead of, or as well as, having Prometheus scrape them:
+```toml
+[telemetry.otlp]
+endpoint = "http://otel-collector:4318"    # OTLP/HTTP; metrics go to <endpoint>/v1/metrics
+interval_secs = 60
+# headers = { "x-api-key" = "..." }        # for hosted collectors
+```
+- The metric set is exactly what `/metrics` serves: counters become cumulative monotonic sums, gauges stay gauges, and histograms keep their buckets. Resource attributes: `service.name = telltaledns`, `service.version`, `host.name` (the node name).
+- Encoding is OTLP/HTTP with JSON, which every OTLP receiver accepts.
+- For **query events as OpenTelemetry logs**, add an event sink with `format = "otlp_logs"` (below), pointed at `<collector>/v1/logs`. Each record has a one-line body (`A example.com from 192.168.1.5: blocked`) and attributes (`dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `client.name`, `telltale.status`, `telltale.list`, ...); blocks are `WARN`, the rest `INFO`.
+- A collector that's down costs only that interval's points; DNS never waits for it.
+
 ### Event sinks
 Copy every query event to your own log pipeline (Loki, Elastic, Splunk, Graylog, a SIEM) as it happens:
 ```toml
@@ -1396,7 +1409,7 @@ statuses = ["blocked"]                   # only blocks; empty means every event
 name = "loki"
 type = "webhook"                         # batched HTTP POST
 url = "https://logs.example.net/ingest"
-format = "json_lines"                    # or json_array
+format = "json_lines"                    # or json_array, or otlp_logs (OpenTelemetry)
 token_file = "/run/secrets/ingest-token" # sent as "Authorization: Bearer <token>"
 # token_scheme = "Splunk"                # for Splunk HEC
 batch = 500                              # events per POST

@@ -302,6 +302,9 @@
           "per_client_cap": 100
         },
         "mode": "local",
+        "otlp": {
+          "interval_secs": 60
+        },
         "qlog": {
           "enabled": true,
           "flush_interval_secs": 10,
@@ -1809,6 +1812,39 @@
         "role"
       ]
     },
+    "OtlpConfig": {
+      "description": "REQ: OBS-006 (T7.17, `spec/06` §5) — OTLP/HTTP (JSON) metrics export.",
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "description": "The collector's OTLP/HTTP base URL (`http://otel-collector:4318`); metrics go to\n`<endpoint>/v1/metrics`. Unset: no export.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "headers": {
+          "description": "Extra headers (an API key for a hosted collector).",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]*$": {
+              "type": "string",
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+            }
+          }
+        },
+        "interval_secs": {
+          "description": "Seconds between exports.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "QlogConfig": {
       "description": "Query-log store (`spec/06` §4).",
       "type": "object",
@@ -2353,10 +2389,19 @@
     },
     "SinkFormat": {
       "description": "A webhook sink's body format.",
-      "type": "string",
-      "enum": [
-        "json_lines",
-        "json_array"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "json_lines",
+            "json_array"
+          ]
+        },
+        {
+          "description": "REQ: OBS-006 (T7.17) — OpenTelemetry logs (OTLP/HTTP JSON): point `url` at\n`<collector>/v1/logs`.",
+          "type": "string",
+          "const": "otlp_logs"
+        }
       ]
     },
     "SinkKind": {
@@ -2434,6 +2479,13 @@
         "mode": {
           "$ref": "#/$defs/TelemetryMode",
           "default": "local"
+        },
+        "otlp": {
+          "description": "REQ: OBS-006 (T7.17) — metrics pushed to an OpenTelemetry collector.",
+          "$ref": "#/$defs/OtlpConfig",
+          "default": {
+            "interval_secs": 60
+          }
         },
         "qlog": {
           "$ref": "#/$defs/QlogConfig",

@@ -1258,6 +1258,19 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-076 — OTLP over HTTP with JSON, metrics converted from our exposition (Proposed)
+**Context:** T7.17 (OBS-006; `06` §5). The spec asks for "the same metric set via OTLP/HTTP" and optional QueryEvent logs, without an encoding or a mapping.
+
+**Decision:**
+- OTLP/HTTP with the JSON encoding (the protobuf JSON mapping: 64-bit integers as strings). No OpenTelemetry SDK and no generated protobuf types: the binary stays small, and every OTLP/HTTP receiver accepts JSON.
+- Metrics are converted from our own Prometheus exposition every `interval_secs`: counters → cumulative monotonic sums (start time = process start), gauges → gauges, histograms → explicit-bucket histograms (per-bucket counts from the cumulative ones). Names and labels are kept as in `/metrics`, so dashboards and docs apply to both.
+- Query events as logs are an event-sink format (`otlp_logs`, ADR-072): batching, buffering, and retries are the sink's. Body: a one-line summary; attributes use OpenTelemetry DNS-style keys where they exist (`dns.question.name`, `client.address`), `telltale.*` otherwise.
+- No OTLP/gRPC.
+
+**Consequences:**
+- Collectors that convert back to Prometheus see `_total` already in counter names (most keep it as is).
+- A counter reset (restart) shows as a new start time, as OTLP expects.
+
 ## ADR-075 — Proxies, socket plugins, pins, and client certificates (Proposed)
 **Context:** T7.16 (UPS-010, UPS-011; `04` §2, §6). The spec names the features but not where a proxied hostname is resolved, how an `exec://` plugin learns its socket, how plugins restart, or how pins interact with `tls_insecure_skip_verify`.
 

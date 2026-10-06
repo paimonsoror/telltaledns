@@ -1267,6 +1267,33 @@ pub struct TelemetryConfig {
     pub anomaly: AnomalyConfig,
     /// REQ: OBS-010 (T7.13) — query events copied to files, syslog, or HTTP collectors.
     pub sink: Vec<SinkConfig>,
+    /// REQ: OBS-006 (T7.17) — metrics pushed to an OpenTelemetry collector.
+    pub otlp: OtlpConfig,
+}
+
+/// REQ: OBS-006 (T7.17, `spec/06` §5) — OTLP/HTTP (JSON) metrics export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct OtlpConfig {
+    /// The collector's OTLP/HTTP base URL (`http://otel-collector:4318`); metrics go to
+    /// `<endpoint>/v1/metrics`. Unset: no export.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<SafeString>,
+    /// Seconds between exports.
+    pub interval_secs: u32,
+    /// Extra headers (an API key for a hosted collector).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<SafeString, SafeString>,
+}
+
+impl Default for OtlpConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            interval_secs: 60,
+            headers: BTreeMap::new(),
+        }
+    }
 }
 
 impl Default for TelemetryConfig {
@@ -1279,6 +1306,7 @@ impl Default for TelemetryConfig {
             metrics: MetricsConfig::default(),
             anomaly: AnomalyConfig::default(),
             sink: Vec::new(),
+            otlp: OtlpConfig::default(),
         }
     }
 }
@@ -1351,6 +1379,9 @@ pub enum SinkFormat {
     #[default]
     JsonLines,
     JsonArray,
+    /// REQ: OBS-006 (T7.17) — OpenTelemetry logs (OTLP/HTTP JSON): point `url` at
+    /// `<collector>/v1/logs`.
+    OtlpLogs,
 }
 
 const fn default_sink_max_bytes() -> ByteSize {

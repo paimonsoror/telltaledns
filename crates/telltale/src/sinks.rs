@@ -66,7 +66,7 @@ pub(crate) fn start(
             .spawn(move || match c.kind {
                 SinkKind::File => file_writer(&c, &rx),
                 SinkKind::Syslog => syslog_writer(&c, &rx, &host),
-                SinkKind::Webhook => webhook_writer(&c, &rx, &d, &rt),
+                SinkKind::Webhook => webhook_writer(&c, &rx, &d, &rt, &host),
             });
         if let Err(e) = spawned {
             warn!(sink = %name, error = %e, "event sink disabled: cannot start its thread");
@@ -380,6 +380,7 @@ fn webhook_writer(
     rx: &Receiver<String>,
     dropped: &AtomicU64,
     rt: &tokio::runtime::Handle,
+    host: &str,
 ) {
     let client = match telltale_filter::fetch::Client::new(
         Arc::new(telltale_filter::fetch::SystemResolver),
@@ -422,6 +423,8 @@ fn webhook_writer(
                 s
             }
             SinkFormat::JsonArray => format!("[{}]", buf.join(",")),
+            // REQ: OBS-006 (T7.17)
+            SinkFormat::OtlpLogs => crate::otlp::logs_body(&buf, &crate::otlp::resource(host)),
         };
         let mut delivered = false;
         for attempt in 0..3u32 {
@@ -454,7 +457,7 @@ async fn post(
     let url = c.url.as_ref().map_or("", |u| u.as_str());
     let ct = match c.format {
         SinkFormat::JsonLines => "application/x-ndjson",
-        SinkFormat::JsonArray => "application/json",
+        SinkFormat::JsonArray | SinkFormat::OtlpLogs => "application/json",
     };
     let mut req = http::Request::post(url)
         .header("content-type", ct)

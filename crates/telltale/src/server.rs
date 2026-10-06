@@ -724,6 +724,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
+    // REQ: OBS-006 (T7.17)
+    tokio::spawn(crate::otlp::run(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).
     tokio::spawn(crate::updates::run(
         Arc::clone(&sources.update),
