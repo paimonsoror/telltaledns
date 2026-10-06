@@ -163,7 +163,7 @@
   ],
   "agents": [
     { "title": "Agent tokens", "summary": "Scoped (analytics:read, config:write:clients, ops:pause, ...), deny by default per route, a reason header on every change, per-token rate limits, and a kill switch.", "adrs": ["ADR-064"], "reqs": ["AGT-004", "AGT-005", "AGT-009"] },
-    { "title": "MCP server", "summary": "POST /mcp on every node, plus telltale mcp --stdio for desktop clients. Read-only tools that call the REST routes in-process with the caller's credentials, so scopes apply inside tools too.", "adrs": ["ADR-065", "ADR-010"], "reqs": ["AGT-006", "AGT-008"] }
+    { "title": "MCP server", "summary": "POST /mcp on every node, plus telltale mcp --stdio for desktop clients. Tools call the REST routes in-process with the caller's credentials, so scopes apply inside tools too. Write tools make plans from the REST dry run; apply_plan replays them with If-Match, after an operator's approval when required.", "adrs": ["ADR-065", "ADR-010", "ADR-070"], "reqs": ["AGT-006", "AGT-007", "AGT-008"] }
   ],
   "stack": [
     { "group": "Runtime and networking", "items": [

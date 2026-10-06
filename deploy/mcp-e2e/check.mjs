@@ -4,9 +4,14 @@
 //      finds the device and its slow queries, upstream_health shows the upstreams, and
 //      explain_decision answers for a blocked name;
 //   3. stdio: `telltale mcp --stdio` relays the same tools;
-//   4. a tool that needs a scope the token lacks reports an error, not data.
+//   4. a tool that needs a scope the token lacks reports an error, not data;
+//   5. AGT-007 (T7.1): with [agents] require_approval, a writer agent plans a block, can't
+//      apply it until an admin approves, then applies it (the name is blocked); a plan made
+//      before another change comes back stale; the audit log names the agent, its owner, and
+//      the reason.
 // Usage: node check.mjs <api url> <telltale binary> <catalog json>
-// Env: AGENT_TOKEN (analytics, config, query log), NARROW_TOKEN (analytics only).
+// Env: AGENT_TOKEN (analytics, config, query log), NARROW_TOKEN (analytics only),
+//      WRITER_TOKEN (config:write:rules, analytics), ADMIN_PASSWORD (user `admin`).
 import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -39,9 +44,12 @@ const committed = JSON.parse(readFileSync(catalogPath, 'utf8')).map((t) => t.nam
 const listed = tools.map((t) => t.name);
 if (JSON.stringify(listed) !== JSON.stringify(committed)) fail(`tools ${listed} != committed ${committed}`);
 for (const t of tools) {
-  if (!t.description.startsWith('Read-only.')) fail(`${t.name} doesn't state its side effects`);
-  if (t.annotations?.readOnlyHint !== true) fail(`${t.name} isn't marked read-only`);
+  // AGT-009: the description and the annotations agree on side effects.
+  if (t.description.startsWith('Read-only.') !== (t.annotations?.readOnlyHint === true))
+    fail(`${t.name}: description and readOnlyHint disagree`);
+  if (t.name.startsWith('plan_') && !t.description.startsWith('Plans a change')) fail(`${t.name} doesn't say it only plans`);
 }
+if (tools.find((t) => t.name === 'apply_plan')?.annotations?.destructiveHint !== true) fail('apply_plan isn\'t marked destructive');
 const overview = await c.callTool({ name: 'get_overview', arguments: { window: '-1h' } });
 if (overview.isError) fail(`get_overview: ${JSON.stringify(overview)}`);
 const queries = data(overview).overview?.queries;
@@ -79,4 +87,66 @@ const denied = await n.callTool({ name: 'search_queries', arguments: {} });
 if (!denied.isError) fail('search_queries worked without querylog:read');
 console.log('ok: scopes apply to tools');
 await n.close();
+
+// 5. Plans (AGT-007): approval, apply, stale, audit.
+const login = await fetch(`${api}/api/v1/auth/login`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ username: 'admin', password: process.env.ADMIN_PASSWORD }),
+});
+if (!login.ok) fail(`admin login: ${login.status}`);
+const cookie = login.headers.getSetCookie().map((x) => x.split(';')[0]).join('; ');
+const csrf = (await login.json()).csrfToken;
+const admin = async (method, path) => {
+  const r = await fetch(`${api}${path}`, { method, headers: { cookie, 'x-csrf-token': csrf } });
+  return [r.status, await r.json().catch(() => null)];
+};
+const w = await connect(http(process.env.WRITER_TOKEN));
+const call = async (name, args) => {
+  const r = await w.callTool({ name, arguments: args });
+  return [r.isError, data(r)];
+};
+const outcome = async (name) => data(await w.callTool({ name: 'explain_decision', arguments: { name, client: '127.0.0.1' } })).explanation?.outcome;
+const reason = 'mcp-e2e: the owner asked to block this';
+let [err, plan] = await call('plan_block_domain', { domain: 'agent.mcp.test', reason });
+if (err || plan.state !== 'pending' || !plan.planId) fail(`plan_block_domain: ${JSON.stringify(plan).slice(0, 400)}`);
+if (!plan.preview || plan.preview.applied !== false) fail(`no dry-run preview: ${JSON.stringify(plan).slice(0, 300)}`);
+if ((await outcome('agent.mcp.test')) === 'blocked') fail('planning blocked the name already');
+[err] = await call('apply_plan', { planId: plan.planId });
+if (!err) fail('apply_plan worked before approval');
+const [st] = await admin('POST', `/api/v1/plans/${plan.planId}/approve`);
+if (st !== 200) fail(`approve: ${st}`);
+const [, mine] = await call('list_plans', {});
+if (mine.items?.find((p) => p.id === plan.planId)?.state !== 'approved') fail(`list_plans: ${JSON.stringify(mine).slice(0, 300)}`);
+let applied;
+[err, applied] = await call('apply_plan', { planId: plan.planId });
+if (err || applied.state !== 'applied') fail(`apply_plan: ${JSON.stringify(applied).slice(0, 400)}`);
+if ((await outcome('agent.mcp.test')) !== 'blocked') fail('the applied plan didn\'t block the name');
+console.log(`ok: plan → approve → apply (${plan.summary})`);
+
+// Stale: two plans against the same version; applying one makes the other stale.
+const [, a] = await call('plan_allow_domain', { domain: 'one.mcp.test', reason });
+const [, b] = await call('plan_allow_domain', { domain: 'two.mcp.test', reason });
+for (const p of [a, b]) if ((await admin('POST', `/api/v1/plans/${p.planId}/approve`))[0] !== 200) fail('approve a/b');
+[err] = await call('apply_plan', { planId: b.planId });
+if (err) fail('apply b');
+const [staleErr, stale] = await call('apply_plan', { planId: a.planId });
+if (!staleErr || stale.state !== 'stale') fail(`expected stale: ${JSON.stringify(stale).slice(0, 300)}`);
+// A rejected plan can't be applied; agents can't approve.
+const [, c2] = await call('plan_allow_domain', { domain: 'three.mcp.test', reason });
+const self = await fetch(`${api}/api/v1/plans/${c2.planId}/approve`, { method: 'POST', headers: { authorization: `Bearer ${process.env.WRITER_TOKEN}`, 'x-telltale-reason': 'x' } });
+if (self.status !== 403) fail(`an agent approved its own plan: ${self.status}`);
+await admin('POST', `/api/v1/plans/${c2.planId}/reject`);
+if (!(await call('apply_plan', { planId: c2.planId }))[0]) fail('a rejected plan applied');
+console.log('ok: stale plans and rejected plans are refused; agents can\'t approve');
+
+// Audit: the apply names the agent, its owner, the client software, and the reason.
+const [, audit] = await admin('GET', '/api/v1/audit?action=rule.put&limit=20');
+const entry = audit?.items?.find((e) => e.target === 'agent-block-agent-mcp-test');
+if (!entry || !entry.actor.startsWith('agent:') || !entry.actor.includes('(owner: admin)') || entry.reason !== reason)
+  fail(`audit: ${JSON.stringify(entry ?? audit).slice(0, 400)}`);
+const decided = (await admin('GET', '/api/v1/audit?action=plan.approve&limit=5'))[1];
+if (!(decided?.items?.length > 0)) fail('approvals aren\'t audited');
+console.log(`ok: audited as ${entry.actor}`);
+await w.close();
 console.log('PASS');

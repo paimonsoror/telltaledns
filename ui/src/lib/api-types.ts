@@ -818,6 +818,73 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent change plans.
+         * @description Changes AI agents planned through MCP (`plan_*` tools), newest first: what each does (the
+         *     dry run's before and after, impact, and warnings), why, who asked, and its state. With
+         *     `[agents] require_approval = true` a plan starts `pending` until an operator approves or
+         *     rejects it. An agent token sees only its own plans. Plans expire ten minutes after they're
+         *     made and stay listed for a day.
+         */
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plans/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve an agent's plan.
+         * @description The agent can then apply it with `apply_plan` until it expires (ten minutes after it was
+         *     made). Only `pending` plans can be approved. Needs the operator role; agent tokens can't
+         *     approve. Audit-logged as `plan.approve`.
+         */
+        post: operations["approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plans/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject an agent's plan.
+         * @description The plan can't be applied any more. Only `pending` plans can be rejected. Needs the operator
+         *     role; agent tokens can't reject. Audit-logged as `plan.reject`.
+         */
+        post: operations["reject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/queries": {
         parameters: {
             query?: never;
@@ -2630,6 +2697,49 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_Plan: {
+            items: {
+                body?: Record<string, never> | null;
+                /**
+                 * Format: int64
+                 * @description The configuration version the plan was made against.
+                 */
+                configVersion: number;
+                /** Format: int64 */
+                createdUnixSeconds: number;
+                /** @description Who approved or rejected it. */
+                decidedBy?: string | null;
+                /** Format: int64 */
+                expiresUnixSeconds: number;
+                /** @description Pass it to `apply_plan` or `discard_plan`. */
+                id: string;
+                /** @description The REST write it replays: `PUT` or `DELETE`. */
+                method: string;
+                /** @description Made while `[agents] require_approval` was on. */
+                needsApproval: boolean;
+                path: string;
+                /** @description The dry run's answer: before, after, impact, and warnings. */
+                preview: Record<string, never>;
+                /** @description Why the agent wants it (goes into the audit log). */
+                reason: string;
+                /** @description Who asked: `agent:<token> (owner: <user>) via <client>`. */
+                requestedBy: string;
+                /** @description The write's answer once applied (or why it failed). */
+                result?: Record<string, never> | null;
+                /**
+                 * @description `pending` (waits for an operator), `ready`, `approved`, `rejected`, `applying`,
+                 *     `applied`, `stale` (the configuration changed), `failed`, `discarded`, or `expired`.
+                 */
+                state: string;
+                /** @description What it does, in one sentence. */
+                summary: string;
+                /** @description The MCP tool that made it, e.g. `plan_block_domain`. */
+                tool: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_RuleInfo: {
             items: {
                 /** @description `allow` or `block`. */
@@ -2934,6 +3044,45 @@ export interface components {
             secondsLeft: number;
             /** @description When blocking turns back on (RFC 3339). */
             until: string;
+        };
+        /** @description A planned change (REQ: AGT-007). */
+        Plan: {
+            body?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description The configuration version the plan was made against.
+             */
+            configVersion: number;
+            /** Format: int64 */
+            createdUnixSeconds: number;
+            /** @description Who approved or rejected it. */
+            decidedBy?: string | null;
+            /** Format: int64 */
+            expiresUnixSeconds: number;
+            /** @description Pass it to `apply_plan` or `discard_plan`. */
+            id: string;
+            /** @description The REST write it replays: `PUT` or `DELETE`. */
+            method: string;
+            /** @description Made while `[agents] require_approval` was on. */
+            needsApproval: boolean;
+            path: string;
+            /** @description The dry run's answer: before, after, impact, and warnings. */
+            preview: Record<string, never>;
+            /** @description Why the agent wants it (goes into the audit log). */
+            reason: string;
+            /** @description Who asked: `agent:<token> (owner: <user>) via <client>`. */
+            requestedBy: string;
+            /** @description The write's answer once applied (or why it failed). */
+            result?: Record<string, never> | null;
+            /**
+             * @description `pending` (waits for an operator), `ready`, `approved`, `rejected`, `applying`,
+             *     `applied`, `stale` (the configuration changed), `failed`, `discarded`, or `expired`.
+             */
+            state: string;
+            /** @description What it does, in one sentence. */
+            summary: string;
+            /** @description The MCP tool that made it, e.g. `plan_block_domain`. */
+            tool: string;
         };
         /**
          * @description An API error.
@@ -4741,6 +4890,108 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The plans, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_Plan"];
+                };
+            };
+        };
+    };
+    approve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The plan's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The approved plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
+            };
+            /** @description No such plan. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The plan isn't pending (applied, expired, rejected, ...). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    reject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The plan's ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rejected plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Plan"];
+                };
+            };
+            /** @description No such plan. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The plan isn't pending. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

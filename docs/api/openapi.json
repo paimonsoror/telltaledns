@@ -1801,6 +1801,134 @@
         }
       }
     },
+    "/api/v1/plans": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Agent change plans.",
+        "description": "Changes AI agents planned through MCP (`plan_*` tools), newest first: what each does (the\ndry run's before and after, impact, and warnings), why, who asked, and its state. With\n`[agents] require_approval = true` a plan starts `pending` until an operator approves or\nrejects it. An agent token sees only its own plans. Plans expire ten minutes after they're\nmade and stay listed for a day.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "The plans, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_Plan"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{id}/approve": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Approve an agent's plan.",
+        "description": "The agent can then apply it with `apply_plan` until it expires (ten minutes after it was\nmade). Only `pending` plans can be approved. Needs the operator role; agent tokens can't\napprove. Audit-logged as `plan.approve`.",
+        "operationId": "approve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The plan's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The approved plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plan"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plan isn't pending (applied, expired, rejected, ...).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/plans/{id}/reject": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Reject an agent's plan.",
+        "description": "The plan can't be applied any more. Only `pending` plans can be rejected. Needs the operator\nrole; agent tokens can't reject. Audit-logged as `plan.reject`.",
+        "operationId": "reject",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The plan's ID.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rejected plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Plan"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plan isn't pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/queries": {
       "get": {
         "tags": [
@@ -6863,6 +6991,121 @@
           }
         }
       },
+      "Items_Plan": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A planned change (REQ: AGT-007).",
+              "required": [
+                "id",
+                "tool",
+                "summary",
+                "method",
+                "path",
+                "preview",
+                "configVersion",
+                "reason",
+                "requestedBy",
+                "createdUnixSeconds",
+                "expiresUnixSeconds",
+                "state",
+                "needsApproval"
+              ],
+              "properties": {
+                "body": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "configVersion": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The configuration version the plan was made against.",
+                  "minimum": 0
+                },
+                "createdUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "decidedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Who approved or rejected it."
+                },
+                "expiresUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "id": {
+                  "type": "string",
+                  "description": "Pass it to `apply_plan` or `discard_plan`."
+                },
+                "method": {
+                  "type": "string",
+                  "description": "The REST write it replays: `PUT` or `DELETE`."
+                },
+                "needsApproval": {
+                  "type": "boolean",
+                  "description": "Made while `[agents] require_approval` was on."
+                },
+                "path": {
+                  "type": "string"
+                },
+                "preview": {
+                  "type": "object",
+                  "description": "The dry run's answer: before, after, impact, and warnings."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Why the agent wants it (goes into the audit log)."
+                },
+                "requestedBy": {
+                  "type": "string",
+                  "description": "Who asked: `agent:<token> (owner: <user>) via <client>`."
+                },
+                "result": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "description": "The write's answer once applied (or why it failed)."
+                },
+                "state": {
+                  "type": "string",
+                  "description": "`pending` (waits for an operator), `ready`, `approved`, `rejected`, `applying`,\n`applied`, `stale` (the configuration changed), `failed`, `discarded`, or `expired`."
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "What it does, in one sentence."
+                },
+                "tool": {
+                  "type": "string",
+                  "description": "The MCP tool that made it, e.g. `plan_block_domain`."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_RuleInfo": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -7733,6 +7976,102 @@
           "until": {
             "type": "string",
             "description": "When blocking turns back on (RFC 3339)."
+          }
+        }
+      },
+      "Plan": {
+        "type": "object",
+        "description": "A planned change (REQ: AGT-007).",
+        "required": [
+          "id",
+          "tool",
+          "summary",
+          "method",
+          "path",
+          "preview",
+          "configVersion",
+          "reason",
+          "requestedBy",
+          "createdUnixSeconds",
+          "expiresUnixSeconds",
+          "state",
+          "needsApproval"
+        ],
+        "properties": {
+          "body": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "configVersion": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The configuration version the plan was made against.",
+            "minimum": 0
+          },
+          "createdUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "decidedBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who approved or rejected it."
+          },
+          "expiresUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "Pass it to `apply_plan` or `discard_plan`."
+          },
+          "method": {
+            "type": "string",
+            "description": "The REST write it replays: `PUT` or `DELETE`."
+          },
+          "needsApproval": {
+            "type": "boolean",
+            "description": "Made while `[agents] require_approval` was on."
+          },
+          "path": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "object",
+            "description": "The dry run's answer: before, after, impact, and warnings."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the agent wants it (goes into the audit log)."
+          },
+          "requestedBy": {
+            "type": "string",
+            "description": "Who asked: `agent:<token> (owner: <user>) via <client>`."
+          },
+          "result": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The write's answer once applied (or why it failed)."
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending` (waits for an operator), `ready`, `approved`, `rejected`, `applying`,\n`applied`, `stale` (the configuration changed), `failed`, `discarded`, or `expired`."
+          },
+          "summary": {
+            "type": "string",
+            "description": "What it does, in one sentence."
+          },
+          "tool": {
+            "type": "string",
+            "description": "The MCP tool that made it, e.g. `plan_block_domain`."
           }
         }
       },
@@ -8941,6 +9280,10 @@
     {
       "name": "config",
       "description": "Lists, groups, clients, and upstreams as running."
+    },
+    {
+      "name": "agents",
+      "description": "Changes AI agents planned through MCP, and their approval."
     },
     {
       "name": "auth",

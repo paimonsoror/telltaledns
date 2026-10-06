@@ -125,7 +125,9 @@ pub fn required(method: &Method, path: &str) -> Need {
     };
     if read {
         match p {
-            "/api/v1/auth/me" | "/api/v1/auth/status" | "/mcp" => return Need::Any,
+            "/api/v1/auth/me" | "/api/v1/auth/status" | "/mcp" | "/api/v1/plans" => {
+                return Need::Any;
+            }
             "/api/v1/system/info"
             | "/api/v1/cluster"
             | "/api/v1/explain"
@@ -218,6 +220,8 @@ pub fn group_aware(method: &Method, path: &str) -> bool {
 #[derive(Debug)]
 pub struct Policy {
     enabled: AtomicBool,
+    /// REQ: AGT-007 — `[agents] require_approval`: plans wait for an operator.
+    require_approval: AtomicBool,
     rate_per_minute: AtomicU32,
     /// Token ID → (requests left, last refill in ms).
     buckets: Mutex<HashMap<String, (f64, u64)>>,
@@ -227,6 +231,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             enabled: AtomicBool::new(true),
+            require_approval: AtomicBool::new(false),
             rate_per_minute: AtomicU32::new(120),
             buckets: Mutex::new(HashMap::new()),
         }
@@ -242,6 +247,14 @@ impl Policy {
 
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_require_approval(&self, on: bool) {
+        self.require_approval.store(on, Ordering::Relaxed);
+    }
+
+    pub fn require_approval(&self) -> bool {
+        self.require_approval.load(Ordering::Relaxed)
     }
 
     /// Takes one request from the token's bucket; `Err(seconds)` to wait when it's empty.

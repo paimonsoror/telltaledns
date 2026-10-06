@@ -113,6 +113,10 @@ export const api = {
 
   // Data (API-001)
   info: () => get<S['SystemInfo']>('/system/info'),
+  // REQ: AGT-007 (T7.1) — agents' plans; operators approve or reject them.
+  plans: () => get<S['Items_Plan']>('/plans'),
+  approvePlan: (id: string) => post<S['Plan']>(`/plans/${encodeURIComponent(id)}/approve`),
+  rejectPlan: (id: string) => post<S['Plan']>(`/plans/${encodeURIComponent(id)}/reject`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
   summary: (from = '-24h', to?: string) => get<S['Summary']>('/stats/summary', { from, to }),

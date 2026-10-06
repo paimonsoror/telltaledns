@@ -4,8 +4,10 @@
 //!
 //! Every tool is a thin wrapper over REST routes, called in-process with the caller's own
 //! credentials: scopes, group restrictions, rate limits, privacy levels, and the agent kill
-//! switch apply exactly as they do to REST calls. The tools are read-only (`spec/13` §3.1);
-//! writes come with plan/apply (§3.2, P1).
+//! switch apply exactly as they do to REST calls. Read-only tools (`spec/13` §3.1) are GETs.
+//! Write tools (§3.2, AGT-007) make a plan with the REST dry run; `apply_plan` replays the
+//! write with `If-Match` on the plan's config version (see `crate::plans`). A few low-risk
+//! operations (flush the cache, pause or resume blocking) act at once, still audited.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -304,21 +306,564 @@ pub fn tools() -> Vec<Tool> {
     ]
 }
 
-/// The catalog as `tools/list` returns it.
-pub fn catalog() -> Value {
-    Value::Array(
-        tools()
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "inputSchema": (t.input_schema)(),
-                    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+/// REQ: AGT-007 (T7.1) — what a write tool does: one REST write.
+#[derive(Debug, Clone)]
+pub struct Write {
+    /// `PUT`, `DELETE`, or `POST`.
+    pub method: &'static str,
+    pub path: String,
+    pub body: Option<Value>,
+    /// One sentence for the plan and the approver.
+    pub summary: String,
+    /// Fill in the fields the agent left out from what's there now: a `config/entries` kind
+    /// (`group`, `upstream`, `upstream_group`, `list`) or `client`, with the name.
+    pub merge: Option<(&'static str, String)>,
+}
+
+/// How a write tool takes effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    /// Stores a plan (dry run); `apply_plan` makes the change.
+    Plan,
+    /// Changes at once (low-risk operations, still audited).
+    Immediate,
+}
+
+/// One write tool and the REST write behind it.
+#[derive(Debug)]
+pub struct WriteTool {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: fn() -> Value,
+    pub effect: Effect,
+    /// Whether applying it can take something away (MCP `destructiveHint`).
+    pub destructive: bool,
+    pub write: fn(&Value) -> Result<Write, String>,
+}
+
+fn reason_schema() -> Value {
+    json!({"type": "string", "description": "Why (required): goes into the audit log and is shown to whoever approves the plan."})
+}
+
+fn need(args: &Value, k: &str) -> Result<String, String> {
+    s(args, k).ok_or_else(|| format!("`{k}` is required"))
+}
+
+fn strings(args: &Value, k: &str) -> Vec<String> {
+    args.get(k)
+        .and_then(Value::as_array)
+        .map(|v| {
+            v.iter()
+                .filter_map(Value::as_str)
+                .map(|x| x.trim().to_owned())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The fields of `args` named in `keys`, as a JSON object (absent ones left out).
+fn pick(args: &Value, keys: &[(&str, &str)]) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    for (arg, field) in keys {
+        if let Some(v) = args.get(*arg).filter(|v| !v.is_null()) {
+            m.insert((*field).to_owned(), v.clone());
+        }
+    }
+    m
+}
+
+/// A quick rule's ID for an agent's block or allow: one per action and domain.
+fn rule_id(action: &str, domain: &str) -> String {
+    let d: String = domain
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut id = format!("agent-{action}-{d}");
+    id.truncate(64);
+    id
+}
+
+fn rule(action: &'static str, a: &Value) -> Result<Write, String> {
+    let domain = need(a, "domain")?;
+    let mut body = pick(
+        a,
+        &[
+            ("devices", "devices"),
+            ("groups", "groups"),
+            ("forMinutes", "forMinutes"),
+        ],
+    );
+    body.insert("action".into(), action.into());
+    body.insert("domain".into(), domain.clone().into());
+    if let Some(r) = s(a, "reason") {
+        body.insert("note".into(), r.into());
+    }
+    let who = match (strings(a, "devices"), strings(a, "groups")) {
+        (d, g) if d.is_empty() && g.is_empty() => "everyone".to_owned(),
+        (d, g) => [d, g].concat().join(", "),
+    };
+    let until = a
+        .get("forMinutes")
+        .and_then(Value::as_u64)
+        .map_or_else(String::new, |m| format!(" for {m} minutes"));
+    Ok(Write {
+        method: "PUT",
+        path: format!("/api/v1/rules/{}", enc(&rule_id(action, &domain))),
+        body: Some(Value::Object(body)),
+        summary: format!(
+            "{} {domain} (and its subdomains) for {who}{until}",
+            if action == "block" { "Block" } else { "Allow" }
+        ),
+        merge: None,
+    })
+}
+
+fn rule_schema(what: &str) -> Value {
+    json!({"type": "object", "properties": {
+        "domain": {"type": "string", "description": format!("The domain to {what}; its subdomains are included.")},
+        "devices": {"type": "array", "items": {"type": "string"}, "description": "Only for these devices (names, IPs, or CIDRs)."},
+        "groups": {"type": "array", "items": {"type": "string"}, "description": "Only for these groups. With neither devices nor groups: everyone."},
+        "forMinutes": {"type": "integer", "minimum": 1, "description": "Stop after this many minutes (default: until removed)."},
+        "reason": reason_schema()
+    }, "required": ["domain", "reason"], "additionalProperties": false})
+}
+
+/// The write catalog (`spec/13` §3.2). Plans first, then the immediate operations.
+#[allow(clippy::too_many_lines)] // one entry per tool: the catalog
+pub fn write_tools() -> Vec<WriteTool> {
+    vec![
+        WriteTool {
+            name: "plan_block_domain",
+            description: "Plans a change (nothing changes until apply_plan). A quick rule that blocks a domain and its subdomains, for everyone or for some devices or groups, optionally for a while. Returns a planId and a preview (what changes, how many recent queries it affects). Needs the config:write:rules scope.",
+            input_schema: || rule_schema("block"),
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| rule("block", a),
+        },
+        WriteTool {
+            name: "plan_allow_domain",
+            description: "Plans a change (nothing changes until apply_plan). A quick rule that allows a domain and its subdomains (it wins over every list), for everyone or for some devices or groups, optionally for a while. Returns a planId and a preview. Needs the config:write:rules scope.",
+            input_schema: || rule_schema("allow"),
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| rule("allow", a),
+        },
+        WriteTool {
+            name: "plan_rename_client",
+            description: "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. Needs the config:write:clients scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's current name."},
+                "newName": {"type": "string", "description": "The new name."},
+                "reason": reason_schema()
+            }, "required": ["client", "newName", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let client = need(a, "client")?;
+                let new = need(a, "newName")?;
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/clients/{}", enc(&client)),
+                    body: Some(json!({"name": new})),
+                    summary: format!("Rename the device {client} to {new}"),
+                    merge: Some(("client", client)),
                 })
+            },
+        },
+        WriteTool {
+            name: "plan_assign_client",
+            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. Needs the config:write:clients scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's name (new or existing), or an IP."},
+                "groups": {"type": "array", "items": {"type": "string"}, "description": "Its groups, highest priority first."},
+                "match": {"type": "array", "items": {"type": "string"}, "description": "How to recognize it (default: what it has now, or the IP given as client)."},
+                "reason": reason_schema()
+            }, "required": ["client", "groups", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let client = need(a, "client")?;
+                let groups = strings(a, "groups");
+                if groups.is_empty() {
+                    return Err("`groups` is required (at least one)".into());
+                }
+                let body = pick(a, &[("groups", "groups"), ("match", "match")]);
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/clients/{}", enc(&client)),
+                    body: Some(Value::Object(body)),
+                    summary: format!("Put the device {client} in {}", groups.join(", ")),
+                    merge: Some(("client", client)),
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_set_local_name",
+            description: "Plans a change (nothing changes until apply_plan). Answers a name on the local network with your own records (A, AAAA, CNAME, TXT, ...), e.g. nas.home.arpa → 192.168.1.10. Replaces that name's records. Needs the config:write:records scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The full name, e.g. nas.home.arpa."},
+                "records": {"type": "array", "items": {"type": "object", "properties": {
+                    "type": {"type": "string", "description": "A, AAAA, CNAME, TXT, MX, SRV, PTR."},
+                    "value": {"type": "string", "description": "The answer, e.g. 192.168.1.10."},
+                    "ttl": {"type": "integer", "description": "Seconds (optional)."}
+                }, "required": ["type", "value"]}, "description": "The records."},
+                "reason": reason_schema()
+            }, "required": ["name", "records", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let records = a
+                    .get("records")
+                    .cloned()
+                    .filter(Value::is_array)
+                    .ok_or("`records` is required")?;
+                let n = records.as_array().map_or(0, Vec::len);
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/records/{}", enc(&name)),
+                    body: Some(json!({"records": records})),
+                    summary: format!("Answer {name} with {n} record(s) of your own"),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_remove_local_name",
+            description: "Plans a change (nothing changes until apply_plan). Removes a local name made through the API or UI; the name is then resolved normally. Needs the config:write:records scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The full name."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let name = need(a, "name")?;
+                Ok(Write {
+                    method: "DELETE",
+                    path: format!("/api/v1/records/{}", enc(&name)),
+                    body: None,
+                    summary: format!("Stop answering {name} locally"),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_forward_domain",
+            description: "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. Needs the config:write:forwards scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "domain": {"type": "string", "description": "The domain, e.g. corp.example."},
+                "servers": {"type": "array", "items": {"type": "string"}, "description": "The servers, tried in order."},
+                "reason": reason_schema()
+            }, "required": ["domain", "servers", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let domain = need(a, "domain")?;
+                let servers = strings(a, "servers");
+                if servers.is_empty() {
+                    return Err("`servers` is required (at least one)".into());
+                }
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/forwards/{}", enc(&domain)),
+                    body: Some(json!({"servers": servers})),
+                    summary: format!("Send questions under {domain} to {}", servers.join(", ")),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_add_list",
+            description: "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "An ID: lowercase letters, digits, - and _."},
+                "url": {"type": "string", "description": "Where to download it (https)."},
+                "rules": {"type": "array", "items": {"type": "string"}, "description": "Or inline rules, one per item."},
+                "kind": {"type": "string", "enum": ["block", "allow"], "description": "Default block."},
+                "enabled": {"type": "boolean", "description": "Default true."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("url", "url"),
+                        ("rules", "rules"),
+                        ("kind", "kind"),
+                        ("enabled", "enabled"),
+                    ],
+                );
+                if !body.contains_key("url") && !body.contains_key("rules") {
+                    return Err("give `url` or `rules`".into());
+                }
+                let from = s(a, "url").unwrap_or_else(|| "inline rules".into());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/lists/{}", enc(&name)),
+                    body: Some(Value::Object(body)),
+                    summary: format!(
+                        "Add the {} list {name} ({from})",
+                        s(a, "kind").unwrap_or_else(|| "block".into())
+                    ),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_update_group",
+            description: "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The group."},
+                "networks": {"type": "array", "items": {"type": "string"}, "description": "CIDRs whose devices belong to it."},
+                "lists": {"type": "array", "items": {"type": "string"}, "description": "List names that apply (default: every enabled list)."},
+                "blockMode": {"type": "string", "enum": ["null_ip", "nxdomain", "nodata", "refused", "custom_ip"], "description": "How blocked names are answered."},
+                "priority": {"type": "integer", "description": "Higher wins when a device matches several groups."},
+                "reason": reason_schema()
+            }, "required": ["name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let body = pick(
+                    a,
+                    &[
+                        ("networks", "networks"),
+                        ("lists", "lists"),
+                        ("blockMode", "block_mode"),
+                        ("priority", "priority"),
+                    ],
+                );
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/groups/{}", enc(&name)),
+                    summary: format!(
+                        "Change the group {name} ({})",
+                        if what.is_empty() {
+                            "no fields".into()
+                        } else {
+                            what.join(", ")
+                        }
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("group", name)),
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_update_upstreams",
+            description: "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["upstream", "upstream_group"], "description": "A server or a group."},
+                "name": {"type": "string", "description": "Its name."},
+                "url": {"type": "string", "description": "upstream: udp://, tcp://, tls://, https://, or quic:// address."},
+                "members": {"type": "array", "items": {"type": "string"}, "description": "upstream_group: upstream names."},
+                "strategy": {"type": "string", "enum": ["failover", "round_robin", "weighted", "fastest", "parallel"], "description": "upstream_group: how members are used."},
+                "reason": reason_schema()
+            }, "required": ["kind", "name", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let (kind, path, body) = match s(a, "kind").as_deref() {
+                    Some("upstream") => ("upstream", "upstreams", pick(a, &[("url", "url")])),
+                    Some("upstream_group") => (
+                        "upstream_group",
+                        "upstream-groups",
+                        pick(a, &[("members", "members"), ("strategy", "strategy")]),
+                    ),
+                    _ => return Err("`kind` is upstream or upstream_group".into()),
+                };
+                let what: Vec<&str> = body.keys().map(String::as_str).collect();
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/{path}/{}", enc(&name)),
+                    summary: format!(
+                        "Change the {} {name} ({})",
+                        kind.replace('_', " "),
+                        what.join(", ")
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: Some((kind, name)),
+                })
+            },
+        },
+        WriteTool {
+            name: "flush_cache",
+            description: "Changes at once (audited, no plan). Removes cached answers: one name (optionally everything under it), or the whole cache; on every node unless `node` names one. The next query is asked upstream again. Blocked answers are never cached. Needs the ops:cache scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "One name (default: everything)."},
+                "subtree": {"type": "boolean", "description": "Also every name under it."},
+                "node": {"type": "string", "description": "Only this node."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: true,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[("name", "name"), ("subtree", "subtree"), ("node", "node")],
+                );
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/cache/flush".into(),
+                    summary: s(a, "name").map_or_else(
+                        || "Empty the cache".into(),
+                        |n| format!("Flush {n} from the cache"),
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "pause_blocking",
+            description: "Changes at once (audited, no plan). Turns blocking off for everyone (or one group) for 1 to 60 minutes, on every node; it comes back on by itself. Needs the ops:pause scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "minutes": {"type": "integer", "minimum": 1, "maximum": 60, "description": "How long."},
+                "group": {"type": "string", "description": "Only this group."},
+                "reason": reason_schema()
+            }, "required": ["minutes", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: true,
+            write: |a| {
+                let minutes = a
+                    .get("minutes")
+                    .and_then(Value::as_u64)
+                    .ok_or("`minutes` is required (1 to 60)")?;
+                let body = pick(a, &[("minutes", "minutes"), ("group", "group")]);
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/blocking/pause".into(),
+                    summary: format!(
+                        "Pause blocking{} for {minutes} minutes",
+                        s(a, "group")
+                            .map(|g| format!(" for {g}"))
+                            .unwrap_or_default()
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "resume_blocking",
+            description: "Changes at once (audited, no plan). Ends a pause of blocking: one group's, or every pause. Needs the ops:pause scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "group": {"type": "string", "description": "Only this group's pause."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/blocking/resume".into(),
+                    summary: "Resume blocking".into(),
+                    body: Some(Value::Object(pick(a, &[("group", "group")]))),
+                    merge: None,
+                })
+            },
+        },
+    ]
+}
+
+/// Plan management tools: `(name, description, schema, readOnly, destructive, idempotent)`.
+fn plan_tools() -> Vec<(&'static str, &'static str, Value, bool, bool, bool)> {
+    let id = || {
+        json!({"type": "object", "properties": {
+        "planId": {"type": "string", "description": "From a plan_* tool."}
+    }, "required": ["planId"], "additionalProperties": false})
+    };
+    vec![
+        (
+            "apply_plan",
+            "Changes the configuration: applies a plan made by a plan_* tool, on every node. Fails if the configuration changed since the plan was made (stale: plan again), if it expired (10 minutes), or if an operator must approve it first. Audited with your token, its owner, and the plan's reason.",
+            id(),
+            false,
+            true,
+            false,
+        ),
+        (
+            "discard_plan",
+            "Drops a plan you made; nothing in the configuration changes.",
+            id(),
+            false,
+            false,
+            true,
+        ),
+        (
+            "list_plans",
+            "Read-only. Your plans, newest first: what each does, its state (pending approval, ready, applied, stale, expired, ...), and when it expires.",
+            json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            true,
+            false,
+            true,
+        ),
+    ]
+}
+
+/// The catalog as `tools/list` returns it. Annotations state each tool's side effects
+/// (AGT-009): reads are read-only; plans change nothing until applied; `apply_plan` and the
+/// immediate operations do.
+pub fn catalog() -> Value {
+    let ann = |read_only: bool, destructive: bool, idempotent: bool| json!({"readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": false});
+    let mut out: Vec<Value> = tools()
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": (t.input_schema)(),
+                "annotations": ann(true, false, true),
             })
-            .collect(),
-    )
+        })
+        .collect();
+    out.extend(write_tools().iter().map(|t| {
+        json!({
+            "name": t.name,
+            "description": t.description,
+            "inputSchema": (t.input_schema)(),
+            // A plan stores a plan, nothing else; the change is apply_plan's.
+            "annotations": match t.effect {
+                Effect::Plan => ann(false, false, false),
+                Effect::Immediate => ann(false, t.destructive, false),
+            },
+        })
+    }));
+    out.extend(plan_tools().into_iter().map(|(name, description, schema, ro, de, idem)| {
+        json!({"name": name, "description": description, "inputSchema": schema, "annotations": ann(ro, de, idem)})
+    }));
+    Value::Array(out)
 }
 
 /// MCP sessions: the client software named at `initialize` (AGT-005 attribution).
@@ -349,6 +894,29 @@ pub struct Mcp {
     /// The REST routes, called in-process with the caller's credentials.
     pub api: Router,
     pub sessions: Arc<Sessions>,
+    /// Plans and the approval policy (AGT-007).
+    pub auth: Arc<crate::auth::Auth>,
+}
+
+/// Who called: their plans key and how the audit log names them.
+#[derive(Debug, Clone)]
+pub struct Caller {
+    pub owner: String,
+    pub name: String,
+}
+
+fn tool_error(text: impl Into<String>) -> Value {
+    json!({"isError": true, "content": [{"type": "text", "text": text.into()}]})
+}
+
+/// A tool result: the value as text and as structured content (when it fits).
+fn tool_result(v: Value, is_error: bool) -> Value {
+    let (text, truncated) = capped(&v);
+    let mut result = json!({"content": [{"type": "text", "text": text}], "isError": is_error});
+    if !truncated {
+        result["structuredContent"] = v;
+    }
+    result
 }
 
 fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
@@ -375,10 +943,25 @@ fn capped(v: &Value) -> (String, bool) {
 impl Mcp {
     /// One REST GET as the caller; the body (JSON or problem+json) and whether it succeeded.
     async fn get(&self, path: &str, auth: &HeaderMap, client: Option<&str>) -> (bool, Value) {
-        let mut req = Request::get(path);
+        let (status, body) = self.send("GET", path, None, auth, client, &[]).await;
+        (status.is_success(), body)
+    }
+
+    /// One REST request as the caller, with `extra` headers; the status and the body.
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        extra: &[(&str, String)],
+    ) -> (StatusCode, Value) {
+        let mut req = Request::builder().method(method).uri(path);
         for h in [
             "authorization",
             "cookie",
+            "x-csrf-token",
             "x-forwarded-for",
             "x-forwarded-proto",
         ] {
@@ -389,21 +972,295 @@ impl Mcp {
         if let Some(c) = client.and_then(|c| HeaderValue::from_str(c).ok()) {
             req = req.header("x-telltale-client", c);
         }
-        let Ok(req) = req.body(Body::empty()) else {
-            return (false, json!({"detail": "bad request path"}));
+        for (k, v) in extra {
+            if let Ok(v) = HeaderValue::from_str(v) {
+                req = req.header(*k, v);
+            }
+        }
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b.to_string())),
+            None => req.body(Body::empty()),
+        };
+        let Ok(req) = req else {
+            return (
+                StatusCode::BAD_REQUEST,
+                json!({"detail": "bad request path"}),
+            );
         };
         let resp = match self.api.clone().oneshot(req).await {
             Ok(r) => r,
-            Err(e) => return (false, json!({"detail": e.to_string()})),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({"detail": e.to_string()}),
+                );
+            }
         };
-        let ok = resp.status().is_success();
+        let status = resp.status();
         let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
             .await
             .unwrap_or_default();
-        (ok, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
-    async fn call_tool(&self, params: &Value, auth: &HeaderMap, client: Option<&str>) -> Value {
+    /// Fills in what a write left out from the entry as it is now (`Write::merge`).
+    async fn merge(
+        &self,
+        w: &mut Write,
+        auth: &HeaderMap,
+        client: Option<&str>,
+    ) -> Result<(), String> {
+        let Some((kind, name)) = w.merge.clone() else {
+            return Ok(());
+        };
+        let Some(Value::Object(body)) = w.body.as_mut() else {
+            return Ok(());
+        };
+        if kind == "client" {
+            let (ok, list) = self.get("/api/v1/clients", auth, client).await;
+            if !ok {
+                return Err(format!("reading the devices failed: {list}"));
+            }
+            let found = list
+                .get("items")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items.iter().find(|d| {
+                        d.get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                            && d.get("source").and_then(Value::as_str) != Some("seen")
+                    })
+                });
+            match found {
+                Some(d) => {
+                    for k in ["match", "groups"] {
+                        if !body.contains_key(k)
+                            && let Some(v) = d.get(k)
+                        {
+                            body.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+                None if body.contains_key("name") => {
+                    return Err(format!(
+                        "no named device `{name}` (plan_assign_client names a new one)"
+                    ));
+                }
+                None if !body.contains_key("match") => {
+                    if name.parse::<std::net::IpAddr>().is_ok() {
+                        body.insert("match".into(), json!([name]));
+                    } else {
+                        return Err(format!(
+                            "`{name}` is a new device: give `match` (its IPs, MACs, or id:<client-id>)"
+                        ));
+                    }
+                }
+                None => {}
+            }
+            return Ok(());
+        }
+        let (ok, list) = self
+            .get(&format!("/api/v1/config/entries?kind={kind}"), auth, client)
+            .await;
+        if !ok {
+            return Err(format!(
+                "reading the current {kind} failed (needs config:read): {list}"
+            ));
+        }
+        let current = list
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|e| e.get("name").and_then(Value::as_str) == Some(name.as_str()))
+            });
+        if let Some(Value::Object(def)) = current.and_then(|e| e.get("definition")) {
+            for (k, v) in def {
+                if k != "name" && !body.contains_key(k) {
+                    body.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ: AGT-007 — a write tool: a plan (dry run, stored), or an immediate operation.
+    async fn call_write(
+        &self,
+        tool: &WriteTool,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        let Some(caller) = caller else {
+            return tool_error("sign in to use write tools");
+        };
+        let Some(reason) = s(args, "reason") else {
+            return tool_error(format!(
+                "{}: `reason` is required: say why (it goes into the audit log)",
+                tool.name
+            ));
+        };
+        let mut w = match (tool.write)(args) {
+            Ok(w) => w,
+            Err(e) => return tool_error(format!("{}: {e}", tool.name)),
+        };
+        if let Err(e) = self.merge(&mut w, auth, client).await {
+            return tool_error(format!("{}: {e}", tool.name));
+        }
+        let why = [("x-telltale-reason", reason.clone())];
+        if tool.effect == Effect::Immediate {
+            let (status, body) = self
+                .send(w.method, &w.path, w.body.as_ref(), auth, client, &why)
+                .await;
+            return tool_result(
+                json!({"done": w.summary, "result": body}),
+                !status.is_success(),
+            );
+        }
+        let dry = format!(
+            "{}{}dryRun=true",
+            w.path,
+            if w.path.contains('?') { '&' } else { '?' }
+        );
+        let (status, preview) = self
+            .send(w.method, &dry, w.body.as_ref(), auth, client, &why)
+            .await;
+        if !status.is_success() {
+            return tool_result(json!({"error": preview, "planned": false}), true);
+        }
+        let Some(version) = preview.get("configVersion").and_then(Value::as_u64) else {
+            return tool_error(format!(
+                "{}: the dry run didn't report a config version",
+                tool.name
+            ));
+        };
+        let needs_approval = self.auth.agents().require_approval();
+        let now = crate::plans::now();
+        let plan = self.auth.plans().add(crate::plans::Plan {
+            id: format!("plan_{}", crate::auth::crypto::random_id()),
+            tool: tool.name.to_owned(),
+            summary: w.summary,
+            method: w.method.to_owned(),
+            path: w.path,
+            body: w.body,
+            preview,
+            config_version: version,
+            reason,
+            requested_by: caller.name.clone(),
+            owner: caller.owner.clone(),
+            created_unix_seconds: now,
+            expires_unix_seconds: now + crate::plans::TTL_SECS,
+            state: if needs_approval { "pending" } else { "ready" }.into(),
+            needs_approval,
+            decided_by: None,
+            result: None,
+        });
+        let next = if needs_approval {
+            "An operator has to approve this plan (Agent changes in the web UI) before apply_plan works. It expires in 10 minutes."
+        } else {
+            "Nothing has changed yet. Call apply_plan with the planId to make the change (within 10 minutes), or discard_plan."
+        };
+        tool_result(
+            json!({"planId": plan.id, "state": plan.state, "summary": plan.summary, "preview": plan.preview, "expiresInSeconds": crate::plans::TTL_SECS, "next": next}),
+            false,
+        )
+    }
+
+    /// REQ: AGT-007 — `apply_plan`, `discard_plan`, `list_plans`.
+    async fn call_plan_tool(
+        &self,
+        name: &str,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        let Some(caller) = caller else {
+            return tool_error("sign in to use plans");
+        };
+        if name == "list_plans" {
+            let (ok, body) = self.get("/api/v1/plans", auth, client).await;
+            return tool_result(body, !ok);
+        }
+        let Some(id) = s(args, "planId") else {
+            return tool_error(format!("{name}: `planId` is required"));
+        };
+        let plans = self.auth.plans();
+        if name == "discard_plan" {
+            return match plans.transition(
+                &id,
+                &["pending", "ready", "approved"],
+                "discarded",
+                Some(&caller.owner),
+                None,
+            ) {
+                Ok(p) => tool_result(json!({"planId": p.id, "state": p.state}), false),
+                Err(e) => tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
+            };
+        }
+        let plan = match plans.transition(
+            &id,
+            &["ready", "approved"],
+            "applying",
+            Some(&caller.owner),
+            None,
+        ) {
+            Ok(p) => p,
+            Err(e) => return tool_result(serde_json::to_value(&e).unwrap_or_default(), true),
+        };
+        // The write as planned: refused (412) if the configuration changed since; the plan ID
+        // makes a retry return the first answer.
+        let extra = [
+            ("x-telltale-reason", plan.reason.clone()),
+            ("if-match", format!("\"{}\"", plan.config_version)),
+            ("idempotency-key", plan.id.clone()),
+        ];
+        let (status, body) = self
+            .send(
+                &plan.method,
+                &plan.path,
+                plan.body.as_ref(),
+                auth,
+                client,
+                &extra,
+            )
+            .await;
+        let state = if status.is_success() {
+            "applied"
+        } else if status == StatusCode::PRECONDITION_FAILED {
+            "stale"
+        } else {
+            "failed"
+        };
+        plans.finish(&id, state, body.clone());
+        let hint = match state {
+            "stale" => {
+                Some("The configuration changed since this plan was made: make the plan again.")
+            }
+            _ => None,
+        };
+        tool_result(
+            json!({"planId": id, "state": state, "summary": plan.summary, "result": body, "hint": hint}),
+            state != "applied",
+        )
+    }
+
+    async fn call_tool(
+        &self,
+        params: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -412,6 +1269,12 @@ impl Mcp {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if let Some(w) = write_tools().into_iter().find(|t| t.name == name) {
+            return self.call_write(&w, &args, auth, client, caller).await;
+        }
+        if plan_tools().iter().any(|t| t.0 == name) {
+            return self.call_plan_tool(name, &args, auth, client, caller).await;
+        }
         let Some(tool) = tools().into_iter().find(|t| t.name == name) else {
             return json!({"isError": true, "content": [{"type": "text", "text": format!("unknown tool `{name}`; see tools/list")}]});
         };
@@ -505,6 +1368,7 @@ impl Mcp {
         msg: &Value,
         headers: &HeaderMap,
         session: Option<&str>,
+        caller: Option<&Caller>,
     ) -> (Option<Value>, Option<String>) {
         let id = msg.get("id").cloned().unwrap_or(Value::Null);
         let method = msg
@@ -542,7 +1406,7 @@ impl Mcp {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "telltaledns", "title": "TelltaleDNS", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "TelltaleDNS is a filtering DNS resolver. These tools are read-only. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h.",
+                    "instructions": "TelltaleDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
                 });
                 return (Some(rpc_ok(&id, &result)), Some(sid));
             }
@@ -552,7 +1416,9 @@ impl Mcp {
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
                 Some(rpc_ok(
                     &id,
-                    &self.call_tool(&params, headers, client.as_deref()).await,
+                    &self
+                        .call_tool(&params, headers, client.as_deref(), caller)
+                        .await,
                 ))
             }
             m if m.starts_with("notifications/") => None,
@@ -568,7 +1434,24 @@ impl Mcp {
 }
 
 /// `POST /mcp`: one JSON-RPC message (or a batch) in, JSON out (Streamable HTTP, no SSE).
-pub async fn post(State(mcp): State<Mcp>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+pub async fn post(
+    State(mcp): State<Mcp>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    body: axum::body::Bytes,
+) -> Response {
+    // The caller, for plans (AGT-007): the session or token, and its audit name.
+    let caller = crate::auth::routes::principal(&ext).ok().map(|p| Caller {
+        owner: crate::plans::owner_key(&p),
+        name: mcp
+            .auth
+            .actor(
+                &p,
+                crate::auth::routes::remote(&mcp.auth, &ext, &headers),
+                None,
+            )
+            .name,
+    });
     let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
         let e = rpc_error(&Value::Null, -32700, "parse error: the body isn't JSON");
         return (StatusCode::BAD_REQUEST, axum::Json(e)).into_response();
@@ -581,13 +1464,17 @@ pub async fn post(State(mcp): State<Mcp>, headers: HeaderMap, body: axum::body::
     let reply = if let Value::Array(batch) = &msg {
         let mut out = Vec::new();
         for m in batch {
-            let (r, sid) = mcp.handle(m, &headers, session.as_deref()).await;
+            let (r, sid) = mcp
+                .handle(m, &headers, session.as_deref(), caller.as_ref())
+                .await;
             new_session = new_session.or(sid);
             out.extend(r);
         }
         (!out.is_empty()).then_some(Value::Array(out))
     } else {
-        let (r, sid) = mcp.handle(&msg, &headers, session.as_deref()).await;
+        let (r, sid) = mcp
+            .handle(&msg, &headers, session.as_deref(), caller.as_ref())
+            .await;
         new_session = sid;
         r
     };
@@ -627,12 +1514,29 @@ mod tests {
         );
     }
 
-    // AGT-009 — every tool says it's read-only; results are capped.
+    // AGT-009 — every tool states its side effects (description and annotations agree);
+    // results are capped.
     #[test]
     fn agt_009_tools_state_side_effects_and_results_are_capped() {
-        for t in tools() {
-            assert!(t.description.starts_with("Read-only."), "{}", t.name);
-            assert_eq!((t.input_schema)()["type"], "object", "{}", t.name);
+        for t in catalog().as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let d = t["description"].as_str().unwrap();
+            let ro = t["annotations"]["readOnlyHint"].as_bool().unwrap();
+            assert_eq!(d.starts_with("Read-only."), ro, "{name}");
+            if name.starts_with("plan_") {
+                assert!(
+                    d.starts_with("Plans a change (nothing changes until apply_plan)."),
+                    "{name}"
+                );
+                assert!(
+                    t["inputSchema"]["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("reason")),
+                    "{name}"
+                );
+            }
+            assert_eq!(t["inputSchema"]["type"], "object", "{name}");
         }
         let big = json!({"items": vec!["x".repeat(100); 1000]});
         let (text, cut) = capped(&big);
@@ -649,5 +1553,34 @@ mod tests {
         assert_eq!(q[0].1, "/api/v1/queries?client=tv%20room&limit=200");
         assert!((find("top_items").calls)(&json!({})).is_err());
         assert!((find("get_config").calls)(&json!({"section": "users"})).is_err());
+    }
+
+    // AGT-007 — write tools become REST writes.
+    #[test]
+    fn agt_007_write_tools_become_rest_writes() {
+        let t = write_tools();
+        let find = |n: &str| t.iter().find(|x| x.name == n).unwrap();
+        let w = (find("plan_block_domain").write)(
+            &json!({"domain": "Ads.Example.", "groups": ["kids"], "forMinutes": 60, "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (w.method, w.path.as_str()),
+            ("PUT", "/api/v1/rules/agent-block-ads-example")
+        );
+        assert_eq!(w.body.as_ref().unwrap()["action"], "block");
+        assert_eq!(w.body.as_ref().unwrap()["groups"], json!(["kids"]));
+        assert!(
+            w.summary.contains("for kids for 60 minutes"),
+            "{}",
+            w.summary
+        );
+        assert!((find("plan_add_list").write)(&json!({"name": "x"})).is_err());
+        let g =
+            (find("plan_update_group").write)(&json!({"name": "kids", "blockMode": "nxdomain"}))
+                .unwrap();
+        assert_eq!(g.body.unwrap()["block_mode"], "nxdomain");
+        assert_eq!(g.merge, Some(("group", "kids".to_owned())));
+        assert!((find("pause_blocking").write)(&json!({})).is_err());
     }
 }

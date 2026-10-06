@@ -1300,7 +1300,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `analytics:read` | statistics, top lists, latency, anomalies, explain, cluster status |
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
-| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules |
+| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams |
 | `ops:pause`, `ops:cache` | pause blocking; flush the cache |
 | `cluster:admin` | promote a node to primary |
 
@@ -1313,7 +1313,7 @@ The default is `analytics:read` and `config:read`: read-only, without the query 
 **Every change from an agent:**
 - needs an `X-Telltale-Reason` header (refused with 400 without one);
 - is recorded in the audit log as `agent:<token> (owner: <you>)`, with the agent software from `X-Telltale-Client`;
-- can be tried first with `?dryRun=true`. That works for devices, names, forwarded domains, and promotion; the answer says what would change, with the numbers behind it (`impact`, `recentQueries`), and nothing changes.
+- can be tried first with `?dryRun=true`. That works for every change (devices, names, forwarded domains, quick rules, lists, groups, upstreams, promotion); the answer says what would change, with the numbers behind it (`impact`, `recentQueries`), and nothing changes.
 
 **Limits:** agents get 120 requests a minute each (`[agents] rate_per_minute`, or the token's `ratePerMinute`). Over the limit, they get 429 with `Retry-After`.
 
@@ -1342,11 +1342,35 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `cluster_status` | members, roles, sync, versions, checks |
 | `get_config` | one configuration section (no secrets) |
 
+**Changing things.** Write tools never change anything directly: each makes a *plan* (see [Plans and approval](#plans-and-approval)).
+
+| Tool | Plans to | Scope |
+|---|---|---|
+| `plan_block_domain`, `plan_allow_domain` | block or allow a domain for everyone, devices, or groups, optionally for a while (a quick rule) | `config:write:rules` |
+| `plan_rename_client`, `plan_assign_client` | rename a device; name a device and set its groups | `config:write:clients` |
+| `plan_set_local_name`, `plan_remove_local_name` | answer a local name with your own records, or stop | `config:write:records` |
+| `plan_forward_domain` | send a domain to other DNS servers | `config:write:forwards` |
+| `plan_add_list` | add a filter list (URL or inline rules) | `config:write:lists` |
+| `plan_update_group` | change a group's networks, lists, blocked answer, or priority | `config:write:groups` (+ `config:read`) |
+| `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
+| `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |
+
+Three low-risk operations act at once, without a plan, and are audited like any change: `flush_cache` (`ops:cache`), `pause_blocking` for 1 to 60 minutes and `resume_blocking` (`ops:pause`). Every write tool needs a `reason`.
+
 **How the tools behave:**
-- **Read-only.** Writes with a plan-and-approve step come later.
+- **Side effects are stated.** Each tool's description starts with what it does ("Read-only.", "Plans a change", "Changes at once"), and its MCP annotations agree (`readOnlyHint`, `destructiveHint`).
 - **Same checks as REST.** Every tool calls the REST API with the agent's own token, so its scopes, group restriction, rate limit, privacy level, and the kill switch all apply. A tool the token can't use answers with an error.
 - **Capped results.** Results stop at 200 rows / 32 KiB, with a note to narrow or page.
 - **Stable catalog.** It's committed as `docs/api/mcp-tools.json`, and CI checks it with the official MCP SDK (`deploy/mcp-e2e.sh`).
+
+### Plans and approval
+A `plan_*` tool asks the node what the change would do (the same dry run as `?dryRun=true`) and keeps the answer as a plan for 10 minutes. The agent gets a `planId` and a preview: before and after, how many recent queries it affects, and any warnings.
+
+- **`apply_plan`** makes the change exactly as planned, on every node. If anything in the configuration changed since the plan was made, the plan is **stale** and nothing happens; the agent plans again. Applying twice changes nothing more.
+- **Approval:** with `[agents] require_approval = true`, a plan waits for a person. Operators see **N agent changes to review** in the header and approve or reject on the **Agent changes** page (or `POST /api/v1/plans/{id}/approve` and `/reject`). Agent tokens can't approve anything, their own plans included. Approvals and rejections are audited.
+- **Who did it:** the change is audited as the agent, with its owner, its MCP client, and the plan's reason. The approval is a separate audit entry under the operator's name.
+- `GET /api/v1/plans` lists plans for the last day (an agent token sees only its own).
+- Plans live in the memory of the node that made them: a restart drops open plans (the agent just plans again). In a cluster, point agents at the node whose UI you use (normally the primary).
 
 ## Users and sign-in
 There is no default password. On first start the server logs a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only):

@@ -17,6 +17,7 @@ pub mod config_api;
 pub mod federation;
 pub mod mcp;
 pub mod model;
+pub mod plans;
 pub mod problem;
 pub mod time;
 pub mod ui;
@@ -325,6 +326,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     let mcp = mcp::Mcp {
         api: api.clone(),
         sessions: Arc::new(mcp::Sessions::default()),
+        auth: Arc::clone(&auth),
     };
     let mcp_routes = Router::new()
         .route("/mcp", axum::routing::post(mcp::post).get(mcp::get))
@@ -362,6 +364,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .with_state(Arc::clone(&backend))
         .merge(cache_api::read_routes(Arc::clone(&backend)))
         .merge(blocking_api::read_routes(Arc::clone(&backend)))
+        .merge(plans::read_routes(Arc::clone(&auth)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
@@ -373,6 +376,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: DNS-006 (T6.13) — flushing the cache needs operator (agents: ops:cache).
         .merge(
             cache_api::flush_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: AGT-007 (T7.1) — operators approve or reject agents' plans.
+        .merge(
+            plans::decide_routes(Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         // REQ: FLT-009 (T7.1) — pausing blocking needs operator (agents: ops:pause).
@@ -440,7 +448,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, update_check, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -454,7 +462,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -476,6 +484,7 @@ async fn fallback(
             (7 days per minute, 400 days per hour, days forever)."),
         (name = "queries", description = "The query log and explanations of decisions."),
         (name = "config", description = "Lists, groups, clients, and upstreams as running."),
+        (name = "agents", description = "Changes AI agents planned through MCP, and their approval."),
         (name = "auth", description = "Sign-in, two-factor, API tokens, and users. Everything \
             else needs one of: the session cookie from POST /auth/login (plus X-CSRF-Token on \
             changes), Authorization: Bearer <token>, or HTTP Basic for users who allow it.")

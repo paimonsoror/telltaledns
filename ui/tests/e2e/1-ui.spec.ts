@@ -739,6 +739,51 @@ test('api_011 help drawer text is body-sized everywhere', async () => {
 
 // REQ: API-002 (T7.5, ADR-069) — upstreams and lists through the API: add, override the
 // files' entry, refuse a change that breaks the configuration, and revert.
+// REQ: AGT-007 (T7.1) — an agent's plan waits for an operator: the header says so, the
+// Agent changes page shows what it does and why, and approving it lets the agent apply it.
+test('agt_007 approve an agent plan in the UI', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const token = (
+    await (
+      await r.post('/api/v1/tokens', {
+        headers: { 'x-csrf-token': csrf },
+        data: { name: 'ui-agent', kind: 'agent', scopes: ['analytics:read', 'config:write:rules'] },
+      })
+    ).json()
+  ).token as string;
+  const mcp = async (name: string, args: Record<string, unknown>) => {
+    const res = await r.post('/mcp', {
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
+      data: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+    });
+    return (await res.json()).result as { isError: boolean; structuredContent?: Record<string, unknown> };
+  };
+  const planned = await mcp('plan_block_domain', { domain: 'plan.e2e.test', groups: ['default'], reason: 'the e2e asked' });
+  expect(planned.isError).toBe(false);
+  const id = planned.structuredContent!.planId as string;
+  expect((await mcp('apply_plan', { planId: id })).isError).toBe(true);
+
+  await page.goto('/#/');
+  await expect(page.getByTestId('agent-inbox')).toHaveText('1 agent change to review', { timeout: 20000 });
+  await page.getByTestId('agent-inbox').click();
+  await expect(page.getByRole('heading', { name: 'Agent changes' })).toBeVisible();
+  const card = page.getByTestId('plan').filter({ hasText: 'Block plan.e2e.test' });
+  await expect(card).toContainText('waiting for approval');
+  await expect(card).toContainText('the e2e asked');
+  await expect(card).toContainText('agent:ui-agent (owner: admin)');
+  await card.getByRole('button', { name: 'Approve' }).click();
+  await expect(card).toContainText('approved');
+  await expect(card).toContainText('Decided by');
+
+  const applied = await mcp('apply_plan', { planId: id });
+  expect(applied.isError).toBe(false);
+  await expect(card).toContainText('applied', { timeout: 10000 });
+  expect((await (await r.get('/api/v1/rules')).json()).items.map((x: { id: string }) => x.id)).toContain('agent-block-plan-e2e-test');
+  expect((await r.delete('/api/v1/rules/agent-block-plan-e2e-test', { headers: { 'x-csrf-token': csrf } })).status()).toBe(200);
+});
+
 // REQ: API-002 (T7.5, ADR-069) — the Lists and Upstreams pages add, change, and revert entries
 // with a preview first; the config files are never rewritten.
 test('api_002 lists and upstreams are edited from the UI', async () => {

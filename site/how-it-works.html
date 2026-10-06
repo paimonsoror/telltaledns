@@ -303,7 +303,7 @@
     <div class="card"><h3>Encrypted DNS for devices</h3><p>DNS over TLS and HTTPS listeners with certificates reloaded on the fly, and PROXY protocol v2 so a load balancer doesn't hide clients.</p></div>
     <div class="card"><h3>Moving in</h3><p><code>telltale import pihole</code> reads a Teleporter export; <code>telltale import technitium</code> reads a live server. Both write a config file with notes on what didn't carry over.</p></div>
     <div class="card"><h3>Backups</h3><p>One <code>.ttbk</code> archive with your configuration, users, devices, audit log, and statistics history (the query log optional), checksummed so a restore verifies every file before it writes any.</p></div>
-    <div class="card"><h3>AI agents</h3><p>Agent tokens with narrow scopes, a reason on every change, rate limits, and a kill switch. An MCP server (<code>/mcp</code>) gives assistants read-only tools.</p></div>
+    <div class="card"><h3>AI agents</h3><p>Agent tokens with narrow scopes, a reason on every change, rate limits, and a kill switch. An MCP server (<code>/mcp</code>) gives assistants tools to look around and to plan changes, which take effect only when applied, and only after you approve them if you want that.</p></div>
     <div class="card"><h3>Versions and updates</h3><p>Every build knows its version and commit, checks a signed release index daily (optional), and tells you how to update for the way you installed it.</p></div>
     <div class="card"><h3>Anomalies</h3><p>Learns each device's normal pattern and points out query spikes, bursts of new domains, and regular phone-home beacons, with the evidence. Findings never block anything on their own.</p></div>
   </div>

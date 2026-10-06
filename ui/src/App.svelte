@@ -9,6 +9,8 @@
   import HelpButton from './lib/components/HelpButton.svelte';
   import Icon from './lib/components/Icon.svelte';
   import PauseControl from './lib/components/PauseControl.svelte';
+  import AgentInbox from './lib/components/AgentInbox.svelte';
+  import AgentChanges from './pages/AgentChanges.svelte';
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
   import Login from './pages/Login.svelte';
@@ -40,6 +42,7 @@
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
     { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
     { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },
+    { path: '/agent-changes', label: 'Agent changes', page: AgentChanges, icon: 'inbox', section: 'System' },
     { path: '/cache', label: 'Cache', page: Cache, icon: 'cache', section: 'System' },
     { path: '/settings', label: 'Settings', page: Settings, icon: 'settings', section: 'System' },
   ];
@@ -187,6 +190,7 @@
         <button aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced</button>
       </span>
       <HelpButton id="simple-advanced" />
+      <AgentInbox />
       <PauseControl />
       <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
         <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />

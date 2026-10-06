@@ -241,6 +241,8 @@ pub struct Auth {
     oidc: std::sync::OnceLock<Arc<oidc::Oidc>>,
     /// `[agents]`: the kill switch and rate limits (AGT-009).
     agents: agent::Policy,
+    /// REQ: AGT-007 — agents' change plans on this node.
+    plans: crate::plans::Plans,
 }
 
 #[allow(clippy::needless_pass_by_value)] // used as `map_err(db)`
@@ -309,7 +311,13 @@ impl Auth {
             basic_salt: rand::random(),
             oidc: std::sync::OnceLock::new(),
             agents: agent::Policy::default(),
+            plans: crate::plans::Plans::default(),
         }
+    }
+
+    /// REQ: AGT-007 — agents' change plans (MCP `plan_*` tools, `apply_plan`).
+    pub fn plans(&self) -> &crate::plans::Plans {
+        &self.plans
     }
 
     /// The agent kill switch and rate limits; the server updates them from `[agents]`.

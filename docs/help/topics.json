@@ -394,6 +394,16 @@
       "example": "0.1.0-edge.60 · commit abc1234 · edge: Update available 0.1.0-edge.64.",
       "caution": "TelltaleDNS never updates itself from the UI: follow the step shown for your install (self-update, a new image, or a chart upgrade), replicas first in a cluster. Turn the check off with [updates] check = false.",
       "docs": "versions-and-updates"
+    },
+    {
+      "id": "agent-changes",
+      "title": "Review what AI agents want to change",
+      "term": "Plans and approval (MCP)",
+      "summary": "An AI agent connected over MCP proposes a change as a plan: what it does, why, and who asked. It changes nothing until the agent applies it, and with approval turned on, only after an operator approves it here.",
+      "when": "You let an assistant manage your DNS but want the final say on changes.",
+      "example": "An agent plans to block ads.example for the kids group; you see the plan, approve it, and the agent applies it.",
+      "caution": "Turn approval on with [agents] require_approval = true. A plan expires after 10 minutes, and goes stale if the configuration changes before it's applied.",
+      "docs": "plans-and-approval"
     }
   ]
 }

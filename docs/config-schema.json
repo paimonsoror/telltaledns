@@ -26,7 +26,8 @@
       "$ref": "#/$defs/AgentsConfig",
       "default": {
         "enabled": true,
-        "rate_per_minute": 120
+        "rate_per_minute": 120,
+        "require_approval": false
       }
     },
     "api": {
@@ -363,6 +364,11 @@
           "format": "uint32",
           "default": 120,
           "minimum": 0
+        },
+        "require_approval": {
+          "description": "REQ: AGT-007 — agents' planned changes wait for an operator's approval (\"Agent\nchanges\" in the web UI) before `apply_plan` succeeds.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

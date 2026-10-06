@@ -1241,3 +1241,19 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - A standalone node can be run entirely from the UI after `install.sh`.
 - Two sources of truth for the same name are possible; the UI and the `GET` endpoints show which one is in effect (`source`: `file`, `api`, or `override`).
 - A file change to an overridden entry has no effect until the override is reverted; the UI says so on the entry.
+
+## ADR-070 — Agents' plans: a dry run kept in memory on the node that made it, applied with If-Match (Proposed)
+**Context:** T7.1 (AGT-007). A `plan_*` MCP tool must show what a change would do and let the agent apply it later, only if nothing changed meanwhile and, with `[agents] require_approval`, only after an operator approves. The spec doesn't say where plans live, how long they last beyond "10 minutes", or how a cluster shares them.
+
+**Decision:**
+- A plan is the REST write (method, path, body) plus its dry-run answer, the config version it saw, the reason, and who asked (the caller's token or session). Plan tools call the REST dry run in-process with the agent's own credentials, so scopes, group restrictions, rate limits, and the kill switch apply unchanged.
+- `apply_plan` replays the same write with `If-Match: <version>` and the plan ID as the `Idempotency-Key`. A 412 marks the plan `stale`. Only the caller that made a plan can apply or discard it.
+- Plans live in the memory of the node that made them, at most 500, open for 10 minutes and listed for a day. They aren't stored or replicated: a restart drops them, and the agent plans again.
+- With `[agents] require_approval = true` a new plan is `pending` until a person with the operator role approves or rejects it (`POST /api/v1/plans/{id}/approve|reject`, the "Agent changes" page). Agent tokens can never approve or reject. Both decisions are audited.
+- Approval is checked when the plan is made: turning the setting on doesn't hold plans already made, and turning it off doesn't release pending ones.
+- Immediate operations (`flush_cache`, `pause_blocking`, `resume_blocking`) have no plan, as `spec/13` §3.2 says; they're audited like any agent write.
+- `plan_set_schedule` waits for schedules (FLT-010). Alert destinations for pending plans wait for OBS-010.
+
+**Consequences:**
+- Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
+- In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.

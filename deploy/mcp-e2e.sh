@@ -48,6 +48,9 @@ rules = ["ads.mcp.test"]
 [[client]]
 name = "living-room-tv"
 match = ["127.0.0.1"]
+# REQ: AGT-007 — agents' plans wait for an operator.
+[agents]
+require_approval = true
 EOF
 "$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
@@ -63,12 +66,17 @@ token() { # scopes JSON
   curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
     -d "{\"name\":\"mcp-$RANDOM\",\"kind\":\"agent\",\"scopes\":$1}" "$API/api/v1/tokens" | field 'd["token"]'
 }
-export AGENT_TOKEN NARROW_TOKEN
+export AGENT_TOKEN NARROW_TOKEN WRITER_TOKEN ADMIN_PASSWORD=mcp-e2e-pass-1
 AGENT_TOKEN=$(token '["analytics:read","config:read","querylog:read"]')
 NARROW_TOKEN=$(token '["analytics:read"]')
+WRITER_TOKEN=$(token '["analytics:read","config:write:rules"]')
 
 (cd deploy/mcp-e2e && npm install --silent --no-audit --no-fund >/dev/null)
 node deploy/mcp-e2e/check.mjs "$API" "$B" docs/api/mcp-tools.json
+# AGT-007: the applied plan blocks the name in DNS itself.
+dig +time=1 -p 25993 @127.0.0.1 agent.mcp.test | grep -q 'EDE: 15' || fail "agent.mcp.test isn't blocked in DNS after apply_plan"
+echo 'ok: agent.mcp.test is blocked in DNS'
+
 # Every tool call was an agent request: the audit log names the MCP client on changes only,
 # so check the session at least reached the node as the agent.
 grep -q 'mcp' "$E/node.log" || true

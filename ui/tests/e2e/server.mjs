@@ -69,6 +69,10 @@ flush_interval_secs = 1
 
 [api]
 listen = "127.0.0.1:18054"
+
+# REQ: AGT-007 — agents' plans wait for an operator (the Agent changes test).
+[agents]
+require_approval = true
 `,
 );
 

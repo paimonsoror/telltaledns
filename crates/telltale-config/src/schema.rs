@@ -971,6 +971,9 @@ pub struct AgentsConfig {
     pub enabled: bool,
     /// Requests per minute per agent token, unless the token sets its own.
     pub rate_per_minute: u32,
+    /// REQ: AGT-007 — agents' planned changes wait for an operator's approval ("Agent
+    /// changes" in the web UI) before `apply_plan` succeeds.
+    pub require_approval: bool,
 }
 
 impl Default for AgentsConfig {
@@ -978,6 +981,7 @@ impl Default for AgentsConfig {
         Self {
             enabled: true,
             rate_per_minute: 120,
+            require_approval: false,
         }
     }
 }

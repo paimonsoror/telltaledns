@@ -322,5 +322,617 @@
       "type": "object"
     },
     "name": "get_config"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). A quick rule that blocks a domain and its subdomains, for everyone or for some devices or groups, optionally for a while. Returns a planId and a preview (what changes, how many recent queries it affects). Needs the config:write:rules scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "description": "Only for these devices (names, IPs, or CIDRs).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "domain": {
+          "description": "The domain to block; its subdomains are included.",
+          "type": "string"
+        },
+        "forMinutes": {
+          "description": "Stop after this many minutes (default: until removed).",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "groups": {
+          "description": "Only for these groups. With neither devices nor groups: everyone.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_block_domain"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). A quick rule that allows a domain and its subdomains (it wins over every list), for everyone or for some devices or groups, optionally for a while. Returns a planId and a preview. Needs the config:write:rules scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "description": "Only for these devices (names, IPs, or CIDRs).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "domain": {
+          "description": "The domain to allow; its subdomains are included.",
+          "type": "string"
+        },
+        "forMinutes": {
+          "description": "Stop after this many minutes (default: until removed).",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "groups": {
+          "description": "Only for these groups. With neither devices nor groups: everyone.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_allow_domain"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Renames a named device; its addresses and groups stay. Past queries show the new name too. Needs the config:write:clients scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "The device's current name.",
+          "type": "string"
+        },
+        "newName": {
+          "description": "The new name.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client",
+        "newName",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_rename_client"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. Needs the config:write:clients scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "The device's name (new or existing), or an IP.",
+          "type": "string"
+        },
+        "groups": {
+          "description": "Its groups, highest priority first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "match": {
+          "description": "How to recognize it (default: what it has now, or the IP given as client).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client",
+        "groups",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_assign_client"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Answers a name on the local network with your own records (A, AAAA, CNAME, TXT, ...), e.g. nas.home.arpa → 192.168.1.10. Replaces that name's records. Needs the config:write:records scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The full name, e.g. nas.home.arpa.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "records": {
+          "description": "The records.",
+          "items": {
+            "properties": {
+              "ttl": {
+                "description": "Seconds (optional).",
+                "type": "integer"
+              },
+              "type": {
+                "description": "A, AAAA, CNAME, TXT, MX, SRV, PTR.",
+                "type": "string"
+              },
+              "value": {
+                "description": "The answer, e.g. 192.168.1.10.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "records",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_local_name"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Removes a local name made through the API or UI; the name is then resolved normally. Needs the config:write:records scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The full name.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_remove_local_name"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Sends every question under a domain to other DNS servers (a work network, your router), e.g. corp.example → 10.0.0.53. Servers are IPs (plain DNS) or tls://, https:// addresses. Needs the config:write:forwards scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "The domain, e.g. corp.example.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "servers": {
+          "description": "The servers, tried in order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "domain",
+        "servers",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_forward_domain"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Adds (or replaces) a filter list: a URL to download (hosts, domains, or Adblock syntax) or inline rules; block or allow. Every group that uses all lists picks it up. Needs the config:write:lists scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Default true.",
+          "type": "boolean"
+        },
+        "kind": {
+          "description": "Default block.",
+          "enum": [
+            "block",
+            "allow"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "An ID: lowercase letters, digits, - and _.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "rules": {
+          "description": "Or inline rules, one per item.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "Where to download it (https).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_add_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "blockMode": {
+          "description": "How blocked names are answered.",
+          "enum": [
+            "null_ip",
+            "nxdomain",
+            "nodata",
+            "refused",
+            "custom_ip"
+          ],
+          "type": "string"
+        },
+        "lists": {
+          "description": "List names that apply (default: every enabled list).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The group.",
+          "type": "string"
+        },
+        "networks": {
+          "description": "CIDRs whose devices belong to it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "priority": {
+          "description": "Higher wins when a device matches several groups.",
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_update_group"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes (or adds) an upstream server (`url`) or an upstream group (`members`, `strategy`: failover, round_robin, weighted, fastest, parallel). Fields left out keep their current values. Needs config:write:upstreams (and config:read to read the current entry).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "A server or a group.",
+          "enum": [
+            "upstream",
+            "upstream_group"
+          ],
+          "type": "string"
+        },
+        "members": {
+          "description": "upstream_group: upstream names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Its name.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "strategy": {
+          "description": "upstream_group: how members are used.",
+          "enum": [
+            "failover",
+            "round_robin",
+            "weighted",
+            "fastest",
+            "parallel"
+          ],
+          "type": "string"
+        },
+        "url": {
+          "description": "upstream: udp://, tcp://, tls://, https://, or quic:// address.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_update_upstreams"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan). Removes cached answers: one name (optionally everything under it), or the whole cache; on every node unless `node` names one. The next query is asked upstream again. Blocked answers are never cached. Needs the ops:cache scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "One name (default: everything).",
+          "type": "string"
+        },
+        "node": {
+          "description": "Only this node.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "subtree": {
+          "description": "Also every name under it.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "flush_cache"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan). Turns blocking off for everyone (or one group) for 1 to 60 minutes, on every node; it comes back on by itself. Needs the ops:pause scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "description": "Only this group.",
+          "type": "string"
+        },
+        "minutes": {
+          "description": "How long.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "minutes",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "pause_blocking"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan). Ends a pause of blocking: one group's, or every pause. Needs the ops:pause scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "description": "Only this group's pause.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "resume_blocking"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes the configuration: applies a plan made by a plan_* tool, on every node. Fails if the configuration changed since the plan was made (stale: plan again), if it expired (10 minutes), or if an operator must approve it first. Audited with your token, its owner, and the plan's reason.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "planId": {
+          "description": "From a plan_* tool.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "planId"
+      ],
+      "type": "object"
+    },
+    "name": "apply_plan"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Drops a plan you made; nothing in the configuration changes.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "planId": {
+          "description": "From a plan_* tool.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "planId"
+      ],
+      "type": "object"
+    },
+    "name": "discard_plan"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Your plans, newest first: what each does, its state (pending approval, ready, applied, stale, expired, ...), and when it expires.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "list_plans"
   }
 ]
