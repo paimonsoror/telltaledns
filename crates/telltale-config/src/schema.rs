@@ -566,6 +566,7 @@ impl Default for LocalConfig {
 /// A client group (FLT-005, `spec/05` §1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // independent per-group switches
 pub struct GroupConfig {
     /// Unique name; `default` applies to clients that match nothing else.
     pub name: SafeString,
@@ -628,6 +629,13 @@ pub struct GroupConfig {
     /// REQ: FLT-014 (T7.20) — rewrites: a domain answered with an address or another name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rewrite: Vec<RewriteConfig>,
+    /// REQ: DNS-016 (T7.21) — DNS64 (RFC 6147): IPv6-only devices behind NAT64 get AAAA
+    /// answers made from A records when a name has no AAAA.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dns64: bool,
+    /// The NAT64 prefix (a /96; default the well-known `64:ff9b::/96`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns64_prefix: Option<Cidr>,
 }
 
 /// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.

@@ -209,12 +209,12 @@
     {
       "rfc": "6147",
       "title": "DNS64",
-      "status": "planned",
+      "status": "supported",
       "reqs": [
         "DNS-016"
       ],
-      "summary": "Synthesize AAAA records for IPv6-only clients, per group.",
-      "diagram": "planned"
+      "summary": "Per group: AAAA made from A records in the NAT64 prefix (64:ff9b::/96 by default) when a name has no AAAA; CNAMEs kept; not for CD clients.",
+      "diagram": "rfc6147"
     },
     {
       "rfc": "9462",

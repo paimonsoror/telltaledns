@@ -122,6 +122,15 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
                 );
             }
         }
+        // REQ: DNS-016 (T7.21)
+        if let Some(p) = g.dns64_prefix
+            && (!p.addr.is_ipv6() || p.prefix != 96)
+        {
+            r.err(
+                format!("group[{i}].dns64_prefix"),
+                "an IPv6 /96, e.g. 64:ff9b::/96",
+            );
+        }
         let mut seen = HashSet::new();
         for (j, w) in g.rewrite.iter().enumerate() {
             let d = w.domain.trim_start_matches("*.");

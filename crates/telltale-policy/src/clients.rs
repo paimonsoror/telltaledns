@@ -33,6 +33,8 @@ pub struct Group {
     pub answers: Option<AnswerFilter>,
     /// REQ: FLT-014 (T7.20) — rewrites.
     pub rewrites: Vec<Rewrite>,
+    /// REQ: DNS-016 (T7.21) — the NAT64 /96 prefix when DNS64 is on.
+    pub dns64: Option<Ipv6Addr>,
 }
 
 /// REQ: FLT-015 (T7.20) — answer addresses a group refuses.
@@ -329,6 +331,8 @@ pub struct ClientTable {
     default_names: Vec<Box<str>>,
     /// REQ: FLT-015 — some group filters answer addresses (else the check is skipped).
     any_answers: bool,
+    /// REQ: DNS-016 — some group has DNS64.
+    any_dns64: bool,
 }
 
 impl Default for ClientTable {
@@ -365,6 +369,13 @@ impl Group {
                         .filter_map(|d| telltale_proto::NameBuf::from_presentation(d).ok())
                         .collect(),
                 }
+            }),
+            dns64: g.dns64.then(|| match g.dns64_prefix {
+                Some(Cidr {
+                    addr: IpAddr::V6(p),
+                    ..
+                }) => p,
+                _ => Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0),
             }),
             rewrites: g
                 .rewrite
@@ -411,6 +422,7 @@ impl ClientTable {
                 safe_search: None,
                 answers: None,
                 rewrites: Vec::new(),
+                dns64: None,
             });
             groups.len() - 1
         };
@@ -421,6 +433,7 @@ impl ClientTable {
             .filter_map(|(i, g)| Some((&*g.name, u16::try_from(i).ok()?)))
             .collect();
         let any_answers = groups.iter().any(|g| g.answers.is_some());
+        let any_dns64 = groups.iter().any(|g| g.dns64.is_some());
         let mut t = Self {
             by_id: HashMap::new(),
             by_mac: HashMap::new(),
@@ -435,6 +448,7 @@ impl ClientTable {
             clients: Vec::new(),
             groups: Vec::new(),
             any_answers,
+            any_dns64,
         };
         for c in &cfg.client {
             let Ok(ci) = u16::try_from(t.clients.len()) else {
@@ -497,6 +511,11 @@ impl ClientTable {
     /// REQ: FLT-015 — whether any group filters answer addresses.
     pub fn any_answers(&self) -> bool {
         self.any_answers
+    }
+
+    /// REQ: DNS-016 — whether any group has DNS64.
+    pub fn any_dns64(&self) -> bool {
+        self.any_dns64
     }
 
     pub fn groups(&self) -> &[Group] {

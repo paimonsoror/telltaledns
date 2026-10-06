@@ -1564,6 +1564,17 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "dns64": {
+          "description": "REQ: DNS-016 (T7.21) — DNS64 (RFC 6147): IPv6-only devices behind NAT64 get AAAA\nanswers made from A records when a name has no AAAA.",
+          "type": "boolean"
+        },
+        "dns64_prefix": {
+          "description": "The NAT64 prefix (a /96; default the well-known `64:ff9b::/96`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ede": {
           "description": "Extended DNS Error on block answers: `blocked` (15) or `filtered` (17, RFC 8914: at\nthe client's request, e.g. parental controls).",
           "$ref": "#/$defs/EdeKind",

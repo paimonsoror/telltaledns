@@ -487,6 +487,17 @@
       "example": "attacker.example answering 192.168.1.1 is blocked; nas.home.example (allowed) still answers.",
       "caution": "Services that hand out private addresses on purpose (plex.direct) need rebinding_allow. Your local records and routed domains are always allowed.",
       "docs": "rebinding-protection"
+    },
+    {
+      "id": "dns64",
+      "title": "DNS64",
+      "term": "DNS64 (RFC 6147)",
+      "general": true,
+      "summary": "IPv6-only devices get IPv6 addresses for IPv4-only names, made from the IPv4 address in a NAT64 prefix.",
+      "when": "A network (or group) of IPv6-only devices behind a NAT64 gateway.",
+      "example": "github.com has no IPv6 address; DNS64 answers 64:ff9b::8c52:7004 and the NAT64 gateway connects to 140.82.112.4.",
+      "caution": "Only useful with a NAT64 gateway on the path; without one, the made-up addresses go nowhere.",
+      "docs": "dns64"
     }
   ]
 }

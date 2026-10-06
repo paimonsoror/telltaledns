@@ -754,6 +754,20 @@ answer = "cdn.example.net"           # answered as a CNAME to that name, with it
 - An address rewrite answers the other address family and other record types with no data.
 - Blocks still win: a blocked name isn't rewritten. For a name everyone should get, use [local records](#local-records) instead.
 
+### DNS64
+For IPv6-only devices behind a NAT64 gateway: names without an IPv6 address get one made from their IPv4 address (RFC 6147), so the gateway can reach them.
+```toml
+[[group]]
+name = "ipv6-only"
+networks = ["2001:db8:64::/64"]
+dns64 = true
+# dns64_prefix = "64:ff9b::/96"     # the default (well-known prefix); your NAT64's /96 otherwise
+```
+- An AAAA question with no AAAA answer is asked again as A, and each A record becomes an AAAA in the prefix (`192.0.2.33` → `64:ff9b::c000:221`); CNAMEs come along. Names that have real AAAA records are left alone.
+- Only for the group's devices, and never for clients that set CD (they validate DNSSEC themselves, and made-up records don't validate).
+- Check it with `dig AAAA ipv4only.arpa`: through DNS64 it answers `64:ff9b::c000:aa` and `64:ff9b::c000:ab`.
+- Addresses that can't work through NAT64 (`0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`) aren't turned into AAAA. *Not yet:* reverse lookups for the prefix.
+
 ### Rebinding protection
 A website can make your browser attack devices on your network by pointing its own name at a private address (DNS rebinding). Turn on the protection per group:
 ```toml

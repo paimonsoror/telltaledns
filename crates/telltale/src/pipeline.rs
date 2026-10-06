@@ -635,6 +635,203 @@ impl Pipeline {
         self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
     }
 
+    /// REQ: DNS-016 (T7.21) — the client's group NAT64 prefix, when it has DNS64.
+    fn dns64_prefix(&self, policy: &Policy, who: Who) -> Option<std::net::Ipv6Addr> {
+        let ident = policy.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+        );
+        policy.clients.primary_group(ident).dns64
+    }
+
+    /// REQ: DNS-016 — `name` answered from the cache, else resolved (coalesced and cached
+    /// like any upstream answer), without a query event: DNS64's A lookup.
+    fn cached_internal(&self, req: &[u8], groups: &[Box<str>]) -> Option<Internal> {
+        let q = parse_query(req).ok()?;
+        let st = self.state.load();
+        let sel = st.router.select(&Question::from_query(&q), groups)?;
+        let key = self.key(&q, sel.view);
+        let client = Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+        let mut out = vec![0u8; MAX_RESPONSE];
+        match self
+            .cache
+            .get(&key, &q.qname, &client, Instant::now(), &mut out)
+        {
+            Lookup::Hit { len, .. } => {
+                out.truncate(len);
+                Some(Internal::Hit(out))
+            }
+            Lookup::Expired | Lookup::Miss => Some(Internal::Miss(key, sel.view)),
+        }
+    }
+
+    async fn lookup_internal(
+        self: &Arc<Self>,
+        req: Vec<u8>,
+        groups: &[Box<str>],
+    ) -> Option<Vec<u8>> {
+        let (key, view) = match self.cached_internal(&req, groups)? {
+            Internal::Hit(bytes) => return Some(bytes),
+            Internal::Miss(key, view) => (key, view),
+        };
+        let permit = Arc::clone(&self.inflight).try_acquire_owned().ok()?;
+        let a = Arc::clone(self)
+            .resolve_shared(req, key, view, permit)
+            .await?;
+        Some(a.to_vec())
+    }
+
+    /// The A query for the AAAA query `req` (same ID, RD, and DO).
+    fn a_query(req: &[u8]) -> Option<Vec<u8>> {
+        let q = parse_query(req).ok()?;
+        let edns = q.edns.as_ref().map(|e| EdnsOut {
+            udp_payload: e.udp_payload,
+            dnssec_ok: e.dnssec_ok,
+            ede: None,
+        });
+        let mut buf = [0u8; 512];
+        let len = build_query(
+            &mut buf,
+            q.header.id,
+            &q.qname,
+            rtype::A,
+            q.qclass,
+            q.header.flags.rd(),
+            edns,
+        )
+        .ok()?;
+        Some(buf[..len].to_vec())
+    }
+
+    /// REQ: DNS-016 — the AAAA answer made from the name's A records (finished for the
+    /// client's transport), or `None` when the name has no A records either.
+    async fn dns64_synthesize(
+        self: &Arc<Self>,
+        req: &[u8],
+        d: &Dns64,
+        transport: Transport,
+    ) -> Option<Vec<u8>> {
+        let a = self.lookup_internal(Self::a_query(req)?, &d.groups).await?;
+        let mut out = vec![0u8; MAX_RESPONSE];
+        let len = self.synthesize_aaaa(req, &a, d.prefix, &mut out)?;
+        let q = parse_query(req).ok()?;
+        let len = self.finish(&q, &mut out, len, transport);
+        out.truncate(len);
+        Some(out)
+    }
+
+    /// RFC 6147 §5.1.7: the CNAMEs and A records of `a` (the A answer) as an answer to `req`
+    /// (the AAAA query), each A turned into `prefix` + the IPv4 address. `None` if there's no
+    /// A record to use.
+    fn synthesize_aaaa(
+        &self,
+        req: &[u8],
+        a: &[u8],
+        prefix: std::net::Ipv6Addr,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let q = parse_query(req).ok()?;
+        let recs: Vec<telltale_proto::Record> = records(a)
+            .ok()?
+            .flatten()
+            .filter(|r| r.section == Section::Answer)
+            .collect();
+        let usable = |r: &telltale_proto::Record| {
+            r.rtype == rtype::A
+                && r.rdlen == 4
+                && !matches!(r.rdata(a)[0], 0 | 127)
+                && r.rdata(a)[..2] != [169, 254]
+        };
+        if !recs.iter().any(usable) {
+            return None;
+        }
+        let mut b = ResponseBuilder::new(&q, out, rcode::NOERROR).ok()?;
+        let p = prefix.octets();
+        for r in &recs {
+            let mut owner = NameBuf::default();
+            telltale_proto::read_name(a, r.name_off, &mut owner).ok()?;
+            if r.rtype == rtype::CNAME {
+                let mut target = NameBuf::default();
+                telltale_proto::read_name(a, r.rdata_off, &mut target).ok()?;
+                b.answer_rdata(Some(&owner), rtype::CNAME, r.ttl, target.as_wire())
+                    .ok()?;
+            } else if usable(r) {
+                let mut v6 = [0u8; 16];
+                v6[..12].copy_from_slice(&p[..12]);
+                v6[12..].copy_from_slice(r.rdata(a));
+                b.answer_rdata(Some(&owner), rtype::AAAA, r.ttl, &v6).ok()?;
+            }
+        }
+        b.finish(response_edns(&q, self.settings.edns_payload, None))
+            .ok()
+    }
+
+    /// REQ: DNS-016 — a cached AAAA answer without addresses: made from a cached A answer
+    /// now, or looked up first (the query event is recorded when it's done).
+    #[allow(clippy::too_many_arguments)]
+    fn dns64_after_cache(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        d: Dns64,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        len: usize,
+        start: Instant,
+        oc: Outcome,
+    ) -> Response {
+        let a_req = Self::a_query(req);
+        if let Some(Internal::Hit(a)) = a_req
+            .as_deref()
+            .and_then(|r| self.cached_internal(r, &d.groups))
+        {
+            let mut tmp = vec![0u8; MAX_RESPONSE];
+            if let Some(n) = self.synthesize_aaaa(req, &a, d.prefix, &mut tmp)
+                && n <= out.len()
+            {
+                out[..n].copy_from_slice(&tmp[..n]);
+                return Response::Ready(self.finish(q, out, n, meta.transport));
+            }
+            return Response::Ready(self.finish(q, out, len, meta.transport));
+        }
+        let this = Arc::clone(self);
+        let req = req.to_vec();
+        let mut original = out[..len].to_vec();
+        let (transport, peer) = (meta.transport, meta.peer.ip());
+        Response::Deferred(Box::pin(async move {
+            let waited = Instant::now();
+            let q = parse_query(&req).ok()?;
+            let bytes = if let Some(b) = this.dns64_synthesize(&req, &d, transport).await {
+                b
+            } else {
+                let n = original.len();
+                original.resize(MAX_RESPONSE.max(n), 0);
+                let n = this.finish(&q, &mut original, n, transport);
+                original.truncate(n);
+                original
+            };
+            this.metrics.record(
+                proto(transport),
+                oc.status,
+                Some(response_rcode(&bytes)),
+                oc.qtype,
+                start.elapsed(),
+            );
+            this.emit(
+                peer,
+                transport,
+                &req,
+                Some(&bytes),
+                &oc,
+                start,
+                waited.elapsed(),
+            );
+            Some(bytes)
+        }))
+    }
+
     /// REQ: FLT-014 (T7.20) — a rewrite to an address: A or AAAA as asked (no data for the
     /// other family and other types).
     fn rewrite_answer(
@@ -877,6 +1074,16 @@ impl Pipeline {
         };
         let key = self.key(&q, sel.view);
         let client = Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+        // REQ: DNS-016 (T7.21) — DNS64 for this client (AAAA only; a validating client that
+        // sets CD gets the real answer).
+        let dns64 =
+            (q.qtype == rtype::AAAA && !q.header.flags.cd() && st.policy.clients.any_dns64())
+                .then(|| self.dns64_prefix(&st.policy, who))
+                .flatten()
+                .map(|prefix| Dns64 {
+                    prefix,
+                    groups: groups.to_vec(),
+                });
         match self.cache.get(&key, &q.qname, &client, start, out) {
             Lookup::Hit { len, prefetch } => {
                 if prefetch {
@@ -891,10 +1098,16 @@ impl Pipeline {
                     }
                     None => len,
                 };
+                if let Some(d) = dns64
+                    && oc.status == Status::Cached
+                    && needs_dns64(&out[..len])
+                {
+                    return self.dns64_after_cache(req, &q, d, meta, out, len, start, *oc);
+                }
                 Response::Ready(self.finish(&q, out, len, meta.transport))
             }
-            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, *oc, who),
-            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, *oc, who),
+            Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, *oc, who, dns64),
+            Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, *oc, who, dns64),
         }
     }
 
@@ -1247,6 +1460,7 @@ impl Pipeline {
         start: Instant,
         mut oc: Outcome,
         who: Who,
+        dns64: Option<Dns64>,
     ) -> Response {
         let this = Arc::clone(self);
         let req = req.to_vec();
@@ -1254,12 +1468,20 @@ impl Pipeline {
         let peer = meta.peer.ip();
         Response::Deferred(Box::pin(async move {
             let waited = Instant::now();
-            let answer = Arc::clone(&this)
+            let mut answer = Arc::clone(&this)
                 .resolve_for_client(req.clone(), key, view, stale_ok, transport)
                 .await
                 .map(|(bytes, status)| {
                     this.deferred_cname_block(&req, who, transport, bytes, status)
                 });
+            // REQ: DNS-016 (T7.21) — no AAAA: made from the name's A records.
+            if let Some(d) = &dns64
+                && let Some((bytes, _, None)) = &mut answer
+                && needs_dns64(bytes)
+                && let Some(synth) = this.dns64_synthesize(&req, d, transport).await
+            {
+                *bytes = synth;
+            }
             let t_upstream = waited.elapsed();
             let (status, rcode) = match &answer {
                 Some((bytes, status, rule)) => {
@@ -1623,6 +1845,30 @@ impl Pipeline {
             tap.offer(peer, transport, req, resp, ev.ts_us);
         }
     }
+}
+
+/// REQ: DNS-016 (T7.21) — DNS64 for one query: the prefix, and the client's groups (for the
+/// A lookup's route).
+#[derive(Debug, Clone)]
+pub(crate) struct Dns64 {
+    prefix: std::net::Ipv6Addr,
+    groups: Vec<Box<str>>,
+}
+
+/// An internal lookup's cache result: the answer, or where to resolve it.
+enum Internal {
+    Hit(Vec<u8>),
+    Miss(CacheKey, u16),
+}
+
+/// A NOERROR answer with no AAAA record (CNAMEs only, or none): DNS64 applies.
+fn needs_dns64(resp: &[u8]) -> bool {
+    if response_rcode(resp) != rcode::NOERROR {
+        return false;
+    }
+    records(resp).is_ok_and(|mut it| {
+        !it.any(|r| r.is_ok_and(|r| r.section == Section::Answer && r.rtype == rtype::AAAA))
+    })
 }
 
 /// REQ: FLT-015 — the address in an A or AAAA record's RDATA.
@@ -2370,6 +2616,70 @@ groups = ["kids"]
         p.cache
             .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
             .unwrap();
+    }
+
+    /// Caches `name`/`qtype` answered with `ip` (or no data).
+    fn cache_answer(p: &Pipeline, name: &str, qtype: u16, ip: Option<std::net::IpAddr>) {
+        let req = query(name, qtype, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        match ip {
+            Some(std::net::IpAddr::V4(v4)) => {
+                b.answer_a(300, v4).unwrap();
+            }
+            Some(std::net::IpAddr::V6(v6)) => {
+                b.answer_aaaa(300, v6).unwrap();
+            }
+            None => {
+                b.authority_soa(60).unwrap();
+            }
+        }
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+            .unwrap();
+    }
+
+    /// REQ: DNS-016 (T7.21) — DNS64: a name without AAAA gets AAAA made from its A records
+    /// (prefix + IPv4) for the group; a real AAAA is kept; other groups get no data.
+    #[test]
+    fn dns_016_dns64_synthesizes_aaaa() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\ndns64 = true\n[[group]]\nname = \"plain\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        cache_answer(&p, "v4only.example", rtype::AAAA, None);
+        cache_answer(
+            &p,
+            "v4only.example",
+            rtype::A,
+            Some("192.0.2.33".parse().unwrap()),
+        );
+        cache_answer(
+            &p,
+            "dual.example",
+            rtype::AAAA,
+            Some("2001:db8::7".parse().unwrap()),
+        );
+        let r = ask_from(&p, "10.0.0.5", "v4only.example", rtype::AAAA);
+        let s = summarize(&r).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+        let want: std::net::Ipv6Addr = "64:ff9b::c000:221".parse().unwrap();
+        assert!(contains(&r, &want.octets()), "64:ff9b::192.0.2.33");
+        let real: std::net::Ipv6Addr = "2001:db8::7".parse().unwrap();
+        assert!(contains(
+            &ask_from(&p, "10.0.0.5", "dual.example", rtype::AAAA),
+            &real.octets()
+        ));
+        let plain = summarize(&ask_from(&p, "10.0.2.5", "v4only.example", rtype::AAAA)).unwrap();
+        assert_eq!(plain.answers, 0, "no DNS64 for the other group");
     }
 
     /// REQ: FLT-015 (T7.20) — rebinding protection: a private address for a public name is
