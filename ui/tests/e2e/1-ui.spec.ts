@@ -670,3 +670,46 @@ test('dns_006 cache page with many nodes', async () => {
   await expect(makeupRows).toHaveCount(8);
   await page.unroute('**/api/v1/cache/entries**');
 });
+
+// REQ: FLT-009 (T7.1) — pause blocking from the header and resume it; the API refuses bad
+// input (no minutes, too many, an unknown group).
+test('flt_009 pause and resume blocking', async () => {
+  await page.goto('/#/');
+  await page.getByRole('button', { name: 'Pause blocking' }).click();
+  await page.getByRole('menuitem', { name: '5 minutes', exact: true }).click();
+  const pill = page.getByTestId('blocking-paused');
+  await expect(pill).toContainText(/Blocking paused · [45] min left/);
+  const st = await (await page.request.get('/api/v1/blocking')).json();
+  expect(st.items[0].pauses[0].group ?? null).toBeNull();
+  await pill.getByRole('button', { name: 'Resume' }).click();
+  await expect(pill).toHaveCount(0);
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const post = (data: object) =>
+    page.request.post('/api/v1/blocking/pause', { headers: { 'x-csrf-token': csrf }, data });
+  expect((await post({})).status()).toBe(400);
+  expect((await post({ minutes: 5000 })).status()).toBe(400);
+  expect((await post({ minutes: 5, group: 'nope' })).status()).toBe(400);
+  // A group pause shows as a count, not as everyone paused.
+  expect((await post({ minutes: 5, group: 'lab' })).status()).toBe(200);
+  await page.reload();
+  await expect(page.getByTestId('groups-paused')).toContainText('1 group paused');
+  await page.request.post('/api/v1/blocking/resume', { headers: { 'x-csrf-token': csrf }, data: {} });
+});
+
+// The help drawer reads the same wherever its "?" sits (owner report: from the Quick rules
+// page title it took the heading's size).
+test('api_011 help drawer text is body-sized everywhere', async () => {
+  const size = async () => {
+    const p = page.getByRole('dialog').locator('p').first();
+    await expect(p).toBeVisible();
+    const px = await p.evaluate((el) => getComputedStyle(el).fontSize);
+    await page.keyboard.press('Escape');
+    return px;
+  };
+  // The header's "?" (the reference), then the one in the Quick rules title.
+  await page.goto('/#/rules');
+  await page.locator('header.top').getByRole('button', { name: /help/i }).first().click();
+  const reference = await size();
+  await page.getByRole('heading', { name: 'Quick rules' }).getByRole('button').click();
+  expect(await size()).toBe(reference);
+});

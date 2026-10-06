@@ -356,5 +356,18 @@ Ordering reflects the owner's priorities: **performance → observability → Ku
 ## M7 — v1.x (post-1.0, priority order)
 MCP write tools with plan/apply + approval inbox, OAuth via OIDC, resources/prompts (AGT-007, 008, 010, 011) → DoQ + DoH3 listeners and upstreams (DNS-004, UPS-002) → schedules, safe search, services (FLT-010..012) → analytics suite + alerts (OBS-009, 010) → recursive resolver (DNS-012, UPS-012) → socket/exec upstream plugins + proxies (UPS-010, 011) → OTLP + dnstap + sinks (OBS-006, 007) → DHCP (OPS-008) → ECS/DNS64/local zones/rewrites/IP filter (DNS-015, 016, 018, FLT-014, 015) → DNSCrypt (UPS-003) → CLI (API-008).
 
+Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
+
+- [ ] **T7.1 Agent write tools with plan/apply, and an approval inbox.** *(AGT-007, AGT-004, AGT-005, FLT-009)*
+  - Pause and resume blocking over the API (`spec/07`: `POST /blocking/pause`, `/blocking/resume`; globally or per group; on every node), with a UI control. Agents: `ops:pause`, at most 60 minutes.
+  - Plans: a write tool computes the change with the REST dry run and stores a plan (`planId`, the diff, the impact, the config version, the reason, who asked, 10-minute expiry). `apply_plan` replays the write with `If-Match` on that version (a changed config makes the plan stale) and the plan ID as the idempotency key; `discard_plan`, `list_plans`.
+  - Write tools over the mutations that exist: `plan_block_domain` / `plan_allow_domain` (quick rules, optionally for devices or groups, with expiry), `plan_rename_client` / `plan_assign_client`, `plan_set_local_name` / `plan_remove_local_name`, `plan_forward_domain`. Immediate, audited: `flush_cache`, `pause_blocking`, `resume_blocking`.
+  - Approval (optional, `[agents] require_approval`): a plan needs an operator's approval before `apply_plan` succeeds. UI: "Pending agent changes" (approve, reject, see the diff and impact); REST: `GET /plans`, `POST /plans/{id}/approve|reject`.
+  - Deferred until their write APIs exist: `plan_add_list`, `plan_update_group`, `plan_update_upstreams`, `plan_set_schedule` (lists, groups, and upstreams come from files or Git today).
+  - *AC:* an agent with `config:write:rules` plans and applies a block, and the query is blocked on every node; a plan made before another change fails as stale; with approval required, `apply_plan` is refused until an operator approves in the UI; every apply is audited with the agent, its owner, and the reason; MCP tool annotations mark side effects.
+- [ ] **T7.2 MCP resources and prompts.** *(AGT-010)* Resources: cluster status, the configuration (redacted), the daily summary. Prompts: investigate a device, weekly network report, tune blocklists, upstream health review.
+- [ ] **T7.3 Scope-aware analytics tools.** *(AGT-011)* Every analytics tool takes `scope` (cluster, site, node) and reports `missingNodes` (`12 §6`).
+- [ ] **T7.4 OAuth for MCP via OIDC.** *(AGT-008, P1 part)* Protected-resource metadata at `/.well-known/oauth-protected-resource`, the configured OIDC provider as the authorization server, scope consent.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

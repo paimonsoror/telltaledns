@@ -636,6 +636,112 @@
         }
       }
     },
+    "/api/v1/blocking": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Whether blocking is paused, per node.",
+        "description": "For each node: its active pauses (everyone, or one group) and when each ends. Nothing listed\nmeans blocking is on.",
+        "operationId": "state",
+        "responses": {
+          "200": {
+            "description": "One row per node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_BlockingNode"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/blocking/pause": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Pause blocking.",
+        "description": "Turns blocking off for `minutes` (1 to 1,440; agents at most 60) for everyone, or only for\n`group`'s devices, then it turns back on by itself. Every node pauses, unless `node` names\none. Quick rules that block stop too; local names, forwarding, and allow rules don't change.\nNeeds the operator role (agents: the `ops:pause` scope); audit-logged as `blocking.pause`.",
+        "operationId": "pause",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Each node's pauses now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_BlockingNode"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No or too many minutes, an unknown group, or an unknown node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/blocking/resume": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Resume blocking.",
+        "description": "Ends the pause for `group`, or every pause (everyone's and every group's) without one, on\nevery node unless `node` names one. Needs the operator role (agents: `ops:pause`);\naudit-logged as `blocking.resume`.",
+        "operationId": "resume",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Each node's pauses now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_BlockingNode"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An unknown group or node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cache/entries": {
       "get": {
         "tags": [
@@ -2888,6 +2994,68 @@
             ]
           }
         }
+      },
+      "BlockingNode": {
+        "type": "object",
+        "description": "One node's pauses (`GET /api/v1/blocking`).",
+        "required": [
+          "pauses"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when the node couldn't be reached."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (absent on a standalone node)."
+          },
+          "pauses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PauseInfo"
+            },
+            "description": "Active pauses; empty: blocking is on."
+          }
+        }
+      },
+      "BlockingRequest": {
+        "type": "object",
+        "description": "REQ: FLT-009 (T7.1) — pause or resume blocking (`POST /api/v1/blocking/pause|resume`).",
+        "properties": {
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One group's devices only; absent: everyone (resume: every pause).",
+            "example": "kids"
+          },
+          "minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Pause only: for how long, 1 to 1,440 (agents: at most 60).",
+            "example": 15,
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One node only (its site, pod, or ID); absent: every node."
+          }
+        },
+        "additionalProperties": false
       },
       "BuildInfo": {
         "type": "object",
@@ -5344,6 +5512,55 @@
           }
         }
       },
+      "Items_BlockingNode": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One node's pauses (`GET /api/v1/blocking`).",
+              "required": [
+                "pauses"
+              ],
+              "properties": {
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Set when the node couldn't be reached."
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node (absent on a standalone node)."
+                },
+                "pauses": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PauseInfo"
+                  },
+                  "description": "Active pauses; empty: blocking is on."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_CacheNodeEntries": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -6773,6 +6990,32 @@
         "properties": {
           "password": {
             "type": "string"
+          }
+        }
+      },
+      "PauseInfo": {
+        "type": "object",
+        "description": "One active pause.",
+        "required": [
+          "until",
+          "secondsLeft"
+        ],
+        "properties": {
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The group paused; absent: everyone."
+          },
+          "secondsLeft": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "until": {
+            "type": "string",
+            "description": "When blocking turns back on (RFC 3339)."
           }
         }
       },

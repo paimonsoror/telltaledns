@@ -132,6 +132,9 @@ export const api = {
   cacheEntries: (q: { sort?: string; limit?: number; node?: string }) =>
     get<S['Items_CacheNodeEntries']>('/cache/entries', q),
   cacheFlush: (body: S['CacheFlushRequest']) => post<S['CacheFlushResult']>('/cache/flush', body),
+  blocking: () => get<S['Items_BlockingNode']>('/blocking'),
+  blockingPause: (body: S['BlockingRequest']) => post<S['Items_BlockingNode']>('/blocking/pause', body),
+  blockingResume: (body: S['BlockingRequest']) => post<S['Items_BlockingNode']>('/blocking/resume', body),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
 
   // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a

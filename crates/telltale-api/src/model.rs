@@ -950,6 +950,43 @@ pub struct CacheNodeEntries {
     pub error: Option<String>,
 }
 
+/// REQ: FLT-009 (T7.1) — pause or resume blocking (`POST /api/v1/blocking/pause|resume`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BlockingRequest {
+    /// Pause only: for how long, 1 to 1,440 (agents: at most 60).
+    #[schema(example = 15)]
+    pub minutes: Option<u32>,
+    /// One group's devices only; absent: everyone (resume: every pause).
+    #[schema(example = "kids")]
+    pub group: Option<String>,
+    /// One node only (its site, pod, or ID); absent: every node.
+    pub node: Option<String>,
+}
+
+/// One active pause.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseInfo {
+    /// The group paused; absent: everyone.
+    pub group: Option<String>,
+    /// When blocking turns back on (RFC 3339).
+    pub until: String,
+    pub seconds_left: u64,
+}
+
+/// One node's pauses (`GET /api/v1/blocking`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockingNode {
+    /// The node (absent on a standalone node).
+    pub node: Option<String>,
+    /// Active pauses; empty: blocking is on.
+    pub pauses: Vec<PauseInfo>,
+    /// Set when the node couldn't be reached.
+    pub error: Option<String>,
+}
+
 /// One cached answer for a name.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

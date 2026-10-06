@@ -64,6 +64,15 @@ enum Read {
     ConfigVersion,
     /// REQ: DNS-006 (T6.13) — the peer's own cache: counters, a lookup, a flush.
     CacheStats,
+    /// T7.1 — pauses.
+    BlockingState,
+    BlockingPause {
+        group: Option<String>,
+        minutes: u32,
+    },
+    BlockingResume {
+        group: Option<String>,
+    },
     /// T6.15 — the top entries and makeup.
     CacheEntries {
         sort: String,
@@ -106,6 +115,14 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
         Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
+        Read::BlockingState => serde_json::to_vec(&b.blocking_state()),
+        Read::BlockingPause { group, minutes } => serde_json::to_vec(
+            &b.blocking_pause(group.as_deref(), minutes, None)
+                .map_err(text)?,
+        ),
+        Read::BlockingResume { group } => {
+            serde_json::to_vec(&b.blocking_resume(group.as_deref(), None).map_err(text)?)
+        }
         Read::CacheEntries { sort, limit } => {
             serde_json::to_vec(&b.cache_entries(&sort, limit, None).map_err(text)?)
         }
@@ -368,6 +385,57 @@ impl Federated {
             })
             .map(|m| Some(m.node_id))
             .ok_or_else(|| Problem::invalid(format!("`node`: no cluster node `{node}`")))
+    }
+
+    /// T7.1 — runs `local` here and `read` on every reachable peer (or only on `node`), each
+    /// row labelled with its node; connected peers that don't answer are listed with an error.
+    fn blocking_fan(
+        &self,
+        node: Option<&str>,
+        local: impl FnOnce(&dyn Backend) -> Result<Vec<telltale_api::model::BlockingNode>, Problem>,
+        read: impl Fn() -> Read,
+    ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+        use telltale_api::model::BlockingNode;
+        let label = |mut v: Vec<BlockingNode>, l: &str| {
+            for r in &mut v {
+                r.node = Some(l.to_owned());
+            }
+            v
+        };
+        let failed = |l: String, e: String| BlockingNode {
+            node: Some(l),
+            error: Some(e),
+            ..BlockingNode::default()
+        };
+        match node.map(|n| self.resolve_node(n)).transpose()? {
+            Some(None) => Ok(label(local(self.local.as_ref())?, &self.own_label())),
+            Some(Some(peer)) => {
+                let l = self.label_of(&peer);
+                Ok(match self.call_one(&peer, &read(), DEADLINE) {
+                    Some(Ok(body)) => label(serde_json::from_slice(&body).unwrap_or_default(), &l),
+                    Some(Err(e)) => vec![failed(l, e)],
+                    None => vec![failed(l, "no runtime".into())],
+                })
+            }
+            None => {
+                let mut out = label(local(self.local.as_ref())?, &self.own_label());
+                let answered = self.everyone_labelled::<Vec<BlockingNode>>(read);
+                let names: Vec<String> = answered.iter().map(|(l, _)| l.clone()).collect();
+                for (l, v) in answered {
+                    out.extend(label(v, &l));
+                }
+                for m in self.cluster.members().into_iter().filter(|m| m.connected) {
+                    let l = self.label_of(&m.node_id);
+                    if !names.contains(&l) {
+                        out.push(failed(
+                            l,
+                            "didn't answer (an older version can't pause)".into(),
+                        ));
+                    }
+                }
+                Ok(out)
+            }
+        }
     }
 
     /// Asks every reachable peer the same read; decoded answers.
@@ -678,6 +746,39 @@ impl Backend for Federated {
                 Ok(out)
             }
         }
+    }
+    // REQ: FLT-009, CLU-002 (T7.1) — pauses on every node (or one).
+    fn blocking_state(&self) -> Vec<telltale_api::model::BlockingNode> {
+        self.blocking_fan(None, |b| Ok(b.blocking_state()), || Read::BlockingState)
+            .unwrap_or_default()
+    }
+    fn blocking_pause(
+        &self,
+        group: Option<&str>,
+        minutes: u32,
+        node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+        let g = group.map(str::to_owned);
+        self.blocking_fan(
+            node,
+            |b| b.blocking_pause(group, minutes, None),
+            || Read::BlockingPause {
+                group: g.clone(),
+                minutes,
+            },
+        )
+    }
+    fn blocking_resume(
+        &self,
+        group: Option<&str>,
+        node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+        let g = group.map(str::to_owned);
+        self.blocking_fan(
+            node,
+            |b| b.blocking_resume(group, None),
+            || Read::BlockingResume { group: g.clone() },
+        )
     }
     // REQ: DNS-006, OBS-003, CLU-002 (T6.15) — each node's top entries and makeup. (Without
     // this, the trait's empty default left the Cache page's table empty on clustered nodes.)

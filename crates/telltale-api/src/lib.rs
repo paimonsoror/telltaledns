@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod blocking_api;
 pub mod cache_api;
 pub mod config_api;
 pub mod federation;
@@ -177,6 +178,29 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (sort, limit, node);
         Ok(Vec::new())
     }
+    /// REQ: FLT-009 (T7.1) — each node's active pauses.
+    fn blocking_state(&self) -> Vec<crate::model::BlockingNode> {
+        Vec::new()
+    }
+    /// Pauses blocking for `minutes` (everyone, or `group`), on every node or `node`.
+    fn blocking_pause(
+        &self,
+        group: Option<&str>,
+        minutes: u32,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::BlockingNode>, Problem> {
+        let _ = (group, minutes, node);
+        Err(Problem::unavailable("pausing isn't available here"))
+    }
+    /// Ends `group`'s pause, or every pause, on every node or `node`.
+    fn blocking_resume(
+        &self,
+        group: Option<&str>,
+        node: Option<&str>,
+    ) -> Result<Vec<crate::model::BlockingNode>, Problem> {
+        let _ = (group, node);
+        Err(Problem::unavailable("pausing isn't available here"))
+    }
     /// What the cache holds for `name`, on every node (T6.13).
     fn cache_lookup(&self, name: &str) -> Result<Vec<crate::model::CacheEntry>, Problem> {
         let _ = name;
@@ -311,6 +335,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/upstreams", get(upstreams))
         .with_state(Arc::clone(&backend))
         .merge(cache_api::read_routes(Arc::clone(&backend)))
+        .merge(blocking_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
@@ -322,6 +347,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: DNS-006 (T6.13) — flushing the cache needs operator (agents: ops:cache).
         .merge(
             cache_api::flush_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: FLT-009 (T7.1) — pausing blocking needs operator (agents: ops:pause).
+        .merge(
+            blocking_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         .merge(
@@ -384,11 +414,11 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,

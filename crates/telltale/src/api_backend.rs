@@ -1153,6 +1153,66 @@ impl Backend for ApiBackend {
         }]
     }
 
+    // REQ: FLT-009 (T7.1) — this node's pauses.
+    fn blocking_state(&self) -> Vec<telltale_api::model::BlockingNode> {
+        let now = crate::pipeline::unix_now();
+        let mut pauses: Vec<telltale_api::model::PauseInfo> = self
+            .src
+            .pipeline
+            .pause
+            .active(now)
+            .into_iter()
+            .map(|(group, until)| telltale_api::model::PauseInfo {
+                group: group.map(|g| g.to_string()),
+                until: telltale_api::time::format_us(until.saturating_mul(1_000_000)),
+                seconds_left: until.saturating_sub(now),
+            })
+            .collect();
+        pauses.sort_by(|a, b| a.group.cmp(&b.group));
+        vec![telltale_api::model::BlockingNode {
+            node: None,
+            pauses,
+            error: None,
+        }]
+    }
+
+    fn blocking_pause(
+        &self,
+        group: Option<&str>,
+        minutes: u32,
+        _node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+        let until = crate::pipeline::unix_now() + u64::from(minutes) * 60;
+        match group {
+            Some(g) => {
+                self.known_group(g)?;
+                self.src.pipeline.pause.pause_group(g, until);
+            }
+            None => self.src.pipeline.pause.pause_all(until),
+        }
+        Ok(self.blocking_state())
+    }
+
+    fn blocking_resume(
+        &self,
+        group: Option<&str>,
+        _node: Option<&str>,
+    ) -> Result<Vec<telltale_api::model::BlockingNode>, Problem> {
+        let pause = &self.src.pipeline.pause;
+        if let Some(g) = group {
+            self.known_group(g)?;
+            pause.pause_group(g, 0);
+        } else {
+            // Every pause: everyone's and each group's.
+            pause.pause_all(0);
+            let groups = pause.active(crate::pipeline::unix_now());
+            for g in groups.into_iter().filter_map(|(g, _)| g) {
+                pause.pause_group(&g, 0);
+            }
+        }
+        Ok(self.blocking_state())
+    }
+
     // REQ: DNS-006, OBS-003 (T6.15) — this node's top entries and makeup.
     fn cache_entries(
         &self,
@@ -2309,6 +2369,20 @@ fn palette(i: usize, name: &str) -> String {
         "#94a3b8".into()
     } else {
         COLORS[i % COLORS.len()].into()
+    }
+}
+
+impl ApiBackend {
+    /// `Ok` when `name` is a configured group (pauses are kept by name, so a typo would pause
+    /// nobody without saying so).
+    fn known_group(&self, name: &str) -> Result<(), Problem> {
+        let policy = &self.src.pipeline.current().policy;
+        if policy.clients.groups().iter().any(|g| &*g.name == name) {
+            Ok(())
+        } else {
+            Err(Problem::invalid(format!("`group`: no group `{name}`"))
+                .hint("GET /api/v1/groups lists them."))
+        }
     }
 }
 

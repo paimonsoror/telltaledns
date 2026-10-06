@@ -331,6 +331,72 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/blocking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether blocking is paused, per node.
+         * @description For each node: its active pauses (everyone, or one group) and when each ends. Nothing listed
+         *     means blocking is on.
+         */
+        get: operations["state"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/blocking/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause blocking.
+         * @description Turns blocking off for `minutes` (1 to 1,440; agents at most 60) for everyone, or only for
+         *     `group`'s devices, then it turns back on by itself. Every node pauses, unless `node` names
+         *     one. Quick rules that block stop too; local names, forwarding, and allow rules don't change.
+         *     Needs the operator role (agents: the `ops:pause` scope); audit-logged as `blocking.pause`.
+         */
+        post: operations["pause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/blocking/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume blocking.
+         * @description Ends the pause for `group`, or every pause (everyone's and every group's) without one, on
+         *     every node unless `node` names one. Needs the operator role (agents: `ops:pause`);
+         *     audit-logged as `blocking.resume`.
+         */
+        post: operations["resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cache/entries": {
         parameters: {
             query?: never;
@@ -1153,6 +1219,31 @@ export interface components {
             /** @description No user exists yet: create the first admin with the setup token. */
             setupRequired: boolean;
             user?: components["schemas"]["Me"] | null;
+        };
+        /** @description One node's pauses (`GET /api/v1/blocking`). */
+        BlockingNode: {
+            /** @description Set when the node couldn't be reached. */
+            error?: string | null;
+            /** @description The node (absent on a standalone node). */
+            node?: string | null;
+            /** @description Active pauses; empty: blocking is on. */
+            pauses: components["schemas"]["PauseInfo"][];
+        };
+        /** @description REQ: FLT-009 (T7.1) — pause or resume blocking (`POST /api/v1/blocking/pause|resume`). */
+        BlockingRequest: {
+            /**
+             * @description One group's devices only; absent: everyone (resume: every pause).
+             * @example kids
+             */
+            group?: string | null;
+            /**
+             * Format: int32
+             * @description Pause only: for how long, 1 to 1,440 (agents: at most 60).
+             * @example 15
+             */
+            minutes?: number | null;
+            /** @description One node only (its site, pod, or ID); absent: every node. */
+            node?: string | null;
         };
         /** @description The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit. */
         BuildInfo: {
@@ -2119,6 +2210,19 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_BlockingNode: {
+            items: {
+                /** @description Set when the node couldn't be reached. */
+                error?: string | null;
+                /** @description The node (absent on a standalone node). */
+                node?: string | null;
+                /** @description Active pauses; empty: blocking is on. */
+                pauses: components["schemas"]["PauseInfo"][];
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_CacheNodeEntries: {
             items: {
                 entries: components["schemas"]["CacheTopEntry"][];
@@ -2607,6 +2711,15 @@ export interface components {
         };
         PasswordConfirm: {
             password: string;
+        };
+        /** @description One active pause. */
+        PauseInfo: {
+            /** @description The group paused; absent: everyone. */
+            group?: string | null;
+            /** Format: int64 */
+            secondsLeft: number;
+            /** @description When blocking turns back on (RFC 3339). */
+            until: string;
         };
         /**
          * @description An API error.
@@ -3549,6 +3662,92 @@ export interface operations {
             };
             /** @description Backups aren't available on this node. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One row per node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_BlockingNode"];
+                };
+            };
+        };
+    };
+    pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockingRequest"];
+            };
+        };
+        responses: {
+            /** @description Each node's pauses now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_BlockingNode"];
+                };
+            };
+            /** @description No or too many minutes, an unknown group, or an unknown node. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockingRequest"];
+            };
+        };
+        responses: {
+            /** @description Each node's pauses now. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_BlockingNode"];
+                };
+            };
+            /** @description An unknown group or node. */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

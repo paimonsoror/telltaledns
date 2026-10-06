@@ -122,7 +122,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/explain"
             | "/api/v1/cache/stats"
             | "/api/v1/cache/lookup"
-            | "/api/v1/cache/entries" => {
+            | "/api/v1/cache/entries"
+            | "/api/v1/blocking" => {
                 return Need::Scope("analytics:read");
             }
             "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
@@ -157,6 +158,11 @@ pub fn required(method: &Method, path: &str) -> Need {
     // REQ: AGT-004 (T6.13) — flushing the cache is an immediate low-risk op (spec/13 §3).
     if *method == Method::POST && p == "/api/v1/cache/flush" {
         return Need::Scope("ops:cache");
+    }
+    // REQ: AGT-004 (T7.1) — pausing blocking is the other immediate op (at most 60 minutes).
+    if *method == Method::POST && (p == "/api/v1/blocking/pause" || p == "/api/v1/blocking/resume")
+    {
+        return Need::Scope("ops:pause");
     }
     if *method == Method::POST && p == "/api/v1/cluster/promote" {
         return Need::Scope("cluster:admin");
@@ -390,6 +396,19 @@ mod tests {
         assert_eq!(
             required(&Method::POST, "/api/v1/cache/flush"),
             Scope("ops:cache")
+        );
+        // T7.1 — pausing blocking needs ops:pause; reading it is analytics.
+        assert_eq!(
+            required(&Method::POST, "/api/v1/blocking/pause"),
+            Scope("ops:pause")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/blocking/resume"),
+            Scope("ops:pause")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/blocking"),
+            Scope("analytics:read")
         );
         // T6.15 — the top entries are analytics too.
         assert_eq!(

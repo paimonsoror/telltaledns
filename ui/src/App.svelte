@@ -8,6 +8,7 @@
   import Logo from './lib/components/Logo.svelte';
   import HelpButton from './lib/components/HelpButton.svelte';
   import Icon from './lib/components/Icon.svelte';
+  import PauseControl from './lib/components/PauseControl.svelte';
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
   import Login from './pages/Login.svelte';
@@ -186,6 +187,7 @@
         <button aria-pressed={currentMode() === 'advanced'} onclick={() => setMode('advanced')}>Advanced</button>
       </span>
       <HelpButton id="simple-advanced" />
+      <PauseControl />
       <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
         <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />
       </button>
