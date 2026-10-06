@@ -1318,6 +1318,47 @@ ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity chec
 ```
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level = 3` (names aren't kept). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
+## Alerts
+TelltaleDNS can tell you when something needs attention: on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
+```toml
+[alerts]
+interval_secs = 30                       # how often rules are checked
+
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"                            # webhook | ntfy | gotify | slack
+url = "https://ntfy.sh/my-home-dns"
+# token_file = "/run/secrets/ntfy-token" # an access token, kept out of the config
+
+[[alerts.rule]]
+name = "Upstream down"
+when = "upstream_down"                   # an upstream's circuit breaker is open
+for_secs = 60                            # only if it lasts a minute
+to = ["phone"]
+
+[[alerts.rule]]
+name = "Too many failures"
+when = "servfail_rate"
+threshold = 5                            # percent of queries over the last 5 minutes
+to = ["phone"]
+```
+Rules watch:
+
+| `when` | Alerts when | One alert per |
+|---|---|---|
+| `upstream_down` | an upstream's circuit breaker is open | upstream |
+| `node_down` | a cluster node isn't connected | node |
+| `list_failing` | a list fails to update | list |
+| `servfail_rate` | SERVFAIL above `threshold` % (default 5) over 5 minutes, at least 50 queries | node |
+| `anomaly` | a [device anomaly](#device-anomalies) is found | finding |
+| `update_available` | a newer TelltaleDNS build is out | version |
+
+- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies and updates go out once each.
+- In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
+- Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
+- Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
+- *Not yet:* email (SMTP).
+
 ## Web UI
 Open `http://<server>:8053/` in a browser. On first start it asks for the setup token (see [Users and sign-in](#users-and-sign-in)) and creates the first admin.
 

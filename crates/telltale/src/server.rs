@@ -711,6 +711,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     }
     // REQ: FLT-010 (T7.10) — schedules: which are on, every 15 s.
     tokio::spawn(schedule_ticker(Arc::clone(&sources), http_stopped.clone()));
+    // REQ: OBS-010 (T7.12)
+    tokio::spawn(crate::alerts::run(
+        Arc::clone(&sources),
+        http_stopped.clone(),
+    ));
     // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).
     tokio::spawn(crate::updates::run(
         Arc::clone(&sources.update),

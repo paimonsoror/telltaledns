@@ -406,5 +406,13 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* the rewrite applies to the group only; the answer carries the CNAME and the target's addresses (resolved and cached like any name); HTTPS/SVCB get no data; look-alike names (`google.evil.example`) aren't rewritten; YouTube strict, moderate, or off.
   - *Done 2026-10-06:* `telltale_config::safesearch` (Google with country domains, YouTube, Bing, DuckDuckGo, Yandex, Pixabay), the rewrite after filtering in the pipeline (blocks still win), `safeSearch`/`youtubeRestrict` on groups, the Groups editor fields and card line, docs, help topic, tests.
 
+- [x] **T7.12 Alerts.** *(OBS-010, `06` §8)* `[alerts]` rules (`upstream_down`, `node_down`, `list_failing`, `servfail_rate`, `anomaly`, `update_available`) sent to webhook, ntfy, Gotify, or Slack-compatible destinations, checked on the primary (or a standalone node) against federated data.
+  - *AC:* an alert goes out once a condition has held `for_secs`, once per subject, and a resolved message when it clears; blips shorter than `for_secs` stay quiet; anomalies and updates go out once each; destinations that fail are logged, never retried without bound; nothing on the DNS path; config errors for unknown destinations, bad URLs, intervals, thresholds.
+  - *Done 2026-10-06:* `crates/telltale/src/alerts.rs` (a pure `Engine::step` with per-rule, per-subject timers; observation through the API backend, `Federated` in a cluster; delivery through the list fetcher's HTTP client with a 10 s timeout); `[alerts]` schema and validation; docs, help topic `alerts`; tests `obs_010_*`. *Deferred:* SMTP; snapshot-lag, new-client, and qlog-disk rules; alerts for pending agent plans; a UI editor.
+
+- [ ] **T7.13 Event sinks.** *(OBS-010)* Query events to a JSON-lines file, syslog (RFC 5424), and a batched HTTP webhook, from the telemetry thread.
+
+- [ ] **T7.14 More analytics.** *(OBS-013)* NXDOMAIN storms, DGA-like names, first-seen domains, list overlap.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

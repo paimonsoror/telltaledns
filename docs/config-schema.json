@@ -30,6 +30,15 @@
         "require_approval": false
       }
     },
+    "alerts": {
+      "description": "REQ: OBS-010 (T7.12) — alert rules and where they go.",
+      "$ref": "#/$defs/AlertsConfig",
+      "default": {
+        "destination": [],
+        "interval_secs": 30,
+        "rule": []
+      }
+    },
     "api": {
       "description": "The REST API (and, later, the web UI).",
       "$ref": "#/$defs/ApiConfig",
@@ -379,6 +388,164 @@
           "description": "REQ: AGT-007 — agents' planned changes wait for an operator's approval (\"Agent\nchanges\" in the web UI) before `apply_plan` succeeds.",
           "type": "boolean",
           "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "AlertDestination": {
+      "description": "One place alerts go.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Unique name, used in a rule's `to`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_file": {
+          "description": "A file holding the token (ntfy access token, Gotify application token), so it stays\nout of the config and Git.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "type": {
+          "description": "`webhook` (JSON POST), `ntfy`, `gotify`, or `slack` (Slack-compatible webhooks:\nSlack, Mattermost, Discord's `/slack` endpoint).",
+          "$ref": "#/$defs/AlertKind"
+        },
+        "url": {
+          "description": "The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), or the Gotify server.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "url"
+      ]
+    },
+    "AlertKind": {
+      "description": "A destination's kind.",
+      "type": "string",
+      "enum": [
+        "webhook",
+        "ntfy",
+        "gotify",
+        "slack"
+      ]
+    },
+    "AlertRule": {
+      "description": "One alert rule.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Off: the rule is kept but not checked.",
+          "type": "boolean",
+          "default": true
+        },
+        "for_secs": {
+          "description": "How long it must hold before the alert goes out (not for `anomaly` and\n`update_available`, which go out once each).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "name": {
+          "description": "Unique name, shown in every alert.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "threshold": {
+          "description": "`servfail_rate`: the percentage of queries (default 5).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "to": {
+          "description": "Destination names.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "when": {
+          "description": "The condition.",
+          "$ref": "#/$defs/AlertWhen"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "when",
+        "to"
+      ]
+    },
+    "AlertWhen": {
+      "description": "What an alert rule watches.",
+      "oneOf": [
+        {
+          "description": "An upstream's circuit breaker is open (one alert per upstream).",
+          "type": "string",
+          "const": "upstream_down"
+        },
+        {
+          "description": "A cluster node isn't connected (one alert per node).",
+          "type": "string",
+          "const": "node_down"
+        },
+        {
+          "description": "A list fails to download (one alert per list).",
+          "type": "string",
+          "const": "list_failing"
+        },
+        {
+          "description": "A device anomaly was found (OBS-013; one alert per finding).",
+          "type": "string",
+          "const": "anomaly"
+        },
+        {
+          "description": "SERVFAIL above `threshold` percent of queries over the last 5 minutes (at least 50).",
+          "type": "string",
+          "const": "servfail_rate"
+        },
+        {
+          "description": "A newer TelltaleDNS build is available (once per version).",
+          "type": "string",
+          "const": "update_available"
+        }
+      ]
+    },
+    "AlertsConfig": {
+      "description": "REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone\nnode), sent to destinations when they start and when they clear.",
+      "type": "object",
+      "properties": {
+        "destination": {
+          "description": "Where alerts go.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AlertDestination"
+          }
+        },
+        "interval_secs": {
+          "description": "How often rules are checked, in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "rule": {
+          "description": "What to alert on.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AlertRule"
+          }
         }
       },
       "additionalProperties": false

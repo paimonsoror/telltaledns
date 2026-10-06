@@ -609,3 +609,63 @@ window = [{ days = ["weekdays"], start = "21:00", end = "07:00" }]
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// REQ: OBS-010 (T7.12) — alerts: rules name destinations that exist; http(s) URLs; a sane
+/// interval and threshold.
+#[test]
+fn obs_010_alerts_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = r#"
+[alerts]
+interval_secs = 30
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"
+url = "https://ntfy.sh/my-dns"
+[[alerts.rule]]
+name = "upstreams"
+when = "upstream_down"
+for_secs = 60
+to = ["phone"]
+[[alerts.rule]]
+name = "servfail"
+when = "servfail_rate"
+threshold = 10
+to = ["phone"]
+"#;
+    assert!(load(ok).is_ok(), "{:?}", load(ok).err());
+    for (bad, why) in [
+        (
+            ok.replace("to = [\"phone\"]\n[[", "to = [\"pager\"]\n[["),
+            "no destination `pager`",
+        ),
+        (
+            ok.replace("https://ntfy.sh", "ftp://ntfy.sh"),
+            "http:// or https://",
+        ),
+        (
+            ok.replace("interval_secs = 30", "interval_secs = 1"),
+            "at least 5 seconds",
+        ),
+        (
+            ok.replace("threshold = 10", "threshold = 150"),
+            "from 0 to 100",
+        ),
+        (
+            ok.replace("name = \"servfail\"", "name = \"upstreams\""),
+            "must be unique",
+        ),
+        (
+            ok.replace("\"upstream_down\"", "\"moon_phase\""),
+            "moon_phase",
+        ),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}

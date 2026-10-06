@@ -50,10 +50,54 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     rules(cfg, &mut r);
     services(cfg, &mut r);
     schedules(cfg, &mut r);
+    alerts(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     r.warnings
+}
+
+// REQ: OBS-010 (T7.12) — alerts: unique names, rules sent to destinations that exist,
+// http(s) URLs, a sane interval and threshold.
+fn alerts(cfg: &Config, r: &mut Report<'_>) {
+    let a = &cfg.alerts;
+    if a.interval_secs < 5 {
+        r.err("alerts.interval_secs", "at least 5 seconds");
+    }
+    let mut names = HashSet::new();
+    for (i, d) in a.destination.iter().enumerate() {
+        let p = format!("alerts.destination[{i}]");
+        if d.name.is_empty() || !names.insert(d.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        let u = d.url.as_str();
+        if !(u.starts_with("https://") || u.starts_with("http://")) {
+            r.err(format!("{p}.url"), "use an http:// or https:// URL");
+        }
+    }
+    let mut rules = HashSet::new();
+    for (i, x) in a.rule.iter().enumerate() {
+        let p = format!("alerts.rule[{i}]");
+        if x.name.is_empty() || !rules.insert(x.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        if x.to.is_empty() {
+            r.err(format!("{p}.to"), "name at least one destination");
+        }
+        for (j, t) in x.to.iter().enumerate() {
+            if !a.destination.iter().any(|d| d.name == *t) {
+                r.err(
+                    format!("{p}.to[{j}]"),
+                    format!("no destination `{}`", t.as_str()),
+                );
+            }
+        }
+        if let Some(t) = x.threshold
+            && !(0.0..=100.0).contains(&t)
+        {
+            r.err(format!("{p}.threshold"), "a percentage from 0 to 100");
+        }
+    }
 }
 
 // REQ: FLT-010 (T7.10) — schedules: unique names, known lists and services for their

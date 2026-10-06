@@ -3,6 +3,7 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+mod alerts;
 mod anomaly;
 mod api_backend;
 mod archive;

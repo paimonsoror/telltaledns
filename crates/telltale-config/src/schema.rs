@@ -42,6 +42,8 @@ pub struct Config {
     pub group: Vec<GroupConfig>,
     /// REQ: FLT-010 (T7.10) — weekly schedules that groups use (`schedules` in a group).
     pub schedule: Vec<ScheduleConfig>,
+    /// REQ: OBS-010 (T7.12) — alert rules and where they go.
+    pub alerts: AlertsConfig,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
     /// Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,
@@ -97,6 +99,7 @@ impl Default for Config {
             list: Vec::new(),
             group: Vec::new(),
             schedule: Vec::new(),
+            alerts: AlertsConfig::default(),
             client: Vec::new(),
             rule: Vec::new(),
             clients: ClientsConfig::default(),
@@ -618,6 +621,101 @@ pub struct ScheduleWindow {
     pub start: SafeString,
     /// `HH:MM`, 24-hour (`24:00` is the end of the day).
     pub end: SafeString,
+}
+
+/// REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone
+/// node), sent to destinations when they start and when they clear.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct AlertsConfig {
+    /// How often rules are checked, in seconds.
+    pub interval_secs: u32,
+    /// Where alerts go.
+    pub destination: Vec<AlertDestination>,
+    /// What to alert on.
+    pub rule: Vec<AlertRule>,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 30,
+            destination: Vec::new(),
+            rule: Vec::new(),
+        }
+    }
+}
+
+/// One place alerts go.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlertDestination {
+    /// Unique name, used in a rule's `to`.
+    pub name: SafeString,
+    /// `webhook` (JSON POST), `ntfy`, `gotify`, or `slack` (Slack-compatible webhooks:
+    /// Slack, Mattermost, Discord's `/slack` endpoint).
+    #[serde(rename = "type")]
+    pub kind: AlertKind,
+    /// The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), or the Gotify server.
+    pub url: SafeString,
+    /// A file holding the token (ntfy access token, Gotify application token), so it stays
+    /// out of the config and Git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<SafeString>,
+}
+
+/// A destination's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertKind {
+    Webhook,
+    Ntfy,
+    Gotify,
+    Slack,
+}
+
+/// One alert rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlertRule {
+    /// Unique name, shown in every alert.
+    pub name: SafeString,
+    /// The condition.
+    pub when: AlertWhen,
+    /// How long it must hold before the alert goes out (not for `anomaly` and
+    /// `update_available`, which go out once each).
+    #[serde(default = "default_alert_for")]
+    pub for_secs: u32,
+    /// `servfail_rate`: the percentage of queries (default 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+    /// Destination names.
+    pub to: Vec<SafeString>,
+    /// Off: the rule is kept but not checked.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+const fn default_alert_for() -> u32 {
+    60
+}
+
+/// What an alert rule watches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertWhen {
+    /// An upstream's circuit breaker is open (one alert per upstream).
+    UpstreamDown,
+    /// A cluster node isn't connected (one alert per node).
+    NodeDown,
+    /// A list fails to download (one alert per list).
+    ListFailing,
+    /// A device anomaly was found (OBS-013; one alert per finding).
+    Anomaly,
+    /// SERVFAIL above `threshold` percent of queries over the last 5 minutes (at least 50).
+    ServfailRate,
+    /// A newer TelltaleDNS build is available (once per version).
+    UpdateAvailable,
 }
 
 /// What a schedule does during its windows.
