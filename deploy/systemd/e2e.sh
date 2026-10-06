@@ -94,6 +94,8 @@ grep -q 'sign in as alice' "$WORK/guided.out" || { cat "$WORK/guided.out"; fail 
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
   -d '{"username":"alice","password":"e2e-guided-pass-1"}' http://127.0.0.1:8053/api/v1/auth/login)
 [ "$code" = 200 ] || { fail "alice can't sign in ($code)"; }
+# The test started the service several times in a few seconds: reset systemd's start limit.
+systemctl reset-failed telltale 2>/dev/null || true
 systemctl restart telltale   # the drop-in is gone: a restart doesn't need it
 for _ in $(seq 1 20); do /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz >/dev/null 2>&1 && break; sleep 0.5; done
 /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz

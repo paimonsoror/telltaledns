@@ -5030,7 +5030,10 @@ export interface operations {
                 limit?: number;
                 /** @description Continue after a previous page (`nextCursor` from it). */
                 cursor?: string;
-                /** @description `cluster` (default) or `node:local`. */
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+                 *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
+                 */
                 scope?: string;
             };
             header?: never;
@@ -5397,7 +5400,10 @@ export interface operations {
                 by: components["schemas"]["LatencyBy"];
                 /** @description Default: `current`. */
                 hour?: components["schemas"]["Hour"];
-                /** @description `cluster` (default) or `node:local`. */
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+                 *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
+                 */
                 scope?: string;
             };
             header?: never;
@@ -5436,7 +5442,10 @@ export interface operations {
                 from?: string;
                 /** @description End. Default: now. */
                 to?: string;
-                /** @description `cluster` (default) or `node:local`. */
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+                 *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
+                 */
                 scope?: string;
             };
             header?: never;
@@ -5477,7 +5486,10 @@ export interface operations {
                 to?: string;
                 /** @description Bucket size. Default: `minute`. */
                 step?: components["schemas"]["Step"];
-                /** @description `cluster` (default) or `node:local`. */
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+                 *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
+                 */
                 scope?: string;
             };
             header?: never;
@@ -5519,7 +5531,10 @@ export interface operations {
                 client?: string;
                 /** @description Only this group's queries (a group name; not with `client`, not for `nxdomain`). */
                 group?: string;
-                /** @description `cluster` (default) or `node:local`. */
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+                 *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
+                 */
                 scope?: string;
             };
             header?: never;
