@@ -12,6 +12,7 @@
 
 mod bootstrap;
 mod conn;
+pub mod dnscrypt;
 pub mod dnssec;
 mod doh;
 mod doh3;

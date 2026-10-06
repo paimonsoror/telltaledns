@@ -60,6 +60,116 @@ impl Router {
     }
 }
 
+/// What a stamp sets besides the endpoint: the TLS name (DoH/DoT/DoQ, unless configured)
+/// and the DNSCrypt provider key and name.
+type DnsCryptProvider = ([u8; 32], String);
+fn stamp_options(
+    stamp: Option<&crate::dnscrypt::Stamp>,
+) -> (Option<String>, Option<DnsCryptProvider>) {
+    use crate::dnscrypt::Stamp;
+    match stamp {
+        Some(Stamp::Doh { hostname, .. } | Stamp::Dot { hostname, .. }) => {
+            (Some(hostname.clone()), None)
+        }
+        Some(Stamp::DnsCrypt {
+            provider_pk,
+            provider_name,
+            ..
+        }) => (None, Some((*provider_pk, provider_name.clone()))),
+        None => (None, None),
+    }
+}
+
+/// An upstream's endpoint from its URL or stamp (and the stamp, when it is one).
+fn upstream_endpoint(
+    u: &telltale_config::Upstream,
+) -> Result<(Endpoint, Option<crate::dnscrypt::Stamp>), String> {
+    // REQ: UPS-003 (T7.24) — `sdns://` stamps: DNSCrypt, or the DoH/DoT/DoQ they name.
+    let stamp = if u.url.starts_with("sdns://") {
+        Some(crate::dnscrypt::parse_stamp(&u.url)?)
+    } else {
+        None
+    };
+    let mut ep = match &stamp {
+        Some(s) => stamp_endpoint(s),
+        None => Endpoint::parse(&u.url)?,
+    };
+    // REQ: UPS-002 (T7.8) — `http_version = "3"` on an https:// upstream: HTTP/3.
+    if u.http_version == HttpVersion::H3 && ep.protocol == Protocol::Https {
+        ep.protocol = Protocol::H3;
+    }
+    Ok((ep, stamp))
+}
+
+/// REQ: UPS-003 (T7.24) — the endpoint a stamp names: DNSCrypt at its address, or DoH /
+/// DoT / DoQ at the pinned address (else the host name, resolved through bootstrap).
+fn stamp_endpoint(s: &crate::dnscrypt::Stamp) -> Endpoint {
+    use crate::dnscrypt::Stamp;
+    let pinned = |addr: &Option<String>, port: u16| -> (Host, u16) {
+        let parsed = addr.as_deref().and_then(|a| {
+            a.parse::<SocketAddr>()
+                .ok()
+                .map(|s| (s.ip(), s.port()))
+                .or_else(|| {
+                    a.trim_matches(|c| c == '[' || c == ']')
+                        .parse::<std::net::IpAddr>()
+                        .ok()
+                        .map(|ip| (ip, port))
+                })
+        });
+        match parsed {
+            Some((ip, p)) => (Host::Ip(ip), p),
+            None => (Host::Name(String::new()), port),
+        }
+    };
+    match s {
+        Stamp::DnsCrypt { addr, .. } => Endpoint {
+            protocol: Protocol::DnsCrypt,
+            host: Host::Ip(addr.ip()),
+            port: addr.port(),
+            path: String::new(),
+        },
+        Stamp::Doh {
+            addr,
+            hostname,
+            port,
+            path,
+        } => {
+            let (host, port) = pinned(addr, *port);
+            Endpoint {
+                protocol: Protocol::Https,
+                host: match host {
+                    Host::Name(_) => Host::Name(hostname.clone()),
+                    ip @ Host::Ip(_) => ip,
+                },
+                port,
+                path: if path.is_empty() {
+                    "/dns-query".into()
+                } else {
+                    path.clone()
+                },
+            }
+        }
+        Stamp::Dot {
+            addr,
+            hostname,
+            port,
+            quic,
+        } => {
+            let (host, port) = pinned(addr, *port);
+            Endpoint {
+                protocol: if *quic { Protocol::Quic } else { Protocol::Tls },
+                host: match host {
+                    Host::Name(_) => Host::Name(hostname.clone()),
+                    ip @ Host::Ip(_) => ip,
+                },
+                port,
+                path: String::new(),
+            }
+        }
+    }
+}
+
 /// REQ: DNS-015 (T7.23) — the ECS option to send: none for `strip` (the default), else the
 /// configured subnet's.
 fn ecs_option_for(u: &telltale_config::Upstream) -> Result<Option<Vec<u8>>, ()> {
@@ -118,13 +228,8 @@ fn build_upstreams<'c>(
     let mut system_bootstrap: Option<Arc<Bootstrap>> = None;
     for (i, u) in cfg.upstream.iter().enumerate() {
         let id = u16::try_from(i + 1).unwrap_or(u16::MAX);
-        let ep = match Endpoint::parse(&u.url) {
-            // REQ: UPS-002 (T7.8) — `http_version = "3"` on an https:// upstream: HTTP/3.
-            Ok(mut ep) if u.http_version == HttpVersion::H3 && ep.protocol == Protocol::Https => {
-                ep.protocol = Protocol::H3;
-                ep
-            }
-            Ok(ep) => ep,
+        let (ep, stamp) = match upstream_endpoint(u) {
+            Ok(x) => x,
             Err(e) => {
                 errors.push(format!("upstream `{}`: {e}", u.name));
                 continue;
@@ -176,12 +281,17 @@ fn build_upstreams<'c>(
                 Some(Arc::clone(bs))
             }
         };
+        let (stamp_tls_name, dnscrypt) = stamp_options(stamp.as_ref());
         let opts = UpstreamOptions {
             timeout: Duration::from_millis(u64::from(u.timeout_ms)),
             weight: u.weight,
             pool_size: usize::from(u.pool_size),
             idle_timeout: Duration::from_millis(u64::from(u.idle_timeout_ms)),
-            tls_server_name: u.tls_server_name.as_ref().map(ToString::to_string),
+            tls_server_name: u
+                .tls_server_name
+                .as_ref()
+                .map(ToString::to_string)
+                .or(stamp_tls_name),
             tls_insecure_skip_verify: u.tls_insecure_skip_verify,
             headers: u
                 .headers
@@ -191,6 +301,7 @@ fn build_upstreams<'c>(
             bootstrap,
             proxy,
             ecs,
+            dnscrypt,
             // REQ: UPS-011 (T7.16)
             tls: up_tls,
             plugin_args: u.args.iter().map(ToString::to_string).collect(),

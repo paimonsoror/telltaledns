@@ -454,5 +454,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* clients' ECS is never forwarded; with a subnet, every upstream query carries an RFC 7871 option with the address cut to the prefix (scope 0); upstream ECS replies never reach clients (the cache strips OPT); invalid values are config errors.
   - *Done 2026-10-06:* `encode_query_with` and `ecs_option` in `telltale-upstream`, the option per upstream, router and validation; test `dns_015_ecs_substitute`; docs; standards (RFC 7871 supported). *Deferred:* `pass` (each client's subnet, which needs ECS-scoped cache keys).
 
+- [x] **T7.24 DNSCrypt and stamps.** *(UPS-003)* `url = "sdns://…"`: DNSCrypt v2 upstreams, and DoH/DoT/DoQ stamps as those transports.
+  - *AC:* the certificate is fetched, checked with the stamp's provider key and dates, and the best one used; queries and answers are boxed (XChaCha20 and XSalsa20), padded, matched by nonce; a certificate from another key is refused; truncated answers go over TCP; DoH/DoT stamps resolve; works against public DNSCrypt servers.
+  - *Done 2026-10-06:* `telltale-upstream/src/dnscrypt.rs` (ADR-079, Proposed): stamp parser, certificate check, the box, `Transport::DnsCrypt`, a test resolver (`dnscrypt::server`); stamps mapped in the router; tests `ups_003_*` and `tests/dnscrypt.rs` (both constructions, a foreign certificate); `examples/dnscrypt_live.rs` (21 of 21 IPv4 servers from the public list answered: AdGuard, OpenDNS, CleanBrowsing, Comodo, cryptostorm); a running node resolving through a DNSCrypt stamp and a DoH stamp; docs. *Deferred:* anonymized relays; enforcing DoH/DoT stamp certificate hashes.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

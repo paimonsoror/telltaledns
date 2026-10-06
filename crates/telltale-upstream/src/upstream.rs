@@ -190,6 +190,8 @@ pub struct UpstreamOptions {
     pub proxy: Option<Arc<crate::proxy::Proxy>>,
     /// REQ: DNS-015 (T7.23) — an ECS option sent instead of the client's subnet.
     pub ecs: Option<Vec<u8>>,
+    /// REQ: UPS-003 (T7.24) — a DNSCrypt stamp's provider key and name.
+    pub dnscrypt: Option<([u8; 32], String)>,
     /// REQ: UPS-011 — this upstream's CA, client certificate, and pins.
     pub tls: crate::tls::UpstreamTls,
     /// REQ: UPS-011 — `exec://`: the program's arguments, and the directory for its socket.
@@ -211,6 +213,7 @@ impl Default for UpstreamOptions {
             recursive: telltale_recursor::Settings::default(),
             proxy: None,
             ecs: None,
+            dnscrypt: None,
             plugin_args: Vec::new(),
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
@@ -255,6 +258,8 @@ enum Transport {
     H3(Box<Doh3>),
     /// REQ: UPS-012 (T7.15) — our own iterative resolver.
     Recursive(Box<telltale_recursor::Recursor>),
+    /// REQ: UPS-003 (T7.24) — DNSCrypt v2.
+    DnsCrypt(Box<crate::dnscrypt::DnsCrypt>),
     /// REQ: UPS-011 (T7.16) — a plugin on a Unix socket; for `exec://`, with the process
     /// that serves it.
     Plugin(
@@ -275,6 +280,7 @@ impl std::fmt::Debug for Transport {
             Self::H3(_) => "H3",
             Self::Recursive(_) => "Recursive",
             Self::Plugin(..) => "Plugin",
+            Self::DnsCrypt(_) => "DnsCrypt",
         })
     }
 }
@@ -479,6 +485,21 @@ impl Upstream {
             Protocol::Recursive => Transport::Recursive(Box::new(
                 telltale_recursor::Recursor::new(opts.recursive.clone()),
             )),
+            Protocol::DnsCrypt => {
+                let (pk, name) = opts
+                    .dnscrypt
+                    .clone()
+                    .ok_or_else(|| format!("upstream `{name}`: DNSCrypt needs a stamp"))?;
+                let addr = match endpoint.host {
+                    Host::Ip(ip) => SocketAddr::new(ip, endpoint.port),
+                    Host::Name(_) => {
+                        return Err(format!(
+                            "upstream `{name}`: DNSCrypt stamps carry an address"
+                        ));
+                    }
+                };
+                Transport::DnsCrypt(Box::new(crate::dnscrypt::DnsCrypt::new(addr, pk, &name)?))
+            }
             Protocol::Unix => {
                 Transport::Plugin(pool(unix_connector(endpoint.path.clone().into())), None)
             }
@@ -566,7 +587,8 @@ impl Upstream {
             Transport::Https(_)
             | Transport::Quic(_)
             | Transport::H3(_)
-            | Transport::Recursive(_) => 0,
+            | Transport::Recursive(_)
+            | Transport::DnsCrypt(_) => 0,
         }
     }
 
@@ -642,6 +664,7 @@ impl Upstream {
                 timed(tokio::time::timeout(timeout, doq.exchange(query)).await)?
             }
             Transport::H3(h3) => timed(tokio::time::timeout(timeout, h3.exchange(query)).await)?,
+            Transport::DnsCrypt(d) => d.exchange(query, timeout).await?,
             Transport::Recursive(r) => tokio::time::timeout(timeout, r.answer(query))
                 .await
                 .map_err(|_| ExchangeError::Timeout)?

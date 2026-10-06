@@ -24,6 +24,8 @@ pub enum Protocol {
     Unix,
     /// REQ: UPS-011 (T7.16) — a plugin program TelltaleDNS starts and supervises.
     Exec,
+    /// REQ: UPS-003 (T7.24) — DNSCrypt v2 (from an `sdns://` stamp).
+    DnsCrypt,
 }
 
 impl Protocol {
@@ -31,7 +33,7 @@ impl Protocol {
         match self {
             Self::Udp | Self::Tcp | Self::Recursive | Self::Unix | Self::Exec => 53,
             Self::Tls | Self::Quic => 853,
-            Self::Https | Self::H3 => 443,
+            Self::Https | Self::H3 | Self::DnsCrypt => 443,
         }
     }
 }
@@ -48,6 +50,7 @@ impl fmt::Display for Protocol {
             Self::Recursive => "recursive",
             Self::Unix => "unix",
             Self::Exec => "exec",
+            Self::DnsCrypt => "dnscrypt",
         })
     }
 }

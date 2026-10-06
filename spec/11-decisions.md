@@ -1258,6 +1258,20 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-079 — DNSCrypt with RustCrypto's crypto_box; stamps map to existing transports (Proposed)
+**Context:** T7.24 (UPS-003; `04` §2). DNSCrypt v2 needs X25519 and libsodium's box constructions; `02` §7 lists no crate for them. Stamps may name DNSCrypt, DoH, DoT, or DoQ servers.
+
+**Decision:**
+- New dependency `crypto_box` 0.9 (RustCrypto; its SalsaBox and ChaChaBox are libsodium's `crypto_box` and `crypto_box_curve25519xchacha20poly1305`, on the `curve25519-dalek` already in the tree) and `ed25519-dalek` (already in the tree) for certificates. The IETF XChaCha20-Poly1305 AEAD is a different construction and wouldn't interoperate. The detached API is used and the tag written first (libsodium's `_easy` layout); verified live against five providers' servers.
+- One X25519 key per upstream for its lifetime (like dnscrypt-proxy's default); a fresh random nonce per query; ISO 7816-4 padding to 64 bytes, at least 256 over UDP; TCP when the answer is truncated.
+- Certificates: TXT records of the provider name fetched in clear, each checked with the stamp's Ed25519 key (`verify_strict`) and its validity dates; the newest construction, then the highest serial, wins; refreshed after an hour or at expiry.
+- DoH/DoT/DoQ stamps become those transports (host name as the TLS name, an address in the stamp pinned); the stamp's certificate hashes aren't enforced yet.
+- Not supported: anonymized DNSCrypt relays, DNSCrypt stamps' `props` flags (DNSSEC, no-log, no-filter are informational).
+
+**Consequences:**
+- Users of dnscrypt-proxy's server list can paste stamps directly.
+- About 100 KiB more in the binary.
+
 ## ADR-078 — DHCPv4: authoritative, broadcast replies, leases name devices (Proposed)
 **Context:** T7.19 (OPS-008; `08` §7). The spec lists the options, static leases, and a lease file, but not the server's stance toward clients asking for foreign addresses, how replies reach clients without an address, or how leases "feed client naming".
 

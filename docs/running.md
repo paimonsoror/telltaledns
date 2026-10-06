@@ -415,6 +415,17 @@ tls_server_name = "dns.adguard-dns.com"
 - `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
 - Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`.
 
+### DNSCrypt and DNS stamps
+Use a DNSCrypt server (as dnscrypt-proxy does next to a Pi-hole), or any server from a DNS stamp list (the public list at dnscrypt.info), by pasting its `sdns://` stamp as the URL:
+```toml
+[[upstream]]
+name = "adguard-dnscrypt"
+url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20"
+```
+- **DNSCrypt stamps** become a DNSCrypt v2 upstream: the server's certificate is fetched and checked against the provider key in the stamp, then every query is encrypted (X25519 with XChaCha20-Poly1305 or XSalsa20-Poly1305, whichever the certificate offers) and padded, over UDP with TCP for large answers. Certificates are refreshed hourly and when they expire.
+- **DoH, DoT, and DoQ stamps** become the matching `https://`, `tls://`, or `quic://` upstream, with the stamp's host name as the TLS name and its address (if any) pinned, so no bootstrap lookup is needed.
+- Tested against AdGuard, OpenDNS, CleanBrowsing, Comodo, and cryptostorm's DNSCrypt servers. *Not supported:* relays (anonymized DNSCrypt) and DNSCrypt over IPv6-only paths without an IPv6 route.
+
 ### Client subnet (ECS)
 Some CDNs pick a server near the client by the subnet a resolver sends along (EDNS Client Subnet, RFC 7871). TelltaleDNS never sends your devices' subnets. When a far-away public resolver gets you slow CDN answers, you can send a subnet of your choice instead, for example your ISP's public block:
 ```toml
