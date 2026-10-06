@@ -950,19 +950,29 @@ pub struct CacheNodeEntries {
     pub error: Option<String>,
 }
 
-/// REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through
-/// the UI or API.
+/// REQ: API-002 (T7.5, ADR-069) — one upstream, upstream group, list, or group: its definition
+/// in effect and where it comes from.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigOverride {
+pub struct ConfigEntry {
     /// `upstream`, `upstream_group`, `list`, or `group`.
     pub kind: String,
     pub name: String,
-    /// `added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'
-    /// entry is left out).
-    pub mode: String,
-    /// Who made the change.
-    pub by: Option<String>,
+    /// `file` (the config files), `added` (made through the UI or API), `override` (replaces
+    /// the files' entry of that name), or `hidden` (the files' entry is left out).
+    pub source: String,
+    /// The definition in effect, with the same fields as in `telltale.toml` (absent when
+    /// hidden).
+    #[schema(value_type = Option<Object>)]
+    pub definition: Option<serde_json::Value>,
+}
+
+/// `GET /api/v1/config/entries` parameters.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EntriesQuery {
+    /// One kind only: `upstream`, `upstream_group`, `list`, or `group`.
+    pub kind: Option<String>,
 }
 
 /// REQ: FLT-009 (T7.1) — pause or resume blocking (`POST /api/v1/blocking/pause|resume`).
@@ -1149,6 +1159,12 @@ pub struct ConfigChange {
     pub impact: String,
     /// Configuration warnings after the change.
     pub warnings: Vec<String>,
+    /// REQ: API-002 (T7.5, ADR-069) — on a node whose configuration comes from Git: the TOML
+    /// to add to (or the block to remove from) the repository or the Helm values' `config:` to
+    /// make this change permanent there. Changes made through the API live in this node's
+    /// `state.db`, not in Git. Absent on other nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_in_git: Option<String>,
 }
 
 /// `GET /analytics/anomalies` parameters.

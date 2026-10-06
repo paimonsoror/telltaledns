@@ -8,6 +8,19 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ShareBar from '../lib/components/ShareBar.svelte';
   import { currentMode } from '../lib/mode.svelte';
+  import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+
+  // REQ: API-002 (T7.5) — add and change lists here.
+  const listFields: Field[] = [
+    { key: 'url', label: 'Download from', type: 'text', placeholder: 'https://example.org/hosts.txt',
+      help: 'Hosts files, plain domain lists, and Adblock-style lists all work. Or leave this empty and write the rules below.' },
+    { key: 'rules', label: 'Rules', type: 'lines', placeholder: 'ads.example.com, ||tracker.example^ (one per line)' },
+    { key: 'kind', label: 'Kind', type: 'select', options: ['block', 'allow'], initial: 'block' },
+    { key: 'match', label: 'Plain names match', type: 'select', options: ['subtree', 'exact'], advanced: true,
+      help: 'subtree: the name and everything below it. exact: only the name itself.' },
+    { key: 'enabled', label: 'On', type: 'bool', initial: true },
+    { key: 'refresh_secs', label: 'Check for updates every (seconds)', type: 'number', placeholder: '86400', advanced: true },
+  ];
 
   let lists = $state<S['ListInfo'][]>([]);
   let info = $state<S['SystemInfo'] | null>(null);
@@ -71,6 +84,9 @@
       </div>
     {/if}
   </section>
+  <ConfigEditor kind="list" path="lists" title="Manage lists" noun="list" fields={listFields}
+    summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
+    onchanged={async () => (lists = (await api.lists()).items)} />
   <p class="muted small">"Names used" counts what this list adds to the active snapshot after removing names other lists already cover.</p>
 </div>
 

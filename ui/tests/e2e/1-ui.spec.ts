@@ -716,13 +716,47 @@ test('api_011 help drawer text is body-sized everywhere', async () => {
 
 // REQ: API-002 (T7.5, ADR-069) — upstreams and lists through the API: add, override the
 // files' entry, refuse a change that breaks the configuration, and revert.
+// REQ: API-002 (T7.5, ADR-069) — the Lists and Upstreams pages add, change, and revert entries
+// with a preview first; the config files are never rewritten.
+test('api_002 lists and upstreams are edited from the UI', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/lists');
+  const lists = page.getByTestId('editor-list');
+  await lists.getByRole('button', { name: 'Add list' }).click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-extra');
+  await page.getByRole('textbox', { name: 'Rules', exact: true }).fill('||ui-extra.e2e.test^');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  const row = lists.getByTestId('entry-row').filter({ hasText: 'ui-extra' });
+  await expect(row).toContainText('added here');
+  await expect(row).toContainText('1 rules');
+  await row.getByRole('button', { name: 'Remove' }).click();
+  await expect(row).toHaveCount(0);
+
+  // An upstream from the files: overridden, then back to the files' version.
+  await page.goto('/#/upstreams');
+  const ups = page.getByTestId('editor-upstream');
+  const router = ups.getByTestId('entry-row').filter({ hasText: 'router' });
+  await expect(router).toContainText('config file');
+  await router.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('router');
+  await page.getByRole('textbox', { name: 'Address', exact: true }).fill('udp://127.0.0.1:15399');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(router).toContainText('overrides the file');
+  await router.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(router).toContainText('config file');
+});
+
 test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
   const r = page.request;
   const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
   const h = { 'x-csrf-token': csrf };
   const overrides = async () =>
-    ((await (await r.get('/api/v1/config/overrides')).json()).items as { kind: string; name: string; mode: string }[])
-      .map((o) => `${o.kind}:${o.name}:${o.mode}`)
+    ((await (await r.get('/api/v1/config/entries')).json()).items as { kind: string; name: string; source: string }[])
+      .filter((o) => o.source !== 'file')
+      .map((o) => `${o.kind}:${o.name}:${o.source}`)
       .sort();
   // A dry run changes nothing.
   let res = await r.put('/api/v1/upstreams/extra?dryRun=true', { headers: h, data: { url: 'udp://127.0.0.1:9' } });

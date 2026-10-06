@@ -1227,11 +1227,29 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, and latency |
 | Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
 
-Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Lists, groups, and local records are read-only in the UI for now; edit the configuration and reload.
+Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
 
 The menu ends with links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
 
 The UI is part of the binary (about 100 KiB compressed). The page is served with a strict Content Security Policy and can't be framed.
+
+### Changing the configuration in the UI
+The Upstreams page (servers and upstream groups), the Lists page, and the Groups page each end with a **Manage** table: every entry with where it comes from.
+
+| Badge | Meaning |
+|---|---|
+| config file | defined in `telltale.toml`; **Edit** makes an override, **Remove** hides it |
+| added here | made in the UI or API; **Remove** deletes it |
+| overrides the file | the UI's version replaces the file's entry of that name; **Revert to the file** brings the file's version back |
+| hidden | the file's entry is left out; **Revert to the file** brings it back |
+
+Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
+
+Changes are stored in `state.db`, next to named devices and local names. **The config files are never rewritten**: what's in the files stays as written, and `telltale config check` on the files alone still shows the file configuration. Simple view shows the common fields; switch to Advanced for timeouts, TLS names, refresh intervals, blocked-answer modes, priorities, and colors.
+
+**Keep it in Git.** On a node whose configuration comes from Git (`[cluster] config_source = "gitops"`, as with the Helm chart and Argo CD or Flux), the change works at once, but a rebuild from Git won't have it. After **Apply** the UI shows the TOML to add to the repository (with the Helm chart: under `config:` in the values) with a **Copy** button, or which block to remove. Once Git has it, **Revert to the file** removes the UI's copy. The API returns the same text as `keepInGit`.
+
+The same through the API: `PUT` or `DELETE` on `/api/v1/upstreams/{name}`, `/api/v1/upstream-groups/{name}`, `/api/v1/lists/{name}`, and `/api/v1/groups/{name}`, with `?dryRun=true` to preview. The body has the same fields as the TOML section. `GET /api/v1/config/entries?kind=list` lists the entries with their sources.
 
 ## API
 A REST API (JSON) listens on `0.0.0.0:8053` by default and also serves `/metrics` and the health probes:

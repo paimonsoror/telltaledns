@@ -161,6 +161,16 @@
       "docs": "routing-conditional-forwarding"
     },
     {
+      "id": "config-sources",
+      "title": "Change upstreams, lists, and groups here",
+      "term": "Configuration overrides",
+      "summary": "Entries made here are stored on the server and shared with the cluster; the config files are never rewritten, so a file's entry can be overridden, hidden, or brought back.",
+      "when": "You want to add a list or switch an upstream without editing files or redeploying.",
+      "example": "Edit the file's upstream 'quad9' to use DNS over TLS: the row shows 'overrides the file' until you revert it.",
+      "caution": "On a node configured from Git, also add the change to Git (the UI shows what to add), or a rebuild won't have it.",
+      "docs": "changing-the-configuration-in-the-ui"
+    },
+    {
       "id": "local-dns",
       "title": "Names on my network",
       "term": "Local records (zone)",

@@ -33,13 +33,13 @@ use utoipa::OpenApi;
 use crate::model::{
     AnomalyFinding, AnomalyParams, ClientChange, ClientInfo, ClientInput, ClusterCheck,
     ClusterConflict, ClusterEvent, ClusterFailover, ClusterInfo, ClusterNode, ClusterPeer,
-    ClusterSource, ClusterView, ConfigChange, ConfigOverride, ExplainBlock, ExplainClient,
-    ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo,
-    ForwardInput, GroupInfo, HostInfo, HostPoint, HostReport, Hour, Items, LatencyBy,
-    LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch, PromoteRequest,
-    QueryPage, QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step, Summary,
-    SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket, TimeseriesParams,
-    TopItem, TopKind, TopParams, UpstreamInfo,
+    ClusterSource, ClusterView, ConfigChange, ConfigEntry, EntriesQuery, ExplainBlock,
+    ExplainClient, ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule,
+    Explanation, ForwardInfo, ForwardInput, GroupInfo, HostInfo, HostPoint, HostReport, Hour,
+    Items, LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch,
+    PromoteRequest, QueryPage, QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step,
+    Summary, SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket,
+    TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -178,9 +178,10 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (sort, limit, node);
         Ok(Vec::new())
     }
-    /// REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups changed
-    /// through the API: added, overriding the files' entry, or hiding it.
-    fn config_overrides(&self) -> Vec<crate::model::ConfigOverride> {
+    /// REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups: each
+    /// definition in effect and its source (`kind` limits it to one kind).
+    fn config_entries(&self, kind: Option<&str>) -> Vec<crate::model::ConfigEntry> {
+        let _ = kind;
         Vec::new()
     }
     /// REQ: FLT-009 (T7.1) — each node's active pauses.
@@ -346,7 +347,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/forwards", get(forwards))
         .route("/api/v1/rules", get(rules))
-        .route("/api/v1/config/overrides", get(config_overrides))
+        .route("/api/v1/config/entries", get(config_entries))
         .route("/api/v1/upstreams", get(upstreams))
         .with_state(Arc::clone(&backend))
         .merge(cache_api::read_routes(Arc::clone(&backend)))
@@ -429,11 +430,11 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_overrides, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigOverride, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -950,18 +951,23 @@ async fn forwards(State(b): State<Shared>) -> impl IntoResponse {
     )
 }
 
-/// What the UI and API changed in the configuration's upstreams, lists, and groups.
+/// The configuration's upstreams, upstream groups, lists, and groups, with their sources.
 ///
-/// Each entry made through the UI or API (ADR-069): `added` (a new name), `override` (it
-/// replaces the config files' entry of the same name), or `hidden` (the files' entry is left
-/// out). Deleting an override or a hidden entry (`DELETE` on its path) brings the files' entry
-/// back. Entries the files define and nobody changed aren't listed.
-#[utoipa::path(get, path = "/api/v1/config/overrides", tag = "config",
-    responses((status = 200, body = Items<ConfigOverride>, description = "The changes, by kind and name.")))]
-async fn config_overrides(State(b): State<Shared>) -> Json<Items<ConfigOverride>> {
+/// Each definition in effect, with the same fields as in `telltale.toml`, and where it comes
+/// from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
+/// config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
+/// it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
+/// files' version back. Secrets aren't part of these sections.
+#[utoipa::path(get, path = "/api/v1/config/entries", tag = "config",
+    params(EntriesQuery),
+    responses((status = 200, body = Items<ConfigEntry>, description = "The entries, by kind and name.")))]
+async fn config_entries(
+    State(b): State<Shared>,
+    Query(q): Query<EntriesQuery>,
+) -> Json<Items<ConfigEntry>> {
     Json(Items {
         missing_nodes: Vec::new(),
-        items: b.config_overrides(),
+        items: b.config_entries(q.kind.as_deref()),
     })
 }
 

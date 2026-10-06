@@ -126,6 +126,7 @@ strategy = "fastest"</code></pre>
 <pre><code>sudo ./target/release/telltale run -c telltale.toml
 dig @127.0.0.1 example.com</code></pre>
       <p class="muted">The first start prints a one-time setup token: open the web UI (port 8053 by default) and use it to create your admin. Then point your router's DHCP "DNS server" setting at this machine so every device uses it.</p>
+      <p class="muted">Upstreams, blocklists, and groups can be added or changed later on their pages in the web UI, with a preview before anything is applied. Your config file is never rewritten.</p>
     </div>
   </div>
 </section>

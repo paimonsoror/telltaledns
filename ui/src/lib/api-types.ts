@@ -599,7 +599,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/config/overrides": {
+    "/api/v1/config/entries": {
         parameters: {
             query?: never;
             header?: never;
@@ -607,13 +607,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * What the UI and API changed in the configuration's upstreams, lists, and groups.
-         * @description Each entry made through the UI or API (ADR-069): `added` (a new name), `override` (it
-         *     replaces the config files' entry of the same name), or `hidden` (the files' entry is left
-         *     out). Deleting an override or a hidden entry (`DELETE` on its path) brings the files' entry
-         *     back. Entries the files define and nobody changed aren't listed.
+         * The configuration's upstreams, upstream groups, lists, and groups, with their sources.
+         * @description Each definition in effect, with the same fields as in `telltale.toml`, and where it comes
+         *     from (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the
+         *     config files' entry of the same name), or `hidden` (the files' entry is left out; listed so
+         *     it can be brought back). `DELETE` on an override's or a hidden entry's path brings the
+         *     files' version back. Secrets aren't part of these sections.
          */
-        get: operations["config_overrides"];
+        get: operations["config_entries"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2009,6 +2010,13 @@ export interface components {
             /** @description What the change does, in one sentence, with the numbers (AGT-002 impact estimate). */
             impact?: string;
             /**
+             * @description REQ: API-002 (T7.5, ADR-069) — on a node whose configuration comes from Git: the TOML
+             *     to add to (or the block to remove from) the repository or the Helm values' `config:` to
+             *     make this change permanent there. Changes made through the API live in this node's
+             *     `state.db`, not in Git. Absent on other nodes.
+             */
+            keepInGit?: string | null;
+            /**
              * Format: int64
              * @description Queries in the current and previous hour for the name (or names under the domain)
              *     that the change affects. A lower bound: counted from the busiest names.
@@ -2018,20 +2026,23 @@ export interface components {
             warnings: string[];
         };
         /**
-         * @description REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through
-         *     the UI or API.
+         * @description REQ: API-002 (T7.5, ADR-069) — one upstream, upstream group, list, or group: its definition
+         *     in effect and where it comes from.
          */
-        ConfigOverride: {
-            /** @description Who made the change. */
-            by?: string | null;
+        ConfigEntry: {
+            /**
+             * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
+             *     hidden).
+             */
+            definition?: Record<string, never> | null;
             /** @description `upstream`, `upstream_group`, `list`, or `group`. */
             kind: string;
-            /**
-             * @description `added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'
-             *     entry is left out).
-             */
-            mode: string;
             name: string;
+            /**
+             * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
+             *     the files' entry of that name), or `hidden` (the files' entry is left out).
+             */
+            source: string;
         };
         CreateToken: {
             /**
@@ -2460,18 +2471,21 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
-        Items_ConfigOverride: {
+        Items_ConfigEntry: {
             items: {
-                /** @description Who made the change. */
-                by?: string | null;
+                /**
+                 * @description The definition in effect, with the same fields as in `telltale.toml` (absent when
+                 *     hidden).
+                 */
+                definition?: Record<string, never> | null;
                 /** @description `upstream`, `upstream_group`, `list`, or `group`. */
                 kind: string;
-                /**
-                 * @description `added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'
-                 *     entry is left out).
-                 */
-                mode: string;
                 name: string;
+                /**
+                 * @description `file` (the config files), `added` (made through the UI or API), `override` (replaces
+                 *     the files' entry of that name), or `hidden` (the files' entry is left out).
+                 */
+                source: string;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -4240,22 +4254,25 @@ export interface operations {
             };
         };
     };
-    config_overrides: {
+    config_entries: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description One kind only: `upstream`, `upstream_group`, `list`, or `group`. */
+                kind?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description The changes, by kind and name. */
+            /** @description The entries, by kind and name. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Items_ConfigOverride"];
+                    "application/json": components["schemas"]["Items_ConfigEntry"];
                 };
             };
         };

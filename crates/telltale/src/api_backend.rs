@@ -1153,61 +1153,84 @@ impl Backend for ApiBackend {
         }]
     }
 
-    // REQ: API-002 (T7.5, ADR-069) — what the API changed in upstreams, lists, and groups.
-    fn config_overrides(&self) -> Vec<telltale_api::model::ConfigOverride> {
-        use crate::managed::Ovr;
-        let Some(state) = self.src.auth.get().map(|a| Arc::clone(a.state())) else {
-            return Vec::new();
-        };
-        let e = crate::managed::entries(&state);
-        let file = self.src.file_config.load_full();
-        let mut out = Vec::new();
-        let mut push = |kind: &str, name: &str, hidden: bool, in_files: bool| {
-            out.push(telltale_api::model::ConfigOverride {
-                kind: kind.to_owned(),
-                name: name.to_owned(),
-                mode: if hidden {
-                    "hidden"
-                } else if in_files {
-                    "override"
-                } else {
-                    "added"
+    // REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups in effect,
+    // with their sources (hidden files' entries included, so they can be brought back).
+    fn config_entries(&self, kind: Option<&str>) -> Vec<telltale_api::model::ConfigEntry> {
+        use crate::managed::{Named, Ovr};
+        fn rows<T: Named + Serialize>(
+            kind: &str,
+            effective: &[T],
+            file: &[T],
+            stored: &[(String, Ovr<T>)],
+            out: &mut Vec<telltale_api::model::ConfigEntry>,
+        ) {
+            let in_file = |n: &str| file.iter().any(|f| f.name() == n);
+            for e in effective {
+                let n = e.name();
+                let api = stored.iter().any(|(s, _)| s == n);
+                out.push(telltale_api::model::ConfigEntry {
+                    kind: kind.to_owned(),
+                    name: n.to_owned(),
+                    source: match (api, in_file(n)) {
+                        (true, true) => "override",
+                        (true, false) => "added",
+                        _ => "file",
+                    }
+                    .to_owned(),
+                    definition: serde_json::to_value(e).ok(),
+                });
+            }
+            for (n, o) in stored {
+                if matches!(o, Ovr::Hidden) {
+                    out.push(telltale_api::model::ConfigEntry {
+                        kind: kind.to_owned(),
+                        name: n.clone(),
+                        source: "hidden".to_owned(),
+                        definition: None,
+                    });
                 }
-                .to_owned(),
-                by: None,
-            });
-        };
-        for (n, o) in &e.upstreams {
-            push(
-                "upstream",
-                n,
-                *o == Ovr::Hidden,
-                file.upstream.iter().any(|u| u.name.as_str() == n),
-            );
+            }
         }
-        for (n, o) in &e.upstream_groups {
-            push(
+        let cfg = self.src.config.load();
+        let file = self.src.file_config.load();
+        let e = self
+            .src
+            .auth
+            .get()
+            .map(|a| crate::managed::entries(a.state()))
+            .unwrap_or_default();
+        let want = |k: &str| kind.is_none_or(|w| w == k);
+        let mut out = Vec::new();
+        if want("upstream") {
+            // Upstreams a forwarded domain made are part of that domain, not listed here.
+            let up: Vec<_> = cfg
+                .upstream
+                .iter()
+                .filter(|u| !u.name.as_str().starts_with("forward:"))
+                .cloned()
+                .collect();
+            rows("upstream", &up, &file.upstream, &e.upstreams, &mut out);
+        }
+        if want("upstream_group") {
+            let g: Vec<_> = cfg
+                .upstream_group
+                .iter()
+                .filter(|u| !u.name.as_str().starts_with("forward:"))
+                .cloned()
+                .collect();
+            rows(
                 "upstream_group",
-                n,
-                *o == Ovr::Hidden,
-                file.upstream_group.iter().any(|u| u.name.as_str() == n),
+                &g,
+                &file.upstream_group,
+                &e.upstream_groups,
+                &mut out,
             );
         }
-        for (n, o) in &e.lists {
-            push(
-                "list",
-                n,
-                *o == Ovr::Hidden,
-                file.list.iter().any(|u| u.name.as_str() == n),
-            );
+        if want("list") {
+            rows("list", &cfg.list, &file.list, &e.lists, &mut out);
         }
-        for (n, o) in &e.groups {
-            push(
-                "group",
-                n,
-                *o == Ovr::Hidden,
-                file.group.iter().any(|u| u.name.as_str() == n),
-            );
+        if want("group") {
+            rows("group", &cfg.group, &file.group, &e.groups, &mut out);
         }
         out
     }
@@ -2503,6 +2526,9 @@ impl ApiBackend {
                 .await
                 .map_err(|e| Problem::internal(format!("request worker failed: {e}")))??
             };
+            // T7.5 — on a Git-managed node, what to add to Git to keep the change.
+            let keep_in_git = (src.config.load().cluster.config_source.as_str() == "gitops")
+                .then(|| keep_in_git(w.kind, &plan.name, w.body.as_ref(), plan.after.as_ref()));
             let change = |applied, version| ConfigChange {
                 applied,
                 config_version: version,
@@ -2511,6 +2537,7 @@ impl ApiBackend {
                 recent_queries: plan.recent_queries,
                 impact: plan.impact.clone(),
                 warnings: plan.warnings.clone(),
+                keep_in_git: keep_in_git.clone(),
             };
             if w.dry_run {
                 if let Some(v) = w.expect
@@ -2585,6 +2612,113 @@ impl ApiBackend {
     }
 }
 
+/// REQ: API-002 (T7.5, ADR-069) — the configuration TOML that makes an API change permanent in
+/// Git: the section(s) to add (from what the request set), or which block to remove.
+fn keep_in_git(
+    kind: ManagedKind,
+    name: &str,
+    body: Option<&serde_json::Value>,
+    after: Option<&serde_json::Value>,
+) -> String {
+    let section = match kind {
+        ManagedKind::Record => "record",
+        ManagedKind::Forward => "route",
+        ManagedKind::Rule => "rule",
+        ManagedKind::Upstream => "upstream",
+        ManagedKind::UpstreamGroup => "upstream_group",
+        ManagedKind::List => "list",
+        ManagedKind::Group => "group",
+    };
+    let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
+    let Some(body) = body else {
+        return if after.is_some() {
+            format!(
+                "# Nothing to change in Git: the configuration's own [[{section}]] `{name}` applies again.\n"
+            )
+        } else {
+            format!("# Remove the [[{section}]] `{name}` from the configuration in Git.\n")
+        };
+    };
+    // Tables to render under `section`: one per record, the request's fields otherwise.
+    let tables: Vec<(&str, serde_json::Value)> = match kind {
+        ManagedKind::Record => body
+            .get("records")
+            .and_then(serde_json::Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .map(|r| {
+                        let mut t = r.clone();
+                        if let Some(o) = t.as_object_mut() {
+                            o.insert("name".into(), name.into());
+                        }
+                        ("record", t)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ManagedKind::Forward => {
+            let group = crate::managed::forward_group(name);
+            let servers: Vec<String> = body
+                .get("servers")
+                .and_then(serde_json::Value::as_array)
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|s| s.as_str().map(crate::managed::server_url))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut t: Vec<(&str, serde_json::Value)> = servers
+                .iter()
+                .enumerate()
+                .map(|(i, url)| {
+                    (
+                        "upstream",
+                        serde_json::json!({ "name": format!("{group}#{}", i + 1), "url": url }),
+                    )
+                })
+                .collect();
+            let members: Vec<String> = (1..=servers.len())
+                .map(|i| format!("{group}#{i}"))
+                .collect();
+            t.push((
+                "upstream_group",
+                serde_json::json!({ "name": group, "members": members, "strategy": "failover" }),
+            ));
+            t.push(("route", serde_json::json!({ "match_suffix": [name], "upstream_group": group, "dnssec_nta": true })));
+            t
+        }
+        ManagedKind::Rule => after.map(|a| vec![("rule", a.clone())]).unwrap_or_default(),
+        _ => {
+            let mut t = body.clone();
+            if let Some(o) = t.as_object_mut() {
+                // `name` first, as people write it.
+                let mut ordered = serde_json::Map::new();
+                ordered.insert("name".into(), name.into());
+                for (k, v) in o.iter().filter(|(k, _)| *k != "name") {
+                    ordered.insert(k.clone(), v.clone());
+                }
+                *o = ordered;
+            }
+            vec![(section, t)]
+        }
+    };
+    let mut out = String::from(head);
+    for (sec, t) in tables {
+        let mut root = toml::Table::new();
+        let Ok(toml::Value::Table(table)) = toml::Value::try_from(&t) else {
+            continue;
+        };
+        root.insert(
+            sec.to_owned(),
+            toml::Value::Array(vec![toml::Value::Table(table)]),
+        );
+        if let Ok(s) = toml::to_string(&root) {
+            out.push_str(&s);
+        }
+    }
+    out
+}
+
 /// REQ: DNS-006 (T6.15) — `[cache]` as the API shows it.
 fn cache_settings(c: &telltale_config::CacheConfig) -> telltale_api::model::CacheSettings {
     telltale_api::model::CacheSettings {
@@ -2600,5 +2734,57 @@ fn cache_settings(c: &telltale_config::CacheConfig) -> telltale_api::model::Cach
         prefetch_threshold_percent: c.prefetch_threshold_pct,
         prefetch_min_hits: c.prefetch_min_hits,
         persist: c.persist,
+    }
+}
+
+#[cfg(test)]
+mod keep_in_git_tests {
+    use super::*;
+
+    /// REQ: API-002 (T7.5) — the TOML that keeps an API change in Git.
+    #[test]
+    fn api_002_keep_in_git_toml() {
+        let up = keep_in_git(
+            ManagedKind::Upstream,
+            "quad9",
+            Some(
+                &serde_json::json!({ "url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net" }),
+            ),
+            None,
+        );
+        assert!(up.contains("[[upstream]]\nname = \"quad9\"\n"), "{up}");
+        assert!(up.contains("url = \"tls://9.9.9.9\""), "{up}");
+        let parsed: toml::Table = toml::from_str(&up).unwrap();
+        assert_eq!(
+            parsed["upstream"][0]["tls_server_name"].as_str(),
+            Some("dns.quad9.net")
+        );
+        let rec = keep_in_git(
+            ManagedKind::Record,
+            "nas.home",
+            Some(&serde_json::json!({ "records": [{ "type": "A", "value": "192.168.1.10" }] })),
+            None,
+        );
+        let parsed: toml::Table = toml::from_str(&rec).unwrap();
+        assert_eq!(parsed["record"][0]["name"].as_str(), Some("nas.home"));
+        let fwd = keep_in_git(
+            ManagedKind::Forward,
+            "corp.example",
+            Some(&serde_json::json!({ "servers": ["10.0.0.53"] })),
+            None,
+        );
+        let parsed: toml::Table = toml::from_str(&fwd).unwrap();
+        assert_eq!(
+            parsed["route"][0]["upstream_group"].as_str(),
+            Some("forward:corp.example")
+        );
+        assert_eq!(
+            parsed["upstream"][0]["url"].as_str(),
+            Some("udp://10.0.0.53")
+        );
+        let gone = keep_in_git(ManagedKind::List, "ads", None, None);
+        assert!(gone.starts_with("# Remove the [[list]] `ads`"), "{gone}");
+        let back = keep_in_git(ManagedKind::List, "ads", None, Some(&serde_json::json!({})));
+        assert!(back.contains("Nothing to change in Git"), "{back}");
     }
 }

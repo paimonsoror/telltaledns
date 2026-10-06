@@ -1160,21 +1160,32 @@
         }
       }
     },
-    "/api/v1/config/overrides": {
+    "/api/v1/config/entries": {
       "get": {
         "tags": [
           "config"
         ],
-        "summary": "What the UI and API changed in the configuration's upstreams, lists, and groups.",
-        "description": "Each entry made through the UI or API (ADR-069): `added` (a new name), `override` (it\nreplaces the config files' entry of the same name), or `hidden` (the files' entry is left\nout). Deleting an override or a hidden entry (`DELETE` on its path) brings the files' entry\nback. Entries the files define and nobody changed aren't listed.",
-        "operationId": "config_overrides",
+        "summary": "The configuration's upstreams, upstream groups, lists, and groups, with their sources.",
+        "description": "Each definition in effect, with the same fields as in `telltale.toml`, and where it comes\nfrom (ADR-069): `file`, `added` (made through the UI or API), `override` (replaces the\nconfig files' entry of the same name), or `hidden` (the files' entry is left out; listed so\nit can be brought back). `DELETE` on an override's or a hidden entry's path brings the\nfiles' version back. Secrets aren't part of these sections.",
+        "operationId": "config_entries",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "One kind only: `upstream`, `upstream_group`, `list`, or `group`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The changes, by kind and name.",
+            "description": "The entries, by kind and name.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Items_ConfigOverride"
+                  "$ref": "#/components/schemas/Items_ConfigEntry"
                 }
               }
             }
@@ -5165,6 +5176,13 @@
             "type": "string",
             "description": "What the change does, in one sentence, with the numbers (AGT-002 impact estimate)."
           },
+          "keepInGit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: API-002 (T7.5, ADR-069) — on a node whose configuration comes from Git: the TOML\nto add to (or the block to remove from) the repository or the Helm values' `config:` to\nmake this change permanent there. Changes made through the API live in this node's\n`state.db`, not in Git. Absent on other nodes."
+          },
           "recentQueries": {
             "type": "integer",
             "format": "int64",
@@ -5180,32 +5198,32 @@
           }
         }
       },
-      "ConfigOverride": {
+      "ConfigEntry": {
         "type": "object",
-        "description": "REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through\nthe UI or API.",
+        "description": "REQ: API-002 (T7.5, ADR-069) — one upstream, upstream group, list, or group: its definition\nin effect and where it comes from.",
         "required": [
           "kind",
           "name",
-          "mode"
+          "source"
         ],
         "properties": {
-          "by": {
+          "definition": {
             "type": [
-              "string",
+              "object",
               "null"
             ],
-            "description": "Who made the change."
+            "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden)."
           },
           "kind": {
             "type": "string",
             "description": "`upstream`, `upstream_group`, `list`, or `group`."
           },
-          "mode": {
-            "type": "string",
-            "description": "`added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'\nentry is left out)."
-          },
           "name": {
             "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` (the config files), `added` (made through the UI or API), `override` (replaces\nthe files' entry of that name), or `hidden` (the files' entry is left out)."
           }
         }
       },
@@ -6422,7 +6440,7 @@
           }
         }
       },
-      "Items_ConfigOverride": {
+      "Items_ConfigEntry": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
         "required": [
@@ -6433,30 +6451,30 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through\nthe UI or API.",
+              "description": "REQ: API-002 (T7.5, ADR-069) — one upstream, upstream group, list, or group: its definition\nin effect and where it comes from.",
               "required": [
                 "kind",
                 "name",
-                "mode"
+                "source"
               ],
               "properties": {
-                "by": {
+                "definition": {
                   "type": [
-                    "string",
+                    "object",
                     "null"
                   ],
-                  "description": "Who made the change."
+                  "description": "The definition in effect, with the same fields as in `telltale.toml` (absent when\nhidden)."
                 },
                 "kind": {
                   "type": "string",
                   "description": "`upstream`, `upstream_group`, `list`, or `group`."
                 },
-                "mode": {
-                  "type": "string",
-                  "description": "`added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'\nentry is left out)."
-                },
                 "name": {
                   "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`file` (the config files), `added` (made through the UI or API), `override` (replaces\nthe files' entry of that name), or `hidden` (the files' entry is left out)."
                 }
               }
             }

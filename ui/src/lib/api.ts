@@ -85,6 +85,8 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups';
+
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
 
@@ -168,6 +170,16 @@ export const api = {
       query: { dryRun: dryRun || undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
+  // REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups.
+  configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
+  putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false) =>
+    call<S['ConfigChange']>('PUT', `/${path}/${encodeURIComponent(name)}`, {
+      body,
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
+  deleteEntry: (path: EntryPath, name: string) =>
+    call<S['ConfigChange']>('DELETE', `/${path}/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
   deleteRule: (id: string) =>
     call<S['ConfigChange']>('DELETE', `/rules/${encodeURIComponent(id)}`, { headers: { 'idempotency-key': newKey() } }),
   deleteClient: (name: string) =>

@@ -7,12 +7,27 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import { currentMode } from '../lib/mode.svelte';
+  import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
 
   let groups = $state<S['GroupInfo'][]>([]);
   let tops = $state<Record<string, { domains: S['TopItem'][]; blocked: S['TopItem'][] }>>({});
   let error = $state<unknown>(null);
+  let listNames = $state<string[]>([]);
 
-  $effect(() => {
+  // REQ: API-002 (T7.5) — add and change groups here.
+  const groupFields = $derived<Field[]>([
+    { key: 'networks', label: 'Networks', type: 'lines', placeholder: '192.168.2.0/24',
+      help: 'One per line. Every device on these networks belongs to the group.' },
+    { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
+      help: 'Leave all unticked on a new group to use every enabled list.' },
+    { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
+    { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
+      help: 'When a device matches several groups, the highest priority wins.' },
+    { key: 'color', label: 'Color', type: 'text', placeholder: '#4f8cff', advanced: true },
+  ]);
+
+  function load() {
+    api.lists().then((l) => (listNames = l.items.map((x) => x.name))).catch(() => {});
     api
       .groups()
       .then(async (g) => {
@@ -28,7 +43,8 @@
         tops = Object.fromEntries(entries);
       })
       .catch((e) => (error = e));
-  });
+  }
+  $effect(load);
   const advanced = $derived(currentMode() === 'advanced');
   const total = $derived(groups.reduce((a, g) => a + g.queries24h, 0));
 </script>
@@ -102,10 +118,9 @@
       </table>
     </div>
   </section>
-  <p class="muted small">
-    Groups are defined with <code>[[group]]</code> in the configuration; <code>networks = ["192.168.2.0/24"]</code> puts a
-    VLAN's devices in a group.
-  </p>
+  <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields}
+    summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || 'named devices only'} · ${d.lists ? `${(d.lists as string[]).length} lists` : 'every enabled list'}`}
+    onchanged={load} />
 </div>
 
 <style>
