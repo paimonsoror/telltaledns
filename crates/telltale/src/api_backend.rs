@@ -99,7 +99,7 @@ pub(crate) fn rcode_name(rc: u8) -> String {
         .map_or_else(|| format!("RCODE{rc}"), |s| (*s).to_owned())
 }
 
-fn rcode_value(name: &str) -> Option<u8> {
+pub(crate) fn rcode_value(name: &str) -> Option<u8> {
     let up = name.trim().to_ascii_uppercase();
     RCODES
         .iter()
@@ -1271,6 +1271,59 @@ impl Backend for ApiBackend {
         }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
         v
+    }
+
+    // REQ: AGT-012 (T8.4) — vqlog over this node's query log and the logs shipped to it.
+    fn vqlog(
+        &self,
+        q: &telltale_api::vqlog::Query,
+        from_us: u64,
+        to_us: u64,
+        dry_run: bool,
+    ) -> Result<telltale_api::model::VqlogResult, Problem> {
+        if self.src.qlog.is_none() {
+            return Err(
+                Problem::unavailable("the query log is off on this node").hint(
+                    "Enable it with [telemetry.qlog] enabled = true (and privacy_level below 3).",
+                ),
+            );
+        }
+        let data_dir = self.src.config.load().node.data_dir.to_string();
+        let mut dirs = vec![Path::new(&data_dir).join("qlog")];
+        dirs.extend(
+            crate::ship::shipped_dirs(&data_dir)
+                .into_iter()
+                .map(|(_, d)| d),
+        );
+        let groups = self
+            .src
+            .pipeline
+            .current()
+            .policy
+            .clients
+            .groups()
+            .iter()
+            .map(|g| g.name.to_string())
+            .collect();
+        let upstreams = self
+            .upstreams()
+            .into_iter()
+            .map(|u| (u.id, u.name))
+            .collect();
+        let name = |ip: [u8; 16]| device_name(&self.src, ip);
+        let ctx = crate::vqlog::Ctx {
+            groups,
+            upstreams,
+            client_name: &name,
+            qtype_name,
+            rcode_name,
+            rcode_value,
+        };
+        let opts = qlog::Options {
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(4)),
+            on_thread_start: Some(telltale_net::background_thread),
+        };
+        crate::vqlog::run(q, from_us, to_us, &dirs, &ctx, dry_run, &opts)
     }
 
     // REQ: OBS-009 (T7.14) — first-seen domains with their DGA scores.

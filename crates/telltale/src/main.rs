@@ -43,6 +43,7 @@ mod sinks;
 mod tail;
 mod technitium;
 mod updates;
+mod vqlog;
 mod warm;
 
 use std::io::{self, Write};

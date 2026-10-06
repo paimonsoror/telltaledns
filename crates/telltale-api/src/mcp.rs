@@ -309,6 +309,27 @@ pub fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "vqlog",
+            description: "Read-only. Analytics over the query log in one query (a small, safe pipe language; never SQL). Examples: `from -24h | where status = blocked and group = kids | top 10 name`; `from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)`; `where name under roku.com | by client | stats count, distinct(name)`. Stages: from TIME [to TIME] (-24h, -7d, RFC 3339; default -24h); where FIELD OP VALUE [and ...] (fields name, client, group, status, qtype, rcode, upstream, proto, latency, upstream_latency; ops =, !=, in (a, b), not in (a, b); names also ~ glob, has, under; latencies >, >=, <, <= in ms); bucket 5m|1h|1d; by KEY, ... (name, domain, client, group, status, qtype, rcode, upstream, proto; at most 3); stats count, distinct(KEY), avg|min|max|p50|p90|p95|p99(latency|upstream_latency|answers|bytes); top N KEY; sort COLUMN [asc|desc]; limit N (<= 200). Returns a table, the query as understood, and its cost. Set estimateOnly to check the cost first. Needs the querylog:read scope; subject to the privacy level.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "query": {"type": "string", "description": "The vqlog query."},
+                "estimateOnly": {"type": "boolean", "description": "Only parse and estimate how much it would read."}
+            }, "required": ["query"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let q = s(a, "query").ok_or("`query` is required")?;
+                let dry = a
+                    .get("estimateOnly")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                Ok(vec![(
+                    "result".into(),
+                    format!("/api/v1/analytics/vqlog?q={}&dryRun={dry}", enc(&q)),
+                )])
+            },
+        },
+        Tool {
             name: "cluster_status",
             description: "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), and recent events. On a standalone node it says so and still shows its machine.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),

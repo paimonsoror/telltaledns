@@ -21,6 +21,7 @@ pub mod plans;
 pub mod problem;
 pub mod time;
 pub mod ui;
+pub mod vqlog;
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -41,6 +42,7 @@ use crate::model::{
     NameMatch, NewDomain, NewDomainParams, PromoteRequest, QueryPage, QueryParams, QueryRow,
     RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped,
     TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    VqlogCost, VqlogParams, VqlogResult,
 };
 use crate::problem::Problem;
 
@@ -164,6 +166,18 @@ pub trait Backend: Send + Sync + 'static {
     /// REQ: OPS-008 — this node's DHCP leases (empty when it doesn't run DHCP).
     fn dhcp_leases(&self) -> Vec<DhcpLease> {
         Vec::new()
+    }
+    /// REQ: AGT-012 — runs a parsed `vqlog` query over `[from_us, to_us)` (or only
+    /// estimates its cost).
+    fn vqlog(
+        &self,
+        q: &vqlog::Query,
+        from_us: u64,
+        to_us: u64,
+        dry_run: bool,
+    ) -> Result<VqlogResult, Problem> {
+        let _ = (q, from_us, to_us, dry_run);
+        Err(Problem::unavailable("vqlog isn't available on this node"))
     }
     /// REQ: OBS-009 — domains devices contacted for the first time since `since_s`, newest
     /// first, optionally for one device, at most `limit`.
@@ -404,6 +418,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/clients", get(clients))
         .route("/api/v1/analytics/anomalies", get(anomalies))
         .route("/api/v1/analytics/new-domains", get(new_domains))
+        .route("/api/v1/analytics/vqlog", get(vqlog_query))
         .route("/api/v1/dhcp/leases", get(dhcp_leases))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/forwards", get(forwards))
@@ -507,14 +522,14 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, rules, anomalies, new_domains, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, VqlogResult, VqlogCost, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -1071,6 +1086,43 @@ async fn new_domains(
             p.limit.unwrap_or(200).clamp(1, 2000),
         ),
     }))
+}
+
+/// Analytics over the query log in one query (`vqlog`, AGT-012).
+///
+/// A small pipe language: `from -24h | where status = blocked and group = kids | top 10 name`,
+/// `from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)`,
+/// `where name under roku.com | by client | stats count, distinct(name)`. Stages: `from TIME
+/// [to TIME]`, `where FIELD OP VALUE [and …]` (fields name, client, group, status, qtype,
+/// rcode, upstream, proto, latency, `upstream_latency`; ops =, !=, in (…), not in (…), and for
+/// names ~ glob, has, under; for latencies >, >=, <, <= in ms), `bucket 5m|1h|1d`, `by KEY,
+/// …` (name, domain, client, group, status, qtype, rcode, upstream, proto), `stats count,
+/// distinct(KEY), avg|min|max|p50|p90|p95|p99(latency|upstream_latency|answers|bytes)`, `top N
+/// KEY`, `sort COLUMN [asc|desc]`, `limit N` (≤ 200). The answer is a table, the query as
+/// understood, and its cost; `dryRun=true` only estimates. Never SQL; read-only. A query that
+/// would read more than 100 million logged queries is refused with a 400 (narrow the time or
+/// filter).
+#[utoipa::path(get, path = "/api/v1/analytics/vqlog", tag = "queries",
+    params(VqlogParams),
+    responses((status = 200, body = VqlogResult, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says what's wrong in the query and how to fix it."),
+        (status = 503, body = Problem, description = "The query log is off.")))]
+async fn vqlog_query(
+    State(b): State<Shared>,
+    Query(p): Query<VqlogParams>,
+) -> Result<Json<VqlogResult>, Problem> {
+    let q = vqlog::parse(&p.q).map_err(|e| {
+        let p = Problem::invalid(format!("`q`: {}", e.message));
+        if e.hint.is_empty() { p } else { p.hint(e.hint) }
+    })?;
+    let now = b.now_unix_seconds();
+    let from = time_param(Some(q.from.as_deref().unwrap_or("-24h")), 0, now, "from")?;
+    let to = time_param(q.to.as_deref(), 0, now, "to")?;
+    let (from_us, to_us) = (from.saturating_mul(1_000_000), to.saturating_mul(1_000_000));
+    let dry = p.dry_run.unwrap_or(false);
+    let bk = Arc::clone(&b);
+    let mut r = blocking(move || bk.vqlog(&q, from_us, to_us, dry)).await?;
+    r.missing_nodes = b.missing_nodes();
+    Ok(Json(r))
 }
 
 /// Names on my network: the names TelltaleDNS answers itself.

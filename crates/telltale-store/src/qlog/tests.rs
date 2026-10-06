@@ -254,6 +254,37 @@ fn obs_003_filters_match_exactly_what_a_scan_would() {
     assert_eq!((page.rows.len(), page.stats.blocks_read), (0, 0));
 }
 
+/// REQ: AGT-012 — the estimate bounds what a search matches, from headers alone.
+#[test]
+fn agt_012_estimate_bounds_the_matches() {
+    let tmp = tempfile::tempdir().unwrap();
+    populate(tmp.path(), 0, 2, 20_000);
+    let all_rows = estimate(tmp.path(), &Filter::default()).unwrap();
+    assert_eq!((all_rows.segments, all_rows.rows), (2, 40_000));
+    let one_hour = Filter {
+        from_us: (BASE_HOUR + 1) * HOUR_US,
+        ..Filter::default()
+    };
+    let e = estimate(tmp.path(), &one_hour).unwrap();
+    assert!(
+        e.rows >= all(tmp.path(), &one_hour).len() as u64 && e.rows < 40_000,
+        "{e:?}"
+    );
+    let blocked = Filter {
+        status: vec![Status::Blocked],
+        ..Filter::default()
+    };
+    assert!(estimate(tmp.path(), &blocked).unwrap().rows >= all(tmp.path(), &blocked).len() as u64);
+    let none = Filter {
+        name: Some(NameMatch::Exact("never.logged.example".into())),
+        ..Filter::default()
+    };
+    assert!(
+        estimate(tmp.path(), &none).unwrap().rows < 40_000,
+        "blooms rule blocks out"
+    );
+}
+
 #[test]
 fn obs_003_rare_names_skip_blocks_by_bloom() {
     let tmp = tempfile::tempdir().unwrap();

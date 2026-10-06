@@ -69,6 +69,18 @@ const why = await c.callTool({ name: 'explain_decision', arguments: { name: 'ads
 if (why.isError || data(why).explanation?.outcome !== 'blocked') fail(`explain_decision: ${JSON.stringify(data(why)).slice(0, 300)}`);
 console.log(`ok: TV story (device ${p.device.name}, ${p.recentQueries.items.length} recent queries, ${data(health).upstreams.items.length} upstreams, ads blocked)`);
 
+// 2b. AGT-012 (T8.4): vqlog — one query for top-K, a cost-only dry run, and a mistake with a hint.
+const top = data(await c.callTool({ name: 'vqlog', arguments: { query: 'from -1h | top 5 name' } }));
+const tv = top.result?.rows?.find((r) => r[0] === 'tv-portal.mcp.test');
+if (!tv || !(tv[1] >= 20) || top.result.columns.join() !== 'name,count') fail(`vqlog top: ${JSON.stringify(top).slice(0, 400)}`);
+const byClient = data(await c.callTool({ name: 'vqlog', arguments: { query: 'from -1h | where name = tv-portal.mcp.test | by client | stats count, p95(latency)' } }));
+if (!(byClient.result?.rows?.[0]?.[2] >= 20) || byClient.result.columns[3] !== 'p95(latency)') fail(`vqlog by client: ${JSON.stringify(byClient).slice(0, 400)}`);
+const est = data(await c.callTool({ name: 'vqlog', arguments: { query: 'from -1h | top 5 name', estimateOnly: true } }));
+if (!(est.result?.cost?.estimatedRows >= 20) || est.result.cost.rowsScanned !== 0 || est.result.rows.length !== 0) fail(`vqlog estimate: ${JSON.stringify(est).slice(0, 400)}`);
+const typo = await c.callTool({ name: 'vqlog', arguments: { query: 'from -1h | top 5 colour' } });
+if (!typo.isError || !JSON.stringify(typo).includes('Keys:')) fail(`vqlog error: ${JSON.stringify(typo).slice(0, 400)}`);
+console.log(`ok: vqlog (tv-portal ${tv[1]} times, p95 ${byClient.result.rows[0][3]} ms, estimate ${est.result.cost.estimatedRows} rows)`);
+
 // 4b. Resources and prompts (AGT-010).
 const { resources } = await c.listResources();
 const uris = resources.map((r) => r.uri).sort();
@@ -106,6 +118,8 @@ await s.close();
 const n = await connect(http(process.env.NARROW_TOKEN));
 const denied = await n.callTool({ name: 'search_queries', arguments: {} });
 if (!denied.isError) fail('search_queries worked without querylog:read');
+const deniedVq = await n.callTool({ name: 'vqlog', arguments: { query: 'top 5 name' } });
+if (!deniedVq.isError) fail('vqlog worked without querylog:read');
 console.log('ok: scopes apply to tools');
 await n.close();
 

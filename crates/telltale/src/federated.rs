@@ -733,6 +733,16 @@ impl Backend for Federated {
     fn local_names(&self) -> Vec<LocalName> {
         self.local.local_names()
     }
+    // REQ: AGT-012 — this node's log and the logs shipped to it (CLU-007).
+    fn vqlog(
+        &self,
+        q: &telltale_api::vqlog::Query,
+        from_us: u64,
+        to_us: u64,
+        dry_run: bool,
+    ) -> Result<telltale_api::model::VqlogResult, telltale_api::problem::Problem> {
+        self.local.vqlog(q, from_us, to_us, dry_run)
+    }
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.local.forwards()
     }

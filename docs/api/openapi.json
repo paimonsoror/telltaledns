@@ -114,6 +114,69 @@
         }
       }
     },
+    "/api/v1/analytics/vqlog": {
+      "get": {
+        "tags": [
+          "queries"
+        ],
+        "summary": "Analytics over the query log in one query (`vqlog`, AGT-012).",
+        "description": "A small pipe language: `from -24h | where status = blocked and group = kids | top 10 name`,\n`from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)`,\n`where name under roku.com | by client | stats count, distinct(name)`. Stages: `from TIME\n[to TIME]`, `where FIELD OP VALUE [and …]` (fields name, client, group, status, qtype,\nrcode, upstream, proto, latency, `upstream_latency`; ops =, !=, in (…), not in (…), and for\nnames ~ glob, has, under; for latencies >, >=, <, <= in ms), `bucket 5m|1h|1d`, `by KEY,\n…` (name, domain, client, group, status, qtype, rcode, upstream, proto), `stats count,\ndistinct(KEY), avg|min|max|p50|p90|p95|p99(latency|upstream_latency|answers|bytes)`, `top N\nKEY`, `sort COLUMN [asc|desc]`, `limit N` (≤ 200). The answer is a table, the query as\nunderstood, and its cost; `dryRun=true` only estimates. Never SQL; read-only. A query that\nwould read more than 100 million logged queries is refused with a 400 (narrow the time or\nfilter).",
+        "operationId": "vqlog_query",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The query, for example `from -24h | where status = blocked | top 10 name`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "from -24h | where status = blocked | top 10 name"
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Only parse and estimate the cost; don't scan.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VqlogResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says what's wrong in the query and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The query log is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -9749,6 +9812,112 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "VqlogCost": {
+        "type": "object",
+        "description": "What a `vqlog` query costs (REQ: AGT-012).",
+        "required": [
+          "estimatedRows",
+          "segments",
+          "blocks",
+          "rowsScanned",
+          "rowsMatched",
+          "elapsedMs"
+        ],
+        "properties": {
+          "blocks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "elapsedMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "estimatedRows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Before scanning, from block headers: how many logged queries could match at most.",
+            "minimum": 0
+          },
+          "rowsMatched": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "rowsScanned": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the scan did (0 for a dry run).",
+            "minimum": 0
+          },
+          "segments": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VqlogResult": {
+        "type": "object",
+        "description": "A `vqlog` result: a table (REQ: AGT-012).",
+        "required": [
+          "query",
+          "columns",
+          "rows",
+          "groups",
+          "cost",
+          "truncated",
+          "missingNodes"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`time` (with `bucket`), the keys (a `client` key adds `clientName`), then the\nstatistics. Latencies are in ms."
+          },
+          "cost": {
+            "$ref": "#/components/schemas/VqlogCost"
+          },
+          "groups": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Groups found before `limit`.",
+            "minimum": 0
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes whose query log isn't here (not shipped to this node)."
+          },
+          "query": {
+            "type": "string",
+            "description": "The query as understood, with the defaults filled in."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "description": "One array per row, in column order."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The scan stopped early (`truncatedReason` says why); the numbers cover what it read."
+          },
+          "truncatedReason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

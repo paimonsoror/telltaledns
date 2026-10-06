@@ -14,7 +14,10 @@ pub mod writer;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use search::{Cursor, Filter, NameMatch, Options, Page, Row, SearchStats, search, search_with};
+pub use search::{
+    Cursor, Estimate, Filter, NameMatch, Options, Page, Row, SearchStats, estimate, search,
+    search_with,
+};
 pub use writer::{Builder, Settings, Stats, hidden_name};
 
 /// Identifies a segment file. Orders oldest first (hour, then node, then part).

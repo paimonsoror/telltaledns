@@ -457,6 +457,16 @@
       "docs": "device-anomalies"
     },
     {
+      "id": "vqlog",
+      "title": "vqlog",
+      "term": "Analytics in one query",
+      "summary": "A small query language over the query log: filter, group, top lists, percentiles, and time series, with the cost shown. Never SQL.",
+      "when": "Asking a question no dashboard answers, yourself or through an AI agent (the MCP tool vqlog).",
+      "example": "from -7d | where group = kids and status = blocked | top 10 domain",
+      "caution": "Long windows over busy networks read a lot: check with a dry run (dryRun=true) first. Agents need the querylog:read scope.",
+      "docs": "analytics-in-one-query-vqlog"
+    },
+    {
       "id": "list-overlap",
       "title": "Unique names and overlap",
       "term": "List overlap",

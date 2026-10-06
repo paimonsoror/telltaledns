@@ -50,6 +50,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/vqlog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Analytics over the query log in one query (`vqlog`, AGT-012).
+         * @description A small pipe language: `from -24h | where status = blocked and group = kids | top 10 name`,
+         *     `from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)`,
+         *     `where name under roku.com | by client | stats count, distinct(name)`. Stages: `from TIME
+         *     [to TIME]`, `where FIELD OP VALUE [and …]` (fields name, client, group, status, qtype,
+         *     rcode, upstream, proto, latency, `upstream_latency`; ops =, !=, in (…), not in (…), and for
+         *     names ~ glob, has, under; for latencies >, >=, <, <= in ms), `bucket 5m|1h|1d`, `by KEY,
+         *     …` (name, domain, client, group, status, qtype, rcode, upstream, proto), `stats count,
+         *     distinct(KEY), avg|min|max|p50|p90|p95|p99(latency|upstream_latency|answers|bytes)`, `top N
+         *     KEY`, `sort COLUMN [asc|desc]`, `limit N` (≤ 200). The answer is a table, the query as
+         *     understood, and its cost; `dryRun=true` only estimates. Never SQL; read-only. A query that
+         *     would read more than 100 million logged queries is refused with a 400 (narrow the time or
+         *     filter).
+         */
+        get: operations["vqlog_query"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -3758,6 +3789,48 @@ export interface components {
             totpEnabled: boolean;
             username: string;
         };
+        /** @description What a `vqlog` query costs (REQ: AGT-012). */
+        VqlogCost: {
+            blocks: number;
+            /** Format: int64 */
+            elapsedMs: number;
+            /**
+             * Format: int64
+             * @description Before scanning, from block headers: how many logged queries could match at most.
+             */
+            estimatedRows: number;
+            /** Format: int64 */
+            rowsMatched: number;
+            /**
+             * Format: int64
+             * @description What the scan did (0 for a dry run).
+             */
+            rowsScanned: number;
+            segments: number;
+        };
+        /** @description A `vqlog` result: a table (REQ: AGT-012). */
+        VqlogResult: {
+            /**
+             * @description `time` (with `bucket`), the keys (a `client` key adds `clientName`), then the
+             *     statistics. Latencies are in ms.
+             */
+            columns: string[];
+            cost: components["schemas"]["VqlogCost"];
+            /**
+             * Format: int64
+             * @description Groups found before `limit`.
+             */
+            groups: number;
+            /** @description Cluster nodes whose query log isn't here (not shipped to this node). */
+            missingNodes: string[];
+            /** @description The query as understood, with the defaults filled in. */
+            query: string;
+            /** @description One array per row, in column order. */
+            rows: Record<string, never>[][];
+            /** @description The scan stopped early (`truncatedReason` says why); the numbers cover what it read. */
+            truncated: boolean;
+            truncatedReason?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -3826,6 +3899,52 @@ export interface operations {
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    vqlog_query: {
+        parameters: {
+            query: {
+                /**
+                 * @description The query, for example `from -24h | where status = blocked | top 10 name`.
+                 * @example from -24h | where status = blocked | top 10 name
+                 */
+                q: string;
+                /** @description Only parse and estimate the cost; don't scan. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VqlogResult"];
+                };
+            };
+            /** @description Invalid request: problem+json says what's wrong in the query and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The query log is off. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -420,6 +420,53 @@ fn parallel(
     })?;
     Ok(page)
 }
+/// What a search would read at most, from segment and block headers only (no column is
+/// read): the cost estimate of an analytics query (REQ: AGT-012).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Estimate {
+    /// Segments and blocks a scan would read.
+    pub segments: usize,
+    pub blocks: usize,
+    /// Rows in those blocks: an upper bound on the matches.
+    pub rows: u64,
+}
+
+/// Estimates what searching `dir` with `f` would read (see [`Estimate`]).
+pub fn estimate(dir: &Path, f: &Filter) -> io::Result<Estimate> {
+    let name = f.name.as_ref().map(NamePred::new).transpose()?;
+    let name_key = name.as_ref().and_then(NamePred::bloom_key);
+    let mut keys: Vec<u64> = name_key.into_iter().collect();
+    keys.extend(f.client_ip.as_ref().map(format::client_key));
+    let to_us = if f.to_us == 0 { u64::MAX } else { f.to_us };
+    let mut e = Estimate::default();
+    for (id, path) in list_segments(dir)? {
+        let seg_from = id.hour.saturating_sub(1) * 3_600_000_000;
+        let seg_to = (id.hour + 1) * 3_600_000_000;
+        if seg_to <= f.from_us || seg_from >= to_us {
+            continue;
+        }
+        let Ok(seg) = Segment::open(&path) else {
+            continue;
+        };
+        if let (Some(k), Some(names)) = (name_key, &seg.names)
+            && !names.may_contain(k)
+        {
+            continue;
+        }
+        let before = e.blocks;
+        for (_, h) in &seg.blocks {
+            if block_may_match(h, f, to_us) && keys.iter().all(|&k| h.bloom_may_contain(k)) {
+                e.blocks += 1;
+                e.rows += u64::from(h.rows);
+            }
+        }
+        if e.blocks > before {
+            e.segments += 1;
+        }
+    }
+    Ok(e)
+}
+
 fn add_stats(a: &mut SearchStats, b: &SearchStats) {
     a.segments += b.segments;
     a.blocks_total += b.blocks_total;

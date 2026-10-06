@@ -1231,6 +1231,55 @@ pub struct ListShare {
     pub names: u64,
 }
 
+/// `GET /analytics/vqlog` parameters (REQ: AGT-012).
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct VqlogParams {
+    /// The query, for example `from -24h | where status = blocked | top 10 name`.
+    #[param(example = "from -24h | where status = blocked | top 10 name")]
+    pub q: String,
+    /// Only parse and estimate the cost; don't scan.
+    #[serde(rename = "dryRun")]
+    pub dry_run: Option<bool>,
+}
+
+/// What a `vqlog` query costs (REQ: AGT-012).
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VqlogCost {
+    /// Before scanning, from block headers: how many logged queries could match at most.
+    pub estimated_rows: u64,
+    pub segments: usize,
+    pub blocks: usize,
+    /// What the scan did (0 for a dry run).
+    pub rows_scanned: u64,
+    pub rows_matched: u64,
+    pub elapsed_ms: u64,
+}
+
+/// A `vqlog` result: a table (REQ: AGT-012).
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VqlogResult {
+    /// The query as understood, with the defaults filled in.
+    pub query: String,
+    /// `time` (with `bucket`), the keys (a `client` key adds `clientName`), then the
+    /// statistics. Latencies are in ms.
+    pub columns: Vec<String>,
+    /// One array per row, in column order.
+    #[schema(value_type = Vec<Vec<Object>>)]
+    pub rows: Vec<Vec<serde_json::Value>>,
+    /// Groups found before `limit`.
+    pub groups: u64,
+    pub cost: VqlogCost,
+    /// The scan stopped early (`truncatedReason` says why); the numbers cover what it read.
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<String>,
+    /// Cluster nodes whose query log isn't here (not shipped to this node).
+    pub missing_nodes: Vec<String>,
+}
+
 /// `GET /analytics/new-domains` parameters.
 #[derive(Debug, Clone, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]

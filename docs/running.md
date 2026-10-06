@@ -1798,8 +1798,31 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
 | `find_anomalies` | device anomalies with evidence (including NXDOMAIN storms and DGA-like names) |
 | `new_domains` | domains devices contacted for the first time, with DGA scores |
+| `vqlog` | any count, top list, percentile, or time series over the query log, in one query (needs `querylog:read`; below) |
 | `cluster_status` | members, roles, sync, versions, checks |
 | `get_config` | one configuration section (no secrets) |
+
+### Analytics in one query (vqlog)
+`vqlog` is a small query language over the query log, for agents and for you: one query instead of many narrow tools, and never SQL. Stages are separated by `|`:
+```text
+from -24h | where status = blocked and group = kids | top 10 name
+from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)
+where name under roku.com | by client | stats count, distinct(name)
+from -1h | where latency > 200 | by upstream | stats count, p50(latency), p99(latency)
+```
+| Stage | |
+|---|---|
+| `from TIME [to TIME]` | `-30m`, `-24h`, `-7d`, or RFC 3339 (default: the last 24 hours) |
+| `where FIELD OP VALUE [and …]` | fields `name`, `client`, `group`, `status`, `qtype`, `rcode`, `upstream`, `proto`, `latency`, `upstream_latency`; `=`, `!=`, `in (a, b)`, `not in (a, b)`; names also `~` (glob: `"*.tiktok.*"`), `has` (part of the name), `under` (the name and below); a client can be a CIDR (`192.168.2.0/24`); latencies `>`, `>=`, `<`, `<=` in ms |
+| `bucket 5m` (`1h`, `1d`) | a time series: one row per bucket |
+| `by KEY, …` | `name`, `domain` (the registrable domain), `client`, `group`, `status`, `qtype`, `rcode`, `upstream`, `proto` (up to three) |
+| `stats …` | `count`, `distinct(KEY)`, and `avg`, `min`, `max`, `p50`, `p90`, `p95`, `p99` of `latency`, `upstream_latency`, `answers`, or `bytes` |
+| `top N KEY` | the same as `by KEY \| stats count \| sort count desc \| limit N` |
+| `sort COLUMN [asc\|desc]`, `limit N` | by any column; at most 200 rows (default 50) |
+
+`GET /api/v1/analytics/vqlog?q=…` (or the MCP tool `vqlog`) answers with a table (`columns`, `rows`; a `client` column comes with `clientName`), the query as it was understood (`query`, with the defaults filled in), and what it cost (`cost`: the rows it could read at most, then the rows scanned and matched). `dryRun=true` (`estimateOnly` in MCP) only estimates. Mistakes come back as 400 with a hint listing the choices (the groups, the statuses, …).
+
+**Limits:** a query that could read more than 100 million logged queries is refused (narrow the time or filter first). A scan stops at 2 million matching queries, 100,000 groups, or 25 seconds, and says so (`truncated`, `truncatedReason`); the numbers then cover the newest queries. It needs `querylog:read`, isn't available to agents restricted to a group, and sees what the privacy level lets the query log keep. On a cluster's primary it covers the query logs replicas ship to it.
 
 **Signing in with SSO (OAuth).** Instead of pasting an agent token, an MCP client can sign you in through your OIDC provider (MCP's OAuth 2.1 flow). Set the provider and register the MCP client with it:
 ```toml

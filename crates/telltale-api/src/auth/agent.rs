@@ -137,7 +137,10 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/blocking" => {
                 return Need::Scope("analytics:read");
             }
-            "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
+            // REQ: AGT-012 — vqlog reads the query log row by row (by client and name).
+            "/api/v1/queries" | "/api/v1/queries/stream" | "/api/v1/analytics/vqlog" => {
+                return Need::Scope("querylog:read");
+            }
             "/api/v1/lists"
             | "/api/v1/services"
             | "/api/v1/groups"
@@ -371,6 +374,11 @@ mod tests {
             Scope("analytics:read")
         );
         assert_eq!(required(&g, "/api/v1/queries"), Scope("querylog:read"));
+        // REQ: AGT-012 — vqlog reads the query log.
+        assert_eq!(
+            required(&g, "/api/v1/analytics/vqlog"),
+            Scope("querylog:read")
+        );
         assert_eq!(required(&g, "/api/v1/clients"), Scope("config:read"));
         assert_eq!(
             required(&Method::PUT, "/api/v1/clients/tv"),
@@ -531,5 +539,9 @@ mod tests {
         };
         assert!(rr("/api/v1/queries").is_ok());
         assert!(rr("/api/v1/stats/summary").is_err(), "no group view");
+        assert!(
+            rr("/api/v1/analytics/vqlog").is_err(),
+            "vqlog has no group view"
+        );
     }
 }

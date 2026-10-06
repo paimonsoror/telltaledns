@@ -1258,6 +1258,20 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-082 — vqlog: a pipe language compiled to qlog searches, aggregated in memory (Proposed)
+**Context:** T8.4, AGT-012: "a constrained, safe query DSL (`vqlog`) over the query log and rollups (filter, group by, top-K, percentiles, time bucket), with a cost estimate, exposed as one tool". The spec doesn't fix the syntax, the limits, or the scope.
+
+**Decision:**
+- Syntax: stages separated by `|` — `from`, `where` (conditions joined by `and`; `in (…)` lists instead of `or`), `bucket`, `by`, `stats`, `top`, `sort`, `limit`. A fixed grammar parsed into a plan in `telltale-api` (syntax errors are 400s with hints); no expressions, functions, or joins. The name kept from the spec (`vqlog`) although the product was renamed.
+- Execution reads the query log only, not the rollups: rollups can't filter by name or client, and percentiles over them would be approximations of approximations. The conditions the qlog index can use are pushed into the search (time, one name, one client, group, statuses, qtypes, rcodes, one upstream, minimum latency); every condition is also checked on each row. Grouping is exact, in memory; percentiles are exact (nearest rank).
+- Cost: a header-only estimate (segments, blocks, and rows that could match, using the same block skipping as search) before the scan, returned with every answer; `dryRun` returns only that. Above 100 million estimated rows the query is refused. The scan stops at 2 million matches, 100,000 groups, or 25 seconds and reports `truncated` with the reason; results then cover the newest queries.
+- Access: `querylog:read` (it reads per-device, per-name rows); not group-aware, so group-restricted agents can't use it. Scope: this node's log plus the logs shipped to it (CLU-007), so the primary of a shipping cluster sees everything; `missingNodes` as elsewhere.
+- Not done: `or` between fields, rollup-backed long windows, per-cluster fan-out with mergeable sketches, a UI editor.
+
+**Consequences:**
+- One MCP tool answers most analytics questions with exact numbers and a visible cost; the narrow tools stay for the common ones.
+- Long windows on busy networks are slow (it scans), and the limits say so instead of degrading DNS (search threads run at background priority).
+
 ## ADR-081 — mDNS device naming: passive, A records of `<name>.local` (Proposed)
 **Context:** T8.3 (M8 "mDNS client naming"; API-010 lists mDNS as a naming source). Many devices announce their host name over mDNS (RFC 6762) whether or not anyone asks.
 
