@@ -430,7 +430,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* counters arrive as monotonic cumulative sums, gauges as gauges, histograms with per-bucket counts and bounds; resource attributes name the service and node; log records carry the event's fields as attributes and a severity (blocks WARN); a collector outage never touches DNS.
   - *Done 2026-10-06:* `crates/telltale/src/otlp.rs` (ADR-076, Proposed): exposition parser and OTLP mapping, the export task, `logs_body` for the sink; config and validation; unit tests `obs_006_*`; `deploy/sinks-e2e.sh` checks both against a running node. *Not done:* OTLP/gRPC.
 
-- [ ] **T7.18 dnstap.** *(OBS-007)* CLIENT_QUERY/CLIENT_RESPONSE (and FORWARDER_*) over Frame Streams (Unix socket or TCP), with sampling. Needs the query and response wire messages, which query events don't carry: a sampled capture on the query path, so a benchmark comes first.
+- [x] **T7.18 dnstap.** *(OBS-007)* CLIENT_QUERY/CLIENT_RESPONSE over Frame Streams (Unix socket or TCP), with sampling. Needs the query and response wire messages, which query events don't carry: a sampled capture on the query path, so a benchmark comes first.
+  - *AC:* the Frame Streams handshake; each sampled query gives both messages with the client, transport, and times; one in `sample_every`; a missing or slow reader drops copies and never delays DNS; nothing extra on the query path when off (bench-smoke).
+  - *Done 2026-10-06:* `crates/telltale/src/dnstap.rs` (ADR-077, Proposed): the tap in `Pipeline::emit`, the writer thread, hand-written protobuf; `[telemetry.dnstap]` config and validation; test `obs_007_dnstap_over_frame_streams` (a reader doing the handshake and decoding the messages); bench-smoke unchanged. *Deferred:* `FORWARDER_*` messages; the client port.
 
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

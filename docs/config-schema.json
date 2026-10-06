@@ -295,6 +295,10 @@
           "nxdomain_percent": 50,
           "sensitivity": "normal"
         },
+        "dnstap": {
+          "buffer": 10000,
+          "sample_every": 1
+        },
         "metrics": {
           "enabled": true,
           "listen": "0.0.0.0:9153",
@@ -1061,6 +1065,43 @@
           "const": "permissive"
         }
       ]
+    },
+    "DnstapConfig": {
+      "description": "REQ: OBS-007 (T7.18, `spec/06` §5) — dnstap over Frame Streams.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "Or a TCP reader: `tcp://host:port`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "buffer": {
+          "description": "Copies held while the reader is slow; beyond, they're dropped.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10000,
+          "minimum": 0
+        },
+        "sample_every": {
+          "description": "One query in this many is copied (1 = every query).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "socket": {
+          "description": "A Unix socket a dnstap reader listens on (`/run/dnstap.sock`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
     },
     "EdeKind": {
       "description": "EDE code on block answers.",
@@ -2465,6 +2506,14 @@
             "nxdomain_per_minute": 30,
             "nxdomain_percent": 50,
             "sensitivity": "normal"
+          }
+        },
+        "dnstap": {
+          "description": "REQ: OBS-007 (T7.18) — client queries and responses as dnstap.",
+          "$ref": "#/$defs/DnstapConfig",
+          "default": {
+            "buffer": 10000,
+            "sample_every": 1
           }
         },
         "metrics": {

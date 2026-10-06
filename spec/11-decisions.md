@@ -1258,6 +1258,17 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-077 — dnstap: a sampled copy of the wire messages, off by default (Proposed)
+**Context:** T7.18 (OBS-007; `06` §5). dnstap needs the query and response messages, which query events don't carry (`02` §3: no allocation on the hot path).
+
+**Decision:**
+- The tap is a `OnceLock` on the pipeline set at startup: with dnstap off, the query path pays one atomic load. With it on, one query in `sample_every` (a relaxed counter) is copied, both messages, into a bounded channel with `try_send`; full means dropped and counted. Measured with bench-smoke: no change with it off (within WSL run-to-run noise).
+- The writer thread speaks bidirectional Frame Streams (READY, ACCEPT, START; STOP at the end) to a Unix socket or TCP reader, reconnects with backoff (1 s to 30 s), and writes `CLIENT_QUERY` and `CLIENT_RESPONSE` (address, family, transport including DoT/DoH/DoQ, times, messages; identity = node name, version = TelltaleDNS version). Protobuf is encoded by hand: the schema is small and fixed.
+- Deferred: `FORWARDER_QUERY`/`FORWARDER_RESPONSE` (they'd need a tap in the upstream exchange), and the client's port (not on the event path).
+
+**Consequences:**
+- At `sample_every = 1` every query costs two small allocations and a channel send; the docs say to sample on busy resolvers.
+
 ## ADR-076 — OTLP over HTTP with JSON, metrics converted from our exposition (Proposed)
 **Context:** T7.17 (OBS-006; `06` §5). The spec asks for "the same metric set via OTLP/HTTP" and optional QueryEvent logs, without an encoding or a mapping.
 

@@ -1388,6 +1388,19 @@ interval_secs = 60
 - For **query events as OpenTelemetry logs**, add an event sink with `format = "otlp_logs"` (below), pointed at `<collector>/v1/logs`. Each record has a one-line body (`A example.com from 192.168.1.5: blocked`) and attributes (`dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `client.name`, `telltale.status`, `telltale.list`, ...); blocks are `WARN`, the rest `INFO`.
 - A collector that's down costs only that interval's points; DNS never waits for it.
 
+### dnstap
+Stream client queries and responses, as the DNS messages themselves, to a dnstap reader (`dnstap-read`, `fstrm_capture`, Vector, Logstash, a network-security monitor):
+```toml
+[telemetry.dnstap]
+socket = "/run/dnstap.sock"     # a reader listening on a Unix socket, or:
+# address = "tcp://10.0.0.5:6000"
+sample_every = 1                # 1 = every query; 10 = one in ten
+buffer = 10000                  # copies held while the reader is slow
+```
+- Each sampled query becomes a `CLIENT_QUERY` and a `CLIENT_RESPONSE` message with the client's address, the transport (UDP, TCP, DoT, DoH, DoQ), the times, and the full query and response messages.
+- Frame Streams with the usual handshake; if the reader isn't there, TelltaleDNS keeps retrying (every few seconds) and drops copies meanwhile. DNS never waits for it: copies go through a bounded queue (`buffer`), and with dnstap off the query path does nothing extra.
+- Read at startup: restart after changing it. Not yet: upstream (`FORWARDER_*`) messages.
+
 ### Event sinks
 Copy every query event to your own log pipeline (Loki, Elastic, Splunk, Graylog, a SIEM) as it happens:
 ```toml

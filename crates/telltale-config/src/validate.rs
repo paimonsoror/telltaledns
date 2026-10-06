@@ -111,6 +111,26 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     if o.interval_secs < 5 {
         r.err("telemetry.otlp.interval_secs", "at least 5 seconds");
     }
+    // REQ: OBS-007 (T7.18)
+    let d = &cfg.telemetry.dnstap;
+    if d.socket.is_some() && d.address.is_some() {
+        r.err("telemetry.dnstap", "set socket or address, not both");
+    }
+    if let Some(a) = &d.address {
+        let hp = a.strip_prefix("tcp://").unwrap_or(a);
+        if !hp
+            .rsplit_once(':')
+            .is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok())
+        {
+            r.err("telemetry.dnstap.address", "use tcp://host:port");
+        }
+    }
+    if d.sample_every == 0 {
+        r.err("telemetry.dnstap.sample_every", "at least 1 (every query)");
+    }
+    if d.buffer < 100 {
+        r.err("telemetry.dnstap.buffer", "at least 100");
+    }
 }
 
 fn sinks(cfg: &Config, r: &mut Report<'_>) {

@@ -13,6 +13,7 @@ mod build_info;
 mod cache_history;
 mod cluster;
 mod datadir;
+mod dnstap;
 mod explain;
 mod federated;
 mod forward;

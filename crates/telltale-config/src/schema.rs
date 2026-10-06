@@ -1269,6 +1269,35 @@ pub struct TelemetryConfig {
     pub sink: Vec<SinkConfig>,
     /// REQ: OBS-006 (T7.17) — metrics pushed to an OpenTelemetry collector.
     pub otlp: OtlpConfig,
+    /// REQ: OBS-007 (T7.18) — client queries and responses as dnstap.
+    pub dnstap: DnstapConfig,
+}
+
+/// REQ: OBS-007 (T7.18, `spec/06` §5) — dnstap over Frame Streams.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct DnstapConfig {
+    /// A Unix socket a dnstap reader listens on (`/run/dnstap.sock`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket: Option<SafeString>,
+    /// Or a TCP reader: `tcp://host:port`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<SafeString>,
+    /// One query in this many is copied (1 = every query).
+    pub sample_every: u32,
+    /// Copies held while the reader is slow; beyond, they're dropped.
+    pub buffer: u32,
+}
+
+impl Default for DnstapConfig {
+    fn default() -> Self {
+        Self {
+            socket: None,
+            address: None,
+            sample_every: 1,
+            buffer: 10_000,
+        }
+    }
 }
 
 /// REQ: OBS-006 (T7.17, `spec/06` §5) — OTLP/HTTP (JSON) metrics export.
@@ -1307,6 +1336,7 @@ impl Default for TelemetryConfig {
             anomaly: AnomalyConfig::default(),
             sink: Vec::new(),
             otlp: OtlpConfig::default(),
+            dnstap: DnstapConfig::default(),
         }
     }
 }

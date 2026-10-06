@@ -355,6 +355,9 @@ pub(crate) struct Pipeline {
     pub(crate) pause: Pause,
     /// REQ: FLT-010 (T7.10) — schedules on now (the ticker in `server` updates it).
     pub(crate) schedules: arc_swap::ArcSwap<ScheduleNow>,
+    /// REQ: OBS-007 (T7.18) — the dnstap tap, set once at startup (one atomic load per query
+    /// when unset).
+    pub(crate) dnstap: std::sync::OnceLock<Arc<crate::dnstap::Tap>>,
     flights: Arc<Singleflight>,
     inflight: Arc<Semaphore>,
     /// Query counters and latency histograms (OBS-005).
@@ -403,6 +406,7 @@ impl Pipeline {
             neighbors: Arc::new(Neighbors::default()),
             pause: Pause::default(),
             schedules: arc_swap::ArcSwap::from_pointee(ScheduleNow::default()),
+            dnstap: std::sync::OnceLock::new(),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),
@@ -1531,6 +1535,10 @@ impl Pipeline {
             answers: u16::from_be_bytes([hdr(6), hdr(7)]),
         };
         self.telemetry.emit_query(&ev, name);
+        // REQ: OBS-007 — a sampled copy of both messages for dnstap, when it's on.
+        if let Some(tap) = self.dnstap.get() {
+            tap.offer(peer, transport, req, resp, ev.ts_us);
+        }
     }
 }
 

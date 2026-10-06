@@ -592,6 +592,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         )));
     let cache = Arc::new(Cache::new(cache_policy(&cfg.cache, workers)));
     let pipeline = build_pipeline(&cfg, Arc::clone(&cache), router, policy);
+    // REQ: OBS-007 (T7.18) — dnstap (read at startup).
+    if let Some(tap) = crate::dnstap::start(&cfg) {
+        let _ = pipeline.dnstap.set(tap);
+    }
     // REQ: DNS-009 — start warm: reload the cache dumped at the last shutdown.
     let warm = cfg
         .cache
