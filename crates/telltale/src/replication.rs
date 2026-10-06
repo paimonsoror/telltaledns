@@ -262,6 +262,10 @@ async fn supervise(
         let (child_stop, child) = watch::channel(false);
         match role {
             Role::Primary | Role::Emergency => {
+                // REQ: CLU-003 (T9.1) — the primary is where users and tokens are managed.
+                if let Some(a) = sources.auth.get() {
+                    a.set_identity_primary(None);
+                }
                 info!(
                     epoch,
                     emergency = role == Role::Emergency,
@@ -330,18 +334,20 @@ fn start_follower(
     ));
     let store2 = store.clone();
     let cluster2 = Arc::clone(cluster);
+    let sources2 = Arc::clone(sources);
     tokio::spawn(telltale_cluster::net::follow(
         Arc::clone(cluster),
         store,
         at,
         move |m: ClusterManifest| {
-            let (store, files, reload, publisher, last_filter, cluster) = (
+            let (store, files, reload, publisher, last_filter, cluster, sources) = (
                 store2.clone(),
                 files.clone(),
                 reload.clone(),
                 publisher.clone(),
                 Arc::clone(&last_filter),
                 Arc::clone(&cluster2),
+                Arc::clone(&sources2),
             );
             async move {
                 let blobs = m.filter.as_ref().map(|f| f.blobs.clone());
@@ -349,7 +355,10 @@ fn start_follower(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     != blobs;
-                apply(m, &cluster, &store, &files, &reload, &publisher, changed).await?;
+                apply(
+                    m, &cluster, &store, &files, &reload, &publisher, changed, &sources,
+                )
+                .await?;
                 *last_filter
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = blobs;
@@ -361,6 +370,7 @@ fn start_follower(
 }
 
 /// Applies one replicated manifest on a replica.
+#[allow(clippy::too_many_arguments)]
 async fn apply(
     m: ClusterManifest,
     cluster: &Cluster,
@@ -369,6 +379,7 @@ async fn apply(
     reload: &mpsc::Sender<oneshot::Sender<bool>>,
     publisher: &Publisher,
     filter_changed: bool,
+    sources: &Sources,
 ) -> Result<(), String> {
     // Check the merged configuration before anything changes on disk.
     let file = crate::server::load_files(files)
@@ -423,6 +434,10 @@ async fn apply(
         .map(|s| s.commit.clone())
         .unwrap_or_default();
     cluster.set_local(|l| l.source_commit = commit);
+    // REQ: CLU-003 (T9.1, ADR-045) — the primary's users and tokens.
+    if let Some(b) = &m.identities {
+        import_identities(sources, store, b, &primary_label(&m)).await?;
+    }
     let json = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
     write_atomic(&cdir.join(APPLIED), &json).map_err(|e| e.to_string())?;
     // The normal reload path: validate, swap, audit-free (the primary audited the change).
@@ -437,6 +452,82 @@ async fn apply(
     if filter_changed && let Some(dir) = dir {
         publisher.publish(dir);
     }
+    Ok(())
+}
+
+/// The primary's identities as published (T9.1), or `None` before the API opened `state.db`.
+async fn export_identities(sources: &Arc<Sources>) -> Option<Vec<u8>> {
+    let auth = Arc::clone(sources.auth.get()?);
+    tokio::task::spawn_blocking(move || {
+        auth.state()
+            .export_identities()
+            .map_err(|e| warn!("cluster: can't read users and tokens to publish: {e}"))
+            .ok()
+            .and_then(|d| serde_json::to_vec(&d).ok())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// How the refusal on a replica names the primary: its site, else its node ID.
+fn primary_label(m: &ClusterManifest) -> String {
+    m.nodes
+        .iter()
+        .find(|n| n.node_id == m.primary)
+        .map(|n| n.site.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| m.primary.clone())
+}
+
+/// Takes in the primary's identities on a replica (T9.1), skipping an unchanged document.
+async fn import_identities(
+    sources: &Sources,
+    store: &BlobStore,
+    b: &BlobRef,
+    primary: &str,
+) -> Result<(), String> {
+    let Some(auth) = sources.auth.get().cloned() else {
+        return Ok(()); // the API isn't up yet: the next version brings them again
+    };
+    auth.set_identity_primary(Some(primary.to_owned()));
+    let applied = || {
+        sources
+            .identities_applied
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    };
+    if applied() == b.hash {
+        return Ok(());
+    }
+    let bytes = store.read(b)?;
+    let doc: telltale_store::state::Identities =
+        serde_json::from_slice(&bytes).map_err(|e| format!("identities: {e}"))?;
+    let state = Arc::clone(auth.state());
+    let rep = tokio::task::spawn_blocking(move || state.import_identities(&doc))
+        .await
+        .map_err(|e| format!("identities: {e}"))?
+        .map_err(|e| format!("identities: {e}"))?;
+    info!(
+        added = rep.users_added,
+        updated = rep.users_updated,
+        removed = rep.users_removed,
+        tokens = rep.tokens,
+        "cluster: users and tokens synced from the primary"
+    );
+    if !rep.replaced_local.is_empty() {
+        warn!(users = ?rep.replaced_local, "cluster: users made on this node now use the primary's account of the same name");
+    }
+    if !rep.local_kept.is_empty() {
+        info!(users = ?rep.local_kept, "cluster: users only on this node are kept (manage them on the primary to share them)");
+    }
+    b.hash.clone_into(
+        &mut sources
+            .identities_applied
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
     Ok(())
 }
 
@@ -553,6 +644,9 @@ struct Published {
     /// epoch: peers only see the newest, and an old primary needs it to find its orphans.
     #[serde(default)]
     base: Option<(u64, u64)>,
+    /// REQ: CLU-003 (T9.1) — hash of the published identities.
+    #[serde(default)]
+    identities: String,
 }
 
 /// The newest filter snapshot as replicated blobs (its own manifest included).
@@ -703,11 +797,23 @@ async fn publish_loop(
             &serde_json::to_vec(&(&nodes, &authority, &failover, &source, &ca_bundle))
                 .unwrap_or_default(),
         );
+        // REQ: CLU-003 (T9.1, ADR-045) — users and tokens travel too (an emergency primary
+        // keeps the last authoritative ones).
+        let identities: Option<Vec<u8>> = if emergency {
+            inherited
+                .as_ref()
+                .and_then(|m| m.identities.as_ref())
+                .and_then(|b| store.as_ref().and_then(|s| s.read(b).ok()))
+        } else {
+            export_identities(&sources).await
+        };
+        let identities_hash = identities.as_deref().map(hash).unwrap_or_default();
         let new_epoch = epoch > last.epoch;
         let changed = new_epoch
             || config_hash != last.config
             || filter_version != last.filter
-            || meta_hash != last.meta;
+            || meta_hash != last.meta
+            || identities_hash != last.identities;
         if changed || first {
             let base = inherited
                 .as_ref()
@@ -726,6 +832,14 @@ async fn publish_loop(
             }
             let _ = write_atomic(&cdir.join("published-config.json"), &shared);
             blobs.insert(config.hash.clone(), BlobSource::Bytes(Bytes::from(shared)));
+            let identities_ref = identities.map(|bytes| {
+                let r = blob_ref("identities.json", &bytes);
+                if let Some(s) = &store {
+                    let _ = s.put(&r, &bytes);
+                }
+                blobs.insert(r.hash.clone(), BlobSource::Bytes(Bytes::from(bytes)));
+                r
+            });
             if let Some((_, paths)) = &filter {
                 for (h, p) in paths {
                     blobs.insert(h.clone(), BlobSource::File(p.clone()));
@@ -748,6 +862,7 @@ async fn publish_loop(
                 schema: telltale_cluster::sync::SCHEMA,
                 source: source.clone(),
                 ca_bundle,
+                identities: identities_ref,
             };
             // The signing key changes when a CA rotation switches (T5.4c).
             let key = id_now.ca_key_pem().unwrap_or_else(|_| key.clone());
@@ -802,6 +917,7 @@ async fn publish_loop(
                         created_ms: now,
                         meta: meta_hash,
                         base: epoch_base,
+                        identities: identities_hash,
                     };
                     if let Ok(b) = serde_json::to_vec(&last)
                         && let Err(e) = write_atomic(&state_path, &b)

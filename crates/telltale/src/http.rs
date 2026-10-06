@@ -67,6 +67,8 @@ pub(crate) struct Sources {
     pub(crate) cache_history: Arc<crate::cache_history::CacheHistory>,
     /// Sign-in and the audit log, once the API listener has opened `state.db`.
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
+    /// REQ: CLU-003 (T9.1) — the hash of the primary's identities this replica last took in.
+    pub(crate) identities_applied: std::sync::Mutex<String>,
     /// Masked-client-IP detector state (OPS-003).
     pub(crate) masking: crate::masking::Detector,
     /// This node's cluster channel, when it's in a cluster (CLU-001).
@@ -1223,6 +1225,7 @@ mod tests {
             host: Arc::default(),
             cache_history: Arc::default(),
             auth: std::sync::OnceLock::new(),
+            identities_applied: std::sync::Mutex::default(),
             masking: crate::masking::Detector::default(),
             cluster: None,
             ship: Arc::default(),

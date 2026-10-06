@@ -1148,6 +1148,8 @@ pub(crate) async fn change_password(
     req_ext: axum::http::Extensions,
     b: Result<Json<PasswordChange>, JsonRejection>,
 ) -> Result<StatusCode, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
@@ -1189,6 +1191,8 @@ pub(crate) async fn totp_setup(
     State(auth): State<AuthState>,
     req_ext: axum::http::Extensions,
 ) -> Result<Json<TotpSetup>, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let p = principal(&req_ext)?;
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
@@ -1222,6 +1226,8 @@ pub(crate) async fn totp_enable(
     req_ext: axum::http::Extensions,
     b: Result<Json<TotpCode>, JsonRejection>,
 ) -> Result<Json<RecoveryCodes>, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
@@ -1264,6 +1270,8 @@ pub(crate) async fn totp_disable(
     req_ext: axum::http::Extensions,
     b: Result<Json<PasswordConfirm>, JsonRejection>,
 ) -> Result<StatusCode, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
@@ -1317,6 +1325,8 @@ pub(crate) async fn create_token(
     req_ext: axum::http::Extensions,
     b: Result<Json<CreateToken>, JsonRejection>,
 ) -> Result<(StatusCode, Json<NewToken>), Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
@@ -1451,6 +1461,8 @@ pub(crate) async fn delete_token(
     req_ext: axum::http::Extensions,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
@@ -1504,6 +1516,8 @@ pub(crate) async fn create_user(
     req_ext: axum::http::Extensions,
     b: Result<Json<CreateUser>, JsonRejection>,
 ) -> Result<(StatusCode, Json<UserInfo>), Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
@@ -1540,6 +1554,8 @@ pub(crate) async fn update_user(
     Path(id): Path<i64>,
     b: Result<Json<UpdateUser>, JsonRejection>,
 ) -> Result<Json<UserInfo>, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
@@ -1621,6 +1637,8 @@ pub(crate) async fn delete_user(
     req_ext: axum::http::Extensions,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
     let p = principal(&req_ext)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {

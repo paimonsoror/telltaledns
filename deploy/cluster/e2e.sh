@@ -9,7 +9,8 @@
 #      down, follows the new primary, and keeps its unseen edit under Conflicts.
 # Plus CLU-002 (T5.6): the primary's stats and query log include the replica's queries;
 # (T5.7): a change made on the replica's API is forwarded to the primary, reaches both
-# nodes, and the primary's audit log names the user and the entry node; (T5.8): the
+# nodes, and the primary's audit log names the user and the entry node; (T9.1): users and
+# tokens made on the primary work on the replica, and changing them there is refused; (T5.8): the
 # replica's query log, in ship mode, ends up on the primary and is still searchable.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
@@ -151,11 +152,11 @@ echo "== federated reads (CLU-002)"
 for i in $(seq 5); do q 25302 "fed$i.r.test" >/dev/null; done
 API=http://127.0.0.1:28001
 ST=$(cat "$E/p/setup-token")
-curl -sf -c "$E/jar" -H 'content-type: application/json' \
-  -d "{\"setupToken\":\"$ST\",\"username\":\"admin\",\"password\":\"e2e-password-123\"}" \
-  "$API/api/v1/auth/setup" >/dev/null || fail "couldn't set up the primary's admin"
-get() { curl -sf -b "$E/jar" "$API$1"; }
 field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
+PCSRF=$(curl -sf -c "$E/jar" -H 'content-type: application/json' \
+  -d "{\"setupToken\":\"$ST\",\"username\":\"admin\",\"password\":\"e2e-password-123\"}" \
+  "$API/api/v1/auth/setup" | field 'd["csrfToken"]') || fail "couldn't set up the primary's admin"
+get() { curl -sf -b "$E/jar" "$API$1"; }
 found=""
 for _ in $(seq 30); do
   found=$(get '/api/v1/queries?name=fed1.r.test' | field '" ".join(r.get("node","") for r in d["items"])')
@@ -181,12 +182,33 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -b "$E/jar" "$API/api/v1/stats/sum
 [ "$code" = 400 ] || fail "an unknown site answered $code"
 echo "ok (site r: $site_r of $both)"
 
-echo "== write forwarding (CLU-002)"
+# REQ: CLU-003, API-003 (T9.1, ADR-045) — the primary's users and tokens reach the replica.
+echo "== users and tokens replicate (T9.1)"
 RAPI=http://127.0.0.1:28002
-RST=$(cat "$E/r/setup-token")
-CSRF=$(curl -sf -c "$E/rjar" -H 'content-type: application/json' \
-  -d "{\"setupToken\":\"$RST\",\"username\":\"bob\",\"password\":\"e2e-password-123\"}" \
-  "$RAPI/api/v1/auth/setup" | field 'd["csrfToken"]') || fail "couldn't set up the replica's admin"
+CSRF=""
+for _ in $(seq 60); do
+  CSRF=$(curl -sf -c "$E/rjar" -H 'content-type: application/json' \
+    -d '{"username":"admin","password":"e2e-password-123"}' "$RAPI/api/v1/auth/login" 2>/dev/null \
+    | field 'd["csrfToken"]' 2>/dev/null) && [ -n "$CSRF" ] && break
+  sleep 0.5
+done
+[ -n "$CSRF" ] || fail "the primary's admin can't sign in on the replica"
+TOKEN=$(curl -sf -b "$E/jar" -H "x-csrf-token: $PCSRF" -H 'content-type: application/json' \
+  -d '{"name":"e2e-replicated"}' "$API/api/v1/tokens" | field 'd["token"]') || fail "couldn't make a token on the primary"
+code=000
+for _ in $(seq 60); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer $TOKEN" "$RAPI/api/v1/system/info")
+  [ "$code" = 200 ] && break; sleep 0.5
+done
+[ "$code" = 200 ] || fail "a token made on the primary doesn't work on the replica ($code)"
+code=$(curl -s -o "$E/user.json" -w '%{http_code}' -b "$E/rjar" -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/json' -d '{"username":"carol","password":"e2e-password-456","role":"viewer"}' \
+  "$RAPI/api/v1/users")
+{ [ "$code" = 409 ] && grep -q 'managed on the cluster' "$E/user.json"; } \
+  || fail "making a user on the replica wasn't refused ($code: $(cat "$E/user.json"))"
+echo "ok (sign-in and a token work on the replica; user changes there are refused)"
+
+echo "== write forwarding (CLU-002)"
 code=$(curl -s -o "$E/fwd.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' -d '{"records":[{"type":"A","value":"10.0.0.1"}]}' \
   "$RAPI/api/v1/records/fwd.e2e.test")
@@ -194,7 +216,7 @@ code=$(curl -s -o "$E/fwd.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csrf
 for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 [ "$(q 25301 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record isn't on the primary"
 [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] || fail "the forwarded record didn't come back to the replica"
-get '/api/v1/audit' | grep -q 'bob via r' || fail "the primary's audit log doesn't name the user and entry node"
+get '/api/v1/audit' | grep -q 'admin via r' || fail "the primary's audit log doesn't name the user and entry node"
 echo "ok"
 
 echo "== quick rules made on the replica apply on every node (T6.12, ADR-067)"

@@ -100,14 +100,20 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE tokens ADD COLUMN agent_scopes TEXT;
     ALTER TABLE tokens ADD COLUMN agent_group TEXT;
     ALTER TABLE tokens ADD COLUMN agent_rate_per_minute INTEGER;",
+    // 6: identity replication (T9.1, ADR-045): where a user or token came from — `local`
+    // (made on this node) or `cluster` (the primary's, replicated).
+    "ALTER TABLE users ADD COLUMN origin TEXT NOT NULL DEFAULT 'local';
+    ALTER TABLE tokens ADD COLUMN origin TEXT NOT NULL DEFAULT 'local';",
 ];
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
 
 pub mod audit;
+pub mod identity;
 pub mod managed;
 pub use audit::{AuditEntry, NewAudit, Verify};
+pub use identity::{IdRecovery, IdToken, IdUser, Identities, ImportReport};
 pub use managed::{Managed, ManagedError, Replay};
 
 /// A user row.

@@ -71,6 +71,10 @@ pub struct ClusterManifest {
     /// first being the one that signs. Empty from older primaries.
     #[serde(default)]
     pub ca_bundle: String,
+    /// REQ: CLU-003 (T9.1, ADR-045) — the primary's users, recovery codes, and API tokens
+    /// (hashes only), as one JSON document. Absent from older primaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identities: Option<BlobRef>,
 }
 
 /// A Git commit as a configuration's provenance (ADR-049). `repo`, `git_ref` and `path` also
@@ -100,6 +104,7 @@ impl ClusterManifest {
         if let Some(f) = &self.filter {
             v.extend(f.blobs.iter());
         }
+        v.extend(self.identities.iter());
         v
     }
 

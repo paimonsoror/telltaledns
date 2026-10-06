@@ -1224,7 +1224,18 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
 - **A replica keeps serving what it last received** if the primary is down, including after a
   restart (it starts answering from `<data_dir>/cluster/applied.json` in milliseconds).
 - **Every version is signed** by the cluster's key; a replica rejects anything else.
-- **Sign-in is still per node:** each node has its own users and sessions until ADR-045 lands.
+- **Users and tokens are the primary's, everywhere.** Users (passwords, roles, two-factor
+  settings, recovery codes) and API and agent tokens are made and changed on the primary, and
+  every node takes them within seconds, so you sign in to any node with the same account and a
+  token works against any node. Only hashes travel, over the cluster's encrypted channel.
+  - On a replica, changing a user, a password, two-factor settings, or a token is refused with
+    a pointer to the primary.
+  - Sessions stay per node: signing in to a second node is a second sign-in (with SSO, a silent
+    redirect).
+  - Users that exist only on a replica (an admin made before it joined) keep working there. If
+    the primary has a user of the same name, the primary's account (and password) takes over on
+    every node.
+  - A promoted replica becomes the place to manage users, with everything it had synced.
 - **Records for one node only:** `node_only = true` on a `[[record]]` keeps it on the node whose
   file has it. The primary doesn't share it, and a replica keeps it next to the cluster's records.
   An example is a name that should only resolve on the Pi:

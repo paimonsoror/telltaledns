@@ -747,6 +747,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             h
         },
         auth: std::sync::OnceLock::new(),
+        identities_applied: std::sync::Mutex::default(),
         masking: crate::masking::Detector::default(),
         cluster,
         ship: Arc::default(),

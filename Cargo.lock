@@ -3513,6 +3513,7 @@ dependencies = [
  "rand 0.10.3",
  "regex-automata",
  "rusqlite",
+ "serde",
  "telltale-telemetry",
  "tempfile",
  "thiserror 2.0.21",

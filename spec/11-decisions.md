@@ -545,6 +545,13 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner registers one extra redirect URI in Authentik per node (for the Pi, e.g. `https://telltale-pi.sororlab.dev`, or its LAN address). The Pi's OIDC needs its own copy of the client secret.
 
+**Implementation (T9.1, 2026-10-06):**
+- Users, recovery codes, and tokens travel as one JSON blob (`identities.json`) named by the signed manifest. Replicas take it in one transaction, keyed by user name; rows carry an `origin`: `cluster` or `local`.
+- Changed from the decision above, to keep the change small: replicas **refuse** identity changes (409, naming the primary's site) instead of forwarding them.
+- Changed from the decision above: users only on a replica **stay local** instead of being offered to the primary once. They keep working on that node; to share one, make it on the primary.
+- A name on both nodes takes the primary's record (logged), as decided.
+- The OIDC provider settings already replicate with the shared configuration. The session-revocation list isn't needed: deleting or disabling a user on the primary removes or blocks them everywhere on the next sync, and with them their sessions.
+
 ## ADR-046 — Version management: one build identity, a signed release index, and update status everywhere (Proposed)
 **Context:** owner request 2026-10-04: the user should always know which version they run, which versions exist, and whether they're on the latest, the same way on every architecture and install type. Today an edge binary reports only `telltale 0.1.0` (the Pi shows exactly that), so two different builds look identical, and nothing tells the user an update exists.
 

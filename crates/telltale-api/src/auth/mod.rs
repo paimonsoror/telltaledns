@@ -243,6 +243,9 @@ pub struct Auth {
     agents: agent::Policy,
     /// REQ: AGT-007 — agents' change plans on this node.
     plans: crate::plans::Plans,
+    /// REQ: CLU-003 (T9.1, ADR-045) — set on a replica: users and tokens come from this
+    /// primary (its UI address), so changing them here is refused.
+    identity_primary: Mutex<Option<String>>,
 }
 
 #[allow(clippy::needless_pass_by_value)] // used as `map_err(db)`
@@ -312,6 +315,40 @@ impl Auth {
             oidc: std::sync::OnceLock::new(),
             agents: agent::Policy::default(),
             plans: crate::plans::Plans::default(),
+            identity_primary: Mutex::new(None),
+        }
+    }
+
+    /// REQ: CLU-003 (T9.1) — the replication sets where identities come from (`None`: here).
+    pub fn set_identity_primary(&self, primary: Option<String>) {
+        *self
+            .identity_primary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = primary;
+    }
+
+    /// Where users and tokens are managed when it isn't this node (a replica).
+    pub fn identity_primary(&self) -> Option<String> {
+        self.identity_primary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// REQ: CLU-003 (T9.1, ADR-045) — refuses identity changes on a replica: they'd be undone
+    /// by the next sync from the primary.
+    pub fn identity_writable(&self) -> Result<(), Problem> {
+        match self.identity_primary() {
+            None => Ok(()),
+            Some(primary) => Err(Problem::new(
+                crate::problem::Code::Conflict,
+                "users, passwords, two-factor settings, and tokens are managed on the cluster's primary",
+            )
+            .hint(if primary.is_empty() {
+                "Make this change on the primary node; it reaches this node within seconds.".to_owned()
+            } else {
+                format!("Make this change on the primary ({primary}); it reaches this node within seconds.")
+            })),
         }
     }
 
