@@ -1258,6 +1258,26 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-083 — io_uring UDP: measured, not adopted (Proposed)
+**Context:** M8 lists io_uring; `02` §3 calls it "a P2 experiment behind a feature flag". The UDP listener already batches with `recvmmsg`/`sendmmsg` on one `SO_REUSEPORT` socket per worker, so the syscall cost per query is already amortized.
+
+**Measured (2026-10-06):** a standalone spike, not in the repo: one server thread doing the same per-datagram work both ways (64-slot `RecvMsg`/`SendMsg` io_uring ring vs 64-message `recvmmsg`/`sendmmsg`), loopback, WSL2 kernel 6.18, 8 cores, alternating 5-second rounds.
+- With 4 client threads: 530.8k vs 526.3k answered per round (io_uring −0.9%).
+- With 7 client threads (server about 90% CPU): 456.8k vs 471.6k (+3%).
+- The spread between rounds was about ±15%, so neither difference is meaningful.
+
+**Decision:** keep `recvmmsg`/`sendmmsg`; don't add an io_uring listener or feature. Reasons:
+- No measured gain.
+- More `unsafe` in the hot path (buffers that must outlive submissions).
+- A second listener to test.
+- io_uring is often unavailable where TelltaleDNS runs: Docker's default seccomp profile blocks it, and some distributions disable it (`kernel.io_uring_disabled`).
+
+Revisit if a profile on real hardware shows syscalls dominating at the owner's target rates. Multishot receive with provided buffers would be the variant to try.
+
+**Consequences:**
+- One UDP code path.
+- The M8 item is closed with data rather than code.
+
 ## ADR-082 — vqlog: a pipe language compiled to qlog searches, aggregated in memory (Proposed)
 **Context:** T8.4, AGT-012: "a constrained, safe query DSL (`vqlog`) over the query log and rollups (filter, group by, top-K, percentiles, time bucket), with a cost estimate, exposed as one tool". The spec doesn't fix the syntax, the limits, or the scope.
 

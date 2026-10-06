@@ -467,7 +467,7 @@ M7 is complete apart from the deferrals noted in each task (and T6.14's soak che
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).
 
-Beaconing detection shipped in T3.13 (the anomaly engine).
+Beaconing detection shipped in T3.13 (the anomaly engine). io_uring was measured against the batched `recvmmsg`/`sendmmsg` path and not adopted (ADR-083, Proposed: no measurable gain). WASM upstream plugins: the size measurement is pending; the process plugins from T7.16 cover the use case meanwhile.
 
 - [x] **T8.1 Cache-warm hints.** *(CLU-011)* A node joining a cluster resolves the cluster's hot names in the background.
   - *AC:* once the cluster's configuration is applied, the node takes the merged top queried names (this hour and the last, from the other nodes) and resolves up to `[cache] warm_names` of them, A and AAAA, paced, through the normal upstream path without query events; off with `0`; never on the DNS path.
