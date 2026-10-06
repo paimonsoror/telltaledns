@@ -162,7 +162,8 @@
         "DNS-004",
         "UPS-002"
       ],
-      "summary": "QUIC transport for clients (a doq listener, UDP 853) and upstreams (quic:// URLs), one stream per query, 0-RTT off."
+      "summary": "QUIC transport for clients (a doq listener, UDP 853) and upstreams (quic:// URLs), one stream per query, 0-RTT off.",
+      "diagram": "rfc9250"
     },
     {
       "rfc": "7871",

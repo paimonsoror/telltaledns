@@ -1,0 +1,6 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>DNS over QUIC stack: one DNS message per QUIC stream, over UDP port 853</title>
+<rect x="40" y="16" width="240" height="30" rx="6" class="svg-box"/><text x="160" y="36" text-anchor="middle" class="svg-sub">DNS message (one per stream, ID 0)</text>
+<rect x="40" y="50" width="240" height="30" rx="6" class="svg-ok" opacity=".75"/><text x="160" y="70" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">QUIC · TLS 1.3 · ALPN doq · no 0-RTT</text>
+<rect x="40" y="84" width="240" height="30" rx="6" class="svg-box"/><text x="160" y="104" text-anchor="middle" class="svg-sub">UDP :853 (one connection, many streams)</text>
+<text x="160" y="136" text-anchor="middle" class="svg-sub">client listener ✓ · upstreams ✓</text>
+</svg>
