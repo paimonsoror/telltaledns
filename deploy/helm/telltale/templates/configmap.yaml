@@ -46,6 +46,14 @@ data:
     tls = {{ $tls }}
     proxy_protocol = {{ .Values.encrypted.proxyProtocol }}
     {{- end }}
+    {{- if and .Values.encrypted.doh.enabled .Values.encrypted.doh.http3 }}
+
+    [[listen]]
+    proto = "doh3"
+    addr = "0.0.0.0:{{ include "telltale.dohPort" . }}"
+    path = {{ .Values.encrypted.doh.path | quote }}
+    tls = {{ $tls }}
+    {{- end }}
     {{- if .Values.encrypted.doq.enabled }}
 
     [[listen]]

@@ -318,3 +318,24 @@ async fn dns_003_doh_http1_and_proxy_protocol() {
     assert_eq!(seen.lock().unwrap()[0].0, client);
     server.shutdown().await;
 }
+
+/// REQ: DNS-004 (T7.8) — with an HTTP/3 listener on the same name, HTTP/2 answers say so
+/// (`Alt-Svc`), so clients that speak HTTP/3 switch.
+#[tokio::test]
+async fn dns_004_doh_advertises_http3() {
+    let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+    let mut cfg = DohConfig::new("127.0.0.1:0".parse().unwrap(), store);
+    cfg.alt_svc = Some("h3=\":443\"; ma=86400".into());
+    let server = DohServer::bind(cfg, Arc::new(handler(Seen::default()))).unwrap();
+    let mut c = h2(server.local_addr(), "dns.test", b"").await;
+    let req = hyper::Request::get(format!(
+        "https://dns.test/dns-query?dns={}",
+        b64url(&query(0))
+    ))
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+    let (st, h, _) = send(&mut c, req).await;
+    assert_eq!(st, 200);
+    assert_eq!(h["alt-svc"], "h3=\":443\"; ma=86400");
+    server.shutdown().await;
+}

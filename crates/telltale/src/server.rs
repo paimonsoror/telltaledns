@@ -165,6 +165,8 @@ enum Stream {
     Doh(DohServer, JoinHandle<()>),
     /// REQ: DNS-004 (T7.7) — DNS over QUIC.
     Doq(telltale_net::DoqServer, JoinHandle<()>),
+    /// REQ: DNS-004 (T7.8) — DoH over HTTP/3.
+    Doh3(telltale_net::Doh3Server, JoinHandle<()>),
 }
 
 impl Stream {
@@ -184,8 +186,21 @@ impl Stream {
                 watch.abort();
                 s.shutdown().await;
             }
+            Self::Doh3(s, watch) => {
+                watch.abort();
+                s.shutdown().await;
+            }
         }
     }
+}
+
+/// REQ: DNS-004 (T7.8) — the `Alt-Svc` an HTTP/2 DoH listener sends when an HTTP/3 DoH listener is
+/// configured: clients that speak HTTP/3 switch to it for the same name.
+fn alt_svc(listen: &[Listener]) -> Option<String> {
+    listen
+        .iter()
+        .find(|l| l.proto == ListenProto::Doh3)
+        .map(|l| format!("h3=\":{}\"; ma=86400", l.addr.port()))
 }
 
 /// REQ: DNS-002/003 — re-reads the certificate files every 10 s (cert-manager renewals).
@@ -223,7 +238,11 @@ impl Listeners {
                     info!(addr = %listener.local_addr(), workers = self.workers, "listening (udp)");
                     self.udp.push((l.addr, listener));
                 }
-                ListenProto::Tcp | ListenProto::Dot | ListenProto::Doh | ListenProto::Doq
+                ListenProto::Tcp
+                | ListenProto::Dot
+                | ListenProto::Doh
+                | ListenProto::Doq
+                | ListenProto::Doh3
                     if !self.streams.iter().any(|(c, _)| c == l) =>
                 {
                     // Same protocol and address with other settings: replace it.
@@ -235,17 +254,17 @@ impl Listeners {
                         let (_, old) = self.streams.remove(i);
                         old.shutdown().await;
                     }
-                    let stream = self.bind_stream(l).map_err(ctx)?;
+                    let stream = self
+                        .bind_stream(l, alt_svc(listen).as_deref())
+                        .map_err(ctx)?;
                     self.streams.push((l.clone(), stream));
                 }
                 ListenProto::Udp
                 | ListenProto::Tcp
                 | ListenProto::Dot
                 | ListenProto::Doh
-                | ListenProto::Doq => {}
-                other @ ListenProto::Doh3 => {
-                    warn!(addr = %l.addr, proto = ?other, "listener type not implemented yet; skipping");
-                }
+                | ListenProto::Doq
+                | ListenProto::Doh3 => {}
             }
         }
         let (kept, gone): (Vec<_>, Vec<_>) = self.udp.drain(..).partition(|(a, _)| {
@@ -270,7 +289,7 @@ impl Listeners {
         Ok(())
     }
 
-    fn bind_stream(&self, l: &Listener) -> io::Result<Stream> {
+    fn bind_stream(&self, l: &Listener, alt_svc: Option<&str>) -> io::Result<Stream> {
         let store = match &l.tls {
             Some(t) => Some(CertStore::load(t.cert.as_str(), t.key.as_str())?),
             None => None,
@@ -283,9 +302,19 @@ impl Listeners {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
                 cfg.proxy_protocol = l.proxy_protocol;
+                cfg.alt_svc = alt_svc.map(str::to_owned);
                 let s = DohServer::bind(cfg, handler)?;
                 info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening (doh)");
                 Ok(Stream::Doh(s, watch_cert(store)))
+            }
+            (ListenProto::Doh3, Some(store)) => {
+                let mut cfg = telltale_net::Doh3Config::new(l.addr, Arc::clone(&store));
+                if let Some(p) = &l.path {
+                    p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
+                }
+                let s = telltale_net::Doh3Server::bind(&cfg, handler)?;
+                info!(addr = %s.local_addr(), "listening (doh3)");
+                Ok(Stream::Doh3(s, watch_cert(store)))
             }
             (ListenProto::Doq, Some(store)) => {
                 let s = telltale_net::DoqServer::bind(
@@ -326,7 +355,7 @@ impl Listeners {
                 .iter()
                 .filter_map(|(_, s)| match s {
                     Stream::Tcp(t, _) => Some(t.stats_handle()),
-                    Stream::Doh(..) | Stream::Doq(..) => None,
+                    Stream::Doh(..) | Stream::Doq(..) | Stream::Doh3(..) => None,
                 })
                 .collect(),
             doh: self
@@ -334,6 +363,7 @@ impl Listeners {
                 .iter()
                 .filter_map(|(_, s)| match s {
                     Stream::Doh(d, _) => Some(d.stats_handle()),
+                    Stream::Doh3(d, _) => Some(d.stats_handle()),
                     Stream::Tcp(..) | Stream::Doq(..) => None,
                 })
                 .collect(),
@@ -342,7 +372,7 @@ impl Listeners {
                 .iter()
                 .filter_map(|(_, s)| match s {
                     Stream::Doq(d, _) => Some(d.stats_handle()),
-                    Stream::Tcp(..) | Stream::Doh(..) => None,
+                    Stream::Tcp(..) | Stream::Doh(..) | Stream::Doh3(..) => None,
                 })
                 .collect(),
         }

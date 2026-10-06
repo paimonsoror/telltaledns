@@ -13,7 +13,7 @@ use telltale_config::{Config, HttpVersion, Strategy as CfgStrategy};
 use telltale_proto::NameBuf;
 
 use crate::bootstrap::Bootstrap;
-use crate::endpoint::{Endpoint, Host};
+use crate::endpoint::{Endpoint, Host, Protocol};
 use crate::group::{Group, Strategy};
 use crate::tls::TlsOptions;
 use crate::upstream::{Question, Upstream, UpstreamOptions};
@@ -74,6 +74,11 @@ fn build_upstreams<'c>(
     for (i, u) in cfg.upstream.iter().enumerate() {
         let id = u16::try_from(i + 1).unwrap_or(u16::MAX);
         let ep = match Endpoint::parse(&u.url) {
+            // REQ: UPS-002 (T7.8) — `http_version = "3"` on an https:// upstream: HTTP/3.
+            Ok(mut ep) if u.http_version == HttpVersion::H3 && ep.protocol == Protocol::Https => {
+                ep.protocol = Protocol::H3;
+                ep
+            }
             Ok(ep) => ep,
             Err(e) => {
                 errors.push(format!("upstream `{}`: {e}", u.name));
@@ -84,7 +89,6 @@ fn build_upstreams<'c>(
             (!u.spki_pins.is_empty(), "spki_pins"),
             (u.proxy.is_some(), "proxy"),
             (u.ecs.as_deref().is_some_and(|e| e != "strip"), "ecs"),
-            (u.http_version == HttpVersion::H3, "http_version = \"3\""),
         ] {
             if set {
                 errors.push(format!(

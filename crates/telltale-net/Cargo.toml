@@ -32,6 +32,9 @@ http-body-util = "0.1.3"
 hyper = { version = "1.11.1", default-features = false, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 libc = "0.2.190"
+# REQ: DNS-004/UPS-002 (T7.8) — DoH over HTTP/3; `02` §7 names h3 and h3-quinn.
+h3 = "0.0.8"
+h3-quinn = { version = "0.0.10", default-features = false }
 # REQ: DNS-004 (T7.7) — DoQ (RFC 9250); `02` §7 names quinn for QUIC.
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

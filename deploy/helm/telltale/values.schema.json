@@ -51,6 +51,9 @@
             "path": {
               "type": "string",
               "pattern": "^/"
+            },
+            "http3": {
+              "type": "boolean"
             }
           }
         },

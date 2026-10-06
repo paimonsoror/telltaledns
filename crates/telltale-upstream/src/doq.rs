@@ -25,12 +25,35 @@ pub(crate) type Resolve = Arc<
         + Sync,
 >;
 
+/// QUIC client endpoints, one per address family, made on first use (they need a runtime).
+/// Shared by DoQ and DoH over HTTP/3.
+#[derive(Debug, Default)]
+pub(crate) struct Endpoints(Mutex<[Option<quinn::Endpoint>; 2]>);
+
+impl Endpoints {
+    pub(crate) async fn for_addr(
+        &self,
+        addr: SocketAddr,
+    ) -> Result<quinn::Endpoint, ExchangeError> {
+        let mut eps = self.0.lock().await;
+        let i = usize::from(addr.is_ipv6());
+        if eps[i].is_none() {
+            let bind: SocketAddr = if addr.is_ipv6() {
+                (Ipv6Addr::UNSPECIFIED, 0).into()
+            } else {
+                (Ipv4Addr::UNSPECIFIED, 0).into()
+            };
+            eps[i] = Some(quinn::Endpoint::client(bind)?);
+        }
+        eps[i].clone().ok_or(ExchangeError::Unresolved)
+    }
+}
+
 pub(crate) struct Doq {
     resolve: Resolve,
     client: quinn::ClientConfig,
     name: String,
-    /// The client endpoints (one per address family), made on first use: they need a runtime.
-    endpoints: Mutex<[Option<quinn::Endpoint>; 2]>,
+    endpoints: Endpoints,
     conn: Mutex<Option<quinn::Connection>>,
 }
 
@@ -61,7 +84,7 @@ impl Doq {
             resolve,
             client,
             name: name.to_str().into_owned(),
-            endpoints: Mutex::new([None, None]),
+            endpoints: Endpoints::default(),
             conn: Mutex::new(None),
         })
     }
@@ -73,19 +96,7 @@ impl Doq {
             return Ok(c.clone());
         }
         let addr = (self.resolve)().await?;
-        let endpoint = {
-            let mut eps = self.endpoints.lock().await;
-            let i = usize::from(addr.is_ipv6());
-            if eps[i].is_none() {
-                let bind: SocketAddr = if addr.is_ipv6() {
-                    (Ipv6Addr::UNSPECIFIED, 0).into()
-                } else {
-                    (Ipv4Addr::UNSPECIFIED, 0).into()
-                };
-                eps[i] = Some(quinn::Endpoint::client(bind)?);
-            }
-            eps[i].clone().ok_or(ExchangeError::Unresolved)?
-        };
+        let endpoint = self.endpoints.for_addr(addr).await?;
         let conn = endpoint
             .connect_with(self.client.clone(), addr, &self.name)
             .map_err(|e| ExchangeError::Io(std::io::Error::other(e.to_string())))?

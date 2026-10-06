@@ -12,6 +12,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# REQ: DNS-004/UPS-002 (T7.8) — DoH over HTTP/3; `02` §7 names h3 and h3-quinn.
+h3 = "0.0.8"
+h3-quinn = { version = "0.0.10", default-features = false }
 # REQ: UPS-002 (T7.7) — DoQ upstreams (RFC 9250).
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -34,5 +37,7 @@ toml = "1.1.6"
 webpki-roots = "1.0.9"
 
 [dev-dependencies]
+# T7.8: the HTTP/3 upstream is tested against the real DoH3 listener.
+telltale-net = { version = "0.1.0", path = "../telltale-net" }
 rcgen = "0.14.10"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

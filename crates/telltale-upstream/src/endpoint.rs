@@ -16,6 +16,8 @@ pub enum Protocol {
     Https,
     /// REQ: UPS-002 (T7.7) — DNS over QUIC (RFC 9250).
     Quic,
+    /// REQ: UPS-002 (T7.8) — DNS over HTTPS over HTTP/3.
+    H3,
 }
 
 impl Protocol {
@@ -23,7 +25,7 @@ impl Protocol {
         match self {
             Self::Udp | Self::Tcp => 53,
             Self::Tls | Self::Quic => 853,
-            Self::Https => 443,
+            Self::Https | Self::H3 => 443,
         }
     }
 }
@@ -36,6 +38,7 @@ impl fmt::Display for Protocol {
             Self::Tls => "tls",
             Self::Https => "https",
             Self::Quic => "quic",
+            Self::H3 => "h3",
         })
     }
 }
@@ -70,15 +73,17 @@ impl Endpoint {
             "tls" => Protocol::Tls,
             "https" => Protocol::Https,
             "quic" => Protocol::Quic,
+            "h3" => Protocol::H3,
             other => return Err(format!("`{url}`: scheme `{other}://` is not supported yet")),
         };
         let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, ""),
         };
-        if protocol != Protocol::Https && !path.is_empty() && path != "/" {
+        let http = matches!(protocol, Protocol::Https | Protocol::H3);
+        if !http && !path.is_empty() && path != "/" {
             return Err(format!(
-                "`{url}`: a path is only valid for https:// upstreams"
+                "`{url}`: a path is only valid for https:// and h3:// upstreams"
             ));
         }
         let (host, port) = split_host_port(authority).map_err(|e| format!("`{url}`: {e}"))?;
@@ -91,7 +96,7 @@ impl Endpoint {
             protocol,
             host,
             port: port.unwrap_or(protocol.default_port()),
-            path: if protocol == Protocol::Https {
+            path: if http {
                 if path.is_empty() {
                     "/dns-query".into()
                 } else {
@@ -181,6 +186,11 @@ mod tests {
         let e = Endpoint::parse("quic://dns.adguard-dns.com").unwrap();
         assert_eq!((e.protocol, e.port), (Protocol::Quic, 853));
         assert!(Endpoint::parse("quic://9.9.9.9/path").is_err());
-        assert!(Endpoint::parse("h3://dns.google/dns-query").is_err());
+        // UPS-002 (T7.8) — DoH over HTTP/3.
+        let e = Endpoint::parse("h3://dns.google").unwrap();
+        assert_eq!(
+            (e.protocol, e.port, e.path.as_str()),
+            (Protocol::H3, 443, "/dns-query")
+        );
     }
 }

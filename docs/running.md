@@ -348,13 +348,18 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
 proto = "doq"
 addr = "0.0.0.0:853"                    # UDP 853 (DoT uses TCP 853: both fit)
 tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+
+[[listen]]
+proto = "doh3"                          # DoH over HTTP/3: UDP 443 next to the TCP one
+addr = "0.0.0.0:443"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
 ```
 - **Certificate:** a PEM chain (leaf first) and key, valid for the name devices use, e.g. `dns.example.com` from Let's Encrypt (DNS-01 works for internal names). Both files are re-read within 10 seconds of changing, so renewals (certbot, cert-manager) need no restart; a broken renewal keeps the old certificate and logs a warning.
-- **DoH** speaks HTTP/2 and HTTP/1.1, `GET ?dns=` and `POST application/dns-message`, and answers with `Cache-Control: max-age` set to the answer's smallest TTL. DoT uses ALPN `dot` with RFC 7766 pipelining, like plain TCP. DoQ uses ALPN `doq`: each query has its own QUIC stream, so a slow answer never holds up the others, and an idle connection closes after 30 s. 0-RTT is off (an early query could be replayed).
+- **DoH** speaks HTTP/2 and HTTP/1.1, `GET ?dns=` and `POST application/dns-message`, and answers with `Cache-Control: max-age` set to the answer's smallest TTL. DoT uses ALPN `dot` with RFC 7766 pipelining, like plain TCP. With a `doh3` listener, DoH also speaks HTTP/3 (ALPN `h3`, the same paths and client IDs), and HTTP/2 answers carry `Alt-Svc: h3=":443"` so browsers and apps that support it switch. DoQ uses ALPN `doq`: each query has its own QUIC stream, so a slow answer never holds up the others, and an idle connection closes after 30 s. 0-RTT is off (an early query could be replayed).
 - **Devices identify themselves:** with a wildcard certificate (`dns.example.com` and `*.dns.example.com`), a device configured with `kids-tablet.dns.example.com` (Android Private DNS, DoT, DoH, or DoQ) or the URL `https://dns.example.com/dns-query/kids-tablet` gets the client ID `kids-tablet`, which `[[client]] match = ["id:kids-tablet"]` recognizes wherever the device is, even on mobile data. The path wins over the name.
 - **Behind a load balancer:** `proxy_protocol = true` on a `tcp`, `dot`, or `doh` listener makes it read the client's address from a PROXY protocol v2 header (HAProxy, Traefik, AWS NLB, ...). Every connection must then start with one, so only enable it when the balancer sends it, and don't let clients reach the listener directly. `LOCAL` connections (the balancer's health checks) keep the socket address.
 - Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
-- In Kubernetes, enable `encrypted.dot` / `encrypted.doh` / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
+- In Kubernetes, enable `encrypted.dot` / `encrypted.doh` (plus `encrypted.doh.http3`) / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
 
 ## Encrypted upstreams
 ```toml
@@ -369,14 +374,20 @@ url = "https://dns.quad9.net/dns-query"     # DNS over HTTPS (HTTP/2)
 bootstrap = ["9.9.9.9", "149.112.112.112"]  # how to look up dns.quad9.net itself
 
 [[upstream]]
+name = "google-h3"
+url = "h3://8.8.8.8/dns-query"              # DoH over HTTP/3 (or https:// with http_version = "3")
+tls_server_name = "dns.google"
+
+[[upstream]]
 name = "adguard-doq"
 url = "quic://94.140.14.14"                 # DNS over QUIC, port 853
 tls_server_name = "dns.adguard-dns.com"
 ```
 - Certificates are verified against the built-in Mozilla root set, so no CA files are needed, even in a minimal container. `tls_insecure_skip_verify = true` turns verification off (a warning is logged; don't use it on untrusted networks).
 - **Hostname upstreams** are looked up through `bootstrap` servers, or the system resolvers from `/etc/resolv.conf` when `bootstrap` is empty (never through TelltaleDNS itself), and the result is cached for its TTL. To skip the lookup, put the IP in the URL and set `tls_server_name`.
-- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT.
-- Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`, `http_version = "3"`.
+- Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT; DoH over HTTP/3 does the same with a request per query.
+- `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
+- Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`.
 
 ## How a query is answered
 ```mermaid

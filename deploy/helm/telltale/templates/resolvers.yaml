@@ -87,6 +87,11 @@ spec:
               containerPort: {{ include "telltale.dohPort" . }}
               protocol: TCP
             {{- end }}
+            {{- if and .Values.encrypted.doh.enabled .Values.encrypted.doh.http3 }}
+            - name: dns-doh3
+              containerPort: {{ include "telltale.dohPort" . }}
+              protocol: UDP
+            {{- end }}
             {{- if .Values.encrypted.doq.enabled }}
             - name: dns-doq
               containerPort: {{ include "telltale.doqPort" . }}

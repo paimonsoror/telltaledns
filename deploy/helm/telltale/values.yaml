@@ -116,6 +116,9 @@ encrypted:
     enabled: false
     port: 443
     path: /dns-query
+    # REQ: DNS-004 — also serve DoH over HTTP/3 (QUIC, UDP on the same port); HTTP/2 answers
+    # advertise it with Alt-Svc.
+    http3: false
   # REQ: DNS-004 — DNS over QUIC (RFC 9250) on UDP 853: Android and iOS apps and some
   # resolvers prefer it. Uses the same certificate.
   doq:

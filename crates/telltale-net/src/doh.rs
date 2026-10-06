@@ -27,9 +27,9 @@ use tokio::time::timeout;
 use crate::handler::{ClientId, QueryHandler, RequestMeta, Response, Transport};
 use crate::tls::CertStore;
 
-const DNS_MESSAGE: &str = "application/dns-message";
+pub(crate) const DNS_MESSAGE: &str = "application/dns-message";
 /// Largest DNS message.
-const MAX_MSG: usize = u16::MAX as usize;
+pub(crate) const MAX_MSG: usize = u16::MAX as usize;
 
 /// DoH listener settings.
 #[derive(Clone, Debug)]
@@ -43,6 +43,9 @@ pub struct DohConfig {
     /// Time allowed for the PROXY header and the TLS handshake, and idle keep-alive.
     pub handshake_timeout: Duration,
     pub max_connections: usize,
+    /// REQ: DNS-004 (T7.8) — `Alt-Svc` to send (`h3=":443"`) when an HTTP/3 DoH listener serves the
+    /// same name.
+    pub alt_svc: Option<String>,
 }
 
 impl DohConfig {
@@ -54,6 +57,7 @@ impl DohConfig {
             proxy_protocol: false,
             handshake_timeout: Duration::from_secs(10),
             max_connections: 1024,
+            alt_svc: None,
         }
     }
 }
@@ -267,34 +271,21 @@ impl<H: QueryHandler> Ctx<H> {
     }
 
     async fn answer_inner(&self, req: Request<Incoming>) -> HttpResponse {
-        // Path: `<path>` or `<path>/<client-id>`.
-        let path = req.uri().path();
-        let path_id = match path.strip_prefix(self.cfg.path.as_str()) {
-            Some("" | "/") => None,
-            Some(rest) => match rest.strip_prefix('/').and_then(ClientId::new) {
-                Some(id) => Some(id),
-                None => return status(StatusCode::NOT_FOUND),
-            },
-            None => return status(StatusCode::NOT_FOUND),
+        let path_id = match route(&self.cfg.path, req.uri().path()) {
+            Ok(id) => id,
+            Err(code) => return status(code),
         };
         let msg = match *req.method() {
-            Method::GET => {
-                let Some(m) = req
-                    .uri()
-                    .query()
-                    .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("dns=")))
-                    .and_then(base64url_decode)
-                else {
-                    return status(StatusCode::BAD_REQUEST);
-                };
-                m
-            }
+            Method::GET => match get_message(req.uri().query()) {
+                Ok(m) => m,
+                Err(code) => return status(code),
+            },
             Method::POST => {
                 let ct = req
                     .headers()
                     .get(CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok());
-                if ct.map(|c| c.split(';').next().unwrap_or("").trim()) != Some(DNS_MESSAGE) {
+                if !is_dns_message(ct) {
                     return status(StatusCode::UNSUPPORTED_MEDIA_TYPE);
                 }
                 match Limited::new(req.into_body(), MAX_MSG).collect().await {
@@ -309,43 +300,90 @@ impl<H: QueryHandler> Ctx<H> {
                 return r;
             }
         };
-        if msg.len() < 12 {
-            return status(StatusCode::BAD_REQUEST);
-        }
         let meta = RequestMeta {
             peer: self.peer,
             local: None,
             transport: Transport::Doh,
             client_id: path_id.or(self.sni_id),
         };
-        let outcome = crate::tcp::with_scratch(|out| match self.handler.handle(&msg, &meta, out) {
-            Response::Ready(len) => Pending::Now(Some(out[..len].to_vec())),
-            Response::Deferred(f) => Pending::Later(f),
-            Response::Drop => Pending::Now(None),
-        });
-        let answer = match outcome {
-            Pending::Now(a) => a,
-            Pending::Later(f) => f.await,
+        let (answer, max_age) = match resolve(self.handler.as_ref(), &msg, &meta).await {
+            Ok(a) => a,
+            Err(code) => return status(code),
         };
-        // Nothing to send (e.g. a rate-limited client): HTTP must still say something.
-        let Some(answer) = answer else {
-            return status(StatusCode::SERVICE_UNAVAILABLE);
-        };
-        let max_age = telltale_proto::summarize(&answer)
-            .ok()
-            .and_then(|s| match (s.min_ttl, s.negative_ttl) {
-                (Some(a), Some(n)) => Some(a.min(n)),
-                (a, n) => a.or(n),
-            })
-            .unwrap_or(0);
         let mut r = hyper::Response::new(Full::new(Bytes::from(answer)));
         let h = r.headers_mut();
         h.insert(CONTENT_TYPE, HeaderValue::from_static(DNS_MESSAGE));
         if let Ok(v) = HeaderValue::from_str(&format!("max-age={max_age}")) {
             h.insert(CACHE_CONTROL, v);
         }
+        // REQ: DNS-004 (T7.8) — clients may switch to HTTP/3 on the same name.
+        if let Some(alt) = self
+            .cfg
+            .alt_svc
+            .as_deref()
+            .and_then(|a| HeaderValue::from_str(a).ok())
+        {
+            h.insert(hyper::header::ALT_SVC, alt);
+        }
         r
     }
+}
+
+/// REQ: DNS-003, DNS-004 — a DoH request, whatever its HTTP version: `<base>` or
+/// `<base>/<client-id>`; anything else is a 404.
+pub(crate) fn route(base: &str, path: &str) -> Result<Option<ClientId>, StatusCode> {
+    match path.strip_prefix(base) {
+        Some("" | "/") => Ok(None),
+        Some(rest) => rest
+            .strip_prefix('/')
+            .and_then(ClientId::new)
+            .map(Some)
+            .ok_or(StatusCode::NOT_FOUND),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// The message of a GET (`?dns=` in base64url).
+pub(crate) fn get_message(query: Option<&str>) -> Result<Vec<u8>, StatusCode> {
+    query
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("dns=")))
+        .and_then(base64url_decode)
+        .ok_or(StatusCode::BAD_REQUEST)
+}
+
+/// Whether a POST's content type is `application/dns-message`.
+pub(crate) fn is_dns_message(content_type: Option<&str>) -> bool {
+    content_type.map(|c| c.split(';').next().unwrap_or("").trim()) == Some(DNS_MESSAGE)
+}
+
+/// Answers `msg`: the answer and its `max-age` (the smallest TTL), or the status to send.
+pub(crate) async fn resolve<H: QueryHandler + ?Sized>(
+    handler: &H,
+    msg: &[u8],
+    meta: &RequestMeta,
+) -> Result<(Vec<u8>, u32), StatusCode> {
+    if msg.len() < 12 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let outcome = crate::tcp::with_scratch(|out| match handler.handle(msg, meta, out) {
+        Response::Ready(len) => Pending::Now(Some(out[..len].to_vec())),
+        Response::Deferred(f) => Pending::Later(f),
+        Response::Drop => Pending::Now(None),
+    });
+    let answer = match outcome {
+        Pending::Now(a) => a,
+        Pending::Later(f) => f.await,
+    };
+    // Nothing to send (e.g. a rate-limited client): HTTP must still say something.
+    let answer = answer.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let max_age = telltale_proto::summarize(&answer)
+        .ok()
+        .and_then(|s| match (s.min_ttl, s.negative_ttl) {
+            (Some(a), Some(n)) => Some(a.min(n)),
+            (a, n) => a.or(n),
+        })
+        .unwrap_or(0);
+    Ok((answer, max_age))
 }
 
 enum Pending {

@@ -48,6 +48,12 @@ spec:
       targetPort: dns-doh
       protocol: TCP
     {{- end }}
+    {{- if and .Values.encrypted.doh.enabled .Values.encrypted.doh.http3 }}
+    - name: dns-doh3
+      port: {{ .Values.encrypted.doh.port }}
+      targetPort: dns-doh3
+      protocol: UDP
+    {{- end }}
     {{- if .Values.encrypted.doq.enabled }}
     - name: dns-doq
       port: {{ .Values.encrypted.doq.port }}
