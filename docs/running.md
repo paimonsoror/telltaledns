@@ -1686,6 +1686,26 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/stats/top?
 curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries?client=192.168.1.20&limit=20'
 ```
 
+### From the shell: `telltale ctl`
+The same API from a terminal, with an API token (Settings → API tokens, or `POST /api/v1/tokens`):
+```sh
+export TELLTALE_TOKEN=tt_...                 # or --token-file /path/to/token
+telltale ctl status                          # version, uptime, the last day's numbers
+telltale ctl queries --status blocked --from -1h
+telltale ctl top blocked --limit 20
+telltale ctl block tiktok.com --group kids --for 120 --note "homework time"
+telltale ctl allow cdn.example.com --device living-room-tv
+telltale ctl rules                           # quick rules; `ctl unrule <id>` removes one
+telltale ctl pause --minutes 10              # `ctl resume` to undo
+telltale ctl flush --name example.com --subtree
+telltale ctl lists                           # with unique names and hits
+telltale ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`
+telltale ctl get stats/latency by=upstream   # any endpoint (raw JSON)
+telltale ctl put groups/kids --data '{"lists": ["oisd-small"]}'
+```
+- It talks to the node in `[api] listen` from your config (or `--url http://dns.lan:8053`), prints tables, and `--json` prints the API's own JSON for scripts. Errors show the API's explanation and hint; the exit status is non-zero.
+- `block` and `allow` take `--dry-run` to see what would change. Rule IDs come from the domain (`block-tiktok-com`).
+
 ## AI agents and automation
 Give an AI assistant (or any automation) an **agent token** instead of your own account. Create one in **Settings → API tokens → for an AI agent**, or with `POST /api/v1/tokens`:
 ```json

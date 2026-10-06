@@ -12,6 +12,7 @@ mod backup;
 mod build_info;
 mod cache_history;
 mod cluster;
+mod ctl;
 mod datadir;
 mod dhcp;
 mod dnstap;
@@ -159,6 +160,26 @@ enum Command {
         token_file: Option<PathBuf>,
         /// Config files (same defaults as `telltale run`), to find the API address.
         #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
+    /// Drive a running node from the shell through its API (status, the query log, top
+    /// lists, block/allow, pause, flush, lists, plans, and raw get/post/put/delete), with an
+    /// API token (`TELLTALE_TOKEN`, or `--token-file`).
+    // REQ: API-008
+    Ctl {
+        #[command(subcommand)]
+        command: ctl::CtlCommand,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// Read the API token from this file instead of `TELLTALE_TOKEN`.
+        #[arg(long, global = true)]
+        token_file: Option<PathBuf>,
+        /// Print the API's JSON instead of tables.
+        #[arg(long, global = true)]
+        json: bool,
+        /// Config files (same defaults as `telltale run`), to find the API address.
+        #[arg(short, long = "config", global = true)]
         config: Vec<PathBuf>,
     },
     /// Back up this node's configuration and data to one file, or restore one.
@@ -526,6 +547,7 @@ enum ConfigCommand {
     Schema,
 }
 
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -609,6 +631,13 @@ fn main() -> ExitCode {
             config,
         } => Ok(run_mcp(stdio, url, token_file.as_deref(), config)),
         Command::Cluster { command, config } => Ok(run_cluster(command, config)),
+        Command::Ctl {
+            command,
+            url,
+            token_file,
+            json,
+            config,
+        } => Ok(run_ctl(command, url, token_file.as_deref(), json, config)),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -697,6 +726,47 @@ fn api_url(config: Vec<PathBuf>) -> Result<String, Vec<telltale_config::ConfigEr
         a.ip().to_string()
     };
     Ok(format!("http://{host}:{}", a.port()))
+}
+
+// REQ: API-008 (T7.25)
+fn run_ctl(
+    command: ctl::CtlCommand,
+    url: Option<String>,
+    token_file: Option<&Path>,
+    json: bool,
+    config: Vec<PathBuf>,
+) -> ExitCode {
+    let url = match url.map_or_else(|| api_url(config), Ok) {
+        Ok(u) => u,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let token = match token_file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())),
+        None => std::env::var("TELLTALE_TOKEN")
+            .map_err(|_| "set TELLTALE_TOKEN to an API token, or use --token-file".to_owned()),
+    };
+    let result = token.and_then(|t| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(ctl::run(&url, t.trim(), command, json))
+    });
+    match result {
+        Ok(text) => {
+            let _ = io::Write::write_all(&mut io::stdout().lock(), text.as_bytes());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 // REQ: AGT-006 (T6.6, ADR-065)

@@ -458,5 +458,11 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* the certificate is fetched, checked with the stamp's provider key and dates, and the best one used; queries and answers are boxed (XChaCha20 and XSalsa20), padded, matched by nonce; a certificate from another key is refused; truncated answers go over TCP; DoH/DoT stamps resolve; works against public DNSCrypt servers.
   - *Done 2026-10-06:* `telltale-upstream/src/dnscrypt.rs` (ADR-079, Proposed): stamp parser, certificate check, the box, `Transport::DnsCrypt`, a test resolver (`dnscrypt::server`); stamps mapped in the router; tests `ups_003_*` and `tests/dnscrypt.rs` (both constructions, a foreign certificate); `examples/dnscrypt_live.rs` (21 of 21 IPv4 servers from the public list answered: AdGuard, OpenDNS, CleanBrowsing, Comodo, cryptostorm); a running node resolving through a DNSCrypt stamp and a DoH stamp; docs. *Deferred:* anonymized relays; enforcing DoH/DoT stamp certificate hashes.
 
+- [x] **T7.25 CLI.** *(API-008)* `telltale ctl …`: the API from a shell with a token: status, queries, top, block/allow/unrule/rules, pause/resume, flush, explain, lists/groups/clients/upstreams, anomalies, plans/approve/reject, and raw `get`/`post`/`put`/`delete`; tables by default, `--json` for scripts.
+  - *AC:* against a running node with a token: status; a blocked name is blocked in DNS and the rule is listed and removable; pause/resume; flush; lists; the query log; a raw GET; `--json` is the API's JSON; a bad token is a clear error with a non-zero exit.
+  - *Done 2026-10-06:* `crates/telltale/src/ctl.rs`; `deploy/ctl-e2e.sh` in CI; unit test `api_008_helpers`; docs.
+
+M7 is complete apart from the deferrals noted in each task (and T6.14's soak check).
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).
