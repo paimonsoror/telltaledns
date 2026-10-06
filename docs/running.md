@@ -1042,6 +1042,11 @@ instead of a cold one.
 - The file is owner-only, since it shows what was looked up. It's removed once loaded, so a
   crash never reloads old data.
 
+**In a cluster**, a node that starts with an empty cache (a new resolver pod, a replica
+after a restart) also asks the other nodes for their most-queried names, this hour and the
+last, and resolves them in the background (20 a second, A and AAAA), so its first clients
+find them cached. `[cache] warm_names = 300` sets how many; `0` turns it off.
+
 ## Cache tools
 The **Cache** page (under System) shows each node's cache. In a cluster that's one card per
 node; Kubernetes pods are told apart by pod name.

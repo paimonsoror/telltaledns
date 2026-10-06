@@ -466,3 +466,9 @@ M7 is complete apart from the deferrals noted in each task (and T6.14's soak che
 
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).
+
+Beaconing detection shipped in T3.13 (the anomaly engine).
+
+- [x] **T8.1 Cache-warm hints.** *(CLU-011)* A node joining a cluster resolves the cluster's hot names in the background.
+  - *AC:* once the cluster's configuration is applied, the node takes the merged top queried names (this hour and the last, from the other nodes) and resolves up to `[cache] warm_names` of them, A and AAAA, paced, through the normal upstream path without query events; off with `0`; never on the DNS path.
+  - *Done 2026-10-06:* `crates/telltale/src/warm.rs` (the federated top read, the internal lookup from T7.21); `[cache] warm_names` (300); unit test `clu_011_hot_names`; the cluster e2e checks the replica takes the primary's hot names; docs.

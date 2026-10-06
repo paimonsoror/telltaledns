@@ -784,6 +784,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     ));
     // REQ: OBS-006 (T7.17)
     tokio::spawn(crate::otlp::run(Arc::clone(&sources), http_stopped.clone()));
+    // REQ: CLU-011 (T8.1) — warm the cache from the cluster's hot names.
+    tokio::spawn(crate::warm::run(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-008 (T7.19) — DHCP (read at startup).
     if cfg.dhcp.enabled {
         tokio::spawn(crate::dhcp::run(

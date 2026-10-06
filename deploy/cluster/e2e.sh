@@ -140,6 +140,13 @@ for _ in $(seq 50); do [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] && break; sleep 0.1
 [ "$(q 25302 ads.p.test)" = 0.0.0.0 ] || fail "replica doesn't block with the primary's list"
 echo "ok"
 
+echo "== cache-warm hints (CLU-011)"
+# The primary answered a.p.test while starting: the replica warms its cache with it.
+for _ in $(seq 150); do grep -q "cache warm: resolving" "$E/r.log" && break; sleep 0.1; done
+grep -q "cache warm: resolving the cluster's hot names" "$E/r.log" ||
+  fail "the replica didn't take the primary's hot names to warm its cache"
+echo "ok"
+
 echo "== federated reads (CLU-002)"
 for i in $(seq 5); do q 25302 "fed$i.r.test" >/dev/null; done
 API=http://127.0.0.1:28001

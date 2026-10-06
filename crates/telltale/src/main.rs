@@ -41,6 +41,7 @@ mod sinks;
 mod tail;
 mod technitium;
 mod updates;
+mod warm;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

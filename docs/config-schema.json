@@ -93,7 +93,8 @@
         "servfail_ttl": 5,
         "stale_answer_client_timeout_ms": 1800,
         "stale_answer_ttl": 30,
-        "stale_max_age": 86400
+        "stale_max_age": 86400,
+        "warm_names": 300
       }
     },
     "client": {
@@ -859,6 +860,13 @@
           "type": "integer",
           "format": "uint32",
           "default": 86400,
+          "minimum": 0
+        },
+        "warm_names": {
+          "description": "REQ: CLU-011 (T8.1) — in a cluster, resolve this many of the cluster's hot names when\nthis node starts, so its first clients find them cached (0: off).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
           "minimum": 0
         }
       },

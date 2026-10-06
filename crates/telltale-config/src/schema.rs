@@ -1262,6 +1262,9 @@ pub struct CacheConfig {
     pub prefetch_min_hits: u32,
     /// Dump the cache on shutdown and reload it on start (DNS-009).
     pub persist: bool,
+    /// REQ: CLU-011 (T8.1) — in a cluster, resolve this many of the cluster's hot names when
+    /// this node starts, so its first clients find them cached (0: off).
+    pub warm_names: u32,
 }
 
 impl Default for CacheConfig {
@@ -1281,6 +1284,7 @@ impl Default for CacheConfig {
             prefetch_threshold_pct: 10,
             prefetch_min_hits: 3,
             persist: false,
+            warm_names: 300,
         }
     }
 }

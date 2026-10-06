@@ -712,7 +712,7 @@ impl Pipeline {
         }
     }
 
-    async fn lookup_internal(
+    pub(crate) async fn lookup_internal(
         self: &Arc<Self>,
         req: Vec<u8>,
         groups: &[Box<str>],
