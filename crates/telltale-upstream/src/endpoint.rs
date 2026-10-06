@@ -20,12 +20,16 @@ pub enum Protocol {
     H3,
     /// REQ: UPS-012 (T7.15) — our own resolver, from the root servers down.
     Recursive,
+    /// REQ: UPS-011 (T7.16) — a plugin's Unix socket (DNS over a stream).
+    Unix,
+    /// REQ: UPS-011 (T7.16) — a plugin program TelltaleDNS starts and supervises.
+    Exec,
 }
 
 impl Protocol {
     pub const fn default_port(self) -> u16 {
         match self {
-            Self::Udp | Self::Tcp | Self::Recursive => 53,
+            Self::Udp | Self::Tcp | Self::Recursive | Self::Unix | Self::Exec => 53,
             Self::Tls | Self::Quic => 853,
             Self::Https | Self::H3 => 443,
         }
@@ -42,6 +46,8 @@ impl fmt::Display for Protocol {
             Self::Quic => "quic",
             Self::H3 => "h3",
             Self::Recursive => "recursive",
+            Self::Unix => "unix",
+            Self::Exec => "exec",
         })
     }
 }
@@ -70,6 +76,25 @@ impl Endpoint {
         let (scheme, rest) = url
             .split_once("://")
             .ok_or_else(|| format!("`{url}`: missing scheme (e.g. udp://9.9.9.9)"))?;
+        // REQ: UPS-011 — `unix:///path.sock` and `exec:///path/to/program`: an absolute path.
+        if scheme == "unix" || scheme == "exec" {
+            if !rest.starts_with('/') || rest.len() < 2 {
+                return Err(format!(
+                    "`{url}`: use an absolute path, e.g. {scheme}:///run/plugin{}",
+                    if scheme == "unix" { ".sock" } else { "" }
+                ));
+            }
+            return Ok(Self {
+                protocol: if scheme == "unix" {
+                    Protocol::Unix
+                } else {
+                    Protocol::Exec
+                },
+                host: Host::Name("local".into()),
+                port: 0,
+                path: rest.to_owned(),
+            });
+        }
         // REQ: UPS-012 — `recursive://` has no host: it starts at the root servers.
         if scheme == "recursive" {
             if !rest.is_empty() && rest != "/" {
@@ -134,8 +159,12 @@ impl Endpoint {
 
 impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.protocol == Protocol::Recursive {
-            return f.write_str("recursive://");
+        match self.protocol {
+            Protocol::Recursive => return f.write_str("recursive://"),
+            Protocol::Unix | Protocol::Exec => {
+                return write!(f, "{}://{}", self.protocol, self.path);
+            }
+            _ => {}
         }
         match &self.host {
             Host::Ip(IpAddr::V6(ip)) => {

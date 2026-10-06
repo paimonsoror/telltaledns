@@ -391,9 +391,18 @@ pub struct Upstream {
     /// Idle connection timeout in milliseconds.
     #[serde(default = "default_idle_timeout_ms")]
     pub idle_timeout_ms: u32,
-    /// Base64 SHA-256 SPKI pins.
+    /// Base64 SHA-256 SPKI pins: the server's key must match one (see `docs/running.md`,
+    /// "Pinning and client certificates", for how to get a server's pin).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spki_pins: Vec<SafeString>,
+    /// REQ: UPS-011 (T7.16) — a PEM file of CA certificates to trust for this upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<SafeString>,
+    /// A client certificate and key (PEM files) for servers that require one (mTLS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_client_cert: Option<SafeString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_client_key: Option<SafeString>,
     /// Disable certificate verification (dangerous; logs a warning).
     #[serde(default)]
     pub tls_insecure_skip_verify: bool,
@@ -406,6 +415,9 @@ pub struct Upstream {
     /// Free-form labels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<SafeString>,
+    /// REQ: UPS-011 (T7.16) — `exec://` only: the plugin program's arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<SafeString>,
     /// REQ: DNS-012 (T7.15) — `recursive://` only: how the resolver asks the root servers
     /// and below.
     #[serde(default, skip_serializing_if = "RecursiveConfig::is_default")]

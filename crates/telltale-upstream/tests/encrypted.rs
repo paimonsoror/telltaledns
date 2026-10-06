@@ -60,7 +60,10 @@ fn acceptor(c: &Cert, alpn: &[&[u8]]) -> tokio_rustls::TlsAcceptor {
 /// DoT server: pipelined; answers each query after a small random-ish delay so responses can
 /// come back out of order.
 async fn dot_server(c: &Cert) -> SocketAddr {
-    let tls = acceptor(c, &[]);
+    dot_server_with(acceptor(c, &[])).await
+}
+
+async fn dot_server_with(tls: tokio_rustls::TlsAcceptor) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move {
@@ -346,4 +349,95 @@ fn loop_detection_tag_round_trips() {
         q.edns.unwrap().loop_tag(),
         Some(&0x1234_5678_9abc_def0u64.to_be_bytes()[..])
     );
+}
+
+/// REQ: UPS-011 (T7.16) — SPKI pins: the right key passes (also with verification off, for a
+/// self-signed server), any other key fails; the pin is SHA-256 of the key's SPKI.
+#[tokio::test]
+async fn ups_011_spki_pins() {
+    let made = rcgen::generate_simple_self_signed(vec!["dns.test".into()]).unwrap();
+    let c = Cert {
+        der: made.cert.der().clone(),
+        key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der())),
+    };
+    let pin = telltale_upstream::spki_pin(c.der.as_ref()).unwrap();
+    assert_eq!(pin.len(), 44);
+    let addr = dot_server(&c).await;
+    let ep = Endpoint::parse(&format!("tls://{addr}")).unwrap();
+    let trusted = TlsOptions {
+        extra_roots: vec![c.der.clone()],
+    };
+    let with_pin = |pins: Vec<String>, insecure: bool| {
+        let mut o = opts("dns.test");
+        o.tls_insecure_skip_verify = insecure;
+        o.tls.pins = pins;
+        o
+    };
+    let other = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_owned();
+    for (pins, insecure, roots, ok) in [
+        (vec![pin.clone()], false, &trusted, true),
+        (vec![other.clone(), pin.clone()], false, &trusted, true),
+        (vec![other.clone()], false, &trusted, false),
+        (vec![pin.clone()], true, &TlsOptions::default(), true),
+        (vec![other.clone()], true, &TlsOptions::default(), false),
+    ] {
+        let up = Upstream::build(
+            1,
+            "dot",
+            ep.clone(),
+            &with_pin(pins.clone(), insecure),
+            roots,
+        )
+        .unwrap();
+        let r = up
+            .exchange(&question("example.com"), Duration::from_secs(2))
+            .await;
+        assert_eq!(r.is_ok(), ok, "pins {pins:?}, insecure {insecure}");
+    }
+}
+
+/// REQ: UPS-011 (T7.16) — mTLS: a server that requires a client certificate answers only
+/// when the upstream presents one it trusts.
+#[tokio::test]
+async fn ups_011_client_certificates() {
+    let server = cert();
+    let client = rcgen::generate_simple_self_signed(vec!["client.test".into()]).unwrap();
+    let client_der = client.cert.der().clone();
+    let client_key =
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(client.signing_key.serialize_der()));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(client_der.clone()).unwrap();
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::clone(&provider),
+    )
+    .build()
+    .unwrap();
+    let cfg = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(vec![server.der.clone()], server.key.clone_key())
+        .unwrap();
+    let addr = dot_server_with(tokio_rustls::TlsAcceptor::from(Arc::new(cfg))).await;
+    let ep = Endpoint::parse(&format!("tls://{addr}")).unwrap();
+    let trusted = TlsOptions {
+        extra_roots: vec![server.der.clone()],
+    };
+    let without = Upstream::build(1, "dot", ep.clone(), &opts("dns.test"), &trusted).unwrap();
+    assert!(
+        without
+            .exchange(&question("example.com"), Duration::from_secs(2))
+            .await
+            .is_err()
+    );
+    let mut o = opts("dns.test");
+    o.tls.client = Some(Arc::new((vec![client_der], client_key)));
+    let with = Upstream::build(2, "dot", ep, &o, &trusted).unwrap();
+    let resp = with
+        .exchange(&question("example.com"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert_eq!(summarize(&resp).unwrap().answers, 1);
 }

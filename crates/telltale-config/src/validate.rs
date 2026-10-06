@@ -58,6 +58,43 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     r.warnings
 }
 
+// REQ: UPS-011 (T7.16) — TLS settings only for TLS upstreams; both halves of a client
+// certificate; pins that look like base64 SHA-256.
+fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_>) {
+    let tls = matches!(s, "tls" | "https" | "h3" | "quic");
+    for (set, what) in [
+        (!u.spki_pins.is_empty(), "spki_pins"),
+        (u.tls_ca.is_some(), "tls_ca"),
+        (u.tls_client_cert.is_some(), "tls_client_cert"),
+    ] {
+        if set && !tls {
+            r.err(
+                format!("{p}.{what}"),
+                "only for TLS upstreams (tls://, https://, h3://, quic://)",
+            );
+        }
+    }
+    if u.tls_client_cert.is_some() != u.tls_client_key.is_some() {
+        r.err(
+            format!("{p}.tls_client_key"),
+            "set both tls_client_cert and tls_client_key",
+        );
+    }
+    for (j, pin) in u.spki_pins.iter().enumerate() {
+        let ok = pin.len() == 44
+            && pin.ends_with('=')
+            && pin[..43]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
+        if !ok {
+            r.err(
+                format!("{p}.spki_pins[{j}]"),
+                "a base64 SHA-256 (44 characters, ending in =)",
+            );
+        }
+    }
+}
+
 // REQ: OBS-010 (T7.13) — event sinks: unique names and what each kind needs.
 fn sinks(cfg: &Config, r: &mut Report<'_>) {
     use crate::SinkKind;
@@ -612,6 +649,21 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                 }
                 if s != "https" && s != "h3" && !u.headers.is_empty() {
                     r.err(format!("{p}.headers"), "only valid for DoH upstreams");
+                }
+                // REQ: UPS-011 (T7.16)
+                upstream_tls(u, s, &p, r);
+                if s != "exec" && !u.args.is_empty() {
+                    r.err(format!("{p}.args"), "only valid for exec:// upstreams");
+                }
+                if (s == "unix" || s == "exec") && !u.url.as_str()[s.len() + 3..].starts_with('/') {
+                    r.err(
+                        format!("{p}.url"),
+                        format!("use an absolute path, e.g. `{s}:///run/plugin`"),
+                    );
+                }
+                // REQ: UPS-010 (T7.16)
+                if u.proxy.is_some() && !matches!(s, "tcp" | "tls" | "https") {
+                    r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams (use tcp:// instead of udp://)");
                 }
                 // REQ: DNS-012 (T7.15)
                 if s != "recursive" && u.recursive != crate::schema::RecursiveConfig::default() {

@@ -60,6 +60,40 @@ impl Router {
     }
 }
 
+/// REQ: UPS-011 (T7.16) — an upstream's TLS files, read now (a reload re-reads them).
+fn upstream_tls(u: &telltale_config::Upstream) -> Result<crate::tls::UpstreamTls, String> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let certs = |path: &str| -> Result<Vec<CertificateDer<'static>>, String> {
+        let v: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+            .map_err(|e| format!("{path}: {e}"))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("{path}: {e}"))?;
+        if v.is_empty() {
+            return Err(format!("{path}: no certificates in it"));
+        }
+        Ok(v)
+    };
+    let ca = match &u.tls_ca {
+        Some(p) => certs(p.as_str())?,
+        None => Vec::new(),
+    };
+    let client = match (&u.tls_client_cert, &u.tls_client_key) {
+        (Some(c), Some(k)) => {
+            let chain = certs(c.as_str())?;
+            let key = PrivateKeyDer::from_pem_file(k.as_str())
+                .map_err(|e| format!("{}: {e}", k.as_str()))?;
+            Some(Arc::new((chain, key)))
+        }
+        _ => None,
+    };
+    Ok(crate::tls::UpstreamTls {
+        ca,
+        client,
+        pins: u.spki_pins.iter().map(ToString::to_string).collect(),
+    })
+}
+
 /// Builds every `[[upstream]]`; problems are appended to `errors`.
 fn build_upstreams<'c>(
     cfg: &'c Config,
@@ -85,20 +119,30 @@ fn build_upstreams<'c>(
                 continue;
             }
         };
-        for (set, what) in [
-            (!u.spki_pins.is_empty(), "spki_pins"),
-            (u.proxy.is_some(), "proxy"),
-            (u.ecs.as_deref().is_some_and(|e| e != "strip"), "ecs"),
-        ] {
-            if set {
-                errors.push(format!(
-                    "upstream `{}`: `{what}` is not supported yet",
-                    u.name
-                ));
+        // REQ: UPS-010 (T7.16)
+        let proxy = match u.proxy.as_deref().map(crate::proxy::Proxy::parse) {
+            Some(Ok(p)) => Some(Arc::new(p)),
+            Some(Err(e)) => {
+                errors.push(format!("upstream `{}`: {e}", u.name));
+                continue;
             }
+            None => None,
+        };
+        // REQ: UPS-011 (T7.16) — CA, client certificate, pins.
+        let up_tls = match upstream_tls(u) {
+            Ok(t) => t,
+            Err(e) => {
+                errors.push(format!("upstream `{}`: {e}", u.name));
+                continue;
+            }
+        };
+        if u.ecs.as_deref().is_some_and(|e| e != "strip") {
+            errors.push(format!("upstream `{}`: `ecs` is not supported yet", u.name));
         }
         let bootstrap = match (&ep.host, u.bootstrap.is_empty()) {
             (Host::Ip(_), _) => None,
+            // The proxy resolves the name (REQ: UPS-010).
+            (Host::Name(_), true) if proxy.is_some() => None,
             (Host::Name(_), false) => Some(Arc::new(Bootstrap::new(
                 u.bootstrap
                     .iter()
@@ -130,6 +174,11 @@ fn build_upstreams<'c>(
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             bootstrap,
+            proxy,
+            // REQ: UPS-011 (T7.16)
+            tls: up_tls,
+            plugin_args: u.args.iter().map(ToString::to_string).collect(),
+            plugin_dir: Some(std::path::Path::new(cfg.node.data_dir.as_str()).join("plugins")),
             // REQ: DNS-012 (T7.15)
             recursive: telltale_recursor::Settings {
                 qname_minimization: u.recursive.qname_minimization,

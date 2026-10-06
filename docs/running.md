@@ -415,6 +415,52 @@ tls_server_name = "dns.adguard-dns.com"
 - `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
 - Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`.
 
+### Through a proxy (Tor)
+Send an upstream's traffic through a SOCKS5 or HTTP proxy, for example Tor, so the resolver never sees your address:
+```toml
+[[upstream]]
+name = "quad9-tor"
+url = "tls://dns.quad9.net"                 # the proxy resolves the name: no bootstrap, no leak
+proxy = "socks5://127.0.0.1:9050"           # or "http://127.0.0.1:3128", with optional user:pass@
+```
+- Works with `tcp://`, `tls://`, and `https://` upstreams (a proxy carries TCP; use `tcp://` instead of `udp://`).
+- A hostname in the URL is passed to the proxy as a name, so the lookup happens at the proxy's end (with Tor, at the exit).
+- Credentials in the proxy URL (`socks5://user:pass@host:port`) never appear in logs.
+
+### Pinning and client certificates
+```toml
+[[upstream]]
+name = "office-dot"
+url = "tls://10.0.0.53"
+tls_server_name = "dns.office.example"
+tls_ca = "/etc/telltale/office-ca.pem"      # trust this CA for this upstream only
+tls_client_cert = "/etc/telltale/client.pem" # servers that require a client certificate (mTLS)
+tls_client_key = "/etc/telltale/client.key"
+spki_pins = ["kXbB2F3...base64...="]        # the server's key must be one of these
+```
+- **Pins** are the base64 SHA-256 of the server certificate's public key (SPKI), checked after the usual verification. With `tls_insecure_skip_verify = true` only the pin is checked, which suits a self-signed server you pin. List two pins (current and next key) to rotate keys without an outage. To get a server's pin:
+  ```sh
+  openssl s_client -connect 10.0.0.53:853 -servername dns.office.example </dev/null 2>/dev/null \
+    | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der \
+    | openssl dgst -sha256 -binary | base64
+  ```
+- The files are read when the configuration loads (and on every reload); a missing or unreadable file is a configuration error.
+
+### Plugin upstreams
+Anything that can answer DNS can be an upstream, in any language, without linking into TelltaleDNS: a plugin speaks plain DNS messages over a stream (a 2-byte length, then the message, as DNS over TCP does) on a Unix socket.
+```toml
+[[upstream]]
+name = "magicdns-bridge"
+url = "unix:///run/magicdns.sock"           # a socket another service listens on
+
+[[upstream]]
+name = "consul"
+url = "exec:///usr/local/bin/consul-dns-plugin"
+args = ["--datacenter", "home"]
+```
+- With `exec://`, TelltaleDNS starts the program and tells it where to listen in `TELLTALE_PLUGIN_SOCKET` (under `<data_dir>/plugins/`; `TELLTALE_UPSTREAM` has the upstream's name). If it exits, it's restarted after 1 s, then 2, 4, ... up to 60 s (back to 1 s once it has run for a minute). Its output goes to TelltaleDNS's log. It's stopped when the configuration changes or TelltaleDNS stops.
+- A plugin can't hurt the resolver: it's another process, every exchange has the upstream's timeout, and a dead plugin is a failing upstream like any other (health, breaker, the group's other members).
+
 ## How a query is answered
 ```mermaid
 flowchart LR

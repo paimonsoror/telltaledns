@@ -144,6 +144,13 @@ pub struct UpstreamOptions {
     pub bootstrap: Option<Arc<Bootstrap>>,
     /// REQ: DNS-012 — `recursive://` settings.
     pub recursive: telltale_recursor::Settings,
+    /// REQ: UPS-010 — connect through this proxy (TCP-based protocols).
+    pub proxy: Option<Arc<crate::proxy::Proxy>>,
+    /// REQ: UPS-011 — this upstream's CA, client certificate, and pins.
+    pub tls: crate::tls::UpstreamTls,
+    /// REQ: UPS-011 — `exec://`: the program's arguments, and the directory for its socket.
+    pub plugin_args: Vec<String>,
+    pub plugin_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for UpstreamOptions {
@@ -158,6 +165,10 @@ impl Default for UpstreamOptions {
             headers: Vec::new(),
             bootstrap: None,
             recursive: telltale_recursor::Settings::default(),
+            proxy: None,
+            plugin_args: Vec::new(),
+            plugin_dir: None,
+            tls: crate::tls::UpstreamTls::default(),
         }
     }
 }
@@ -199,6 +210,13 @@ enum Transport {
     H3(Box<Doh3>),
     /// REQ: UPS-012 (T7.15) — our own iterative resolver.
     Recursive(Box<telltale_recursor::Recursor>),
+    /// REQ: UPS-011 (T7.16) — a plugin on a Unix socket; for `exec://`, with the process
+    /// that serves it.
+    Plugin(
+        Pool,
+        #[allow(dead_code)] // held for its Drop, which stops the process
+        Option<crate::plugin::Supervisor>,
+    ),
 }
 
 impl std::fmt::Debug for Transport {
@@ -211,6 +229,7 @@ impl std::fmt::Debug for Transport {
             Self::Quic(_) => "Quic",
             Self::H3(_) => "H3",
             Self::Recursive(_) => "Recursive",
+            Self::Plugin(..) => "Plugin",
         })
     }
 }
@@ -230,15 +249,36 @@ pub struct Upstream {
     transport: Transport,
 }
 
-fn tcp_connector(target: Arc<Target>) -> Connector {
+/// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
+/// hostname as is, so it resolves it.
+async fn open_tcp(target: &Target, proxy: Option<&crate::proxy::Proxy>) -> io::Result<TcpStream> {
+    let s = if let Some(p) = proxy {
+        let dest = match &target.host {
+            Host::Ip(ip) => crate::proxy::Dest::Addr(SocketAddr::new(*ip, target.port)),
+            Host::Name(n) => crate::proxy::Dest::Name(n.clone(), target.port),
+        };
+        p.connect(&dest).await?
+    } else {
+        let addr = target.addr().await.map_err(io::Error::other)?;
+        TcpStream::connect(addr).await?
+    };
+    s.set_nodelay(true)?;
+    Ok(s)
+}
+
+fn tcp_connector(target: Arc<Target>, proxy: Option<Arc<crate::proxy::Proxy>>) -> Connector {
     Arc::new(move || {
-        let target = Arc::clone(&target);
-        Box::pin(async move {
-            let addr = target.addr().await.map_err(io::Error::other)?;
-            let s = TcpStream::connect(addr).await?;
-            s.set_nodelay(true)?;
-            Ok(Box::new(s) as BoxIo)
-        })
+        let (target, proxy) = (Arc::clone(&target), proxy.clone());
+        Box::pin(async move { Ok(Box::new(open_tcp(&target, proxy.as_deref()).await?) as BoxIo) })
+    })
+}
+
+fn unix_connector(path: std::path::PathBuf) -> Connector {
+    Arc::new(move || {
+        let path = path.clone();
+        Box::pin(
+            async move { Ok(Box::new(tokio::net::UnixStream::connect(&path).await?) as BoxIo) },
+        )
     })
 }
 
@@ -246,14 +286,18 @@ fn tls_connector(
     target: Arc<Target>,
     cfg: Arc<rustls::ClientConfig>,
     name: ServerName<'static>,
+    proxy: Option<Arc<crate::proxy::Proxy>>,
 ) -> Connector {
     let tls = tokio_rustls::TlsConnector::from(cfg);
     Arc::new(move || {
-        let (target, tls, name) = (Arc::clone(&target), tls.clone(), name.clone());
+        let (target, tls, name, proxy) = (
+            Arc::clone(&target),
+            tls.clone(),
+            name.clone(),
+            proxy.clone(),
+        );
         Box::pin(async move {
-            let addr = target.addr().await.map_err(io::Error::other)?;
-            let s = TcpStream::connect(addr).await?;
-            s.set_nodelay(true)?;
+            let s = open_tcp(&target, proxy.as_deref()).await?;
             Ok(Box::new(tls.connect(name, s).await?) as BoxIo)
         })
     })
@@ -286,9 +330,24 @@ impl Upstream {
         tls: &TlsOptions,
     ) -> Result<Self, String> {
         let name = name.into();
+        // REQ: UPS-010 — TCP-based protocols only (UDP through SOCKS5 is P2).
+        if opts.proxy.is_some()
+            && !matches!(
+                endpoint.protocol,
+                Protocol::Tcp | Protocol::Tls | Protocol::Https
+            )
+        {
+            return Err(format!(
+                "upstream `{name}`: a proxy works with tcp://, tls://, and https:// upstreams (use tcp:// instead of udp://)"
+            ));
+        }
         if matches!(endpoint.host, Host::Name(_))
             && opts.bootstrap.is_none()
-            && endpoint.protocol != Protocol::Recursive
+            && opts.proxy.is_none()
+            && !matches!(
+                endpoint.protocol,
+                Protocol::Recursive | Protocol::Unix | Protocol::Exec
+            )
         {
             return Err(format!(
                 "upstream `{name}`: hostname URL needs bootstrap servers"
@@ -308,20 +367,23 @@ impl Upstream {
         let pool = |c: Connector| Pool::new(c, opts.pool_size, opts.idle_timeout);
         let transport = match endpoint.protocol {
             Protocol::Udp => Transport::Udp {
-                tcp: pool(tcp_connector(Arc::clone(&target))),
+                tcp: pool(tcp_connector(Arc::clone(&target), None)),
             },
-            Protocol::Tcp => Transport::Tcp(pool(tcp_connector(Arc::clone(&target)))),
+            Protocol::Tcp => {
+                Transport::Tcp(pool(tcp_connector(Arc::clone(&target), opts.proxy.clone())))
+            }
             Protocol::Tls => {
-                let cfg = client_config(tls, &[], opts.tls_insecure_skip_verify)
+                let cfg = client_config(tls, &opts.tls, &[], opts.tls_insecure_skip_verify)
                     .map_err(|e| e.to_string())?;
                 Transport::Tls(pool(tls_connector(
                     Arc::clone(&target),
                     cfg,
                     server_name(&tls_name)?,
+                    opts.proxy.clone(),
                 )))
             }
             Protocol::Https => {
-                let cfg = client_config(tls, &[b"h2"], opts.tls_insecure_skip_verify)
+                let cfg = client_config(tls, &opts.tls, &[b"h2"], opts.tls_insecure_skip_verify)
                     .map_err(|e| e.to_string())?;
                 let host = match (&opts.tls_server_name, &endpoint.host) {
                     (None, Host::Ip(std::net::IpAddr::V6(ip))) => format!("[{ip}]"),
@@ -332,11 +394,16 @@ impl Upstream {
                 } else {
                     format!("{host}:{}", endpoint.port)
                 };
-                let conn = tls_connector(Arc::clone(&target), cfg, server_name(&tls_name)?);
+                let conn = tls_connector(
+                    Arc::clone(&target),
+                    cfg,
+                    server_name(&tls_name)?,
+                    opts.proxy.clone(),
+                );
                 Transport::Https(Doh::new(conn, &authority, &endpoint.path, &opts.headers)?)
             }
             Protocol::H3 => {
-                let cfg = client_config(tls, &[b"h3"], opts.tls_insecure_skip_verify)
+                let cfg = client_config(tls, &opts.tls, &[b"h3"], opts.tls_insecure_skip_verify)
                     .map_err(|e| e.to_string())?;
                 let host = match (&opts.tls_server_name, &endpoint.host) {
                     (None, Host::Ip(std::net::IpAddr::V6(ip))) => format!("[{ip}]"),
@@ -365,8 +432,35 @@ impl Upstream {
             Protocol::Recursive => Transport::Recursive(Box::new(
                 telltale_recursor::Recursor::new(opts.recursive.clone()),
             )),
+            Protocol::Unix => {
+                Transport::Plugin(pool(unix_connector(endpoint.path.clone().into())), None)
+            }
+            Protocol::Exec => {
+                let dir = opts
+                    .plugin_dir
+                    .clone()
+                    .unwrap_or_else(|| std::env::temp_dir().join("telltale-plugins"));
+                let safe: String = name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let socket = dir.join(format!("{safe}.sock"));
+                let sup = crate::plugin::supervise(
+                    &name,
+                    endpoint.path.clone().into(),
+                    opts.plugin_args.clone(),
+                    socket.clone(),
+                );
+                Transport::Plugin(pool(unix_connector(socket)), Some(sup))
+            }
             Protocol::Quic => {
-                let cfg = client_config(tls, &[b"doq"], opts.tls_insecure_skip_verify)
+                let cfg = client_config(tls, &opts.tls, &[b"doq"], opts.tls_insecure_skip_verify)
                     .map_err(|e| e.to_string())?;
                 let t = Arc::clone(&target);
                 let resolve: crate::doq::Resolve = Arc::new(move || {
@@ -420,7 +514,7 @@ impl Upstream {
     pub fn pooled_connections(&self) -> usize {
         match &self.transport {
             Transport::Udp { tcp } => tcp.len(),
-            Transport::Tcp(p) | Transport::Tls(p) => p.len(),
+            Transport::Tcp(p) | Transport::Tls(p) | Transport::Plugin(p, _) => p.len(),
             Transport::Https(_)
             | Transport::Quic(_)
             | Transport::H3(_)
@@ -489,7 +583,7 @@ impl Upstream {
                     resp
                 }
             }
-            Transport::Tcp(pool) | Transport::Tls(pool) => {
+            Transport::Tcp(pool) | Transport::Tls(pool) | Transport::Plugin(pool, _) => {
                 timed(tokio::time::timeout(timeout, pool.exchange(query.to_vec(), id)).await)?
             }
             Transport::Https(doh) => {

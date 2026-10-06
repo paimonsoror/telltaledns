@@ -1258,6 +1258,19 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-075 — Proxies, socket plugins, pins, and client certificates (Proposed)
+**Context:** T7.16 (UPS-010, UPS-011; `04` §2, §6). The spec names the features but not where a proxied hostname is resolved, how an `exec://` plugin learns its socket, how plugins restart, or how pins interact with `tls_insecure_skip_verify`.
+
+**Decision:**
+- Proxies (SOCKS5 with RFC 1929 credentials, HTTP CONNECT) carry `tcp://`, `tls://`, and `https://` upstreams; others are a configuration error. A hostname URL goes to the proxy by name (SOCKS5 ATYP 3, `CONNECT host:port`), so no bootstrap is needed and no lookup leaks (Tor). Proxy addresses are IP literals (or `localhost`). UDP through SOCKS5 (UDP ASSOCIATE) stays P2.
+- Socket plugins speak RFC 7766 framing over a Unix socket, on the same pipelined connection pool as TCP upstreams. `exec://` plugins get `TELLTALE_PLUGIN_SOCKET` (`<data_dir>/plugins/<upstream>.sock`) and `TELLTALE_UPSTREAM` in their environment, `args` as arguments, stdin closed, stdout and stderr logged per line; they restart with backoff (1 s doubling to 60 s, reset after a minute up) and are killed when their upstream is dropped (each reload rebuilds upstreams, so a reload restarts plugins).
+- Pins are base64 SHA-256 of the leaf's `SubjectPublicKeyInfo`, checked after the normal WebPKI verification; with `tls_insecure_skip_verify` only the pin is checked. `tls_ca` adds roots for one upstream; `tls_client_cert`/`tls_client_key` (PEM) enable mTLS. Files are read at load and reload.
+- Deferred: DoH GET, the WASM upstream ABI (P2).
+
+**Consequences:**
+- Tor users point an encrypted upstream at the Tor SOCKS port with a hostname URL and nothing else.
+- A plugin that needs state across reloads must keep it itself (it's restarted on configuration changes).
+
 ## ADR-074 — Our own iterative resolver, conservative defaults (Proposed)
 **Context:** T7.15 (DNS-012, UPS-012; `03` §6). `02` §2 allows building on `hickory-recursor`. The spec fixes the limits (16 CNAME hops, 32 referrals) and asks for QNAME minimization, 0x20 (configurable), SRTT server selection, glue in bailiwick, and RFC 8198, but not the defaults, the timeouts, or how the resolver meets the per-query budget.
 

@@ -19,7 +19,11 @@ mod doq;
 mod endpoint;
 mod group;
 pub mod health;
+/// REQ: UPS-011 (T7.16)
+mod plugin;
 pub mod presets;
+/// REQ: UPS-010 (T7.16)
+pub mod proxy;
 mod router;
 mod tls;
 mod upstream;
@@ -31,7 +35,7 @@ pub use bootstrap::Bootstrap;
 pub use endpoint::{Endpoint, Host, Protocol};
 pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};
-pub use tls::TlsOptions;
+pub use tls::{TlsOptions, UpstreamTls, spki_pin};
 pub use upstream::{
     ExchangeError, Question, Upstream, UpstreamOptions, encode_query, is_own_loop_tag,
     matches_query, set_node_tag,

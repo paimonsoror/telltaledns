@@ -2529,6 +2529,14 @@
       "description": "One upstream resolver (`spec/04` §1–2).",
       "type": "object",
       "properties": {
+        "args": {
+          "description": "REQ: UPS-011 (T7.16) — `exec://` only: the plugin program's arguments.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "bootstrap": {
           "description": "DNS servers used to resolve a hostname URL (UPS-009); default: the system resolvers\nfrom /etc/resolv.conf, minus our own listeners. To pin the server address instead, put\nthe IP in the URL and set `tls_server_name`.",
           "type": "array",
@@ -2602,7 +2610,7 @@
           "$ref": "#/$defs/RecursiveConfig"
         },
         "spki_pins": {
-          "description": "Base64 SHA-256 SPKI pins.",
+          "description": "Base64 SHA-256 SPKI pins: the server's key must match one (see `docs/running.md`,\n\"Pinning and client certificates\", for how to get a server's pin).",
           "type": "array",
           "items": {
             "type": "string",
@@ -2615,6 +2623,29 @@
           "format": "uint32",
           "default": 400,
           "minimum": 0
+        },
+        "tls_ca": {
+          "description": "REQ: UPS-011 (T7.16) — a PEM file of CA certificates to trust for this upstream.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "tls_client_cert": {
+          "description": "A client certificate and key (PEM files) for servers that require one (mTLS).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "tls_client_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "tls_insecure_skip_verify": {
           "description": "Disable certificate verification (dangerous; logs a warning).",
