@@ -7,11 +7,14 @@
 //! from -24h | where status = blocked and group = kids | top 10 name
 //! from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)
 //! where name under roku.com | by client | stats count, distinct(name) | sort count desc | limit 20
+//! from -1d | where status = blocked and (client = 192.168.1.20 or name under roku.com) | top 10 name
 //! ```
 //!
 //! Stages, separated by `|`, each at most once except `where` (they combine with `and`):
 //! - `from TIME [to TIME]` — `-24h`, `-7d`, `-30m`, or RFC 3339. Default: the last 24 hours.
-//! - `where COND [and COND]...` — `FIELD OP VALUE`. Fields: `name`, `client`, `group`,
+//! - `where COND [and COND]...` — `FIELD OP VALUE`, and (T9.12) `or`: `and` binds tighter,
+//!   and a parenthesized group (`(A or B and C)`, one level) is one term of the `and` list.
+//!   A bare `or` makes the whole stage one group. Fields: `name`, `client`, `group`,
 //!   `status`, `qtype`, `rcode`, `upstream`, `proto`, `latency`, `upstream_latency` (ms).
 //!   Ops: `=`, `!=`, `in (a, b)`, `not in (a, b)`; for `name` also `~` (glob, `*` and `?`),
 //!   `has` (substring), and `under` (the name or below it); for `client` a value can be a
@@ -240,7 +243,11 @@ pub struct Cond {
 pub struct Query {
     pub from: Option<String>,
     pub to: Option<String>,
+    /// Conditions every row meets.
     pub conds: Vec<Cond>,
+    /// REQ: AGT-012 (T9.12) — `or` groups every row also meets: each a list of alternatives,
+    /// an alternative a list of conditions that all hold.
+    pub any_of: Vec<Vec<Vec<Cond>>>,
     pub bucket_secs: Option<u64>,
     pub keys: Vec<Key>,
     pub aggs: Vec<Agg>,
@@ -305,21 +312,16 @@ impl fmt::Display for Query {
         if let Some(t) = &self.to {
             write!(f, " to {t}")?;
         }
-        if !self.conds.is_empty() {
-            let conds: Vec<String> = self
-                .conds
+        let mut terms: Vec<String> = self.conds.iter().map(cond_text).collect();
+        for g in &self.any_of {
+            let alts: Vec<String> = g
                 .iter()
-                .map(|c| {
-                    let v = if matches!(c.op, Op::In | Op::NotIn) {
-                        let vs: Vec<String> = c.values.iter().map(|v| quote(v)).collect();
-                        format!("({})", vs.join(", "))
-                    } else {
-                        c.values.first().map(|v| quote(v)).unwrap_or_default()
-                    };
-                    format!("{} {} {v}", c.field.label(), c.op.text())
-                })
+                .map(|a| a.iter().map(cond_text).collect::<Vec<_>>().join(" and "))
                 .collect();
-            write!(f, " | where {}", conds.join(" and "))?;
+            terms.push(format!("({})", alts.join(" or ")));
+        }
+        if !terms.is_empty() {
+            write!(f, " | where {}", terms.join(" and "))?;
         }
         if let Some(b) = self.bucket_secs {
             write!(f, " | bucket {}", dur_text(b))?;
@@ -334,6 +336,16 @@ impl fmt::Display for Query {
         write!(f, " | sort {col} {}", if desc { "desc" } else { "asc" })?;
         write!(f, " | limit {}", self.limit)
     }
+}
+
+fn cond_text(c: &Cond) -> String {
+    let v = if matches!(c.op, Op::In | Op::NotIn) {
+        let vs: Vec<String> = c.values.iter().map(|v| quote(v)).collect();
+        format!("({})", vs.join(", "))
+    } else {
+        c.values.first().map(|v| quote(v)).unwrap_or_default()
+    };
+    format!("{} {} {v}", c.field.label(), c.op.text())
 }
 
 /// A parse error, with what to do about it.
@@ -539,6 +551,7 @@ pub fn parse(text: &str) -> Result<Query, Error> {
         from: None,
         to: None,
         conds: Vec::new(),
+        any_of: Vec::new(),
         bucket_secs: None,
         keys: Vec::new(),
         aggs: Vec::new(),
@@ -560,12 +573,7 @@ pub fn parse(text: &str) -> Result<Query, Error> {
                     q.to = Some(p.value()?);
                 }
             }
-            "where" => loop {
-                q.conds.push(cond(&mut p)?);
-                if !p.kw("and") {
-                    break;
-                }
-            },
+            "where" => where_stage(&mut p, &mut q)?,
             "bucket" => {
                 let w = p.word("a duration")?;
                 q.bucket_secs = Some(parse_duration(&w).ok_or_else(|| Error {
@@ -725,6 +733,97 @@ fn agg(p: &mut Parser) -> Result<Agg, Error> {
     })
 }
 
+/// One term of a `where` list: a condition, or a parenthesized `or` group.
+enum Term {
+    Cond(Cond),
+    Group(Vec<Vec<Cond>>),
+}
+
+/// The most alternatives in all `or` groups of a query.
+const MAX_ALTERNATIVES: usize = 32;
+
+/// REQ: AGT-012 (T9.12) — `COND (and|or) …`, `and` binding tighter, with `( … )` groups one
+/// level deep.
+fn where_stage(p: &mut Parser, q: &mut Query) -> Result<(), Error> {
+    let mut terms = Vec::new();
+    // Before each term after the first: whether `or` joined it.
+    let mut ors = Vec::new();
+    loop {
+        if p.sym("(") {
+            terms.push(Term::Group(or_group(p)?));
+            if !p.sym(")") {
+                return err(
+                    "expected `)` to close the group",
+                    "(client = 10.0.0.5 or name under roku.com)",
+                );
+            }
+        } else {
+            terms.push(Term::Cond(cond(p)?));
+        }
+        if p.kw("or") {
+            ors.push(true);
+        } else if p.kw("and") {
+            ors.push(false);
+        } else {
+            break;
+        }
+    }
+    if ors.contains(&true) {
+        // A bare `or`: the whole stage is one group, of plain conditions only.
+        let mut alts = vec![Vec::new()];
+        for (i, t) in terms.into_iter().enumerate() {
+            let Term::Cond(c) = t else {
+                return err(
+                    "`or` next to a parenthesized group is ambiguous",
+                    "Put the `or` inside the parentheses: status = blocked and (client = a or name under b)",
+                );
+            };
+            if i > 0 && ors.get(i - 1) == Some(&true) {
+                alts.push(Vec::new());
+            }
+            if let Some(last) = alts.last_mut() {
+                last.push(c);
+            }
+        }
+        terms = vec![Term::Group(alts)];
+    }
+    for t in terms {
+        match t {
+            Term::Cond(c) => q.conds.push(c),
+            Term::Group(mut g) if g.len() == 1 => q.conds.append(&mut g[0]),
+            Term::Group(g) => q.any_of.push(g),
+        }
+    }
+    if q.any_of.iter().map(Vec::len).sum::<usize>() > MAX_ALTERNATIVES {
+        return err(
+            format!("at most {MAX_ALTERNATIVES} alternatives in `or` groups"),
+            "Use `in (a, b, …)` for many values of one field.",
+        );
+    }
+    Ok(())
+}
+
+/// The inside of `( … )`: conditions joined by `and` and `or`.
+fn or_group(p: &mut Parser) -> Result<Vec<Vec<Cond>>, Error> {
+    let mut alts = vec![Vec::new()];
+    loop {
+        if matches!(p.peek(), Some(Tok::Sym("("))) {
+            return err(
+                "only one level of parentheses",
+                "status = blocked and (client = a or name under b)",
+            );
+        }
+        if let Some(last) = alts.last_mut() {
+            last.push(cond(p)?);
+        }
+        if p.kw("or") {
+            alts.push(Vec::new());
+        } else if !p.kw("and") {
+            return Ok(alts);
+        }
+    }
+}
+
 fn cond(p: &mut Parser) -> Result<Cond, Error> {
     let w = p.word("a field")?;
     let field = Field::parse(&w).ok_or_else(|| Error {
@@ -859,6 +958,42 @@ mod tests {
             parse("").unwrap().to_string(),
             "from -24h | stats count | sort count desc | limit 50"
         );
+    }
+
+    /// REQ: AGT-012 (T9.12) — `or`: `and` binds tighter; a group is one term; a group of
+    /// one alternative is plain conditions; the normalized text parses back the same.
+    #[test]
+    fn agt_012_parse_or() {
+        let q = parse(
+            "where status = blocked and (client = 10.0.0.5 or name under roku.com and qtype = A)",
+        )
+        .unwrap();
+        assert_eq!(q.conds.len(), 1);
+        assert_eq!(q.any_of.len(), 1);
+        assert_eq!(q.any_of[0].len(), 2);
+        assert_eq!(q.any_of[0][1].len(), 2);
+        let text = q.to_string();
+        assert!(
+            text.starts_with("from -24h | where status = blocked and (client = 10.0.0.5 or name under roku.com and qtype = A) |"),
+            "{text}"
+        );
+        assert_eq!(parse(&text).unwrap().to_string(), text);
+        let q = parse("where client = 10.0.0.5 or status = blocked and group = kids").unwrap();
+        assert_eq!(q.conds.len(), 0);
+        assert_eq!(q.any_of[0].len(), 2);
+        assert_eq!(q.any_of[0][1].len(), 2);
+        assert_eq!(parse(&q.to_string()).unwrap().any_of, q.any_of);
+        let q = parse("where (status = blocked and group = kids)").unwrap();
+        assert_eq!((q.conds.len(), q.any_of.len()), (2, 0));
+        for bad in [
+            "where (status = blocked or (client = a))",
+            "where (status = blocked or group = kids) or client = a",
+            "where (status = blocked or group = kids",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        let many: Vec<String> = (0..40).map(|i| format!("client = 10.0.0.{i}")).collect();
+        assert!(parse(&format!("where {}", many.join(" or "))).is_err());
     }
 
     /// REQ: AGT-012 — mistakes come back with a hint, never a partial plan.

@@ -144,6 +144,9 @@ export const api = {
   // REQ: OBS-010 (T9.6)
   alertsStatus: () => get<S['AlertsStatus']>('/alerts'),
   alertTest: (name: string) => post<S['AlertTest']>(`/alerts/destinations/${encodeURIComponent(name)}/test`),
+  // REQ: API-002 (T9.12) — pre-save checks of a draft.
+  checkUpstream: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/upstream', body),
+  checkList: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/list', body),
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
   localNames: () => get<S['Items_LocalName']>('/records'),

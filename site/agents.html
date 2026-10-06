@@ -121,7 +121,7 @@
     <p class="msg user">What did the kids' tablets get blocked on this week, and when?</p>
     <p class="call"><span>vqlog</span> from -7d | where group = kids and status = blocked | top 5 domain</p>
     <p class="result">tiktokv.com 1,912 · doubleclick.net 806 · roblox-ads.example 377 · app-measurement.com 301 · unityads.unity3d.com 244</p>
-    <p class="call"><span>vqlog</span> from -7d | where group = kids and domain = tiktokv.com | bucket 1d | stats count</p>
+    <p class="call"><span>vqlog</span> from -7d | where group = kids and name under tiktokv.com | bucket 1d | stats count</p>
     <p class="result">Mon 12 · Tue 9 · Wed 301 · Thu 655 · Fri 588 · Sat 214 · Sun 133</p>
     <p class="msg agent">Mostly TikTok and ad networks. The TikTok attempts jumped on Wednesday, the day the new tablet joined. Everything was blocked, as your schedule says. Want me to look at that tablet's other new domains?</p>
   </article>
@@ -179,7 +179,7 @@
         </tbody>
       </table></div>
       <h3>Act at once (low risk, audited)</h3>
-      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>.</p>
+      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>. And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
       <h3>Resources and prompts</h3>
       <p class="muted">Resources an assistant can attach: <code>telltale://cluster/status</code>, <code>telltale://config</code> (no secrets), <code>telltale://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
     </div>
@@ -190,11 +190,13 @@
 <section id="vqlog">
   <p class="eyebrow">One tool for analytics</p>
   <h2>vqlog: questions as one line</h2>
-  <p class="muted">Instead of dozens of narrow tools, agents (and you) can ask the query log anything in a small pipe language: filter, group, top lists, percentiles, and time series. It's parsed into a fixed plan, so it can't run code or SQL, and every answer says what it cost to compute.</p>
+  <p class="muted">Instead of dozens of narrow tools, agents (and you) can ask the query log anything in a small pipe language: filter, group, top lists, percentiles, and time series. It's parsed into a fixed plan, so it can't run code or SQL, and every answer says what it cost to compute. Counts over windows longer than the query log keeps come from the long-term rollups, and the answer says which it used.</p>
 <pre><code>from -24h | where status = blocked and group = kids | top 10 name
 from -7d  | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)
 where name under roku.com | by client | stats count, distinct(name)
-from -1h  | where latency &gt; 200 | by upstream | stats count, p50(latency), p99(latency)</code></pre>
+from -1h  | where latency &gt; 200 | by upstream | stats count, p50(latency), p99(latency)
+from -1d  | where status = blocked and (client = 192.168.1.20 or name under roku.com) | top 10 name
+from -180d | where status = blocked | bucket 1d | stats count</code></pre>
   <p class="muted">Agents can check the cost first (<code>estimateOnly</code>). Over-broad questions are refused with a hint on how to narrow them, and long scans stop and say so instead of slowing DNS down. Full syntax: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#analytics-in-one-query-vqlog">Analytics in one query</a>.</p>
 </section>
 

@@ -1324,6 +1324,24 @@ impl Backend for ApiBackend {
         })
     }
 
+    // REQ: API-002 (T9.12) — a draft upstream asked the root's NS records, as health checks do.
+    fn check_upstream(
+        &self,
+        body: serde_json::Value,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
+        let cfg = self.src.config.load_full();
+        Box::pin(async move { crate::checks::upstream(&cfg, body).await })
+    }
+
+    // REQ: API-002 (T9.12) — a draft list downloaded (or its rules taken) and parsed.
+    fn check_list(
+        &self,
+        body: serde_json::Value,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
+        let cfg = self.src.config.load_full();
+        Box::pin(async move { crate::checks::list(&cfg, body).await })
+    }
+
     // REQ: OBS-010 (T9.5) — devices this node's anomaly engine met for the first time.
     fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
         let Some(a) = &self.src.anomalies else {
@@ -1347,6 +1365,50 @@ impl Backend for ApiBackend {
         to_us: u64,
         dry_run: bool,
     ) -> Result<telltale_api::model::VqlogResult, Problem> {
+        // REQ: AGT-012 (T9.12) — past what the query log keeps (or with it off), counts by
+        // one breakdown come from the rollups.
+        let cfg = self.src.config.load();
+        let kept_from_us = self
+            .now_unix_seconds()
+            .saturating_sub(u64::from(cfg.telemetry.qlog.retention_days) * 86_400)
+            .saturating_mul(1_000_000);
+        let beyond = from_us < kept_from_us || self.src.qlog.is_none();
+        let dim = crate::vqlog::rollup_dim(q);
+        if beyond
+            && self.src.rollups.is_some()
+            && let Some(dim) = dim
+        {
+            let step = if q.bucket_secs.is_some_and(|b| b.is_multiple_of(86_400)) {
+                Step::Day
+            } else {
+                Step::Hour
+            };
+            let buckets = if dry_run {
+                Vec::new()
+            } else {
+                self.counts(step, from_us / 1_000_000, to_us.div_ceil(1_000_000))
+            };
+            let no_names = |_: [u8; 16]| None;
+            let ctx = crate::vqlog::Ctx {
+                groups: self
+                    .src
+                    .pipeline
+                    .current()
+                    .policy
+                    .clients
+                    .groups()
+                    .iter()
+                    .map(|g| g.name.to_string())
+                    .collect(),
+                upstreams: std::collections::HashMap::new(),
+                client_name: &no_names,
+                qtype_name,
+                rcode_name,
+                rcode_value,
+            };
+            return crate::vqlog::run_rollups(q, dim, &buckets, &ctx);
+        }
+        drop(cfg);
         if self.src.qlog.is_none() {
             return Err(
                 Problem::unavailable("the query log is off on this node").hint(
@@ -1389,7 +1451,14 @@ impl Backend for ApiBackend {
             threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(4)),
             on_thread_start: Some(telltale_net::background_thread),
         };
-        crate::vqlog::run(q, from_us, to_us, &dirs, &ctx, dry_run, &opts)
+        let mut r = crate::vqlog::run(q, from_us, to_us, &dirs, &ctx, dry_run, &opts)?;
+        if beyond {
+            r.note = Some(format!(
+                "The query log keeps {} days: this covers those. Counts by one of status, qtype, rcode, proto, or group (with buckets of 1h or more) reach further, from the rollups.",
+                self.src.config.load().telemetry.qlog.retention_days
+            ));
+        }
+        Ok(r)
     }
 
     // REQ: OBS-009 (T7.14) — first-seen domains with their DGA scores.

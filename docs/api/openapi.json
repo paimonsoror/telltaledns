@@ -1355,6 +1355,90 @@
         }
       }
     },
+    "/api/v1/checks/list": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Check a draft list before saving it (API-002, T9.12).",
+        "description": "The body has the same fields as `PUT /api/v1/lists/{name}` (`name` optional): a `url` is\ndownloaded from this node (with `[filter]`'s size limit and timeout), or `rules` are taken\nas they are, then parsed as the compiler would. Answers with the rules found, the lines it\ncouldn't use, and the time. Nothing is saved or compiled; the check is audited. `path`\nlists are checked when saved. Needs the operator role (agents: `config:write:lists`).",
+        "operationId": "check_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Parsed, or why not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body isn't a list (an unknown or mistyped field), or it has no url or rules.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/checks/upstream": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Check a draft upstream before saving it (API-002, T9.12).",
+        "description": "The body has the same fields as `PUT /api/v1/upstreams/{name}` (`name` optional). This node\nbuilds it and asks it for the root's NS records, as health checks do, and answers with what\nhappened: `ok` with the rcode, records, and time, or the error (a bad URL, a TLS name that\ndoesn't match, a timeout). Nothing is saved; the check is audited. Needs the operator role\n(agents: `config:write:upstreams`).",
+        "operationId": "check_upstream",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Answered, or why not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body isn't an upstream (an unknown or mistyped field).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients": {
       "get": {
         "tags": [
@@ -5157,6 +5241,55 @@
               "null"
             ],
             "description": "Why nothing was loaded (no dump, a dump from other upstreams, ...)."
+          }
+        }
+      },
+      "CheckResult": {
+        "type": "object",
+        "description": "REQ: API-002 (T9.12) — a pre-save check of a draft upstream or list.",
+        "required": [
+          "ok",
+          "detail",
+          "elapsedMs",
+          "warnings"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What was seen: `answered NOERROR, 13 records` or `81,234 rules from 81,512 lines`."
+          },
+          "elapsedMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long the probe or the download took.",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why not (the server's or the parser's own message where there is one)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "It works: the upstream answered, or the list downloaded and has rules."
+          },
+          "rules": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Lists: the rules found.",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lists: up to 10 lines that were invalid or unsupported, with why."
           }
         }
       },
@@ -10580,7 +10713,8 @@
           "groups",
           "cost",
           "truncated",
-          "missingNodes"
+          "missingNodes",
+          "source"
         ],
         "properties": {
           "columns": {
@@ -10606,6 +10740,13 @@
             },
             "description": "Cluster nodes whose query log isn't here (not shipped to this node)."
           },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Something to know about the answer (a window longer than the query log keeps)."
+          },
           "query": {
             "type": "string",
             "description": "The query as understood, with the defaults filled in."
@@ -10619,6 +10760,10 @@
               }
             },
             "description": "One array per row, in column order."
+          },
+          "source": {
+            "type": "string",
+            "description": "REQ: AGT-012 (T9.12) — where the numbers come from: `querylog` (every query, kept\n`retention_days`) or `rollups` (counts by one breakdown, kept much longer)."
           },
           "truncated": {
             "type": "boolean",

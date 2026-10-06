@@ -46,7 +46,7 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 
 ### 3.2 Write (P1, plan/apply)
 `plan_block_domain`, `plan_allow_domain`, `plan_add_list`, `plan_update_group`, `plan_assign_client`, `plan_rename_client` (API-010), `plan_update_upstreams`, `plan_set_schedule` → `apply_plan`, `discard_plan`.
-Immediate low-risk ops (scope-gated, still audited, no plan): `pause_blocking` (max 60 min for agents), `resume_blocking`, `flush_cache`.
+Immediate low-risk ops (scope-gated, still audited, no plan): `pause_blocking` (max 60 min for agents), `resume_blocking`, `flush_cache`. Pre-save checks (T9.12; change nothing, need the entry's write scope): `check_upstream`, `check_list`.
 `cluster_promote` is excluded from agents unless `cluster:admin` scope **and** human approval are both configured.
 
 ### 3.3 Example interaction

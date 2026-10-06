@@ -1026,6 +1026,62 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Changes nothing (audited). Checks an upstream before you save it: this node builds it from the fields you'd save (url, tls_server_name, bootstrap, proxy, ...) and asks it for the root's NS records. Returns ok, the answer or the error (bad URL, TLS name mismatch, timeout), and the time. Use it before plan_update_upstreams. Needs the config:write:upstreams scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "The upstream's fields, as when saving it (url required, e.g. {\"url\": \"tls://9.9.9.9\", \"tls_server_name\": \"dns.quad9.net\"}).",
+          "type": "object"
+        }
+      },
+      "required": [
+        "upstream",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "check_upstream"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes nothing (audited). Checks a filter list before you add it: this node downloads the URL (with the configured size limit and timeout), or takes inline rules, and parses it as the compiler would. Returns ok, how many rules it found, up to 10 lines it couldn't use and why, and the time. Use it before plan_add_list. Needs the config:write:lists scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "list": {
+          "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match.",
+          "type": "object"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "list",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "check_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Changes at once (audited, no plan). Ends a pause of blocking: one group's, or every pause. Needs the ops:pause scope.",
     "inputSchema": {
       "additionalProperties": false,

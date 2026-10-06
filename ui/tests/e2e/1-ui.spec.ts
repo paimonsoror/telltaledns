@@ -803,6 +803,9 @@ test('api_002 lists and upstreams are edited from the UI', async () => {
   await lists.getByRole('button', { name: 'Add list' }).click();
   await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-extra');
   await page.getByRole('textbox', { name: 'Rules', exact: true }).fill('||ui-extra.e2e.test^');
+  // REQ: API-002 (T9.12) — try the draft before saving it.
+  await page.getByRole('button', { name: 'Test it' }).click();
+  await expect(page.getByTestId('form-action-result')).toContainText('Works: 1 rules from 1 lines');
   await page.getByRole('button', { name: 'Check' }).click();
   await expect(page.getByTestId('entry-preview')).toBeVisible();
   await page.getByRole('button', { name: 'Apply' }).click();
@@ -820,6 +823,9 @@ test('api_002 lists and upstreams are edited from the UI', async () => {
   await router.getByRole('button', { name: 'Edit' }).click();
   await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('router');
   await page.getByRole('textbox', { name: 'Address', exact: true }).fill('udp://127.0.0.1:15399');
+  // The e2e fake upstream answers there (T9.12).
+  await page.getByRole('button', { name: 'Test it' }).click();
+  await expect(page.getByTestId('form-action-result')).toContainText('Works: answered NOERROR');
   await page.getByRole('button', { name: 'Check' }).click();
   await page.getByRole('button', { name: 'Apply' }).click();
   await expect(router).toContainText('overrides the file');

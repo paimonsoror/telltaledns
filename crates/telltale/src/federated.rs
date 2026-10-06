@@ -1031,6 +1031,19 @@ impl Backend for Federated {
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::AlertTest, Problem>> {
         self.local.alert_test(name)
     }
+    // REQ: API-002 (T9.12) — checks run where the request landed.
+    fn check_upstream(
+        &self,
+        body: serde_json::Value,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
+        self.local.check_upstream(body)
+    }
+    fn check_list(
+        &self,
+        body: serde_json::Value,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
+        self.local.check_list(body)
+    }
     // REQ: OBS-010 (T9.5) — any node may meet a device first; the earliest sighting wins.
     fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
         let mut all: Vec<telltale_api::model::NewDevice> = self

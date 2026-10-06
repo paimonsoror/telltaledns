@@ -96,6 +96,12 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/alerts/destinations/{name}/test",
             axum::routing::post(test_alert_destination),
         )
+        // REQ: API-002 (T9.12)
+        .route(
+            "/api/v1/checks/upstream",
+            axum::routing::post(check_upstream),
+        )
+        .route("/api/v1/checks/list", axum::routing::post(check_list))
         // REQ: FLT-010 (T9.7)
         .route(
             "/api/v1/schedules/{name}",
@@ -742,6 +748,72 @@ pub(crate) async fn test_alert_destination(
         "alert.test",
         &name,
         &serde_json::json!({ "ok": r.ok, "error": r.error }),
+    );
+    Ok(Json(r))
+}
+
+/// Check a draft upstream before saving it (API-002, T9.12).
+///
+/// The body has the same fields as `PUT /api/v1/upstreams/{name}` (`name` optional). This node
+/// builds it and asks it for the root's NS records, as health checks do, and answers with what
+/// happened: `ok` with the rcode, records, and time, or the error (a bad URL, a TLS name that
+/// doesn't match, a timeout). Nothing is saved; the check is audited. Needs the operator role
+/// (agents: `config:write:upstreams`).
+#[utoipa::path(post, path = "/api/v1/checks/upstream", tag = "config",
+    request_body = Object,
+    responses(
+        (status = 200, body = crate::model::CheckResult, description = "Answered, or why not."),
+        (status = 422, body = Problem, description = "The body isn't an upstream (an unknown or mistyped field)."),
+    ))]
+pub(crate) async fn check_upstream(
+    State((backend, auth)): State<Ctx>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<crate::model::CheckResult>, Problem> {
+    let p = principal(&ext)?;
+    let input = body(b)?;
+    let url = input.get("url").cloned().unwrap_or_default();
+    let r = backend.check_upstream(input).await?;
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    auth.record(
+        &actor,
+        "check.upstream",
+        url.as_str().unwrap_or(""),
+        &serde_json::json!({ "ok": r.ok, "error": r.error }),
+    );
+    Ok(Json(r))
+}
+
+/// Check a draft list before saving it (API-002, T9.12).
+///
+/// The body has the same fields as `PUT /api/v1/lists/{name}` (`name` optional): a `url` is
+/// downloaded from this node (with `[filter]`'s size limit and timeout), or `rules` are taken
+/// as they are, then parsed as the compiler would. Answers with the rules found, the lines it
+/// couldn't use, and the time. Nothing is saved or compiled; the check is audited. `path`
+/// lists are checked when saved. Needs the operator role (agents: `config:write:lists`).
+#[utoipa::path(post, path = "/api/v1/checks/list", tag = "config",
+    request_body = Object,
+    responses(
+        (status = 200, body = crate::model::CheckResult, description = "Parsed, or why not."),
+        (status = 422, body = Problem, description = "The body isn't a list (an unknown or mistyped field), or it has no url or rules."),
+    ))]
+pub(crate) async fn check_list(
+    State((backend, auth)): State<Ctx>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Json<crate::model::CheckResult>, Problem> {
+    let p = principal(&ext)?;
+    let input = body(b)?;
+    let url = input.get("url").cloned().unwrap_or_default();
+    let r = backend.check_list(input).await?;
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    auth.record(
+        &actor,
+        "check.list",
+        url.as_str().unwrap_or("(rules)"),
+        &serde_json::json!({ "ok": r.ok, "rules": r.rules, "error": r.error }),
     );
     Ok(Json(r))
 }

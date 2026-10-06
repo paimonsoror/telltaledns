@@ -891,6 +891,69 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: API-002 (T9.12) — pre-save checks: nothing changes, but they reach out from the
+        // node, so they need the scope that saves the entry and are audited.
+        WriteTool {
+            name: "check_upstream",
+            description: "Changes nothing (audited). Checks an upstream before you save it: this node builds it from the fields you'd save (url, tls_server_name, bootstrap, proxy, ...) and asks it for the root's NS records. Returns ok, the answer or the error (bad URL, TLS name mismatch, timeout), and the time. Use it before plan_update_upstreams. Needs the config:write:upstreams scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "upstream": {"type": "object", "description": "The upstream's fields, as when saving it (url required, e.g. {\"url\": \"tls://9.9.9.9\", \"tls_server_name\": \"dns.quad9.net\"})."},
+                "reason": reason_schema()
+            }, "required": ["upstream", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let u = a
+                    .get("upstream")
+                    .filter(|v| v.is_object())
+                    .cloned()
+                    .ok_or("`upstream` (an object with at least `url`) is required")?;
+                let url = u
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_owned();
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/checks/upstream".into(),
+                    summary: format!("Check the upstream {url}"),
+                    body: Some(u),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "check_list",
+            description: "Changes nothing (audited). Checks a filter list before you add it: this node downloads the URL (with the configured size limit and timeout), or takes inline rules, and parses it as the compiler would. Returns ok, how many rules it found, up to 10 lines it couldn't use and why, and the time. Use it before plan_add_list. Needs the config:write:lists scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "list": {"type": "object", "description": "The list's fields, as when saving it: url (or rules), and optionally kind (block|allow) and match."},
+                "reason": reason_schema()
+            }, "required": ["list", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let l = a
+                    .get("list")
+                    .filter(|v| v.is_object())
+                    .cloned()
+                    .ok_or("`list` (an object with `url` or `rules`) is required")?;
+                let what = l
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| "inline rules".to_owned(), ToOwned::to_owned);
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/checks/list".into(),
+                    summary: format!("Check the list {what}"),
+                    body: Some(l),
+                    merge: None,
+                })
+            },
+        },
         WriteTool {
             name: "resume_blocking",
             description: "Changes at once (audited, no plan). Ends a pause of blocking: one group's, or every pause. Needs the ops:pause scope.",

@@ -49,6 +49,16 @@
   const reload = async () => {
     upstreams = (await api.upstreams()).items;
   };
+  // REQ: API-002 (T9.12) — ask the draft upstream before saving it.
+  const tryUpstream = {
+    label: 'Test it',
+    run: async (b: Record<string, unknown>) => {
+      const r = await api.checkUpstream(b);
+      return r.ok
+        ? { ok: true, text: `Works: ${r.detail} in ${r.elapsedMs} ms.` }
+        : { ok: false, text: `Doesn't work: ${r.error ?? r.detail}` };
+    },
+  };
 </script>
 
 <div class="page">
@@ -86,7 +96,7 @@
     <strong>half_open</strong> = being probed. Percentiles cover this hour.
   </p>
   <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
-    summary={(d) => String(d.url ?? '')} onchanged={reload} />
+    summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream} />
   <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
     summary={(d) => `${String(d.strategy ?? 'failover')}: ${((d.members as string[]) ?? []).join(', ')}`} onchanged={reload} />
   <p class="muted small">

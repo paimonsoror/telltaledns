@@ -1772,7 +1772,7 @@ The Upstreams page (servers and upstream groups), the Lists page, and the Groups
 | overrides the file | the UI's version replaces the file's entry of that name; **Revert to the file** brings the file's version back |
 | hidden | the file's entry is left out; **Revert to the file** brings it back |
 
-Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
+Each change is checked first: **Check** shows what it will do and any warnings (an upstream group that would lose its last member, a list no group uses), and nothing is saved until **Apply**. For upstreams and lists, **Test it** also tries the draft from this node: an upstream is asked for the root's NS records (it shows the answer and the time, or the error: a bad URL, a TLS name that doesn't match, a timeout), and a list is downloaded and parsed (how many rules, and the first lines it can't use). The API calls are `POST /api/v1/checks/upstream` and `POST /api/v1/checks/list`, with the same body as saving; agents use the MCP tools `check_upstream` and `check_list`. A change that would leave the configuration invalid is refused with the reason. Operators and admins can make changes; every change is audited and reaches every node in a cluster.
 
 Changes are stored in `state.db`, next to named devices and local names. **The config files are never rewritten**: what's in the files stays as written, and `telltale config check` on the files alone still shows the file configuration. Simple view shows the common fields; switch to Advanced for timeouts, TLS names, refresh intervals, blocked-answer modes, priorities, and colors.
 
@@ -1893,11 +1893,13 @@ from -24h | where status = blocked and group = kids | top 10 name
 from -7d | where client = 192.168.1.20 | bucket 1h | stats count, p95(latency)
 where name under roku.com | by client | stats count, distinct(name)
 from -1h | where latency > 200 | by upstream | stats count, p50(latency), p99(latency)
+from -1d | where status = blocked and (client = 192.168.1.20 or name under roku.com) | top 10 name
+from -180d | where status = blocked | bucket 1d | stats count
 ```
 | Stage | |
 |---|---|
 | `from TIME [to TIME]` | `-30m`, `-24h`, `-7d`, or RFC 3339 (default: the last 24 hours) |
-| `where FIELD OP VALUE [and …]` | fields `name`, `client`, `group`, `status`, `qtype`, `rcode`, `upstream`, `proto`, `latency`, `upstream_latency`; `=`, `!=`, `in (a, b)`, `not in (a, b)`; names also `~` (glob: `"*.tiktok.*"`), `has` (part of the name), `under` (the name and below); a client can be a CIDR (`192.168.2.0/24`); latencies `>`, `>=`, `<`, `<=` in ms |
+| `where FIELD OP VALUE [and …] [or …]` | `and` binds tighter than `or`; a group in parentheses, `(A or B and C)`, is one term (one level deep). Fields `name`, `client`, `group`, `status`, `qtype`, `rcode`, `upstream`, `proto`, `latency`, `upstream_latency`; `=`, `!=`, `in (a, b)`, `not in (a, b)`; names also `~` (glob: `"*.tiktok.*"`), `has` (part of the name), `under` (the name and below); a client can be a CIDR (`192.168.2.0/24`); latencies `>`, `>=`, `<`, `<=` in ms |
 | `bucket 5m` (`1h`, `1d`) | a time series: one row per bucket |
 | `by KEY, …` | `name`, `domain` (the registrable domain), `client`, `group`, `status`, `qtype`, `rcode`, `upstream`, `proto` (up to three) |
 | `stats …` | `count`, `distinct(KEY)`, and `avg`, `min`, `max`, `p50`, `p90`, `p95`, `p99` of `latency`, `upstream_latency`, `answers`, or `bytes` |
@@ -1907,6 +1909,8 @@ from -1h | where latency > 200 | by upstream | stats count, p50(latency), p99(la
 In the web UI, **Analyze** (under Monitor) runs vqlog: type a query or pick an example, run it or only estimate its cost, and click a name, domain, or client in the result to open those queries in the query log. The URL keeps the query, so a result can be shared.
 
 `GET /api/v1/analytics/vqlog?q=…` (or the MCP tool `vqlog`) answers with a table (`columns`, `rows`; a `client` column comes with `clientName`), the query as it was understood (`query`, with the defaults filled in), and what it cost (`cost`: the rows it could read at most, then the rows scanned and matched). `dryRun=true` (`estimateOnly` in MCP) only estimates. Mistakes come back as 400 with a hint listing the choices (the groups, the statuses, …).
+
+**Long windows.** The query log keeps `retention_days` (30 by default). For a window that reaches back further, or with the query log off, counts by at most one of `status`, `qtype`, `rcode`, `proto`, or `group` (as the key, the filter, or both, with buckets of `1h` or longer) come from the rollups instead, which keep hours for 400 days and days for good. The answer says so (`source: "rollups"`). Other queries over such a window cover what the query log still has, and say that in `note`.
 
 **Limits:** a query that could read more than 100 million logged queries is refused (narrow the time or filter first). A scan stops at 2 million matching queries, 100,000 groups, or 25 seconds, and says so (`truncated`, `truncatedReason`); the numbers then cover the newest queries. It needs `querylog:read`, isn't available to agents restricted to a group, and sees what the privacy level lets the query log keep. On a cluster's primary it covers the query logs replicas ship to it.
 
@@ -1953,7 +1957,7 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 | `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
 | `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |
 
-Three low-risk operations act at once, without a plan, and are audited like any change: `flush_cache` (`ops:cache`), `pause_blocking` for 1 to 60 minutes and `resume_blocking` (`ops:pause`). Every write tool needs a `reason`.
+Three low-risk operations act at once, without a plan, and are audited like any change: `flush_cache` (`ops:cache`), `pause_blocking` for 1 to 60 minutes and `resume_blocking` (`ops:pause`). Two checks change nothing but reach out from the node, so they're audited too and need the scope that would save the entry: `check_upstream` (`config:write:upstreams`) and `check_list` (`config:write:lists`) try a draft before a plan adds it. Every write tool needs a `reason`.
 
 **How the tools behave:**
 - **Cluster-wide by default.** `get_overview`, `top_items`, `search_queries`, `latency_breakdown`, and `get_client_profile` take `scope` (`cluster`, `site:<name>`, `node:<name>`, `node:local`), and every result has `missingNodes`: the nodes in scope that didn't answer within 2 seconds, so a partial answer is never mistaken for a whole one. Upstream health and anomalies are the connected node's own.

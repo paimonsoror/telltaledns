@@ -451,6 +451,17 @@ pub(crate) fn run(
         .iter()
         .map(|c| resolve(c, ctx))
         .collect::<Result<_, _>>()?;
+    // REQ: AGT-012 (T9.12) — `or` groups: checked per row (only the plain conditions are
+    // pushed into the index search).
+    let any_of: Vec<Vec<Vec<Pred>>> = q
+        .any_of
+        .iter()
+        .map(|g| {
+            g.iter()
+                .map(|alt| alt.iter().map(|c| resolve(c, ctx)).collect())
+                .collect()
+        })
+        .collect::<Result<_, _>>()?;
     let filter = pushdown(&preds, from_us, to_us);
     let mut cost = VqlogCost::default();
     for d in dirs {
@@ -462,6 +473,7 @@ pub(crate) fn run(
     let mut out = VqlogResult {
         query: q.to_string(),
         columns: columns(q),
+        source: "querylog".to_owned(),
         ..VqlogResult::default()
     };
     if cost.estimated_rows > MAX_ESTIMATED {
@@ -486,7 +498,11 @@ pub(crate) fn run(
                 .map_err(|e| Problem::internal(format!("query log: {e}")))?;
             cost.rows_scanned += page.stats.rows_scanned as u64;
             for r in &page.rows {
-                if !preds.iter().all(|p| p.matches(r)) {
+                if !preds.iter().all(|p| p.matches(r))
+                    || !any_of
+                        .iter()
+                        .all(|g| g.iter().any(|alt| alt.iter().all(|p| p.matches(r))))
+                {
                     continue;
                 }
                 let mut key = Vec::with_capacity(q.keys.len() + 1);
@@ -529,6 +545,19 @@ pub(crate) fn run(
             }
         }
     }
+    Ok(finish(q, groups, ctx, out, cost, reason, started))
+}
+
+/// The table from the groups: sorted, limited, labeled.
+fn finish(
+    q: &Query,
+    mut groups: HashMap<Vec<Kv>, Group>,
+    ctx: &Ctx<'_>,
+    mut out: VqlogResult,
+    mut cost: VqlogCost,
+    reason: Option<String>,
+    started: Instant,
+) -> VqlogResult {
     // A plain total is one row, even with nothing matched.
     if groups.is_empty() && q.keys.is_empty() && q.bucket_secs.is_none() {
         groups.insert(
@@ -591,7 +620,178 @@ pub(crate) fn run(
     out.cost = cost;
     out.truncated = reason.is_some();
     out.truncated_reason = reason;
-    Ok(out)
+    out
+}
+
+/// REQ: AGT-012 (T9.12) — the rollup breakdown that can answer `q`, if any: counts only,
+/// no `or`, buckets of whole hours, and at most one of status, qtype, rcode, proto, and
+/// group across the key and the conditions (`=`, `!=`, `in`, `not in`). `Some(None)` is a
+/// plain count.
+#[allow(clippy::option_option)] // `None`: it doesn't fit; `Some(None)`: a plain count
+pub(crate) fn rollup_dim(q: &Query) -> Option<Option<Key>> {
+    if q.aggs != [Agg::Count]
+        || !q.any_of.is_empty()
+        || q.bucket_secs.is_some_and(|b| !b.is_multiple_of(3600))
+        || q.keys.len() > 1
+    {
+        return None;
+    }
+    let dim_of = |f: Field| match f {
+        Field::Status => Some(Key::Status),
+        Field::Qtype => Some(Key::Qtype),
+        Field::Rcode => Some(Key::Rcode),
+        Field::Proto => Some(Key::Proto),
+        Field::Group => Some(Key::Group),
+        _ => None,
+    };
+    let mut dim = match q.keys.first() {
+        Some(k @ (Key::Status | Key::Qtype | Key::Rcode | Key::Proto | Key::Group)) => Some(*k),
+        Some(_) => return None,
+        None => None,
+    };
+    for c in &q.conds {
+        let d = dim_of(c.field)?;
+        if !matches!(c.op, Op::Eq | Op::Ne | Op::In | Op::NotIn) || dim.is_some_and(|x| x != d) {
+            return None;
+        }
+        // Only the query types the rollups count by name.
+        if d == Key::Qtype
+            && !c.values.iter().all(|v| {
+                telltale_telemetry::QTYPES
+                    .iter()
+                    .any(|(_, n)| n.eq_ignore_ascii_case(v))
+            })
+        {
+            return None;
+        }
+        dim = Some(d);
+    }
+    Some(dim)
+}
+
+/// One rollup bucket's columns for the breakdown `dim`: label, key, count.
+fn rollup_columns(
+    dim: Option<Key>,
+    c: &telltale_telemetry::agg::Counts,
+    ctx: &Ctx<'_>,
+) -> Vec<(String, Kv, u32)> {
+    match dim {
+        None => vec![(String::new(), Kv::Str(String::new()), c.total)],
+        Some(Key::Status) => Status::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let n = c.status.get(i).copied().unwrap_or(0);
+                (
+                    s.label().to_owned(),
+                    Kv::St(u8::try_from(i).unwrap_or(u8::MAX)),
+                    n,
+                )
+            })
+            .collect(),
+        Some(Key::Qtype) => {
+            let mut v: Vec<(String, Kv, u32)> = telltale_telemetry::QTYPES
+                .iter()
+                .enumerate()
+                .map(|(i, (code, name))| {
+                    (
+                        (*name).to_owned(),
+                        Kv::N(*code),
+                        c.qtype.get(i).copied().unwrap_or(0),
+                    )
+                })
+                .collect();
+            v.push((
+                "other".to_owned(),
+                Kv::Str("other".to_owned()),
+                c.qtype.last().copied().unwrap_or(0),
+            ));
+            v
+        }
+        Some(Key::Rcode) => c
+            .rcode
+            .iter()
+            .enumerate()
+            .map(|(i, n)| match u8::try_from(i) {
+                Ok(rc) if i + 1 < c.rcode.len() => ((ctx.rcode_name)(rc), Kv::Rc(Some(rc)), *n),
+                _ => ("other".to_owned(), Kv::Str("other".to_owned()), *n),
+            })
+            .collect(),
+        Some(Key::Proto) => Proto::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                (
+                    p.label().to_owned(),
+                    Kv::Pr(*p as u8),
+                    c.proto.get(i).copied().unwrap_or(0),
+                )
+            })
+            .collect(),
+        Some(_) => c
+            .named_groups
+            .iter()
+            .map(|g| (g.name.to_string(), Kv::Str(g.name.to_string()), g.total))
+            .collect(),
+    }
+}
+
+/// REQ: AGT-012 (T9.12) — `q` answered from rollup buckets (`(start seconds, counts)`, an
+/// hour or a day each) instead of the query log, for windows longer than the log keeps.
+pub(crate) fn run_rollups(
+    q: &Query,
+    dim: Option<Key>,
+    buckets: &[(u64, telltale_telemetry::agg::Counts)],
+    ctx: &Ctx<'_>,
+) -> Result<VqlogResult, Problem> {
+    let started = Instant::now();
+    // The conditions name real values (the same errors as over the query log).
+    for c in &q.conds {
+        resolve(c, ctx)?;
+    }
+    let keep = |label: &str| {
+        q.conds.iter().all(|c| {
+            let hit = c.values.iter().any(|v| v.eq_ignore_ascii_case(label));
+            if c.op.positive() { hit } else { !hit }
+        })
+    };
+    let mut groups: HashMap<Vec<Kv>, Group> = HashMap::new();
+    let bucket_us = q.bucket_secs.map(|b| b.saturating_mul(1_000_000));
+    let mut matched = 0u64;
+    for (start, c) in buckets {
+        let columns = rollup_columns(dim, c, ctx);
+        let mut time = Vec::new();
+        if let Some(b) = bucket_us {
+            let us = start.saturating_mul(1_000_000);
+            time.push(Kv::Time(us / b * b));
+        }
+        for (label, kv, n) in columns {
+            if n == 0 || (dim.is_some() && !keep(&label)) {
+                continue;
+            }
+            let mut key = time.clone();
+            if !q.keys.is_empty() {
+                key.push(kv);
+            }
+            let g = groups.entry(key).or_insert_with(|| Group {
+                count: 0,
+                accs: q.aggs.iter().map(|a| Acc::new(*a)).collect(),
+            });
+            g.count += u64::from(n);
+            matched += u64::from(n);
+        }
+    }
+    let out = VqlogResult {
+        query: q.to_string(),
+        columns: columns(q),
+        source: "rollups".to_owned(),
+        ..VqlogResult::default()
+    };
+    let cost = VqlogCost {
+        rows_matched: matched,
+        ..VqlogCost::default()
+    };
+    Ok(finish(q, groups, ctx, out, cost, None, started))
 }
 
 /// The output columns: a `client` key is followed by `clientName`.
@@ -797,6 +997,21 @@ mod tests {
         assert_eq!(r.rows[0][1], json!(300.0));
         assert_eq!(r.rows[0][2], json!(3.0));
 
+        // REQ: AGT-012 (T9.12) — `or`: blocked (even i) and (.10 (i ≡ 0 mod 3) or a site
+        // name (odd i)) is i ≡ 0 mod 6; a bare `or` is the union.
+        let r = ask(
+            tmp.path(),
+            "where status = blocked and (client = 192.168.1.10 or name under site.example)",
+        )
+        .unwrap();
+        assert_eq!(r.rows, vec![vec![json!(100.0)]]);
+        let r = ask(
+            tmp.path(),
+            "where client = 192.168.1.10 or name under site.example",
+        )
+        .unwrap();
+        assert_eq!(r.rows, vec![vec![json!(400.0)]], "200 + 300 - 100");
+
         let r = ask(tmp.path(), "by domain, status | stats count").unwrap();
         assert_eq!(r.rows.len(), 2);
         assert!(
@@ -804,6 +1019,92 @@ mod tests {
                 .iter()
                 .any(|x| x[0] == json!("tracker.example") && x[1] == json!("blocked"))
         );
+    }
+
+    /// REQ: AGT-012 (T9.12) — what the rollups can answer, and the answers: counts by one
+    /// breakdown, filtered on it, in day buckets.
+    #[test]
+    fn agt_012_vqlog_rollups() {
+        use telltale_telemetry::agg::{Counts, NamedGroup};
+        let dim = |t: &str| rollup_dim(&parse(t).unwrap());
+        assert_eq!(
+            dim("from -90d | where status = blocked | bucket 1d | stats count"),
+            Some(Some(Key::Status))
+        );
+        assert_eq!(dim("from -90d | by qtype"), Some(Some(Key::Qtype)));
+        assert_eq!(dim("from -90d"), Some(None));
+        for no in [
+            "top 5 name",
+            "where status = blocked and group = kids",
+            "where status = blocked | by group",
+            "bucket 5m",
+            "where qtype = DS",
+            "stats p95(latency)",
+            "where status = blocked or status = refused",
+            "where client = 10.0.0.1",
+        ] {
+            assert_eq!(dim(no), None, "{no}");
+        }
+        let day = |total: u32, blocked: u32, cached: u32, a: u32, kids: u32| {
+            let mut c = Counts {
+                total,
+                ..Counts::default()
+            };
+            c.status[5] = blocked;
+            c.status[0] = cached;
+            c.qtype[0] = a;
+            c.qtype[1] = total - a;
+            c.named_groups = vec![
+                NamedGroup {
+                    name: "default".into(),
+                    total: total - kids,
+                    blocked: 0,
+                },
+                NamedGroup {
+                    name: "kids".into(),
+                    total: kids,
+                    blocked,
+                },
+            ];
+            c
+        };
+        let buckets = vec![(0, day(10, 3, 7, 6, 4)), (86_400, day(20, 5, 15, 12, 0))];
+        let name = |_: [u8; 16]| None;
+        let ctx = Ctx {
+            groups: vec!["default".into(), "kids".into()],
+            upstreams: HashMap::new(),
+            client_name: &name,
+            qtype_name: crate::api_backend::qtype_name,
+            rcode_name: crate::api_backend::rcode_name,
+            rcode_value: crate::api_backend::rcode_value,
+        };
+        let ask = |t: &str| {
+            let q = parse(t).unwrap();
+            run_rollups(&q, rollup_dim(&q).unwrap(), &buckets, &ctx).unwrap()
+        };
+        let r = ask("from -90d | where status = blocked | bucket 1d | stats count");
+        assert_eq!(r.source, "rollups");
+        assert_eq!(r.columns, vec!["time", "count"]);
+        assert_eq!(
+            r.rows.iter().map(|x| x[1].clone()).collect::<Vec<_>>(),
+            vec![json!(3.0), json!(5.0)]
+        );
+        let r = ask("from -90d | by status");
+        assert_eq!(
+            r.rows,
+            vec![
+                vec![json!("cached"), json!(22.0)],
+                vec![json!("blocked"), json!(8.0)]
+            ]
+        );
+        let r = ask("from -90d | where qtype in (A) | stats count");
+        assert_eq!(r.rows, vec![vec![json!(18.0)]]);
+        let r = ask("from -90d | where group != kids | by group");
+        assert_eq!(r.rows, vec![vec![json!("default"), json!(26.0)]]);
+        assert_eq!(ask("from -90d").rows, vec![vec![json!(30.0)]]);
+        // A value it doesn't know is the same 400 as over the query log.
+        let q = parse("from -90d | where status = blokced").unwrap();
+        assert!(run_rollups(&q, rollup_dim(&q).unwrap(), &buckets, &ctx).is_err());
     }
 
     /// REQ: AGT-012 — names it doesn't know are 400s with the choices; a dry run only

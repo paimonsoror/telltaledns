@@ -39,6 +39,7 @@
     onchanged,
     help,
     rowAction,
+    formAction,
   }: {
     kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule';
     path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules';
@@ -50,7 +51,19 @@
     help?: string;
     /** A button on each row (T9.6: "Send test"); `run` returns what to show. */
     rowAction?: { label: string; run: (name: string) => Promise<{ ok: boolean; text: string }> };
+    /** A button in the form that tries the draft before saving (T9.12: "Test it"). */
+    formAction?: { label: string; run: (body: Record<string, unknown>) => Promise<{ ok: boolean; text: string }> };
   } = $props();
+  let formOut = $state<{ ok: boolean; text: string } | null>(null);
+  async function runFormAction() {
+    if (!formAction || !editing) return;
+    formOut = { ok: true, text: 'Testing…' };
+    try {
+      formOut = await formAction.run(body());
+    } catch (err) {
+      formOut = { ok: false, text: err instanceof Error ? err.message : String(err) };
+    }
+  }
   let actionOut = $state<{ name: string; ok: boolean; text: string } | null>(null);
   async function runAction(name: string) {
     if (!rowAction) return;
@@ -99,6 +112,7 @@
     preview = null;
     result = null;
     formError = null;
+    formOut = null;
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def } };
@@ -283,7 +297,15 @@
             <button type="button" onclick={() => (preview = null)}>Change it</button>
           </div>
         {:else}
-          <div class="row"><button class="primary" disabled={busy || !editing.name.trim()}>Check</button></div>
+          <div class="row">
+            <button class="primary" disabled={busy || !editing.name.trim()}>Check</button>
+            {#if formAction}<button type="button" onclick={runFormAction}>{formAction.label}</button>{/if}
+          </div>
+        {/if}
+        {#if formOut}
+          <p class="notice small {formOut.ok ? 'ok' : 'bad'}" data-testid="form-action-result" role="status">
+            {formOut.text}
+          </p>
         {/if}
       </form>
     {/if}

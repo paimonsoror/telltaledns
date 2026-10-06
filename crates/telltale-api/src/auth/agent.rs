@@ -199,6 +199,13 @@ pub fn required(method: &Method, path: &str) -> Need {
     {
         return Need::Scope("config:write:alerts");
     }
+    // REQ: API-002 (T9.12) — checks need the scope that saves the entry.
+    if *method == Method::POST && p == "/api/v1/checks/upstream" {
+        return Need::Scope("config:write:upstreams");
+    }
+    if *method == Method::POST && p == "/api/v1/checks/list" {
+        return Need::Scope("config:write:lists");
+    }
     // MCP: each tool's REST calls are checked on their own (ADR-065).
     if *method == Method::POST && p == "/mcp" {
         return Need::Any;

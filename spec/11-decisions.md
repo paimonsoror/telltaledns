@@ -1265,6 +1265,27 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-089 — vqlog `or` and rollup windows; pre-save checks (Proposed)
+**Context:** T9.12 picks up ADR-082's "not done" (`or`, rollup-backed long windows) and the pre-save checks deferred from T7.5.
+
+**Decision:**
+- **`or`:** `and` binds tighter. A parenthesized group is one term of the `and` list, one level deep. A bare `or` makes the whole stage one group, and mixing it with parentheses is refused as ambiguous rather than guessed. The plan keeps the plain conditions (still pushed into the index search) and adds `any_of` groups checked per row. At most 32 alternatives in all; `in (…)` covers many values of one field.
+- **Rollup windows:**
+  - **When:** a query whose `from` is older than `retention_days`, or any query while the query log is off, is answered from the rollups when it fits them.
+  - **What fits:** `count` only, no `or`, buckets of whole hours, and at most one of status, qtype (the named ones), rcode, proto, and group, used as the key, the filter, or both. The rollups keep each breakdown on its own, so two can't be combined.
+  - **Levels:** day buckets use the day rollups; everything else uses the hour rollups.
+  - **Labels:** `source` says which store answered. A query that doesn't fit runs over the log as before, with a `note` saying the log only covers `retention_days`.
+  - **Not chosen:** answering partly from each store. Its numbers would mix two sources, with no line between them.
+- **Pre-save checks:** `POST /api/v1/checks/upstream` and `/checks/list` take the same body as the PUT.
+  - The upstream check builds the upstream through the normal router (a configuration holding only it) and asks for `. NS` within 5 s. The list check downloads with `[filter]`'s limits, or takes inline rules, and parses as the compiler does.
+  - `path` lists aren't checked: reading server files on request would be a new capability.
+  - Both need the operator role and the entry's write scope (they reach out from the node), and both are audited. The paths sit under `/checks/` so they can't collide with an upstream or list named `test`.
+
+**Consequences:**
+- An agent can ask "blocked per day for six months" and get exact counts.
+- Questions that need names or clients stay limited to what the log keeps, and the answer says so.
+- A typo in an upstream URL or a dead list URL shows up before it's saved.
+
 ## ADR-088 — DNS64 exclusions and reverse names; syslog over TLS; a webhook spill (Proposed)
 **Context:** T9.10 and T9.11 pick up the deferrals of T7.21 (DNS64) and T7.13 (event sinks).
 

@@ -648,6 +648,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/checks/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a draft list before saving it (API-002, T9.12).
+         * @description The body has the same fields as `PUT /api/v1/lists/{name}` (`name` optional): a `url` is
+         *     downloaded from this node (with `[filter]`'s size limit and timeout), or `rules` are taken
+         *     as they are, then parsed as the compiler would. Answers with the rules found, the lines it
+         *     couldn't use, and the time. Nothing is saved or compiled; the check is audited. `path`
+         *     lists are checked when saved. Needs the operator role (agents: `config:write:lists`).
+         */
+        post: operations["check_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/checks/upstream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a draft upstream before saving it (API-002, T9.12).
+         * @description The body has the same fields as `PUT /api/v1/upstreams/{name}` (`name` optional). This node
+         *     builds it and asks it for the root's NS records, as health checks do, and answers with what
+         *     happened: `ok` with the rcode, records, and time, or the error (a bad URL, a TLS name that
+         *     doesn't match, a timeout). Nothing is saved; the check is audited. Needs the operator role
+         *     (agents: `config:write:upstreams`).
+         */
+        post: operations["check_upstream"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients": {
         parameters: {
             query?: never;
@@ -2010,6 +2058,27 @@ export interface components {
             loaded?: number | null;
             /** @description Why nothing was loaded (no dump, a dump from other upstreams, ...). */
             note?: string | null;
+        };
+        /** @description REQ: API-002 (T9.12) — a pre-save check of a draft upstream or list. */
+        CheckResult: {
+            /** @description What was seen: `answered NOERROR, 13 records` or `81,234 rules from 81,512 lines`. */
+            detail: string;
+            /**
+             * Format: int64
+             * @description How long the probe or the download took.
+             */
+            elapsedMs: number;
+            /** @description Why not (the server's or the parser's own message where there is one). */
+            error?: string | null;
+            /** @description It works: the upstream answered, or the list downloaded and has rules. */
+            ok: boolean;
+            /**
+             * Format: int64
+             * @description Lists: the rules found.
+             */
+            rules?: number | null;
+            /** @description Lists: up to 10 lines that were invalid or unsupported, with why. */
+            warnings: string[];
         };
         /** @description What a device change did, or would do with `dryRun=true` (AGT-002). */
         ClientChange: {
@@ -4077,10 +4146,17 @@ export interface components {
             groups: number;
             /** @description Cluster nodes whose query log isn't here (not shipped to this node). */
             missingNodes: string[];
+            /** @description Something to know about the answer (a window longer than the query log keeps). */
+            note?: string | null;
             /** @description The query as understood, with the defaults filled in. */
             query: string;
             /** @description One array per row, in column order. */
             rows: Record<string, never>[][];
+            /**
+             * @description REQ: AGT-012 (T9.12) — where the numbers come from: `querylog` (every query, kept
+             *     `retention_days`) or `rollups` (counts by one breakdown, kept much longer).
+             */
+            source: string;
             /** @description The scan stopped early (`truncatedReason` says why); the numbers cover what it read. */
             truncated: boolean;
             truncatedReason?: string | null;
@@ -5112,6 +5188,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_CacheNodeStats"];
+                };
+            };
+        };
+    };
+    check_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Parsed, or why not. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckResult"];
+                };
+            };
+            /** @description The body isn't a list (an unknown or mistyped field), or it has no url or rules. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_upstream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Answered, or why not. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckResult"];
+                };
+            };
+            /** @description The body isn't an upstream (an unknown or mistyped field). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

@@ -153,6 +153,24 @@ pub trait Backend: Send + Sync + 'static {
         let _ = name;
         Box::pin(async { Err(Problem::unavailable("alerts aren't available on this node")) })
     }
+    /// REQ: API-002 (T9.12) — a draft upstream (the `PUT /upstreams/{name}` body) asked a
+    /// probe from this node, before it's saved.
+    fn check_upstream(
+        &self,
+        body: serde_json::Value,
+    ) -> BoxFuture<Result<model::CheckResult, Problem>> {
+        let _ = body;
+        Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
+    }
+    /// REQ: API-002 (T9.12) — a draft list (the `PUT /lists/{name}` body) downloaded and
+    /// parsed on this node, before it's saved.
+    fn check_list(
+        &self,
+        body: serde_json::Value,
+    ) -> BoxFuture<Result<model::CheckResult, Problem>> {
+        let _ = body;
+        Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
+    }
     /// REQ: OBS-010 (T9.5) — devices first seen since `since_s` (every node, in a cluster).
     fn new_devices(&self, since_s: u64) -> Vec<model::NewDevice> {
         let _ = since_s;
@@ -564,14 +582,14 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::put_schedule, config_api::delete_schedule, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,

@@ -39,6 +39,17 @@
     }, 15000),
   );
   const advanced = $derived(currentMode() === 'advanced');
+  // REQ: API-002 (T9.12) — download and parse the draft list before saving it.
+  const tryList = {
+    label: 'Test it',
+    run: async (b: Record<string, unknown>) => {
+      const r = await api.checkList(b);
+      const notes = r.warnings.length ? ` Lines it can't use: ${r.warnings.slice(0, 3).join('; ')}` : '';
+      return r.ok
+        ? { ok: true, text: `Works: ${r.detail}, in ${r.elapsedMs} ms.${notes}` }
+        : { ok: false, text: `Doesn't work: ${r.error ?? r.detail}.${notes}` };
+    },
+  };
 </script>
 
 <div class="page">
@@ -94,7 +105,7 @@
   </section>
   <ConfigEditor kind="list" path="lists" title="Manage lists" noun="list" fields={listFields}
     summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
-    onchanged={async () => (lists = (await api.lists()).items)} />
+    onchanged={async () => (lists = (await api.lists()).items)} formAction={tryList} />
   <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list has (what removing it would lose). "Hits" counts the queries it decided on this node since it started.</p>
 </div>
 

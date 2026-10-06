@@ -860,6 +860,26 @@ pub struct AlertTest {
     pub error: Option<String>,
 }
 
+/// REQ: API-002 (T9.12) — a pre-save check of a draft upstream or list.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckResult {
+    /// It works: the upstream answered, or the list downloaded and has rules.
+    pub ok: bool,
+    /// Why not (the server's or the parser's own message where there is one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// What was seen: `answered NOERROR, 13 records` or `81,234 rules from 81,512 lines`.
+    pub detail: String,
+    /// How long the probe or the download took.
+    pub elapsed_ms: u64,
+    /// Lists: the rules found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules: Option<u64>,
+    /// Lists: up to 10 lines that were invalid or unsupported, with why.
+    pub warnings: Vec<String>,
+}
+
 /// REQ: OBS-010 (T9.6) — an alert that is firing now.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1379,6 +1399,12 @@ pub struct VqlogResult {
     pub truncated_reason: Option<String>,
     /// Cluster nodes whose query log isn't here (not shipped to this node).
     pub missing_nodes: Vec<String>,
+    /// REQ: AGT-012 (T9.12) — where the numbers come from: `querylog` (every query, kept
+    /// `retention_days`) or `rollups` (counts by one breakdown, kept much longer).
+    pub source: String,
+    /// Something to know about the answer (a window longer than the query log keeps).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// `GET /analytics/new-domains` parameters.

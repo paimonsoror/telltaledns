@@ -118,6 +118,13 @@
       {#if result.missingNodes.length}
         <div class="notice warn" role="status">Not included: {result.missingNodes.join(', ')}</div>
       {/if}
+      <!-- REQ: AGT-012 (T9.12) — answered from the rollups, or past what the log keeps. -->
+      {#if result.source === 'rollups'}
+        <p class="small muted" data-testid="vqlog-source">From the rollups (counts kept for long windows), not the query log.</p>
+      {/if}
+      {#if result.note}
+        <div class="notice" role="status" data-testid="vqlog-note">{result.note}</div>
+      {/if}
       {#if result.rows.length}
         <div class="table-wrap">
           <table>
