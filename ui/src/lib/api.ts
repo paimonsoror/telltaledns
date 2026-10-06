@@ -85,7 +85,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules';
 
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
@@ -141,6 +141,9 @@ export const api = {
   dhcpLeases: () => get<S['Items_DhcpLease']>('/dhcp/leases'),
   // REQ: DNS-018 (T8.6)
   zones: () => get<S['Items_ZoneInfo']>('/zones'),
+  // REQ: OBS-010 (T9.6)
+  alertsStatus: () => get<S['AlertsStatus']>('/alerts'),
+  alertTest: (name: string) => post<S['AlertTest']>(`/alerts/destinations/${encodeURIComponent(name)}/test`),
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
   localNames: () => get<S['Items_LocalName']>('/records'),

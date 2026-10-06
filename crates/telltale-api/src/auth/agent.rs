@@ -47,6 +47,10 @@ pub const SCOPES: &[(&str, &str)] = &[
     ),
     ("config:write:lists", "add, change, and remove filter lists"),
     (
+        "config:write:alerts",
+        "add, change, test, and remove alert destinations and rules",
+    ),
+    (
         "config:write:groups",
         "add, change, and remove client groups",
     ),
@@ -148,6 +152,7 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/upstreams"
             | "/api/v1/records"
             | "/api/v1/zones"
+            | "/api/v1/alerts"
             | "/api/v1/forwards"
             | "/api/v1/rules"
             | "/api/v1/config/entries" => {
@@ -182,6 +187,13 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/groups") {
             return Need::Scope("config:write:groups");
         }
+        // REQ: OBS-010 (T9.6)
+        if under("/api/v1/alerts") {
+            return Need::Scope("config:write:alerts");
+        }
+    }
+    if *method == Method::POST && under("/api/v1/alerts/destinations") && p.ends_with("/test") {
+        return Need::Scope("config:write:alerts");
     }
     // MCP: each tool's REST calls are checked on their own (ADR-065).
     if *method == Method::POST && p == "/mcp" {
@@ -470,8 +482,8 @@ mod tests {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            8,
-            "seven write areas (clients, records, forwards, rules, upstreams, lists, groups) + analytics"
+            9,
+            "eight write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

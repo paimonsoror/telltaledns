@@ -83,6 +83,19 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         )
         .route("/api/v1/lists/{name}", put(put_list).delete(delete_list))
         .route("/api/v1/groups/{name}", put(put_group).delete(delete_group))
+        // REQ: OBS-010 (T9.6)
+        .route(
+            "/api/v1/alerts/destinations/{name}",
+            put(put_alert_destination).delete(delete_alert_destination),
+        )
+        .route(
+            "/api/v1/alerts/rules/{name}",
+            put(put_alert_rule).delete(delete_alert_rule),
+        )
+        .route(
+            "/api/v1/alerts/destinations/{name}/test",
+            axum::routing::post(test_alert_destination),
+        )
         .with_state((backend, auth))
 }
 
@@ -555,6 +568,179 @@ fn group_guard(
     }
 }
 
+/// Add or change an alert destination (OBS-010, T9.6).
+///
+/// The body has the same fields as `[[alerts.destination]]` (the name comes from the path):
+/// `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
+/// `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
+/// ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
+/// Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
+/// A destination the config files define is overridden until this one is deleted.
+#[utoipa::path(put, path = "/api/v1/alerts/destinations/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+    ))]
+pub(crate) async fn put_alert_destination(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /alerts/destinations/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::AlertDestination, Some(input)),
+    )
+    .await
+}
+
+/// Remove an alert destination (OBS-010, T9.6).
+///
+/// Rules that still send to it make the configuration invalid (422 says which).
+#[utoipa::path(delete, path = "/api/v1/alerts/destinations/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 422, body = Problem, description = "A rule still uses it."),
+    ))]
+pub(crate) async fn delete_alert_destination(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /alerts/destinations/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::AlertDestination, None),
+    )
+    .await
+}
+
+/// Add or change an alert rule (OBS-010, T9.6).
+///
+/// The body has the same fields as `[[alerts.rule]]` (the name comes from the path):
+/// `{"when": "upstream_down", "for_secs": 60, "to": ["phone"]}`. `when` is one of
+/// `upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,
+/// `update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.
+#[utoipa::path(put, path = "/api/v1/alerts/rules/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+    ))]
+pub(crate) async fn put_alert_rule(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /alerts/rules/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::AlertRule, Some(input)),
+    )
+    .await
+}
+
+/// Remove an alert rule (OBS-010, T9.6).
+///
+/// An alert the rule has firing stops being tracked (no "Resolved" message is sent). A rule
+/// the config files define is hidden until this override is deleted in turn.
+#[utoipa::path(delete, path = "/api/v1/alerts/rules/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+    ))]
+pub(crate) async fn delete_alert_rule(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /alerts/rules/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::AlertRule, None),
+    )
+    .await
+}
+
+/// Send a test alert to one destination (OBS-010, T9.6).
+///
+/// Sends a message marked as a test, from this node, and answers with what happened: `ok`, or
+/// the destination's error (a wrong password, an unreachable server). Nothing is stored, but
+/// the test is audited. Needs the operator role.
+#[utoipa::path(post, path = "/api/v1/alerts/destinations/{name}/test", tag = "config",
+    params(("name" = String, Path, description = "The destination.")),
+    responses(
+        (status = 200, body = crate::model::AlertTest, description = "Sent, or why not."),
+        (status = 404, body = Problem, description = "No destination by that name."),
+    ))]
+pub(crate) async fn test_alert_destination(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Result<Json<crate::model::AlertTest>, Problem> {
+    let p = principal(&ext)?;
+    let r = backend.alert_test(&name).await?;
+    let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
+    auth.record(
+        &actor,
+        "alert.test",
+        &name,
+        &serde_json::json!({ "ok": r.ok, "error": r.error }),
+    );
+    Ok(Json(r))
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -572,6 +758,8 @@ impl Op {
             Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",
             Self::Managed(ManagedKind::List, _) => "list",
             Self::Managed(ManagedKind::Group, _) => "group",
+            Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
+            Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
         }
     }
     fn deleting(&self) -> bool {

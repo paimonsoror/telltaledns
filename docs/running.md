@@ -1684,6 +1684,8 @@ Rules watch:
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
+- **In the UI:** **Alerts** (under System) shows what's firing now and how the last delivery to each destination went, and adds, changes, or removes destinations and rules like other configuration (a dry run first; on a Git-managed cluster it says what to add to Git). **Send test** on a destination sends a test message and shows the result, a wrong password or an unreachable server included.
+- **API:** `GET /api/v1/alerts` (firing alerts and deliveries), `PUT`/`DELETE /api/v1/alerts/destinations/{name}` and `/api/v1/alerts/rules/{name}` (same fields as the configuration, with `?dryRun=true`, `If-Match`, and `Idempotency-Key`), and `POST /api/v1/alerts/destinations/{name}/test`. Agent tokens need `config:write:alerts`. Passwords and tokens stay in files on the node: only their paths go through the API.
 
 ### Email
 Any mail account that allows SMTP sign-in works; you don't need a mail server of your own:

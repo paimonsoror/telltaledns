@@ -29,6 +29,7 @@
   import Upstreams from './pages/Upstreams.svelte';
   import LocalDns from './pages/LocalDns.svelte';
   import Settings from './pages/Settings.svelte';
+  import Alerts from './pages/Alerts.svelte';
 
   // T6.8 — the sidebar in sections, each page with an icon.
   const pages: { path: string; label: string; page: Component; icon: string; section: string }[] = [
@@ -44,6 +45,7 @@
     { path: '/upstreams', label: 'Upstreams', page: Upstreams, icon: 'upstreams', section: 'Filtering & DNS' },
     { path: '/local-dns', label: 'Names on my network', page: LocalDns, icon: 'names', section: 'Filtering & DNS' },
     { path: '/cluster', label: 'Cluster', page: Cluster, icon: 'cluster', section: 'System' },
+    { path: '/alerts', label: 'Alerts', page: Alerts, icon: 'bell', section: 'System' },
     { path: '/agent-changes', label: 'Agent changes', page: AgentChanges, icon: 'inbox', section: 'System' },
     { path: '/cache', label: 'Cache', page: Cache, icon: 'cache', section: 'System' },
     { path: '/settings', label: 'Settings', page: Settings, icon: 'settings', section: 'System' },

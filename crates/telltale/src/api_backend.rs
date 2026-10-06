@@ -1290,6 +1290,40 @@ impl Backend for ApiBackend {
         v
     }
 
+    // REQ: OBS-010 (T9.6) — what the alert task last saw and sent.
+    fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
+        self.src
+            .alerts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    // REQ: OBS-010 (T9.6) — a test message to one destination, sent from this node.
+    fn alert_test(
+        &self,
+        name: &str,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::AlertTest, Problem>> {
+        let cfg = self.src.config.load_full();
+        let d = cfg
+            .alerts
+            .destination
+            .iter()
+            .find(|d| d.name.as_str() == name)
+            .cloned();
+        let node = crate::http::node_name(&cfg);
+        let name = name.to_owned();
+        Box::pin(async move {
+            let d =
+                d.ok_or_else(|| Problem::not_found(format!("no alert destination `{name}`")))?;
+            let r = crate::alerts::send_test(&d, &node).await;
+            Ok(telltale_api::model::AlertTest {
+                ok: r.is_ok(),
+                error: r.err(),
+            })
+        })
+    }
+
     // REQ: OBS-010 (T9.5) — devices this node's anomaly engine met for the first time.
     fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
         let Some(a) = &self.src.anomalies else {
@@ -1536,6 +1570,25 @@ impl Backend for ApiBackend {
         }
         if want("group") {
             rows("group", &cfg.group, &file.group, &e.groups, &mut out);
+        }
+        // REQ: OBS-010 (T9.6)
+        if want("alert_destination") {
+            rows(
+                "alert_destination",
+                &cfg.alerts.destination,
+                &file.alerts.destination,
+                &e.alert_destinations,
+                &mut out,
+            );
+        }
+        if want("alert_rule") {
+            rows(
+                "alert_rule",
+                &cfg.alerts.rule,
+                &file.alerts.rule,
+                &e.alert_rules,
+                &mut out,
+            );
         }
         out
     }
@@ -2140,6 +2193,8 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
         ManagedKind::List => crate::managed::LIST,
         ManagedKind::Group => crate::managed::GROUP,
+        ManagedKind::AlertDestination => crate::managed::ALERT_DESTINATION,
+        ManagedKind::AlertRule => crate::managed::ALERT_RULE,
     }
 }
 
@@ -2429,6 +2484,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         }
         (ManagedKind::List, false) => "Its blocks stop when the lists are compiled again (seconds).".into(),
         (ManagedKind::Group, _) => "Applies to the group's devices on their next query.".into(),
+        (ManagedKind::AlertDestination | ManagedKind::AlertRule, _) => {
+            "Applies at the next alert check; firing alerts of a changed rule start over.".into()
+        }
     };
     (recent_queries, impact)
 }
@@ -2443,7 +2501,12 @@ fn plan_managed(
 ) -> Result<ManagedPlan, Problem> {
     if matches!(
         w.kind,
-        ManagedKind::Upstream | ManagedKind::UpstreamGroup | ManagedKind::List | ManagedKind::Group
+        ManagedKind::Upstream
+            | ManagedKind::UpstreamGroup
+            | ManagedKind::List
+            | ManagedKind::Group
+            | ManagedKind::AlertDestination
+            | ManagedKind::AlertRule
     ) {
         return plan_override(src, state, w);
     }
@@ -2661,6 +2724,24 @@ fn plan_override(
             before_cfg.list.iter().find(|u| u.name() == name),
             &mut entries.lists,
         )?,
+        ManagedKind::AlertDestination => override_step(
+            &name,
+            w.body.as_ref(),
+            file.alerts.destination.iter().any(|u| u.name() == name),
+            before_cfg
+                .alerts
+                .destination
+                .iter()
+                .find(|u| u.name() == name),
+            &mut entries.alert_destinations,
+        )?,
+        ManagedKind::AlertRule => override_step(
+            &name,
+            w.body.as_ref(),
+            file.alerts.rule.iter().any(|u| u.name() == name),
+            before_cfg.alerts.rule.iter().find(|u| u.name() == name),
+            &mut entries.alert_rules,
+        )?,
         _ => override_step(
             &name,
             w.body.as_ref(),
@@ -2675,6 +2756,8 @@ fn plan_override(
         ManagedKind::Upstream => named_json(&merged.upstream, &name),
         ManagedKind::UpstreamGroup => named_json(&merged.upstream_group, &name),
         ManagedKind::List => named_json(&merged.list, &name),
+        ManagedKind::AlertDestination => named_json(&merged.alerts.destination, &name),
+        ManagedKind::AlertRule => named_json(&merged.alerts.rule, &name),
         _ => named_json(&merged.group, &name),
     };
     let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
@@ -2963,6 +3046,8 @@ fn keep_in_git(
         ManagedKind::UpstreamGroup => "upstream_group",
         ManagedKind::List => "list",
         ManagedKind::Group => "group",
+        ManagedKind::AlertDestination => "alerts.destination",
+        ManagedKind::AlertRule => "alerts.rule",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     let Some(body) = body else {

@@ -144,6 +144,15 @@ pub trait Backend: Send + Sync + 'static {
         ))
     }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
+    /// REQ: OBS-010 (T9.6) — alerts firing now and the last delivery per destination.
+    fn alerts_status(&self) -> model::AlertsStatus {
+        model::AlertsStatus::default()
+    }
+    /// REQ: OBS-010 (T9.6) — sends a test alert to destination `name` from this node.
+    fn alert_test(&self, name: &str) -> BoxFuture<Result<model::AlertTest, Problem>> {
+        let _ = name;
+        Box::pin(async { Err(Problem::unavailable("alerts aren't available on this node")) })
+    }
     /// REQ: OBS-010 (T9.5) — devices first seen since `since_s` (every node, in a cluster).
     fn new_devices(&self, since_s: u64) -> Vec<model::NewDevice> {
         let _ = since_s;
@@ -347,6 +356,10 @@ pub enum ManagedKind {
     List,
     /// A client group (`/groups/{name}`).
     Group,
+    /// REQ: OBS-010 (T9.6) — an alert destination (`/alerts/destinations/{name}`).
+    AlertDestination,
+    /// An alert rule (`/alerts/rules/{name}`).
+    AlertRule,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -447,6 +460,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/dhcp/leases", get(dhcp_leases))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/zones", get(zones))
+        .route("/api/v1/alerts", get(alerts_status))
         .route("/api/v1/forwards", get(forwards))
         .route("/api/v1/rules", get(rules))
         .route("/api/v1/config/entries", get(config_entries))
@@ -548,14 +562,14 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -1149,6 +1163,18 @@ async fn vqlog_query(
     let mut r = blocking(move || bk.vqlog(&q, from_us, to_us, dry)).await?;
     r.missing_nodes = b.missing_nodes();
     Ok(Json(r))
+}
+
+/// Alerts now (OBS-010).
+///
+/// The alerts firing at this moment and the last delivery to each destination (with its
+/// error, if it failed). Rules are checked on the cluster's primary; on another node
+/// `evaluating` is false. The destinations and rules themselves are configuration:
+/// `GET /api/v1/config/entries?kind=alert_destination` and `kind=alert_rule`.
+#[utoipa::path(get, path = "/api/v1/alerts", tag = "stats",
+    responses((status = 200, body = model::AlertsStatus, description = "The result.")))]
+async fn alerts_status(State(b): State<Shared>) -> Json<model::AlertsStatus> {
+    Json(b.alerts_status())
 }
 
 /// Authoritative zones (DNS-018).

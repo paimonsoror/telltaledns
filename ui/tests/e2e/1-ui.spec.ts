@@ -924,3 +924,66 @@ test('t8_6 discovered devices, group settings, and zones', async () => {
   const zones = page.getByTestId('zones');
   await expect(zones.locator('tbody tr', { hasText: 'zone.e2e.test' })).toContainText('ipv6only');
 });
+
+// REQ: OBS-010 (T9.6) — the Alerts page: add a destination, send it a test, add a rule that
+// fires, see it under "Now" with the delivery, then remove both.
+test('obs_010 alerts page: destinations, test, rules', async () => {
+  test.setTimeout(120_000); // the rule fires on the next 5 s check
+  const { createServer } = await import('node:http');
+  const got: string[] = [];
+  const hook = createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      got.push(b);
+      res.end('ok');
+    });
+  });
+  await new Promise<void>((r) => hook.listen(18998, '127.0.0.1', () => r()));
+  try {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/#/alerts');
+    await expect(page.locator('h1', { hasText: 'Alerts' })).toBeVisible();
+    // Advanced: the rule's threshold.
+    await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+    const dests = page.getByTestId('editor-alert_destination');
+    await dests.getByRole('button', { name: 'Add destination' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-hook');
+    await page.getByLabel('Type', { exact: true }).selectOption('webhook');
+    await page.getByRole('textbox', { name: 'Address', exact: true }).fill('http://127.0.0.1:18998/alert');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await expect(page.getByTestId('entry-preview')).toBeVisible();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    const row = dests.getByTestId('entry-row').filter({ hasText: 'ui-hook' });
+    await expect(row).toContainText('webhook: http://127.0.0.1:18998/alert');
+    await row.getByRole('button', { name: 'Send test' }).click();
+    await expect(dests.getByTestId('row-action-result')).toContainText('sent');
+    expect(got.some((b) => b.includes('This is a test alert'))).toBe(true);
+
+    const rules = page.getByTestId('editor-alert_rule');
+    await rules.getByRole('button', { name: 'Add rule' }).click();
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-disk');
+    await page.getByLabel('When', { exact: true }).selectOption('disk_full');
+    await page.getByRole('group', { name: 'Send to' }).getByLabel('ui-hook').check();
+    await page.getByRole('spinbutton', { name: 'For at least (seconds)' }).fill('0');
+    await page.getByRole('spinbutton', { name: 'Threshold (%)' }).fill('0.1');
+    await page.getByRole('button', { name: 'Check' }).click();
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-disk' })).toContainText('disk_full → ui-hook');
+    const now = page.getByTestId('alerts-now');
+    await expect(async () => {
+      await page.reload();
+      await expect(now).toContainText('ui-disk', { timeout: 2000 });
+      await expect(now).toContainText('delivered', { timeout: 2000 });
+    }).toPass({ timeout: 45_000 });
+    expect(got.some((b) => b.includes('"rule":"ui-disk"'))).toBe(true);
+
+    await rules.getByTestId('entry-row').filter({ hasText: 'ui-disk' }).getByRole('button', { name: 'Remove' }).click();
+    await expect(rules.getByTestId('entry-row').filter({ hasText: 'ui-disk' })).toHaveCount(0);
+    await row.getByRole('button', { name: 'Remove' }).click();
+    await expect(row).toHaveCount(0);
+  } finally {
+    await page.getByRole('button', { name: 'Simple', exact: true }).click().catch(() => {});
+    hook.close();
+  }
+});

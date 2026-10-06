@@ -117,6 +117,58 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// REQ: OBS-010 (T9.6) — the alerts firing now, for the status API.
+    pub(crate) fn firing_now(&self, rules: &[AlertRule]) -> Vec<telltale_api::model::FiringAlert> {
+        let mut v: Vec<telltale_api::model::FiringAlert> = self
+            .firing
+            .iter()
+            .filter_map(|((r, subject), summary)| {
+                Some(telltale_api::model::FiringAlert {
+                    rule: rules.get(*r)?.name.to_string(),
+                    subject: subject.clone(),
+                    summary: summary.clone(),
+                })
+            })
+            .collect();
+        v.sort_by(|a, b| (&a.rule, &a.subject).cmp(&(&b.rule, &b.subject)));
+        v
+    }
+}
+
+/// REQ: OBS-010 (T9.6) — a test message to `d`, from `node`.
+pub(crate) async fn send_test(d: &AlertDestination, node: &str) -> Result<(), String> {
+    let n = Notice {
+        rule: 0,
+        subject: "test".to_owned(),
+        summary: format!(
+            "This is a test alert from TelltaleDNS on {node}. If you can read it, the destination `{}` works.",
+            d.name.as_str()
+        ),
+        firing: true,
+    };
+    let client =
+        telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])?;
+    deliver(&client, d, "Test", &n, node).await
+}
+
+/// Records a delivery's outcome for the status API (the latest per destination).
+fn record_delivery(sources: &crate::http::Sources, destination: &str, r: &Result<(), String>) {
+    let mut s = sources
+        .alerts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    s.deliveries.retain(|x| x.destination != destination);
+    s.deliveries.push(telltale_api::model::AlertDelivery {
+        destination: destination.to_owned(),
+        unix_seconds: crate::pipeline::unix_now(),
+        ok: r.is_ok(),
+        error: r.as_ref().err().cloned(),
+    });
+    s.deliveries
+        .sort_by(|a, b| a.destination.cmp(&b.destination));
+}
+
 /// What `rule` sees now, read from `b` (blocking: run it on a blocking thread). `pending`:
 /// agents' plans waiting for approval on this node, as `(id, summary)`.
 #[allow(clippy::too_many_lines)] // one arm per condition
@@ -471,6 +523,34 @@ async fn deliver(
     }
 }
 
+/// REQ: OBS-010 (T9.6) — the status API's view after a check.
+fn publish_status(
+    sources: &crate::http::Sources,
+    engine: &Engine,
+    rules: &[AlertRule],
+    cfg: &Config,
+    primary: bool,
+) {
+    let mut s = sources
+        .alerts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    s.evaluating = primary;
+    s.firing = if s.evaluating {
+        engine.firing_now(rules)
+    } else {
+        Vec::new()
+    };
+    let names: Vec<&str> = cfg
+        .alerts
+        .destination
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    s.deliveries
+        .retain(|x| names.contains(&x.destination.as_str()));
+}
+
 /// The alert task: every `interval_secs`, evaluate (on the primary or a standalone node) and
 /// send what started or cleared.
 pub(crate) async fn run(
@@ -550,20 +630,24 @@ pub(crate) async fn run(
                     else {
                         continue;
                     };
-                    let (client, rname, n, node) = (
+                    let (client, rname, n, node, src) = (
                         Arc::clone(&client),
                         rule.name.to_string(),
                         n.clone(),
                         node.clone(),
+                        Arc::clone(&sources),
                     );
                     tokio::spawn(async move {
-                        if let Err(e) = deliver(&client, &d, &rname, &n, &node).await {
+                        let r = deliver(&client, &d, &rname, &n, &node).await;
+                        if let Err(e) = &r {
                             warn!(destination = %d.name, error = %e, "alert not delivered");
                         }
+                        record_delivery(&src, d.name.as_str(), &r);
                     });
                 }
             }
         }
+        publish_status(&sources, &engine, &rules, &cfg, primary);
         tokio::select! {
             _ = stop.changed() => return,
             () = tokio::time::sleep(interval) => {}

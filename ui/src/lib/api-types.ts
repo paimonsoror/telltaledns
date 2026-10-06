@@ -4,6 +4,108 @@
  */
 
 export interface paths {
+    "/api/v1/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Alerts now (OBS-010).
+         * @description The alerts firing at this moment and the last delivery to each destination (with its
+         *     error, if it failed). Rules are checked on the cluster's primary; on another node
+         *     `evaluating` is false. The destinations and rules themselves are configuration:
+         *     `GET /api/v1/config/entries?kind=alert_destination` and `kind=alert_rule`.
+         */
+        get: operations["alerts_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/destinations/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an alert destination (OBS-010, T9.6).
+         * @description The body has the same fields as `[[alerts.destination]]` (the name comes from the path):
+         *     `{"type": "ntfy", "url": "https://ntfy.sh/my-topic"}`, or for email
+         *     `{"type": "email", "url": "smtp://smtp.gmail.com:587", "from": "me@gmail.com", "to":
+         *     ["me@gmail.com"], "username": "me@gmail.com", "password_file": "/run/secrets/smtp"}`.
+         *     Secrets stay in files on the node (`token_file`, `password_file`): only the path is sent.
+         *     A destination the config files define is overridden until this one is deleted.
+         */
+        put: operations["put_alert_destination"];
+        post?: never;
+        /**
+         * Remove an alert destination (OBS-010, T9.6).
+         * @description Rules that still send to it make the configuration invalid (422 says which).
+         */
+        delete: operations["delete_alert_destination"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/destinations/{name}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a test alert to one destination (OBS-010, T9.6).
+         * @description Sends a message marked as a test, from this node, and answers with what happened: `ok`, or
+         *     the destination's error (a wrong password, an unreachable server). Nothing is stored, but
+         *     the test is audited. Needs the operator role.
+         */
+        post: operations["test_alert_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/alerts/rules/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an alert rule (OBS-010, T9.6).
+         * @description The body has the same fields as `[[alerts.rule]]` (the name comes from the path):
+         *     `{"when": "upstream_down", "for_secs": 60, "to": ["phone"]}`. `when` is one of
+         *     `upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,
+         *     `update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.
+         */
+        put: operations["put_alert_rule"];
+        post?: never;
+        /**
+         * Remove an alert rule (OBS-010, T9.6).
+         * @description An alert the rule has firing stops being tracked (no "Resolved" message is sent). A rule
+         *     the config files define is hidden until this override is deleted in turn.
+         */
+        delete: operations["delete_alert_rule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/anomalies": {
         parameters: {
             query?: never;
@@ -1470,6 +1572,30 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description REQ: OBS-010 (T9.6) — the last delivery to a destination. */
+        AlertDelivery: {
+            destination: string;
+            error?: string | null;
+            ok: boolean;
+            /** Format: int64 */
+            unixSeconds: number;
+        };
+        /** @description REQ: OBS-010 (T9.6) — the result of a test alert. */
+        AlertTest: {
+            /** @description Why it wasn't delivered (the destination's own message where there is one). */
+            error?: string | null;
+            ok: boolean;
+        };
+        /** @description REQ: OBS-010 (T9.6) — alerts now: what fires, and how deliveries went. */
+        AlertsStatus: {
+            deliveries: components["schemas"]["AlertDelivery"][];
+            /**
+             * @description Rules are checked on the cluster's primary (or a standalone node); elsewhere this is
+             *     false and the lists are empty.
+             */
+            evaluating: boolean;
+            firing: components["schemas"]["FiringAlert"][];
+        };
         /** @description A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it. */
         AnomalyFinding: {
             /** Format: double */
@@ -2376,6 +2502,13 @@ export interface components {
             qtype: string;
             route?: components["schemas"]["ExplainRoute"] | null;
             /** @description One sentence for people. */
+            summary: string;
+        };
+        /** @description REQ: OBS-010 (T9.6) — an alert that is firing now. */
+        FiringAlert: {
+            rule: string;
+            /** @description What it's about: an upstream, a node, a list. */
+            subject: string;
             summary: string;
         };
         /** @description A domain sent to other servers (conditional forwarding). */
@@ -3954,6 +4087,233 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    alerts_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertsStatus"];
+                };
+            };
+        };
+    };
+    put_alert_destination: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_alert_destination: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A rule still uses it. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    test_alert_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sent, or why not. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertTest"];
+                };
+            };
+            /** @description No destination by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_alert_rule: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_alert_rule: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     anomalies: {
         parameters: {
             query?: {

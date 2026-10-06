@@ -33,15 +33,30 @@
     fields,
     summary,
     onchanged,
+    help,
+    rowAction,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules';
     title: string;
     noun: string;
     fields: Field[];
     summary: (def: Record<string, unknown>) => string;
     onchanged?: () => void;
+    help?: string;
+    /** A button on each row (T9.6: "Send test"); `run` returns what to show. */
+    rowAction?: { label: string; run: (name: string) => Promise<{ ok: boolean; text: string }> };
   } = $props();
+  let actionOut = $state<{ name: string; ok: boolean; text: string } | null>(null);
+  async function runAction(name: string) {
+    if (!rowAction) return;
+    actionOut = { name, ok: true, text: 'Sending…' };
+    try {
+      actionOut = { name, ...(await rowAction.run(name)) };
+    } catch (err) {
+      actionOut = { name, ok: false, text: err instanceof Error ? err.message : String(err) };
+    }
+  }
 
   let entries = $state<S['ConfigEntry'][]>([]);
   let error = $state<unknown>(null);
@@ -144,7 +159,7 @@
 
 <section class="card" data-testid={`editor-${kind}`}>
   <div class="head">
-    <h2>{title}<HelpButton id="config-sources" /></h2>
+    <h2>{title}{#if help}<HelpButton id={help} />{:else}<HelpButton id="config-sources" />{/if}</h2>
     {#if writable}<button onclick={() => open()}>Add {noun}</button>{/if}
   </div>
   <ErrorNote {error} />
@@ -161,6 +176,9 @@
               <td class="small muted">{e.definition ? summary(e.definition as Record<string, unknown>) : 'left out of the configuration'}</td>
               {#if writable}
                 <td class="actions">
+                  {#if rowAction && e.source !== 'hidden'}
+                    <button class="link small" onclick={() => runAction(e.name)}>{rowAction.label}</button>
+                  {/if}
                   {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>Edit</button>{/if}
                   {#if e.source === 'override' || e.source === 'hidden'}
                     <button class="link small" disabled={busy} onclick={() => remove(e)}>Revert to the file</button>
@@ -174,6 +192,11 @@
         </tbody>
       </table>
     </div>
+  {/if}
+  {#if actionOut}
+    <p class="notice small {actionOut.ok ? 'ok' : 'bad'}" role="status" data-testid="row-action-result">
+      <strong>{actionOut.name}</strong>: {actionOut.text}
+    </p>
   {/if}
 </section>
 
@@ -225,7 +248,8 @@
             {:else if f.type === 'bool'}
               <input type="checkbox" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} />
             {:else if f.type === 'number'}
-              <input type="number" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
+              <!-- step="any": thresholds such as 0.5 % are allowed. -->
+              <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
             {:else}
               <input class="mono" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />
             {/if}

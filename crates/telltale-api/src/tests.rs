@@ -778,7 +778,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 62);
+    assert_eq!(paths.len(), 66);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

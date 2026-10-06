@@ -850,6 +850,48 @@ pub enum TailItem {
     Dropped(TailDropped),
 }
 
+/// REQ: OBS-010 (T9.6) — the result of a test alert.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertTest {
+    pub ok: bool,
+    /// Why it wasn't delivered (the destination's own message where there is one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// REQ: OBS-010 (T9.6) — an alert that is firing now.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FiringAlert {
+    pub rule: String,
+    /// What it's about: an upstream, a node, a list.
+    pub subject: String,
+    pub summary: String,
+}
+
+/// REQ: OBS-010 (T9.6) — the last delivery to a destination.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertDelivery {
+    pub destination: String,
+    pub unix_seconds: u64,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// REQ: OBS-010 (T9.6) — alerts now: what fires, and how deliveries went.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertsStatus {
+    /// Rules are checked on the cluster's primary (or a standalone node); elsewhere this is
+    /// false and the lists are empty.
+    pub evaluating: bool,
+    pub firing: Vec<FiringAlert>,
+    pub deliveries: Vec<AlertDelivery>,
+}
+
 /// REQ: OBS-010 (T9.5) — a device seen for the first time (internal: alerts).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewDevice {

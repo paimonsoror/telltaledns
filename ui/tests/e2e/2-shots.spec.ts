@@ -61,6 +61,7 @@ for (const theme of ['light', 'dark'] as const) {
       ['groups', '/#/groups'],
       ['upstreams', '/#/upstreams'],
       ['local-dns', '/#/local-dns'],
+      ['alerts', '/#/alerts'],
       ['cluster', '/#/cluster'],
       ['settings-system', '/#/settings?tab=system'],
     ]) {

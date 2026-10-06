@@ -30,6 +30,9 @@ pub(crate) const UPSTREAM: &str = "upstream";
 pub(crate) const UPSTREAM_GROUP: &str = "upstream_group";
 pub(crate) const LIST: &str = "list";
 pub(crate) const GROUP: &str = "group";
+/// REQ: OBS-010 (T9.6) — alert destinations and rules (they override the files' too).
+pub(crate) const ALERT_DESTINATION: &str = "alert_destination";
+pub(crate) const ALERT_RULE: &str = "alert_rule";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -66,6 +69,16 @@ impl Named for GroupConfig {
         self.name.as_str()
     }
 }
+impl Named for telltale_config::AlertDestination {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+impl Named for telltale_config::AlertRule {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
 
 /// One record of a local name (a name's records are stored together).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +109,8 @@ pub(crate) struct Entries {
     pub(crate) upstream_groups: Vec<(String, Ovr<UpstreamGroup>)>,
     pub(crate) lists: Vec<(String, Ovr<FilterList>)>,
     pub(crate) groups: Vec<(String, Ovr<GroupConfig>)>,
+    pub(crate) alert_destinations: Vec<(String, Ovr<telltale_config::AlertDestination>)>,
+    pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
 }
 
 /// Where the state database lives.
@@ -169,6 +184,8 @@ pub(crate) fn entries(state: &State) -> Entries {
         upstream_groups: decode_ovr(state, UPSTREAM_GROUP),
         lists: decode_ovr(state, LIST),
         groups: decode_ovr(state, GROUP),
+        alert_destinations: decode_ovr(state, ALERT_DESTINATION),
+        alert_rules: decode_ovr(state, ALERT_RULE),
     }
 }
 
@@ -200,6 +217,8 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.upstream_group, &e.upstream_groups);
     apply_ovr(&mut cfg.list, &e.lists);
     apply_ovr(&mut cfg.group, &e.groups);
+    apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
+    apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());

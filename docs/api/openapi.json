@@ -9,6 +9,325 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/alerts": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Alerts now (OBS-010).",
+        "description": "The alerts firing at this moment and the last delivery to each destination (with its\nerror, if it failed). Rules are checked on the cluster's primary; on another node\n`evaluating` is false. The destinations and rules themselves are configuration:\n`GET /api/v1/config/entries?kind=alert_destination` and `kind=alert_rule`.",
+        "operationId": "alerts_status",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertsStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alerts/destinations/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change an alert destination (OBS-010, T9.6).",
+        "description": "The body has the same fields as `[[alerts.destination]]` (the name comes from the path):\n`{\"type\": \"ntfy\", \"url\": \"https://ntfy.sh/my-topic\"}`, or for email\n`{\"type\": \"email\", \"url\": \"smtp://smtp.gmail.com:587\", \"from\": \"me@gmail.com\", \"to\":\n[\"me@gmail.com\"], \"username\": \"me@gmail.com\", \"password_file\": \"/run/secrets/smtp\"}`.\nSecrets stay in files on the node (`token_file`, `password_file`): only the path is sent.\nA destination the config files define is overridden until this one is deleted.",
+        "operationId": "put_alert_destination",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove an alert destination (OBS-010, T9.6).",
+        "description": "Rules that still send to it make the configuration invalid (422 says which).",
+        "operationId": "delete_alert_destination",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule still uses it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alerts/destinations/{name}/test": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Send a test alert to one destination (OBS-010, T9.6).",
+        "description": "Sends a message marked as a test, from this node, and answers with what happened: `ok`, or\nthe destination's error (a wrong password, an unreachable server). Nothing is stored, but\nthe test is audited. Needs the operator role.",
+        "operationId": "test_alert_destination",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The destination.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sent, or why not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertTest"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No destination by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alerts/rules/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change an alert rule (OBS-010, T9.6).",
+        "description": "The body has the same fields as `[[alerts.rule]]` (the name comes from the path):\n`{\"when\": \"upstream_down\", \"for_secs\": 60, \"to\": [\"phone\"]}`. `when` is one of\n`upstream_down`, `node_down`, `list_failing`, `anomaly`, `servfail_rate`,\n`update_available`, `sync_lag`, `new_device`, `disk_full`, `plan_pending`.",
+        "operationId": "put_alert_rule",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove an alert rule (OBS-010, T9.6).",
+        "description": "An alert the rule has firing stops being tracked (no \"Resolved\" message is sent). A rule\nthe config files define is hidden until this override is deleted in turn.",
+        "operationId": "delete_alert_rule",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/analytics/anomalies": {
       "get": {
         "tags": [
@@ -3706,6 +4025,80 @@
   },
   "components": {
     "schemas": {
+      "AlertDelivery": {
+        "type": "object",
+        "description": "REQ: OBS-010 (T9.6) — the last delivery to a destination.",
+        "required": [
+          "destination",
+          "unixSeconds",
+          "ok"
+        ],
+        "properties": {
+          "destination": {
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "unixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AlertTest": {
+        "type": "object",
+        "description": "REQ: OBS-010 (T9.6) — the result of a test alert.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it wasn't delivered (the destination's own message where there is one)."
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AlertsStatus": {
+        "type": "object",
+        "description": "REQ: OBS-010 (T9.6) — alerts now: what fires, and how deliveries went.",
+        "required": [
+          "evaluating",
+          "firing",
+          "deliveries"
+        ],
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertDelivery"
+            }
+          },
+          "evaluating": {
+            "type": "boolean",
+            "description": "Rules are checked on the cluster's primary (or a standalone node); elsewhere this is\nfalse and the lists are empty."
+          },
+          "firing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FiringAlert"
+            }
+          }
+        }
+      },
       "AnomalyFinding": {
         "type": "object",
         "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
@@ -5972,6 +6365,27 @@
           "summary": {
             "type": "string",
             "description": "One sentence for people."
+          }
+        }
+      },
+      "FiringAlert": {
+        "type": "object",
+        "description": "REQ: OBS-010 (T9.6) — an alert that is firing now.",
+        "required": [
+          "rule",
+          "subject",
+          "summary"
+        ],
+        "properties": {
+          "rule": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "description": "What it's about: an upstream, a node, a list."
+          },
+          "summary": {
+            "type": "string"
           }
         }
       },

@@ -98,6 +98,10 @@ listen = "127.0.0.1:18054"
 # REQ: AGT-007 — agents' plans wait for an operator (the Agent changes test).
 [agents]
 require_approval = true
+
+# T9.6 — rules made in the Alerts test are checked every 5 s.
+[alerts]
+interval_secs = 5
 `,
 );
 

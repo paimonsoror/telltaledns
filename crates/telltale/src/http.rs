@@ -69,6 +69,8 @@ pub(crate) struct Sources {
     pub(crate) auth: std::sync::OnceLock<Arc<telltale_api::auth::Auth>>,
     /// REQ: CLU-003 (T9.1) — the hash of the primary's identities this replica last took in.
     pub(crate) identities_applied: std::sync::Mutex<String>,
+    /// REQ: OBS-010 (T9.6) — what the alert task last saw and sent.
+    pub(crate) alerts: std::sync::Mutex<telltale_api::model::AlertsStatus>,
     /// Masked-client-IP detector state (OPS-003).
     pub(crate) masking: crate::masking::Detector,
     /// This node's cluster channel, when it's in a cluster (CLU-001).
@@ -1226,6 +1228,7 @@ mod tests {
             cache_history: Arc::default(),
             auth: std::sync::OnceLock::new(),
             identities_applied: std::sync::Mutex::default(),
+            alerts: std::sync::Mutex::default(),
             masking: crate::masking::Detector::default(),
             cluster: None,
             ship: Arc::default(),
