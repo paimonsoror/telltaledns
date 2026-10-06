@@ -43,6 +43,14 @@
     display: flex;
     flex-direction: column;
     outline: none;
+    /* Opened from a "?" inside a page heading, it would otherwise take the heading's size and
+       weight: the body text's own type, whatever it sits in. */
+    font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font-weight: 400;
+    letter-spacing: normal;
+    text-transform: none;
+    text-align: left;
+    white-space: normal;
   }
   header {
     display: flex;
