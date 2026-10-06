@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tour — TelltaleDNS</title>
+<meta name="description" content="Screenshots of the TelltaleDNS web UI: the dashboard, the query log with a Why? on every row, lists, the cluster topology, the cache, and agent tokens, in light and dark.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="tour">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">The web UI</p>
+  <h1>Tour</h1>
+  <p class="lede">The UI is built into the binary: nothing else to install. Light or dark, on a desktop or a phone.</p>
+  <p class="muted">These are captured by the Playwright suite against a real server (<code>SHOTS=1 npx playwright test</code>), so they always match the code. The test server is minutes old, so its charts are short.</p>
+</section>
+
+<section id="see">
+  <h2>See what's happening</h2>
+  <div class="shots">
+    <figure><img src="assets/shots/dashboard-light.jpg" alt="Dashboard: KPI tiles with their change and sparklines, queries by status, and the sidebar" width="1280" height="860" loading="lazy"><figcaption>Dashboard: queries, blocked share, cache hits, latency, and traffic by group</figcaption></figure>
+    <figure><img src="assets/shots/dashboard-dark.jpg" alt="Dashboard in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Dashboard (dark theme)</figcaption></figure>
+    <figure><img src="assets/shots/queries-light.jpg" alt="Query log with filters" width="1280" height="860" loading="lazy"><figcaption>Query log: every question, filterable, with timings</figcaption></figure>
+    <figure><img src="assets/shots/why-light.jpg" alt="Why was this blocked: the list, its line number, and the rule" width="1280" height="860" loading="lazy"><figcaption>"Why?": the list and line behind every decision</figcaption></figure>
+  </div>
+</section>
+
+<section id="decide">
+  <h2>Decide what's allowed</h2>
+  <div class="shots">
+    <figure><img src="assets/shots/lists-light.jpg" alt="Blocklists with sizes and refresh status" width="1280" height="860" loading="lazy"><figcaption>Lists: sizes, refresh state, unique names, and overlap</figcaption></figure>
+    <figure><img src="assets/shots/lists-dark.jpg" alt="Blocklists in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Lists (dark theme)</figcaption></figure>
+  </div>
+</section>
+
+<section id="run">
+  <h2>Run it as one system</h2>
+  <div class="shots">
+    <figure><img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site with a controller and three resolver pods on two nodes, and a Pi" width="1280" height="860" loading="lazy"><figcaption>Cluster topology (example data: the test server runs alone)</figcaption></figure>
+    <figure><img src="assets/shots/cache-dark.jpg" alt="Cache page: hit rate, what the cache holds, settings, and the top entries, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Cache (dark theme)</figcaption></figure>
+    <figure><img src="assets/shots/settings-dark.jpg" alt="Settings: API tokens for scripts and AI agents, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Settings: API and agent tokens (dark theme)</figcaption></figure>
+    <figure><img src="assets/shots/queries-dark.jpg" alt="Query log with filters, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Query log (dark theme)</figcaption></figure>
+  </div>
+</section>
+
+<section>
+  <h2>More</h2>
+  <div class="cta">
+    <a class="btn primary" href="start.html">Try it</a>
+    <a class="btn" href="monitoring.html">Monitoring and alerts</a>
+    <a class="btn" href="agents.html">AI agents</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

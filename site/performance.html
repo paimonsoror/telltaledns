@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Performance and screenshots — TelltaleDNS</title>
-<meta name="description" content="Measured throughput and latency from the TelltaleDNS benchmark harness, with the raw results, and screenshots of the web UI.">
+<title>Performance — TelltaleDNS</title>
+<meta name="description" content="Measured throughput and latency from the TelltaleDNS benchmark harness, with the raw results.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -21,20 +21,8 @@
   <p class="muted">How to read this: <b>peak</b> is the most queries per second the server answered with no loss while <code>dnsperf</code> pushed as hard as it could on the same machine; latency at peak is mostly queueing in the load generator. The <b>at 25 / 50 / 75% load</b> rows replay a fixed rate below that peak: that's what devices on a home network experience. <code>cache-hot</code> asks 10,000 names repeatedly (answers from the cache), <code>blocked</code> asks names on the blocklists (answered by the filter, about 2.7 million names loaded), and <code>miss-heavy</code> sends unique names at a fixed 2,000 per second, each one resolved through a local stub upstream. Harness details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/bench/README.md">bench/README.md</a>.</p>
 </section>
 
-<section id="screens">
-  <p class="eyebrow">The web UI</p>
-  <h2>Screenshots</h2>
-  <p class="muted">Captured by the Playwright suite against a real server (<code>SHOTS=1 npx playwright test</code>), so they always match the code. The test server is minutes old, so its charts are short.</p>
-  <div class="shots">
-    <figure><img src="assets/shots/dashboard-light.jpg" alt="Dashboard: KPI tiles with their change and sparklines, queries by status, and the sidebar" width="1280" height="860" loading="lazy"><figcaption>Dashboard</figcaption></figure>
-    <figure><img src="assets/shots/why-light.jpg" alt="Why was this blocked: the list, its line number, and the rule" width="1280" height="860" loading="lazy"><figcaption>"Why?": the list and line behind every decision</figcaption></figure>
-    <figure><img src="assets/shots/queries-dark.jpg" alt="Query log with filters, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Query log (dark theme)</figcaption></figure>
-    <figure><img src="assets/shots/lists-light.jpg" alt="Blocklists with sizes and refresh status" width="1280" height="860" loading="lazy"><figcaption>Lists</figcaption></figure>
-    <figure><img src="assets/shots/settings-dark.jpg" alt="Settings: API tokens for scripts and AI agents, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Settings: API and agent tokens (dark theme)</figcaption></figure>
-    <figure><img src="assets/shots/dashboard-dark.jpg" alt="Dashboard in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Dashboard (dark theme)</figcaption></figure>
-    <figure><img src="assets/shots/cluster-light.jpg" alt="Cluster page: a live topology of a Kubernetes site with a controller and three resolver pods on two nodes, and a Pi" width="1280" height="860" loading="lazy"><figcaption>Cluster topology (example data: the test server runs alone)</figcaption></figure>
-    <figure><img src="assets/shots/cache-dark.jpg" alt="Cache page: hit rate, what the cache holds, settings, and the top entries, in the dark theme" width="1280" height="860" loading="lazy"><figcaption>Cache (dark theme)</figcaption></figure>
-  </div>
+<section>
+  <p class="muted">Screenshots of the UI moved to the <a href="tour.html">Tour</a>; what TelltaleDNS measures and alerts on is on <a href="monitoring.html">Monitoring</a>.</p>
 </section>
 
 </div>

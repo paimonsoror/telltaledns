@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitoring and alerts — TelltaleDNS</title>
+<meta name="description" content="What TelltaleDNS shows and tells you: metrics and Grafana, a searchable query log and a cluster-wide live view, per-device anomalies, alerts by email, ntfy, Gotify, Slack, or webhook, and exports to syslog, OpenTelemetry, and dnstap.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="monitoring">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">Observability first</p>
+    <h1>Know what your network is doing.<br>Hear about it when it changes.</h1>
+    <p class="lede">Every question is counted, timed, explained, and searchable. When something needs attention, TelltaleDNS tells you where you already look: your inbox, your phone, or your team's channel.</p>
+    <div class="cta">
+      <a class="btn primary" href="#alerts">Alerts</a>
+      <a class="btn" href="tour.html">See the UI</a>
+    </div>
+  </div>
+  <figure class="figure"><img src="assets/shots/dashboard-light.jpg" alt="The dashboard: KPI tiles, queries by status, traffic by group" width="1280" height="860" loading="lazy"></figure>
+</section>
+
+<section>
+  <p class="eyebrow">Watch</p>
+  <h2>Everything a question went through</h2>
+  <div class="grid">
+    <div class="card"><h3>Dashboard</h3><p>Queries, blocked share, cache hits, NXDOMAIN, active devices, and latency percentiles, per minute for a week and per hour for over a year, by status, type, response code, and group.</p></div>
+    <div class="card"><h3>Query log</h3><p>Every question with its device, group, answer, and timings, in a compact columnar log built for search: filter by name, device, status, type, or latency, and see <b>Why?</b> on any row (the list and line that decided it).</p></div>
+    <div class="card"><h3>Live view</h3><p>Questions as they happen, filtered on the server and rate-capped, across every node of a cluster, each row naming the node that answered.</p></div>
+    <div class="card"><h3>Latency, honestly</h3><p>Percentiles per answer path, query type, upstream, and device. In a cluster they're computed from every node's merged histograms, so a slow node shows up in the p99 instead of being averaged away.</p></div>
+    <div class="card"><h3>Analytics in one line</h3><p><code>from -7d | where group = kids and status = blocked | top 10 domain</code>: <a href="agents.html#vqlog">vqlog</a> answers questions no dashboard has a tile for, with its cost shown up front.</p></div>
+    <div class="card"><h3>The machine too</h3><p>Memory, CPU, disk, and temperature for every node, with the last hour of history and warnings, on the Cluster page and in metrics.</p></div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Notice</p>
+  <h2>Device anomalies</h2>
+  <p class="muted">Each device is compared with its own usual behavior, learned over its first week. Findings come with their evidence (what was seen, the usual value, the bar it crossed) and never block anything on their own.</p>
+  <div class="grid">
+    <div class="card"><h3>Rate spikes and drift</h3><p>Many more questions than usual for this hour, or many new domains in a day.</p></div>
+    <div class="card"><h3>Beaconing</h3><p>Regular call-home patterns: the same domain at a steady interval, the signature of telemetry and malware alike.</p></div>
+    <div class="card"><h3>NXDOMAIN storms</h3><p>Bursts of failed lookups from one device: a broken app, or something hunting for a server.</p></div>
+    <div class="card"><h3>New and generated-looking domains</h3><p>Each device's first-seen domains, scored for how machine-generated the name looks (DGA).</p></div>
+  </div>
+</section>
+
+<section id="alerts">
+  <p class="eyebrow">Tell</p>
+  <h2>Alerts, where you'll see them</h2>
+  <div class="two">
+    <div>
+      <p class="muted">Rules watch the whole cluster from its primary, so you get one message, not one per node. A condition must hold for a while before it alerts, and a "Resolved" follows when it clears.</p>
+      <div class="table-wrap"><table class="std">
+        <tbody>
+          <tr><th scope="row"><code>upstream_down</code></th><td>an upstream stops answering (its circuit breaker opens)</td></tr>
+          <tr><th scope="row"><code>node_down</code>, <code>sync_lag</code></th><td>a cluster node drops out, or falls behind the configuration</td></tr>
+          <tr><th scope="row"><code>list_failing</code></th><td>a blocklist stops updating</td></tr>
+          <tr><th scope="row"><code>servfail_rate</code></th><td>failures climb above a share of queries</td></tr>
+          <tr><th scope="row"><code>anomaly</code>, <code>new_device</code></th><td>a device behaves oddly, or a device appears for the first time</td></tr>
+          <tr><th scope="row"><code>disk_full</code></th><td>a node's data disk fills up</td></tr>
+          <tr><th scope="row"><code>plan_pending</code></th><td>an AI agent's change waits for your approval</td></tr>
+          <tr><th scope="row"><code>update_available</code></th><td>a newer TelltaleDNS build is out</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+    <div>
+      <p class="muted"><b>Destinations:</b> email (any provider's SMTP: Gmail with an app password works, no mail server of your own), <a href="https://ntfy.sh">ntfy</a> and Gotify push to your phone, Slack-compatible channels (Slack, Mattermost, Discord), or any webhook.</p>
+<pre><code>[[alerts.destination]]
+name = "inbox"
+type = "email"
+url = "smtp://smtp.gmail.com:587"
+from = "you@gmail.com"
+to = ["you@gmail.com"]
+username = "you@gmail.com"
+password_file = "/run/secrets/smtp"
+
+[[alerts.rule]]
+name = "Upstream down"
+when = "upstream_down"
+for_secs = 60
+to = ["inbox"]</code></pre>
+      <p class="muted">Email is always encrypted when a password is sent (STARTTLS or TLS, no fallback). Secrets stay in files, out of the configuration and Git.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">Export</p>
+  <h2>Into the tools you already run</h2>
+  <div class="grid">
+    <div class="card"><h3>Prometheus and Grafana</h3><p>A <code>/metrics</code> endpoint with query, cache, upstream, filter, cluster, and host series, and a ready-made <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/grafana/telltale-dashboard.json">Grafana dashboard</a>. The Helm chart can add a ServiceMonitor.</p></div>
+    <div class="card"><h3>OpenTelemetry</h3><p>Metrics and query events as OTLP over HTTP, to a collector or any OTLP backend.</p></div>
+    <div class="card"><h3>Event sinks</h3><p>Every query as a JSON line to a file, to syslog (RFC 5424, UDP or TCP), or batched to a webhook, with the same fields as the query log.</p></div>
+    <div class="card"><h3>dnstap</h3><p>Raw query and response messages in the standard dnstap format, for DNS-specific tooling.</p></div>
+  </div>
+  <p class="muted">None of this sits on the query path: exports run in their own tasks with bounded buffers, and a slow collector loses events (logged) rather than slowing DNS down.</p>
+</section>
+
+<section>
+  <h2>Go further</h2>
+  <div class="cta">
+    <a class="btn primary" href="start.html">Get started</a>
+    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#monitoring">Monitoring documentation</a>
+    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#alerts">Alerts documentation</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>
