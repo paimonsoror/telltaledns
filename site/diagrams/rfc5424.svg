@@ -1,0 +1,6 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>Syslog message: priority, version, time, host, app name, then the query event as JSON</title>
+<rect x="20" y="16" width="280" height="30" rx="6" class="svg-box"/><text x="160" y="36" text-anchor="middle" class="svg-sub">&lt;PRI&gt;1 TIME HOST telltale - query -</text>
+<rect x="20" y="50" width="280" height="30" rx="6" class="svg-ok" opacity=".75"/><text x="160" y="70" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">{"name": …, "status": "blocked", …}</text>
+<rect x="20" y="84" width="280" height="30" rx="6" class="svg-box"/><text x="160" y="104" text-anchor="middle" class="svg-sub">UDP datagram · TCP octet-counted frame</text>
+<text x="160" y="136" text-anchor="middle" class="svg-sub">event sink ✓ · notice for blocks, info otherwise</text>
+</svg>

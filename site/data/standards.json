@@ -166,6 +166,16 @@
       "diagram": "rfc9250"
     },
     {
+      "rfc": "5424",
+      "title": "The Syslog Protocol",
+      "status": "supported",
+      "reqs": [
+        "OBS-010"
+      ],
+      "summary": "Query events to a syslog collector over UDP or TCP (RFC 6587 octet counting), one RFC 5424 message each with the event as JSON; notice severity for blocks.",
+      "diagram": "rfc5424"
+    },
+    {
       "rfc": "7871",
       "title": "Client subnet in DNS queries (ECS)",
       "status": "planned",
