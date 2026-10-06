@@ -1356,6 +1356,23 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `cluster_status` | members, roles, sync, versions, checks |
 | `get_config` | one configuration section (no secrets) |
 
+**Resources and prompts.** Besides tools, the server offers three read-only **resources** (JSON documents an assistant can attach) and four **prompts** (ready-made requests that walk the assistant through the right tools):
+
+| Resource | What it holds |
+|---|---|
+| `telltale://cluster/status` | members, roles, sync, versions, checks, each node's machine |
+| `telltale://config` | the running configuration without secrets: upstreams, lists, groups (with their sources), devices, local names, forwarded domains, quick rules |
+| `telltale://reports/daily` | the last 24 hours: totals, top domains, blocked names and clients, upstream health, anomalies |
+
+| Prompt | Arguments | What it does |
+|---|---|---|
+| `investigate_device` | `client`, `window` | profile, anomalies, explanations, and latency for one device |
+| `weekly_network_report` | | the week's numbers and the three things most worth attention |
+| `tune_blocklists` | | dead or failing lists, likely false positives, and proposed plans |
+| `upstream_health_review` | `window` | upstream health and latency, and a proposed strategy change |
+
+Resources read the same REST routes with the agent's token, so scopes apply: a part the token can't read shows as an error. Prompts only suggest changes as plans; they never apply them.
+
 **Changing things.** Write tools never change anything directly: each makes a *plan* (see [Plans and approval](#plans-and-approval)).
 
 | Tool | Plans to | Scope |

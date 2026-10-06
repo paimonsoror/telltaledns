@@ -832,6 +832,137 @@ fn plan_tools() -> Vec<(&'static str, &'static str, Value, bool, bool, bool)> {
     ]
 }
 
+/// REQ: AGT-010 (T7.2) — one MCP resource and the REST reads behind it.
+#[derive(Debug)]
+pub struct Resource {
+    pub uri: &'static str,
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    /// `(key, GET path)`: each read becomes one key of the JSON document.
+    pub reads: &'static [(&'static str, &'static str)],
+}
+
+/// The resources (`spec/13` AGT-010): read-only JSON documents built from REST reads, with the
+/// caller's credentials (scopes apply; a read the token can't make shows as an error).
+pub fn resources() -> Vec<Resource> {
+    vec![
+        Resource {
+            uri: "telltale://cluster/status",
+            name: "cluster-status",
+            title: "Cluster status",
+            description: "The cluster as this node sees it: members, roles, sync, versions, health checks, each node's machine, and recent events (or this node alone).",
+            reads: &[
+                ("cluster", "/api/v1/cluster"),
+                ("system", "/api/v1/system/info"),
+            ],
+        },
+        Resource {
+            uri: "telltale://config",
+            name: "config",
+            title: "Configuration (redacted)",
+            description: "The running configuration as the API shows it, without secrets: upstreams, upstream groups, lists, and groups (with where each comes from), devices, local names, forwarded domains, and quick rules.",
+            reads: &[
+                ("entries", "/api/v1/config/entries"),
+                ("devices", "/api/v1/clients"),
+                ("localNames", "/api/v1/records"),
+                ("forwards", "/api/v1/forwards"),
+                ("rules", "/api/v1/rules"),
+                ("system", "/api/v1/system/info"),
+            ],
+        },
+        Resource {
+            uri: "telltale://reports/daily",
+            name: "daily-summary",
+            title: "Daily summary",
+            description: "The last 24 hours: queries, blocked %, cache hits, latency, the top domains, blocked names, and clients, upstream health, and device anomalies.",
+            reads: &[
+                ("summary", "/api/v1/stats/summary?from=-24h"),
+                ("topDomains", "/api/v1/stats/top?kind=domains&limit=10"),
+                ("topBlocked", "/api/v1/stats/top?kind=blocked&limit=10"),
+                ("topClients", "/api/v1/stats/top?kind=clients&limit=10"),
+                ("upstreams", "/api/v1/upstreams"),
+                ("anomalies", "/api/v1/analytics/anomalies?since=-1d"),
+            ],
+        },
+    ]
+}
+
+/// REQ: AGT-010 (T7.2) — one MCP prompt: a playbook for a common question.
+#[derive(Debug)]
+pub struct Prompt {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    /// `(name, description, required)`.
+    pub arguments: &'static [(&'static str, &'static str, bool)],
+    /// The message, with `{argument}` placeholders.
+    pub text: &'static str,
+}
+
+pub fn prompts() -> Vec<Prompt> {
+    vec![
+        Prompt {
+            name: "investigate_device",
+            title: "Investigate a device",
+            description: "What a device has been doing, whether anything is off, and why.",
+            arguments: &[
+                ("client", "The device's name or IP address.", true),
+                (
+                    "window",
+                    "How far back, like -6h or -7d (default -24h).",
+                    false,
+                ),
+            ],
+            text: "Investigate the device \"{client}\" on my network over {window}.\n\n1. get_client_profile (client \"{client}\", window \"{window}\"): who it is, its groups, top domains, recent and slow queries.\n2. find_anomalies: any findings for this device (rate spikes, beaconing, drift).\n3. For anything blocked or odd, explain_decision with the name and this client.\n4. If it's slow, latency_breakdown by upstream and upstream_health.\n\nReport in plain language: what the device is, what it talks to, anything unusual (with the evidence), and what you'd suggest. Don't change anything; if a change would help, say which plan_* tool would make it.",
+        },
+        Prompt {
+            name: "weekly_network_report",
+            title: "Weekly network report",
+            description: "A short report on the last 7 days: traffic, blocking, devices, speed, and anything to look at.",
+            arguments: &[],
+            text: "Write a weekly report for my home network.\n\n1. get_overview with window -7d, and with -24h to compare with today.\n2. top_items: domains, blocked, nxdomain, and clients (current and previous hour), to see who and what dominates.\n3. find_anomalies since -7d.\n4. upstream_health and latency_breakdown by upstream.\n5. cluster_status: are all nodes healthy and in sync?\n\nKeep it short: the key numbers, the three things most worth attention (with evidence), and anything that needs no action said briefly. No changes.",
+        },
+        Prompt {
+            name: "tune_blocklists",
+            title: "Tune blocklists",
+            description: "Which lists earn their place, which are dead weight, and what's blocked by mistake.",
+            arguments: &[],
+            text: "Help me tune my blocklists.\n\n1. list_effectiveness: each list's size, update state, errors, and how many names it adds.\n2. top_items kind blocked (current and previous hour): what's blocked most.\n3. For blocked names that look like they break something (CDNs, login, payment, app APIs), explain_decision to see which list and rule blocks them.\n4. get_config section lists and groups: which groups use which lists.\n\nSuggest: lists to drop (dead, failing, or adding nothing), possible false positives to allow (and for whom), and gaps. Propose changes as plan_allow_domain, plan_block_domain, or plan_add_list plans with a reason; don't apply them.",
+        },
+        Prompt {
+            name: "upstream_health_review",
+            title: "Upstream health review",
+            description: "Whether the upstream DNS servers are healthy and fast, and what to change if not.",
+            arguments: &[(
+                "window",
+                "How far back, like -1h or -24h (default -24h).",
+                false,
+            )],
+            text: "Review my upstream DNS servers over {window}.\n\n1. upstream_health: each upstream's health, circuit breaker, failures, and latency.\n2. latency_breakdown by upstream and by stage, for the current and the previous hour.\n3. get_overview (window \"{window}\"): SERVFAIL and latency overall.\n4. get_config section upstreams: the groups and their strategies.\n\nSay which upstreams are healthy, which are slow or failing (with numbers), and whether the strategy fits. If a change would help, propose it with plan_update_upstreams (with a reason) and don't apply it.",
+        },
+    ]
+}
+
+/// A prompt's message with its arguments filled in (defaults for the optional ones).
+fn render_prompt(p: &Prompt, args: &Value) -> Result<String, String> {
+    let mut text = p.text.to_owned();
+    for (name, _, required) in p.arguments {
+        let v = args
+            .get(*name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let v = match (v, required) {
+            (Some(v), _) => v.chars().filter(|c| !c.is_control()).take(200).collect(),
+            (None, true) => return Err(format!("`{name}` is required")),
+            (None, false) => "-24h".to_owned(),
+        };
+        text = text.replace(&format!("{{{name}}}"), &v);
+    }
+    Ok(text)
+}
+
 /// The catalog as `tools/list` returns it. Annotations state each tool's side effects
 /// (AGT-009): reads are read-only; plans change nothing until applied; `apply_plan` and the
 /// immediate operations do.
@@ -938,6 +1069,45 @@ fn capped(v: &Value) -> (String, bool) {
         cut -= 1;
     }
     (text[..cut].to_owned(), true)
+}
+
+/// `resources/list`.
+fn resource_list() -> Value {
+    json!({"resources": resources().iter().map(|r| json!({
+        "uri": r.uri, "name": r.name, "title": r.title, "description": r.description, "mimeType": "application/json",
+    })).collect::<Vec<_>>()})
+}
+
+/// `prompts/list`.
+fn prompt_list() -> Value {
+    json!({"prompts": prompts().iter().map(|p| json!({
+        "name": p.name, "title": p.title, "description": p.description,
+        "arguments": p.arguments.iter().map(|(n, d, r)| json!({"name": n, "description": d, "required": r})).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>()})
+}
+
+/// `prompts/get`: the prompt's message with its arguments filled in.
+fn get_prompt(id: &Value, msg: &Value) -> Value {
+    let p = msg.get("params").cloned().unwrap_or(Value::Null);
+    let name = p.get("name").and_then(Value::as_str).unwrap_or_default();
+    let args = p.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let Some(pr) = prompts().into_iter().find(|x| x.name == name) else {
+        return rpc_error(
+            id,
+            -32602,
+            &format!("prompt `{name}` not found; see prompts/list"),
+        );
+    };
+    match render_prompt(&pr, &args) {
+        Err(e) => rpc_error(id, -32602, &format!("{name}: {e}")),
+        Ok(text) => rpc_ok(
+            id,
+            &json!({
+                "description": pr.description,
+                "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+            }),
+        ),
+    }
 }
 
 impl Mcp {
@@ -1362,6 +1532,41 @@ impl Mcp {
         result
     }
 
+    /// `resources/read`: the resource's REST reads, as the caller, in one JSON document.
+    async fn read_resource(
+        &self,
+        id: &Value,
+        msg: &Value,
+        headers: &HeaderMap,
+        client: Option<&str>,
+    ) -> Value {
+        let uri = msg
+            .get("params")
+            .and_then(|p| p.get("uri"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(r) = resources().into_iter().find(|r| r.uri == uri) else {
+            return rpc_error(
+                id,
+                -32002,
+                &format!("resource `{uri}` not found; see resources/list"),
+            );
+        };
+        let mut doc = serde_json::Map::new();
+        for (key, path) in r.reads {
+            let (ok, body) = self.get(path, headers, client).await;
+            doc.insert(
+                (*key).to_owned(),
+                if ok { body } else { json!({"error": body}) },
+            );
+        }
+        let (text, _) = capped(&Value::Object(doc));
+        rpc_ok(
+            id,
+            &json!({"contents": [{"uri": r.uri, "mimeType": "application/json", "text": text}]}),
+        )
+    }
+
     /// One JSON-RPC message; `None` for notifications.
     pub async fn handle(
         &self,
@@ -1404,7 +1609,7 @@ impl Mcp {
                 let sid = self.sessions.start(who);
                 let result = json!({
                     "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
+                    "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}, "prompts": {"listChanged": false}},
                     "serverInfo": {"name": "telltaledns", "title": "TelltaleDNS", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": "TelltaleDNS is a filtering DNS resolver. Start with get_overview, then narrow down with top_items, search_queries, get_client_profile, latency_breakdown, and upstream_health; explain_decision says why a name was blocked or routed. Times take relative offsets like -1h. To change something, a plan_* tool returns a planId and a preview without changing anything; apply_plan makes the change (an operator may have to approve it first). flush_cache, pause_blocking, and resume_blocking act at once. Every write needs a `reason`.",
                 });
@@ -1412,6 +1617,15 @@ impl Mcp {
             }
             "ping" => Some(rpc_ok(&id, &json!({}))),
             "tools/list" => Some(rpc_ok(&id, &json!({"tools": catalog()}))),
+            // REQ: AGT-010 (T7.2) — resources and prompts.
+            "resources/list" => Some(rpc_ok(&id, &resource_list())),
+            "resources/templates/list" => Some(rpc_ok(&id, &json!({"resourceTemplates": []}))),
+            "resources/read" => Some(
+                self.read_resource(&id, msg, headers, client.as_deref())
+                    .await,
+            ),
+            "prompts/list" => Some(rpc_ok(&id, &prompt_list())),
+            "prompts/get" => Some(get_prompt(&id, msg)),
             "tools/call" => {
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
                 Some(rpc_ok(
@@ -1553,6 +1767,51 @@ mod tests {
         assert_eq!(q[0].1, "/api/v1/queries?client=tv%20room&limit=200");
         assert!((find("top_items").calls)(&json!({})).is_err());
         assert!((find("get_config").calls)(&json!({"section": "users"})).is_err());
+    }
+
+    // AGT-010 — prompts name real tools, and fill in their arguments.
+    #[test]
+    fn agt_010_prompts_and_resources() {
+        let names: Vec<String> = catalog()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect();
+        for p in prompts() {
+            // Every word that looks like a tool name is one.
+            for w in p
+                .text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            {
+                if w.contains('_')
+                    && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                    && !w.starts_with('_')
+                {
+                    assert!(
+                        names.contains(&w.to_owned()) || w == "plan_",
+                        "{}: unknown tool {w}",
+                        p.name
+                    );
+                }
+            }
+        }
+        let inv = prompts()
+            .into_iter()
+            .find(|p| p.name == "investigate_device")
+            .unwrap();
+        let t = render_prompt(&inv, &json!({"client": "tv"})).unwrap();
+        assert!(
+            t.contains("\"tv\"") && t.contains("-24h") && !t.contains('{'),
+            "{t}"
+        );
+        assert!(render_prompt(&inv, &json!({})).is_err());
+        for r in resources() {
+            assert!(r.uri.starts_with("telltale://"));
+            for (_, path) in r.reads {
+                assert!(path.starts_with("/api/v1/"), "{path}");
+            }
+        }
     }
 
     // AGT-007 — write tools become REST writes.

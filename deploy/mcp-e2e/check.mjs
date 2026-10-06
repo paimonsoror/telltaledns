@@ -5,6 +5,8 @@
 //      explain_decision answers for a blocked name;
 //   3. stdio: `telltale mcp --stdio` relays the same tools;
 //   4. a tool that needs a scope the token lacks reports an error, not data;
+//   4b. AGT-010 (T7.2): resources (cluster status, the configuration, the daily summary) read
+//      through the REST routes, and prompts fill in their arguments;
 //   5. AGT-007 (T7.1): with [agents] require_approval, a writer agent plans a block, can't
 //      apply it until an admin approves, then applies it (the name is blocked); a plan made
 //      before another change comes back stale; the audit log names the agent, its owner, and
@@ -66,6 +68,25 @@ if (health.isError || !Array.isArray(data(health).upstreams?.items)) fail(`upstr
 const why = await c.callTool({ name: 'explain_decision', arguments: { name: 'ads.mcp.test', client: '127.0.0.1' } });
 if (why.isError || data(why).explanation?.outcome !== 'blocked') fail(`explain_decision: ${JSON.stringify(data(why)).slice(0, 300)}`);
 console.log(`ok: TV story (device ${p.device.name}, ${p.recentQueries.items.length} recent queries, ${data(health).upstreams.items.length} upstreams, ads blocked)`);
+
+// 4b. Resources and prompts (AGT-010).
+const { resources } = await c.listResources();
+const uris = resources.map((r) => r.uri).sort();
+if (JSON.stringify(uris) !== JSON.stringify(['telltale://cluster/status', 'telltale://config', 'telltale://reports/daily']))
+  fail(`resources ${uris}`);
+const doc = async (uri) => JSON.parse((await c.readResource({ uri })).contents[0].text);
+const daily = await doc('telltale://reports/daily');
+if (!(daily.summary?.queries > 0)) fail(`daily summary: ${JSON.stringify(daily).slice(0, 300)}`);
+const cfg = await doc('telltale://config');
+if (!cfg.devices?.items?.some((d) => d.name === 'living-room-tv')) fail(`config resource: ${JSON.stringify(cfg).slice(0, 300)}`);
+if (JSON.stringify(cfg).includes('password')) fail('the config resource mentions a password');
+if (!(await doc('telltale://cluster/status')).system?.version) fail('cluster status resource');
+const { prompts } = await c.listPrompts();
+if (prompts.length !== 4) fail(`prompts: ${prompts.map((x) => x.name)}`);
+const inv = await c.getPrompt({ name: 'investigate_device', arguments: { client: 'living-room-tv' } });
+const text = inv.messages[0].content.text;
+if (!text.includes('get_client_profile') || !text.includes('"living-room-tv"') || text.includes('{client}')) fail(`prompt: ${text.slice(0, 200)}`);
+console.log(`ok: ${resources.length} resources, ${prompts.length} prompts`);
 await c.close();
 
 // 3. stdio

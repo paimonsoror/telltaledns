@@ -656,7 +656,7 @@ async fn agt_006_mcp_over_http() {
         rpc(
             &agent,
             None,
-            serde_json::json!({"jsonrpc": "2.0", "id": 6, "method": "resources/list"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 6, "method": "sampling/createMessage"}),
         ),
     )
     .await;
