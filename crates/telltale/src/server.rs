@@ -111,7 +111,61 @@ pub(crate) fn build_dynamic(
     if !local.is_empty() {
         info!(records = local.len(), "local records loaded");
     }
-    Ok((router, Policy::from_config(cfg, local)))
+    let zones = load_zones(cfg)?;
+    let mut policy = Policy::from_config(cfg, local);
+    policy.zones = Arc::new(zones);
+    Ok((router, policy))
+}
+
+/// REQ: DNS-018 (T7.22) — `[[zone]]`: each zone's file and records, most specific first.
+pub(crate) fn load_zones(cfg: &Config) -> Result<Vec<crate::pipeline::Zone>, Vec<String>> {
+    let mut zones = Vec::new();
+    let mut errors = Vec::new();
+    for (i, z) in cfg.zone.iter().enumerate() {
+        let Ok(apex) = telltale_proto::NameBuf::from_presentation(z.name.as_str()) else {
+            errors.push(format!("zone[{i}]: `{}` isn't a name", z.name.as_str()));
+            continue;
+        };
+        let mut data = LocalData::default();
+        let ttl = cfg.local.default_ttl;
+        if let Some(f) = &z.file {
+            match std::fs::read_to_string(f.as_str()) {
+                Ok(text) => {
+                    let im = crate::import::parse_zone(&text, Some(z.name.as_str()));
+                    for k in &im.skipped {
+                        if !k.contains("SOA") && !k.contains(" NS") {
+                            warn!(zone = %z.name.as_str(), "zone file: skipped {k}");
+                        }
+                    }
+                    for r in &im.records {
+                        if let Err(e) = data.add(&r.name, &r.rtype, &r.value, r.ttl.unwrap_or(ttl))
+                        {
+                            errors.push(format!("zone[{i}] {}: {e}", f.as_str()));
+                        }
+                    }
+                }
+                Err(e) => errors.push(format!("zone[{i}].file: {}: {e}", f.as_str())),
+            }
+        }
+        for (j, r) in z.record.iter().enumerate() {
+            if let Err(e) = data.add(&r.name, &r.rtype, &r.value, r.ttl.unwrap_or(ttl)) {
+                errors.push(format!("zone[{i}].record[{j}]: {e}"));
+            }
+        }
+        info!(zone = %z.name.as_str(), records = data.len(), "zone loaded");
+        zones.push(crate::pipeline::Zone {
+            apex,
+            data,
+            groups: z.groups.iter().map(|g| g.as_str().into()).collect(),
+            negative_ttl: z.negative_ttl,
+        });
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    // Most specific first; group views before the zone for everyone.
+    zones.sort_by_key(|z| (std::cmp::Reverse(z.apex.wire_len()), z.groups.is_empty()));
+    Ok(zones)
 }
 
 /// REQ: FLT-006 — keeps the IP → MAC map fresh while any client is identified by MAC.

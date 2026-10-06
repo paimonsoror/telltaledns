@@ -291,6 +291,22 @@ impl LocalData {
         None
     }
 
+    /// REQ: DNS-018 — some name below `name` has records (an empty non-terminal exists).
+    pub fn has_below(&self, name: &NameBuf) -> bool {
+        let suffix = name.as_wire();
+        self.exact.keys().chain(self.wildcard.keys()).any(|k| {
+            k.len() > suffix.len() && k.ends_with(suffix) && {
+                // `suffix` must start on a label boundary of `k`.
+                let start = k.len() - suffix.len();
+                let mut pos = 0;
+                while pos < start {
+                    pos += 1 + usize::from(k[pos]);
+                }
+                pos == start
+            }
+        })
+    }
+
     /// Answers `q` from local data, or returns `None` if the name isn't local.
     /// AA=1; CNAMEs are followed within local data; NODATA when the name exists without the
     /// requested type.

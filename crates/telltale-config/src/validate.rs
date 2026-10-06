@@ -54,6 +54,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     sinks(cfg, &mut r);
     dhcp(cfg, &mut r);
     rewrites(cfg, &mut r);
+    zones(cfg, &mut r);
     otlp(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
@@ -99,6 +100,53 @@ fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_
 }
 
 // REQ: OBS-010 (T7.13) — event sinks: unique names and what each kind needs.
+// REQ: DNS-018 (T7.22) — zones: a valid, unique apex; known groups; records under it.
+fn zones(cfg: &Config, r: &mut Report<'_>) {
+    let mut apexes = HashSet::new();
+    let lower = |s: &str| s.trim_end_matches('.').to_ascii_lowercase();
+    for (i, z) in cfg.zone.iter().enumerate() {
+        let apex = lower(&z.name);
+        if apex.is_empty() || apex.split('.').any(str::is_empty) {
+            r.err(format!("zone[{i}].name"), "a domain, e.g. home.example.com");
+        }
+        let key = (apex.clone(), {
+            let mut g: Vec<String> = z
+                .groups
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
+            g.sort();
+            g
+        });
+        if !apexes.insert(key) {
+            r.err(
+                format!("zone[{i}].name"),
+                "the same zone twice for the same groups",
+            );
+        }
+        if z.file.is_none() && z.record.is_empty() {
+            r.err(format!("zone[{i}]"), "give a file or records");
+        }
+        for (j, g) in z.groups.iter().enumerate() {
+            if g.as_str() != "default" && !cfg.group.iter().any(|x| x.name == *g) {
+                r.err(
+                    format!("zone[{i}].groups[{j}]"),
+                    format!("no group `{}`", g.as_str()),
+                );
+            }
+        }
+        for (j, rec) in z.record.iter().enumerate() {
+            let n = lower(rec.name.trim_start_matches("*."));
+            if n != apex && !n.ends_with(&format!(".{apex}")) {
+                r.err(
+                    format!("zone[{i}].record[{j}].name"),
+                    format!("not under {apex}"),
+                );
+            }
+        }
+    }
+}
+
 // REQ: FLT-014, FLT-015 (T7.20) — rewrites and rebinding exceptions are names; a rewrite's
 // answer is an address or a name.
 fn rewrites(cfg: &Config, r: &mut Report<'_>) {

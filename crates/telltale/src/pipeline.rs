@@ -72,6 +72,18 @@ pub(crate) struct Policy {
     pub(crate) clients: Arc<ClientTable>,
     /// Quick rules (T6.12, ADR-067), decided before the lists.
     pub(crate) quick: Arc<telltale_policy::QuickRules>,
+    /// REQ: DNS-018 (T7.22) — authoritative zones, most specific first.
+    pub(crate) zones: Arc<Vec<Zone>>,
+}
+
+/// REQ: DNS-018 (T7.22) — one authoritative zone.
+#[derive(Debug, Default)]
+pub(crate) struct Zone {
+    pub(crate) apex: NameBuf,
+    pub(crate) data: LocalData,
+    /// Groups that see it (empty: everyone).
+    pub(crate) groups: Vec<Box<str>>,
+    pub(crate) negative_ttl: u32,
 }
 
 impl Policy {
@@ -86,6 +98,7 @@ impl Policy {
             local: Arc::new(local),
             quick,
             clients: Arc::new(clients),
+            zones: Arc::default(),
         }
     }
 
@@ -591,6 +604,13 @@ impl Pipeline {
             .first()
             .copied()
             .unwrap_or(0);
+        // REQ: DNS-018 (T7.22) — authoritative zones (per group), before any filtering.
+        if !st.policy.zones.is_empty()
+            && let Some(len) = self.zone_answer(&q, st.policy.clients.group_names(ident), out)
+        {
+            oc.status = Status::Local;
+            return Response::Ready(self.finish(&q, out, len, meta.transport));
+        }
         // REQ: FLT-005 (T6.12, ADR-067) — quick rules decide before any list.
         match self.quick_decision(&st.policy, q.qname.as_wire(), ident, who) {
             Some(m) if m.allow => oc.rule = Some(quick_rule(&st.policy, m)),
@@ -633,6 +653,31 @@ impl Pipeline {
             return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
         }
         self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
+    }
+
+    /// REQ: DNS-018 (T7.22) — the answer from the most specific zone this client sees: its
+    /// records, no data for the apex and empty non-terminals, else NXDOMAIN (authoritative,
+    /// with an SOA).
+    fn zone_answer(&self, q: &Query<'_>, groups: &[Box<str>], out: &mut [u8]) -> Option<usize> {
+        let st = self.state.load();
+        let z = st.policy.zones.iter().find(|z| {
+            q.qname.is_subdomain_of(&z.apex)
+                && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
+        })?;
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        if let Some(len) = z.data.answer(q, out, edns) {
+            return Some(len);
+        }
+        let exists = q.qname == z.apex || z.data.has_below(&q.qname);
+        let rc = if exists {
+            rcode::NOERROR
+        } else {
+            rcode::NXDOMAIN
+        };
+        let mut b = ResponseBuilder::new(q, out, rc).ok()?;
+        b.authoritative(true).authority_soa(z.negative_ttl).ok()?;
+        b.finish(response_edns(q, self.settings.edns_payload, None))
+            .ok()
     }
 
     /// REQ: DNS-016 (T7.21) — the client's group NAT64 prefix, when it has DNS64.
@@ -2645,6 +2690,86 @@ groups = ["kids"]
         p.cache
             .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
             .unwrap();
+    }
+
+    /// REQ: DNS-018 (T7.22) — authoritative zones: a group's view answers its names, NXDOMAIN
+    /// (authoritative, with an SOA) for names it doesn't have, no data for the apex and empty
+    /// non-terminals; other groups don't see it; a zone file loads.
+    #[test]
+    fn dns_018_local_zones() {
+        let dir = std::env::temp_dir().join(format!("tt-zone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lab.zone");
+        std::fs::write(
+            &file,
+            "$ORIGIN lab.example.\n@ 900 IN SOA ns1 hostmaster 1 900 300 604800 900\n@ 3600 IN NS ns1\nweb 300 IN A 192.168.9.9\n",
+        )
+        .unwrap();
+        let cfg_toml = format!(
+            "{UPSTREAM}[[group]]\nname = \"office\"\nnetworks = [\"10.0.3.0/24\"]\n[[zone]]\nname = \"corp.example\"\ngroups = [\"office\"]\n[[zone.record]]\nname = \"intranet.corp.example\"\ntype = \"A\"\nvalue = \"10.10.0.5\"\n[[zone.record]]\nname = \"_sip._tcp.corp.example\"\ntype = \"SRV\"\nvalue = \"0 5 5060 pbx.corp.example\"\n[[zone]]\nname = \"lab.example\"\nfile = \"{}\"\n",
+            file.display()
+        );
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str("t.toml", &cfg_toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                zones: Arc::new(crate::server::load_zones(&cfg).unwrap()),
+                ..Policy::open()
+            },
+        );
+        install_filter(
+            &p,
+            "||nothing.example^\n",
+            telltale_filter::matcher::Lookup::Indexed,
+        );
+        cache_a(&p, "intranet.corp.example", Ipv4Addr::new(203, 0, 113, 5));
+        let office = "10.0.3.5";
+        let r = ask_from(&p, office, "intranet.corp.example", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert!(
+            s.header.flags.aa() && contains(&r, &[10, 10, 0, 5]),
+            "the office view"
+        );
+        let nx = summarize(&ask_from(&p, office, "nope.corp.example", rtype::A)).unwrap();
+        assert_eq!(
+            (nx.rcode, nx.header.flags.aa(), nx.negative_ttl.is_some()),
+            (rcode::NXDOMAIN, true, true)
+        );
+        let apex = summarize(&ask_from(&p, office, "corp.example", rtype::A)).unwrap();
+        assert_eq!(
+            (apex.rcode, apex.answers),
+            (rcode::NOERROR, 0),
+            "the apex exists"
+        );
+        let ent = summarize(&ask_from(&p, office, "_tcp.corp.example", rtype::SRV)).unwrap();
+        assert_eq!(
+            (ent.rcode, ent.answers),
+            (rcode::NOERROR, 0),
+            "an empty non-terminal exists"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "intranet.corp.example", rtype::A),
+                &[203, 0, 113, 5]
+            ),
+            "others: the public answer"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "web.lab.example", rtype::A),
+                &[192, 168, 9, 9]
+            ),
+            "the zone file, for everyone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// REQ: DNS-016 (T7.21) — DNS64: a name without AAAA gets AAAA made from its A records

@@ -360,6 +360,14 @@
       "items": {
         "$ref": "#/$defs/UpstreamGroup"
       }
+    },
+    "zone": {
+      "description": "REQ: DNS-018 (T7.22) — authoritative zones, optionally per group (split horizon).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ZoneConfig"
+      }
     }
   },
   "additionalProperties": false,
@@ -3077,6 +3085,51 @@
           "type": "string",
           "const": "off"
         }
+      ]
+    },
+    "ZoneConfig": {
+      "description": "REQ: DNS-018 (T7.22) — an authoritative zone: every name under `name` is answered from\nit (names it doesn't have get NXDOMAIN), for everyone or only `groups`.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "An RFC 1035 zone file (BIND, Technitium's export, `PowerDNS`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "groups": {
+          "description": "Only these groups see this zone (split horizon); empty: everyone.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "name": {
+          "description": "The zone's apex (`home.example.com`).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "negative_ttl": {
+          "description": "TTL of negative answers (NXDOMAIN, no data), in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "record": {
+          "description": "Records, as in `[[record]]` (names under the zone).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LocalRecord"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     }
   }

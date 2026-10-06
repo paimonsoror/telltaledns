@@ -446,5 +446,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* a name without AAAA answers AAAA in the prefix (also when nothing is cached: the A lookup is resolved and cached like any name, and the query is logged once with the final answer); real AAAA records are kept; other groups and CD clients get the real answer; the cache holds the real answers; `ipv4only.arpa` gives `64:ff9b::c000:aa` and `:ab`.
   - *Done 2026-10-06:* synthesis after the cache (cache hits and deferred answers), an internal lookup for the A query (no extra query event), `Group.dns64` in the policy; config and validation (a /96); test `dns_016_dns64_synthesizes_aaaa`; a live check through Quad9; docs, help, standards (RFC 6147 supported); bench-smoke unchanged. *Deferred:* reverse lookups (`ip6.arpa`) for the prefix; exclusion lists.
 
+- [x] **T7.22 Local zones.** *(DNS-018)* `[[zone]]`: an authoritative zone from a zone file or inline records, optionally per group (split horizon).
+  - *AC:* names in the zone answer AA; names it doesn't have get NXDOMAIN with an SOA; the apex and empty non-terminals get no data; a group view hides the zone from other groups (who get the public answer); the most specific zone wins; a zone file loads; config errors for unknown groups, records outside the zone, a zone with nothing in it.
+  - *Done 2026-10-06:* `Zone` in the pipeline policy, loaded by `server::load_zones` (zone files through the importer's parser, inline records through `LocalData`), answered after identification and before filtering; `LocalData::has_below`; config and validation; test `dns_018_local_zones`; docs. *Not done:* serving SOA and NS records for the apex (a synthetic SOA is in negative answers), zone transfers.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

@@ -34,6 +34,8 @@ pub struct Config {
     pub route: Vec<Route>,
     /// Local DNS records answered authoritatively (DNS-010).
     pub record: Vec<LocalRecord>,
+    /// REQ: DNS-018 (T7.22) — authoritative zones, optionally per group (split horizon).
+    pub zone: Vec<ZoneConfig>,
     /// Local data settings (hosts files, PTR generation).
     pub local: LocalConfig,
     /// Filter lists: blocklists and allowlists from URLs, files, or inline rules (`spec/05`).
@@ -101,6 +103,7 @@ impl Default for Config {
             list: Vec::new(),
             group: Vec::new(),
             schedule: Vec::new(),
+            zone: Vec::new(),
             alerts: AlertsConfig::default(),
             dhcp: DhcpConfig::default(),
             client: Vec::new(),
@@ -692,6 +695,31 @@ pub struct ScheduleWindow {
     pub start: SafeString,
     /// `HH:MM`, 24-hour (`24:00` is the end of the day).
     pub end: SafeString,
+}
+
+/// REQ: DNS-018 (T7.22) — an authoritative zone: every name under `name` is answered from
+/// it (names it doesn't have get NXDOMAIN), for everyone or only `groups`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneConfig {
+    /// The zone's apex (`home.example.com`).
+    pub name: SafeString,
+    /// An RFC 1035 zone file (BIND, Technitium's export, `PowerDNS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<SafeString>,
+    /// Records, as in `[[record]]` (names under the zone).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub record: Vec<LocalRecord>,
+    /// Only these groups see this zone (split horizon); empty: everyone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<SafeString>,
+    /// TTL of negative answers (NXDOMAIN, no data), in seconds.
+    #[serde(default = "default_zone_negative_ttl")]
+    pub negative_ttl: u32,
+}
+
+const fn default_zone_negative_ttl() -> u32 {
+    300
 }
 
 /// REQ: OPS-008 (T7.19, `spec/08` §7) — the DHCPv4 server. Off by default; in a cluster,

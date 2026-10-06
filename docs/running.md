@@ -509,6 +509,27 @@ default_ttl = 300
 - **In the web UI:** **Names on my network** lists every local name grouped by domain. Operators can add, edit, and remove names (A, AAAA, and CNAME in Simple; every type in Advanced), run **Set up my home domain** (home.arpa by default) for a first device, and **Send a domain to another server** (conditional forwarding). Each change is previewed in a sentence and a diagram before it's saved, and every name has a **Test** link to Explain. Names from the config files are shown read-only. Through the API: `GET /api/v1/records`, `PUT`/`DELETE /api/v1/records/{name}` with `{"records": [{"type": "A", "value": "192.168.1.10"}]}`, and `GET /api/v1/forwards`, `PUT`/`DELETE /api/v1/forwards/{domain}` with `{"servers": ["10.0.0.53"]}`; all take `?dryRun=true`, `If-Match`, and `Idempotency-Key` like devices.
 - **Moving from another DNS server:** `telltale import zone exported.zone > records.toml` converts a zone file (Technitium's Zones → Export Zone, BIND, PowerDNS) into `[[record]]` entries for your config. The header lists anything with no local equivalent (SOA and NS aren't needed: TelltaleDNS answers these names itself). Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working: internal names answer locally, everything else publicly.
 
+### Local zones
+A zone makes TelltaleDNS the authority for a whole domain: names in it are answered from it, and names it doesn't have get NXDOMAIN (instead of going to the upstreams, as names not in `[[record]]` do).
+```toml
+[[zone]]
+name = "lab.example.com"
+file = "/etc/telltale/lab.example.com.zone"   # an RFC 1035 zone file (BIND, Technitium, PowerDNS)
+
+[[zone]]
+name = "corp.example.com"
+groups = ["office"]                 # split horizon: only these groups see this zone
+negative_ttl = 300
+[[zone.record]]
+name = "intranet.corp.example.com"
+type = "A"
+value = "10.10.0.5"
+```
+- Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry an SOA with `negative_ttl`.
+- **Split horizon:** with `groups`, only those groups' devices see the zone; everyone else resolves the domain normally (the public answer). Several zones for the same domain can serve different groups.
+- The most specific zone wins (`a.corp.example.com` over `corp.example.com`). Zones are answered before filtering, like local records.
+- Zone files use the record types local records support (A, AAAA, CNAME, PTR, TXT, MX, SRV); SOA and NS lines are read past. Changes need a reload (`SIGHUP`).
+
 ## Filter lists
 > **Status:** lists are downloaded, compiled, and **enforced** per client group, including names reached through a CNAME.
 
