@@ -281,7 +281,10 @@ kubectl -n telltale get svc telltale-dns          # EXTERNAL-IP: point clients (
   for `drainDelaySeconds` (default 5; passed as `TELLTALE_DRAIN_DELAY_SECS`, which is
   `[node] drain_delay_secs`) while the Service stops
   sending it queries, and only then stops. Outside Kubernetes the default is 0.
-- **Metrics** (on the controller): `telltale_cluster_peer_info{kube_node, pod}`,
+- **Metrics.** With `serviceMonitor.enabled`, Prometheus scrapes the controller and every
+  resolver pod (a headless `<release>-resolver-metrics` Service), so query, SERVFAIL, and
+  latency metrics cover all the traffic. On the controller, per member:
+  `telltale_cluster_peer_info{kube_node, pod}`,
   `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
   `telltale_cluster_peer_restarts`, per member.
 

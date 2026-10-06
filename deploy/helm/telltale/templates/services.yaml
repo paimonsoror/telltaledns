@@ -109,6 +109,27 @@ spec:
       protocol: TCP
 {{- if include "telltale.scaled" . }}
 ---
+# REQ: OBS-005 (T6.14) — every resolver pod's metrics, for Prometheus (headless: the
+# ServiceMonitor, which selects every Service labelled part=metrics, scrapes each pod). The
+# resolver pods answer most queries in scaled mode; without this only the controller was
+# scraped.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "telltale.fullname" . }}-resolver-metrics
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+    app.kubernetes.io/part: metrics
+spec:
+  clusterIP: None
+  selector:
+    {{- include "telltale.resolverLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.service.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+---
 # REQ: CLU-009 — the controller's cluster port: resolver pods join and stream here.
 apiVersion: v1
 kind: Service
