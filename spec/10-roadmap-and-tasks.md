@@ -402,5 +402,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* bedtime blocks everything for its group during the window only (quick allows and local names still answer; a pause pauses it); scheduled lists and services are off outside their windows even for groups using every list; no per-query time maths (a 15 s ticker); windows past midnight and time zones are correct; blocks are attributed to the schedule.
   - *Done 2026-10-06:* `telltale_config::schedule` (windows, `jiff` time zones from the system tz database), `ScheduleNow` per group computed by a 15-second ticker, list masks rebuilt on change (no recompile), a block-everything check after quick rules, `RuleKind::Schedule` in the query log, `schedules` / `schedulesOn` on groups, the Groups card line, docs, help topic. *Deferred:* editing schedules in the UI (they come from the config files or the API's group editor names them).
 
+- [x] **T7.11 Safe search.** *(FLT-011)* Per group (`safe_search`, `youtube_restrict`): engines' names answered as a CNAME to their safe-search service plus its addresses, from `presets/safesearch.toml`.
+  - *AC:* the rewrite applies to the group only; the answer carries the CNAME and the target's addresses (resolved and cached like any name); HTTPS/SVCB get no data; look-alike names (`google.evil.example`) aren't rewritten; YouTube strict, moderate, or off.
+  - *Done 2026-10-06:* `telltale_config::safesearch` (Google with country domains, YouTube, Bing, DuckDuckGo, Yandex, Pixabay), the rewrite after filtering in the pipeline (blocks still win), `safeSearch`/`youtubeRestrict` on groups, the Groups editor fields and card line, docs, help topic, tests.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

@@ -640,6 +640,11 @@ pub struct GroupInfo {
     /// REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now.
     pub schedules: Vec<String>,
     pub schedules_on: Vec<String>,
+    /// REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,
+    /// or `off` (absent when safe search is off).
+    pub safe_search: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub youtube_restrict: Option<String>,
 }
 
 /// REQ: FLT-012 (T7.9) — a blockable service.

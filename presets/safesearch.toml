@@ -1,0 +1,52 @@
+# TelltaleDNS safe-search table (REQ: FLT-011, `spec/05` §4).
+#
+# Data, not code: compiled into the binary. For a group with `safe_search = true`, a query for
+# one of an engine's domains is answered as a CNAME to its `target` (the engine's own
+# safe-search service) plus the target's addresses, so the engine itself enforces safe
+# results. `*` in a domain stands for a country domain: one or two labels of up to three
+# letters (`google.de`, `google.co.uk`). Targets are the names each engine documents for
+# network-level safe search.
+
+[[engine]]
+id = "google"
+name = "Google Search"
+target = "forcesafesearch.google.com"
+domains = ["google.*", "www.google.*"]
+
+[[engine]]
+id = "youtube"
+name = "YouTube"
+# Strict; `youtube_restrict = "moderate"` in the group uses `moderate` instead.
+target = "restrict.youtube.com"
+moderate = "restrictmoderate.youtube.com"
+domains = [
+  "www.youtube.com",
+  "m.youtube.com",
+  "youtubei.googleapis.com",
+  "youtube.googleapis.com",
+  "www.youtube-nocookie.com",
+]
+
+[[engine]]
+id = "bing"
+name = "Bing"
+target = "strict.bing.com"
+domains = ["bing.com", "www.bing.com"]
+
+[[engine]]
+id = "duckduckgo"
+name = "DuckDuckGo"
+target = "safe.duckduckgo.com"
+domains = ["duckduckgo.com", "www.duckduckgo.com", "start.duckduckgo.com"]
+
+[[engine]]
+id = "yandex"
+name = "Yandex"
+target = "familysearch.yandex.ru"
+domains = ["yandex.*", "www.yandex.*"]
+
+[[engine]]
+id = "pixabay"
+name = "Pixabay"
+target = "safesearch.pixabay.com"
+domains = ["pixabay.com", "www.pixabay.com"]

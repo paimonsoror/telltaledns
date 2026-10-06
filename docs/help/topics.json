@@ -424,6 +424,16 @@
       "example": "The kids group blocks everything from 21:00 to 07:00 on school nights; a quick allow keeps the homework site reachable.",
       "caution": "Windows use the schedule's time zone (tz), else the server's. Changes take effect within 15 seconds of the window's time.",
       "docs": "schedules"
+    },
+    {
+      "id": "safe-search",
+      "title": "Safe search for a group",
+      "term": "Safe search enforcement",
+      "summary": "Google, Bing, DuckDuckGo, Yandex, and Pixabay only show safe results, and YouTube uses Restricted Mode, for the group's devices, whatever their settings.",
+      "when": "Children's devices, or a classroom network.",
+      "example": "The kids group searches on Google and gets safe results; adults on the same network don't.",
+      "caution": "A browser using its own encrypted DNS bypasses it, like all filtering. YouTube's strict mode hides many videos; moderate is gentler.",
+      "docs": "safe-search"
     }
   ]
 }

@@ -22,6 +22,10 @@
       help: 'One per line. Every device on these networks belongs to the group.' },
     { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
       help: 'Leave all unticked on a new group to use every enabled list.' },
+    // REQ: FLT-011 (T7.11)
+    { key: 'safe_search', label: 'Safe search', type: 'bool',
+      help: 'Google, Bing, DuckDuckGo, Yandex, and Pixabay show only safe results; YouTube uses Restricted Mode.' },
+    { key: 'youtube_restrict', label: 'YouTube restriction', type: 'select', options: ['strict', 'moderate', 'off'], advanced: true },
     // REQ: FLT-012 (T7.9)
     { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
       help: 'Block a whole service (all its domains) for this group, on top of its lists.' },
@@ -75,6 +79,11 @@
         <div class="muted small mono">
           {g.networks.length ? g.networks.join(', ') : g.name === 'default' ? 'devices that match nothing else' : 'named devices only'}
         </div>
+        {#if g.safeSearch}
+          <div class="small" data-testid="group-safe-search">
+            Safe search on{g.youtubeRestrict === 'off' ? ' (not YouTube)' : g.youtubeRestrict === 'moderate' ? ' (YouTube moderate)' : ''}<HelpButton id="safe-search" />
+          </div>
+        {/if}
         {#if g.schedules.length}
           <div class="small" data-testid="group-schedules">
             Schedules: {#each g.schedules as s, i (s)}{i ? ', ' : ''}{s}{#if g.schedulesOn.includes(s)}

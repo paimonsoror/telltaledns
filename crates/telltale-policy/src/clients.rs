@@ -27,6 +27,8 @@ pub struct Group {
     pub color: Option<Box<str>>,
     /// REQ: FLT-012 (T7.9) — blocked services (IDs), compiled as `svc-<id>` lists.
     pub services: Vec<Box<str>>,
+    /// REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction with it.
+    pub safe_search: Option<telltale_config::YoutubeRestrict>,
 }
 
 /// How a group's blocked queries are answered (FLT-008).
@@ -245,6 +247,7 @@ impl Group {
                 .iter()
                 .map(|s| s.as_str().into())
                 .collect(),
+            safe_search: g.safe_search.then_some(g.youtube_restrict),
         }
     }
 }
@@ -265,6 +268,7 @@ impl ClientTable {
                 networks: Vec::new(),
                 color: None,
                 services: Vec::new(),
+                safe_search: None,
             });
             groups.len() - 1
         };

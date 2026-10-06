@@ -1087,6 +1087,15 @@ impl Backend for ApiBackend {
                     .map(|x| x.schedules.iter().map(ToString::to_string).collect())
                     .unwrap_or_default(),
                 schedules_on: schedules_on(&cfg, &g.name, now_s),
+                safe_search: g.safe_search.is_some(),
+                youtube_restrict: g.safe_search.map(|y| {
+                    match y {
+                        telltale_config::YoutubeRestrict::Strict => "strict",
+                        telltale_config::YoutubeRestrict::Moderate => "moderate",
+                        telltale_config::YoutubeRestrict::Off => "off",
+                    }
+                    .to_owned()
+                }),
                 priority: g.priority,
                 lists: g
                     .lists

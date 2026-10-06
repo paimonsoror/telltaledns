@@ -1203,6 +1203,10 @@
           "format": "int32",
           "default": 0
         },
+        "safe_search": {
+          "description": "REQ: FLT-011 (T7.11) — safe search: Google, Bing, DuckDuckGo, Yandex, and Pixabay\nanswer with their safe-search service, and YouTube with Restricted Mode.",
+          "type": "boolean"
+        },
         "schedules": {
           "description": "REQ: FLT-010 (T7.10) — `[[schedule]]` names that apply to this group.",
           "type": "array",
@@ -1210,6 +1214,10 @@
             "type": "string",
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
           }
+        },
+        "youtube_restrict": {
+          "description": "With `safe_search`: YouTube's restriction (`strict`, `moderate`, or `off`).",
+          "$ref": "#/$defs/YoutubeRestrict"
         }
       },
       "additionalProperties": false,
@@ -2335,6 +2343,26 @@
           "description": "Everything.",
           "type": "string",
           "const": "admin"
+        }
+      ]
+    },
+    "YoutubeRestrict": {
+      "description": "REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.",
+      "oneOf": [
+        {
+          "description": "Strict restricted mode.",
+          "type": "string",
+          "const": "strict"
+        },
+        {
+          "description": "Moderate restricted mode.",
+          "type": "string",
+          "const": "moderate"
+        },
+        {
+          "description": "YouTube is left alone (search engines are still restricted).",
+          "type": "string",
+          "const": "off"
         }
       ]
     }

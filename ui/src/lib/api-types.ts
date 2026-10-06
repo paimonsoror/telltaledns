@@ -2318,9 +2318,15 @@ export interface components {
              * @description Queries from the group's devices over the last 24 hours.
              */
             queries24h: number;
+            /**
+             * @description REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,
+             *     or `off` (absent when safe search is off).
+             */
+            safeSearch: boolean;
             /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
             schedules: string[];
             schedulesOn: string[];
+            youtubeRestrict?: string | null;
         };
         /** @description One host sample, with sizes in bytes and shares in percent. */
         HostInfo: {
@@ -2659,9 +2665,15 @@ export interface components {
                  * @description Queries from the group's devices over the last 24 hours.
                  */
                 queries24h: number;
+                /**
+                 * @description REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction: `strict`, `moderate`,
+                 *     or `off` (absent when safe search is off).
+                 */
+                safeSearch: boolean;
                 /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
                 schedules: string[];
                 schedulesOn: string[];
+                youtubeRestrict?: string | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];

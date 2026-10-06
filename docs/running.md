@@ -658,6 +658,21 @@ blocked_services = ["tiktok", "roblox", "fortnite"]
 - In the UI: **Groups → Manage groups → Edit → Blocked services**.
 - The catalog is part of the binary (`presets/services/*.toml`); services change with updates. To block one service's extra domain, add a quick rule.
 
+### Safe search
+Make search engines show only safe results for a group, whatever the browser's settings:
+```toml
+[[group]]
+name = "kids"
+networks = ["192.168.20.0/24"]
+safe_search = true
+youtube_restrict = "strict"                 # or "moderate", or "off" to leave YouTube alone
+```
+- Google (every country domain), Bing, DuckDuckGo, Yandex, and Pixabay answer as a CNAME to their own safe-search service (`forcesafesearch.google.com`, `strict.bing.com`, ...), with that service's addresses, so the engine enforces it. YouTube gets Restricted Mode (`restrict.youtube.com`, or `restrictmoderate.youtube.com`).
+- HTTPS records for those names get no data, so browsers use the safe-search addresses rather than hints for the normal ones.
+- It applies to the group's devices only; the table is part of the binary (`presets/safesearch.toml`).
+- Browsers using their own encrypted DNS bypass it (as they bypass all filtering): TelltaleDNS answers `use-application-dns.net` with NXDOMAIN so Firefox turns its own DoH off.
+- In the UI: **Groups → Manage groups → Edit → Safe search**.
+
 ### Schedules
 Change a group's filtering by the time of day and the day of the week: block everything at bedtime, or add a list or a service only at certain times.
 ```toml

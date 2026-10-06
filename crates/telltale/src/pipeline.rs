@@ -22,8 +22,9 @@ use telltale_policy::{
     ClientTable, Group, Identity, LocalData, Neighbors, Pause, RateLimiter, Special,
 };
 use telltale_proto::{
-    EdnsOut, Query, QueryError, ResponseBuilder, badvers_from_raw, ede, error_from_raw,
-    parse_query, rcode, response_edns, truncate_for_udp, udp_limit,
+    EdnsOut, NameBuf, Query, QueryError, ResponseBuilder, Section, badvers_from_raw, build_query,
+    ede, error_from_raw, parse_query, rcode, records, response_edns, rtype, truncate_for_udp,
+    udp_limit,
 };
 use telltale_telemetry::{Hub, Metrics, Proto, QueryEvent, Rule, RuleKind, Status, UpstreamEvent};
 use telltale_upstream::{Question, Router};
@@ -609,7 +610,108 @@ impl Pipeline {
             }
         }
         let groups = st.policy.clients.group_names(ident);
+        // REQ: FLT-011 (T7.11) — safe search: the engine's safe name instead.
+        if let Some(target) = Self::safe_search_target(&q, st.policy.clients.primary_group(ident)) {
+            return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
+        }
         self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
+    }
+
+    /// REQ: FLT-011 (T7.11) — the safe-search name for this query, when the group has safe
+    /// search and the name is an engine's. Nothing to do (no allocation) for other groups.
+    fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
+        let youtube = group.safe_search?;
+        let mut name = q.qname.display().to_string();
+        name.make_ascii_lowercase();
+        let target = telltale_config::safesearch::target(name.trim_end_matches('.'), youtube)?;
+        NameBuf::from_presentation(target).ok()
+    }
+
+    /// REQ: FLT-011 (T7.11) — answers `q` as `CNAME target` plus the target's records of the
+    /// asked type, resolving the target through the cache and upstreams like any name. HTTPS
+    /// and SVCB get no data (so clients use the target's addresses, not hints for the
+    /// original name).
+    #[allow(clippy::too_many_arguments)] // the same inputs as resolve_or_defer
+    fn safe_search(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        target: &NameBuf,
+        groups: &[Box<str>],
+        who: Who,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        if matches!(q.qtype, rtype::HTTPS | rtype::SVCB) {
+            return self.simple(q, out, rcode::NOERROR, None, meta);
+        }
+        let edns = q.edns.as_ref().map(|e| EdnsOut {
+            udp_payload: e.udp_payload,
+            dnssec_ok: e.dnssec_ok,
+            ede: None,
+        });
+        let mut buf = [0u8; 512];
+        let Ok(len) = build_query(&mut buf, q.header.id, target, q.qtype, q.qclass, true, edns)
+        else {
+            return self.simple(q, out, rcode::SERVFAIL, None, meta);
+        };
+        let treq = buf[..len].to_vec();
+        let Ok(tq) = parse_query(&treq) else {
+            return self.simple(q, out, rcode::SERVFAIL, None, meta);
+        };
+        let orig = req.to_vec();
+        let target = *target;
+        let transport = meta.transport;
+        match self.resolve_or_defer(&treq, &tq, None, groups, who, meta, out, start, oc) {
+            Response::Ready(n) => {
+                let resp = out[..n].to_vec();
+                match self.safe_search_answer(&orig, &target, &resp, out) {
+                    Some(len) => Response::Ready(self.finish(q, out, len, transport)),
+                    None => self.simple(q, out, rcode::SERVFAIL, None, meta),
+                }
+            }
+            Response::Deferred(f) => {
+                let this = Arc::clone(self);
+                Response::Deferred(Box::pin(async move {
+                    let resp = f.await?;
+                    let mut o = vec![0u8; MAX_RESPONSE];
+                    let len = this.safe_search_answer(&orig, &target, &resp, &mut o)?;
+                    let oq = parse_query(&orig).ok()?;
+                    let len = this.finish(&oq, &mut o, len, transport);
+                    o.truncate(len);
+                    Some(o)
+                }))
+            }
+            Response::Drop => Response::Drop,
+        }
+    }
+
+    /// The answer to `orig` from the target's answer `resp`: `CNAME target` and the target's
+    /// records of the asked type (owned by the target). A failed target fails the same way.
+    fn safe_search_answer(
+        &self,
+        orig: &[u8],
+        target: &NameBuf,
+        resp: &[u8],
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let oq = parse_query(orig).ok()?;
+        let rc = u16::from(resp.get(3)? & 0x0F);
+        let mut b = ResponseBuilder::new(&oq, out, rc).ok()?;
+        if rc == rcode::NOERROR {
+            b.answer_rdata(None, rtype::CNAME, 300, target.as_wire())
+                .ok()?;
+            for r in records(resp).ok()?.flatten() {
+                if r.section == Section::Answer && r.rtype == oq.qtype {
+                    b.answer_rdata(Some(target), r.rtype, r.ttl, r.rdata(resp))
+                        .ok()?;
+                }
+            }
+        }
+        b.finish(response_edns(&oq, self.settings.edns_payload, None))
+            .ok()
     }
 
     /// `spec/03` §3 steps 2–4: access, rate limit, loop tag, ANY, special names. Returns the
@@ -2144,6 +2246,72 @@ groups = ["kids"]
         assert_eq!(sum(&e), (rcode::NOERROR, 1));
         assert!(contains(&e, &[0, 15, 0, 2, 0, 17]));
         assert!(!contains(&e, b"blocked by list"));
+    }
+
+    /// REQ: FLT-011 (T7.11) — safe search: an engine's name is answered as a CNAME to its
+    /// safe-search name plus that name's addresses (resolved through the cache like any
+    /// name); HTTPS records get no data; groups without safe search are untouched.
+    #[test]
+    fn flt_011_safe_search_rewrites_per_group() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\nsafe_search = true\n[[group]]\nname = \"adults\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        let cache_a = |name: &str, ip: Ipv4Addr| {
+            let req = query(name, rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, ip).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+                .unwrap();
+        };
+        cache_a(
+            "forcesafesearch.google.com",
+            Ipv4Addr::new(216, 239, 38, 120),
+        );
+        cache_a("www.google.com", Ipv4Addr::new(142, 250, 0, 1));
+        let safe = ask_from(&p, "10.0.0.5", "www.google.com", rtype::A);
+        let s = summarize(&safe).unwrap();
+        assert_eq!(
+            (s.rcode, s.answers),
+            (rcode::NOERROR, 2),
+            "CNAME and the target's A"
+        );
+        let target = NameBuf::from_presentation("forcesafesearch.google.com").unwrap();
+        assert!(
+            contains(&safe, target.as_wire()),
+            "points at the safe-search name"
+        );
+        assert!(contains(&safe, &[216, 239, 38, 120]), "with its address");
+        assert!(
+            !contains(&safe, &[142, 250, 0, 1]),
+            "not the normal address"
+        );
+        let rr: Vec<u16> = telltale_proto::records(&safe)
+            .unwrap()
+            .flatten()
+            .filter(|r| r.section == telltale_proto::Section::Answer)
+            .map(|r| r.rtype)
+            .collect();
+        assert_eq!(rr, vec![rtype::CNAME, rtype::A]);
+        let https = ask_from(&p, "10.0.0.5", "www.google.com", rtype::HTTPS);
+        let h = summarize(&https).unwrap();
+        assert_eq!((h.rcode, h.answers), (rcode::NOERROR, 0), "no HTTPS hints");
+        let adult = ask_from(&p, "10.0.2.5", "www.google.com", rtype::A);
+        assert!(
+            contains(&adult, &[142, 250, 0, 1]),
+            "the adults group isn't rewritten"
+        );
+        assert!(!contains(&adult, target.as_wire()));
     }
 
     #[test]

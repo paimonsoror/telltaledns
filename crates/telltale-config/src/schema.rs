@@ -555,6 +555,32 @@ pub struct GroupConfig {
     /// REQ: FLT-010 (T7.10) — `[[schedule]]` names that apply to this group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schedules: Vec<SafeString>,
+    /// REQ: FLT-011 (T7.11) — safe search: Google, Bing, DuckDuckGo, Yandex, and Pixabay
+    /// answer with their safe-search service, and YouTube with Restricted Mode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub safe_search: bool,
+    /// With `safe_search`: YouTube's restriction (`strict`, `moderate`, or `off`).
+    #[serde(default, skip_serializing_if = "YoutubeRestrict::is_default")]
+    pub youtube_restrict: YoutubeRestrict,
+}
+
+/// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum YoutubeRestrict {
+    /// Strict restricted mode.
+    #[default]
+    Strict,
+    /// Moderate restricted mode.
+    Moderate,
+    /// YouTube is left alone (search engines are still restricted).
+    Off,
+}
+
+impl YoutubeRestrict {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Strict
+    }
 }
 
 /// REQ: FLT-010 (T7.10, `spec/05` §3) — a weekly schedule: during its windows, the groups
