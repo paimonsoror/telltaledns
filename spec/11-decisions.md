@@ -1257,3 +1257,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Consequences:**
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
+
+## ADR-071 — MCP over OAuth: JWT access tokens from the OIDC provider, for existing users only (Proposed)
+**Context:** T7.4 (AGT-008, P1). MCP clients sign in with OAuth 2.1: the server publishes RFC 9728 metadata naming an authorization server, and accepts that server's access tokens. The spec says to use the configured OIDC provider but not how tokens become principals, or which tokens are accepted.
+
+**Decision:**
+- One provider is the authorization server for MCP (`[auth.oidc] mcp_provider`). TelltaleDNS is only a resource server: client registration, consent screens, and refresh are the provider's.
+- Accepted tokens are JWTs signed with the provider's published keys (asymmetric algorithms only), with its issuer, the audience `mcp_audience` (default `<public_url>/mcp`), and a current expiry (60 s leeway). There's no introspection, so opaque tokens are refused.
+- The token's `sub` must match a user who has signed in to the web UI with that provider (ADR-034). An unknown subject is refused rather than creating an account, because access tokens rarely carry the group claims that decide roles.
+- The principal is an agent of that user: the TelltaleDNS scopes in `scope` or `scp` (or the read-only default when there are none), never above the user's stored role; audited as `agent:oauth:<azp> (owner: <user>)`. Rate limits, the kill switch, plans, and approvals apply as for agent tokens.
+- An unauthenticated or refused `/mcp` request gets `WWW-Authenticate: Bearer resource_metadata="…"` (and `error="invalid_token"` when a token was sent).
+
+**Consequences:**
+- Assistants connect with SSO and the user's consent, and no long-lived token is stored in the assistant.
+- Each request verifies a signature (keys cached with discovery, refreshed on rotation); no per-token cache is kept.
+- Providers that only issue opaque access tokens need a token per agent instead, until introspection is added.

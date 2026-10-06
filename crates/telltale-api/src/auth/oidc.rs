@@ -69,6 +69,17 @@ pub struct OidcSettings {
     /// `https://dns.example.com` (no trailing slash).
     pub public_url: String,
     pub providers: Vec<ProviderSettings>,
+    /// REQ: AGT-008 (T7.4) — MCP clients sign in through this provider.
+    pub mcp: Option<McpOAuth>,
+}
+
+/// OAuth for MCP (REQ: AGT-008, T7.4): which provider issues access tokens, and for whom.
+#[derive(Debug, Clone)]
+pub struct McpOAuth {
+    /// A provider's `id`.
+    pub provider: String,
+    /// The `aud` tokens must carry (the MCP endpoint's URL).
+    pub audience: String,
 }
 
 #[derive(Debug)]
@@ -393,6 +404,127 @@ impl Oidc {
         ))
     }
 
+    /// REQ: AGT-008 (T7.4) — OAuth for MCP, when configured.
+    pub fn mcp(&self) -> Option<&McpOAuth> {
+        self.settings.mcp.as_ref()
+    }
+
+    /// The RFC 9728 protected-resource metadata for `/mcp`: this resource, its authorization
+    /// server (the provider), and the scopes agents can ask for. `None` when not configured.
+    pub fn resource_metadata(&self) -> Option<Value> {
+        let m = self.mcp()?;
+        let p = self.provider(&m.provider).ok()?;
+        let scopes: Vec<&str> = super::agent::SCOPES.iter().map(|(s, _)| *s).collect();
+        Some(serde_json::json!({
+            "resource": m.audience,
+            "authorization_servers": [p.issuer],
+            "scopes_supported": scopes,
+            "bearer_methods_supported": ["header"],
+            "resource_name": "TelltaleDNS",
+            "resource_documentation": "https://paimonsoror.github.io/telltaledns/",
+        }))
+    }
+
+    /// Where the protected-resource metadata is.
+    pub fn resource_metadata_url(&self) -> String {
+        format!(
+            "{}/.well-known/oauth-protected-resource",
+            self.settings.public_url.trim_end_matches('/')
+        )
+    }
+
+    /// REQ: AGT-008 (T7.4) — an MCP access token from the configured provider, verified: a JWT
+    /// signed with one of the provider's keys (asymmetric algorithms only), from its issuer,
+    /// for this resource's audience, and current. Its claims. Opaque (non-JWT) tokens aren't
+    /// accepted: there's no introspection.
+    pub async fn verify_access_token(&self, token: &str, now: u64) -> Result<Value, Problem> {
+        use openidconnect::JsonWebKey as _;
+        let bad = |why: &str| {
+            Problem::new(
+                Code::Unauthorized,
+                format!("the access token isn't valid: {why}"),
+            )
+            .hint("Sign in again from your MCP client to get a new token.")
+        };
+        let mcp = self
+            .mcp()
+            .ok_or_else(|| bad("OAuth for MCP isn't configured"))?;
+        let provider = self.provider(&mcp.provider)?;
+        let mut parts = token.split('.');
+        let (Some(head), Some(body), Some(sig64), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(bad("not a JWT"));
+        };
+        let decode = |text: &str| URL_SAFE_NO_PAD.decode(text.trim_end_matches('=')).ok();
+        let header: Value = decode(head)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .ok_or_else(|| bad("unreadable header"))?;
+        let alg: openidconnect::core::CoreJwsSigningAlgorithm = header
+            .get("alg")
+            .cloned()
+            .and_then(|a| serde_json::from_value(a).ok())
+            .filter(|a| algs().contains(a))
+            .ok_or_else(|| bad("unsupported signing algorithm"))?;
+        let kid = header.get("kid").and_then(Value::as_str);
+        let signature = decode(sig64).ok_or_else(|| bad("unreadable signature"))?;
+        let signed_part = format!("{head}.{body}");
+        let signed = |found: &Discovered| {
+            found
+                .metadata
+                .jwks()
+                .keys()
+                .iter()
+                .filter(|key| {
+                    kid.is_none_or(|id| key.key_id().is_some_and(|key_id| key_id.as_str() == id))
+                })
+                .any(|key| {
+                    key.verify_signature(&alg, signed_part.as_bytes(), &signature)
+                        .is_ok()
+                })
+        };
+        let known = self.discover(provider, false).await?;
+        // Maybe the provider rotated its keys: rediscover once.
+        if !signed(&known) && !signed(&*self.discover(provider, true).await?) {
+            return Err(bad("the signature doesn't verify"));
+        }
+        let claims: Value = decode(body)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .ok_or_else(|| bad("unreadable claims"))?;
+        let issuer = claims
+            .get("iss")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if issuer.trim_end_matches('/') != provider.issuer.trim_end_matches('/') {
+            return Err(bad("issued by another provider"));
+        }
+        let for_us = match claims.get("aud") {
+            Some(Value::String(aud)) => *aud == mcp.audience,
+            Some(Value::Array(auds)) => auds
+                .iter()
+                .any(|aud| aud.as_str() == Some(mcp.audience.as_str())),
+            _ => false,
+        };
+        if !for_us {
+            return Err(bad(&format!("not issued for {}", mcp.audience)));
+        }
+        let expires = claims
+            .get("exp")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| bad("no expiry"))?;
+        if expires.saturating_add(60) < now {
+            return Err(bad("expired"));
+        }
+        if claims
+            .get("nbf")
+            .and_then(Value::as_u64)
+            .is_some_and(|not_before| not_before > now.saturating_add(60))
+        {
+            return Err(bad("not valid yet"));
+        }
+        Ok(claims)
+    }
+
     /// Where to send the browser to also sign out at the provider, if it supports that.
     pub fn logout_url(&self, id: &str) -> Option<String> {
         let p = self.provider(id).ok()?;
@@ -555,6 +687,91 @@ fn username_for(auth: &Auth, provider: &str, wanted: &str) -> Result<String, Pro
 }
 
 impl Auth {
+    /// REQ: AGT-008 (T7.4, ADR-071) — the agent an MCP access token stands for: the user who
+    /// signed in (they must have signed in to the web UI with the provider before), with the
+    /// TelltaleDNS scopes they consented to (read-only when it names none), never above their
+    /// role. Blocking.
+    pub fn oauth_principal(
+        &self,
+        oidc: &Oidc,
+        claims: &Value,
+    ) -> Result<super::Principal, Problem> {
+        let provider = oidc
+            .mcp()
+            .map(|m| m.provider.clone())
+            .ok_or_else(|| Problem::new(Code::Unauthorized, "OAuth for MCP isn't configured"))?;
+        let sub = claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let user = self
+            .state()
+            .user_by_oidc(&provider, sub)
+            .map_err(super::db)?
+            .filter(|_| !sub.is_empty())
+            .ok_or_else(|| {
+                Problem::new(
+                    Code::Unauthorized,
+                    "this account hasn't used TelltaleDNS yet",
+                )
+                .hint("Sign in to the web UI with the same provider once, then connect the MCP client again.")
+            })?;
+        if user.disabled {
+            return Err(Problem::new(
+                Code::Forbidden,
+                "this account is disabled in TelltaleDNS",
+            ));
+        }
+        // `scope` (space-separated) or `scp` (a list): the TelltaleDNS scopes among them.
+        let asked: Vec<String> = match (claims.get("scope"), claims.get("scp")) {
+            (Some(Value::String(s)), _) => s.split_whitespace().map(str::to_owned).collect(),
+            (_, Some(Value::Array(v))) => v
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let known: Vec<String> = asked
+            .into_iter()
+            .filter(|s| s == "config:write:*" || super::agent::SCOPES.iter().any(|(k, _)| k == s))
+            .collect();
+        let mut scopes = super::agent::parse_scopes(&known).unwrap_or_default();
+        if scopes.is_empty() {
+            scopes = super::agent::DEFAULT_SCOPES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect();
+        }
+        let user_role = Role::parse(&user.role).unwrap_or(Role::Viewer);
+        let role = user_role.min(super::agent::implied_role(&scopes));
+        // The MCP client the token was issued to names the agent in the audit log.
+        let client = claims
+            .get("azp")
+            .or_else(|| claims.get("client_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("mcp")
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || "-_.:".contains(*c))
+            .take(64)
+            .collect::<String>();
+        Ok(super::Principal {
+            user_id: user.id,
+            username: user.username,
+            role,
+            via: super::Via::Token {
+                id: format!("oauth:{client}:{sub}"),
+            },
+            agent: Some(super::AgentGrant {
+                token_name: format!("oauth:{client}"),
+                scopes,
+                group: None,
+                rate_per_minute: None,
+                client: None,
+            }),
+        })
+    }
+
     /// Signs in (and on first sign-in creates) the user `who` from provider `id`, updating
     /// their role from their groups. Blocking.
     pub fn oidc_user(

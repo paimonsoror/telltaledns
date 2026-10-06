@@ -248,6 +248,16 @@ fn oidc(o: &crate::OidcConfig, r: &mut Report<'_>) {
             r.warn("auth.oidc.public_url: plain HTTP; providers may refuse http redirect URIs except for localhost");
         }
     }
+    // REQ: AGT-008 (T7.4) — MCP sign-in uses one of the configured providers.
+    if !o.mcp_provider.is_empty() && !o.provider.iter().any(|p| p.id == o.mcp_provider) {
+        r.err(
+            "auth.oidc.mcp_provider",
+            format!(
+                "`{}` isn't the id of an [[auth.oidc.provider]]",
+                o.mcp_provider.as_str()
+            ),
+        );
+    }
     if o.disable_local_login && o.provider.is_empty() {
         r.err(
             "auth.oidc.disable_local_login",

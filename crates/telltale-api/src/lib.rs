@@ -337,6 +337,18 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         sessions: Arc::new(mcp::Sessions::default()),
         auth: Arc::clone(&auth),
     };
+    // REQ: AGT-008 (T7.4) — RFC 9728 protected-resource metadata (public), for OAuth sign-in
+    // from MCP clients.
+    let well_known = Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(resource_metadata),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(resource_metadata),
+        )
+        .with_state(Arc::clone(&auth));
     let mcp_routes = Router::new()
         .route("/mcp", axum::routing::post(mcp::post).get(mcp::get))
         .with_state(mcp)
@@ -344,7 +356,18 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             auth,
             auth::routes::authenticate,
         ));
-    api.merge(mcp_routes)
+    api.merge(mcp_routes).merge(well_known)
+}
+
+/// RFC 9728 metadata for `/mcp`: the resource, its authorization server (the configured OIDC
+/// provider), and the scopes agents may ask for. 404 when OAuth for MCP isn't configured.
+async fn resource_metadata(State(auth): State<Arc<auth::Auth>>) -> Response {
+    match auth.oidc().and_then(|o| o.resource_metadata()) {
+        Some(v) => Json(v).into_response(),
+        None => Problem::not_found("OAuth sign-in for MCP isn't configured on this node")
+            .hint("Use an agent token, or set [auth.oidc] mcp_provider.")
+            .into_response(),
+    }
 }
 
 /// The `/api/v1` routes without MCP.

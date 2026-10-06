@@ -25,7 +25,7 @@ use openidconnect::{
 use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 
-use super::{Fetch, Oidc, OidcSettings, ProviderSettings};
+use super::{Fetch, McpOAuth, Oidc, OidcSettings, ProviderSettings};
 use crate::auth::{Auth, Role, Settings};
 
 const ISSUER: &str = "https://idp.test";
@@ -235,6 +235,10 @@ fn harness(settings: Settings) -> Harness {
                 default_role: None,
                 require_verified_email: false,
             }],
+            mcp: Some(McpOAuth {
+                provider: "fake".into(),
+                audience: "https://dns.test/mcp".into(),
+            }),
         },
         fetch(idp(Arc::clone(&codes))),
     ));
@@ -599,4 +603,155 @@ async fn api_004_disable_local_login_keeps_a_break_glass_admin() {
         "10.0.0.0".parse().unwrap(),
         8
     ));
+}
+
+/// An access token from the fake provider, signed with its key.
+fn access_token(claims: &serde_json::Value) -> String {
+    use base64::Engine as _;
+    let b64 = |v: &serde_json::Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(v).unwrap())
+    };
+    let msg = format!(
+        "{}.{}",
+        b64(&serde_json::json!({"alg": "RS256", "kid": "k1", "typ": "at+jwt"})),
+        b64(claims)
+    );
+    let sig = key()
+        .sign(
+            &CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+            msg.as_bytes(),
+        )
+        .unwrap();
+    format!(
+        "{msg}.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig)
+    )
+}
+
+async fn mcp_call(
+    app: &Router,
+    bearer: &str,
+    body: serde_json::Value,
+) -> axum::http::Response<Body> {
+    app.clone()
+        .oneshot(
+            Request::post("/mcp")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// REQ: AGT-008 (T7.4) — OAuth for MCP: the metadata names the provider; a 401 says where
+/// to sign in; a valid access token acts as an agent with the consented scopes (never above
+/// the user's role); wrong audience, expiry, and unknown users are refused.
+#[tokio::test]
+async fn agt_008_mcp_oauth_access_tokens() {
+    let h = harness(Settings::default());
+    let r = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/.well-known/oauth-protected-resource")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let meta: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap())
+            .unwrap();
+    assert_eq!(meta["resource"], "https://dns.test/mcp");
+    assert_eq!(meta["authorization_servers"][0], ISSUER);
+    assert!(
+        meta["scopes_supported"]
+            .as_array()
+            .unwrap()
+            .contains(&"config:write:rules".into())
+    );
+
+    // No credentials: a challenge pointing at the metadata.
+    let r = h
+        .app
+        .clone()
+        .oneshot(Request::post("/mcp").body(Body::from("{}")).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let www = r.headers()["www-authenticate"].to_str().unwrap().to_owned();
+    assert!(
+        www.contains("resource_metadata=\"https://dns.test/.well-known/oauth-protected-resource\""),
+        "{www}"
+    );
+
+    let now = chrono::Utc::now().timestamp().unsigned_abs();
+    let claims = |aud: &str, exp: u64, sub: &str, scope: &str| serde_json::json!({"iss": ISSUER, "aud": aud, "exp": exp, "iat": now, "sub": sub, "azp": "claude-desktop", "scope": scope});
+    // A user who has signed in to the UI with the provider before (an operator).
+    h.auth
+        .state()
+        .create_oidc_user("alice", "operator", "fake", "sub-alice", 1)
+        .unwrap();
+    let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let ok = access_token(&claims(
+        "https://dns.test/mcp",
+        now + 300,
+        "sub-alice",
+        "openid analytics:read",
+    ));
+    assert_eq!(
+        mcp_call(&h.app, &ok, list.clone()).await.status(),
+        StatusCode::OK
+    );
+    // Read-only consent: a write tool is refused inside the tool.
+    let plan = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "plan_block_domain", "arguments": {"domain": "x.example", "reason": "test"}}});
+    let r = mcp_call(&h.app, &ok, plan).await;
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap())
+            .unwrap();
+    assert_eq!(v["result"]["isError"], true, "{v}");
+    assert!(v.to_string().contains("config:write:rules"), "{v}");
+    // Refused: another audience, expired, a stranger, a forged signature.
+    for (token, why) in [
+        (
+            access_token(&claims(
+                "https://other.test/mcp",
+                now + 300,
+                "sub-alice",
+                "",
+            )),
+            "not issued for",
+        ),
+        (
+            access_token(&claims("https://dns.test/mcp", now - 3600, "sub-alice", "")),
+            "expired",
+        ),
+        (
+            access_token(&claims("https://dns.test/mcp", now + 300, "sub-bob", "")),
+            "hasn't used TelltaleDNS",
+        ),
+        (format!("{}x", &ok[..ok.len() - 4]), "signature"),
+    ] {
+        let r = mcp_call(&h.app, &token, list.clone()).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{why}");
+        assert!(
+            r.headers()["www-authenticate"]
+                .to_str()
+                .unwrap()
+                .contains("invalid_token"),
+            "{why}"
+        );
+        let body = String::from_utf8(
+            axum::body::to_bytes(r.into_body(), 1 << 16)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains(why), "{why}: {body}");
+    }
 }

@@ -1194,6 +1194,12 @@ pub struct OidcConfig {
     /// Where break-glass admin sign-in is allowed. Default: private networks and loopback.
     pub allowed_admin_networks: Vec<Cidr>,
     pub provider: Vec<OidcProvider>,
+    /// REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its
+    /// `id`) with OAuth 2.1: TelltaleDNS accepts the provider's JWT access tokens issued for
+    /// `mcp_audience`, as an agent with the scopes the user consented to. Empty: off.
+    pub mcp_provider: SafeString,
+    /// The audience (`aud`) MCP access tokens must carry. Default: `<public_url>/mcp`.
+    pub mcp_audience: SafeString,
 }
 
 impl Default for OidcConfig {
@@ -1203,6 +1209,8 @@ impl Default for OidcConfig {
             disable_local_login: false,
             allowed_admin_networks: AccessConfig::default().allowed_networks,
             provider: Vec::new(),
+            mcp_provider: SafeString::default(),
+            mcp_audience: SafeString::default(),
         }
     }
 }

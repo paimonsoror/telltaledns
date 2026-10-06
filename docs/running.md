@@ -1359,6 +1359,18 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `cluster_status` | members, roles, sync, versions, checks |
 | `get_config` | one configuration section (no secrets) |
 
+**Signing in with SSO (OAuth).** Instead of pasting an agent token, an MCP client can sign you in through your OIDC provider (MCP's OAuth 2.1 flow). Set the provider and register the MCP client with it:
+```toml
+[auth.oidc]
+public_url = "https://dns.example.com"
+mcp_provider = "keycloak"            # one of your [[auth.oidc.provider]] ids
+# mcp_audience = "https://dns.example.com/mcp"   # the default
+```
+- TelltaleDNS publishes `/.well-known/oauth-protected-resource` (RFC 9728) naming the provider as the authorization server, and answers an unauthenticated `/mcp` with a `WWW-Authenticate` header pointing there, so MCP clients find the sign-in on their own.
+- At the provider, give the MCP client an audience of `https://dns.example.com/mcp` (Keycloak: an audience mapper; Authentik and others: the resource or audience setting) and offer the TelltaleDNS scopes (`analytics:read`, `config:write:rules`, ...) as optional client scopes. You consent to the ones the agent gets; with none, it gets the read-only default.
+- The access token must be a JWT signed by the provider. It's checked for signature, issuer, audience, and expiry on every request; opaque tokens aren't supported.
+- It acts as an agent for **your account**: never above your role, audited as `agent:oauth:<client> (owner: <you>)`. You must have signed in to the web UI with that provider once, so your account exists.
+
 **Resources and prompts.** Besides tools, the server offers three read-only **resources** (JSON documents an assistant can attach) and four **prompts** (ready-made requests that walk the assistant through the right tools):
 
 | Resource | What it holds |

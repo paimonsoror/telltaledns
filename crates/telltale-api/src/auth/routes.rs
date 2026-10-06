@@ -135,8 +135,27 @@ pub async fn authenticate(
     let https = is_https(&headers);
     let ip = remote(&auth, req.extensions(), &headers);
     let (session, bearer, basic) = presented(&headers);
+    // REQ: AGT-008 (T7.4) — an OAuth access token from the MCP sign-in provider (a JWT, not a
+    // TelltaleDNS token) is verified against the provider first.
+    let oauth = match (&bearer, auth.oidc()) {
+        (Some(t), Some(o))
+            if o.mcp().is_some() && !t.starts_with("tt_") && t.split('.').count() == 3 =>
+        {
+            Some(
+                o.verify_access_token(t, now())
+                    .await
+                    .map(|c| (Arc::clone(o), c)),
+            )
+        }
+        _ => None,
+    };
+    let presented_token = bearer.is_some();
     let auth2 = Arc::clone(&auth);
     let result = blocking(move || {
+        if let Some(verified) = oauth {
+            let (o, claims) = verified?;
+            return auth2.oauth_principal(&o, &claims).map(Some);
+        }
         let p = Presented {
             session: session.as_deref(),
             bearer: bearer.as_deref(),
@@ -147,14 +166,15 @@ pub async fn authenticate(
         auth2.authenticate(&p, now())
     })
     .await;
+    let path = req.uri().path().to_owned();
     let principal = match result {
         Ok(Some(p)) => p,
         Ok(None) => {
-            return Problem::new(Code::Unauthorized, "sign in to use the API")
+            return challenge(&auth, &path, false, Problem::new(Code::Unauthorized, "sign in to use the API")
                 .hint("Send a session cookie (POST /api/v1/auth/login), Authorization: Bearer <token>, or HTTP Basic if enabled for the user.")
-                .into_response();
+                .into_response());
         }
-        Err(p) => return p.into_response(),
+        Err(p) => return challenge(&auth, &path, presented_token, p.into_response()),
     };
     if let Via::Session { csrf, .. } = &principal.via
         && !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
@@ -210,6 +230,29 @@ pub async fn authenticate(
     }
     req.extensions_mut().insert(principal);
     next.run(req).await
+}
+
+/// REQ: AGT-008 (T7.4) — a 401 from `/mcp` tells MCP clients where to sign in (RFC 9728
+/// `resource_metadata`), when OAuth for MCP is configured.
+fn challenge(auth: &Auth, path: &str, token_sent: bool, mut resp: Response) -> Response {
+    if resp.status() != axum::http::StatusCode::UNAUTHORIZED || !path.starts_with("/mcp") {
+        return resp;
+    }
+    let Some(o) = auth.oidc().filter(|o| o.mcp().is_some()) else {
+        return resp;
+    };
+    let error = if token_sent {
+        ", error=\"invalid_token\""
+    } else {
+        ""
+    };
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "Bearer resource_metadata=\"{}\"{error}",
+        o.resource_metadata_url()
+    )) {
+        resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
+    }
+    resp
 }
 
 /// `uri` with its `group` query parameter replaced by `group`.

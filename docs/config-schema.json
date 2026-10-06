@@ -57,6 +57,8 @@
             "::1/128"
           ],
           "disable_local_login": false,
+          "mcp_audience": "",
+          "mcp_provider": "",
           "provider": [],
           "public_url": ""
         },
@@ -482,6 +484,8 @@
               "::1/128"
             ],
             "disable_local_login": false,
+            "mcp_audience": "",
+            "mcp_provider": "",
             "provider": [],
             "public_url": ""
           }
@@ -1442,6 +1446,18 @@
           "description": "Turn off password sign-in (and HTTP Basic) except for admins signing in from\n`allowed_admin_networks` (break-glass, for when the provider is down).",
           "type": "boolean",
           "default": false
+        },
+        "mcp_audience": {
+          "description": "The audience (`aud`) MCP access tokens must carry. Default: `<public_url>/mcp`.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "mcp_provider": {
+          "description": "REQ: AGT-008 (T7.4) — MCP clients (AI assistants) sign in through this provider (its\n`id`) with OAuth 2.1: TelltaleDNS accepts the provider's JWT access tokens issued for\n`mcp_audience`, as an agent with the scopes the user consented to. Empty: off.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "provider": {
           "type": "array",

@@ -113,10 +113,20 @@ fn oidc(cfg: &Config) -> io::Result<Option<telltale_api::auth::oidc::Oidc>> {
         })
     });
     info!(providers = providers.len(), "OIDC sign-in enabled");
+    // REQ: AGT-008 (T7.4) — MCP clients sign in through one provider.
+    let mcp = (!o.mcp_provider.is_empty()).then(|| telltale_api::auth::oidc::McpOAuth {
+        provider: o.mcp_provider.to_string(),
+        audience: if o.mcp_audience.is_empty() {
+            format!("{}/mcp", o.public_url.as_str().trim_end_matches('/'))
+        } else {
+            o.mcp_audience.to_string()
+        },
+    });
     Ok(Some(Oidc::new(
         OidcSettings {
             public_url: o.public_url.to_string(),
             providers,
+            mcp,
         },
         fetch,
     )))
