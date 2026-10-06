@@ -54,6 +54,10 @@ enum Read {
         by: LatencyBy,
         hour: Hour,
     },
+    /// REQ: OBS-010 (T9.5) — devices first seen.
+    NewDevices {
+        since_s: u64,
+    },
     /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
     LatencyHist {
         by: LatencyBy,
@@ -124,6 +128,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         } => serde_json::to_vec(&b.top_in_group(kind, hour, limit, &group).map_err(text)?),
         Read::Latency { by, hour } => serde_json::to_vec(&b.latency(by, hour)),
         Read::LatencyHist { by, hour } => serde_json::to_vec(&b.latency_hists(by, hour)),
+        Read::NewDevices { since_s } => serde_json::to_vec(&b.new_devices(since_s)),
         Read::TailOpen { params } => serde_json::to_vec(&tail_open(b, &params).map_err(text)?),
         Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
         Read::TailClose { id } => {
@@ -1015,6 +1020,19 @@ impl Backend for Federated {
     }
     fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
         self.local.anomalies(since_s)
+    }
+    // REQ: OBS-010 (T9.5) — any node may meet a device first; the earliest sighting wins.
+    fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
+        let mut all: Vec<telltale_api::model::NewDevice> = self
+            .everyone::<Vec<telltale_api::model::NewDevice>>(|| Read::NewDevices { since_s })
+            .into_iter()
+            .flatten()
+            .collect();
+        all.extend(self.local.new_devices(since_s));
+        all.sort_by_key(|d| d.first_seen_unix_seconds);
+        let mut seen = std::collections::HashSet::new();
+        all.retain(|d| seen.insert(d.client.clone()));
+        all
     }
     fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
         self.local.dhcp_leases()

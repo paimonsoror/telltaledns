@@ -1290,6 +1290,21 @@ impl Backend for ApiBackend {
         v
     }
 
+    // REQ: OBS-010 (T9.5) — devices this node's anomaly engine met for the first time.
+    fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
+        let Some(a) = &self.src.anomalies else {
+            return Vec::new();
+        };
+        a.new_clients(since_s)
+            .into_iter()
+            .map(|(ip, first)| telltale_api::model::NewDevice {
+                client: telltale_telemetry::agg::client_text(ip),
+                client_name: device_name(&self.src, ip),
+                first_seen_unix_seconds: first,
+            })
+            .collect()
+    }
+
     // REQ: AGT-012 (T8.4) — vqlog over this node's query log and the logs shipped to it.
     fn vqlog(
         &self,

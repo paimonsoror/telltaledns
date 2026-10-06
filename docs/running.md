@@ -1675,8 +1675,12 @@ Rules watch:
 | `servfail_rate` | SERVFAIL above `threshold` % (default 5) over 5 minutes, at least 50 queries | node |
 | `anomaly` | a [device anomaly](#device-anomalies) is found | finding |
 | `update_available` | a newer TelltaleDNS build is out | version |
+| `sync_lag` | a replica is behind the primary's configuration (set `for_secs`, say 300, so a normal sync stays quiet) | node |
+| `new_device` | a device TelltaleDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
+| `disk_full` | a node's data disk is more than `threshold` % full (default 90) | node |
+| `plan_pending` | an AI agent's change waits for approval (`[agents] require_approval`) | plan |
 
-- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies and updates go out once each.
+- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, and pending plans go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.

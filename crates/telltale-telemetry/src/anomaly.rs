@@ -601,6 +601,19 @@ impl Engine {
         &self.findings
     }
 
+    /// REQ: OBS-010 (T9.5) — devices first seen at or after `since_s`, with when. Only once the
+    /// engine has known devices for a day: on a fresh start every device is "new".
+    pub fn new_clients(&self, since_s: u64) -> Vec<([u8; 16], u64)> {
+        let Some(earliest) = self.clients.values().map(|c| c.first_s).min() else {
+            return Vec::new();
+        };
+        self.clients
+            .iter()
+            .filter(|(_, c)| c.first_s >= since_s && c.first_s >= earliest + 86_400)
+            .map(|(ip, c)| (*ip, c.first_s))
+            .collect()
+    }
+
     /// First-seen domains, oldest first (at most the last 2000).
     pub fn new_domains(&self) -> impl DoubleEndedIterator<Item = &NewDomain> {
         self.new_domains.iter()

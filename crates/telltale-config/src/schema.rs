@@ -974,6 +974,17 @@ pub enum AlertWhen {
     ServfailRate,
     /// A newer TelltaleDNS build is available (once per version).
     UpdateAvailable,
+    /// REQ: OBS-010 (T9.5) — a replica is behind the primary's configuration (one alert per
+    /// node; `for_secs` says for how long).
+    SyncLag,
+    /// A device TelltaleDNS has never seen starts asking (once per device; quiet for the
+    /// first day after a fresh start, while every device is new).
+    NewDevice,
+    /// A node's data disk is more than `threshold` percent full (default 90; one alert per
+    /// node).
+    DiskFull,
+    /// An AI agent's change waits for approval (`[agents] require_approval`; once per plan).
+    PlanPending,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

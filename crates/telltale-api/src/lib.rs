@@ -144,6 +144,11 @@ pub trait Backend: Send + Sync + 'static {
         ))
     }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
+    /// REQ: OBS-010 (T9.5) — devices first seen since `since_s` (every node, in a cluster).
+    fn new_devices(&self, since_s: u64) -> Vec<model::NewDevice> {
+        let _ = since_s;
+        Vec::new()
+    }
     /// REQ: CLU-007 (T9.3) — counts other nodes shipped here, except those of `live` nodes.
     fn shipped_timeseries(
         &self,

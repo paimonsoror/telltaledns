@@ -606,6 +606,26 @@
           "description": "A newer TelltaleDNS build is available (once per version).",
           "type": "string",
           "const": "update_available"
+        },
+        {
+          "description": "REQ: OBS-010 (T9.5) — a replica is behind the primary's configuration (one alert per\nnode; `for_secs` says for how long).",
+          "type": "string",
+          "const": "sync_lag"
+        },
+        {
+          "description": "A device TelltaleDNS has never seen starts asking (once per device; quiet for the\nfirst day after a fresh start, while every device is new).",
+          "type": "string",
+          "const": "new_device"
+        },
+        {
+          "description": "A node's data disk is more than `threshold` percent full (default 90; one alert per\nnode).",
+          "type": "string",
+          "const": "disk_full"
+        },
+        {
+          "description": "An AI agent's change waits for approval (`[agents] require_approval`; once per plan).",
+          "type": "string",
+          "const": "plan_pending"
         }
       ]
     },

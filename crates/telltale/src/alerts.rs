@@ -40,7 +40,13 @@ pub(crate) struct Engine {
 
 /// Conditions that go out once per subject and never "clear".
 fn one_off(w: AlertWhen) -> bool {
-    matches!(w, AlertWhen::Anomaly | AlertWhen::UpdateAvailable)
+    matches!(
+        w,
+        AlertWhen::Anomaly
+            | AlertWhen::UpdateAvailable
+            | AlertWhen::NewDevice
+            | AlertWhen::PlanPending
+    )
 }
 
 impl Engine {
@@ -111,9 +117,92 @@ impl Engine {
     }
 }
 
-/// What `rule` sees now, read from `b` (blocking: run it on a blocking thread).
-fn observe(b: &dyn Backend, rule: &AlertRule, now: u64) -> Observed {
+/// What `rule` sees now, read from `b` (blocking: run it on a blocking thread). `pending`:
+/// agents' plans waiting for approval on this node, as `(id, summary)`.
+#[allow(clippy::too_many_lines)] // one arm per condition
+fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, String)]) -> Observed {
+    let node_label = |n: &telltale_api::model::ClusterNode| {
+        if let Some(pod) = n.pod.as_ref().filter(|p| !p.is_empty()) {
+            pod.clone()
+        } else if n.site.is_empty() {
+            n.node_id.clone()
+        } else {
+            n.site.clone()
+        }
+    };
     match rule.when {
+        // REQ: OBS-010 (T9.5) — the new conditions.
+        AlertWhen::SyncLag => b
+            .cluster()
+            .nodes
+            .into_iter()
+            .filter(|n| !n.this_node && n.connected && n.config_lag > 0)
+            .map(|n| {
+                let s = format!(
+                    "{} is {} configuration version(s) behind the primary{}",
+                    node_label(&n),
+                    n.config_lag,
+                    n.behind_seconds
+                        .map_or(String::new(), |s| format!(" (for {s} s)"))
+                );
+                (node_label(&n), s)
+            })
+            .collect(),
+        AlertWhen::NewDevice => b
+            .new_devices(now.saturating_sub(3600))
+            .into_iter()
+            .map(|d| {
+                let who = d
+                    .client_name
+                    .clone()
+                    .map_or_else(|| d.client.clone(), |n| format!("{n} ({})", d.client));
+                (
+                    d.client.clone(),
+                    format!("a new device started using DNS: {who}"),
+                )
+            })
+            .collect(),
+        AlertWhen::DiskFull => {
+            let limit = rule.threshold.unwrap_or(90.0);
+            let c = b.cluster();
+            let mut hosts: Vec<(String, telltale_api::model::HostReport)> = c
+                .nodes
+                .iter()
+                .filter_map(|n| n.host.clone().map(|h| (node_label(n), h)))
+                .collect();
+            if hosts.is_empty()
+                && let Some(h) = c.host.clone()
+            {
+                hosts.push(("this node".to_owned(), h));
+            }
+            hosts
+                .into_iter()
+                .filter_map(|(name, h)| {
+                    let used = h.latest.disk_used_percent?;
+                    (used > limit).then(|| {
+                        let free = h
+                            .latest
+                            .disk_free_bytes
+                            .map_or(String::new(), |f| format!(", {} MiB free", f / (1 << 20)));
+                        (
+                            name.clone(),
+                            format!(
+                                "{name}'s data disk is {used:.0}% full{free} (threshold {limit}%)"
+                            ),
+                        )
+                    })
+                })
+                .collect()
+        }
+        AlertWhen::PlanPending => pending
+            .iter()
+            .map(|(id, summary)| {
+                (
+                    id.clone(),
+                    format!("an AI agent's change waits for approval: {summary}"),
+                )
+            })
+            .collect(),
         AlertWhen::UpstreamDown => b
             .upstreams()
             .into_iter()
@@ -427,9 +516,22 @@ pub(crate) async fn run(
             let now = crate::pipeline::unix_now();
             let b = Arc::clone(&backend);
             let rs = rules.clone();
+            // REQ: OBS-010 (T9.5) — plans waiting for approval on this node.
+            let pending: Vec<(String, String)> = sources
+                .auth
+                .get()
+                .map(|a| {
+                    a.plans()
+                        .list(None)
+                        .into_iter()
+                        .filter(|p| p.state == "pending")
+                        .map(|p| (p.id, format!("{} (by {})", p.summary, p.requested_by)))
+                        .collect()
+                })
+                .unwrap_or_default();
             let observed = tokio::task::spawn_blocking(move || {
                 rs.iter()
-                    .map(|r| observe(b.as_ref(), r, now))
+                    .map(|r| observe(b.as_ref(), r, now, &pending))
                     .collect::<Vec<_>>()
             })
             .await

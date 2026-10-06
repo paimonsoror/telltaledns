@@ -850,6 +850,14 @@ pub enum TailItem {
     Dropped(TailDropped),
 }
 
+/// REQ: OBS-010 (T9.5) — a device seen for the first time (internal: alerts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewDevice {
+    pub client: String,
+    pub client_name: Option<String>,
+    pub first_seen_unix_seconds: u64,
+}
+
 /// REQ: CLU-002 (T9.2) — one latency histogram, as `(microseconds, count)` pairs: what
 /// cluster nodes send each other so percentiles merge exactly. Internal (not an API route).
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -99,6 +99,11 @@ impl Anomalies {
             .collect()
     }
 
+    /// REQ: OBS-010 (T9.5) — devices first seen since `since` (Unix seconds).
+    pub(crate) fn new_clients(&self, since: u64) -> Vec<([u8; 16], u64)> {
+        self.lock().new_clients(since)
+    }
+
     /// Findings so far by kind, devices with state, and devices evicted (for `/metrics`).
     pub(crate) fn counters(&self) -> (Vec<(Kind, u64)>, usize, u64) {
         let e = self.lock();

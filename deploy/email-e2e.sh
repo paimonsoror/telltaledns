@@ -124,6 +124,10 @@ threading.Thread(target=listen, args=(25465, True), daemon=True).start()
 listen(25587, False)
 EOF
 python3 "$E/smtp.py" "$E" "$E/cert.pem" "$E/key.pem" > "$E/smtp.log" 2>&1 & S=$!
+for _ in $(seq 50); do
+  python3 -c 'import socket; [socket.create_connection(("127.0.0.1", p), 1).close() for p in (25587, 25465)]' 2>/dev/null && break
+  sleep 0.1
+done
 echo -n app-password-1 > "$E/pass"
 echo -n wrong-password > "$E/wrong"
 
@@ -175,6 +179,13 @@ name = "Lists failing"
 when = "list_failing"
 for_secs = 0
 to = ["mail", "mail-tls", "mail-wrong"]
+# REQ: OBS-010 (T9.5) — a new condition: any disk is fuller than 0.1%.
+[[alerts.rule]]
+name = "Disk full"
+when = "disk_full"
+threshold = 0.1
+for_secs = 0
+to = ["mail"]
 EOF
 
 # Configuration check: a password over an unencrypted connection is refused.
@@ -184,12 +195,15 @@ grep -q "never sent unencrypted" "$E/check.txt" || fail "the check didn't explai
 echo "ok: config check refuses a password without encryption"
 
 "$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
-for _ in $(seq 120); do [ "$(ls "$E/mail" 2>/dev/null | wc -l)" -ge 2 ] && break; sleep 0.5; done
-[ "$(ls "$E/mail" | wc -l)" -ge 2 ] || fail "two emails (STARTTLS and TLS) didn't arrive"
+for _ in $(seq 120); do [ "$(ls "$E/mail" 2>/dev/null | wc -l)" -ge 3 ] && break; sleep 0.5; done
+[ "$(ls "$E/mail" | wc -l)" -ge 3 ] || fail "three emails (two for the list, one for the disk) didn't arrive"
 python3 - "$E/mail" <<'EOF'
 import base64, email, json, os, sys
 d = sys.argv[1]
 msgs = [json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d))]
+disk = [m for m in msgs if "Subject: [TelltaleDNS] Disk full" in m["data"]]
+assert len(disk) == 1 and "data disk is" in base64.b64decode("".join(email.message_from_string(disk[0]["data"]).get_payload().split())).decode(), disk
+msgs = [m for m in msgs if m not in disk]
 both = [m for m in msgs if len(m["to"]) == 2]
 assert both, msgs
 m = both[0]
@@ -200,7 +214,7 @@ assert msg["To"] == "me@example.com, you@example.com", msg["To"]
 body = msg.get_payload(decode=True).decode()
 assert "Rule: Lists failing" in body and "Status: firing" in body, body
 assert len(msgs) == 2, f"the wrong password must not deliver: {len(msgs)}"
-print(f"ok: {len(msgs)} emails (STARTTLS and implicit TLS), subject and body as expected")
+print(f"ok: {len(msgs)} emails (STARTTLS and implicit TLS), subject and body as expected; disk_full fired")
 EOF
 for _ in $(seq 20); do grep -q 'alert not delivered.*mail-wrong.*535' "$E/node.log" && break; sleep 0.5; done
 grep -q 'alert not delivered.*mail-wrong.*535' "$E/node.log" || fail "the wrong password wasn't reported"

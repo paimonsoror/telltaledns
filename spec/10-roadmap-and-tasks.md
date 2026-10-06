@@ -507,3 +507,7 @@ The deferrals collected after M8, worked through one by one. DHCP follow-ups are
 - [x] **T9.4 Alert email.** *(OBS-010)* `type = "email"` destinations: STARTTLS or TLS, AUTH, any provider (no relay of one's own).
   - *AC:* a scripted SMTP server receives the alert over STARTTLS (private CA) and implicit TLS with the right envelope, subject, and body; a wrong password is reported (535) and nothing is delivered; a password over `smtp+insecure://` fails the configuration check; checked by hand against Mailpit.
   - *Done 2026-10-06:* `crates/telltale/src/smtp.rs` (ADR-085, Proposed), email destination fields and validation, `deliver_email`; unit tests `obs_010_smtp_urls`, `obs_010_smtp_message`; `deploy/email-e2e.sh` in CI; docs (Gmail app passwords, Mailpit).
+
+- [x] **T9.5 More alert rules.** *(OBS-010)* `sync_lag`, `new_device`, `disk_full`, `plan_pending`.
+  - *AC:* a replica behind the primary, a device seen for the first time on any node (not during the first day after a fresh start), a data disk over `threshold`, and an agent plan waiting for approval each raise an alert (the last three once per subject); the email e2e sees `disk_full` fire.
+  - *Done 2026-10-06:* `anomaly::Engine::new_clients` (learning guard), `Backend::new_devices` (federated, earliest sighting wins), the conditions in `alerts.rs` (plans read from this node's plan store); unit test `obs_010_new_devices_after_the_first_day`; `deploy/email-e2e.sh` checks `disk_full` (and now waits for its mail server); docs.

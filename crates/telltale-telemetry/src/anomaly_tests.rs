@@ -341,3 +341,25 @@ fn obs_009_dga_and_first_seen_feed() {
         "the first day isn't in the feed; known domains aren't new"
     );
 }
+
+/// REQ: OBS-010 (T9.5) — a device is "new" only once the engine has known devices for a day,
+/// so a fresh start doesn't announce every device on the network.
+#[test]
+fn obs_010_new_devices_after_the_first_day() {
+    let mut e = Engine::new(Settings::default());
+    e.observe(DAY0, ip(PHONE), &wire("a.example.com"));
+    e.observe(DAY0 + 3600, ip(TV), &wire("b.example.com"));
+    assert!(
+        e.new_clients(DAY0).is_empty(),
+        "the first day: learning, not new"
+    );
+    e.observe(DAY0 + 2 * 86_400, ip(PLUG), &wire("c.example.com"));
+    assert_eq!(
+        e.new_clients(DAY0 + 86_400),
+        vec![(ip(PLUG), DAY0 + 2 * 86_400)]
+    );
+    assert!(
+        e.new_clients(DAY0 + 3 * 86_400).is_empty(),
+        "only since the given time"
+    );
+}
