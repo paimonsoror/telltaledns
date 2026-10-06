@@ -646,6 +646,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dhcp/leases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * DHCP leases (OPS-008).
+         * @description The addresses this node's DHCP server has handed out (and its reservations), with each
+         *     device's MAC, the host name it gave, and its name in TelltaleDNS. Empty on a node that
+         *     doesn't run DHCP (in a cluster, ask the node that does).
+         */
+        get: operations["dhcp_leases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/explain": {
         parameters: {
             query?: never;
@@ -2213,6 +2235,19 @@ export interface components {
             role: components["schemas"]["Role"];
             username: string;
         };
+        /** @description A DHCP lease (REQ: OPS-008). */
+        DhcpLease: {
+            /** @description The device's name in TelltaleDNS (a named client, else the host name). */
+            clientName?: string | null;
+            /** Format: int64 */
+            expiresUnixSeconds: number;
+            /** @description The name the device gave (option 12), or its reservation's. */
+            hostname?: string | null;
+            ip: string;
+            mac: string;
+            /** @description A reservation (`[[dhcp.reservation]]`). */
+            reserved: boolean;
+        };
         ExplainBlock: {
             /** Format: int32 */
             edeCode: number;
@@ -2633,6 +2668,23 @@ export interface components {
                  *     the files' entry of that name), or `hidden` (the files' entry is left out).
                  */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_DhcpLease: {
+            items: {
+                /** @description The device's name in TelltaleDNS (a named client, else the host name). */
+                clientName?: string | null;
+                /** Format: int64 */
+                expiresUnixSeconds: number;
+                /** @description The name the device gave (option 12), or its reservation's. */
+                hostname?: string | null;
+                ip: string;
+                mac: string;
+                /** @description A reservation (`[[dhcp.reservation]]`). */
+                reserved: boolean;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -4643,6 +4695,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ConfigEntry"];
+                };
+            };
+        };
+    };
+    dhcp_leases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_DhcpLease"];
                 };
             };
         };
