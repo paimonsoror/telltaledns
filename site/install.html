@@ -157,7 +157,8 @@ kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token 
     <li><b>One management plane.</b> Any node's UI shows the whole cluster's dashboard and query log, and changes made there go to the primary.</li>
     <li><b>Failover.</b> Promote another node by hand (<code>telltale cluster promote</code>), or let the cluster elect one (<code>telltale cluster set-failover auto</code>) once it has a third voter, such as a tiny witness (<code>telltale cluster witness</code>).</li>
     <li><b>Node-local settings.</b> Each node keeps its own listeners, retention, and overrides; everything else is shared.</li>
-    <li><b>Kubernetes pods come and go.</b> Resolver pods join on their own and are removed when they disappear.</li>
+    <li><b>More pods in Kubernetes.</b> <code>mode: scaled</code> adds resolver pods beside the controller (<code>resolvers.replicas</code>). They join on their own, share the DNS Service, leave the cluster when they shut down, and keep answering for a few seconds while the Service drops them, so rollouts don't lose lookups. For one address for DNS, the UI, and the cluster port, set <code>service.dns.alsoServe</code>.</li>
+    <li><b>See it.</b> The Cluster page draws the cluster live: sites, the primary, pods grouped by Kubernetes node, link round trips, and each node's share of the queries.</li>
     <li><b>Git as the source.</b> Optionally, the shared configuration can come from a Git repository or a GitOps tool (<code>config_source = "gitops"</code>).</li>
     <li><b>Maintenance.</b> Rolling upgrades work across one version step (N and N−1), and <code>telltale cluster rotate-ca</code> replaces the cluster's certificate authority without downtime.</li>
   </ul>
