@@ -503,3 +503,7 @@ The deferrals collected after M8, worked through one by one. DHCP follow-ups are
 - [x] **T9.3 Dashboard history from ephemeral nodes.** *(CLU-007, ADR-055)* Ship-mode nodes also send their per-minute counts; the cluster's dashboard keeps a replaced pod's traffic.
   - *AC:* minutes arrive on the target per node; a node answering live isn't counted twice; damaged bodies and bad node IDs are refused; retention as for minutes (7 days); the whole-cluster view only (a scoped view shows live nodes).
   - *Done 2026-10-06:* `Rollups::put_shipped`/`shipped_range` (`shipped_minute`), `ship::run_rollups`/`receive_rollups` (RPC `rollup.put`), `Backend::shipped_timeseries` merged into the federated time series (and so the summary); unit test `clu_007_rollup_minutes_ship`; cluster e2e (the replica's minutes reach the primary); docs.
+
+- [x] **T9.4 Alert email.** *(OBS-010)* `type = "email"` destinations: STARTTLS or TLS, AUTH, any provider (no relay of one's own).
+  - *AC:* a scripted SMTP server receives the alert over STARTTLS (private CA) and implicit TLS with the right envelope, subject, and body; a wrong password is reported (535) and nothing is delivered; a password over `smtp+insecure://` fails the configuration check; checked by hand against Mailpit.
+  - *Done 2026-10-06:* `crates/telltale/src/smtp.rs` (ADR-085, Proposed), email destination fields and validation, `deliver_email`; unit tests `obs_010_smtp_urls`, `obs_010_smtp_message`; `deploy/email-e2e.sh` in CI; docs (Gmail app passwords, Mailpit).

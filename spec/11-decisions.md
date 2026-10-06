@@ -1265,6 +1265,17 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-085 — Alert email: a small built-in SMTP submission client (Proposed)
+**Context:** T9.4 (OBS-010 lists email as a destination; deferred in T7.12). The owner has no relay of their own.
+
+**Decision:**
+- A minimal client in the binary (`smtp.rs`, written from RFC 5321/3207/4954/5322) over the rustls stack already shipped, instead of a mail library: one message per connection, STARTTLS (`smtp://`, 587) or implicit TLS (`smtps://`, 465), AUTH PLAIN or LOGIN, the public roots plus `tls_ca`, base64 text bodies, RFC 2047 subjects.
+- A password is only sent encrypted: STARTTLS can't fall back to plain, and `smtp+insecure://` (for local catchers) refuses a username in the configuration check.
+- Validation: CI runs a scripted SMTP server (STARTTLS with a private CA, implicit TLS, a wrong password reported as 535); Mailpit was checked by hand as an independent implementation; real delivery is the owner's choice of provider (a Gmail app password needs no relay).
+- Not done: HTML mail, DKIM (the provider signs), a queue (a failed alert is logged like any destination).
+
+**Consequences:** email works with any provider that offers SMTP submission, for about 30 KiB of code and no new dependency.
+
 ## ADR-084 — WASM upstream plugins: deferred, and wasmi rather than wasmtime if built (Proposed)
 **Context:** M8 lists WASM upstream plugins; `04` §3 and ADR-007 name wasmtime behind a feature flag. T7.16 shipped the out-of-process plugins (`unix://` and `exec://`, DNS wire format), which already let any language implement an upstream.
 

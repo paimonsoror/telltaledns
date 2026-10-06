@@ -3306,6 +3306,7 @@ dependencies = [
  "rand 0.10.3",
  "ring",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "socket2",
@@ -3323,9 +3324,11 @@ dependencies = [
  "telltale-upstream",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots",
  "zstd",
 ]
 

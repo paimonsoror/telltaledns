@@ -41,6 +41,11 @@ zstd = { version = "0.14.0", default-features = false }
 # SHA-256 for self-update (already in the tree through rustls).
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
+# REQ: OBS-010 (T9.4) — alert email over STARTTLS/TLS: the same rustls stack the fetcher and
+# DoT use (already in the tree), with the built-in Mozilla roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1.0.9"
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 bytes = "1.12.1"

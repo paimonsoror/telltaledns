@@ -437,10 +437,41 @@
       "description": "One place alerts go.",
       "type": "object",
       "properties": {
+        "from": {
+          "description": "REQ: OBS-010 (T9.4) — `email`: the sender address.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "name": {
           "description": "Unique name, used in a rule's `to`.",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "password_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "tls_ca": {
+          "description": "`email`: a PEM file with the mail server's certificate (or its CA), for a private\nserver; public ones are trusted already.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "to": {
+          "description": "`email`: the recipients.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
         },
         "token_file": {
           "description": "A file holding the token (ntfy access token, Gotify application token), so it stays\nout of the config and Git.",
@@ -451,12 +482,20 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "type": {
-          "description": "`webhook` (JSON POST), `ntfy`, `gotify`, or `slack` (Slack-compatible webhooks:\nSlack, Mattermost, Discord's `/slack` endpoint).",
+          "description": "`webhook` (JSON POST), `ntfy`, `gotify`, `slack` (Slack-compatible webhooks:\nSlack, Mattermost, Discord's `/slack` endpoint), or `email`.",
           "$ref": "#/$defs/AlertKind"
         },
         "url": {
-          "description": "The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), or the Gotify server.",
+          "description": "The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), the Gotify server,\nor the mail server: `smtp://smtp.gmail.com:587` (STARTTLS), `smtps://host:465` (TLS),\nor `smtp+insecure://127.0.0.1:1025` (no encryption: a local mail catcher only).",
           "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "username": {
+          "description": "`email`: the mail server account, and a file holding its password (a Gmail app\npassword, for example). Sent only over an encrypted connection.",
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         }
       },
@@ -469,12 +508,21 @@
     },
     "AlertKind": {
       "description": "A destination's kind.",
-      "type": "string",
-      "enum": [
-        "webhook",
-        "ntfy",
-        "gotify",
-        "slack"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "webhook",
+            "ntfy",
+            "gotify",
+            "slack"
+          ]
+        },
+        {
+          "description": "REQ: OBS-010 (T9.4)",
+          "type": "string",
+          "const": "email"
+        }
       ]
     },
     "AlertRule": {

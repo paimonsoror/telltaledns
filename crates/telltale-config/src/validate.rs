@@ -426,7 +426,36 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
             r.err(format!("{p}.name"), "must be unique and not empty");
         }
         let u = d.url.as_str();
-        if !(u.starts_with("https://") || u.starts_with("http://")) {
+        if d.kind == crate::schema::AlertKind::Email {
+            // REQ: OBS-010 (T9.4)
+            if !(u.starts_with("smtp://")
+                || u.starts_with("smtps://")
+                || u.starts_with("smtp+insecure://"))
+            {
+                r.err(
+                    format!("{p}.url"),
+                    "use smtp://host:587 (STARTTLS), smtps://host:465 (TLS), or smtp+insecure://host:port (a local catcher)",
+                );
+            }
+            if d.from.as_ref().is_none_or(|f| !f.as_str().contains('@')) {
+                r.err(format!("{p}.from"), "the sender's email address");
+            }
+            if d.to.is_empty() || d.to.iter().any(|t| !t.as_str().contains('@')) {
+                r.err(format!("{p}.to"), "one or more email addresses");
+            }
+            if d.username.is_some() != d.password_file.is_some() {
+                r.err(
+                    format!("{p}.password_file"),
+                    "username and password_file go together",
+                );
+            }
+            if d.username.is_some() && u.starts_with("smtp+insecure://") {
+                r.err(
+                    format!("{p}.url"),
+                    "a password is never sent unencrypted: use smtp:// or smtps://",
+                );
+            }
+        } else if !(u.starts_with("https://") || u.starts_with("http://")) {
             r.err(format!("{p}.url"), "use an http:// or https:// URL");
         }
     }

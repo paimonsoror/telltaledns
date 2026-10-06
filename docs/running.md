@@ -1642,14 +1642,14 @@ nxdomain_percent = 50          # ...that are at least this share of the device's
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level = 3` (names aren't kept). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
 ## Alerts
-TelltaleDNS can tell you when something needs attention: on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
+TelltaleDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
 ```toml
 [alerts]
 interval_secs = 30                       # how often rules are checked
 
 [[alerts.destination]]
 name = "phone"
-type = "ntfy"                            # webhook | ntfy | gotify | slack
+type = "ntfy"                            # webhook | ntfy | gotify | slack | email
 url = "https://ntfy.sh/my-home-dns"
 # token_file = "/run/secrets/ntfy-token" # an access token, kept out of the config
 
@@ -1680,7 +1680,24 @@ Rules watch:
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.
-- *Not yet:* email (SMTP).
+
+### Email
+Any mail account that allows SMTP sign-in works; you don't need a mail server of your own:
+```toml
+[[alerts.destination]]
+name = "inbox"
+type = "email"
+url = "smtp://smtp.gmail.com:587"        # STARTTLS; smtps://host:465 for TLS from the start
+from = "you@gmail.com"
+to = ["you@gmail.com"]                   # one or more
+username = "you@gmail.com"
+password_file = "/run/secrets/smtp-password"
+```
+- **Gmail:** turn on 2-Step Verification, then make an app password (Google Account → Security → App passwords) and put it in `password_file`. Outlook.com, Fastmail, iCloud, and most providers work the same way with their SMTP host and an app password.
+- **Encryption is required** whenever a password is sent: `smtp://` must offer STARTTLS (there's no fallback to plain), and `smtps://` is TLS from the first byte. Certificates are checked against the built-in public roots; for a private mail server, give its CA in `tls_ca`.
+- `smtp+insecure://host:port` sends without encryption and without a password: only for a local mail catcher such as [Mailpit](https://mailpit.axllent.org) while testing (`docker run -p 8025:8025 -p 1025:1025 axllent/mailpit`, then `url = "smtp+insecure://127.0.0.1:1025"` and open http://127.0.0.1:8025).
+- The message is plain text: the summary, then the rule, status, subject, node, and time (UTC). The subject starts with `[TelltaleDNS]`, which makes a mail filter easy.
+- In Kubernetes, keep the password in a Secret mounted as a file, never in the values or Git.
 
 ## Web UI
 Open `http://<server>:8053/` in a browser. On first start it asks for the setup token (see [Users and sign-in](#users-and-sign-in)) and creates the first admin.

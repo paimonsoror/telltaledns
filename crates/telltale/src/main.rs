@@ -40,6 +40,7 @@ mod selfupdate;
 mod server;
 mod ship;
 mod sinks;
+mod smtp;
 mod tail;
 mod technitium;
 mod updates;

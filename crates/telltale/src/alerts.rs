@@ -261,7 +261,78 @@ fn render(
             "application/json",
             Vec::new(),
         ),
+        // Sent by `deliver_email`, not as HTTP.
+        AlertKind::Email => (text, "text/plain", Vec::new()),
     }
+}
+
+/// REQ: OBS-010 (T9.4) — an alert as an email.
+async fn deliver_email(
+    d: &AlertDestination,
+    rule: &str,
+    n: &Notice,
+    node: &str,
+) -> Result<(), String> {
+    let (host, port, security) = crate::smtp::parse_url(d.url.as_str())?;
+    let login = match (&d.username, &d.password_file) {
+        (Some(u), Some(f)) => Some((
+            u.to_string(),
+            std::fs::read_to_string(f.as_str())
+                .map_err(|e| format!("{}: {e}", f.as_str()))?
+                .trim()
+                .to_owned(),
+        )),
+        _ => None,
+    };
+    let extra_roots = match &d.tls_ca {
+        Some(f) => {
+            use rustls::pki_types::pem::PemObject as _;
+            rustls::pki_types::CertificateDer::pem_file_iter(f.as_str())
+                .map_err(|e| format!("{}: {e}", f.as_str()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("{}: {e}", f.as_str()))?
+        }
+        None => Vec::new(),
+    };
+    let subject = if n.firing {
+        format!("[TelltaleDNS] {rule}: {}", n.subject)
+    } else {
+        format!("[TelltaleDNS] Resolved: {rule}: {}", n.subject)
+    };
+    let body = format!(
+        "{}\n\nRule: {rule}\nStatus: {}\nSubject: {}\nNode: {node}\nTime: {}\n\n-- \nSent by TelltaleDNS alerts ([alerts] in the configuration).\n",
+        if n.firing {
+            n.summary.clone()
+        } else {
+            format!("Cleared: {}", n.summary)
+        },
+        if n.firing { "firing" } else { "resolved" },
+        n.subject,
+        crate::alerts::time_text(crate::pipeline::unix_now()),
+    );
+    let server = crate::smtp::Server {
+        host,
+        port,
+        security,
+        login,
+        extra_roots,
+    };
+    let m = crate::smtp::Message {
+        from: d.from.as_ref().map(ToString::to_string).unwrap_or_default(),
+        to: d.to.iter().map(ToString::to_string).collect(),
+        subject,
+        body,
+    };
+    tokio::time::timeout(Duration::from_secs(60), crate::smtp::send(&server, &m))
+        .await
+        .map_err(|_| "timed out".to_owned())?
+}
+
+/// `2026-10-06 17:05:52 UTC`.
+pub(crate) fn time_text(unix: u64) -> String {
+    let t = telltale_store::qlog::format_ts(unix.saturating_mul(1_000_000));
+    t.get(..19)
+        .map_or(t.clone(), |s| format!("{} UTC", s.replace('T', " ")))
 }
 
 /// Sends one alert to one destination.
@@ -272,6 +343,9 @@ async fn deliver(
     n: &Notice,
     node: &str,
 ) -> Result<(), String> {
+    if d.kind == AlertKind::Email {
+        return deliver_email(d, rule, n, node).await;
+    }
     let token = match &d.token_file {
         Some(f) => Some(
             std::fs::read_to_string(f.as_str())
@@ -479,6 +553,11 @@ mod tests {
             kind,
             url: telltale_config::SafeString::new("https://example.test/x").unwrap(),
             token_file: None,
+            from: None,
+            to: Vec::new(),
+            username: None,
+            password_file: None,
+            tls_ca: None,
         };
         let n = Notice {
             rule: 0,

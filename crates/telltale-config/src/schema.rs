@@ -890,16 +890,34 @@ impl Default for AlertsConfig {
 pub struct AlertDestination {
     /// Unique name, used in a rule's `to`.
     pub name: SafeString,
-    /// `webhook` (JSON POST), `ntfy`, `gotify`, or `slack` (Slack-compatible webhooks:
-    /// Slack, Mattermost, Discord's `/slack` endpoint).
+    /// `webhook` (JSON POST), `ntfy`, `gotify`, `slack` (Slack-compatible webhooks:
+    /// Slack, Mattermost, Discord's `/slack` endpoint), or `email`.
     #[serde(rename = "type")]
     pub kind: AlertKind,
-    /// The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), or the Gotify server.
+    /// The webhook URL, the ntfy topic URL (`https://ntfy.sh/my-topic`), the Gotify server,
+    /// or the mail server: `smtp://smtp.gmail.com:587` (STARTTLS), `smtps://host:465` (TLS),
+    /// or `smtp+insecure://127.0.0.1:1025` (no encryption: a local mail catcher only).
     pub url: SafeString,
     /// A file holding the token (ntfy access token, Gotify application token), so it stays
     /// out of the config and Git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<SafeString>,
+    /// REQ: OBS-010 (T9.4) — `email`: the sender address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<SafeString>,
+    /// `email`: the recipients.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<SafeString>,
+    /// `email`: the mail server account, and a file holding its password (a Gmail app
+    /// password, for example). Sent only over an encrypted connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<SafeString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<SafeString>,
+    /// `email`: a PEM file with the mail server's certificate (or its CA), for a private
+    /// server; public ones are trusted already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<SafeString>,
 }
 
 /// A destination's kind.
@@ -910,6 +928,8 @@ pub enum AlertKind {
     Ntfy,
     Gotify,
     Slack,
+    /// REQ: OBS-010 (T9.4)
+    Email,
 }
 
 /// One alert rule.
