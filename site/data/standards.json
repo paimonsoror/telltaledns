@@ -199,12 +199,12 @@
     {
       "rfc": "8198",
       "title": "Aggressive use of DNSSEC-validated cache",
-      "status": "planned",
+      "status": "partial",
       "reqs": [
-        "DNS-012"
+        "DNS-011"
       ],
-      "summary": "Answer non-existent names from validated NSEC records without asking. Deferred (ADR-086): it needs a cache of validated NSEC ranges next to the validator; the NSEC proofs already pass through for validation.",
-      "diagram": "planned"
+      "summary": "A validated NSEC denial proves a range of names absent: later questions inside it get a signed NXDOMAIN or NODATA without asking upstream (`[dnssec] aggressive_nsec`, on by default). Partial: NSEC only; NSEC3-signed zones still ask (ADR-092).",
+      "diagram": "rfc8198"
     },
     {
       "rfc": "6147",

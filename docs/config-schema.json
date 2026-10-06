@@ -145,6 +145,7 @@
       "description": "DNSSEC validation of forwarded answers (DNS-011).",
       "$ref": "#/$defs/DnssecConfig",
       "default": {
+        "aggressive_nsec": true,
         "mode": "off",
         "negative_trust_anchors": []
       }
@@ -1137,6 +1138,11 @@
       "description": "`[dnssec]`.",
       "type": "object",
       "properties": {
+        "aggressive_nsec": {
+          "description": "REQ: DNS-011 (T9.16) — RFC 8198: answer names that validated NSEC records prove don't\nexist (or lack the type) from the cache, without asking upstream. On by default.",
+          "type": "boolean",
+          "default": true
+        },
         "mode": {
           "$ref": "#/$defs/DnssecMode",
           "default": "off"

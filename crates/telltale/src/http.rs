@@ -663,6 +663,13 @@ fn render_dnssec(w: &mut PromWriter, s: &telltale_upstream::dnssec::Stats) {
     ] {
         f.sample(name, &[("result", result)], v.load(Relaxed));
     }
+    // REQ: DNS-011 (T9.16) — RFC 8198.
+    w.family(
+        "telltale_dnssec_synthesized_total",
+        "counter",
+        "Negative answers made from cached, validated NSEC ranges instead of asking upstream (RFC 8198).",
+    )
+    .sample("telltale_dnssec_synthesized_total", &[], s.synthesized.load(Relaxed));
 }
 
 /// REQ: CLU-007 — query-log ship mode, sending and receiving.

@@ -1265,6 +1265,29 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-092 — Aggressive NSEC (RFC 8198): NSEC ranges per upstream group, NSEC3 later (Proposed)
+**Context:** ADR-086 deferred RFC 8198. The owner asked for the deferred features that make TelltaleDNS a more complete DNS product. Unbound and BIND both do this by default, and on a home network the root zone's NSEC records cover the steady trickle of made-up TLDs (`.lan`, `.home`, `.localdomain`).
+
+**Decision:**
+- **What's kept:** after the validator proves a negative answer secure, its NSEC records are cached, keyed by owner in canonical order, per upstream group. Each is kept only if:
+  - it's proven secure;
+  - it's inside the zone of the SOA that came with it;
+  - it's signed by that zone.
+  The SOA and all RRSIGs are kept too.
+- **How long:** the NSEC's TTL, capped by the SOA's negative TTL (RFC 8198 §5.4). At most 20,000 ranges and 2,000 zones per group; past that, the ones expiring first go.
+- **Answering on a miss, before going upstream:**
+  - **NXDOMAIN** when one range covers the name and one covers the wildcard at the closest encloser (RFC 4035 §5.4).
+  - **NODATA** when an NSEC at the name lacks the type and CNAME, and isn't a delegation (unless the question is DS).
+  - **Nothing** below a delegation's or a DNAME's owner. The child zone, or the alias, decides there.
+- **The answer:** NXDOMAIN or NODATA with the SOA and NSEC records, plus their signatures for DO clients, and AD as for any secure answer. TTLs are counted down to the earliest expiry. It's counted as synthesized, not as a validation.
+- **Switch:** `[dnssec] aggressive_nsec`, on by default, as in Unbound.
+- **Deferred — NSEC3:** synthesis needs the zone's hash parameters and a hash per lookup, and opt-out spans prove nothing for unsigned delegations. Worth doing with measurements.
+
+**Consequences:**
+- Repeated junk lookups under NSEC-signed zones (the root above all) stop reaching upstreams, and are answered in microseconds instead of a round trip.
+- Answers still carry their proof, so a validating client downstream can check them.
+- A config reload starts the cache empty, like the validator's own cache.
+
 ## ADR-091 — No DHCP server: routers hand out addresses (Accepted)
 **Context:** T7.19 added an optional DHCPv4 server (OPS-008, ADR-078). The owner (2026-10-06): most people let their router serve DHCP, and DHCP sits outside what a DNS product should own. Keeping it means a privileged port (67), a lease state machine, and a failover question in clusters, all for few users.
 

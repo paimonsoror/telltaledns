@@ -489,7 +489,8 @@ impl Pipeline {
         // REQ: DNS-011 (T9.8) — root anchors from a file when one is set.
         let validator =
             telltale_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats))
-                .with_anchors_file(cfg.dnssec.trust_anchors_file.as_deref());
+                .with_anchors_file(cfg.dnssec.trust_anchors_file.as_deref())
+                .with_aggressive_nsec(cfg.dnssec.aggressive_nsec);
         self.dnssec.store(Some(Arc::new(Dnssec {
             validator,
             permissive,

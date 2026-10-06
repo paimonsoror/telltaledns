@@ -14,6 +14,10 @@
 //!
 //! Validation runs only on cache misses: the validated answer goes into the cache with its AD
 //! bit, so hits cost nothing extra.
+//!
+//! (T9.16) Secure negative answers also teach the per-group NSEC cache (RFC 8198,
+//! [`crate::nsec`]): a later miss inside a proven range is answered from it, signed, without
+//! asking upstream.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -26,7 +30,7 @@ use futures_util::stream::{self, Stream};
 use hickory_net::dnssec::DnssecDnsHandle;
 use hickory_net::proto::dnssec::{Proof, TrustAnchors};
 use hickory_net::proto::op::{
-    DnsRequest, DnsRequestOptions, DnsResponse, Message, Query, ResponseCode,
+    DnsRequest, DnsRequestOptions, DnsResponse, Edns, Message, OpCode, Query, ResponseCode,
 };
 use hickory_net::proto::rr::{Name, RecordType};
 use hickory_net::runtime::TokioRuntimeProvider;
@@ -65,6 +69,8 @@ pub struct Stats {
     pub insecure: AtomicU64,
     pub bogus: AtomicU64,
     pub indeterminate: AtomicU64,
+    /// REQ: DNS-011 (T9.16) — negative answers made from cached NSEC ranges (RFC 8198).
+    pub synthesized: AtomicU64,
 }
 
 impl Stats {
@@ -141,6 +147,10 @@ pub struct Validator {
     nta: Vec<String>,
     /// One validating handle (and validation cache) per upstream group, by its address.
     handles: Mutex<HashMap<usize, Checked>>,
+    /// REQ: DNS-011 (T9.16) — validated NSEC ranges per upstream group, by its address.
+    nsec: Mutex<HashMap<usize, crate::nsec::Ranges>>,
+    /// Use them (RFC 8198; `[dnssec] aggressive_nsec`).
+    aggressive: bool,
     pub stats: Arc<Stats>,
 }
 
@@ -163,8 +173,17 @@ impl Validator {
                 .filter(|s| !s.is_empty())
                 .collect(),
             handles: Mutex::new(HashMap::new()),
+            nsec: Mutex::new(HashMap::new()),
+            aggressive: true,
             stats,
         }
+    }
+
+    /// REQ: DNS-011 (T9.16) — RFC 8198 on (the default) or off.
+    #[must_use]
+    pub fn with_aggressive_nsec(mut self, on: bool) -> Self {
+        self.aggressive = on;
+        self
     }
 
     /// REQ: DNS-011 (T9.8) — root trust anchors from `path` (DNSKEY records in zone-file
@@ -250,6 +269,25 @@ impl Validator {
             text.push('.');
         }
         let name = Name::from_ascii(&text).map_err(|_| ResolveError::Empty)?;
+        let group_key = Arc::as_ptr(group) as usize;
+        // REQ: DNS-011 (T9.16) — a denial the cached NSEC ranges already prove (RFC 8198).
+        if self.aggressive && q.qclass == 1 {
+            let synth = self.nsec.lock().get(&group_key).and_then(|r| {
+                r.synthesize(&name, RecordType::from(q.qtype), std::time::Instant::now())
+            });
+            if let Some(bytes) =
+                synth.and_then(|s| synthesized(&name, q.qtype, s, client_do, client_ad))
+            {
+                self.stats.synthesized.fetch_add(1, Ordering::Relaxed);
+                return Ok(Validated {
+                    bytes,
+                    verdict: Verdict::Secure,
+                    ede: 0,
+                    upstream_id: 0,
+                    attempts: 0,
+                });
+            }
+        }
         let mut query = Query::query(name, RecordType::from(q.qtype));
         query.set_query_class(q.qclass.into());
         let mut opts = DnsRequestOptions::default();
@@ -280,6 +318,16 @@ impl Validator {
         let verdict = verdict(&response);
         self.stats.count(verdict);
         let mut message = response.into_message();
+        // REQ: DNS-011 (T9.16) — a secure denial's NSEC ranges, for later questions.
+        if self.aggressive && verdict == Verdict::Secure {
+            let mut all = self.nsec.lock();
+            if all.len() > 64 {
+                all.clear(); // groups of past configurations
+            }
+            all.entry(group_key)
+                .or_default()
+                .learn(&message, std::time::Instant::now());
+        }
         // Before DNSSEC records are stripped: why a bogus answer failed.
         let ede = if verdict == Verdict::Bogus {
             message
@@ -390,6 +438,36 @@ fn verdict(m: &Message) -> Verdict {
         };
     }
     worst
+}
+
+/// REQ: DNS-011 (T9.16) — the response for a denial proven by cached ranges: NXDOMAIN or
+/// NODATA, the SOA and NSEC records (with signatures for DO clients), AD as for any secure
+/// answer.
+fn synthesized(
+    name: &Name,
+    qtype: u16,
+    s: crate::nsec::Synth,
+    client_do: bool,
+    client_ad: bool,
+) -> Option<Vec<u8>> {
+    let mut m = Message::response(0, OpCode::Query);
+    m.metadata.recursion_desired = true;
+    m.metadata.recursion_available = true;
+    m.metadata.response_code = match s.denial {
+        crate::nsec::Denial::NxDomain => ResponseCode::NXDomain,
+        crate::nsec::Denial::NoData => ResponseCode::NoError,
+    };
+    m.add_query(Query::query(name.clone(), RecordType::from(qtype)));
+    m.add_authorities(s.authorities);
+    if !client_do {
+        strip_dnssec(&mut m, qtype);
+    }
+    m.metadata.authentic_data = client_do || client_ad;
+    let mut edns = Edns::new();
+    edns.set_max_payload(1232);
+    edns.set_dnssec_ok(client_do);
+    m.set_edns(edns);
+    m.to_vec().ok()
 }
 
 /// Removes RRSIG, NSEC, and NSEC3 records a client didn't ask for (it sent no DO bit).

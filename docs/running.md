@@ -386,7 +386,7 @@ members = ["recursive"]
 - **DNSSEC:** with `[dnssec] mode = "validate"` the signatures come along and are checked from the root's trust anchor, as for forwarded answers.
 - It's an upstream like any other: mix it into a group with forwarders (for example `strategy = "failover"` with a public resolver as the fallback), or route only some domains through it.
 - Limits that stop loops and broken zones: 16 CNAME hops, 32 referrals, 96 queries per question; servers get at most 1.2 s each.
-- *Not yet:* aggressive use of NSEC records (RFC 8198) to answer non-existent names without asking (ADR-086).
+- Non-existent names that validated NSEC records already cover are answered without asking (RFC 8198; see DNSSEC below).
 - Moving from Pi-hole with unbound, or from Technitium without forwarders: the importers note it (Technitium's import uses `recursive://` directly).
 
 ## Encrypted upstreams
@@ -1147,6 +1147,7 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   The first lookup in a new zone fetches its keys, and a cold start fetches the root's and
   the TLD's; after that they're cached.
 - **Counted** in `telltale_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
+- **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
 - **Why it failed:** a bogus answer's SERVFAIL says why when its signatures show it: EDE 7 (signature expired), 8 (signature not yet valid), 10 (signatures missing), else 6. A clock that's far off shows up as 7 or 8 everywhere, which is worth checking first.
 - **Trust anchors:** the root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you. To use other anchors (a future key before TelltaleDNS is updated, or a test root), give a file of DNSKEY records in zone-file form, as `dig DNSKEY . +noall +answer` prints them or Unbound's `root.key` holds:
   ```toml

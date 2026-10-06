@@ -20,6 +20,7 @@ mod doq;
 mod endpoint;
 mod group;
 pub mod health;
+mod nsec;
 /// REQ: UPS-011 (T7.16)
 mod plugin;
 pub mod presets;

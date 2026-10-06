@@ -1353,6 +1353,9 @@ pub struct DnssecConfig {
     /// file that can't be read or has no keys leaves the built-in anchors in place (logged).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_anchors_file: Option<SafeString>,
+    /// REQ: DNS-011 (T9.16) — RFC 8198: answer names that validated NSEC records prove don't
+    /// exist (or lack the type) from the cache, without asking upstream. On by default.
+    pub aggressive_nsec: bool,
 }
 
 impl Default for DnssecConfig {
@@ -1361,6 +1364,7 @@ impl Default for DnssecConfig {
             mode: DnssecMode::Off,
             negative_trust_anchors: Vec::new(),
             trust_anchors_file: None,
+            aggressive_nsec: true,
         }
     }
 }

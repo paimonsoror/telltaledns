@@ -56,7 +56,7 @@ proxy_protocol = false
 
 ## 6. Recursive resolution (DNS-012, UPS-012) — P1
 - Iterative from root hints, with QNAME minimization (relaxed mode), 0x20 case randomization (configurable), NS selection by smoothed RTT, glue validation within bailiwick, a CNAME/DNAME chase limit of 16, and a max 32 referrals per query.
-- Aggressive NSEC/NSEC3 caching (RFC 8198) when DNSSEC is validated.
+- Aggressive NSEC caching (RFC 8198) when DNSSEC is validated (T9.16, ADR-092: NSEC; NSEC3 not yet).
 - Exposed as an upstream of type `recursive`, so the default homelab setup ("Pi-hole + unbound") becomes one upstream group with a single entry.
 
 ## 7. Response synthesis rules
