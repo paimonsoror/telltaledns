@@ -147,8 +147,18 @@ echo "ok (new CA ${new:0:16})"
 
 echo "== 2. one CA everywhere, every certificate from it"
 # Replicas adopt the final bundle from the next manifest.
+# A replica adopts the bundle a moment before it removes its rotation files: wait for both.
+settled() {
+  local n f
+  for n in r w; do
+    [ "$(pki count "$E/$n/cluster/ca.crt")" = 1 ] || return 1
+    for f in ca-old.key ca-next.key ca-pending.key rotation.json; do
+      [ ! -e "$E/$n/cluster/$f" ] || return 1
+    done
+  done
+}
 for _ in $(seq 60); do
-  [ "$(pki count "$E/r/cluster/ca.crt")" = 1 ] && [ "$(pki count "$E/w/cluster/ca.crt")" = 1 ] && break
+  settled && break
   sleep 1
 done
 for n in p r w; do
