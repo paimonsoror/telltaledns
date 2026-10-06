@@ -1235,6 +1235,19 @@ impl Backend for ApiBackend {
         out
     }
 
+    // REQ: OPS-004 (ADR-046) — "Check now" in Settings.
+    fn check_updates(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::UpdateStatus, Problem>> {
+        let cfg = self.src.config.load();
+        let fut = crate::updates::check_now(
+            Arc::clone(&self.src.update),
+            cfg.updates.check,
+            cfg.updates.index_url.as_ref().map(ToString::to_string),
+        );
+        Box::pin(async move { Ok(fut.await) })
+    }
+
     // REQ: FLT-009 (T7.1) — this node's pauses.
     fn blocking_state(&self) -> Vec<telltale_api::model::BlockingNode> {
         let now = crate::pipeline::unix_now();

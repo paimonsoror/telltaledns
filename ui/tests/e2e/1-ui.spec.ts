@@ -629,6 +629,12 @@ test('dns_006 cache page', async () => {
   expect((await page.request.get('/api/v1/cache/entries?sort=nope')).status()).toBe(400);
   await page.goto('/#/settings?tab=system');
   await expect(page.getByRole('link', { name: 'Cache page' })).toHaveAttribute('href', '#/cache');
+  // REQ: OPS-004 — "Check now" (admins): a local build isn't compared with releases, so the
+  // status stays "newer" and nothing is fetched.
+  const check = page.waitForResponse('**/api/v1/system/update-check');
+  await page.getByTestId('check-updates').click();
+  expect((await check).status()).toBe(200);
+  await expect(page.getByTestId('updates')).toContainText('Newer than the published');
 });
 
 // REQ: DNS-006, CLU-008 (T6.15) — the Cache page scales with the cluster: with 8 nodes, each

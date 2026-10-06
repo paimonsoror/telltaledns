@@ -478,6 +478,12 @@ impl Backend for Federated {
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
         self.local.promote(req, by)
     }
+    // Updates are per node: the one serving the UI checks.
+    fn check_updates(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::UpdateStatus, Problem>> {
+        self.local.check_updates()
+    }
     fn promote_plan(
         &self,
         req: &PromoteRequest,

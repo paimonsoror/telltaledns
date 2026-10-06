@@ -247,6 +247,22 @@
     if (tab === 'audit' && can('admin')) void loadAudit();
     if (tab === 'system') api.info().then((i) => (info = i)).catch(() => {});
   });
+
+  // REQ: OPS-004 — check the release index now instead of at the daily check.
+  let checking = $state(false);
+  let checkError = $state<unknown>(null);
+  async function checkNow() {
+    if (!info) return;
+    checking = true;
+    checkError = null;
+    try {
+      info.update = await api.checkUpdates();
+    } catch (e) {
+      checkError = e;
+    } finally {
+      checking = false;
+    }
+  }
 </script>
 
 <div class="page">
@@ -540,7 +556,15 @@
             {:else}
               Not known yet{info.update.error ? `: ${info.update.error}` : ''}
             {/if}
-            {#if info.update.checkedUnixSeconds}<div class="muted small">Checked {ago(info.update.checkedUnixSeconds)}</div>{/if}
+            <div class="muted small">
+              {#if info.update.checkedUnixSeconds}Checked {ago(info.update.checkedUnixSeconds)}{/if}
+              {#if can('admin') && info.update.state !== 'off'}
+                <button class="link small" disabled={checking} onclick={checkNow} data-testid="check-updates"
+                  >{checking ? 'Checking…' : 'Check now'}</button
+                >
+              {/if}
+            </div>
+            <ErrorNote error={checkError} />
           </dd>
         </dl>
         <p class="small">{info.update.how}</p>

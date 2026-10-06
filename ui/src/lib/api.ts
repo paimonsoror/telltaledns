@@ -113,6 +113,8 @@ export const api = {
 
   // Data (API-001)
   info: () => get<S['SystemInfo']>('/system/info'),
+  // REQ: OPS-004 — "Check now" (admin).
+  checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
   summary: (from = '-24h', to?: string) => get<S['Summary']>('/stats/summary', { from, to }),
   timeseries: (q: { from?: string; step?: S['Step'] }) => get<S['Items_TimeBucket']>('/stats/timeseries', q),
   top: (kind: S['TopKind'], limit = 10, client?: string, group?: string) =>

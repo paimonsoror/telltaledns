@@ -2767,6 +2767,38 @@
         }
       }
     },
+    "/api/v1/system/update-check": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Check for updates now.",
+        "description": "Reads this node's channel's signed release index (`releases.json`) at once instead of at\nthe next daily check, and returns the update status (the same as `update` in\n`GET /api/v1/system/info`). At most one check a minute: a sooner request returns the\ncurrent status without fetching. Nothing is installed. With `[updates] check = false` the\nstatus stays `off` and nothing leaves the node. Needs the admin role.",
+        "operationId": "update_check",
+        "responses": {
+          "200": {
+            "description": "The update status after the check.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs the admin role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tokens": {
       "get": {
         "tags": [

@@ -152,7 +152,8 @@ The same build identity, and how the node was installed (`native`, `container`, 
 
 **Update checks:**
 - **How:** once a day, a node reads its channel's `releases.json` (published with every release, signed with the release key) and compares versions: `up_to_date`, `available`, `newer` (a dev build), or `unknown` (not checked yet, or failing). An index whose signature doesn't verify is ignored.
-- **Where it shows:** `telltale_update_available` is 1 when an update exists.
+- **When:** a minute after the node starts, then every 24 hours (an hour after a failed check). To look now, an admin clicks **Check now** under **Settings → System → Version and updates** (`POST /api/v1/system/update-check`). It's handy on the edge channel, which publishes several builds a day. Clicks less than a minute apart show the last result without fetching again. Nothing is installed.
+- **Where it shows:** an **update** pill next to the version in the sidebar, the Version and updates panel (with the step for your install), the Cluster page (each node's version), and `telltale_update_available` (1 when an update exists).
 - **Air-gapped:** `[updates] check = false` means nothing leaves the node; `[updates] index_url` points at a mirror (still verified with the built-in key).
 
 TelltaleDNS never updates itself from the UI. The panel shows the step for your install:

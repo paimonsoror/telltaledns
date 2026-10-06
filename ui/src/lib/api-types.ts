@@ -1079,6 +1079,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/update-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check for updates now.
+         * @description Reads this node's channel's signed release index (`releases.json`) at once instead of at
+         *     the next daily check, and returns the update status (the same as `update` in
+         *     `GET /api/v1/system/info`). At most one check a minute: a sooner request returns the
+         *     current status without fetching. Nothing is installed. With `[updates] check = false` the
+         *     status stays `off` and nothing leaves the node. Needs the admin role.
+         */
+        post: operations["update_check"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tokens": {
         parameters: {
             query?: never;
@@ -5289,6 +5313,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemInfo"];
+                };
+            };
+        };
+    };
+    update_check: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The update status after the check. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateStatus"];
+                };
+            };
+            /** @description Needs the admin role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

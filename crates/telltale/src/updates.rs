@@ -153,38 +153,74 @@ pub(crate) async fn run(
             _ = stop.changed() => return,
             () = tokio::time::sleep(wait) => {}
         }
-        wait = Duration::from_hours(24);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let result = check_once(override_url.as_deref()).await;
-        let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
-        match result {
-            Ok(ix) => {
-                let state = compare(build_info::VERSION, &ix.version);
-                if state == "available" && s.state != "available" {
-                    info!(latest = %ix.version, "a newer TelltaleDNS build is available");
-                }
-                debug!(latest = %ix.version, state, "update check");
-                s.state = state.into();
-                s.latest = Some(ix.version);
-                s.latest_commit = Some(ix.commit);
-                s.latest_date = Some(ix.date);
-                s.notes_url = ix.notes;
-                s.checked_unix_seconds = Some(now);
-                s.error = None;
+        // Try again sooner after a failure.
+        wait = if check_and_record(&status, override_url.as_deref()).await {
+            Duration::from_hours(24)
+        } else {
+            Duration::from_secs(3600)
+        };
+    }
+}
+
+/// One check, recorded in `status`; false when it failed.
+async fn check_and_record(status: &Mutex<UpdateStatus>, override_url: Option<&str>) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let result = check_once(override_url).await;
+    let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
+    match result {
+        Ok(ix) => {
+            let state = compare(build_info::VERSION, &ix.version);
+            if state == "available" && s.state != "available" {
+                info!(latest = %ix.version, "a newer TelltaleDNS build is available");
             }
-            Err(e) => {
-                warn!("update check failed: {e}");
-                if s.checked_unix_seconds.is_none() {
-                    s.state = "unknown".into();
-                }
-                s.error = Some(e);
-                // Try again sooner after a failure.
-                wait = Duration::from_secs(3600);
+            debug!(latest = %ix.version, state, "update check");
+            s.state = state.into();
+            s.latest = Some(ix.version);
+            s.latest_commit = Some(ix.commit);
+            s.latest_date = Some(ix.date);
+            s.notes_url = ix.notes;
+            s.checked_unix_seconds = Some(now);
+            s.error = None;
+            true
+        }
+        Err(e) => {
+            warn!("update check failed: {e}");
+            if s.checked_unix_seconds.is_none() {
+                s.state = "unknown".into();
             }
+            s.error = Some(e);
+            false
         }
     }
+}
+
+/// When "Check now" last fetched the index (at most once a minute).
+static LAST_MANUAL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// REQ: OPS-004 (ADR-046) — "Check now": the same check as the daily one, at once. Off
+/// (`[updates] check = false`) or a local build: the status as it is, nothing fetched. A
+/// second request within a minute returns the current status without fetching.
+pub(crate) async fn check_now(
+    status: Arc<Mutex<UpdateStatus>>,
+    check: bool,
+    override_url: Option<String>,
+) -> UpdateStatus {
+    let current =
+        |s: &Mutex<UpdateStatus>| s.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    if !check || build_info::CHANNEL == "dev" {
+        return current(&status);
+    }
+    {
+        let mut last = LAST_MANUAL.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return current(&status);
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    check_and_record(&status, override_url.as_deref()).await;
+    current(&status)
 }
 
 #[cfg(test)]

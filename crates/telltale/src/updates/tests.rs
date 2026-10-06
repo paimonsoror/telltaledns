@@ -68,3 +68,19 @@ fn ops_004_update_instructions_per_install_type() {
     assert!(how("container", "edge").contains(":edge"));
     assert!(how("helm", "stable").contains("helm upgrade"));
 }
+
+/// REQ: OPS-004 — "Check now" with checks off fetches nothing and keeps the status `off`.
+#[tokio::test]
+async fn ops_004_check_now_respects_check_off() {
+    let status = Arc::new(Mutex::new(initial(false)));
+    // An unreachable index: a fetch would fail and set `error`.
+    let st = check_now(
+        Arc::clone(&status),
+        false,
+        Some("http://127.0.0.1:9/releases.json".into()),
+    )
+    .await;
+    assert_eq!(st.state, "off");
+    assert_eq!(st.error, None);
+    assert_eq!(st.checked_unix_seconds, None);
+}

@@ -237,6 +237,16 @@ pub trait Backend: Send + Sync + 'static {
     fn config_version(&self) -> u64 {
         0
     }
+    /// REQ: OPS-004 (ADR-046) — checks the signed release index now instead of waiting for the
+    /// daily check, and returns the new status. At most one check a minute: sooner, the
+    /// current status comes back without a fetch.
+    fn check_updates(&self) -> BoxFuture<Result<crate::model::UpdateStatus, Problem>> {
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "update checks aren't available on this node",
+            ))
+        })
+    }
     /// Creates, renames, changes (`input` set), or deletes (`input` None) a device made
     /// through the API (API-010). Validates the resulting configuration and, unless
     /// `dry_run`, stores and applies it.
@@ -374,6 +384,16 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             auth::routes::admin(Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
         )
+        // REQ: OPS-004 — "Check now" for updates is an admin action.
+        .merge(
+            Router::new()
+                .route(
+                    "/api/v1/system/update-check",
+                    axum::routing::post(update_check),
+                )
+                .with_state(Arc::clone(&backend))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
         // REQ: CLU-005 — promotion is an admin action (ADR-051).
         .merge(
             config_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
@@ -420,7 +440,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, update_check, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -561,6 +581,22 @@ async fn blocking<T: Send + 'static>(
     responses((status = 200, body = SystemInfo, description = "The result.")))]
 async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
     Json(b.system_info())
+}
+
+/// Check for updates now.
+///
+/// Reads this node's channel's signed release index (`releases.json`) at once instead of at
+/// the next daily check, and returns the update status (the same as `update` in
+/// `GET /api/v1/system/info`). At most one check a minute: a sooner request returns the
+/// current status without fetching. Nothing is installed. With `[updates] check = false` the
+/// status stays `off` and nothing leaves the node. Needs the admin role.
+#[utoipa::path(post, path = "/api/v1/system/update-check", tag = "system",
+    responses((status = 200, body = crate::model::UpdateStatus, description = "The update status after the check."),
+        (status = 403, body = Problem, description = "Needs the admin role.")))]
+async fn update_check(
+    State(b): State<Shared>,
+) -> Result<Json<crate::model::UpdateStatus>, Problem> {
+    b.check_updates().await.map(Json)
 }
 
 /// Git push webhook.
