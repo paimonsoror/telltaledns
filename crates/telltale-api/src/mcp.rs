@@ -689,6 +689,61 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: FLT-010, AGT-007 (T9.7) — schedules, as plans.
+        WriteTool {
+            name: "plan_set_schedule",
+            description: "Plans a change (nothing changes until apply_plan). Makes or changes a weekly schedule: during its windows it blocks everything (block_all, a bedtime), applies extra lists (enable_lists), or blocks services (block_services). Groups follow a schedule once it's in their schedules (plan_update_group). Needs config:write:groups.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "The schedule."},
+                "action": {"type": "string", "enum": ["block_all", "enable_lists", "block_services"], "description": "What happens during the windows."},
+                "windows": {"type": "array", "items": {"type": "object", "properties": {
+                    "days": {"type": "array", "items": {"type": "string"}, "description": "mon..sun, or weekdays, weekends, daily."},
+                    "start": {"type": "string", "description": "HH:MM, 24-hour, local time."},
+                    "end": {"type": "string", "description": "HH:MM; at or before start runs past midnight."}
+                }, "required": ["days", "start", "end"], "additionalProperties": false}, "description": "When it's on."},
+                "lists": {"type": "array", "items": {"type": "string"}, "description": "enable_lists: the lists."},
+                "services": {"type": "array", "items": {"type": "string"}, "description": "block_services: service IDs (GET /services)."},
+                "tz": {"type": "string", "description": "IANA time zone, e.g. America/New_York (default: the node's)."},
+                "reason": reason_schema()
+            }, "required": ["name", "action", "windows", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let name = need(a, "name")?;
+                let mut body = pick(
+                    a,
+                    &[
+                        ("action", "action"),
+                        ("lists", "lists"),
+                        ("services", "services"),
+                        ("tz", "tz"),
+                        ("windows", "window"),
+                    ],
+                );
+                let action = body
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if body
+                    .get("window")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+                {
+                    return Err("`windows`: at least one".into());
+                }
+                body.retain(|_, v| !v.is_null());
+                Ok(Write {
+                    method: "PUT",
+                    path: format!("/api/v1/schedules/{}", enc(&name)),
+                    summary: format!("Set the schedule {name} ({action})"),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("schedule", name)),
+                })
+            },
+        },
         WriteTool {
             name: "plan_update_group",
             description: "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
@@ -699,6 +754,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                 "lists": {"type": "array", "items": {"type": "string"}, "description": "List names that apply (default: every enabled list)."},
                 "blockMode": {"type": "string", "enum": ["null_ip", "nxdomain", "nodata", "refused", "custom_ip"], "description": "How blocked names are answered."},
                 "priority": {"type": "integer", "description": "Higher wins when a device matches several groups."},
+                "schedules": {"type": "array", "items": {"type": "string"}, "description": "Schedules (by name) the group follows (plan_set_schedule makes them)."},
                 "reason": reason_schema()
             }, "required": ["name", "reason"], "additionalProperties": false})
             },
@@ -713,6 +769,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("lists", "lists"),
                         ("blockMode", "block_mode"),
                         ("priority", "priority"),
+                        ("schedules", "schedules"),
                     ],
                 );
                 let what: Vec<&str> = body.keys().map(String::as_str).collect();

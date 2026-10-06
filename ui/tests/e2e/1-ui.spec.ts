@@ -987,3 +987,42 @@ test('obs_010 alerts page: destinations, test, rules', async () => {
     hook.close();
   }
 });
+
+// REQ: FLT-010 (T9.7) — schedules from the UI: a bad window is explained, a good one saved;
+// a group follows it (on now), then both are undone.
+test('flt_010 schedules are edited from the UI', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/groups');
+  const sched = page.getByTestId('editor-schedule');
+  await sched.getByRole('button', { name: 'Add schedule' }).click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('ui-bedtime');
+  const windows = page.getByRole('textbox', { name: 'Windows (one per line)' });
+  await windows.fill('sometimes');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await expect(page.getByRole('alert')).toContainText('weekdays 21:00-07:00');
+  await windows.fill('daily 00:00-24:00');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  const row = sched.getByTestId('entry-row').filter({ hasText: 'ui-bedtime' });
+  await expect(row).toContainText('block_all: daily 00:00-24:00');
+
+  // The test-only group follows it (an override of the files' group).
+  await page.reload();
+  const groups = page.getByTestId('editor-group');
+  const g = groups.getByTestId('entry-row').filter({ hasText: 'ipv6only' });
+  await g.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('group', { name: 'Schedules' }).getByLabel('ui-bedtime').check();
+  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  const card = page.getByTestId('group-card').filter({ hasText: 'ipv6only' });
+  await expect(async () => {
+    await page.reload();
+    await expect(card.getByTestId('group-schedules')).toContainText('on now', { timeout: 2000 });
+  }).toPass({ timeout: 30_000 });
+
+  await g.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(g).toContainText('config file');
+  await row.getByRole('button', { name: 'Remove' }).click();
+  await expect(row).toHaveCount(0);
+});

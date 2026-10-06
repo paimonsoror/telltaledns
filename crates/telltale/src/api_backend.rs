@@ -1494,6 +1494,8 @@ impl Backend for ApiBackend {
 
     // REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups in effect,
     // with their sources (hidden files' entries included, so they can be brought back).
+    // T9.6/T9.7: alert destinations and rules, and schedules too.
+    #[allow(clippy::too_many_lines)] // one branch per kind of entry
     fn config_entries(&self, kind: Option<&str>) -> Vec<telltale_api::model::ConfigEntry> {
         use crate::managed::{Named, Ovr};
         fn rows<T: Named + Serialize>(
@@ -1578,6 +1580,16 @@ impl Backend for ApiBackend {
                 &cfg.alerts.destination,
                 &file.alerts.destination,
                 &e.alert_destinations,
+                &mut out,
+            );
+        }
+        // REQ: FLT-010 (T9.7)
+        if want("schedule") {
+            rows(
+                "schedule",
+                &cfg.schedule,
+                &file.schedule,
+                &e.schedules,
                 &mut out,
             );
         }
@@ -2195,6 +2207,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Group => crate::managed::GROUP,
         ManagedKind::AlertDestination => crate::managed::ALERT_DESTINATION,
         ManagedKind::AlertRule => crate::managed::ALERT_RULE,
+        ManagedKind::Schedule => crate::managed::SCHEDULE,
     }
 }
 
@@ -2484,6 +2497,9 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         }
         (ManagedKind::List, false) => "Its blocks stop when the lists are compiled again (seconds).".into(),
         (ManagedKind::Group, _) => "Applies to the group's devices on their next query.".into(),
+        (ManagedKind::Schedule, _) => {
+            "Applies within 15 seconds to the groups that use it.".into()
+        }
         (ManagedKind::AlertDestination | ManagedKind::AlertRule, _) => {
             "Applies at the next alert check; firing alerts of a changed rule start over.".into()
         }
@@ -2507,6 +2523,7 @@ fn plan_managed(
             | ManagedKind::Group
             | ManagedKind::AlertDestination
             | ManagedKind::AlertRule
+            | ManagedKind::Schedule
     ) {
         return plan_override(src, state, w);
     }
@@ -2742,6 +2759,13 @@ fn plan_override(
             before_cfg.alerts.rule.iter().find(|u| u.name() == name),
             &mut entries.alert_rules,
         )?,
+        ManagedKind::Schedule => override_step(
+            &name,
+            w.body.as_ref(),
+            file.schedule.iter().any(|u| u.name() == name),
+            before_cfg.schedule.iter().find(|u| u.name() == name),
+            &mut entries.schedules,
+        )?,
         _ => override_step(
             &name,
             w.body.as_ref(),
@@ -2758,6 +2782,7 @@ fn plan_override(
         ManagedKind::List => named_json(&merged.list, &name),
         ManagedKind::AlertDestination => named_json(&merged.alerts.destination, &name),
         ManagedKind::AlertRule => named_json(&merged.alerts.rule, &name),
+        ManagedKind::Schedule => named_json(&merged.schedule, &name),
         _ => named_json(&merged.group, &name),
     };
     let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
@@ -3048,6 +3073,7 @@ fn keep_in_git(
         ManagedKind::Group => "group",
         ManagedKind::AlertDestination => "alerts.destination",
         ManagedKind::AlertRule => "alerts.rule",
+        ManagedKind::Schedule => "schedule",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     let Some(body) = body else {

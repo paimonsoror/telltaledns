@@ -747,6 +747,93 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Plans a change (nothing changes until apply_plan). Makes or changes a weekly schedule: during its windows it blocks everything (block_all, a bedtime), applies extra lists (enable_lists), or blocks services (block_services). Groups follow a schedule once it's in their schedules (plan_update_group). Needs config:write:groups.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "What happens during the windows.",
+          "enum": [
+            "block_all",
+            "enable_lists",
+            "block_services"
+          ],
+          "type": "string"
+        },
+        "lists": {
+          "description": "enable_lists: the lists.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The schedule.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "services": {
+          "description": "block_services: service IDs (GET /services).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tz": {
+          "description": "IANA time zone, e.g. America/New_York (default: the node's).",
+          "type": "string"
+        },
+        "windows": {
+          "description": "When it's on.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "days": {
+                "description": "mon..sun, or weekdays, weekends, daily.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "end": {
+                "description": "HH:MM; at or before start runs past midnight.",
+                "type": "string"
+              },
+              "start": {
+                "description": "HH:MM, 24-hour, local time.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "days",
+              "start",
+              "end"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "windows",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_schedule"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
     "inputSchema": {
       "additionalProperties": false,
@@ -787,6 +874,13 @@
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
           "type": "string"
+        },
+        "schedules": {
+          "description": "Schedules (by name) the group follows (plan_set_schedule makes them).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [

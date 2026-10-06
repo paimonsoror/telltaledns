@@ -33,6 +33,8 @@ pub(crate) const GROUP: &str = "group";
 /// REQ: OBS-010 (T9.6) — alert destinations and rules (they override the files' too).
 pub(crate) const ALERT_DESTINATION: &str = "alert_destination";
 pub(crate) const ALERT_RULE: &str = "alert_rule";
+/// REQ: FLT-010 (T9.7) — schedules.
+pub(crate) const SCHEDULE: &str = "schedule";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -74,6 +76,11 @@ impl Named for telltale_config::AlertDestination {
         self.name.as_str()
     }
 }
+impl Named for telltale_config::ScheduleConfig {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
 impl Named for telltale_config::AlertRule {
     fn name(&self) -> &str {
         self.name.as_str()
@@ -111,6 +118,7 @@ pub(crate) struct Entries {
     pub(crate) groups: Vec<(String, Ovr<GroupConfig>)>,
     pub(crate) alert_destinations: Vec<(String, Ovr<telltale_config::AlertDestination>)>,
     pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
+    pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
 }
 
 /// Where the state database lives.
@@ -186,6 +194,7 @@ pub(crate) fn entries(state: &State) -> Entries {
         groups: decode_ovr(state, GROUP),
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
+        schedules: decode_ovr(state, SCHEDULE),
     }
 }
 
@@ -219,6 +228,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.group, &e.groups);
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
+    apply_ovr(&mut cfg.schedule, &e.schedules);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());

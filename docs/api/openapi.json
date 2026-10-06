@@ -3058,6 +3058,138 @@
         }
       }
     },
+    "/api/v1/schedules/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change a schedule (FLT-010, T9.7).",
+        "description": "The body has the same fields as `[[schedule]]` (the name comes from the path), e.g. a\nbedtime: `{\"action\": \"block_all\", \"tz\": \"America/New_York\", \"window\": [{\"days\":\n[\"weekdays\"], \"start\": \"21:00\", \"end\": \"07:00\"}]}`. Groups use a schedule by naming it in\ntheir `schedules`. A schedule the config files define is overridden until this one is\ndeleted.",
+        "operationId": "put_schedule",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong (a window's time, an unknown list or service), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a schedule (FLT-010, T9.7).",
+        "description": "A group that still names it makes the configuration invalid (422 says which): take it out\nof the group's `schedules` first.",
+        "operationId": "delete_schedule",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A group still uses it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/services": {
       "get": {
         "tags": [

@@ -869,6 +869,7 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 - **`enable_lists`** and **`block_services`** add lists or services during the windows. A list a schedule turns on is off outside its windows for every group, even one that uses every list, unless a group names it in its own `lists`.
 - Schedules are checked every 15 seconds, so a window starts or ends within 15 s of its time. No query does any time maths, and nothing is recompiled.
 - The Groups page shows each group's schedules and which are **on now**; the query log shows blocks as **schedule**.
+- **In the UI:** **Groups → Schedules** adds, changes, or removes schedules (windows one per line, like `weekdays 21:00-07:00`), and a group's editor picks the schedules it follows. Through the API: `PUT`/`DELETE /api/v1/schedules/{name}` with the same fields as `[[schedule]]` (agents need `config:write:groups`, and AI agents can plan one with the MCP tool `plan_set_schedule`).
 
 ### DHCP server
 TelltaleDNS can hand out addresses too, so a Pi can replace the router's DHCP (Linux and Pi installs; off by default):
@@ -1908,7 +1909,8 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 | `plan_set_local_name`, `plan_remove_local_name` | answer a local name with your own records, or stop | `config:write:records` |
 | `plan_forward_domain` | send a domain to other DNS servers | `config:write:forwards` |
 | `plan_add_list` | add a filter list (URL or inline rules) | `config:write:lists` |
-| `plan_update_group` | change a group's networks, lists, blocked answer, or priority | `config:write:groups` (+ `config:read`) |
+| `plan_update_group` | change a group's networks, lists, blocked answer, priority, or schedules | `config:write:groups` (+ `config:read`) |
+| `plan_set_schedule` | make or change a weekly schedule (a bedtime, extra lists, blocked services) | `config:write:groups` |
 | `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
 | `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |
 

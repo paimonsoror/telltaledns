@@ -96,6 +96,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/alerts/destinations/{name}/test",
             axum::routing::post(test_alert_destination),
         )
+        // REQ: FLT-010 (T9.7)
+        .route(
+            "/api/v1/schedules/{name}",
+            put(put_schedule).delete(delete_schedule),
+        )
         .with_state((backend, auth))
 }
 
@@ -741,6 +746,79 @@ pub(crate) async fn test_alert_destination(
     Ok(Json(r))
 }
 
+/// Add or change a schedule (FLT-010, T9.7).
+///
+/// The body has the same fields as `[[schedule]]` (the name comes from the path), e.g. a
+/// bedtime: `{"action": "block_all", "tz": "America/New_York", "window": [{"days":
+/// ["weekdays"], "start": "21:00", "end": "07:00"}]}`. Groups use a schedule by naming it in
+/// their `schedules`. A schedule the config files define is overridden until this one is
+/// deleted.
+#[utoipa::path(put, path = "/api/v1/schedules/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong (a window's time, an unknown list or service), or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_schedule(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /schedules/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Schedule, Some(input)),
+    )
+    .await
+}
+
+/// Remove a schedule (FLT-010, T9.7).
+///
+/// A group that still names it makes the configuration invalid (422 says which): take it out
+/// of the group's `schedules` first.
+#[utoipa::path(delete, path = "/api/v1/schedules/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 422, body = Problem, description = "A group still uses it."),
+    ))]
+pub(crate) async fn delete_schedule(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /schedules/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Schedule, None),
+    )
+    .await
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -760,6 +838,7 @@ impl Op {
             Self::Managed(ManagedKind::Group, _) => "group",
             Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
+            Self::Managed(ManagedKind::Schedule, _) => "schedule",
         }
     }
     fn deleting(&self) -> bool {

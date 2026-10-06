@@ -184,7 +184,8 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/lists") {
             return Need::Scope("config:write:lists");
         }
-        if under("/api/v1/groups") {
+        // Schedules are group settings (FLT-010, T9.7).
+        if under("/api/v1/groups") || under("/api/v1/schedules") {
             return Need::Scope("config:write:groups");
         }
         // REQ: OBS-010 (T9.6)
@@ -192,7 +193,10 @@ pub fn required(method: &Method, path: &str) -> Need {
             return Need::Scope("config:write:alerts");
         }
     }
-    if *method == Method::POST && under("/api/v1/alerts/destinations") && p.ends_with("/test") {
+    if *method == Method::POST
+        && p.starts_with("/api/v1/alerts/destinations/")
+        && p.ends_with("/test")
+    {
         return Need::Scope("config:write:alerts");
     }
     // MCP: each tool's REST calls are checked on their own (ADR-065).

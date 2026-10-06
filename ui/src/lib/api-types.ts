@@ -1214,6 +1214,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/schedules/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change a schedule (FLT-010, T9.7).
+         * @description The body has the same fields as `[[schedule]]` (the name comes from the path), e.g. a
+         *     bedtime: `{"action": "block_all", "tz": "America/New_York", "window": [{"days":
+         *     ["weekdays"], "start": "21:00", "end": "07:00"}]}`. Groups use a schedule by naming it in
+         *     their `schedules`. A schedule the config files define is overridden until this one is
+         *     deleted.
+         */
+        put: operations["put_schedule"];
+        post?: never;
+        /**
+         * Remove a schedule (FLT-010, T9.7).
+         * @description A group that still names it makes the configuration invalid (422 says which): take it out
+         *     of the group's `schedules` first.
+         */
+        delete: operations["delete_schedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/services": {
         parameters: {
             query?: never;
@@ -6253,6 +6282,98 @@ export interface operations {
             };
             /** @description The configuration changed since the If-Match version: re-read it and retry. */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_schedule: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong (a window's time, an unknown list or service), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_schedule: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A group still uses it. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

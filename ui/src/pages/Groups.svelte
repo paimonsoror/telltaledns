@@ -14,6 +14,32 @@
   let error = $state<unknown>(null);
   let listNames = $state<string[]>([]);
   let services = $state<S['ServiceInfo'][]>([]);
+  // REQ: FLT-010 (T9.7) — schedules, edited below the groups.
+  let scheduleNames = $state<string[]>([]);
+  type Window = { days: string[]; start: string; end: string };
+  const windowText = (v: unknown) =>
+    ((v as Window[] | undefined) ?? []).map((w) => `${w.days.join(',')} ${w.start}-${w.end}`).join('\n');
+  function windowsFrom(s: string): Window[] {
+    const out: Window[] = [];
+    for (const line of s.split('\n').map((x) => x.trim()).filter(Boolean)) {
+      const m = /^([a-z,]+)\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/i.exec(line);
+      if (!m) throw new Error(`"${line}": write the days and times like "weekdays 21:00-07:00"`);
+      out.push({ days: m[1].toLowerCase().split(',').filter(Boolean), start: m[2], end: m[3] });
+    }
+    if (!out.length) throw new Error('Add at least one window, like "weekdays 21:00-07:00".');
+    return out;
+  }
+  const scheduleFields = $derived<Field[]>([
+    { key: 'action', label: 'During the windows', type: 'select', options: ['block_all', 'enable_lists', 'block_services'], initial: 'block_all',
+      help: 'block_all: a bedtime (everything blocked except quick allow rules and local names). enable_lists: extra lists apply. block_services: extra services are blocked.' },
+    { key: 'window', label: 'Windows (one per line)', type: 'lines', placeholder: 'weekdays 21:00-07:00\nsat,sun 23:00-08:00',
+      help: 'Days: mon … sun, weekdays, weekends, daily. An end before the start runs past midnight.',
+      toText: windowText, fromText: windowsFrom },
+    { key: 'lists', label: 'Lists (enable_lists)', type: 'multi', options: listNames },
+    { key: 'services', label: 'Services (block_services)', type: 'multi', options: services.map((s) => s.id) },
+    { key: 'tz', label: 'Time zone', type: 'text', placeholder: 'America/New_York', advanced: true,
+      help: 'IANA time zone. Default: the node\u2019s.' },
+  ]);
   const serviceName = (id: string) => services.find((s) => s.id === id)?.name ?? id;
 
   // REQ: API-002 (T7.5) — add and change groups here.
@@ -37,6 +63,9 @@
     { key: 'dns64', label: 'DNS64', type: 'bool', advanced: true,
       help: 'Make IPv6 addresses for IPv4-only names, for IPv6-only networks with NAT64.' },
     { key: 'dns64_prefix', label: 'DNS64 prefix', type: 'text', placeholder: '64:ff9b::/96', advanced: true },
+    // REQ: FLT-010 (T9.7)
+    { key: 'schedules', label: 'Schedules', type: 'multi', options: scheduleNames,
+      help: 'Schedules this group follows (make them under Schedules, below).' },
     { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
     { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
       help: 'When a device matches several groups, the highest priority wins.' },
@@ -46,6 +75,10 @@
   function load() {
     api.lists().then((l) => (listNames = l.items.map((x) => x.name))).catch(() => {});
     api.services().then((s) => (services = s.items)).catch(() => {});
+    api
+      .configEntries('schedule')
+      .then((e) => (scheduleNames = e.items.filter((x) => x.source !== 'hidden').map((x) => x.name)))
+      .catch(() => {});
     api
       .groups()
       .then(async (g) => {
@@ -175,6 +208,10 @@
   </section>
   <ConfigEditor kind="group" path="groups" title="Manage groups" noun="group" fields={groupFields}
     summary={(d) => `${((d.networks as string[]) ?? []).join(', ') || 'named devices only'} · ${d.lists ? `${(d.lists as string[]).length} lists` : 'every enabled list'}`}
+    onchanged={load} />
+  <!-- REQ: FLT-010 (T9.7) — schedules made here; groups follow them through `schedules`. -->
+  <ConfigEditor kind="schedule" path="schedules" title="Schedules" noun="schedule" help="schedules" fields={scheduleFields}
+    summary={(d) => `${String(d.action ?? '')}: ${((d.window as { days: string[]; start: string; end: string }[]) ?? []).map((w) => `${w.days.join(',')} ${w.start}-${w.end}`).join('; ')}`}
     onchanged={load} />
 </div>
 

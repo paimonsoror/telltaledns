@@ -13,6 +13,10 @@
     advanced?: boolean;
     /** The value a new entry starts with. */
     initial?: unknown;
+    /** `lines` fields kept as text while editing and converted on Check (T9.7: schedule
+     *  windows as `weekdays 21:00-07:00`). `fromText` throws to report a bad line. */
+    toText?: (v: unknown) => string;
+    fromText?: (s: string) => unknown;
   };
 </script>
 
@@ -36,8 +40,8 @@
     help,
     rowAction,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules';
     title: string;
     noun: string;
     fields: Field[];
@@ -61,6 +65,8 @@
   let entries = $state<S['ConfigEntry'][]>([]);
   let error = $state<unknown>(null);
   let editing = $state<{ name: string; isNew: boolean; values: Record<string, unknown> } | null>(null);
+  // Text of fields with `toText`/`fromText`, while editing.
+  let texts = $state<Record<string, string>>({});
   let preview = $state<S['ConfigChange'] | null>(null);
   let result = $state<S['ConfigChange'] | null>(null);
   let busy = $state(false);
@@ -96,6 +102,7 @@
     const def = (e?.definition ?? {}) as Record<string, unknown>;
     const initial = e ? {} : Object.fromEntries(fields.filter((f) => f.initial !== undefined).map((f) => [f.key, f.initial]));
     editing = { name: e?.name ?? '', isNew: !e, values: { ...initial, ...def } };
+    texts = Object.fromEntries(fields.filter((f) => f.toText).map((f) => [f.key, f.toText!(editing!.values[f.key])]));
   }
 
   // The body: the fields shown, with empty ones left out (the defaults apply); other fields of
@@ -103,6 +110,7 @@
   function body(): Record<string, unknown> {
     const v = { ...editing!.values };
     delete v.name;
+    for (const f of fields) if (f.fromText) v[f.key] = f.fromText(texts[f.key] ?? '');
     for (const f of fields) {
       const x = v[f.key];
       if (x === '' || x === null || x === undefined || (Array.isArray(x) && x.length === 0 && f.type !== 'multi')) delete v[f.key];
@@ -236,6 +244,14 @@
                   >
                 {/each}
               </span>
+            {:else if f.type === 'lines' && f.fromText}
+              <textarea
+                rows="4"
+                class="mono"
+                placeholder={f.placeholder}
+                aria-label={f.label}
+                bind:value={texts[f.key]}
+              ></textarea>
             {:else if f.type === 'lines'}
               <textarea
                 rows="4"
