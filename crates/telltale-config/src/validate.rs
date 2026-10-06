@@ -172,6 +172,13 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
             }
         }
         // REQ: DNS-016 (T7.21)
+        // REQ: DNS-016 (T9.10)
+        if !g.dns64 && !g.dns64_exclude.is_empty() {
+            r.err(
+                format!("group[{i}].dns64_exclude"),
+                "only with `dns64 = true`",
+            );
+        }
         if let Some(p) = g.dns64_prefix
             && (!p.addr.is_ipv6() || p.prefix != 96)
         {
@@ -361,6 +368,7 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
                 let ok = a
                     .strip_prefix("udp://")
                     .or_else(|| a.strip_prefix("tcp://"))
+                    .or_else(|| a.strip_prefix("tls://"))
                     .is_some_and(|hp| {
                         hp.rsplit_once(':')
                             .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok())
@@ -368,8 +376,12 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
                 if !ok {
                     r.err(
                         format!("{p}.address"),
-                        "use udp://host:port or tcp://host:port",
+                        "use udp://host:port, tcp://host:port, or tls://host:port",
                     );
+                }
+                // REQ: OBS-010 (T9.11)
+                if s.tls_ca.is_some() && !a.starts_with("tls://") {
+                    r.err(format!("{p}.tls_ca"), "only for tls:// syslog addresses");
                 }
                 if s.facility > 23 {
                     r.err(format!("{p}.facility"), "a syslog facility from 0 to 23");
@@ -389,7 +401,14 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
                 if s.flush_secs == 0 {
                     r.err(format!("{p}.flush_secs"), "at least 1");
                 }
+                // REQ: OBS-010 (T9.11)
+                if s.spill_max_bytes.is_some_and(|b| b.bytes() < 1024 * 1024) {
+                    r.err(format!("{p}.spill_max_bytes"), "at least 1 MiB");
+                }
             }
+        }
+        if s.spill_max_bytes.is_some() && s.kind != SinkKind::Webhook {
+            r.err(format!("{p}.spill_max_bytes"), "only for webhook sinks");
         }
         if s.format == crate::SinkFormat::OtlpLogs && s.kind != SinkKind::Webhook {
             r.err(format!("{p}.format"), "otlp_logs is for webhook sinks");

@@ -1,6 +1,7 @@
 //! Event sinks (REQ: OBS-010, `spec/06` §5; T7.13): every query event, as the same JSON
 //! object the API's query log returns, copied to a JSON-lines file (rotated), syslog
-//! (RFC 5424 over UDP, or TCP with octet counting), or a batched HTTP webhook.
+//! (RFC 5424 over UDP, or TCP or (T9.11) TLS with octet counting), or a batched HTTP
+//! webhook, which (T9.11) can keep refused batches on disk until the collector is back.
 //!
 //! The aggregator thread formats each event once and hands it to every sink through a
 //! bounded channel (`max_buffer`); a sink that can't keep up drops events (counted, logged
@@ -61,12 +62,13 @@ pub(crate) fn start(
         let c = s.clone();
         let (d, rt) = (Arc::clone(&dropped), rt.clone());
         let host = crate::http::node_name(cfg);
+        let spill = Spill::new(s, cfg.node.data_dir.as_str());
         let spawned = std::thread::Builder::new()
             .name(format!("sink-{name}"))
             .spawn(move || match c.kind {
                 SinkKind::File => file_writer(&c, &rx),
                 SinkKind::Syslog => syslog_writer(&c, &rx, &host),
-                SinkKind::Webhook => webhook_writer(&c, &rx, &d, &rt, &host),
+                SinkKind::Webhook => webhook_writer(&c, &rx, &d, &rt, &host, spill.as_ref()),
             });
         if let Err(e) = spawned {
             warn!(sink = %name, error = %e, "event sink disabled: cannot start its thread");
@@ -322,8 +324,54 @@ pub(crate) fn syslog_message(
     format!("<{pri}>1 {time} {host} telltale - query - {json}")
 }
 
-/// Syslog over UDP (one datagram per event) or TCP (octet-counted frames, RFC 6587),
-/// reconnecting when the collector goes away.
+/// REQ: OBS-010 (T9.11) — the TLS client for a `tls://` syslog collector: the public roots
+/// plus `tls_ca`.
+fn syslog_tls(c: &SinkConfig) -> Result<Arc<rustls::ClientConfig>, String> {
+    use rustls::pki_types::pem::PemObject as _;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if let Some(f) = &c.tls_ca {
+        for cert in rustls::pki_types::CertificateDer::pem_file_iter(f.as_str())
+            .map_err(|e| format!("{}: {e}", f.as_str()))?
+        {
+            roots
+                .add(cert.map_err(|e| format!("{}: {e}", f.as_str()))?)
+                .map_err(|e| format!("{}: {e}", f.as_str()))?;
+        }
+    }
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Arc::new(cfg))
+}
+
+/// A stream to a TCP or TLS syslog collector.
+fn syslog_connect(
+    target: &str,
+    tls: Option<&Arc<rustls::ClientConfig>>,
+) -> Option<Box<dyn Write + Send>> {
+    let t = TcpStream::connect(target).ok()?;
+    let _ = t.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = t.set_read_timeout(Some(Duration::from_secs(5)));
+    let Some(cfg) = tls else {
+        return Some(Box::new(t));
+    };
+    // REQ: OBS-010 (T9.11) — RFC 5425: the certificate must name the host in the address.
+    let host = target
+        .rsplit_once(':')
+        .map_or(target, |(h, _)| h)
+        .trim_matches(|ch| ch == '[' || ch == ']');
+    let name = rustls::pki_types::ServerName::try_from(host.to_owned()).ok()?;
+    let conn = rustls::ClientConnection::new(Arc::clone(cfg), name).ok()?;
+    Some(Box::new(rustls::StreamOwned::new(conn, t)))
+}
+
+/// Syslog over UDP (one datagram per event) or TCP or TLS (octet-counted frames, RFC 6587
+/// and RFC 5425), reconnecting when the collector goes away.
 fn syslog_writer(c: &SinkConfig, rx: &Receiver<String>, host: &str) {
     let addr = c.address.as_ref().map_or("", |a| a.as_str()).to_owned();
     let (udp, target) = match addr.split_once("://") {
@@ -331,8 +379,19 @@ fn syslog_writer(c: &SinkConfig, rx: &Receiver<String>, host: &str) {
         Some((_, t)) => (false, t.to_owned()),
         None => return,
     };
+    let tls = if addr.starts_with("tls://") {
+        match syslog_tls(c) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!(sink = %c.name, error = %e, "event sink disabled: its TLS settings");
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let mut sock: Option<UdpSocket> = None;
-    let mut tcp: Option<TcpStream> = None;
+    let mut tcp: Option<Box<dyn Write + Send>> = None;
     let mut warned = false;
     while let Ok(line) = rx.recv() {
         let mut parts = line.splitn(3, '\t');
@@ -354,14 +413,11 @@ fn syslog_writer(c: &SinkConfig, rx: &Receiver<String>, host: &str) {
                 .is_some_and(|s| s.send_to(msg.as_bytes(), target.as_str()).is_ok())
         } else {
             if tcp.is_none() {
-                tcp = TcpStream::connect(target.as_str()).ok();
-                if let Some(t) = &tcp {
-                    let _ = t.set_write_timeout(Some(Duration::from_secs(5)));
-                }
+                tcp = syslog_connect(&target, tls.as_ref());
             }
             let ok = tcp
                 .as_mut()
-                .is_some_and(|t| write!(t, "{} {msg}", msg.len()).is_ok());
+                .is_some_and(|t| write!(t, "{} {msg}", msg.len()).is_ok() && t.flush().is_ok());
             if !ok {
                 tcp = None;
             }
@@ -381,6 +437,7 @@ fn webhook_writer(
     dropped: &AtomicU64,
     rt: &tokio::runtime::Handle,
     host: &str,
+    spill: Option<&Spill>,
 ) {
     let client = match telltale_filter::fetch::Client::new(
         Arc::new(telltale_filter::fetch::SystemResolver),
@@ -414,18 +471,13 @@ fn webhook_writer(
         }
         if buf.is_empty() {
             first = None;
+            // REQ: OBS-010 (T9.11) — quiet: a chance to send what was kept.
+            if let Some(s) = spill {
+                replay(s, c, &client, rt, host, batch);
+            }
             continue;
         }
-        let body = match c.format {
-            SinkFormat::JsonLines => {
-                let mut s = buf.join("\n");
-                s.push('\n');
-                s
-            }
-            SinkFormat::JsonArray => format!("[{}]", buf.join(",")),
-            // REQ: OBS-006 (T7.17)
-            SinkFormat::OtlpLogs => crate::otlp::logs_body(&buf, &crate::otlp::resource(host)),
-        };
+        let body = webhook_body(c, &buf, host);
         let mut delivered = false;
         for attempt in 0..3u32 {
             match rt.block_on(post(&client, c, body.clone())) {
@@ -441,11 +493,186 @@ fn webhook_writer(
                 }
             }
         }
-        if !delivered {
-            dropped.fetch_add(buf.len() as u64, Ordering::Relaxed);
+        match (delivered, spill) {
+            // REQ: OBS-010 (T9.11) — the collector is back: send what was kept, oldest first.
+            (true, Some(s)) => replay(s, c, &client, rt, host, batch),
+            (true, None) => {}
+            (false, Some(s)) if s.push(&buf) => {
+                info!(sink = %c.name, events = buf.len(), "event sink batch kept on disk until the collector is back");
+            }
+            (false, _) => {
+                dropped.fetch_add(buf.len() as u64, Ordering::Relaxed);
+            }
         }
         buf.clear();
         first = None;
+    }
+}
+
+/// A webhook request body for `events`.
+fn webhook_body(c: &SinkConfig, events: &[String], host: &str) -> String {
+    match c.format {
+        SinkFormat::JsonLines => {
+            let mut s = events.join("\n");
+            s.push('\n');
+            s
+        }
+        SinkFormat::JsonArray => format!("[{}]", events.join(",")),
+        // REQ: OBS-006 (T7.17)
+        SinkFormat::OtlpLogs => crate::otlp::logs_body(events, &crate::otlp::resource(host)),
+    }
+}
+
+/// REQ: OBS-010 (T9.11) — sends up to 20 kept batches, stopping at the first failure (the
+/// rest wait for the next chance).
+fn replay(
+    s: &Spill,
+    c: &SinkConfig,
+    client: &telltale_filter::fetch::Client,
+    rt: &tokio::runtime::Handle,
+    host: &str,
+    batch: usize,
+) {
+    for _ in 0..20 {
+        let (events, next) = s.take(batch);
+        if events.is_empty() {
+            return;
+        }
+        if rt
+            .block_on(post(client, c, webhook_body(c, &events, host)))
+            .is_err()
+        {
+            return;
+        }
+        s.commit(next);
+    }
+}
+
+/// REQ: OBS-010 (T9.11) — a webhook sink's refused batches on disk: events appended as
+/// JSON lines to `<data_dir>/sinks/<name>.spill`, read from the offset in `.pos`; the files
+/// go once everything is sent. The file never grows past `spill_max_bytes` (sent events
+/// included until it's compacted); events that don't fit are dropped (counted).
+pub(crate) struct Spill {
+    path: std::path::PathBuf,
+    pos: std::path::PathBuf,
+    max: u64,
+}
+
+impl Spill {
+    fn new(c: &SinkConfig, data_dir: &str) -> Option<Self> {
+        let max = c.spill_max_bytes?.bytes();
+        let safe: String = c
+            .name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let dir = std::path::Path::new(data_dir).join("sinks");
+        Some(Self {
+            path: dir.join(format!("{safe}.spill")),
+            pos: dir.join(format!("{safe}.spill.pos")),
+            max,
+        })
+    }
+
+    fn offset(&self) -> u64 {
+        std::fs::read_to_string(&self.pos)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Appends `events`; false (nothing written) when they don't fit.
+    fn push(&self, events: &[String]) -> bool {
+        let mut size = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+        let add: u64 = events.iter().map(|e| e.len() as u64 + 1).sum();
+        if size + add > self.max {
+            // Sent events still at the front: drop them to make room.
+            self.compact();
+            size = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+            if size + add > self.max {
+                return false;
+            }
+        }
+        if let Some(d) = self.path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        else {
+            return false;
+        };
+        let mut out = String::with_capacity(usize::try_from(add).unwrap_or(0));
+        for e in events {
+            out.push_str(e);
+            out.push('\n');
+        }
+        f.write_all(out.as_bytes()).is_ok()
+    }
+
+    /// Up to `limit` events from the front, and the offset after them.
+    fn take(&self, limit: usize) -> (Vec<String>, u64) {
+        use std::io::{BufRead as _, Seek as _};
+        let start = self.offset();
+        let Ok(mut file) = std::fs::File::open(&self.path) else {
+            return (Vec::new(), start);
+        };
+        if file.seek(std::io::SeekFrom::Start(start)).is_err() {
+            return (Vec::new(), start);
+        }
+        let mut reader = std::io::BufReader::new(file);
+        let (mut events, mut at) = (Vec::new(), start);
+        let mut line = String::new();
+        while events.len() < limit {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    at += read as u64;
+                    let event = line.trim_end_matches('\n');
+                    if !event.is_empty() {
+                        events.push(event.to_owned());
+                    }
+                }
+            }
+        }
+        (events, at)
+    }
+
+    /// Marks everything before `next` as sent; removes the files when that's all of it.
+    fn commit(&self, next: u64) {
+        let size = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+        if next >= size {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = std::fs::remove_file(&self.pos);
+        } else {
+            let _ = std::fs::write(&self.pos, next.to_string());
+        }
+    }
+
+    /// Rewrites the file without its sent events.
+    fn compact(&self) {
+        let start = self.offset();
+        if start == 0 {
+            return;
+        }
+        let Ok(data) = std::fs::read(&self.path) else {
+            return;
+        };
+        let rest = data
+            .get(usize::try_from(start).unwrap_or(usize::MAX)..)
+            .unwrap_or_default();
+        let tmp = self.path.with_extension("spill.tmp");
+        if std::fs::write(&tmp, rest).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            let _ = std::fs::remove_file(&self.pos);
+        }
     }
 }
 
@@ -499,6 +726,41 @@ mod tests {
     }
 
     /// REQ: OBS-010 — file rotation keeps `keep` files and drops the oldest.
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn obs_010_spill_keeps_order_and_cap() {
+        let d = tempfile::tempdir().unwrap();
+        let c: SinkConfig = toml::from_str(
+            "name = \"hook/1\"\ntype = \"webhook\"\nurl = \"http://x\"\nspill_max_bytes = \"1MiB\"\n",
+        )
+        .unwrap();
+        let s = Spill::new(&c, d.path().to_str().unwrap()).unwrap();
+        assert!(s.path.ends_with("sinks/hook_1.spill"));
+        let ev = |i: usize| format!("{{\"n\":{i}}}");
+        assert!(s.push(&(0..3).map(ev).collect::<Vec<_>>()));
+        assert!(s.push(&(3..5).map(ev).collect::<Vec<_>>()));
+        let (a, next) = s.take(2);
+        assert_eq!(a, vec![ev(0), ev(1)]);
+        // Not committed (the post failed): the same events again.
+        assert_eq!(s.take(2).0, a);
+        s.commit(next);
+        let (b, next) = s.take(10);
+        assert_eq!(b, (2..5).map(ev).collect::<Vec<_>>());
+        s.commit(next);
+        assert!(
+            !s.path.exists() && !s.pos.exists(),
+            "all sent: files removed"
+        );
+        // The cap: what doesn't fit is refused, and sent events make room.
+        let big = "x".repeat(300 * 1024);
+        assert!(s.push(&[big.clone(), big.clone(), big.clone()]));
+        assert!(!s.push(std::slice::from_ref(&big)), "over 1 MiB");
+        let (_, next) = s.take(2);
+        s.commit(next);
+        assert!(s.push(std::slice::from_ref(&big)), "room after compaction");
+        assert_eq!(s.take(10).0.len(), 2);
+    }
+
     #[test]
     fn obs_010_file_rotation() {
         let dir = std::env::temp_dir().join(format!("tt-sink-{}", std::process::id()));

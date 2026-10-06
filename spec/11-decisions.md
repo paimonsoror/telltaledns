@@ -1265,6 +1265,22 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-088 — DNS64 exclusions and reverse names; syslog over TLS; a webhook spill (Proposed)
+**Context:** T9.10 and T9.11 pick up the deferrals of T7.21 (DNS64) and T7.13 (event sinks).
+
+**Decision:**
+- **DNS64 exclusion set (RFC 6147 §5.1.4):** `dns64_exclude` on the group takes networks of either family. An excluded AAAA counts as missing. With all of a name's AAAA records excluded, AAAA records are made up for it. With some left, the excluded ones are removed, along with signatures, since the set they signed changed; DNS64 already never applies to CD clients. An excluded A record is never made into AAAA. `::ffff:0:0/96` is always excluded, as the RFC recommends.
+- **DNS64 reverse names (§5.3.1):** a PTR question for an address inside the client group's /96 gets a CNAME to the embedded IPv4 address's `in-addr.arpa` name, resolved like a safe-search target. A private IPv4 address keeps RFC 6303's local NXDOMAIN, so it never goes upstream. Of the RFC's two options, the CNAME was chosen over making up a PTR record: it needs no state and shows where the answer comes from.
+- **Syslog over TLS (RFC 5425):** `tls://host:port`, with octet-counted frames as on TCP, rustls with the public roots plus `tls_ca`, and the certificate checked against the host in the address. No client certificates (none asked for yet).
+- **Webhook spill:** off unless `spill_max_bytes` is set (at least 1 MiB).
+  - Refused batches are appended as JSON lines to `<data_dir>/sinks/<name>.spill`, with the send offset in a `.pos` file, so a restart doesn't resend what was sent. The file is compacted when it needs room and removed when it's empty.
+  - Replay runs up to 20 batches after a delivered batch or on a quiet tick, and stops at the first failure. Events that arrive meanwhile wait in the sink's normal buffer.
+
+**Consequences:**
+- IPv6-only networks get working reverse names and can route around unreachable IPv6 ranges.
+- A SIEM can take events over TLS.
+- A collector outage no longer loses events, up to the cap. The disk writes happen only during an outage, on the sink's own thread.
+
 ## ADR-087 — Upstream follow-ups: DoH GET, UDP over SOCKS5, DNSCrypt relays, per-client ECS (Proposed)
 **Context:** T9.9 picks up the deferrals of T7.8 (DoH), T7.16 (proxies), T7.23 (ECS), and T7.24 (DNSCrypt).
 

@@ -832,11 +832,14 @@ name = "ipv6-only"
 networks = ["2001:db8:64::/64"]
 dns64 = true
 # dns64_prefix = "64:ff9b::/96"     # the default (well-known prefix); your NAT64's /96 otherwise
+# dns64_exclude = ["2001:db8:bad::/48", "198.51.100.0/24"]
 ```
 - An AAAA question with no AAAA answer is asked again as A, and each A record becomes an AAAA in the prefix (`192.0.2.33` → `64:ff9b::c000:221`); CNAMEs come along. Names that have real AAAA records are left alone.
 - Only for the group's devices, and never for clients that set CD (they validate DNSSEC themselves, and made-up records don't validate).
 - Check it with `dig AAAA ipv4only.arpa`: through DNS64 it answers `64:ff9b::c000:aa` and `64:ff9b::c000:ab`.
-- Addresses that can't work through NAT64 (`0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`) aren't turned into AAAA. *Not yet:* reverse lookups for the prefix.
+- Addresses that can't work through NAT64 (`0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`) aren't turned into AAAA.
+- **Exclusions** (`dns64_exclude`, RFC 6147 §5.1.4): IPv6 addresses in these networks count as missing, for names whose IPv6 addresses your devices can't reach (a broken tunnel, a provider's unreachable range); the name gets made-up AAAA records instead, or keeps its other real ones. IPv4-mapped addresses (`::ffff:0:0/96`) are always excluded. IPv4 networks listed here are never turned into AAAA, so those destinations stay unreachable from IPv6-only devices.
+- **Reverse lookups** for addresses in the prefix follow the IPv4 address: `dig -x 64:ff9b::c000:221` answers with a CNAME to `33.2.0.192.in-addr.arpa` and that name's PTR (RFC 6147 §5.3.1). Private IPv4 addresses inside the prefix get NXDOMAIN locally, as their in-addr.arpa names would.
 
 ### Rebinding protection
 A website can make your browser attack devices on your network by pointing its own name at a private address (DNS rebinding). Turn on the protection per group:
@@ -1632,7 +1635,8 @@ keep = 3
 [[telemetry.sink]]
 name = "siem"
 type = "syslog"                          # RFC 5424
-address = "udp://192.168.1.20:514"       # or tcp:// (octet-counted frames)
+address = "udp://192.168.1.20:514"       # or tcp:// (octet-counted frames), or tls://host:6514
+# tls_ca = "/etc/telltale/siem-ca.pem"   # tls://: a private collector's CA (public roots always work)
 facility = 16                            # local0
 statuses = ["blocked"]                   # only blocks; empty means every event
 
@@ -1645,10 +1649,13 @@ token_file = "/run/secrets/ingest-token" # sent as "Authorization: Bearer <token
 # token_scheme = "Splunk"                # for Splunk HEC
 batch = 500                              # events per POST
 flush_secs = 5                           # or whatever arrived in 5 s
+# spill_max_bytes = "64MiB"              # keep refused batches on disk until the collector is back
 ```
 - Each event is the same JSON object as a row of `GET /api/v1/queries` (`time`, `client`, `clientName`, `group`, `name`, `qtype`, `status`, `rcode`, `proto`, `list`, `rule`, `totalMs`, `upstreamMs`, `answers`, `node`), with the query log's `privacy_level` applied (names hashed at 1, clients removed at 2).
 - Syslog messages are `<PRI>1 <time> <host> telltale - query - <JSON>`, with severity *notice* for blocks and *informational* for the rest.
-- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped and logged once a minute (`event sink fell behind`). A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped. Nothing is spilled to disk.
+- **Syslog over TLS** (`tls://`, RFC 5425) sends the same octet-counted frames as `tcp://`, encrypted. The collector's certificate must name the host in `address` and come from a public CA or the one in `tls_ca`.
+- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped and logged once a minute (`event sink fell behind`). A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped.
+- **Spill to disk** (webhook sinks, `spill_max_bytes`): instead of being dropped, a refused batch is appended to `<data_dir>/sinks/<name>.spill`. Once the collector accepts a batch again (or on the next quiet moment), the kept events go first, oldest first, up to 20 batches at a time; the file is removed when it's empty. Past `spill_max_bytes`, batches are dropped as before. The file survives restarts. Off by default, and best kept modest on an SD card.
 - Sinks are read at startup: restart after changing them.
 
 ## Device anomalies

@@ -35,6 +35,8 @@ pub struct Group {
     pub rewrites: Vec<Rewrite>,
     /// REQ: DNS-016 (T7.21) — the NAT64 /96 prefix when DNS64 is on.
     pub dns64: Option<Ipv6Addr>,
+    /// REQ: DNS-016 (T9.10) — the DNS64 exclusion set (RFC 6147 §5.1.4).
+    pub dns64_exclude: Vec<Cidr>,
 }
 
 /// REQ: FLT-015 (T7.20) — answer addresses a group refuses.
@@ -377,6 +379,7 @@ impl Group {
                 }) => p,
                 _ => Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0),
             }),
+            dns64_exclude: g.dns64_exclude.clone(),
             rewrites: g
                 .rewrite
                 .iter()
@@ -423,6 +426,7 @@ impl ClientTable {
                 answers: None,
                 rewrites: Vec::new(),
                 dns64: None,
+                dns64_exclude: Vec::new(),
             });
             groups.len() - 1
         };

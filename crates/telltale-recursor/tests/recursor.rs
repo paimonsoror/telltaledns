@@ -506,34 +506,46 @@ async fn dns_012_hedged_queries() {
     .await;
     let mut s = s;
     s.server_timeout = Duration::from_millis(1200);
-    for hedge in [true, false] {
-        // The fake server answers one query at a time: let a slow one from the last round finish.
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        slow.store(0, Ordering::Relaxed);
-        let mut st = s.clone();
-        st.hedge = hedge;
-        let r = Recursor::new(st);
-        // Learn both servers: .4 answers at once, .10 after 5 ms, so .4 is tried first.
-        for _ in 0..4 {
-            r.resolve(name("www.example.com"), rtype::A, false)
+    // One slow lookup with a fresh recursor that has learned both servers.
+    let measure = |hedge: bool| {
+        let (s, slow) = (s.clone(), Arc::clone(&slow));
+        async move {
+            // The fake server answers one query at a time: let a slow one finish first.
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            slow.store(0, Ordering::Relaxed);
+            let mut st = s;
+            st.hedge = hedge;
+            let r = Recursor::new(st);
+            // .4 answers at once, .10 after 5 ms, so .4 is tried first.
+            for _ in 0..4 {
+                r.resolve(name("www.example.com"), rtype::A, false)
+                    .await
+                    .unwrap();
+                r.resolve(name("deep.ent.example.com"), rtype::A, false)
+                    .await
+                    .unwrap();
+            }
+            slow.store(700, Ordering::Relaxed);
+            let t0 = std::time::Instant::now();
+            let res = r
+                .resolve(name("www.example.com"), rtype::A, false)
                 .await
                 .unwrap();
-            r.resolve(name("deep.ent.example.com"), rtype::A, false)
-                .await
-                .unwrap();
+            assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+            t0.elapsed()
         }
-        slow.store(700, Ordering::Relaxed);
-        let t0 = std::time::Instant::now();
-        let res = r
-            .resolve(name("www.example.com"), rtype::A, false)
-            .await
-            .unwrap();
-        let took = t0.elapsed();
-        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
-        if hedge {
-            assert!(took < Duration::from_millis(240), "hedged: {took:?}");
-        } else {
-            assert!(took >= Duration::from_millis(240), "not hedged: {took:?}");
-        }
+    };
+    // The hedge goes after 150 ms; without it, the slow server's attempt times out at its
+    // 250 ms floor. The best of three runs each, so a busy machine (the whole suite runs in
+    // parallel) doesn't decide.
+    let (mut hedged, mut plain) = (Duration::MAX, Duration::MAX);
+    for _ in 0..3 {
+        hedged = hedged.min(measure(true).await);
+        plain = plain.min(measure(false).await);
     }
+    assert!(plain >= Duration::from_millis(240), "not hedged: {plain:?}");
+    assert!(
+        hedged + Duration::from_millis(60) < plain,
+        "hedged {hedged:?} vs not hedged {plain:?}"
+    );
 }

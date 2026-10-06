@@ -670,6 +670,11 @@ pub struct GroupConfig {
     /// The NAT64 prefix (a /96; default the well-known `64:ff9b::/96`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dns64_prefix: Option<Cidr>,
+    /// REQ: DNS-016 (T9.10) — the exclusion set (RFC 6147 §5.1.4): AAAA records in these IPv6
+    /// networks count as missing (so the name gets made-up ones), and A records in these IPv4
+    /// networks are never made into AAAA. `::ffff:0:0/96` is always excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns64_exclude: Vec<Cidr>,
 }
 
 /// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.
@@ -1639,9 +1644,13 @@ pub struct SinkConfig {
     /// `file`: rotated files kept.
     #[serde(default = "default_sink_keep")]
     pub keep: u32,
-    /// `syslog`: `udp://host:514` or `tcp://host:514`.
+    /// `syslog`: `udp://host:514`, `tcp://host:514`, or (T9.11) `tls://host:6514` (RFC 5425).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<SafeString>,
+    /// `syslog` over `tls://`: a PEM file of CAs trusted besides the public roots (a private
+    /// collector's CA).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<SafeString>,
     /// `syslog`: the facility number (16 = local0).
     #[serde(default = "default_sink_facility")]
     pub facility: u8,
@@ -1666,6 +1675,10 @@ pub struct SinkConfig {
     /// Events held while the destination is slow or down; beyond it, events are dropped.
     #[serde(default = "default_sink_buffer")]
     pub max_buffer: u32,
+    /// REQ: OBS-010 (T9.11) — `webhook`: keep batches the collector refused (after the
+    /// retries) on disk, up to this size, and send them once it's back. Off by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_max_bytes: Option<ByteSize>,
     /// Only these statuses (`blocked`, `cached`, ...); empty means all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub statuses: Vec<SafeString>,

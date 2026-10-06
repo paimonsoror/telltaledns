@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # REQ: OBS-010 — T7.12/T7.13 acceptance: a running node copies its query events to a
-# JSON-lines file, a syslog collector (UDP), and a batched webhook, and sends an alert (and
-# nothing on the DNS path waits for any of them). Needs python3, dig, curl.
+# JSON-lines file, a syslog collector (UDP, and T9.11: TLS with a private CA), and a batched
+# webhook, and sends an alert (and nothing on the DNS path waits for any of them). T9.11: a
+# webhook whose collector is down keeps its batches on disk and sends them when it's back.
+# Needs python3, dig, curl, openssl.
 # Usage: deploy/sinks-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,9 +13,11 @@ E=$(mktemp -d)
 P=
 H=
 S=
+T=
+L=
 cleanup() {
   local rc=$?
-  for p in $P $H $S; do kill "$p" 2>/dev/null || true; done
+  for p in $P $H $S $T $L; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   rm -rf "$E"
   exit "$rc"
@@ -54,6 +58,36 @@ http.server.ThreadingHTTPServer(("127.0.0.1", 25580), H).serve_forever()
 EOF
 python3 "$E/collect.py" "$E" & H=$!
 
+# REQ: OBS-010 (T9.11) — a TLS syslog collector (RFC 5425) with a certificate from a private
+# CA (what tls_ca trusts); octet-counted frames to syslog-tls.
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=e2e-syslog-ca \
+  -keyout "$E/ca.key" -out "$E/ca.pem" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj /CN=localhost -keyout "$E/key.pem" -out "$E/req.pem" 2>/dev/null
+printf 'subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' > "$E/ext.cnf"
+openssl x509 -req -in "$E/req.pem" -CA "$E/ca.pem" -CAkey "$E/ca.key" -CAcreateserial -days 1 \
+  -extfile "$E/ext.cnf" -out "$E/cert.pem" 2>/dev/null
+cat > "$E/tls_syslog.py" <<'EOF'
+import socket, ssl, sys, threading
+out = sys.argv[1]
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(out + "/cert.pem", out + "/key.pem")
+l = socket.socket()
+l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+l.bind(("127.0.0.1", 25516))
+l.listen()
+def serve(c):
+    with ctx.wrap_socket(c, server_side=True) as t, open(out + "/syslog-tls", "ab", buffering=0) as f:
+        while True:
+            d = t.recv(65535)
+            if not d:
+                return
+            f.write(d)
+while True:
+    c, _ = l.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+EOF
+python3 "$E/tls_syslog.py" "$E" & T=$!
+
 cat > "$E/telltale.toml" <<EOF
 [node]
 data_dir = "$E/data"
@@ -88,6 +122,19 @@ name = "syslog"
 type = "syslog"
 address = "udp://127.0.0.1:25515"
 statuses = ["blocked"]
+[[telemetry.sink]]
+name = "syslog-tls"
+type = "syslog"
+address = "tls://localhost:25516"
+tls_ca = "$E/ca.pem"
+statuses = ["blocked"]
+# REQ: OBS-010 (T9.11) — its collector starts later: batches wait on disk.
+[[telemetry.sink]]
+name = "late"
+type = "webhook"
+url = "http://127.0.0.1:25581/late"
+flush_secs = 1
+spill_max_bytes = "1MiB"
 [[telemetry.sink]]
 name = "collector"
 type = "webhook"
@@ -140,6 +187,11 @@ for _ in $(seq 50); do grep -q 'ads.sinks.test' "$E/syslog" 2>/dev/null && break
 grep -q '^<133>1 .* telltale - query - {.*"name":"ads.sinks.test"' "$E/syslog" || fail "syslog: $(head -c 300 "$E/syslog")"
 ! grep -q 'nas.sinks.test' "$E/syslog" || fail "syslog got an event its statuses filter excludes"
 echo "syslog sink: ok"
+
+# REQ: OBS-010 (T9.11) — syslog over TLS: octet-counted RFC 5424 frames.
+for _ in $(seq 50); do grep -q 'ads.sinks.test' "$E/syslog-tls" 2>/dev/null && break; sleep 0.2; done
+grep -Eq '^[0-9]+ <133>1 .* telltale - query - \{.*"name":"ads.sinks.test"' "$E/syslog-tls" || fail "syslog over TLS: $(head -c 300 "$E/syslog-tls" 2>/dev/null)"
+echo "syslog over TLS: ok"
 
 # Webhook: newline-delimited JSON batches.
 for _ in $(seq 50); do grep -lq 'ads.sinks.test' "$E"/posts/* 2>/dev/null && break; sleep 0.2; done
@@ -196,6 +248,34 @@ a = alerts[0]
 assert a["rule"] == "Lists failing" and a["status"] == "firing" and a["subject"] == "unreachable", a
 print("alert:", a["summary"])
 EOF
+
+# REQ: OBS-010 (T9.11) — the late collector: refused batches (after their retries, about 7 s)
+# are kept on disk, then sent once it's up, and the spill file goes.
+for _ in $(seq 60); do [ -s "$E/data/sinks/late.spill" ] && break; sleep 0.5; done
+[ -s "$E/data/sinks/late.spill" ] || fail "no spill file for the late webhook"
+cat > "$E/late.py" <<'EOF'
+import http.server, os, sys
+out = sys.argv[1]
+os.makedirs(out + "/late", exist_ok=True)
+n = [0]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", 0)))
+        n[0] += 1
+        with open(f"{out}/late/{n[0]:04d}", "wb") as f:
+            f.write(body)
+        self.send_response(204)
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(("127.0.0.1", 25581), H).serve_forever()
+EOF
+python3 "$E/late.py" "$E" & L=$!
+dig +short +time=1 -p 25994 @127.0.0.1 nas.sinks.test >/dev/null || true
+for _ in $(seq 60); do grep -lq 'ads.sinks.test' "$E"/late/* 2>/dev/null && [ ! -e "$E/data/sinks/late.spill" ] && break; sleep 0.5; done
+grep -lq 'ads.sinks.test' "$E"/late/* 2>/dev/null || fail "the kept batches never reached the late collector"
+[ ! -e "$E/data/sinks/late.spill" ] || fail "spill file left after sending: $(wc -c < "$E/data/sinks/late.spill") bytes"
+echo "webhook spill: $(cat "$E"/late/* | grep -c '"name"') events delivered late"
 
 # DNS never waited: still answering.
 [[ $(dig +short +time=1 -p 25994 @127.0.0.1 nas.sinks.test) == *10.0.0.9* ]] || fail "DNS stopped answering"

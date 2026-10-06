@@ -667,6 +667,14 @@ impl Pipeline {
             }
         }
         let groups = st.policy.clients.group_names(ident);
+        // REQ: DNS-016 (T9.10) — RFC 6147 §5.3.1: a reverse name inside the NAT64 prefix is
+        // the IPv4 address's (a CNAME to its in-addr.arpa name, resolved like any other).
+        if q.qtype == rtype::PTR
+            && let Some(prefix) = st.policy.clients.primary_group(ident).dns64
+            && let Some(target) = dns64_reverse_target(&q.qname, prefix)
+        {
+            return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
+        }
         // REQ: FLT-014 (T7.20) — the group's rewrites (blocks above still win).
         match st.policy.clients.primary_group(ident).rewrite_for(&q.qname) {
             Some(RewriteTarget::Addr(ip)) => {
@@ -710,15 +718,17 @@ impl Pipeline {
             .ok()
     }
 
-    /// REQ: DNS-016 (T7.21) — the client's group NAT64 prefix, when it has DNS64.
-    fn dns64_prefix(&self, policy: &Policy, who: Who) -> Option<std::net::Ipv6Addr> {
+    /// REQ: DNS-016 (T7.21) — the client's group NAT64 prefix and (T9.10) exclusions, when
+    /// it has DNS64.
+    fn dns64_for(&self, policy: &Policy, who: Who) -> Option<(std::net::Ipv6Addr, Vec<Cidr>)> {
         let ident = policy.clients.identify(
             who.peer,
             who.client_id.as_ref().map(telltale_net::ClientId::as_str),
             who.mac,
             &self.neighbors,
         );
-        policy.clients.primary_group(ident).dns64
+        let g = policy.clients.primary_group(ident);
+        g.dns64.map(|p| (p, g.dns64_exclude.clone()))
     }
 
     /// REQ: DNS-016 — `name` answered from the cache, else resolved (coalesced and cached
@@ -790,7 +800,7 @@ impl Pipeline {
     ) -> Option<Vec<u8>> {
         let a = self.lookup_internal(Self::a_query(req)?, &d.groups).await?;
         let mut out = vec![0u8; MAX_RESPONSE];
-        let len = self.synthesize_aaaa(req, &a, d.prefix, &mut out)?;
+        let len = self.synthesize_aaaa(req, &a, d.prefix, &d.exclude, &mut out)?;
         let q = parse_query(req).ok()?;
         let len = self.finish(&q, &mut out, len, transport);
         out.truncate(len);
@@ -805,6 +815,7 @@ impl Pipeline {
         req: &[u8],
         a: &[u8],
         prefix: std::net::Ipv6Addr,
+        exclude: &[Cidr],
         out: &mut [u8],
     ) -> Option<usize> {
         let q = parse_query(req).ok()?;
@@ -818,6 +829,8 @@ impl Pipeline {
                 && r.rdlen == 4
                 && !matches!(r.rdata(a)[0], 0 | 127)
                 && r.rdata(a)[..2] != [169, 254]
+                // REQ: DNS-016 (T9.10) — and none in the exclusion set.
+                && answer_ip(rtype::A, r.rdata(a)).is_none_or(|ip| !exclude.iter().any(|c| c.contains(ip)))
         };
         if !recs.iter().any(usable) {
             return None;
@@ -843,6 +856,48 @@ impl Pipeline {
             .ok()
     }
 
+    /// REQ: DNS-016 (T9.10) — `resp` (an AAAA answer) without its excluded AAAA records,
+    /// when it has some and others remain (with none left, it's synthesized instead). The
+    /// CNAMEs stay; signatures go, since the set they signed changed.
+    fn dns64_filter(&self, req: &[u8], resp: &[u8], exclude: &[Cidr]) -> Option<Vec<u8>> {
+        if response_rcode(resp) != rcode::NOERROR {
+            return None;
+        }
+        let recs: Vec<telltale_proto::Record> = records(resp)
+            .ok()?
+            .flatten()
+            .filter(|r| r.section == Section::Answer)
+            .collect();
+        let aaaa = |r: &&telltale_proto::Record| r.rtype == rtype::AAAA;
+        let excluded = |r: &telltale_proto::Record| {
+            answer_ip(rtype::AAAA, r.rdata(resp)).is_some_and(|ip| dns64_excluded(ip, exclude))
+        };
+        if !recs.iter().filter(aaaa).any(excluded) || recs.iter().filter(aaaa).all(excluded) {
+            return None;
+        }
+        let q = parse_query(req).ok()?;
+        let mut out = vec![0u8; MAX_RESPONSE];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).ok()?;
+        for r in &recs {
+            let mut owner = NameBuf::default();
+            telltale_proto::read_name(resp, r.name_off, &mut owner).ok()?;
+            if r.rtype == rtype::CNAME {
+                let mut target = NameBuf::default();
+                telltale_proto::read_name(resp, r.rdata_off, &mut target).ok()?;
+                b.answer_rdata(Some(&owner), rtype::CNAME, r.ttl, target.as_wire())
+                    .ok()?;
+            } else if r.rtype == rtype::AAAA && !excluded(r) {
+                b.answer_rdata(Some(&owner), rtype::AAAA, r.ttl, r.rdata(resp))
+                    .ok()?;
+            }
+        }
+        let len = b
+            .finish(response_edns(&q, self.settings.edns_payload, None))
+            .ok()?;
+        out.truncate(len);
+        Some(out)
+    }
+
     /// REQ: DNS-016 — a cached AAAA answer without addresses: made from a cached A answer
     /// now, or looked up first (the query event is recorded when it's done).
     #[allow(clippy::too_many_arguments)]
@@ -863,7 +918,7 @@ impl Pipeline {
             .and_then(|r| self.cached_internal(r, &d.groups))
         {
             let mut tmp = vec![0u8; MAX_RESPONSE];
-            if let Some(n) = self.synthesize_aaaa(req, &a, d.prefix, &mut tmp)
+            if let Some(n) = self.synthesize_aaaa(req, &a, d.prefix, &d.exclude, &mut tmp)
                 && n <= out.len()
             {
                 out[..n].copy_from_slice(&tmp[..n]);
@@ -984,7 +1039,10 @@ impl Pipeline {
         let orig = req.to_vec();
         let target = *target;
         let transport = meta.transport;
-        match self.resolve_or_defer(&treq, &tq, None, groups, who, meta, out, start, oc) {
+        // A private reverse name stays local (RFC 6303), as when asked directly (T9.10).
+        let special = telltale_policy::classify(&tq, &self.state.load().policy.special)
+            .filter(|s| *s == Special::PrivatePtr);
+        match self.resolve_or_defer(&treq, &tq, special, groups, who, meta, out, start, oc) {
             Response::Ready(n) => {
                 let resp = out[..n].to_vec();
                 match self.safe_search_answer(&orig, &target, &resp, out) {
@@ -1157,10 +1215,11 @@ impl Pipeline {
         // sets CD gets the real answer).
         let dns64 =
             (q.qtype == rtype::AAAA && !q.header.flags.cd() && st.policy.clients.any_dns64())
-                .then(|| self.dns64_prefix(&st.policy, who))
+                .then(|| self.dns64_for(&st.policy, who))
                 .flatten()
-                .map(|prefix| Dns64 {
+                .map(|(prefix, exclude)| Dns64 {
                     prefix,
+                    exclude,
                     groups: groups.to_vec(),
                 });
         match self.cache.get(&key, &q.qname, &client, start, out) {
@@ -1177,9 +1236,18 @@ impl Pipeline {
                     }
                     None => len,
                 };
+                if let Some(d) = &dns64
+                    && oc.status == Status::Cached
+                    && let Some(n) = self.dns64_filter(req, &out[..len], &d.exclude)
+                    && n.len() <= out.len()
+                {
+                    // REQ: DNS-016 (T9.10) — real AAAA records left after the exclusions.
+                    out[..n.len()].copy_from_slice(&n);
+                    return Response::Ready(self.finish(&q, out, n.len(), meta.transport));
+                }
                 if let Some(d) = dns64
                     && oc.status == Status::Cached
-                    && needs_dns64(&out[..len])
+                    && needs_dns64(&out[..len], &d.exclude)
                 {
                     return self.dns64_after_cache(req, &q, d, meta, out, len, start, *oc);
                 }
@@ -1556,10 +1624,15 @@ impl Pipeline {
             // REQ: DNS-016 (T7.21) — no AAAA: made from the name's A records.
             if let Some(d) = &dns64
                 && let Some((bytes, _, None)) = &mut answer
-                && needs_dns64(bytes)
-                && let Some(synth) = this.dns64_synthesize(&req, d, transport).await
             {
-                *bytes = synth;
+                if needs_dns64(bytes, &d.exclude) {
+                    if let Some(synth) = this.dns64_synthesize(&req, d, transport).await {
+                        *bytes = synth;
+                    }
+                } else if let Some(filtered) = this.dns64_filter(&req, bytes, &d.exclude) {
+                    // REQ: DNS-016 (T9.10) — excluded AAAA records dropped.
+                    *bytes = filtered;
+                }
             }
             let t_upstream = waited.elapsed();
             let (status, rcode) = match &answer {
@@ -1929,6 +2002,8 @@ impl Pipeline {
 #[derive(Debug, Clone)]
 pub(crate) struct Dns64 {
     prefix: std::net::Ipv6Addr,
+    /// REQ: DNS-016 (T9.10) — the exclusion set.
+    exclude: Vec<Cidr>,
     groups: Vec<Box<str>>,
 }
 
@@ -1938,14 +2013,60 @@ enum Internal {
     Miss(CacheKey, u16),
 }
 
-/// A NOERROR answer with no AAAA record (CNAMEs only, or none): DNS64 applies.
-fn needs_dns64(resp: &[u8]) -> bool {
+/// A NOERROR answer with no AAAA record (CNAMEs only, or none) outside the exclusion set
+/// (T9.10): DNS64 applies.
+fn needs_dns64(resp: &[u8], exclude: &[Cidr]) -> bool {
     if response_rcode(resp) != rcode::NOERROR {
         return false;
     }
     records(resp).is_ok_and(|mut it| {
-        !it.any(|r| r.is_ok_and(|r| r.section == Section::Answer && r.rtype == rtype::AAAA))
+        !it.any(|r| {
+            r.is_ok_and(|r| {
+                r.section == Section::Answer
+                    && r.rtype == rtype::AAAA
+                    && answer_ip(rtype::AAAA, r.rdata(resp))
+                        .is_none_or(|ip| !dns64_excluded(ip, exclude))
+            })
+        })
     })
+}
+
+/// REQ: DNS-016 (T9.10) — an AAAA address in the exclusion set; IPv4-mapped addresses
+/// (`::ffff:0:0/96`) always are (RFC 6147 §5.1.4).
+fn dns64_excluded(ip: std::net::IpAddr, exclude: &[Cidr]) -> bool {
+    matches!(ip, std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_some())
+        || exclude.iter().any(|c| c.contains(ip))
+}
+
+/// REQ: DNS-016 (T9.10) — RFC 6147 §5.3.1: for a reverse name inside the NAT64 /96
+/// (`….b.9.f.f.4.6.0.0.ip6.arpa`), the embedded IPv4 address's `in-addr.arpa` name.
+fn dns64_reverse_target(qname: &NameBuf, prefix: std::net::Ipv6Addr) -> Option<NameBuf> {
+    let mut name = qname.display().to_string();
+    name.make_ascii_lowercase();
+    let body = name.trim_end_matches('.').strip_suffix(".ip6.arpa")?;
+    let mut nibbles = [0u8; 32];
+    let mut n = 0;
+    for label in body.split('.') {
+        let &[c] = label.as_bytes() else { return None };
+        let v = char::from(c).to_digit(16)?;
+        *nibbles.get_mut(31usize.checked_sub(n)?)? = u8::try_from(v).ok()?;
+        n += 1;
+    }
+    if n != 32 {
+        return None;
+    }
+    let mut addr = [0u8; 16];
+    for (i, b) in addr.iter_mut().enumerate() {
+        *b = (nibbles[2 * i] << 4) | nibbles[2 * i + 1];
+    }
+    if addr[..12] != prefix.octets()[..12] {
+        return None;
+    }
+    NameBuf::from_presentation(&format!(
+        "{}.{}.{}.{}.in-addr.arpa",
+        addr[15], addr[14], addr[13], addr[12]
+    ))
+    .ok()
 }
 
 /// REQ: FLT-015 — the address in an A or AAAA record's RDATA.
@@ -2837,6 +2958,130 @@ groups = ["kids"]
         ));
         let plain = summarize(&ask_from(&p, "10.0.2.5", "v4only.example", rtype::AAAA)).unwrap();
         assert_eq!(plain.answers, 0, "no DNS64 for the other group");
+    }
+
+    /// Caches `name`/`qtype` answered with these records (type, RDATA).
+    fn cache_records(p: &Pipeline, name: &str, qtype: u16, recs: &[(u16, Vec<u8>)]) {
+        let req = query(name, qtype, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 1024];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        for (rt, rdata) in recs {
+            b.answer_rdata(None, *rt, 300, rdata).unwrap();
+        }
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+            .unwrap();
+    }
+
+    fn v6(s: &str) -> Vec<u8> {
+        s.parse::<std::net::Ipv6Addr>().unwrap().octets().to_vec()
+    }
+
+    /// The `ip6.arpa` name of `s`.
+    fn rev6(s: &str) -> String {
+        let o = s.parse::<std::net::Ipv6Addr>().unwrap().octets();
+        let mut parts = Vec::new();
+        for b in o.iter().rev() {
+            parts.push(format!("{:x}", b & 0xf));
+            parts.push(format!("{:x}", b >> 4));
+        }
+        format!("{}.ip6.arpa", parts.join("."))
+    }
+
+    /// REQ: DNS-016 (T9.10) — the exclusion set: an excluded (or IPv4-mapped) AAAA counts as
+    /// missing, a mixed answer loses the excluded ones, an excluded A is never made into
+    /// AAAA; reverse names in the prefix follow the IPv4 address's PTR (private ones stay
+    /// local).
+    #[test]
+    fn dns_016_dns64_exclusions_and_reverse() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\ndns64 = true\ndns64_exclude = [\"2001:db8:bad::/48\", \"198.51.100.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        let synth = |last: &str| v6(&format!("64:ff9b::{last}"));
+        // Only an excluded AAAA: made from the A record.
+        cache_records(
+            &p,
+            "excl.example",
+            rtype::AAAA,
+            &[(rtype::AAAA, v6("2001:db8:bad::1"))],
+        );
+        cache_answer(
+            &p,
+            "excl.example",
+            rtype::A,
+            Some("192.0.2.44".parse().unwrap()),
+        );
+        let r = ask_from(&p, "10.0.0.5", "excl.example", rtype::AAAA);
+        assert!(contains(&r, &synth("c000:22c")), "synthesized");
+        assert!(!contains(&r, &v6("2001:db8:bad::1")));
+        // IPv4-mapped: always excluded.
+        cache_records(
+            &p,
+            "mapped.example",
+            rtype::AAAA,
+            &[(rtype::AAAA, v6("::ffff:192.0.2.45"))],
+        );
+        cache_answer(
+            &p,
+            "mapped.example",
+            rtype::A,
+            Some("192.0.2.45".parse().unwrap()),
+        );
+        assert!(contains(
+            &ask_from(&p, "10.0.0.5", "mapped.example", rtype::AAAA),
+            &synth("c000:22d")
+        ));
+        // Mixed: the real one stays, the excluded one goes.
+        cache_records(
+            &p,
+            "mixed.example",
+            rtype::AAAA,
+            &[
+                (rtype::AAAA, v6("2001:db8:bad::2")),
+                (rtype::AAAA, v6("2001:db8::9")),
+            ],
+        );
+        let r = ask_from(&p, "10.0.0.5", "mixed.example", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().answers, 1);
+        assert!(contains(&r, &v6("2001:db8::9")));
+        assert!(!contains(&r, &v6("2001:db8:bad::2")));
+        // An excluded A: no AAAA made.
+        cache_answer(&p, "v4ex.example", rtype::AAAA, None);
+        cache_answer(
+            &p,
+            "v4ex.example",
+            rtype::A,
+            Some("198.51.100.7".parse().unwrap()),
+        );
+        let r = ask_from(&p, "10.0.0.5", "v4ex.example", rtype::AAAA);
+        assert_eq!(summarize(&r).unwrap().answers, 0);
+        // Reverse: 64:ff9b::192.0.2.33 → 33.2.0.192.in-addr.arpa's PTR.
+        let host = NameBuf::from_presentation("host.example").unwrap();
+        cache_records(
+            &p,
+            "33.2.0.192.in-addr.arpa",
+            rtype::PTR,
+            &[(rtype::PTR, host.as_wire().to_vec())],
+        );
+        let r = ask_from(&p, "10.0.0.5", &rev6("64:ff9b::c000:221"), rtype::PTR);
+        let sr = summarize(&r).unwrap();
+        assert_eq!((sr.rcode, sr.answers), (rcode::NOERROR, 2), "CNAME + PTR");
+        assert!(contains(&r, host.as_wire()));
+        // An embedded private address stays local (RFC 6303).
+        let r = ask_from(&p, "10.0.0.5", &rev6("64:ff9b::c0a8:105"), rtype::PTR);
+        assert_eq!(summarize(&r).unwrap().rcode, rcode::NXDOMAIN);
+        // Outside the prefix: not ours.
+        let other = NameBuf::from_presentation(&rev6("2001:db8::c000:221")).unwrap();
+        assert!(dns64_reverse_target(&other, "64:ff9b::".parse().unwrap()).is_none());
     }
 
     /// REQ: FLT-015 (T7.20) — rebinding protection: a private address for a public name is

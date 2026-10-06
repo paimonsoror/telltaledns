@@ -63,6 +63,9 @@
     { key: 'dns64', label: 'DNS64', type: 'bool', advanced: true,
       help: 'Make IPv6 addresses for IPv4-only names, for IPv6-only networks with NAT64.' },
     { key: 'dns64_prefix', label: 'DNS64 prefix', type: 'text', placeholder: '64:ff9b::/96', advanced: true },
+    // REQ: DNS-016 (T9.10)
+    { key: 'dns64_exclude', label: 'DNS64 exclusions', type: 'lines', placeholder: '2001:db8:bad::/48', advanced: true,
+      help: 'IPv6 addresses here count as missing (the name gets made-up ones); IPv4 addresses here are never made into IPv6.' },
     // REQ: FLT-010 (T9.7)
     { key: 'schedules', label: 'Schedules', type: 'multi', options: scheduleNames,
       help: 'Schedules this group follows (make them under Schedules, below).' },
