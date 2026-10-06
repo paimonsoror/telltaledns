@@ -29,6 +29,111 @@ pub struct Group {
     pub services: Vec<Box<str>>,
     /// REQ: FLT-011 (T7.11) — safe search, and YouTube's restriction with it.
     pub safe_search: Option<telltale_config::YoutubeRestrict>,
+    /// REQ: FLT-015 (T7.20) — which answer addresses are refused.
+    pub answers: Option<AnswerFilter>,
+    /// REQ: FLT-014 (T7.20) — rewrites.
+    pub rewrites: Vec<Rewrite>,
+}
+
+/// REQ: FLT-015 (T7.20) — answer addresses a group refuses.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AnswerFilter {
+    /// Private, loopback, link-local, shared, and unspecified ranges (rebinding protection).
+    pub private: bool,
+    pub deny: Vec<Cidr>,
+    /// Names (and everything under them) allowed to answer private addresses.
+    pub allow: Vec<telltale_proto::NameBuf>,
+}
+
+/// Ranges no public name should answer with (DNS rebinding).
+fn is_private(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    };
+    match ip {
+        IpAddr::V4(a) => {
+            let o = a.octets();
+            a.is_private()
+                || a.is_loopback()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(a) => {
+            let s = a.segments()[0];
+            a.is_loopback()
+                || a.is_unspecified()
+                || (s & 0xfe00) == 0xfc00
+                || (s & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+impl AnswerFilter {
+    /// Why `ip` is refused for `name`, if it is.
+    pub fn refuses(&self, name: &telltale_proto::NameBuf, ip: IpAddr) -> Option<&'static str> {
+        if self.deny.iter().any(|c| c.contains(ip)) {
+            return Some("answer address blocked");
+        }
+        if self.private && is_private(ip) && !self.allow.iter().any(|a| name.is_subdomain_of(a)) {
+            return Some("private address for a public name (rebinding protection)");
+        }
+        None
+    }
+}
+
+/// REQ: FLT-015 — conditionally forwarded domains are local: they may answer private
+/// addresses.
+fn allow_routed(cfg: &Config, groups: &mut [Group]) {
+    let routed: Vec<telltale_proto::NameBuf> = cfg
+        .route
+        .iter()
+        .flat_map(|r| r.match_suffix.iter())
+        .filter_map(|d| telltale_proto::NameBuf::from_presentation(d).ok())
+        .collect();
+    for g in groups {
+        if let Some(a) = &mut g.answers {
+            a.allow.extend(routed.iter().copied());
+        }
+    }
+}
+
+/// REQ: FLT-014 (T7.20) — one rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rewrite {
+    pub name: telltale_proto::NameBuf,
+    /// `*.name`: every name under it (not the name itself).
+    pub wildcard: bool,
+    pub target: RewriteTarget,
+}
+
+/// What a rewrite answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // few, read-only, and Copy: no indirection per lookup
+pub enum RewriteTarget {
+    Addr(IpAddr),
+    Name(telltale_proto::NameBuf),
+}
+
+impl Group {
+    /// The rewrite for `name`: an exact one first, else the most specific wildcard.
+    pub fn rewrite_for(&self, name: &telltale_proto::NameBuf) -> Option<RewriteTarget> {
+        if self.rewrites.is_empty() {
+            return None;
+        }
+        self.rewrites
+            .iter()
+            .find(|r| !r.wildcard && r.name == *name)
+            .or_else(|| {
+                self.rewrites
+                    .iter()
+                    .filter(|r| r.wildcard && *name != r.name && name.is_subdomain_of(&r.name))
+                    .max_by_key(|r| r.name.wire_len())
+            })
+            .map(|r| r.target)
+    }
 }
 
 /// How a group's blocked queries are answered (FLT-008).
@@ -222,6 +327,8 @@ pub struct ClientTable {
     /// Index of the `default` group, and its name for unknown clients.
     default_group: [u16; 1],
     default_names: Vec<Box<str>>,
+    /// REQ: FLT-015 — some group filters answer addresses (else the check is skipped).
+    any_answers: bool,
 }
 
 impl Default for ClientTable {
@@ -248,6 +355,39 @@ impl Group {
                 .map(|s| s.as_str().into())
                 .collect(),
             safe_search: g.safe_search.then_some(g.youtube_restrict),
+            answers: (g.rebinding_protection || !g.block_answer_ips.is_empty()).then(|| {
+                AnswerFilter {
+                    private: g.rebinding_protection,
+                    deny: g.block_answer_ips.clone(),
+                    allow: g
+                        .rebinding_allow
+                        .iter()
+                        .filter_map(|d| telltale_proto::NameBuf::from_presentation(d).ok())
+                        .collect(),
+                }
+            }),
+            rewrites: g
+                .rewrite
+                .iter()
+                .filter_map(|w| {
+                    let wildcard = w.domain.starts_with("*.");
+                    let name = telltale_proto::NameBuf::from_presentation(
+                        w.domain.trim_start_matches("*."),
+                    )
+                    .ok()?;
+                    let target = match w.answer.parse::<IpAddr>() {
+                        Ok(ip) => RewriteTarget::Addr(ip),
+                        Err(_) => RewriteTarget::Name(
+                            telltale_proto::NameBuf::from_presentation(&w.answer).ok()?,
+                        ),
+                    };
+                    Some(Rewrite {
+                        name,
+                        wildcard,
+                        target,
+                    })
+                })
+                .collect(),
         }
     }
 }
@@ -269,14 +409,18 @@ impl ClientTable {
                 color: None,
                 services: Vec::new(),
                 safe_search: None,
+                answers: None,
+                rewrites: Vec::new(),
             });
             groups.len() - 1
         };
+        allow_routed(cfg, &mut groups);
         let index: HashMap<&str, u16> = groups
             .iter()
             .enumerate()
             .filter_map(|(i, g)| Some((&*g.name, u16::try_from(i).ok()?)))
             .collect();
+        let any_answers = groups.iter().any(|g| g.answers.is_some());
         let mut t = Self {
             by_id: HashMap::new(),
             by_mac: HashMap::new(),
@@ -290,6 +434,7 @@ impl ClientTable {
             default_names: vec!["default".into()],
             clients: Vec::new(),
             groups: Vec::new(),
+            any_answers,
         };
         for c in &cfg.client {
             let Ok(ci) = u16::try_from(t.clients.len()) else {
@@ -347,6 +492,11 @@ impl ClientTable {
     /// True if some client is identified by MAC, so the neighbor table is worth reading.
     pub fn uses_macs(&self) -> bool {
         !self.by_mac.is_empty()
+    }
+
+    /// REQ: FLT-015 — whether any group filters answer addresses.
+    pub fn any_answers(&self) -> bool {
+        self.any_answers
     }
 
     pub fn groups(&self) -> &[Group] {

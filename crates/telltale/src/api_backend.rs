@@ -227,6 +227,13 @@ pub(crate) fn rule_labels(
 ) -> (Option<String>, Option<String>) {
     use telltale_telemetry::event::RuleKind;
     let Some(x) = rule else { return (None, None) };
+    // REQ: FLT-015 (T7.20) — an answer address refused.
+    if x.kind == RuleKind::AnswerIp {
+        return (
+            Some("answer address (rebinding protection or a blocked range)".to_owned()),
+            Some("answer_ip".to_owned()),
+        );
+    }
     // REQ: FLT-010 (T7.10) — a block-everything schedule.
     if x.kind == RuleKind::Schedule {
         let name = schedules.iter().find(|(r, _)| *r == x.list).map_or_else(

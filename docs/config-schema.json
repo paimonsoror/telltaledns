@@ -1520,6 +1520,14 @@
       "description": "A client group (FLT-005, `spec/05` §1).",
       "type": "object",
       "properties": {
+        "block_answer_ips": {
+          "description": "Answers inside these networks are blocked, whatever the name.",
+          "type": "array",
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
         "block_ips": {
           "description": "Addresses for `block_mode = \"custom_ip\"` (IPv4 for A, IPv6 for AAAA).",
           "type": "array",
@@ -1595,6 +1603,25 @@
           "type": "integer",
           "format": "int32",
           "default": 0
+        },
+        "rebinding_allow": {
+          "description": "Domains allowed to answer with private addresses (your own domain, `plex.direct`).\nDomains with a `[[route]]` (conditional forwarding) always are.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "rebinding_protection": {
+          "description": "REQ: FLT-015 (T7.20) — DNS rebinding protection: answers in private, loopback,\nlink-local, or shared (CGNAT) ranges are blocked for names that aren't yours.",
+          "type": "boolean"
+        },
+        "rewrite": {
+          "description": "REQ: FLT-014 (T7.20) — rewrites: a domain answered with an address or another name.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RewriteConfig"
+          }
         },
         "safe_search": {
           "description": "REQ: FLT-011 (T7.11) — safe search: Google, Bing, DuckDuckGo, Yandex, and Pixabay\nanswer with their safe-search service, and YouTube with Restricted Mode.",
@@ -2188,6 +2215,27 @@
         }
       },
       "additionalProperties": false
+    },
+    "RewriteConfig": {
+      "description": "REQ: FLT-014 (T7.20) — one rewrite.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "description": "An address (answered as A or AAAA) or a name (answered as a CNAME to it, with its\naddresses).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "domain": {
+          "description": "The name (`nas.example.com`), or `*.example.com` for every name under it.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "answer"
+      ]
     },
     "Role": {
       "description": "Process role (`spec/02` §1).",

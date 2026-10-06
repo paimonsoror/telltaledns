@@ -747,6 +747,7 @@ fn row(
         4 => Some(RuleKind::Cname),
         5 => Some(RuleKind::Quick),
         6 => Some(RuleKind::Schedule),
+        7 => Some(RuleKind::AnswerIp),
         _ => None,
     };
     let rule = rule_kind.filter(|_| list > 0).map(|k| Rule {

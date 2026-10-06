@@ -39,6 +39,9 @@ pub enum RuleKind {
     Quick = 5,
     /// REQ: FLT-010 (T7.10) — a schedule blocked everything; `list` holds its reference.
     Schedule = 6,
+    /// REQ: FLT-015 (T7.20) — an answer address was refused (rebinding protection or a
+    /// blocked range).
+    AnswerIp = 7,
 }
 
 impl RuleKind {
@@ -50,6 +53,7 @@ impl RuleKind {
             4 => Self::Cname,
             5 => Self::Quick,
             6 => Self::Schedule,
+            7 => Self::AnswerIp,
             _ => return None,
         })
     }
@@ -61,6 +65,7 @@ impl RuleKind {
             Self::Cname => "cname",
             Self::Quick => "quick",
             Self::Schedule => "schedule",
+            Self::AnswerIp => "answer_ip",
         }
     }
 }

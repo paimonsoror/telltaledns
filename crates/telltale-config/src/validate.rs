@@ -53,6 +53,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     alerts(cfg, &mut r);
     sinks(cfg, &mut r);
     dhcp(cfg, &mut r);
+    rewrites(cfg, &mut r);
     otlp(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
@@ -98,6 +99,53 @@ fn upstream_tls(u: &crate::schema::Upstream, s: &str, p: &str, r: &mut Report<'_
 }
 
 // REQ: OBS-010 (T7.13) — event sinks: unique names and what each kind needs.
+// REQ: FLT-014, FLT-015 (T7.20) — rewrites and rebinding exceptions are names; a rewrite's
+// answer is an address or a name.
+fn rewrites(cfg: &Config, r: &mut Report<'_>) {
+    let name_ok = |s: &str| {
+        let s = s.trim_end_matches('.');
+        !s.is_empty()
+            && s.len() <= 253
+            && s.split('.').all(|l| {
+                !l.is_empty()
+                    && l.len() <= 63
+                    && l.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+    };
+    for (i, g) in cfg.group.iter().enumerate() {
+        for (j, a) in g.rebinding_allow.iter().enumerate() {
+            if !name_ok(a) {
+                r.err(
+                    format!("group[{i}].rebinding_allow[{j}]"),
+                    "a domain, e.g. plex.direct",
+                );
+            }
+        }
+        let mut seen = HashSet::new();
+        for (j, w) in g.rewrite.iter().enumerate() {
+            let d = w.domain.trim_start_matches("*.");
+            if !name_ok(d) {
+                r.err(
+                    format!("group[{i}].rewrite[{j}].domain"),
+                    "a domain, or *.domain for every name under it",
+                );
+            } else if !seen.insert(w.domain.to_ascii_lowercase()) {
+                r.err(
+                    format!("group[{i}].rewrite[{j}].domain"),
+                    "rewritten twice in this group",
+                );
+            }
+            if w.answer.parse::<std::net::IpAddr>().is_err() && !name_ok(&w.answer) {
+                r.err(
+                    format!("group[{i}].rewrite[{j}].answer"),
+                    "an IP address or a domain",
+                );
+            }
+        }
+    }
+}
+
 // REQ: OPS-008 (T7.19) — DHCP: the addresses it needs, a pool inside the subnet, valid
 // reservations.
 fn dhcp(cfg: &Config, r: &mut Report<'_>) {

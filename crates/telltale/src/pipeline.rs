@@ -19,7 +19,7 @@ use telltale_config::{Cidr, RateLimitAction, SpecialConfig};
 use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Matcher, Scratch};
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
 use telltale_policy::{
-    ClientTable, Group, Identity, LocalData, Neighbors, Pause, RateLimiter, Special,
+    ClientTable, Group, Identity, LocalData, Neighbors, Pause, RateLimiter, RewriteTarget, Special,
 };
 use telltale_proto::{
     EdnsOut, NameBuf, Query, QueryError, ResponseBuilder, Section, badvers_from_raw, build_query,
@@ -617,11 +617,52 @@ impl Pipeline {
             }
         }
         let groups = st.policy.clients.group_names(ident);
+        // REQ: FLT-014 (T7.20) — the group's rewrites (blocks above still win).
+        match st.policy.clients.primary_group(ident).rewrite_for(&q.qname) {
+            Some(RewriteTarget::Addr(ip)) => {
+                oc.status = Status::Local;
+                return self.rewrite_answer(&q, ip, out, meta);
+            }
+            Some(RewriteTarget::Name(target)) => {
+                return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
+            }
+            None => {}
+        }
         // REQ: FLT-011 (T7.11) — safe search: the engine's safe name instead.
         if let Some(target) = Self::safe_search_target(&q, st.policy.clients.primary_group(ident)) {
             return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
         }
         self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
+    }
+
+    /// REQ: FLT-014 (T7.20) — a rewrite to an address: A or AAAA as asked (no data for the
+    /// other family and other types).
+    fn rewrite_answer(
+        &self,
+        q: &Query<'_>,
+        ip: std::net::IpAddr,
+        out: &mut [u8],
+        meta: &RequestMeta,
+    ) -> Response {
+        let edns = response_edns(q, self.settings.edns_payload, None);
+        let built = ResponseBuilder::new(q, out, rcode::NOERROR)
+            .ok()
+            .and_then(|mut b| {
+                match (q.qtype, ip) {
+                    (rtype::A, std::net::IpAddr::V4(v4)) => {
+                        b.answer_a(60, v4).ok()?;
+                    }
+                    (rtype::AAAA, std::net::IpAddr::V6(v6)) => {
+                        b.answer_aaaa(60, v6).ok()?;
+                    }
+                    _ => {}
+                }
+                b.finish(edns).ok()
+            });
+        match built {
+            Some(len) => Response::Ready(self.finish(q, out, len, meta.transport)),
+            None => self.simple(q, out, rcode::SERVFAIL, None, meta),
+        }
     }
 
     /// REQ: FLT-011 (T7.11) — the safe-search name for this query, when the group has safe
@@ -1033,14 +1074,48 @@ impl Pipeline {
         let st = self.state.load();
         let guard = self.filter.load();
         let f = guard.as_ref();
-        if f.is_none() && st.policy.quick.is_empty() {
+        let answers_on = st.policy.clients.any_answers();
+        if f.is_none() && st.policy.quick.is_empty() && !answers_on {
             return None;
         }
+        // REQ: FLT-015 (T7.20) — the client's answer filter, if its group has one.
+        let answer_filter = answers_on
+            .then(|| {
+                let ident = st.policy.clients.identify(
+                    who.peer,
+                    who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+                    who.mac,
+                    &self.neighbors,
+                );
+                st.policy.clients.primary_group(ident)
+            })
+            .filter(|g| g.answers.is_some());
         let mut target = telltale_proto::NameBuf::default();
         for r in telltale_proto::records(out.get(..len)?).ok()?.flatten() {
-            if r.section != telltale_proto::Section::Answer
-                || r.rtype != telltale_proto::rtype::CNAME
+            if r.section != telltale_proto::Section::Answer {
+                continue;
+            }
+            if let Some(group) = answer_filter
+                && let Some(af) = &group.answers
+                && let Some(ip) = answer_ip(r.rtype, r.rdata(&out[..len]))
+                && !self.paused_for(group)
             {
+                let mut owner = telltale_proto::NameBuf::default();
+                let _ = telltale_proto::read_name(&out[..len], r.name_off, &mut owner);
+                let allowed = af.allow.iter().any(|a| q.qname.is_subdomain_of(a));
+                if let Some(why) = af.refuses(&owner, ip).filter(|_| !allowed) {
+                    let len = self.block_answer(q, out, group, why)?;
+                    return Some((
+                        len,
+                        Rule {
+                            list: 0,
+                            kind: RuleKind::AnswerIp,
+                            allow: false,
+                        },
+                    ));
+                }
+            }
+            if r.rtype != telltale_proto::rtype::CNAME {
                 continue;
             }
             if telltale_proto::read_name(&out[..len], r.rdata_off, &mut target).is_err() {
@@ -1078,6 +1153,11 @@ impl Pipeline {
             }
         }
         None
+    }
+
+    /// Blocking is paused for this group (FLT-009): no answer is refused either.
+    fn paused_for(&self, group: &Group) -> bool {
+        self.pause.is_paused(&group.name, unix_now)
     }
 
     /// REQ: FLT-005 (T6.12, ADR-067) — the quick rule deciding `name` (wire format) for this
@@ -1542,6 +1622,20 @@ impl Pipeline {
         if let Some(tap) = self.dnstap.get() {
             tap.offer(peer, transport, req, resp, ev.ts_us);
         }
+    }
+}
+
+/// REQ: FLT-015 — the address in an A or AAAA record's RDATA.
+fn answer_ip(rt: u16, rdata: &[u8]) -> Option<std::net::IpAddr> {
+    match (rt, rdata.len()) {
+        (rtype::A, 4) => Some(std::net::IpAddr::from([
+            rdata[0], rdata[1], rdata[2], rdata[3],
+        ])),
+        (rtype::AAAA, 16) => {
+            let b: [u8; 16] = rdata.try_into().ok()?;
+            Some(std::net::IpAddr::from(b))
+        }
+        _ => None,
     }
 }
 
@@ -2257,6 +2351,114 @@ groups = ["kids"]
         assert_eq!(sum(&e), (rcode::NOERROR, 1));
         assert!(contains(&e, &[0, 15, 0, 2, 0, 17]));
         assert!(!contains(&e, b"blocked by list"));
+    }
+
+    /// Puts `name A ip` in the cache, as an upstream answer would be.
+    fn cache_a(p: &Pipeline, name: &str, ip: Ipv4Addr) {
+        let req = query(name, rtype::A, false);
+        let q = parse_query(&req).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        b.answer_a(300, ip).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        p.cache
+            .insert(&p.key(&q, view), &q, &out[..len], Instant::now())
+            .unwrap();
+    }
+
+    /// REQ: FLT-015 (T7.20) — rebinding protection: a private address for a public name is
+    /// refused (cache hits included), allowed under `rebinding_allow`, and for groups without
+    /// it; `block_answer_ips` refuses a range for any name.
+    #[test]
+    fn flt_015_answer_ip_filter() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\nrebinding_protection = true\nrebinding_allow = [\"home.example\"]\nblock_answer_ips = [\"203.0.113.0/24\"]\n[[group]]\nname = \"open\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        cache_a(&p, "evil.example", Ipv4Addr::new(192, 168, 1, 5));
+        cache_a(&p, "nas.home.example", Ipv4Addr::new(192, 168, 1, 6));
+        cache_a(&p, "bad.example", Ipv4Addr::new(203, 0, 113, 9));
+        cache_a(&p, "ok.example", Ipv4Addr::new(93, 184, 216, 34));
+        let evil = ask_from(&p, "10.0.0.5", "evil.example", rtype::A);
+        assert!(
+            !contains(&evil, &[192, 168, 1, 5]),
+            "a private answer for a public name"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "nas.home.example", rtype::A),
+                &[192, 168, 1, 6]
+            ),
+            "allowed domain"
+        );
+        assert!(
+            !contains(
+                &ask_from(&p, "10.0.0.5", "bad.example", rtype::A),
+                &[203, 0, 113, 9]
+            ),
+            "blocked range"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "ok.example", rtype::A),
+                &[93, 184, 216, 34]
+            ),
+            "public is fine"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.2.5", "evil.example", rtype::A),
+                &[192, 168, 1, 5]
+            ),
+            "a group without it"
+        );
+    }
+
+    /// REQ: FLT-014 (T7.20) — rewrites: an address (exact or wildcard) answered locally, a
+    /// name answered as a CNAME with the name's addresses; only for the group.
+    #[test]
+    fn flt_014_rewrites() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"default\"\n[[group.rewrite]]\ndomain = \"nas.lan.example\"\nanswer = \"192.168.1.10\"\n[[group.rewrite]]\ndomain = \"*.dev.example\"\nanswer = \"10.1.1.1\"\n[[group.rewrite]]\ndomain = \"tv.example\"\nanswer = \"cdn.example\"\n[[group]]\nname = \"adults\"\nnetworks = [\"10.0.2.0/24\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||nothing.example^\n");
+        cache_a(&p, "cdn.example", Ipv4Addr::new(10, 9, 9, 9));
+        cache_a(&p, "nas.lan.example", Ipv4Addr::new(1, 2, 3, 4));
+        let nas = ask_from(&p, "10.0.0.5", "nas.lan.example", rtype::A);
+        assert_eq!(summarize(&nas).unwrap().answers, 1);
+        assert!(contains(&nas, &[192, 168, 1, 10]));
+        let v6 = summarize(&ask_from(&p, "10.0.0.5", "nas.lan.example", rtype::AAAA)).unwrap();
+        assert_eq!(
+            (v6.rcode, v6.answers),
+            (rcode::NOERROR, 0),
+            "no data for the other family"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "api.dev.example", rtype::A),
+                &[10, 1, 1, 1]
+            ),
+            "wildcard"
+        );
+        let tv = ask_from(&p, "10.0.0.5", "tv.example", rtype::A);
+        let target = NameBuf::from_presentation("cdn.example").unwrap();
+        assert!(
+            contains(&tv, target.as_wire()) && contains(&tv, &[10, 9, 9, 9]),
+            "CNAME and its address"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.2.5", "nas.lan.example", rtype::A),
+                &[1, 2, 3, 4]
+            ),
+            "other groups: the real answer"
+        );
     }
 
     /// REQ: FLT-011 (T7.11) — safe search: an engine's name is answered as a CNAME to its

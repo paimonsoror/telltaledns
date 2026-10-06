@@ -465,6 +465,28 @@
       "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
       "caution": "Hits count since the node started, so a list with no hits after a restart may just be new.",
       "docs": "filter-lists"
+    },
+    {
+      "id": "rewrites",
+      "title": "Rewrites",
+      "term": "DNS rewrite",
+      "general": true,
+      "summary": "Answer a name with your own address, or another name, for one group's devices.",
+      "when": "Split-horizon names, test servers, pointing a device at a different backend.",
+      "example": "nas.example.com answers 192.168.1.10 at home, while everyone else gets the public address.",
+      "caution": "Blocks still win. For a name everyone should get, use local records.",
+      "docs": "rewrites"
+    },
+    {
+      "id": "rebinding",
+      "title": "Rebinding protection",
+      "term": "DNS rebinding",
+      "general": true,
+      "summary": "Refuses private-network addresses in answers for public names, so websites can't use DNS to reach devices on your network.",
+      "when": "On networks with browsers and devices that have web interfaces (routers, cameras, printers).",
+      "example": "attacker.example answering 192.168.1.1 is blocked; nas.home.example (allowed) still answers.",
+      "caution": "Services that hand out private addresses on purpose (plex.direct) need rebinding_allow. Your local records and routed domains are always allowed.",
+      "docs": "rebinding-protection"
     }
   ]
 }

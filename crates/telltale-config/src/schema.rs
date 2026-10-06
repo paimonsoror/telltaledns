@@ -614,6 +614,20 @@ pub struct GroupConfig {
     /// With `safe_search`: YouTube's restriction (`strict`, `moderate`, or `off`).
     #[serde(default, skip_serializing_if = "YoutubeRestrict::is_default")]
     pub youtube_restrict: YoutubeRestrict,
+    /// REQ: FLT-015 (T7.20) — DNS rebinding protection: answers in private, loopback,
+    /// link-local, or shared (CGNAT) ranges are blocked for names that aren't yours.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rebinding_protection: bool,
+    /// Domains allowed to answer with private addresses (your own domain, `plex.direct`).
+    /// Domains with a `[[route]]` (conditional forwarding) always are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rebinding_allow: Vec<SafeString>,
+    /// Answers inside these networks are blocked, whatever the name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_answer_ips: Vec<Cidr>,
+    /// REQ: FLT-014 (T7.20) — rewrites: a domain answered with an address or another name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rewrite: Vec<RewriteConfig>,
 }
 
 /// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.
@@ -849,6 +863,17 @@ pub enum AlertWhen {
     ServfailRate,
     /// A newer TelltaleDNS build is available (once per version).
     UpdateAvailable,
+}
+
+/// REQ: FLT-014 (T7.20) — one rewrite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RewriteConfig {
+    /// The name (`nas.example.com`), or `*.example.com` for every name under it.
+    pub domain: SafeString,
+    /// An address (answered as A or AAAA) or a name (answered as a CNAME to it, with its
+    /// addresses).
+    pub answer: SafeString,
 }
 
 /// What a schedule does during its windows.

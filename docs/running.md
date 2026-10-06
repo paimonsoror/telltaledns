@@ -732,6 +732,41 @@ blocked_services = ["tiktok", "roblox", "fortnite"]
 - In the UI: **Groups → Manage groups → Edit → Blocked services**.
 - The catalog is part of the binary (`presets/services/*.toml`); services change with updates. To block one service's extra domain, add a quick rule.
 
+### Rewrites
+Answer a name differently for a group, for example a split-horizon name or a test server:
+```toml
+[[group]]
+name = "default"
+
+[[group.rewrite]]
+domain = "nas.example.com"           # this name...
+answer = "192.168.1.10"              # ...answered with this address (A, or AAAA for IPv6)
+
+[[group.rewrite]]
+domain = "*.dev.example.com"         # every name under dev.example.com
+answer = "10.1.1.1"
+
+[[group.rewrite]]
+domain = "tv.example"
+answer = "cdn.example.net"           # answered as a CNAME to that name, with its addresses
+```
+- An exact name wins over a wildcard; the most specific wildcard wins over others. A wildcard covers names under the domain, not the domain itself.
+- An address rewrite answers the other address family and other record types with no data.
+- Blocks still win: a blocked name isn't rewritten. For a name everyone should get, use [local records](#local-records) instead.
+
+### Rebinding protection
+A website can make your browser attack devices on your network by pointing its own name at a private address (DNS rebinding). Turn on the protection per group:
+```toml
+[[group]]
+name = "default"
+rebinding_protection = true                   # refuse private answers for public names
+rebinding_allow = ["plex.direct", "home.example.com"]   # names allowed to answer private addresses
+block_answer_ips = ["203.0.113.0/24"]         # answers in these networks are refused for any name
+```
+- With `rebinding_protection`, answers in private (10/8, 172.16/12, 192.168/16, fc00::/7), loopback, link-local, CGNAT (100.64/10), and unspecified ranges are blocked, with the block answer and the reason in the query log. Your [local records](#local-records) and domains with a `[[route]]` (conditional forwarding to your router or AD server) are never affected.
+- `block_answer_ips` refuses answers in any network you list, whatever the name (a known-bad range, or your own WAN address).
+- Cached answers are checked too, and a paused group isn't filtered.
+
 ### Safe search
 Make search engines show only safe results for a group, whatever the browser's settings:
 ```toml
