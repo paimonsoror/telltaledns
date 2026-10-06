@@ -25,6 +25,9 @@ pub struct UpstreamTls {
     pub client: Option<Arc<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>>,
     /// Base64 SHA-256 of the server certificate's `SubjectPublicKeyInfo` (HPKP style).
     pub pins: Vec<String>,
+    /// REQ: UPS-003 (T9.17) — a DNS stamp's hashes: SHA-256 of the TBS part of some
+    /// certificate in the chain the server presents.
+    pub tbs_hashes: Vec<[u8; 32]>,
 }
 
 impl std::fmt::Debug for UpstreamTls {
@@ -33,6 +36,7 @@ impl std::fmt::Debug for UpstreamTls {
             .field("ca", &self.ca.len())
             .field("client_cert", &self.client.is_some())
             .field("pins", &self.pins)
+            .field("tbs_hashes", &self.tbs_hashes.len())
             .finish()
     }
 }
@@ -64,12 +68,13 @@ pub(crate) fn client_config(
         .build()
         .map_err(|e| rustls::Error::General(e.to_string()))?
     };
-    let verifier: Arc<dyn ServerCertVerifier> = if up.pins.is_empty() {
+    let verifier: Arc<dyn ServerCertVerifier> = if up.pins.is_empty() && up.tbs_hashes.is_empty() {
         verifier
     } else {
         Arc::new(Pinned {
             inner: verifier,
             pins: up.pins.clone(),
+            tbs_hashes: up.tbs_hashes.clone(),
         })
     };
     let builder = builder
@@ -90,32 +95,46 @@ pub(crate) fn server_name(name: &str) -> Result<ServerName<'static>, String> {
         .map_err(|e| format!("invalid TLS server name `{name}`: {e}"))
 }
 
+/// One DER TLV: (tag, content, the whole TLV, what follows).
+type Tlv<'a> = (u8, &'a [u8], &'a [u8], &'a [u8]);
+
+fn tlv(d: &[u8]) -> Option<Tlv<'_>> {
+    let tag = *d.first()?;
+    let first = *d.get(1)?;
+    let (len, head) = if first & 0x80 == 0 {
+        (usize::from(first), 2)
+    } else {
+        let n = usize::from(first & 0x7f);
+        if n == 0 || n > 3 {
+            return None;
+        }
+        let mut len = 0usize;
+        for b in d.get(2..2 + n)? {
+            len = (len << 8) | usize::from(*b);
+        }
+        (len, 2 + n)
+    };
+    let end = head.checked_add(len)?;
+    let whole = d.get(..end)?;
+    Some((tag, &whole[head..], whole, &d[end..]))
+}
+
+/// The DER of a certificate's `tbsCertificate` (with its header): what DNS stamp hashes cover.
+pub(crate) fn tbs_der(cert: &[u8]) -> Option<&[u8]> {
+    let (_, certificate, _, _) = tlv(cert)?;
+    let (tag, _, whole, _) = tlv(certificate)?;
+    (tag == 0x30).then_some(whole)
+}
+
+/// REQ: UPS-003 (T9.17) — SHA-256 of a certificate's `tbsCertificate`, as DNS stamps pin it.
+pub fn tbs_hash(cert: &[u8]) -> Option<[u8; 32]> {
+    let d = ring::digest::digest(&ring::digest::SHA256, tbs_der(cert)?);
+    d.as_ref().try_into().ok()
+}
+
 /// The DER of a certificate's `SubjectPublicKeyInfo` (a minimal walk of the X.509 structure).
 pub(crate) fn spki(cert: &[u8]) -> Option<&[u8]> {
-    /// One TLV: (tag, content, the whole TLV, what follows).
-    type Tlv<'a> = (u8, &'a [u8], &'a [u8], &'a [u8]);
-    fn tlv(d: &[u8]) -> Option<Tlv<'_>> {
-        let tag = *d.first()?;
-        let first = *d.get(1)?;
-        let (len, head) = if first & 0x80 == 0 {
-            (usize::from(first), 2)
-        } else {
-            let n = usize::from(first & 0x7f);
-            if n == 0 || n > 3 {
-                return None;
-            }
-            let mut len = 0usize;
-            for b in d.get(2..2 + n)? {
-                len = (len << 8) | usize::from(*b);
-            }
-            (len, 2 + n)
-        };
-        let end = head.checked_add(len)?;
-        let whole = d.get(..end)?;
-        Some((tag, &whole[head..], whole, &d[end..]))
-    }
-    let (_, certificate, _, _) = tlv(cert)?;
-    let (_, tbs, _, _) = tlv(certificate)?;
+    let (_, tbs, _, _) = tlv(tbs_der(cert)?)?;
     let mut rest = tbs;
     // [0] version (optional), then serial, signature, issuer, validity, subject.
     if rest.first() == Some(&0xa0) {
@@ -135,11 +154,13 @@ pub fn spki_pin(cert: &[u8]) -> Option<String> {
 }
 
 /// REQ: UPS-011 — the usual verification (or none, when insecure), then the key must match one
-/// of the pins.
+/// of the pins, and (UPS-003, T9.17) a certificate in the chain must match one of a stamp's
+/// hashes.
 #[derive(Debug)]
 struct Pinned {
     inner: Arc<dyn ServerCertVerifier>,
     pins: Vec<String>,
+    tbs_hashes: Vec<[u8; 32]>,
 }
 
 impl ServerCertVerifier for Pinned {
@@ -154,12 +175,24 @@ impl ServerCertVerifier for Pinned {
         let ok =
             self.inner
                 .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)?;
-        match spki_pin(end_entity.as_ref()) {
-            Some(pin) if self.pins.contains(&pin) => Ok(ok),
-            _ => Err(rustls::Error::General(
+        if !self.pins.is_empty()
+            && !spki_pin(end_entity.as_ref()).is_some_and(|pin| self.pins.contains(&pin))
+        {
+            return Err(rustls::Error::General(
                 "the server's key doesn't match spki_pins".into(),
-            )),
+            ));
         }
+        if !self.tbs_hashes.is_empty()
+            && !std::iter::once(end_entity)
+                .chain(intermediates)
+                .filter_map(|c| tbs_hash(c.as_ref()))
+                .any(|h| self.tbs_hashes.contains(&h))
+        {
+            return Err(rustls::Error::General(
+                "no certificate in the server's chain matches the stamp's hashes".into(),
+            ));
+        }
+        Ok(ok)
     }
 
     fn verify_tls12_signature(

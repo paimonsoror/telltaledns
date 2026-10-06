@@ -1265,6 +1265,20 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-093 — DNS stamps: enforce their certificate hashes (Proposed)
+**Context:** T7.24 parsed DoH/DoT/DoQ stamps but skipped their hashes. A stamp's hashes are SHA-256 digests of the `tbsCertificate` of certificates in the server's chain: the publisher's way of saying "only these CAs (or this certificate) may vouch for it". dnscrypt-proxy enforces them.
+
+**Decision:**
+- Hashes are parsed. Each must be 32 bytes, or the stamp is malformed.
+- When a stamp has hashes, the normal verification runs first, then some certificate in the presented chain must match one. With `tls_insecure_skip_verify` the match is still required, as for SPKI pins.
+- No opt-out switch. Someone who doesn't want the pinning uses the plain URL instead of the stamp, which is clearer than a flag that silently weakens what the stamp says.
+- Failures name the cause.
+
+**Consequences:**
+- Stamps mean what they say.
+- When a provider rotates its intermediate CA before republishing the stamp, that upstream fails until the stamp is updated. A group with another member fails over meanwhile.
+- No built-in preset uses stamps.
+
 ## ADR-092 — Aggressive NSEC (RFC 8198): NSEC ranges per upstream group, NSEC3 later (Proposed)
 **Context:** ADR-086 deferred RFC 8198. The owner asked for the deferred features that make TelltaleDNS a more complete DNS product. Unbound and BIND both do this by default, and on a home network the root zone's NSEC records cover the steady trickle of made-up TLDs (`.lan`, `.home`, `.localdomain`).
 

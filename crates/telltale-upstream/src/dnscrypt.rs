@@ -43,6 +43,9 @@ pub enum Stamp {
         hostname: String,
         port: u16,
         path: String,
+        /// REQ: UPS-003 (T9.17) — SHA-256 of the TBS part of a certificate in the server's
+        /// chain; one must match (empty: no pinning).
+        hashes: Vec<[u8; 32]>,
     },
     /// DoT or DoQ: the server address (if pinned) and its TLS name.
     Dot {
@@ -50,6 +53,8 @@ pub enum Stamp {
         hostname: String,
         port: u16,
         quic: bool,
+        /// REQ: UPS-003 (T9.17) — as for DoH.
+        hashes: Vec<[u8; 32]>,
     },
 }
 
@@ -93,15 +98,20 @@ fn lp<'a>(b: &mut &'a [u8]) -> Option<&'a [u8]> {
     Some(v)
 }
 
-/// A variable-length set (hashes): items whose length has the high bit set continue.
-fn vlp_skip(b: &mut &[u8]) -> Option<()> {
+/// A variable-length set (the certificate hashes): items whose length has the high bit set
+/// continue. Empty items are skipped; a hash that isn't 32 bytes is malformed.
+fn vlp_hashes(b: &mut &[u8]) -> Option<Vec<[u8; 32]>> {
+    let mut out = Vec::new();
     loop {
         let l = *b.first()?;
         let len = usize::from(l & 0x7f);
-        b.get(1..1 + len)?;
+        let item = b.get(1..1 + len)?;
+        if !item.is_empty() {
+            out.push(item.try_into().ok()?);
+        }
         *b = &b[1 + len..];
         if l & 0x80 == 0 {
-            return Some(());
+            return Some(out);
         }
     }
 }
@@ -167,7 +177,7 @@ pub fn parse_stamp(s: &str) -> Result<Stamp, String> {
         }
         0x02..=0x04 => {
             let addr = text(lp(&mut b).ok_or_else(bad)?).ok_or_else(bad)?;
-            vlp_skip(&mut b).ok_or_else(bad)?;
+            let hashes = vlp_hashes(&mut b).ok_or_else(bad)?;
             let host_port = text(lp(&mut b).ok_or_else(bad)?).ok_or_else(bad)?;
             // The host name may carry a port (`dns.example:443`).
             let default_port = if kind == 0x02 { 443 } else { 853 };
@@ -183,6 +193,7 @@ pub fn parse_stamp(s: &str) -> Result<Stamp, String> {
                     hostname,
                     port,
                     path,
+                    hashes,
                 })
             } else {
                 Ok(Stamp::Dot {
@@ -190,6 +201,7 @@ pub fn parse_stamp(s: &str) -> Result<Stamp, String> {
                     hostname,
                     port,
                     quic: kind == 0x04,
+                    hashes,
                 })
             }
         }
@@ -715,9 +727,36 @@ mod tests {
                 addr: Some("9.9.9.9".into()),
                 hostname: "dns.quad9.net".into(),
                 port: 443,
-                path: "/dns-query".into()
+                path: "/dns-query".into(),
+                hashes: vec![],
             }
         );
+        // REQ: UPS-003 (T9.17) — DoT with two certificate hashes (the first flagged "more").
+        let mut raw = vec![0x03];
+        raw.extend_from_slice(&0u64.to_le_bytes());
+        raw.push(0);
+        raw.push(0x80 | 32);
+        raw.extend_from_slice(&[1u8; 32]);
+        raw.push(32);
+        raw.extend_from_slice(&[2u8; 32]);
+        raw.push(15);
+        raw.extend_from_slice(b"dns.example:853");
+        assert_eq!(
+            parse_stamp(&format!("sdns://{}", b64url(&raw))).unwrap(),
+            Stamp::Dot {
+                addr: None,
+                hostname: "dns.example".into(),
+                port: 853,
+                quic: false,
+                hashes: vec![[1u8; 32], [2u8; 32]],
+            }
+        );
+        // A hash that isn't 32 bytes.
+        let mut bad = vec![0x03];
+        bad.extend_from_slice(&0u64.to_le_bytes());
+        bad.extend_from_slice(&[0, 3, 1, 2, 3, 3]);
+        bad.extend_from_slice(b"x.y");
+        assert!(parse_stamp(&format!("sdns://{}", b64url(&bad))).is_err());
         assert!(parse_stamp("sdns://AAAA").is_err());
         assert!(parse_stamp("https://x").is_err());
     }

@@ -431,6 +431,44 @@ async fn ups_011_spki_pins() {
     }
 }
 
+/// REQ: UPS-003 (T9.17) — a DNS stamp's certificate hashes: the server's certificate (its TBS
+/// part) must match one of them, even with verification off; any other hash fails.
+#[tokio::test]
+async fn ups_003_stamp_certificate_hashes() {
+    let made = rcgen::generate_simple_self_signed(vec!["dns.test".into()]).unwrap();
+    let c = Cert {
+        der: made.cert.der().clone(),
+        key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der())),
+    };
+    let hash = telltale_upstream::tbs_hash(c.der.as_ref()).unwrap();
+    let addr = dot_server(&c).await;
+    let ep = Endpoint::parse(&format!("tls://{addr}")).unwrap();
+    let trusted = TlsOptions {
+        extra_roots: vec![c.der.clone()],
+    };
+    for (hashes, insecure, roots, ok) in [
+        (vec![hash], false, &trusted, true),
+        (vec![[9u8; 32], hash], false, &trusted, true),
+        (vec![[9u8; 32]], false, &trusted, false),
+        (vec![hash], true, &TlsOptions::default(), true),
+        (vec![[9u8; 32]], true, &TlsOptions::default(), false),
+    ] {
+        let mut o = opts("dns.test");
+        o.tls_insecure_skip_verify = insecure;
+        o.tls.tbs_hashes.clone_from(&hashes);
+        let up = Upstream::build(1, "dot", ep.clone(), &o, roots).unwrap();
+        let r = up
+            .exchange(&question("example.com"), Duration::from_secs(2))
+            .await;
+        assert_eq!(
+            r.is_ok(),
+            ok,
+            "{} hashes, insecure {insecure}",
+            hashes.len()
+        );
+    }
+}
+
 /// REQ: UPS-011 (T7.16) — mTLS: a server that requires a client certificate answers only
 /// when the upstream presents one it trusts.
 #[tokio::test]

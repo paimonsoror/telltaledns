@@ -80,6 +80,15 @@ fn stamp_options(
     }
 }
 
+/// REQ: UPS-003 (T9.17) — a DoH/DoT/DoQ stamp's certificate hashes (none for other upstreams).
+fn stamp_hashes(stamp: Option<&crate::dnscrypt::Stamp>) -> Vec<[u8; 32]> {
+    use crate::dnscrypt::Stamp;
+    match stamp {
+        Some(Stamp::Doh { hashes, .. } | Stamp::Dot { hashes, .. }) => hashes.clone(),
+        _ => Vec::new(),
+    }
+}
+
 /// An upstream's endpoint from its URL or stamp (and the stamp, when it is one).
 fn upstream_endpoint(
     u: &telltale_config::Upstream,
@@ -134,6 +143,7 @@ fn stamp_endpoint(s: &crate::dnscrypt::Stamp) -> Endpoint {
             hostname,
             port,
             path,
+            ..
         } => {
             let (host, port) = pinned(addr, *port);
             Endpoint {
@@ -155,6 +165,7 @@ fn stamp_endpoint(s: &crate::dnscrypt::Stamp) -> Endpoint {
             hostname,
             port,
             quic,
+            ..
         } => {
             let (host, port) = pinned(addr, *port);
             Endpoint {
@@ -231,6 +242,7 @@ fn upstream_tls(u: &telltale_config::Upstream) -> Result<crate::tls::UpstreamTls
         ca,
         client,
         pins: u.spki_pins.iter().map(ToString::to_string).collect(),
+        tbs_hashes: Vec::new(),
     })
 }
 
@@ -262,7 +274,7 @@ fn build_upstreams<'c>(
             }
         };
         // REQ: UPS-011 (T7.16) — CA, client certificate, pins.
-        let up_tls = match upstream_tls(u) {
+        let mut up_tls = match upstream_tls(u) {
             Ok(t) => t,
             Err(e) => {
                 errors.push(format!("upstream `{}`: {e}", u.name));
@@ -299,6 +311,8 @@ fn build_upstreams<'c>(
             }
         };
         let (stamp_tls_name, dnscrypt) = stamp_options(stamp.as_ref());
+        // REQ: UPS-003 (T9.17) — a DoH/DoT/DoQ stamp's certificate hashes are enforced.
+        up_tls.tbs_hashes = stamp_hashes(stamp.as_ref());
         let opts = UpstreamOptions {
             timeout: Duration::from_millis(u64::from(u.timeout_ms)),
             weight: u.weight,
