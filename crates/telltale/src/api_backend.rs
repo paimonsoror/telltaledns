@@ -543,6 +543,8 @@ impl Backend for ApiBackend {
             role: label(&cfg.node.role),
             uptime_seconds: self.src.started.elapsed().as_secs(),
             started_at: format_us(u64::try_from(started_us).unwrap_or(0)),
+            starts: crate::datadir::runs().starts,
+            unclean_starts: crate::datadir::runs().unclean,
             listeners: cfg
                 .listen
                 .iter()

@@ -230,17 +230,54 @@ ts("Top clients", 0, 24, 8,
    stack=False, fill=0)
 advance(8)
 
+# ---- T9.13: transports and encrypted DNS
+row("Transports")
+ts("Queries by transport", 0, 12, 7,
+   [(f'sum by (proto) (rate(telltale_queries_total{{{SEL}}}[$__rate_interval]))', "{{proto}}")],
+   "reqps", "Queries per second over UDP, TCP, DoT, DoH, and DoQ.", stack=True)
+ts("Encrypted DNS problems", 12, 12, 7,
+   [(f'sum(rate(telltale_tls_handshake_failures_total{{{SEL}}}[$__rate_interval]))', "TLS handshakes failed"),
+    (f'sum(rate(telltale_doh_bad_requests_total{{{SEL}}}[$__rate_interval]))', "DoH bad requests"),
+    (f'sum(rate(telltale_doq_protocol_errors_total{{{SEL}}}[$__rate_interval]))', "DoQ protocol errors"),
+    (f'sum(rate(telltale_proxy_protocol_rejected_total{{{SEL}}}[$__rate_interval]))', "PROXY headers refused"),
+    (f'sum(rate(telltale_tcp_rejected_total{{{SEL}}}[$__rate_interval]))', "TCP connections refused")],
+   "ops", "Clients that couldn't talk to the encrypted listeners: an expired or wrong certificate, a broken client, or a load balancer without PROXY protocol.", fill=0)
+advance(7)
+
 # ---- Health of TelltaleDNS itself
 row("TelltaleDNS")
+# REQ: OBS-002 (T9.13) — restarts, counted in the data directory, so they survive restarts.
+stat("Uptime", 0, 6, f'min(telltale_uptime_seconds{{{SEL}}})', "s",
+     "Since the most recent start of any selected node.")
+stat("Restarts", 6, 6, f'sum(increase(telltale_process_starts_total{{{SEL}}}[$__range]))', "none",
+     "Starts in the selected time range, every node (a new pod with an empty data directory counts from 1).",
+     thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}], decimals=0)
+stat("After a crash or a kill", 12, 6,
+     f'sum(increase(telltale_process_unclean_starts_total{{{SEL}}}[$__range]))', "none",
+     "Starts after a run that didn't stop cleanly: a crash, an OOM kill, a power cut.",
+     thresholds=[{"color": "green", "value": None}, {"color": "red", "value": 1}], decimals=0)
+stat("OOM kills", 18, 6, f'sum(increase(telltale_cgroup_oom_kills_total{{{SEL}}}[$__range]))', "none",
+     "Times the container's memory limit killed a process (cgroup v2).",
+     thresholds=[{"color": "green", "value": None}, {"color": "red", "value": 1}], decimals=0)
+advance(4)
 ts("Telemetry and query log", 0, 12, 7,
    [(f'sum(rate(telltale_telemetry_dropped_total{{{SEL}}}[$__rate_interval]))', "events dropped"),
     (f'sum(rate(telltale_qlog_rows_written_total{{{SEL}}}[$__rate_interval]))', "log rows written"),
     (f'sum(rate(telltale_qlog_rows_dropped_total{{{SEL}}}[$__rate_interval]))', "log rows dropped"),
     (f'sum(rate(telltale_ratelimited_total{{{SEL}}}[$__rate_interval]))', "rate limited")],
    "ops", "Dropped events/rows mean the analytics fell behind; answers never wait for them.", fill=0)
-ts("Memory and uptime", 12, 12, 7,
-   [(f'max(telltale_resident_memory_bytes{{{SEL}}})', "RSS")],
-   "bytes", "Resident memory of the process.", fill=20)
+ts("Memory", 12, 12, 7,
+   [(f'max(telltale_resident_memory_bytes{{{SEL}}})', "RSS"),
+    (f'max(telltale_host_memory_bytes{{{SEL}, kind="available"}})', "host available")],
+   "bytes", "Resident memory of the process, and what the machine has left.", fill=20)
+advance(7)
+ts("Machine", 0, 12, 7,
+   [(f'max by (instance) (telltale_host_cpu_busy_ratio{{{SEL}}})', "CPU busy {{instance}}")],
+   "percentunit", "How busy each node's machine is (all cores).", fill=0)
+ts("Temperature and disk", 12, 12, 7,
+   [(f'max by (instance) (telltale_host_temperature_celsius{{{SEL}}})', "°C {{instance}}"),
+    (f'min by (instance) (telltale_data_filesystem_bytes{{{SEL}, kind="free"}} / telltale_data_filesystem_bytes{{{SEL}, kind="total"}} * 100)', "data disk free % {{instance}}")],
+   "none", "CPU temperature (a Pi throttles near 80 °C) and free space where the data directory is.", fill=0)
 advance(7)
 
 dashboard = {

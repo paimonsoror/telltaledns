@@ -23,7 +23,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "agents.html", "monitoring.html", "tour.html", "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "nerds.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "agents.html", "monitoring.html", "tour.html", "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 
@@ -359,11 +359,46 @@ def _us(v):
     return "{:.0f} µs".format(v) if v < 1000 else "{:.1f} ms".format(v / 1000)
 
 
+def render_transports(name):
+    """T9.13 — the newest `bench/run.sh transports` result: cache hits per transport."""
+    d = json.loads(read(os.path.join(BENCH_DIR, name)))
+    host, s = d["host"], d["summary"]
+    out = ['<div class="card bench">', "<h3>By transport</h3>"]
+    out.append(
+        "<p><b>{cpu}</b> ({cores} threads, {arch}) · {date} · "
+        '<a href="data/bench/{name}">raw results (JSON)</a></p>'.format(
+            cpu=html.escape(host["cpu"]), cores=host["cores"], arch=host["arch"],
+            date=d["started"][:10], name=name,
+        )
+    )
+    out.append('<div class="table-wrap"><table><thead><tr><th>Transport</th><th class="num">Peak qps</th>'
+               '<th class="num">p50 at 50%</th><th class="num">p99 at 50%</th><th class="num">Loss</th></tr></thead><tbody>')
+    labels = {"cache-hot": "UDP", "cache-hot/tcp": "TCP", "cache-hot/dot": "DoT", "cache-hot/doh": "DoH (HTTP/2)"}
+    for key, label in labels.items():
+        c = s.get(key)
+        if not c:
+            continue
+        at = (c.get("at_load") or {}).get("50", {})
+        lat = at.get("latency_us", c["latency_us"])
+        out.append(
+            '<tr><td>{l}</td><td class="num">{q:,.0f}</td><td class="num">{p50}</td><td class="num">{p99}</td>'
+            '<td class="num">{loss:.2f}%</td></tr>'.format(l=label, q=c["qps"], p50=_us(lat["p50"]), p99=_us(lat["p99"]),
+                                                          loss=c["loss_pct"])
+        )
+    out.append("</tbody></table></div>")
+    out.append('<p class="muted">The same cache-hit corpus over each transport, from one node with a throwaway '
+               "certificate. UDP, TCP, and DoT from dnsperf; DoH from h2load (RFC 8484 GET). The load generator "
+               "runs on the same machine, so compare the rows with each other rather than with other hosts.</p>")
+    out.append("</div>")
+    return out
+
+
 def render_bench(page):
     files = sorted(f for f in os.listdir(BENCH_DIR) if f.endswith(".json"))
-    if not files:
-        sys.exit("site/data/bench has no results")
-    name = files[-1]
+    full = [f for f in files if f.endswith("-full.json")]
+    if not full:
+        sys.exit("site/data/bench has no bench-full results")
+    name = full[-1]
     d = json.loads(read(os.path.join(BENCH_DIR, name)))
     host, srv, s = d["host"], d["server"], d["summary"]
     raw = "data/bench/" + name
@@ -412,7 +447,194 @@ def render_bench(page):
         )
     )
     out.append("</div>")
+    transports = [f for f in files if f.endswith("-transports.json")]
+    if transports:
+        out += render_transports(transports[-1])
     return page.replace("<!-- @bench -->", "\n".join(out)), files
+
+
+# REQ: DOC-006 — the decisions explorer: every ADR in spec/11-decisions.md, parsed and rendered
+# here (a small Markdown subset: paragraphs, nested lists, tables, inline code, bold, italics),
+# with its status, the requirements it cites, and the ADRs it mentions and that mention it.
+AREAS = {
+    "DNS": "DNS core", "UPS": "Upstreams", "FLT": "Filtering", "OBS": "Observability",
+    "CLU": "Clustering and HA", "API": "API and UI", "AGT": "Agents", "OPS": "Deployment and operations",
+    "DOC": "Site and docs", "NFR": "Performance and footprint",
+}
+STATUS_TEXT = {
+    "accepted": "Agreed with the project owner.",
+    "proposed": "Chosen during implementation where the specification left a gap. It is in effect, "
+                "and waits for the owner's review.",
+}
+
+
+def md_inline(s, known):
+    s = html.escape(s, quote=False)
+    codes = []
+
+    def code(m):
+        codes.append(m.group(1))
+        return "\x00{}\x00".format(len(codes) - 1)
+
+    s = re.sub(r"`([^`]+)`", code, s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])", r"<i>\1</i>", s)
+    s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
+    s = re.sub(r"\bADR-(\d{3})\b",
+               lambda m: '<a href="#adr-{0}">ADR-{0}</a>'.format(m.group(1)) if "ADR-" + m.group(1) in known else m.group(0), s)
+    return re.sub("\x00(\\d+)\x00", lambda m: "<code>{}</code>".format(codes[int(m.group(1))]), s)
+
+
+LIST_RE = re.compile(r"^(\s*)(?:- |(\d+)\. )(.*)$")
+
+
+def md_list(lines, known):
+    out, stack = [], []
+    for line in lines:
+        m = LIST_RE.match(line)
+        if not m:
+            out.append(" " + md_inline(line.strip(), known))
+            continue
+        ind, tag = len(m.group(1)), "ol" if m.group(2) else "ul"
+        while stack and ind < stack[-1][0]:
+            out.append("</li></{}>".format(stack.pop()[1]))
+        if not stack or ind > stack[-1][0]:
+            out.append("<{}>".format(tag))
+            stack.append((ind, tag))
+        else:
+            out.append("</li>")
+        out.append("<li>" + md_inline(m.group(3), known))
+    while stack:
+        out.append("</li></{}>".format(stack.pop()[1]))
+    return "".join(out)
+
+
+def md_table(lines, known):
+    rows = [[c.strip() for c in l.strip().strip("|").split("|")] for l in lines]
+    rows = [r for r in rows if not all(re.fullmatch(r":?-{2,}:?", c) for c in r)]
+    if not rows:
+        return ""
+    head = "".join("<th>{}</th>".format(md_inline(c, known)) for c in rows[0])
+    body = "".join("<tr>{}</tr>".format("".join("<td>{}</td>".format(md_inline(c, known)) for c in r)) for r in rows[1:])
+    return '<div class="table-wrap"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></div>'.format(head, body)
+
+
+def md_blocks(lines, known):
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+        elif line.lstrip().startswith("|"):
+            j = i
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                j += 1
+            out.append(md_table(lines[i:j], known))
+            i = j
+        elif LIST_RE.match(line):
+            j = i + 1
+            while j < len(lines) and (LIST_RE.match(lines[j]) or (lines[j].startswith("  ") and lines[j].strip())):
+                j += 1
+            out.append(md_list(lines[i:j], known))
+            i = j
+        else:
+            j = i
+            while j < len(lines) and lines[j].strip() and not LIST_RE.match(lines[j]) and not lines[j].lstrip().startswith("|"):
+                j += 1
+            out.append("<p>{}</p>".format(md_inline(" ".join(l.strip() for l in lines[i:j]), known)))
+            i = j
+    return "\n".join(out)
+
+
+ADR_HEAD = re.compile(r"^## (ADR-(\d{3})) — (.*?)(?: \(([^()]*)\))?\s*$")
+SECTION = re.compile(r"^\*\*([A-Z][A-Za-z ]+):\*\*\s*(.*)$")
+
+
+def parse_adrs():
+    adrs, cur = [], None
+    for line in read(os.path.join(ROOT, "spec", "11-decisions.md")).splitlines():
+        m = ADR_HEAD.match(line)
+        if m:
+            cur = {"id": m.group(1), "num": int(m.group(2)), "title": m.group(3).strip(),
+                   "status": (m.group(4) or "Proposed").strip(), "heading": line[3:].strip(), "lines": []}
+            adrs.append(cur)
+        elif line.startswith("## ") or line.startswith("# "):
+            cur = None
+        elif cur is not None:
+            cur["lines"].append(line)
+    return adrs
+
+
+def render_decisions(page, reqs):
+    adrs = parse_adrs()
+    known = {a["id"] for a in adrs}
+    ids = [a["id"] for a in adrs]
+    if len(ids) != len(known):
+        sys.exit("spec/11-decisions.md: an ADR number is used twice")
+    for a in adrs:
+        body = "\n".join(a["lines"])
+        a["mentions"] = sorted({x for x in re.findall(r"\bADR-\d{3}\b", body) if x in known and x != a["id"]})
+        a["reqs"] = sorted({x for x in re.findall(r"\b[A-Z]{3}-\d{3}\b", body) if x in reqs})
+        a["areas"] = sorted({r[:3] for r in a["reqs"] if r[:3] in AREAS})
+    mentioned_by = {a["id"]: [] for a in adrs}
+    for a in adrs:
+        for x in a["mentions"]:
+            mentioned_by[x].append(a["id"])
+    counts = {}
+    for a in adrs:
+        counts[a["status"]] = counts.get(a["status"], 0) + 1
+    legend = " ".join(
+        '<span><span class="pill {c}">{s}</span> {n} · {t}</span>'.format(
+            c=html.escape(s.lower()), s=html.escape(s), n=n, t=html.escape(STATUS_TEXT.get(s.lower(), "")))
+        for s, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+    summary = '<p class="legend adr-legend">{} decisions. {}</p>'.format(len(adrs), legend)
+    out = []
+    for a in sorted(adrs, key=lambda a: a["num"]):
+        sections, cur = [], None
+        for line in a["lines"]:
+            m = SECTION.match(line)
+            if m:
+                cur = [m.group(1), [m.group(2)] if m.group(2) else []]
+                sections.append(cur)
+            elif cur is None:
+                if line.strip():
+                    cur = ["Notes", [line]]
+                    sections.append(cur)
+            else:
+                cur[1].append(line)
+        gist = ""
+        for label, lines in sections:
+            if label == "Context" and lines:
+                first = re.split(r"(?<=[.!?])\s", " ".join(l.strip() for l in lines if l.strip() and not LIST_RE.match(l)), 1)[0]
+                gist = re.sub(r"<[^>]+>", "", md_inline(first, set()))
+                break
+        body = "".join('<h3>{}</h3>{}'.format(html.escape(label), md_blocks(lines, known)) for label, lines in sections)
+        chips = []
+        if a["reqs"]:
+            chips.append('<p class="chips"><span class="muted small">Requirements</span> ' + " ".join(
+                '<span class="chip req" title="{}">{}</span>'.format(html.escape(reqs[r][0]), r) for r in a["reqs"]) + "</p>")
+        if a["mentions"]:
+            chips.append('<p class="chips"><span class="muted small">Builds on</span> ' + " ".join(
+                '<a class="chip adr" href="#{}">{}</a>'.format(x.lower(), x) for x in a["mentions"]) + "</p>")
+        if mentioned_by[a["id"]]:
+            chips.append('<p class="chips"><span class="muted small">Referenced by</span> ' + " ".join(
+                '<a class="chip adr" href="#{}">{}</a>'.format(x.lower(), x) for x in sorted(mentioned_by[a["id"]])) + "</p>")
+        areas = "".join('<span class="chip area" data-area="{a}" title="{t}">{a}</span>'.format(a=x, t=html.escape(AREAS[x])) for x in a["areas"])
+        out.append(
+            '<details class="adr card" id="{lid}" data-num="{num}" data-status="{st}" data-areas="{areas_attr}">'
+            '<summary><span class="adr-head"><span class="adr-id">{id}</span> <span class="adr-title">{title}</span></span>'
+            '<span class="adr-meta"><span class="pill {st}">{status}</span>{areas}</span>'
+            '{gist}</summary>'
+            '<div class="adr-body">{body}{chips}'
+            '<p class="small adr-links"><a href="#{lid}">Link to this decision</a> · '
+            '<a href="{gh}spec/11-decisions.md#{anchor}">In the specification</a></p></div></details>'.format(
+                lid=a["id"].lower(), num=a["num"], st=html.escape(a["status"].lower()), areas_attr=" ".join(a["areas"]),
+                id=a["id"], title=md_inline(a["title"], set()), status=html.escape(a["status"]), areas=areas,
+                gist='<span class="adr-gist muted">{}</span>'.format(html.escape(gist)) if gist else "",
+                body=body, chips="".join(chips), gh=GH, anchor=gh_anchor(a["heading"]),
+            )
+        )
+    return page.replace("<!-- @decisions-summary -->", summary).replace("<!-- @decisions -->", "\n".join(out))
 
 
 # REQ: API-011, DOC-006 (T3.11) — the glossary page, from the same file as the UI's "?" panels.
@@ -557,7 +779,7 @@ def _chips(item, adrs, reqs):
     out = []
     for a in item.get("adrs", []):
         title, anchor = adrs.get(a, (a, ""))
-        out.append('<a class="chip adr" href="{}spec/11-decisions.md#{}" title="{}">{}</a>'.format(GH, anchor, html.escape(title), a))
+        out.append('<a class="chip adr" href="decisions.html#{}" title="{}">{}</a>'.format(a.lower(), html.escape(title), a))
     for r in item.get("reqs", []):
         text, spec = reqs.get(r, ("", "01-requirements.md"))
         title = re.sub(r"\*\*|`", "", text)
@@ -817,6 +1039,8 @@ def main():
             page = render_standards(page, data)
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
+        if name == "decisions.html":
+            page = render_decisions(page, reqs)
         if "<!-- @" in page:
             sys.exit("{}: unreplaced marker".format(name))
         with open(os.path.join(out, name), "w", encoding="utf-8") as f:

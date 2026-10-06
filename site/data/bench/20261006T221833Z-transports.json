@@ -1,0 +1,364 @@
+{
+  "schema": 1,
+  "mode": "transports",
+  "started": "2026-10-06T22:18:33+00:00",
+  "git": {
+    "rev": "314ef5ca6b6bdc9888e579505467015fa3c6a287",
+    "dirty": true
+  },
+  "host": {
+    "cpu": "Intel(R) Core(TM) i5-1035G4 CPU @ 1.10GHz",
+    "cores": 8,
+    "arch": "x86_64",
+    "kernel": "6.18.40.1-microsoft-standard-WSL2",
+    "os": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+  },
+  "tools": {
+    "dnsperf": "2.14.0"
+  },
+  "params": {
+    "duration_s": 10,
+    "runs": 1,
+    "warmup_s": 3,
+    "threads": 2,
+    "clients": 8,
+    "outstanding": 200,
+    "miss_qps": 2000,
+    "quick_rules": 0,
+    "transports": [
+      "udp",
+      "tcp",
+      "dot",
+      "doh"
+    ]
+  },
+  "server": {
+    "bin": "/home/paimo/dnsproject/target/bench-fast/telltale",
+    "version": null,
+    "workers": 4,
+    "upstream_delay_ms": 0.0,
+    "ready_ms": 81.4,
+    "idle_rss_kib": 26464,
+    "lists": [],
+    "filter_ready_s": null,
+    "peak_rss_kib": 74968
+  },
+  "runs": [
+    {
+      "corpus": "cache-hot",
+      "transport": "udp",
+      "run": 1,
+      "seed": 32273,
+      "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+      "qps": 199475.535401,
+      "sent": 1994890,
+      "completed": 1994890,
+      "lost": 0,
+      "loss_pct": 0.0,
+      "rcodes": {
+        "NOERROR": 1994890
+      },
+      "latency_us": {
+        "avg": 334.0,
+        "min": 7.0,
+        "max": 1098523.0,
+        "stddev": 5059.0,
+        "p50": 125.0,
+        "p90": 815.0,
+        "p99": 2367.0,
+        "p999": 4607.0
+      },
+      "server": {
+        "rss_kib": 59764,
+        "peak_rss_kib": 74968,
+        "cpu_pct": 335.5
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 99737,
+          "qps": 99736.471397,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 100.0,
+            "min": 6.0,
+            "max": 5827.0,
+            "stddev": 209.0,
+            "p50": 75.0,
+            "p90": 131.0,
+            "p99": 879.0,
+            "p999": 3199.0
+          }
+        }
+      }
+    },
+    {
+      "corpus": "cache-hot/tcp",
+      "transport": "tcp",
+      "run": 1,
+      "seed": 32273,
+      "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+      "qps": 229385.4901,
+      "sent": 2293915,
+      "completed": 2293915,
+      "lost": 0,
+      "loss_pct": 0.0,
+      "rcodes": {
+        "NOERROR": 2293915
+      },
+      "latency_us": {
+        "avg": 599.0,
+        "min": 14.0,
+        "max": 10889.0,
+        "stddev": 477.0,
+        "p50": 479.0,
+        "p90": 1151.0,
+        "p99": 2367.0,
+        "p999": 4735.0
+      },
+      "server": {
+        "rss_kib": 56892,
+        "peak_rss_kib": 74968,
+        "cpu_pct": 436.3
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 114692,
+          "qps": 102290.324884,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 659.0,
+            "min": 12.0,
+            "max": 1103796.0,
+            "stddev": 10580.0,
+            "p50": 359.0,
+            "p90": 1311.0,
+            "p99": 2687.0,
+            "p999": 4479.0
+          }
+        }
+      }
+    },
+    {
+      "corpus": "cache-hot/dot",
+      "transport": "dot",
+      "run": 1,
+      "seed": 32273,
+      "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+      "qps": 91903.265888,
+      "sent": 919081,
+      "completed": 919081,
+      "lost": 0,
+      "loss_pct": 0.0,
+      "rcodes": {
+        "NOERROR": 919081
+      },
+      "latency_us": {
+        "avg": 1374.0,
+        "min": 32.0,
+        "max": 14448.0,
+        "stddev": 739.0,
+        "p50": 1311.0,
+        "p90": 2303.0,
+        "p99": 3775.0,
+        "p999": 5887.0
+      },
+      "server": {
+        "rss_kib": 55948,
+        "peak_rss_kib": 74968,
+        "cpu_pct": 274.1
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 45951,
+          "qps": 45950.595635,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 379.0,
+            "min": 20.0,
+            "max": 5021.0,
+            "stddev": 508.0,
+            "p50": 235.0,
+            "p90": 767.0,
+            "p99": 3007.0,
+            "p999": 4223.0
+          }
+        }
+      }
+    },
+    {
+      "corpus": "cache-hot/doh",
+      "transport": "doh",
+      "run": 1,
+      "seed": 32273,
+      "corpus_sha256": "fd26abefd19b26d8de2501c6f16bbf1ea747919fa6e0d6a75ff7e9f78dcebb3f",
+      "qps": 147802.6,
+      "sent": 1478026,
+      "completed": 1478026,
+      "lost": 0,
+      "loss_pct": 0.0,
+      "rcodes": {},
+      "latency_us": {
+        "avg": 1121.6,
+        "min": 52.0,
+        "max": 11800.0,
+        "stddev": 605.9,
+        "p50": 998.0,
+        "p90": 1818.0,
+        "p99": 3272.0,
+        "p999": 5389.0
+      },
+      "server": {
+        "rss_kib": 64864,
+        "peak_rss_kib": 74968,
+        "cpu_pct": 519.2
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 73901,
+          "qps": 73820.5,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 873.4,
+            "min": 40.0,
+            "max": 33783.0,
+            "stddev": 608.4,
+            "p50": 771.0,
+            "p90": 1357.0,
+            "p99": 2631.0,
+            "p999": 7382.0
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "cache-hot": {
+      "runs": 1,
+      "qps": 199475.5,
+      "loss_pct": 0.0,
+      "latency_us": {
+        "avg": 334.0,
+        "min": 7.0,
+        "max": 1098523.0,
+        "stddev": 5059.0,
+        "p50": 125.0,
+        "p90": 815.0,
+        "p99": 2367.0,
+        "p999": 4607.0
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 99737,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 100.0,
+            "min": 6.0,
+            "max": 5827.0,
+            "stddev": 209.0,
+            "p50": 75.0,
+            "p90": 131.0,
+            "p99": 879.0,
+            "p999": 3199.0
+          }
+        }
+      },
+      "server_cpu_pct": 335.5
+    },
+    "cache-hot/tcp": {
+      "runs": 1,
+      "qps": 229385.5,
+      "loss_pct": 0.0,
+      "latency_us": {
+        "avg": 599.0,
+        "min": 14.0,
+        "max": 10889.0,
+        "stddev": 477.0,
+        "p50": 479.0,
+        "p90": 1151.0,
+        "p99": 2367.0,
+        "p999": 4735.0
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 114692,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 659.0,
+            "min": 12.0,
+            "max": 1103796.0,
+            "stddev": 10580.0,
+            "p50": 359.0,
+            "p90": 1311.0,
+            "p99": 2687.0,
+            "p999": 4479.0
+          }
+        }
+      },
+      "server_cpu_pct": 436.3
+    },
+    "cache-hot/dot": {
+      "runs": 1,
+      "qps": 91903.3,
+      "loss_pct": 0.0,
+      "latency_us": {
+        "avg": 1374.0,
+        "min": 32.0,
+        "max": 14448.0,
+        "stddev": 739.0,
+        "p50": 1311.0,
+        "p90": 2303.0,
+        "p99": 3775.0,
+        "p999": 5887.0
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 45951,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 379.0,
+            "min": 20.0,
+            "max": 5021.0,
+            "stddev": 508.0,
+            "p50": 235.0,
+            "p90": 767.0,
+            "p99": 3007.0,
+            "p999": 4223.0
+          }
+        }
+      },
+      "server_cpu_pct": 274.1
+    },
+    "cache-hot/doh": {
+      "runs": 1,
+      "qps": 147802.6,
+      "loss_pct": 0.0,
+      "latency_us": {
+        "avg": 1121.6,
+        "min": 52.0,
+        "max": 11800.0,
+        "stddev": 605.9,
+        "p50": 998.0,
+        "p90": 1818.0,
+        "p99": 3272.0,
+        "p999": 5389.0
+      },
+      "at_load": {
+        "50": {
+          "offered_qps": 73901,
+          "loss_pct": 0.0,
+          "latency_us": {
+            "avg": 873.4,
+            "min": 40.0,
+            "max": 33783.0,
+            "stddev": 608.4,
+            "p50": 771.0,
+            "p90": 1357.0,
+            "p99": 2631.0,
+            "p999": 7382.0
+          }
+        }
+      },
+      "server_cpu_pct": 519.2
+    }
+  }
+}

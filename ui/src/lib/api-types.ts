@@ -3921,6 +3921,14 @@ export interface components {
             role: string;
             /** @description When the process started (RFC 3339). */
             startedAt: string;
+            /**
+             * Format: int64
+             * @description REQ: OBS-002 (T9.13) — times a node started on this data directory, and how many of
+             *     those followed a run that didn't stop cleanly.
+             */
+            starts: number;
+            /** Format: int64 */
+            uncleanStarts: number;
             /** @description Whether a newer build exists on this build's channel (ADR-046). */
             update: components["schemas"]["UpdateStatus"];
             /** Format: int64 */

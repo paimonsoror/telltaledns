@@ -20,6 +20,10 @@ pub struct SystemInfo {
     pub uptime_seconds: u64,
     /// When the process started (RFC 3339).
     pub started_at: String,
+    /// REQ: OBS-002 (T9.13) — times a node started on this data directory, and how many of
+    /// those followed a run that didn't stop cleanly.
+    pub starts: u64,
+    pub unclean_starts: u64,
     /// DNS listeners, as `proto://addr`.
     pub listeners: Vec<String>,
     /// Whether the per-query log is being written.

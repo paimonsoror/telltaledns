@@ -1515,6 +1515,7 @@ Main metrics:
 | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
 | `telltale_udp_*`, `telltale_tcp_*` | listener counters |
 | `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
+| `telltale_process_starts_total`, `telltale_process_unclean_starts_total` | starts on this data directory, and those after a run that didn't stop cleanly (a crash, an OOM kill, a power cut); kept in `<data_dir>/runs.json`, so they count across restarts (a new pod with an empty volume starts from 1). Settings → System shows them too. |
 | `telltale_host_*`, `telltale_cgroup_*`, `telltale_data_*`, `telltale_open_fds` | the machine it runs on: see [Host resources](#host-resources) |
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory. The per-upstream, per-list, and per-client series are built by the analytics thread from query events, off the query path.

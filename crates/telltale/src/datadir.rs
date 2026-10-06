@@ -13,6 +13,65 @@ use std::time::{Duration, Instant};
 /// The lock file, inside the data directory.
 pub(crate) const LOCK_FILE: &str = "telltale.lock";
 
+/// REQ: OBS-002 (T9.13) — the run record, inside the data directory.
+pub(crate) const RUNS_FILE: &str = "runs.json";
+
+/// REQ: OBS-002 (T9.13) — how often a node has started on this data directory, and how many
+/// of those followed a run that never stopped cleanly (a crash, an OOM kill, a power cut).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Runs {
+    pub(crate) starts: u64,
+    pub(crate) unclean: u64,
+    /// Set while a process runs; still set at the next start means the last one didn't stop.
+    #[serde(default)]
+    pub(crate) running: bool,
+}
+
+/// This process's view of the run record (zero until [`record_start`]).
+static RUNS: std::sync::OnceLock<Runs> = std::sync::OnceLock::new();
+
+/// The run record as of this process's start.
+pub(crate) fn runs() -> Runs {
+    RUNS.get().copied().unwrap_or_default()
+}
+
+/// REQ: OBS-002 (T9.13) — counts this start (and an unclean one when the last run never
+/// stopped) and marks the record running. A missing or unreadable record starts over.
+pub(crate) fn record_start(dir: &Path) -> Runs {
+    let path = dir.join(RUNS_FILE);
+    let mut r: Runs = fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    if r.running {
+        r.unclean += 1;
+    }
+    r.starts += 1;
+    r.running = true;
+    write_runs(&path, &r);
+    let _ = RUNS.set(r);
+    r
+}
+
+/// REQ: OBS-002 (T9.13) — a clean stop: the next start isn't counted as unclean.
+pub(crate) fn record_stop(dir: &Path) {
+    let mut r = runs();
+    if r.starts == 0 {
+        return;
+    }
+    r.running = false;
+    write_runs(&dir.join(RUNS_FILE), &r);
+}
+
+fn write_runs(path: &Path, r: &Runs) {
+    let tmp = path.with_extension("json.tmp");
+    let ok = serde_json::to_vec(r)
+        .is_ok_and(|b| fs::write(&tmp, b).is_ok() && fs::rename(&tmp, path).is_ok());
+    if !ok {
+        tracing::warn!(path = %path.display(), "couldn't write the run record (restart counts)");
+    }
+}
+
 /// Held for as long as the process runs.
 #[derive(Debug)]
 pub(crate) struct DataDirLock {
@@ -84,6 +143,60 @@ fn host_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// REQ: OBS-002 (T9.13) — starts count up; a run that never stopped makes the next
+    /// start unclean; a clean stop doesn't.
+    #[test]
+    fn obs_002_run_record() {
+        let dir = std::env::temp_dir().join(format!("tt-runs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let read =
+            || -> Runs { serde_json::from_slice(&fs::read(dir.join(RUNS_FILE)).unwrap()).unwrap() };
+        // `record_start` also sets the process-wide copy once; the file is what's checked.
+        record_start(&dir);
+        assert_eq!(
+            read(),
+            Runs {
+                starts: 1,
+                unclean: 0,
+                running: true
+            }
+        );
+        record_start(&dir); // the first never stopped
+        assert_eq!(
+            read(),
+            Runs {
+                starts: 2,
+                unclean: 1,
+                running: true
+            }
+        );
+        let mut r = read();
+        r.running = false;
+        write_runs(&dir.join(RUNS_FILE), &r);
+        record_start(&dir);
+        assert_eq!(
+            read(),
+            Runs {
+                starts: 3,
+                unclean: 1,
+                running: true
+            }
+        );
+        fs::write(dir.join(RUNS_FILE), b"not json").unwrap();
+        record_start(&dir);
+        assert_eq!(
+            read(),
+            Runs {
+                starts: 1,
+                unclean: 0,
+                running: true
+            },
+            "starts over"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// REQ: CLU-008 (T6.14) — a second holder is refused and told who has it; the lock comes

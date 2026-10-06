@@ -552,6 +552,20 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
         "1 if a newer build exists on this build's channel (from the signed release index).",
     )
     .sample("telltale_update_available", &[], u64::from(available));
+    // REQ: OBS-002 (T9.13) — restarts survive restarts: counted in the data directory.
+    let runs = crate::datadir::runs();
+    w.family(
+        "telltale_process_starts_total",
+        "counter",
+        "Times a node started on this data directory.",
+    )
+    .sample("telltale_process_starts_total", &[], runs.starts);
+    w.family(
+        "telltale_process_unclean_starts_total",
+        "counter",
+        "Starts after a run that didn't stop cleanly (a crash, an OOM kill, a power cut).",
+    )
+    .sample("telltale_process_unclean_starts_total", &[], runs.unclean);
     w.family("telltale_uptime_seconds", "gauge", "Seconds since start.")
         .sample(
             "telltale_uptime_seconds",

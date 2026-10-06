@@ -528,6 +528,10 @@
           <dt>Version</dt><dd>{info.version}</dd>
           <dt>Node</dt><dd>{info.node} ({info.role})</dd>
           <dt>Started</dt><dd>{dateTime(Date.parse(info.startedAt) / 1000)} · up {duration(info.uptimeSeconds)}</dd>
+          <!-- REQ: OBS-002 (T9.13) -->
+          {#if info.starts > 1}
+            <dt>Restarts</dt><dd data-testid="restarts">{info.starts - 1}{#if info.uncleanStarts} ({info.uncleanStarts} after a crash or a kill){/if}</dd>
+          {/if}
           <dt>DNS listeners</dt><dd class="mono">{info.listeners.join(', ')}</dd>
           <dt>Query log</dt><dd>{info.queryLog ? 'on' : 'off'}</dd>
           <dt>Filter snapshot</dt><dd>{info.filterSnapshot ?? 'none yet'} · {info.filterNames.toLocaleString()} names</dd>

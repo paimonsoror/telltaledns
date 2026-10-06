@@ -26,6 +26,8 @@ impl Backend for Fake {
             role: "all".into(),
             uptime_seconds: 5,
             started_at: "2026-10-04T00:00:00.000Z".into(),
+            starts: 1,
+            unclean_starts: 0,
             listeners: vec!["udp://0.0.0.0:53".into()],
             query_log: true,
             filter_snapshot: Some(3),

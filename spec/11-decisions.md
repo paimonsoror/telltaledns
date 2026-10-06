@@ -3,7 +3,7 @@
 Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`). An agent must not contradict an accepted ADR without adding a superseding ADR and flagging it to the owner.
 
 ## ADR-001 — Language: Rust (Accepted)
-**Context:** Performance and footprint are paramount. Technitium pays for the .NET runtime and GC (150–300 MB RSS, GC tail latency). Pi-hole inherits C memory-safety issues from dnsmasq. Go (AdGuard Home, Blocky, CoreDNS) is productive, but its GC and ~2× memory overhead fight our RSS targets.
+**Context:** Performance and footprint are paramount: a small, steady memory footprint on a Raspberry Pi and microsecond cache hits. That rules out garbage-collection pauses and runtime memory overhead, and we want memory safety at the same time.
 **Decision:** Rust (stable, 2024 edition), tokio, rustls (ring or aws-lc-rs backend), quinn.
 **Consequences:** No GC, static musl binaries, memory safety, and a mature DNS crate ecosystem (hickory). Compile times are slower and the contributor pool is smaller. `unsafe` is confined to `telltale-net`.
 
@@ -18,7 +18,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 **Consequences:** ~10× less memory per domain, O(|qname|) lookups, and instant reloads. Snapshots are immutable, so every edit triggers a recompile. To keep manual rule edits instant, a small **overlay** (a HashMap of manual rules) is consulted before the FST and folded into the next compile.
 
 ## ADR-004 — Container-first distribution, Kubernetes-first operations (Accepted)
-**Context:** The owner prioritizes Kubernetes and also runs a Raspberry Pi. Native packaging per distro is costly (Pi-hole's installer complexity; Technitium's runtime upgrades).
+**Context:** The owner prioritizes Kubernetes and also runs a Raspberry Pi. Native packaging and installers per distro are costly to build and keep working.
 **Decision:** Tier-1 artifacts are the multi-arch OCI image + Helm chart, and the same image runs on the Pi with host networking. The static binary + systemd unit is Tier 2.
 **Consequences:** One artifact to test. The Pi needs Docker/Podman (~50 MB extra), which is acceptable on Pi 3+. A Pi Zero can use the native binary.
 
@@ -37,7 +37,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 **Consequences:** We own a storage format (versioned, fuzzed, with a migration tool). Search is fast via dictionary-first predicate evaluation. External SQL access goes through export or the API, not live SQL.
 
 ## ADR-007 — Plugins out-of-process (socket/exec) first, WASM later (Accepted)
-**Context:** Technitium's in-process DLL apps have full trust. The owner needs custom upstreams.
+**Context:** The owner needs custom upstreams. A plugin loaded into the resolver's process would share its memory and its fate: a crash or a leak there takes DNS down.
 **Decision:** DNS-wire-over-socket plugins for upstreams in v1, with WASM (wasmtime, feature-gated) in v2.
 **Consequences:** Plugin crashes can't take down DNS, there is a small IPC latency cost (~20–50 µs), and plugins can be written in any language.
 
@@ -1264,6 +1264,24 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Consequences:**
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
+
+## ADR-090 — DoH load from h2load; restart counts in the data directory (Proposed)
+**Context:** T9.13 picks up the deferrals of T0.3 (DoT/DoH load, a realistic profile) and T6.14 (restart counts, Grafana panels).
+
+**Decision:**
+- **Transports bench:** dnsperf (`-m tcp|dot`) measures TCP and DoT.
+  - DoH uses h2load, a bench-only tool that isn't shipped. dnsperf's DoH client ran at about 40 ms a query against a listener that answers curl in 175 µs, so it would have measured itself.
+  - DoH requests are GETs built from the same corpus, so the names match the other transports.
+  - The existing `realistic-home` corpus stays with the swap test. The new mode uses cache hits, because the Python stub upstream would saturate first and hide the transports' cost.
+- **Restart counts:** `<data_dir>/runs.json` holds `starts`, `unclean`, and `running`. A start increments `starts`, and adds to `unclean` if `running` is still set, then sets `running`. A clean stop clears it, even when startup fails.
+  - It's written only by the process holding the data-directory lock.
+  - An unreadable file starts over, rather than failing startup.
+  - These are counters, so `increase()` over a range works across restarts. The heartbeat-observed `restarts` column in the cluster view stays as it is (what peers saw).
+- **Grafana:** new rows for transports (queries by protocol, TLS/DoH/DoQ/PROXY problems) and the process (uptime, restarts, unclean starts, OOM kills, CPU, temperature, data-disk free). Every expression is checked with `promtool check rules` in the Prometheus image.
+
+**Consequences:**
+- What DoT and DoH cost compared with UDP is measured, and repeatable on any machine with h2load.
+- A crash loop shows up as a number on the dashboard instead of a short uptime.
 
 ## ADR-089 — vqlog `or` and rollup windows; pre-save checks (Proposed)
 **Context:** T9.12 picks up ADR-082's "not done" (`or`, rollup-backed long windows) and the pre-save checks deferred from T7.5.

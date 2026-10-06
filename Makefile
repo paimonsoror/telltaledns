@@ -1,4 +1,4 @@
-.PHONY: check fmt clippy test deny build bench-smoke bench-full image image-all bench-proto udp-scaling fuzz
+.PHONY: check fmt clippy test deny build bench-smoke bench-full bench-transports image image-all bench-proto udp-scaling fuzz
 
 check: fmt clippy test deny
 
@@ -24,6 +24,10 @@ bench-smoke:
 # Nightly / release set: every corpus with inputs present, 3 runs, 25-50-75% load points.
 bench-full:
 	./bench/run.sh full
+
+# T9.13 — cache hits over UDP, TCP, DoT, and DoH (DoH needs h2load).
+bench-transports:
+	./bench/run.sh transports
 
 # REQ: OPS-001 — host-arch image, then the hardened smoke test (read-only, caps dropped, non-root).
 image:

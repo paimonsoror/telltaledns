@@ -10097,6 +10097,8 @@
           "role",
           "uptimeSeconds",
           "startedAt",
+          "starts",
+          "uncleanStarts",
           "listeners",
           "queryLog",
           "filterNames",
@@ -10167,6 +10169,17 @@
           "startedAt": {
             "type": "string",
             "description": "When the process started (RFC 3339)."
+          },
+          "starts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: OBS-002 (T9.13) — times a node started on this data directory, and how many of\nthose followed a run that didn't stop cleanly.",
+            "minimum": 0
+          },
+          "uncleanStarts": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "update": {
             "$ref": "#/components/schemas/UpdateStatus",

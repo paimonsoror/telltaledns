@@ -11,6 +11,7 @@ on loopback, drives it with dnsperf, and writes results JSON to bench/results/.
 """
 
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -21,6 +22,7 @@ import shutil
 import signal
 import socket
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -37,6 +39,9 @@ SCHEMA = 1
 DNS_PORT = 5300
 STUB_PORT = 5301
 METRICS_PORT = 9153
+# T9.13 — encrypted listeners for the `transports` mode (a throwaway self-signed certificate).
+DOT_PORT = 5853
+DOH_PORT = 5443
 
 MODES = {
     # REQ: NFR-001 — `make bench-smoke` (AGENTS.md rule 4): short, single run, fails on errors.
@@ -44,6 +49,9 @@ MODES = {
     # Nightly / release: every corpus whose inputs are present, median of 3 (09 §2 regression gate).
     "full": {"corpora": ["cache-hot", "miss-heavy", "blocked"], "duration": 30, "runs": 3, "warmup": 5,
              "load_points": [25, 50, 75]},
+    # T9.13 — the same cache hits over each transport: what TCP framing, TLS, and HTTP/2 cost.
+    "transports": {"corpora": ["cache-hot"], "duration": 10, "runs": 1, "warmup": 3, "load_points": [50],
+                   "transports": ["udp", "tcp", "dot", "doh"]},
 }
 
 # miss-heavy measures latency through the upstream path, not throughput: the Python stub
@@ -86,8 +94,10 @@ def parse_dnsperf(out: str) -> dict:
     if m:
         for code, n in re.findall(r"(\w+) (\d+) \(", m.group(1)):
             rcodes[code] = int(n)
-    # Percentiles from dnsperf's latency histogram, reported at each bucket's upper edge.
-    buckets = [(float(hi), int(n)) for _, hi, n in BUCKET_RE.findall(out)]
+    # Percentiles from dnsperf's latency histogram, reported at each bucket's upper edge. Over
+    # TCP, DoT, and DoH a second one (connection latency) follows: it isn't counted (T9.13).
+    answers = out.split("Connection Statistics")[0]
+    buckets = [(float(hi), int(n)) for _, hi, n in BUCKET_RE.findall(answers)]
     total = sum(n for _, n in buckets)
     pct = {}
     for name, q in (("p50", 0.50), ("p90", 0.90), ("p99", 0.99), ("p999", 0.999)):
@@ -107,7 +117,7 @@ def parse_dnsperf(out: str) -> dict:
         "loss_pct": round(100.0 * lost / sent, 4) if sent else 100.0,
         "rcodes": rcodes,
         "latency_us": {
-            "avg": round(grab("avg") * 1e6, 1),
+            "avg": round(grab("avg") * 1e6, 1),  # the first match: answers
             "min": round(grab("avg", 2) * 1e6, 1),
             "max": round(grab("avg", 3) * 1e6, 1),
             "stddev": round(grab("stddev") * 1e6, 1),
@@ -116,13 +126,19 @@ def parse_dnsperf(out: str) -> dict:
     }
 
 
-def dnsperf(target, datafile, seconds, *, threads, clients, outstanding, max_qps=None, once=False):
+def dnsperf(target, datafile, seconds, *, threads, clients, outstanding, max_qps=None, once=False,
+            transport="udp"):
     host, port = target
     cmd = [
         "dnsperf", "-s", host, "-p", str(port), "-d", str(datafile), "-l", str(seconds),
         "-T", str(threads), "-c", str(clients), "-q", str(outstanding), "-t", "2",
         "-O", "latency-histogram", "-O", "suppress=timeout,unexpected",
     ]
+    # T9.13 — TCP, DoT, or DoH (dnsperf doesn't verify the certificate).
+    if transport != "udp":
+        cmd += ["-m", transport]
+    if transport == "doh":
+        cmd += ["-O", f"doh-uri=https://{host}:{port}/dns-query", "-O", "doh-method=POST"]
     if max_qps:
         cmd += ["-Q", str(max_qps)]
     if once:
@@ -131,6 +147,78 @@ def dnsperf(target, datafile, seconds, *, threads, clients, outstanding, max_qps
     if proc.returncode != 0:
         raise RuntimeError(f"dnsperf exited {proc.returncode}:\n{proc.stderr or proc.stdout}")
     return proc.stdout
+
+
+# ---------------------------------------------------------------------------- h2load (DoH)
+
+# T9.13 — dnsperf's DoH client tops out at a few dozen queries a second here (about 40 ms each,
+# even one at a time; curl gets 175 µs from the same listener), so DoH load comes from h2load
+# (nghttp2), with the corpus as RFC 8484 GET URLs.
+H2LOAD = os.environ.get("H2LOAD") or shutil.which("h2load")
+QTYPES = {"A": 1, "AAAA": 28, "HTTPS": 65, "CNAME": 5, "PTR": 12, "TXT": 16, "SRV": 33, "MX": 15, "NS": 2}
+
+
+def doh_uris(datafile, port, out, limit=50_000):
+    """The corpus as `https://127.0.0.1:PORT/dns-query?dns=…` lines (query ID 0, RD set)."""
+    lines = []
+    for line in pathlib.Path(datafile).read_text().splitlines()[:limit]:
+        parts = line.split()
+        if len(parts) != 2 or parts[1] not in QTYPES:
+            continue
+        wire = b"".join(bytes([len(lbl)]) + lbl.encode() for lbl in parts[0].strip(".").split(".")) + b"\0"
+        msg = struct.pack(">HHHHHH", 0, 0x0100, 1, 0, 0, 0) + wire + struct.pack(">HH", QTYPES[parts[1]], 1)
+        b64 = base64.urlsafe_b64encode(msg).decode().rstrip("=")
+        lines.append(f"https://127.0.0.1:{port}/dns-query?dns={b64}")
+    pathlib.Path(out).write_text("\n".join(lines) + "\n")
+    return out
+
+
+H2_REQ_RE = re.compile(r"requests: (\d+) total, \d+ started, (\d+) done, (\d+) succeeded, (\d+) failed, (\d+) errored")
+H2_RPS_RE = re.compile(r"finished in ([\d.]+)(m?s), ([\d.]+) req/s")
+
+
+def h2load(target, uris, seconds, *, clients, outstanding, max_qps=None, **_):
+    """One DoH run, in dnsperf's result shape (no rcodes: h2load sees HTTP, not DNS)."""
+    host, port = target
+    log = pathlib.Path(uris).with_suffix(".log")
+    log.unlink(missing_ok=True)
+    streams = max(1, outstanding // max(1, clients))
+    cmd = [H2LOAD, "-i", str(uris), "-D", str(seconds), "-c", str(clients), "-m", str(streams), "-t", "2",
+           "--log-file", str(log)]
+    if max_qps:
+        cmd += ["--rps", str(max(1, max_qps // clients))]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 60)
+    m, r = H2_REQ_RE.search(proc.stdout), H2_RPS_RE.search(proc.stdout)
+    if proc.returncode != 0 or not m or not r:
+        raise RuntimeError(f"h2load exited {proc.returncode}:\n{proc.stdout[-1500:]}{proc.stderr[-500:]}")
+    total, succeeded = int(m.group(1)), int(m.group(3))
+    durs = sorted(int(f[2]) for f in (l.split("\t") for l in log.read_text().splitlines()) if len(f) >= 3 and f[1] == "200")
+    pct = {}
+    for name, q in (("p50", 0.50), ("p90", 0.90), ("p99", 0.99), ("p999", 0.999)):
+        if durs:
+            pct[name] = float(durs[min(len(durs) - 1, int(q * len(durs)))])
+    avg = statistics.fmean(durs) if durs else 0.0
+    return {
+        "qps": float(r.group(3)),
+        "sent": total,
+        "completed": succeeded,
+        "lost": total - succeeded,
+        "loss_pct": round(100.0 * (total - succeeded) / total, 4) if total else 100.0,
+        "rcodes": {},
+        "latency_us": {"avg": round(avg, 1), "min": float(durs[0]) if durs else 0.0,
+                       "max": float(durs[-1]) if durs else 0.0,
+                       "stddev": round(statistics.pstdev(durs), 1) if len(durs) > 1 else 0.0, **pct},
+    }
+
+
+def measure(target, datafile, seconds, *, transport="udp", **kw):
+    """One run as a result dict: dnsperf, or h2load for DoH."""
+    if transport == "doh":
+        uris = doh_uris(datafile, target[1], pathlib.Path(tempfile.gettempdir()) / f"tt-doh-{os.getpid()}.uris")
+        kw.pop("threads", None)
+        kw.pop("once", None)
+        return h2load(target, uris, seconds, **kw)
+    return parse_dnsperf(dnsperf(target, datafile, seconds, transport=transport, **kw))
 
 
 # ---------------------------------------------------------------------------- processes
@@ -204,7 +292,17 @@ def wait_port(port, timeout=10.0):
     raise RuntimeError(f"nothing listening on 127.0.0.1:{port}")
 
 
-def server_config(workers, data_dir, upstream, lists=(), compile_threads=0, quick_rules=0):
+def tls_cert(dir_):
+    """T9.13 — a throwaway self-signed certificate for the encrypted listeners."""
+    cert, key = pathlib.Path(dir_) / "cert.pem", pathlib.Path(dir_) / "key.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                    "-nodes", "-days", "1", "-subj", "/CN=localhost",
+                    "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+                    "-keyout", str(key), "-out", str(cert)], check=True, capture_output=True)
+    return cert, key
+
+
+def server_config(workers, data_dir, upstream, lists=(), compile_threads=0, quick_rules=0, tls=None):
     list_cfg = "".join(f'\n[[list]]\nname = "{p.stem}"\npath = "{p}"\n' for p in lists)
     if compile_threads:
         list_cfg = f"\n[filter]\ncompile_threads = {compile_threads}\n" + list_cfg
@@ -216,6 +314,12 @@ def server_config(workers, data_dir, upstream, lists=(), compile_threads=0, quic
         action = "allow" if i % 2 else "block"
         list_cfg += f'\n[[rule]]\nid = "bench-{i}"\naction = "{action}"\ndomain = "r{i}.bench.invalid"\n{scope}\n'
 
+    encrypted = ""
+    if tls:
+        cert, key = tls
+        for proto, port in (("dot", DOT_PORT), ("doh", DOH_PORT)):
+            encrypted += (f'\n[[listen]]\nproto = "{proto}"\naddr = "127.0.0.1:{port}"\n'
+                          f'tls = {{ cert = "{cert}", key = "{key}" }}\n')
     return f"""# Generated by bench/bench.py — loopback-only bench stack.
 config_version = 1
 
@@ -230,7 +334,7 @@ addr = "127.0.0.1:{DNS_PORT}"
 [[listen]]
 proto = "tcp"
 addr = "127.0.0.1:{DNS_PORT}"
-
+{encrypted}
 [[upstream]]
 name = "stub"
 url = "{upstream}"
@@ -304,6 +408,10 @@ def summarize(runs):
 def cmd_run(args):
     mode = dict(MODES[args.mode])
     corpora = args.corpus or mode["corpora"]
+    transports = args.transport or mode.get("transports", ["udp"])
+    if "doh" in transports and not H2LOAD:
+        print("skip doh: h2load not found (apt install nghttp2-client, or set H2LOAD)", file=sys.stderr)
+        transports = [t for t in transports if t != "doh"]
     duration = args.duration or mode["duration"]
     runs = args.runs or mode["runs"]
 
@@ -328,7 +436,7 @@ def cmd_run(args):
         "tools": {"dnsperf": tool_version(["dnsperf", "-h"])},
         "params": {"duration_s": duration, "runs": runs, "warmup_s": mode["warmup"], "threads": args.threads,
                    "clients": args.clients, "outstanding": args.outstanding, "miss_qps": MISS_QPS,
-                   "quick_rules": args.quick_rules},
+                   "quick_rules": args.quick_rules, "transports": transports},
         "server": {},
         "runs": [],
     }
@@ -351,8 +459,9 @@ def cmd_run(args):
             cfg = pathlib.Path(tmp.name) / "telltale.toml"
             # The blocked corpus needs the lists loaded; then every corpus runs with them.
             lists = sorted((HERE / "lists").glob("*.txt")) if "blocked" in files else []
+            tls = tls_cert(tmp.name) if {"dot", "doh"} & set(transports) else None
             cfg.write_text(server_config(args.workers, tmp.name, f"udp://127.0.0.1:{STUB_PORT}", lists,
-                                         quick_rules=args.quick_rules))
+                                         quick_rules=args.quick_rules, tls=tls))
             log = open(pathlib.Path(tmp.name) / "server.log", "w")
             env = dict(os.environ, RUST_LOG=os.environ.get("RUST_LOG", "warn"))
             t0 = time.monotonic()
@@ -380,19 +489,25 @@ def cmd_run(args):
             }
             target = ("127.0.0.1", DNS_PORT)
 
-        for name, meta in files.items():
+        plain = target
+        for (name, meta), transport in [(f, t) for f in files.items() for t in transports]:
+            # T9.13 — one label per corpus and transport ("cache-hot", "cache-hot/dot").
+            label = name if transport == "udp" else f"{name}/{transport}"
+            port = {"dot": DOT_PORT, "doh": DOH_PORT}.get(transport)
+            target = (plain[0], port) if port and not args.target else plain
             for i in range(runs):
                 miss = name == "miss-heavy"
-                common = dict(threads=args.threads, clients=args.clients, outstanding=args.outstanding)
+                common = dict(threads=args.threads, clients=args.clients, outstanding=args.outstanding,
+                              transport=transport)
                 if not miss and mode["warmup"]:
-                    dnsperf(target, meta["path"], mode["warmup"], **common)
+                    measure(target, meta["path"], mode["warmup"], **common)
                 before = proc_stats(server.pid) if server else None
                 # miss-heavy: run each name at most once so every query is a real miss.
-                out = dnsperf(target, meta["path"], duration, **common,
+                res = measure(target, meta["path"], duration, **common,
                               max_qps=MISS_QPS if miss else None, once=miss)
                 after = proc_stats(server.pid) if server else None
-                run = {"corpus": name, "run": i + 1, "seed": meta["seed"], "corpus_sha256": meta["sha256"],
-                       **parse_dnsperf(out)}
+                run = {"corpus": label, "transport": transport, "run": i + 1, "seed": meta["seed"], "corpus_sha256": meta["sha256"],
+                       **res}
                 if before and after:
                     run["server"] = {
                         "rss_kib": after["rss_kib"],
@@ -402,19 +517,19 @@ def cmd_run(args):
                 # Fixed-rate latency at a share of the measured max (throughput corpora only).
                 for pct in [] if miss else mode["load_points"]:
                     offered = max(1, int(run["qps"] * pct / 100))
-                    at = parse_dnsperf(dnsperf(target, meta["path"], duration, **common, max_qps=offered))
+                    at = measure(target, meta["path"], duration, **common, max_qps=offered)
                     run.setdefault("at_load", {})[str(pct)] = {"offered_qps": offered, "qps": at["qps"],
                                                                "loss_pct": at["loss_pct"], "latency_us": at["latency_us"]}
                 result["runs"].append(run)
                 lat = run["latency_us"]
-                print(f"{name:<11} run {i + 1}/{runs}: {run['qps']:>10.0f} qps  loss {run['loss_pct']:.2f}%  "
+                print(f"{label:<15} run {i + 1}/{runs}: {run['qps']:>10.0f} qps  loss {run['loss_pct']:.2f}%  "
                       f"p50 {lat.get('p50', '-')} µs  p99 {lat.get('p99', '-')} µs", file=sys.stderr)
                 for pct, at in run.get("at_load", {}).items():
                     al = at["latency_us"]
-                    print(f"{'':<11}   @{pct:>3}%: {at['qps']:>10.0f} qps  loss {at['loss_pct']:.2f}%  "
+                    print(f"{'':<15}   @{pct:>3}%: {at['qps']:>10.0f} qps  loss {at['loss_pct']:.2f}%  "
                           f"p50 {al.get('p50', '-')} µs  p99 {al.get('p99', '-')} µs", file=sys.stderr)
                 if server and server.poll() is not None:
-                    raise RuntimeError(f"server exited with {server.returncode} during {name}")
+                    raise RuntimeError(f"server exited with {server.returncode} during {label}")
         if server:
             final = proc_stats(server.pid) or {}
             result["server"]["peak_rss_kib"] = final.get("hwm_kib")
@@ -434,8 +549,9 @@ def cmd_run(args):
     path.write_text(json.dumps(result, indent=2) + "\n")
     print(f"results: {path}", file=sys.stderr)
 
-    failures = [f"{name}: loss {s['loss_pct']}% > {MAX_LOSS_PCT[name]}%"
-                for name, s in result["summary"].items() if s["loss_pct"] > MAX_LOSS_PCT[name]]
+    failures = [f"{name}: loss {s['loss_pct']}% > {MAX_LOSS_PCT.get(name.split('/')[0], 1.0)}%"
+                for name, s in result["summary"].items()
+                if s["loss_pct"] > MAX_LOSS_PCT.get(name.split("/")[0], 1.0)]
     if args.baseline:
         failures += compare(json.loads(pathlib.Path(args.baseline).read_text()), result, args.tolerance)
     for f in failures:
@@ -697,6 +813,8 @@ def main():
     r.add_argument("--baseline", help="results JSON to gate against")
     r.add_argument("--tolerance", type=float, default=5.0, help="regression tolerance in percent")
     r.add_argument("--quick-rules", type=int, default=0, help="load this many non-matching quick rules (T6.12)")
+    r.add_argument("--transport", action="append", choices=["udp", "tcp", "dot", "doh"],
+                   help="query over these transports (T9.13; default: the mode's, else udp)")
     r.add_argument("--out", default=str(HERE / "results"))
     r.set_defaults(func=cmd_run)
 

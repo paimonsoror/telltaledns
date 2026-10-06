@@ -1138,7 +1138,7 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
     };
     // REQ: CLU-008 (T6.14) — one process per data directory, held until exit.
     let data_dir = Path::new(cfg.node.data_dir.as_str());
-    let _lock = match datadir::lock(data_dir, std::time::Duration::from_secs(10)) {
+    let lock = match datadir::lock(data_dir, std::time::Duration::from_secs(10)) {
         Ok(l) => Some(l),
         Err(datadir::LockError::Held(holder)) => {
             error!(
@@ -1154,6 +1154,20 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
             None
         }
     };
+    // REQ: OBS-002 (T9.13) — restart counts, kept in the data directory (only with the lock:
+    // two processes would count each other).
+    let runs = if lock.is_some() {
+        datadir::record_start(data_dir)
+    } else {
+        datadir::Runs::default()
+    };
+    if runs.unclean > 0 && runs.starts > 1 {
+        info!(
+            starts = runs.starts,
+            unclean = runs.unclean,
+            "the previous run didn't stop cleanly"
+        );
+    }
     info!(
         version = build_info::VERSION,
         commit = build_info::COMMIT,
@@ -1168,7 +1182,12 @@ fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
         .enable_all()
         .thread_name("telltale-rt")
         .build()?;
-    rt.block_on(server::serve(files, cfg))?;
+    let data_dir = data_dir.to_owned();
+    let served = rt.block_on(server::serve(files, cfg));
+    if lock.is_some() {
+        datadir::record_stop(&data_dir);
+    }
+    served?;
     info!("stopped");
     Ok(ExitCode::SUCCESS)
 }

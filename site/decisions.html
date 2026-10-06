@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decisions — TelltaleDNS</title>
+<meta name="description" content="Every architecture decision record behind TelltaleDNS: the context, what was decided, and what it costs, with its status, the requirements it serves, and the decisions it builds on.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="decisions">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">For the technical audience</p>
+  <h1>Decisions</h1>
+  <p class="lede">Every architecture decision record (ADR) behind TelltaleDNS: what we knew, what we chose, and what it costs. This page is built from <a href="https://github.com/paimonsoror/telltaledns/blob/main/spec/11-decisions.md">the specification</a> on every change, so it's always the current record.</p>
+  <!-- @decisions-summary -->
+</section>
+
+<section class="adr-explorer" aria-label="Decision records">
+  <div class="adr-tools" hidden>
+    <label class="adr-search">Search <input type="search" id="adr-q" placeholder="cache, DNSSEC, ADR-061, OBS-010…" autocomplete="off"></label>
+    <div class="adr-filter" role="group" aria-label="Status" id="adr-status"></div>
+    <label>Area <select id="adr-area"><option value="">All areas</option></select></label>
+    <label>Order <select id="adr-sort"><option value="desc">Newest first</option><option value="asc">Oldest first</option></select></label>
+    <button type="button" class="adr-toggle" id="adr-expand">Expand all</button>
+    <p class="muted small adr-count" id="adr-count" role="status" aria-live="polite"></p>
+  </div>
+  <div class="adr-list" id="adr-list">
+<!-- @decisions -->
+  </div>
+  <p class="muted adr-empty" id="adr-empty" hidden>No decision matches. Try fewer words, or another status or area.</p>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+<script src="assets/decisions.js" defer></script>
+</body>
+</html>
