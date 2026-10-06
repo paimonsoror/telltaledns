@@ -85,7 +85,8 @@ less install.sh
 sudo sh install.sh --edge          # without --edge: the latest tagged release
 sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre>
   <ul>
-    <li>It creates a <code>telltale</code> user, writes the starter config to <code>/etc/telltale/telltale.toml</code> (never overwriting yours), and keeps data in <code>/var/lib/telltale</code>.</li>
+    <li>It asks first: press Enter for the recommended settings, or <b>walk me through the options</b> to pick upstreams (encrypted presets or your own server), starting blocklists (or none), the listen address, the first admin (a setup token, or a password now), and the query log's retention and privacy. Every step shows its default; Enter keeps it. Piped or automated runs (and <code>--yes</code>) ask nothing.</li>
+    <li>It creates a <code>telltale</code> user, writes the config to <code>/etc/telltale/telltale.toml</code> (never overwriting yours), and keeps data in <code>/var/lib/telltale</code>.</li>
     <li>If systemd-resolved holds port 53 (Ubuntu, some Debian setups), it asks to turn the stub listener off.</li>
     <li>Updates: <code>sudo telltale self-update --restart</code> (add <code>--channel edge</code> if you installed with <code>--edge</code>). The previous binary is kept as <code>telltale.old</code>.</li>
     <li>Logs: <code>journalctl -u telltale -f</code>. Reload after editing the config: <code>sudo systemctl reload telltale</code>.</li>

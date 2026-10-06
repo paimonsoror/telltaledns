@@ -77,6 +77,20 @@ less install.sh                     # read before running as root
 sudo sh install.sh --edge           # builds from main; without --edge: the latest tagged release
 sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
 ```
+**Guided setup.** Run in a terminal on a new machine, the installer asks one question first: press Enter for the recommended settings (the starter config above), or choose **Walk me through the options**. Each step shows its default in `[brackets]`; Enter or `skip` keeps it:
+1. **Builds:** releases or edge.
+2. **Upstreams:** Cloudflare and Quad9 (encrypted, the default), one provider (Cloudflare, Quad9, Google, Mullvad, AdGuard), plain DNS for networks that block port 853, or your own server.
+3. **Starting blocklists:** one or more of HaGeZi Pro (the default), Light, Pro++, Threat Intelligence, Steven Black's hosts, and OISD small, or none (add lists later on the Lists page).
+4. **Where DNS listens:** every address, or one.
+5. **systemd-resolved:** turn its stub listener off if it holds port 53.
+6. **The first admin:** a setup token for the web UI (the default), or a username and password now.
+7. **The query log:** how many days to keep, and how much it records (privacy level 0 to 3).
+
+A summary comes before anything is installed. The answers become `/etc/telltale/telltale.toml`, checked with `telltale config check` before the service starts.
+- **No questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/telltale/telltale.toml` already exists (re-runs only upgrade).
+- **Automation:** `--interactive` asks even without a terminal and reads the answers from stdin; `--config-only FILE` writes the config and stops (no root needed), to see what the answers produce.
+- **The first admin "now"** is created on the service's first start from an Argon2id hash in a root-only systemd drop-in, which the installer removes once the service is up. The password itself isn't stored.
+
 Re-running it upgrades the binary in place. `sudo telltale self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `telltale.old`. In containers it refuses (pull a new image instead).
 
 **Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` offers to turn it off (`--disable-resolved-stub` does it without asking: the machine then resolves through TelltaleDNS); for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.

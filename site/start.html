@@ -82,7 +82,7 @@ sudo sh install.sh --edge          # --edge: builds from main (pre-1.0)
 
 # then: the first admin, and the web UI at http://&lt;this machine&gt;:8053/
 sudo -u telltale /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre>
-        <p class="muted">Any systemd distribution on x86-64, arm64, or 32-bit ARM: one static binary, a sandboxed service, a <code>telltale</code> user, and a starter <code>/etc/telltale/telltale.toml</code> (kept if it exists). It checks the release signature and checksum before installing. On Ubuntu, systemd-resolved holds port 53: the installer offers to free it (<code>--disable-resolved-stub</code> does it without asking). Updates: <code>sudo telltale self-update --channel edge --restart</code>.</p>
+        <p class="muted">Any systemd distribution on x86-64, arm64, or 32-bit ARM: one static binary, a sandboxed service, a <code>telltale</code> user, and a starter <code>/etc/telltale/telltale.toml</code> (kept if it exists). It checks the release signature and checksum before installing. In a terminal it asks first: Enter for the recommended settings, or a walk through upstreams, blocklists, the first admin, and the query log. On Ubuntu, systemd-resolved holds port 53: the installer offers to free it (<code>--disable-resolved-stub</code> does it without asking). Updates: <code>sudo telltale self-update --channel edge --restart</code>.</p>
         </div>
         <div class="panel"><h3>Raspberry Pi (Docker Compose or native)</h3>
 <pre><code># Docker Compose: host network, so every device shows up as itself

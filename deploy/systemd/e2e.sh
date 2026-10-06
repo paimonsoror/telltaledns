@@ -66,6 +66,25 @@ sh "$HERE/install.sh" --disable-resolved-stub >/dev/null
 grep -q "# local edit" /etc/telltale/telltale.toml || { echo "FAIL: config overwritten"; exit 1; }
 systemctl is-active --quiet telltale
 
+# REQ: OPS-001 (T7.6) — the guided setup on a fresh machine: answers on stdin, the first admin
+# made from the answers (its drop-in removed once the service is up), the answers in the config.
+echo "== guided install, admin made now"
+systemctl stop telltale
+rm -rf /etc/telltale /var/lib/telltale/*
+printf '2\n\n\n0\n\n\n2\nalice\ne2e-guided-pass-1\ne2e-guided-pass-1\n3\n\ny\n' \
+  | sh "$HERE/install.sh" --interactive > "$WORK/guided.out" 2>&1 \
+  || { cat "$WORK/guided.out"; journalctl -u telltale --no-pager | tail -30; echo "FAIL: guided install"; exit 1; }
+grep -q 'retention_days = 3' /etc/telltale/telltale.toml || { cat /etc/telltale/telltale.toml; echo "FAIL: answers not in the config"; exit 1; }
+grep -q '\[\[list\]\]' /etc/telltale/telltale.toml && { echo "FAIL: lists written for 'none'"; exit 1; }
+[ -f /etc/systemd/system/telltale.service.d/10-first-admin.conf ] && { echo "FAIL: the first-admin drop-in is still there"; exit 1; }
+grep -q 'sign in as alice' "$WORK/guided.out" || { cat "$WORK/guided.out"; echo "FAIL: closing message"; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+  -d '{"username":"alice","password":"e2e-guided-pass-1"}' http://127.0.0.1:8053/api/v1/auth/login)
+[ "$code" = 200 ] || { echo "FAIL: alice can't sign in ($code)"; exit 1; }
+systemctl restart telltale   # the drop-in is gone: a restart doesn't need it
+for _ in $(seq 1 20); do /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz >/dev/null 2>&1 && break; sleep 0.5; done
+/usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz
+
 echo "== tampered release is refused"
 cp "$BIN" "$WORK/evil" && printf 'x' >> "$WORK/evil"
 cp "$WORK/evil" "$REL/$ASSET"     # binary swapped after signing

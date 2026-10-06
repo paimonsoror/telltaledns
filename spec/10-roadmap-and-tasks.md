@@ -373,12 +373,13 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - Unblocks the T7.1 tools `plan_add_list`, `plan_update_group`, and `plan_update_upstreams`.
   - *Done 2026-10-06:* API and UI editors (`ConfigEditor`) with source badges, check-then-apply, revert; `keepInGit` TOML on gitops nodes with a copy panel; docs (`running.md` § Changing the configuration in the UI), help topic `config-sources`; e2e tests. *Deferred:* the test resolution for an upstream and the fetch check for a list URL before saving (the dry run validates the configuration, not reachability).
 
-- [ ] **T7.6 An interactive `install.sh` (owner request 2026-10-06).** A novice accepts every default in one keypress; an advanced user steps through the options, each with its default shown and Enter (or `skip`) to keep it. *(OPS-001, DOC-001)*
+- [x] **T7.6 An interactive `install.sh` (owner request 2026-10-06).** A novice accepts every default in one keypress; an advanced user steps through the options, each with its default shown and Enter (or `skip`) to keep it. *(OPS-001, DOC-001)*
   - Asked only in a terminal: piped or automated installs (no TTY), `--yes`, and re-runs that upgrade an existing config keep today's behavior.
   - First choice: "accept all defaults" or "walk me through it".
   - Steps: upstreams (the built-in presets: encrypted or plain, which providers); starting blocklists (none, recommended, or pick from common ones); the listen address; freeing port 53 from systemd-resolved; the first admin (create now, or a setup token); query-log retention and privacy level; release or edge builds.
   - The answers become the starter `/etc/telltale/telltale.toml`, which is checked (`telltale config check`) before the service starts; a summary is shown before writing.
   - *AC:* `sudo sh install.sh` then Enter at the first prompt gives today's install; the guided path produces a config that passes `config check` for each combination tested in CI (non-interactive answers fed on stdin); no prompts without a TTY.
+  - *Done 2026-10-06:* seven guided steps with defaults and `skip`, a summary before installing, `--yes`, `--interactive` (answers on stdin), `--config-only FILE`; the first admin "now" via a root-only drop-in with the Argon2id hash, removed once the service is up. CI: `deploy/systemd/guided-e2e.sh` (15 answer sets through `config check`, Enter = the starter, no questions without a TTY) and a guided install with an admin on real systemd in `deploy/systemd/e2e.sh`.
 
 - [ ] **T7.2 MCP resources and prompts.** *(AGT-010)* Resources: cluster status, the configuration (redacted), the daily summary. Prompts: investigate a device, weekly network report, tune blocklists, upstream health review.
 - [ ] **T7.3 Scope-aware analytics tools.** *(AGT-011)* Every analytics tool takes `scope` (cluster, site, node) and reports `missingNodes` (`12 §6`).

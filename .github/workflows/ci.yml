@@ -235,6 +235,10 @@ jobs:
             'ENTRYPOINT ["/usr/local/bin/telltale"]' 'CMD ["run"]' > ctx/Dockerfile
           docker build -q -t telltale:ci ctx
           bash deploy/compose/e2e.sh telltale:ci
+      # REQ: OPS-001 (T7.6 AC) — the guided installer's answers produce configs that pass
+      # `config check`; Enter gives the starter config; no questions without a terminal.
+      - name: install.sh guided setup (answers on stdin)
+        run: bash deploy/systemd/guided-e2e.sh target/bench-fast/telltale
       - name: install.sh + systemd unit
         run: sudo bash deploy/systemd/e2e.sh target/bench-fast/telltale
       # REQ: CLU-003, CLU-004 (T5.2/T5.3 AC) — a primary and a replica as real processes:
