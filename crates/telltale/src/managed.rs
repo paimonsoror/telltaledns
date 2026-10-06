@@ -13,7 +13,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use telltale_config::{
-    ClientConfig, Config, LocalRecord, Route, SafeString, Upstream, UpstreamGroup,
+    ClientConfig, Config, FilterList, GroupConfig, LocalRecord, Route, SafeString, Upstream,
+    UpstreamGroup,
 };
 use telltale_store::state::State;
 use tracing::{error, warn};
@@ -24,6 +25,47 @@ pub(crate) const RECORD: &str = "record";
 pub(crate) const FORWARD: &str = "forward";
 /// Quick rules (T6.12, ADR-067), stored by ID.
 pub(crate) const RULE: &str = "rule";
+/// T7.5 (ADR-069): these may override or hide the files' entry of the same name.
+pub(crate) const UPSTREAM: &str = "upstream";
+pub(crate) const UPSTREAM_GROUP: &str = "upstream_group";
+pub(crate) const LIST: &str = "list";
+pub(crate) const GROUP: &str = "group";
+
+/// An API entry for a kind that can override the files (ADR-069): a definition, or the
+/// files' entry of that name left out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Ovr<T> {
+    Set(T),
+    Hidden,
+}
+
+/// The stored body of a hidden entry.
+pub(crate) const HIDDEN: &str = r#"{"hidden":true}"#;
+
+/// The config entries a kind holds, by name.
+pub(crate) trait Named {
+    fn name(&self) -> &str;
+}
+impl Named for Upstream {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+impl Named for UpstreamGroup {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+impl Named for FilterList {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+impl Named for GroupConfig {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+}
 
 /// One record of a local name (a name's records are stored together).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +92,10 @@ pub(crate) struct Entries {
     pub(crate) records: Vec<(String, Vec<RecordValue>)>,
     pub(crate) forwards: Vec<(String, Forward)>,
     pub(crate) rules: Vec<telltale_config::RuleConfig>,
+    pub(crate) upstreams: Vec<(String, Ovr<Upstream>)>,
+    pub(crate) upstream_groups: Vec<(String, Ovr<UpstreamGroup>)>,
+    pub(crate) lists: Vec<(String, Ovr<FilterList>)>,
+    pub(crate) groups: Vec<(String, Ovr<GroupConfig>)>,
 }
 
 /// Where the state database lives.
@@ -76,6 +122,36 @@ fn decode<T: for<'de> Deserialize<'de>>(state: &State, kind: &str) -> Vec<(Strin
         .collect()
 }
 
+/// Entries of a kind that can override the files: a definition, or `{"hidden":true}`.
+fn decode_ovr<T: for<'de> Deserialize<'de>>(state: &State, kind: &str) -> Vec<(String, Ovr<T>)> {
+    decode::<serde_json::Value>(state, kind)
+        .into_iter()
+        .filter_map(|(name, v)| {
+            if v.get("hidden").and_then(serde_json::Value::as_bool) == Some(true) {
+                return Some((name, Ovr::Hidden));
+            }
+            match serde_json::from_value::<T>(v) {
+                Ok(t) => Some((name, Ovr::Set(t))),
+                Err(e) => {
+                    warn!(kind, %name, "skipping a stored entry: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Applies `over` to `items` by name: an override replaces the files' entry, a new name is
+/// added, a hidden name is removed.
+pub(crate) fn apply_ovr<T: Named + Clone>(items: &mut Vec<T>, over: &[(String, Ovr<T>)]) {
+    for (name, o) in over {
+        items.retain(|i| i.name() != name);
+        if let Ovr::Set(t) = o {
+            items.push(t.clone());
+        }
+    }
+}
+
 /// Everything stored through the API, decoded (bad rows are skipped with a warning).
 pub(crate) fn entries(state: &State) -> Entries {
     Entries {
@@ -89,6 +165,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .map(|(_, r)| r)
             .collect(),
+        upstreams: decode_ovr(state, UPSTREAM),
+        upstream_groups: decode_ovr(state, UPSTREAM_GROUP),
+        lists: decode_ovr(state, LIST),
+        groups: decode_ovr(state, GROUP),
     }
 }
 
@@ -114,6 +194,12 @@ fn safe(s: &str) -> Result<SafeString, String> {
 /// (including record values); otherwise `Err` with the reasons.
 pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     let mut cfg = file.clone();
+    // ADR-069 — upstreams, upstream groups, lists, and groups made through the API override
+    // or hide the files' entries of the same name (before forwards add their own).
+    apply_ovr(&mut cfg.upstream, &e.upstreams);
+    apply_ovr(&mut cfg.upstream_group, &e.upstream_groups);
+    apply_ovr(&mut cfg.list, &e.lists);
+    apply_ovr(&mut cfg.group, &e.groups);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());
@@ -394,5 +480,69 @@ mod tests {
             ..Entries::default()
         };
         assert!(merge(&base(), &bad_server).is_err());
+    }
+
+    /// REQ: API-002 (T7.5, ADR-069) — API upstreams, groups, and lists add, override, or hide
+    /// the files' entries by name, and the merged configuration must still be valid.
+    #[test]
+    fn api_002_overrides_add_replace_and_hide_file_entries() {
+        let file: Config = toml::from_str(
+            r#"
+            [[upstream]]
+            name = "quad9"
+            url = "udp://9.9.9.9"
+            [[upstream]]
+            name = "cloudflare"
+            url = "udp://1.1.1.1"
+            [[upstream_group]]
+            name = "default"
+            members = ["quad9"]
+            [[list]]
+            name = "ads"
+            rules = ["||ads.example^"]
+            "#,
+        )
+        .unwrap();
+        let up = |name: &str, url: &str| {
+            new_upstream(
+                SafeString::new(name).unwrap(),
+                SafeString::new(url).unwrap(),
+            )
+            .unwrap()
+        };
+        let mut group: UpstreamGroup = file.upstream_group[0].clone();
+        group.members = vec![SafeString::from("cloudflare"), SafeString::from("mullvad")];
+        let e = Entries {
+            upstreams: vec![
+                ("quad9".into(), Ovr::Set(up("quad9", "tls://9.9.9.9"))),
+                (
+                    "mullvad".into(),
+                    Ovr::Set(up("mullvad", "udp://194.242.2.2")),
+                ),
+            ],
+            upstream_groups: vec![("default".into(), Ovr::Set(group))],
+            lists: vec![("ads".into(), Ovr::Hidden)],
+            ..Entries::default()
+        };
+        let c = merge(&file, &e).unwrap();
+        let names: Vec<&str> = c.upstream.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, ["cloudflare", "quad9", "mullvad"]);
+        assert_eq!(
+            c.upstream
+                .iter()
+                .find(|u| u.name.as_str() == "quad9")
+                .unwrap()
+                .url
+                .as_str(),
+            "tls://9.9.9.9"
+        );
+        assert_eq!(c.upstream_group[0].members.len(), 2);
+        assert!(c.list.is_empty(), "the files' list is hidden");
+        // Hiding an upstream the default group still uses is refused (the merge doesn't validate).
+        let broken = Entries {
+            upstreams: vec![("quad9".into(), Ovr::Hidden)],
+            ..Entries::default()
+        };
+        assert!(merge(&file, &broken).is_err());
     }
 }

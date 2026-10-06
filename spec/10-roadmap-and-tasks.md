@@ -371,6 +371,13 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - **Keep it in Git (owner request):** on a node whose configuration comes from Git, every change made in the UI or API shows the TOML to add to the Helm values or the repository to make it permanent (a `toml` field in the change response; a "Keep it in Git" panel with a copy button). API changes live in the node's `state.db`, not in Git.
   - Unblocks the T7.1 tools `plan_add_list`, `plan_update_group`, and `plan_update_upstreams`.
 
+- [ ] **T7.6 An interactive `install.sh` (owner request 2026-10-06).** A novice accepts every default in one keypress; an advanced user steps through the options, each with its default shown and Enter (or `skip`) to keep it. *(OPS-001, DOC-001)*
+  - Asked only in a terminal: piped or automated installs (no TTY), `--yes`, and re-runs that upgrade an existing config keep today's behavior.
+  - First choice: "accept all defaults" or "walk me through it".
+  - Steps: upstreams (the built-in presets: encrypted or plain, which providers); starting blocklists (none, recommended, or pick from common ones); the listen address; freeing port 53 from systemd-resolved; the first admin (create now, or a setup token); query-log retention and privacy level; release or edge builds.
+  - The answers become the starter `/etc/telltale/telltale.toml`, which is checked (`telltale config check`) before the service starts; a summary is shown before writing.
+  - *AC:* `sudo sh install.sh` then Enter at the first prompt gives today's install; the guided path produces a config that passes `config check` for each combination tested in CI (non-interactive answers fed on stdin); no prompts without a TTY.
+
 - [ ] **T7.2 MCP resources and prompts.** *(AGT-010)* Resources: cluster status, the configuration (redacted), the daily summary. Prompts: investigate a device, weekly network report, tune blocklists, upstream health review.
 - [ ] **T7.3 Scope-aware analytics tools.** *(AGT-011)* Every analytics tool takes `scope` (cluster, site, node) and reports `missingNodes` (`12 §6`).
 - [ ] **T7.4 OAuth for MCP via OIDC.** *(AGT-008, P1 part)* Protected-resource metadata at `/.well-known/oauth-protected-resource`, the configured OIDC provider as the authorization server, scope consent.

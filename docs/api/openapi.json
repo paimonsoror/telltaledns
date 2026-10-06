@@ -1160,6 +1160,28 @@
         }
       }
     },
+    "/api/v1/config/overrides": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "What the UI and API changed in the configuration's upstreams, lists, and groups.",
+        "description": "Each entry made through the UI or API (ADR-069): `added` (a new name), `override` (it\nreplaces the config files' entry of the same name), or `hidden` (the files' entry is left\nout). Deleting an override or a hidden entry (`DELETE` on its path) brings the files' entry\nback. Entries the files define and nobody changed aren't listed.",
+        "operationId": "config_overrides",
+        "responses": {
+          "200": {
+            "description": "The changes, by kind and name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ConfigOverride"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/explain": {
       "get": {
         "tags": [
@@ -1427,6 +1449,148 @@
         }
       }
     },
+    "/api/v1/groups/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change a client group (ADR-069).",
+        "description": "The body has the same fields as `[[group]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"lists\": [\"stevenblack\"], \"block_mode\": \"null_ip\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "operationId": "put_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a client group (ADR-069).",
+        "description": "An entry added through the API goes away; an override goes away and the config files'\nentry is back; an entry only the files define is hidden (left out) until this override is\ndeleted in turn. The configuration is checked first (say, a group still using a list).",
+        "operationId": "delete_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Something still uses it: problem+json says what.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/hooks/git": {
       "post": {
         "tags": [
@@ -1477,6 +1641,148 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_ListInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lists/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change a filter list (ADR-069).",
+        "description": "The body has the same fields as `[[list]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"url\": \"https://example.com/hosts.txt\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "operationId": "put_list",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a filter list (ADR-069).",
+        "description": "An entry added through the API goes away; an override goes away and the config files'\nentry is back; an entry only the files define is hidden (left out) until this override is\ndeleted in turn. The configuration is checked first (say, a group still using a list).",
+        "operationId": "delete_list",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Something still uses it: problem+json says what.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2548,6 +2854,148 @@
         }
       }
     },
+    "/api/v1/upstream-groups/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change an upstream group (ADR-069).",
+        "description": "The body has the same fields as `[[upstream_group]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"members\": [\"quad9\", \"cloudflare\"], \"strategy\": \"fastest\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "operationId": "put_upstream_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove an upstream group (ADR-069).",
+        "description": "An entry added through the API goes away; an override goes away and the config files'\nentry is back; an entry only the files define is hidden (left out) until this override is\ndeleted in turn. The configuration is checked first (say, a group still using a list).",
+        "operationId": "delete_upstream_group",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Something still uses it: problem+json says what.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/upstreams": {
       "get": {
         "tags": [
@@ -2563,6 +3011,148 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_UpstreamInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/upstreams/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Add or change an upstream resolver (ADR-069).",
+        "description": "The body has the same fields as `[[upstream]]` in `telltale.toml` (the name comes from the path),\ne.g. `{\"url\": \"tls://9.9.9.9\", \"tls_server_name\": \"dns.quad9.net\"}`. A name the config files use is overridden: this definition replaces theirs\nuntil it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole\nconfiguration is checked before anything is stored. On a node whose configuration comes from\nGit, the response's `toml` says what to add to the repository to keep the change.",
+        "operationId": "put_upstream",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong, or the configuration wouldn't be valid: problem+json says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove an upstream resolver (ADR-069).",
+        "description": "An entry added through the API goes away; an override goes away and the config files'\nentry is back; an entry only the files define is hidden (left out) until this override is\ndeleted in turn. The configuration is checked first (say, a group still using a list).",
+        "operationId": "delete_upstream",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Something still uses it: problem+json says what.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -4590,6 +5180,35 @@
           }
         }
       },
+      "ConfigOverride": {
+        "type": "object",
+        "description": "REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through\nthe UI or API.",
+        "required": [
+          "kind",
+          "name",
+          "mode"
+        ],
+        "properties": {
+          "by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made the change."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`upstream`, `upstream_group`, `list`, or `group`."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'\nentry is left out)."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "CreateToken": {
         "type": "object",
         "required": [
@@ -5790,6 +6409,54 @@
                   "type": "string",
                   "description": "`file` (defined in the config files: read-only here) or `api` (named in the UI or\nthrough the API: editable with `PUT /clients/{name}`).",
                   "example": "api"
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_ConfigOverride": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through\nthe UI or API.",
+              "required": [
+                "kind",
+                "name",
+                "mode"
+              ],
+              "properties": {
+                "by": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Who made the change."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`upstream`, `upstream_group`, `list`, or `group`."
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "`added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'\nentry is left out)."
+                },
+                "name": {
+                  "type": "string"
                 }
               }
             }

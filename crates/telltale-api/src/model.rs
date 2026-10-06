@@ -950,6 +950,21 @@ pub struct CacheNodeEntries {
     pub error: Option<String>,
 }
 
+/// REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through
+/// the UI or API.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigOverride {
+    /// `upstream`, `upstream_group`, `list`, or `group`.
+    pub kind: String,
+    pub name: String,
+    /// `added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'
+    /// entry is left out).
+    pub mode: String,
+    /// Who made the change.
+    pub by: Option<String>,
+}
+
 /// REQ: FLT-009 (T7.1) — pause or resume blocking (`POST /api/v1/blocking/pause|resume`).
 #[derive(Debug, Clone, Default, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

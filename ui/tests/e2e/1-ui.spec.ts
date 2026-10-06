@@ -713,3 +713,38 @@ test('api_011 help drawer text is body-sized everywhere', async () => {
   await page.getByRole('heading', { name: 'Quick rules' }).getByRole('button').click();
   expect(await size()).toBe(reference);
 });
+
+// REQ: API-002 (T7.5, ADR-069) — upstreams and lists through the API: add, override the
+// files' entry, refuse a change that breaks the configuration, and revert.
+test('api_002 upstreams and lists can be added, overridden, and reverted', async () => {
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = { 'x-csrf-token': csrf };
+  const overrides = async () =>
+    ((await (await r.get('/api/v1/config/overrides')).json()).items as { kind: string; name: string; mode: string }[])
+      .map((o) => `${o.kind}:${o.name}:${o.mode}`)
+      .sort();
+  // A dry run changes nothing.
+  let res = await r.put('/api/v1/upstreams/extra?dryRun=true', { headers: h, data: { url: 'udp://127.0.0.1:9' } });
+  expect(res.status()).toBe(200);
+  expect((await res.json()).applied).toBe(false);
+  expect(await overrides()).toEqual([]);
+  // Added, and an override of the files' "router".
+  expect((await r.put('/api/v1/upstreams/extra', { headers: h, data: { url: 'udp://127.0.0.1:9' } })).status()).toBe(200);
+  res = await r.put('/api/v1/upstreams/router', { headers: h, data: { url: 'udp://127.0.0.1:15399', timeout_ms: 900 } });
+  expect(res.status()).toBe(200);
+  expect(await overrides()).toEqual(['upstream:extra:added', 'upstream:router:override']);
+  // Hiding an upstream the default group uses would break the configuration.
+  res = await r.delete('/api/v1/upstreams/nowhere', { headers: h });
+  expect(res.status()).toBe(422);
+  // Revert the override, remove the added one.
+  expect((await r.delete('/api/v1/upstreams/router', { headers: h })).status()).toBe(200);
+  expect((await r.delete('/api/v1/upstreams/extra', { headers: h })).status()).toBe(200);
+  expect(await overrides()).toEqual([]);
+  // A list: added, then removed.
+  res = await r.put('/api/v1/lists/e2e-extra', { headers: h, data: { rules: ['||extra.e2e.test^'] } });
+  expect(res.status()).toBe(200);
+  expect(await overrides()).toEqual(['list:e2e-extra:added']);
+  expect((await r.delete('/api/v1/lists/e2e-extra', { headers: h })).status()).toBe(200);
+  expect(await overrides()).toEqual([]);
+});

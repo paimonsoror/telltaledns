@@ -1153,6 +1153,65 @@ impl Backend for ApiBackend {
         }]
     }
 
+    // REQ: API-002 (T7.5, ADR-069) — what the API changed in upstreams, lists, and groups.
+    fn config_overrides(&self) -> Vec<telltale_api::model::ConfigOverride> {
+        use crate::managed::Ovr;
+        let Some(state) = self.src.auth.get().map(|a| Arc::clone(a.state())) else {
+            return Vec::new();
+        };
+        let e = crate::managed::entries(&state);
+        let file = self.src.file_config.load_full();
+        let mut out = Vec::new();
+        let mut push = |kind: &str, name: &str, hidden: bool, in_files: bool| {
+            out.push(telltale_api::model::ConfigOverride {
+                kind: kind.to_owned(),
+                name: name.to_owned(),
+                mode: if hidden {
+                    "hidden"
+                } else if in_files {
+                    "override"
+                } else {
+                    "added"
+                }
+                .to_owned(),
+                by: None,
+            });
+        };
+        for (n, o) in &e.upstreams {
+            push(
+                "upstream",
+                n,
+                *o == Ovr::Hidden,
+                file.upstream.iter().any(|u| u.name.as_str() == n),
+            );
+        }
+        for (n, o) in &e.upstream_groups {
+            push(
+                "upstream_group",
+                n,
+                *o == Ovr::Hidden,
+                file.upstream_group.iter().any(|u| u.name.as_str() == n),
+            );
+        }
+        for (n, o) in &e.lists {
+            push(
+                "list",
+                n,
+                *o == Ovr::Hidden,
+                file.list.iter().any(|u| u.name.as_str() == n),
+            );
+        }
+        for (n, o) in &e.groups {
+            push(
+                "group",
+                n,
+                *o == Ovr::Hidden,
+                file.group.iter().any(|u| u.name.as_str() == n),
+            );
+        }
+        out
+    }
+
     // REQ: FLT-009 (T7.1) — this node's pauses.
     fn blocking_state(&self) -> Vec<telltale_api::model::BlockingNode> {
         let now = crate::pipeline::unix_now();
@@ -1719,6 +1778,10 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Record => crate::managed::RECORD,
         ManagedKind::Forward => crate::managed::FORWARD,
         ManagedKind::Rule => crate::managed::RULE,
+        ManagedKind::Upstream => crate::managed::UPSTREAM,
+        ManagedKind::UpstreamGroup => crate::managed::UPSTREAM_GROUP,
+        ManagedKind::List => crate::managed::LIST,
+        ManagedKind::Group => crate::managed::GROUP,
     }
 }
 
@@ -1981,6 +2044,7 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         .filter(|t| match kind {
             ManagedKind::Record => t.key == name,
             ManagedKind::Forward | ManagedKind::Rule => t.key == name || t.key.ends_with(&under),
+            _ => false,
         })
         .map(|t| t.count)
         .sum();
@@ -1999,6 +2063,14 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
             "Names under `{name}` go back to the default upstreams; {recent_queries} queries for them in the last two hours (at least)."
         ),
         (ManagedKind::Rule, _) => String::new(), // rule_impact says it better
+        (ManagedKind::Upstream | ManagedKind::UpstreamGroup, _) => {
+            "Applies on the next query; answers already cached stay until they expire.".into()
+        }
+        (ManagedKind::List, true) => {
+            "The list is downloaded and compiled in the background; blocking changes when that's done.".into()
+        }
+        (ManagedKind::List, false) => "Its blocks stop when the lists are compiled again (seconds).".into(),
+        (ManagedKind::Group, _) => "Applies to the group's devices on their next query.".into(),
     };
     (recent_queries, impact)
 }
@@ -2011,6 +2083,12 @@ fn plan_managed(
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
+    if matches!(
+        w.kind,
+        ManagedKind::Upstream | ManagedKind::UpstreamGroup | ManagedKind::List | ManagedKind::Group
+    ) {
+        return plan_override(src, state, w);
+    }
     let name = norm(&w.name);
     if name.is_empty() {
         return Err(Problem::invalid("the name is empty"));
@@ -2026,6 +2104,7 @@ fn plan_managed(
             .iter()
             .any(|r| r.match_suffix.iter().any(|s| s.eq_ignore_ascii_case(&name))),
         ManagedKind::Rule => file.rule.iter().any(|r| r.id.eq_ignore_ascii_case(&name)),
+        _ => false,
     };
     if in_files {
         return Err(Problem::new(
@@ -2096,6 +2175,7 @@ fn plan_managed(
                 after.map(|a| serde_json::to_value(a).unwrap_or_default()),
             )
         }
+        _ => return Err(Problem::internal("handled by plan_override")),
     };
     if w.body.is_none() && before.is_none() {
         return Err(Problem::not_found(format!(
@@ -2111,7 +2191,7 @@ fn plan_managed(
         (ManagedKind::Forward, Some(a)) => {
             Some(serde_json::json!({ "servers": a["servers"] }).to_string())
         }
-        (ManagedKind::Rule, Some(a)) => Some(a.to_string()),
+        (_, Some(a)) => Some(a.to_string()),
     };
     let (recent_queries, impact) = if w.kind == ManagedKind::Rule {
         let rule = after
@@ -2122,6 +2202,125 @@ fn plan_managed(
     } else {
         managed_impact(src, w.kind, &name, body.is_some())
     };
+    Ok(ManagedPlan {
+        name,
+        before,
+        after,
+        body,
+        recent_queries,
+        impact,
+        warnings,
+    })
+}
+
+/// ADR-069 — one kind's change: returns (the entry before, the body to store).
+fn override_step<T>(
+    name: &str,
+    body: Option<&serde_json::Value>,
+    in_files: bool,
+    current: Option<&T>,
+    stored: &mut Vec<(String, crate::managed::Ovr<T>)>,
+) -> Result<(Option<serde_json::Value>, Option<String>), Problem>
+where
+    T: crate::managed::Named + Clone + Serialize + serde::de::DeserializeOwned,
+{
+    let before = current.map(|c| serde_json::to_value(c).unwrap_or_default());
+    let had = stored.iter().any(|(n, _)| n == name);
+    stored.retain(|(n, _)| n != name);
+    let body = match body {
+        Some(v) => {
+            let mut v = v.clone();
+            if let Some(o) = v.as_object_mut() {
+                o.insert("name".into(), serde_json::Value::String(name.to_owned()));
+            } else {
+                return Err(Problem::invalid("the body must be an object"));
+            }
+            let t: T = serde_json::from_value(v)
+                .map_err(|e| Problem::new(Code::InvalidConfig, format!("{e}")))?;
+            let s = serde_json::to_string(&t).unwrap_or_default();
+            stored.push((name.to_owned(), crate::managed::Ovr::Set(t)));
+            Some(s)
+        }
+        // DELETE: what the API stored goes (the files' entry is back), else hide the files'.
+        None if had => None,
+        None if in_files => {
+            stored.push((name.to_owned(), crate::managed::Ovr::Hidden));
+            Some(crate::managed::HIDDEN.to_owned())
+        }
+        None => return Err(Problem::not_found(format!("no `{name}`"))),
+    };
+    Ok((before, body))
+}
+
+/// The entry named `name`, as JSON.
+fn named_json<T: crate::managed::Named + Serialize>(
+    items: &[T],
+    name: &str,
+) -> Option<serde_json::Value> {
+    items
+        .iter()
+        .find(|i| i.name() == name)
+        .map(|x| serde_json::to_value(x).unwrap_or_default())
+}
+
+/// REQ: API-002 (T7.5, ADR-069) — a change to an upstream, upstream group, list, or group: it
+/// may override or hide the files' entry of the same name. `PUT` stores a definition; `DELETE`
+/// removes what the API stored (so the files' entry, if any, is back), or else hides the
+/// files' entry. The merged configuration must validate.
+fn plan_override(
+    src: &Sources,
+    state: &telltale_store::state::State,
+    w: &ManagedWrite,
+) -> Result<ManagedPlan, Problem> {
+    use crate::managed::Named;
+    let name = w.name.trim().to_owned();
+    if name.is_empty() {
+        return Err(Problem::invalid("the name is empty"));
+    }
+    let file = src.file_config.load_full();
+    let mut entries = crate::managed::entries(state);
+    let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+
+    let (before, body) = match w.kind {
+        ManagedKind::Upstream => override_step(
+            &name,
+            w.body.as_ref(),
+            file.upstream.iter().any(|u| u.name() == name),
+            before_cfg.upstream.iter().find(|u| u.name() == name),
+            &mut entries.upstreams,
+        )?,
+        ManagedKind::UpstreamGroup => override_step(
+            &name,
+            w.body.as_ref(),
+            file.upstream_group.iter().any(|u| u.name() == name),
+            before_cfg.upstream_group.iter().find(|u| u.name() == name),
+            &mut entries.upstream_groups,
+        )?,
+        ManagedKind::List => override_step(
+            &name,
+            w.body.as_ref(),
+            file.list.iter().any(|u| u.name() == name),
+            before_cfg.list.iter().find(|u| u.name() == name),
+            &mut entries.lists,
+        )?,
+        _ => override_step(
+            &name,
+            w.body.as_ref(),
+            file.group.iter().any(|u| u.name() == name),
+            before_cfg.group.iter().find(|u| u.name() == name),
+            &mut entries.groups,
+        )?,
+    };
+    let merged = crate::managed::merge(&file, &entries)
+        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    let after = match w.kind {
+        ManagedKind::Upstream => named_json(&merged.upstream, &name),
+        ManagedKind::UpstreamGroup => named_json(&merged.upstream_group, &name),
+        ManagedKind::List => named_json(&merged.list, &name),
+        _ => named_json(&merged.group, &name),
+    };
+    let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
+    let (recent_queries, impact) = managed_impact(src, w.kind, &name, w.body.is_some());
     Ok(ManagedPlan {
         name,
         before,

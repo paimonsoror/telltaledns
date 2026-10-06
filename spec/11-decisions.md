@@ -1222,3 +1222,22 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - The operating system releases the lock when the process exits, even after a crash or `SIGKILL`, so there is no stale-lock cleanup.
 - A rolling update of a single-volume Deployment would wait for the old pod forever. The chart uses a StatefulSet and the homelab Deployment uses `Recreate`, and the docs tell people with their own manifests to do the same.
 - On network file systems `flock` may be emulated or local-only. That is acceptable for a guard against mistakes.
+
+## ADR-069 — Editing upstreams, lists, and groups from the UI: overrides in state.db, the files untouched (Proposed)
+**Context:** T7.5 (owner report 2026-10-06). On a node installed with `install.sh`, the upstreams and lists come in the starter `/etc/telltale/telltale.toml`. ADR-040 makes anything the files define read-only through the API ("files win"), so none of them could be changed in the UI. Rewriting the file isn't an option either: Docker and Kubernetes mount it read-only, and on Git-managed nodes the next deploy would replace it.
+
+**Decision:**
+- Upstreams, upstream groups, lists, and client groups made or changed through the API are managed entries in `state.db` (like ADR-040's), by name. An entry can:
+  - add a new name;
+  - **override** a file entry of the same name (the whole entry is replaced);
+  - **hide** a file entry (a tombstone: the name is left out).
+- The files are never rewritten. The UI marks each entry as *file*, *UI*, or *UI override of the file*, and "Revert to the file" deletes the override or tombstone.
+- Every change is validated on the merged configuration before it's stored (a group can't lose its last upstream; a list can't be removed while a group uses it; the default upstream group must keep a member), with dry run, `If-Match`, idempotency, and audit as for the other managed kinds.
+- In a cluster, the merged configuration is what the primary publishes (ADR-047), so changes reach every node.
+- On a node whose configuration comes from Git (`config_source = "gitops"`), each change response carries the TOML to add to the repository or the Helm values to make it permanent ("Keep it in Git"), because an override lives only in that node's `state.db`.
+- Devices, local names, forwarded domains, and quick rules keep ADR-040's rule (files win), since the starter config doesn't define them.
+
+**Consequences:**
+- A standalone node can be run entirely from the UI after `install.sh`.
+- Two sources of truth for the same name are possible; the UI and the `GET` endpoints show which one is in effect (`source`: `file`, `api`, or `override`).
+- A file change to an overridden entry has no effect until the override is reverted; the UI says so on the entry.

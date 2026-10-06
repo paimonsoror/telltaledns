@@ -599,6 +599,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/config/overrides": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the UI and API changed in the configuration's upstreams, lists, and groups.
+         * @description Each entry made through the UI or API (ADR-069): `added` (a new name), `override` (it
+         *     replaces the config files' entry of the same name), or `hidden` (the files' entry is left
+         *     out). Deleting an override or a hidden entry (`DELETE` on its path) brings the files' entry
+         *     back. Entries the files define and nobody changed aren't listed.
+         */
+        get: operations["config_overrides"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/explain": {
         parameters: {
             query?: never;
@@ -691,6 +714,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/groups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change a client group (ADR-069).
+         * @description The body has the same fields as `[[group]]` in `telltale.toml` (the name comes from the path),
+         *     e.g. `{"lists": ["stevenblack"], "block_mode": "null_ip"}`. A name the config files use is overridden: this definition replaces theirs
+         *     until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+         *     configuration is checked before anything is stored. On a node whose configuration comes from
+         *     Git, the response's `toml` says what to add to the repository to keep the change.
+         */
+        put: operations["put_group"];
+        post?: never;
+        /**
+         * Remove a client group (ADR-069).
+         * @description An entry added through the API goes away; an override goes away and the config files'
+         *     entry is back; an entry only the files define is hidden (left out) until this override is
+         *     deleted in turn. The configuration is checked first (say, a group still using a list).
+         */
+        delete: operations["delete_group"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/hooks/git": {
         parameters: {
             query?: never;
@@ -729,6 +782,36 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/lists/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change a filter list (ADR-069).
+         * @description The body has the same fields as `[[list]]` in `telltale.toml` (the name comes from the path),
+         *     e.g. `{"url": "https://example.com/hosts.txt"}`. A name the config files use is overridden: this definition replaces theirs
+         *     until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+         *     configuration is checked before anything is stored. On a node whose configuration comes from
+         *     Git, the response's `toml` says what to add to the repository to keep the change.
+         */
+        put: operations["put_list"];
+        post?: never;
+        /**
+         * Remove a filter list (ADR-069).
+         * @description An entry added through the API goes away; an override goes away and the config files'
+         *     entry is back; an entry only the files define is hidden (left out) until this override is
+         *     deleted in turn. The configuration is checked first (say, a group still using a list).
+         */
+        delete: operations["delete_list"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1041,6 +1124,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/upstream-groups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an upstream group (ADR-069).
+         * @description The body has the same fields as `[[upstream_group]]` in `telltale.toml` (the name comes from the path),
+         *     e.g. `{"members": ["quad9", "cloudflare"], "strategy": "fastest"}`. A name the config files use is overridden: this definition replaces theirs
+         *     until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+         *     configuration is checked before anything is stored. On a node whose configuration comes from
+         *     Git, the response's `toml` says what to add to the repository to keep the change.
+         */
+        put: operations["put_upstream_group"];
+        post?: never;
+        /**
+         * Remove an upstream group (ADR-069).
+         * @description An entry added through the API goes away; an override goes away and the config files'
+         *     entry is back; an entry only the files define is hidden (left out) until this override is
+         *     deleted in turn. The configuration is checked first (say, a group still using a list).
+         */
+        delete: operations["delete_upstream_group"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/upstreams": {
         parameters: {
             query?: never;
@@ -1057,6 +1170,36 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upstreams/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add or change an upstream resolver (ADR-069).
+         * @description The body has the same fields as `[[upstream]]` in `telltale.toml` (the name comes from the path),
+         *     e.g. `{"url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net"}`. A name the config files use is overridden: this definition replaces theirs
+         *     until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+         *     configuration is checked before anything is stored. On a node whose configuration comes from
+         *     Git, the response's `toml` says what to add to the repository to keep the change.
+         */
+        put: operations["put_upstream"];
+        post?: never;
+        /**
+         * Remove an upstream resolver (ADR-069).
+         * @description An entry added through the API goes away; an override goes away and the config files'
+         *     entry is back; an entry only the files define is hidden (left out) until this override is
+         *     deleted in turn. The configuration is checked first (say, a group still using a list).
+         */
+        delete: operations["delete_upstream"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1874,6 +2017,22 @@ export interface components {
             /** @description Configuration warnings after the change. */
             warnings: string[];
         };
+        /**
+         * @description REQ: API-002 (T7.5, ADR-069) — an upstream, upstream group, list, or group changed through
+         *     the UI or API.
+         */
+        ConfigOverride: {
+            /** @description Who made the change. */
+            by?: string | null;
+            /** @description `upstream`, `upstream_group`, `list`, or `group`. */
+            kind: string;
+            /**
+             * @description `added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'
+             *     entry is left out).
+             */
+            mode: string;
+            name: string;
+        };
         CreateToken: {
             /**
              * Format: int32
@@ -2296,6 +2455,23 @@ export interface components {
                  * @example api
                  */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_ConfigOverride: {
+            items: {
+                /** @description Who made the change. */
+                by?: string | null;
+                /** @description `upstream`, `upstream_group`, `list`, or `group`. */
+                kind: string;
+                /**
+                 * @description `added` (a new name), `override` (replaces the files' entry), or `hidden` (the files'
+                 *     entry is left out).
+                 */
+                mode: string;
+                name: string;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -4064,6 +4240,26 @@ export interface operations {
             };
         };
     };
+    config_overrides: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The changes, by kind and name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ConfigOverride"];
+                };
+            };
+        };
+    };
     explain: {
         parameters: {
             query: {
@@ -4255,6 +4451,107 @@ export interface operations {
             };
         };
     };
+    put_group: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_group: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Something still uses it: problem+json says what. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     git_hook: {
         parameters: {
             query?: never;
@@ -4307,6 +4604,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ListInfo"];
+                };
+            };
+        };
+    };
+    put_list: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_list: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Something still uses it: problem+json says what. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -4961,6 +5359,107 @@ export interface operations {
             };
         };
     };
+    put_upstream_group: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_upstream_group: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Something still uses it: problem+json says what. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     upstreams: {
         parameters: {
             query?: never;
@@ -4977,6 +5476,107 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_UpstreamInfo"];
+                };
+            };
+        };
+    };
+    put_upstream: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong, or the configuration wouldn't be valid: problem+json says which. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_upstream: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description The name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No entry by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Something still uses it: problem+json says what. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

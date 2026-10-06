@@ -148,6 +148,10 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 ManagedKind::Record => "record",
                 ManagedKind::Forward => "forward",
                 ManagedKind::Rule => "rule",
+                ManagedKind::Upstream => "upstream",
+                ManagedKind::UpstreamGroup => "upstream_group",
+                ManagedKind::List => "list",
+                ManagedKind::Group => "group",
             };
             let deleting = body.is_none();
             let r = local

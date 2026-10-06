@@ -72,7 +72,318 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             put(put_forward).delete(delete_forward),
         )
         .route("/api/v1/rules/{id}", put(put_rule).delete(delete_rule))
+        // REQ: API-002 (T7.5, ADR-069)
+        .route(
+            "/api/v1/upstreams/{name}",
+            put(put_upstream).delete(delete_upstream),
+        )
+        .route(
+            "/api/v1/upstream-groups/{name}",
+            put(put_upstream_group).delete(delete_upstream_group),
+        )
+        .route("/api/v1/lists/{name}", put(put_list).delete(delete_list))
+        .route("/api/v1/groups/{name}", put(put_group).delete(delete_group))
         .with_state((backend, auth))
+}
+
+/// Add or change an upstream resolver (ADR-069).
+///
+/// The body has the same fields as `[[upstream]]` in `telltale.toml` (the name comes from the path),
+/// e.g. `{"url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net"}`. A name the config files use is overridden: this definition replaces theirs
+/// until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+/// configuration is checked before anything is stored. On a node whose configuration comes from
+/// Git, the response's `toml` says what to add to the repository to keep the change.
+#[utoipa::path(put, path = "/api/v1/upstreams/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+    ))]
+pub(crate) async fn put_upstream(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /upstreams/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Upstream, Some(input)),
+    )
+    .await
+}
+
+/// Remove an upstream resolver (ADR-069).
+///
+/// An entry added through the API goes away; an override goes away and the config files'
+/// entry is back; an entry only the files define is hidden (left out) until this override is
+/// deleted in turn. The configuration is checked first (say, a group still using a list).
+#[utoipa::path(delete, path = "/api/v1/upstreams/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+    ))]
+pub(crate) async fn delete_upstream(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /upstreams/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Upstream, None),
+    )
+    .await
+}
+
+/// Add or change an upstream group (ADR-069).
+///
+/// The body has the same fields as `[[upstream_group]]` in `telltale.toml` (the name comes from the path),
+/// e.g. `{"members": ["quad9", "cloudflare"], "strategy": "fastest"}`. A name the config files use is overridden: this definition replaces theirs
+/// until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+/// configuration is checked before anything is stored. On a node whose configuration comes from
+/// Git, the response's `toml` says what to add to the repository to keep the change.
+#[utoipa::path(put, path = "/api/v1/upstream-groups/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+    ))]
+pub(crate) async fn put_upstream_group(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /upstream-groups/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::UpstreamGroup, Some(input)),
+    )
+    .await
+}
+
+/// Remove an upstream group (ADR-069).
+///
+/// An entry added through the API goes away; an override goes away and the config files'
+/// entry is back; an entry only the files define is hidden (left out) until this override is
+/// deleted in turn. The configuration is checked first (say, a group still using a list).
+#[utoipa::path(delete, path = "/api/v1/upstream-groups/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+    ))]
+pub(crate) async fn delete_upstream_group(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /upstream-groups/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::UpstreamGroup, None),
+    )
+    .await
+}
+
+/// Add or change a filter list (ADR-069).
+///
+/// The body has the same fields as `[[list]]` in `telltale.toml` (the name comes from the path),
+/// e.g. `{"url": "https://example.com/hosts.txt"}`. A name the config files use is overridden: this definition replaces theirs
+/// until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+/// configuration is checked before anything is stored. On a node whose configuration comes from
+/// Git, the response's `toml` says what to add to the repository to keep the change.
+#[utoipa::path(put, path = "/api/v1/lists/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+    ))]
+pub(crate) async fn put_list(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /lists/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::List, Some(input)),
+    )
+    .await
+}
+
+/// Remove a filter list (ADR-069).
+///
+/// An entry added through the API goes away; an override goes away and the config files'
+/// entry is back; an entry only the files define is hidden (left out) until this override is
+/// deleted in turn. The configuration is checked first (say, a group still using a list).
+#[utoipa::path(delete, path = "/api/v1/lists/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+    ))]
+pub(crate) async fn delete_list(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /lists/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::List, None),
+    )
+    .await
+}
+
+/// Add or change a client group (ADR-069).
+///
+/// The body has the same fields as `[[group]]` in `telltale.toml` (the name comes from the path),
+/// e.g. `{"lists": ["stevenblack"], "block_mode": "null_ip"}`. A name the config files use is overridden: this definition replaces theirs
+/// until it's deleted again (`GET /api/v1/config/overrides` lists such changes). The whole
+/// configuration is checked before anything is stored. On a node whose configuration comes from
+/// Git, the response's `toml` says what to add to the repository to keep the change.
+#[utoipa::path(put, path = "/api/v1/groups/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong, or the configuration wouldn't be valid: problem+json says which."),
+    ))]
+pub(crate) async fn put_group(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /groups/{name} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Group, Some(input)),
+    )
+    .await
+}
+
+/// Remove a client group (ADR-069).
+///
+/// An entry added through the API goes away; an override goes away and the config files'
+/// entry is back; an entry only the files define is hidden (left out) until this override is
+/// deleted in turn. The configuration is checked first (say, a group still using a list).
+#[utoipa::path(delete, path = "/api/v1/groups/{name}", tag = "config",
+    params(("name" = String, Path, description = "The name."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No entry by that name."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "Something still uses it: problem+json says what."),
+    ))]
+pub(crate) async fn delete_group(
+    State((backend, auth)): State<Ctx>,
+    Path(name): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let request = format!("DELETE /groups/{name}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        name,
+        Op::Managed(ManagedKind::Group, None),
+    )
+    .await
 }
 
 /// Admin-only cluster actions.
@@ -239,7 +550,7 @@ fn group_guard(
         Op::Client(None) if existing.is_none() => refuse(format!("`{name}` isn't in group `{g}`")),
         Op::Client(_) => Ok(()),
         Op::Managed(..) => refuse(
-            "restricted tokens can't change local names, forwarded domains, or quick rules".into(),
+            "restricted tokens can't change local names, forwarded domains, quick rules, upstreams, lists, or groups".into(),
         ),
     }
 }
@@ -257,6 +568,10 @@ impl Op {
             Self::Managed(ManagedKind::Record, _) => "record",
             Self::Managed(ManagedKind::Forward, _) => "forward",
             Self::Managed(ManagedKind::Rule, _) => "rule",
+            Self::Managed(ManagedKind::Upstream, _) => "upstream",
+            Self::Managed(ManagedKind::UpstreamGroup, _) => "upstream_group",
+            Self::Managed(ManagedKind::List, _) => "list",
+            Self::Managed(ManagedKind::Group, _) => "group",
         }
     }
     fn deleting(&self) -> bool {

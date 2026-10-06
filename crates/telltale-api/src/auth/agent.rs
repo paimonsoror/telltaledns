@@ -41,6 +41,15 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:rules",
         "allow or block a domain for some devices or groups (quick rules)",
     ),
+    (
+        "config:write:upstreams",
+        "add, change, and remove upstreams and upstream groups",
+    ),
+    ("config:write:lists", "add, change, and remove filter lists"),
+    (
+        "config:write:groups",
+        "add, change, and remove client groups",
+    ),
     ("ops:pause", "pause and resume blocking"),
     ("ops:cache", "flush the cache"),
     ("cluster:admin", "promote a node to primary"),
@@ -127,8 +136,14 @@ pub fn required(method: &Method, path: &str) -> Need {
                 return Need::Scope("analytics:read");
             }
             "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
-            "/api/v1/lists" | "/api/v1/groups" | "/api/v1/clients" | "/api/v1/upstreams"
-            | "/api/v1/records" | "/api/v1/forwards" | "/api/v1/rules" => {
+            "/api/v1/lists"
+            | "/api/v1/groups"
+            | "/api/v1/clients"
+            | "/api/v1/upstreams"
+            | "/api/v1/records"
+            | "/api/v1/forwards"
+            | "/api/v1/rules"
+            | "/api/v1/config/overrides" => {
                 return Need::Scope("config:read");
             }
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
@@ -149,6 +164,16 @@ pub fn required(method: &Method, path: &str) -> Need {
         }
         if under("/api/v1/rules") {
             return Need::Scope("config:write:rules");
+        }
+        // T7.5 (ADR-069)
+        if under("/api/v1/upstreams") || under("/api/v1/upstream-groups") {
+            return Need::Scope("config:write:upstreams");
+        }
+        if under("/api/v1/lists") {
+            return Need::Scope("config:write:lists");
+        }
+        if under("/api/v1/groups") {
+            return Need::Scope("config:write:groups");
         }
     }
     // MCP: each tool's REST calls are checked on their own (ADR-065).
@@ -422,9 +447,10 @@ mod tests {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            5,
-            "four write areas (clients, records, forwards, rules) + analytics"
+            8,
+            "seven write areas (clients, records, forwards, rules, upstreams, lists, groups) + analytics"
         );
+        assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));
         assert_eq!(implied_role(&s), Role::Operator);
         assert_eq!(
