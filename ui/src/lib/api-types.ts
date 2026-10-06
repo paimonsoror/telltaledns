@@ -835,10 +835,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * DHCP leases (OPS-008).
-         * @description The addresses this node's DHCP server has handed out (and its reservations), with each
-         *     device's MAC, the host name it gave, and its name in TelltaleDNS. Empty on a node that
-         *     doesn't run DHCP (in a cluster, ask the node that does).
+         * Devices found on the network (API-010; T8.2, T8.3).
+         * @description The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
+         *     names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
+         *     TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+         *     because these are the router's DHCP leases.
          */
         get: operations["dhcp_leases"];
         put?: never;
@@ -2512,21 +2513,22 @@ export interface components {
             role: components["schemas"]["Role"];
             username: string;
         };
-        /** @description A DHCP lease (REQ: OPS-008). */
+        /** @description A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3). */
         DhcpLease: {
             /** @description The device's name in TelltaleDNS (a named client, else the host name). */
             clientName?: string | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description When the router's lease ends (Unix seconds; 0 when unknown).
+             */
             expiresUnixSeconds: number;
-            /** @description The name the device gave (option 12), or its reservation's. */
+            /** @description The name the router knows it by (its DHCP host name or alias), or the one it announces. */
             hostname?: string | null;
             ip: string;
             mac: string;
-            /** @description A reservation (`[[dhcp.reservation]]`). */
-            reserved: boolean;
             /**
-             * @description `dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the
-             *     name the device announces, `[clients] mdns`; no MAC).
+             * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
+             *     `[clients] mdns`; no MAC).
              */
             source: string;
         };
@@ -2980,17 +2982,18 @@ export interface components {
             items: {
                 /** @description The device's name in TelltaleDNS (a named client, else the host name). */
                 clientName?: string | null;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description When the router's lease ends (Unix seconds; 0 when unknown).
+                 */
                 expiresUnixSeconds: number;
-                /** @description The name the device gave (option 12), or its reservation's. */
+                /** @description The name the router knows it by (its DHCP host name or alias), or the one it announces. */
                 hostname?: string | null;
                 ip: string;
                 mac: string;
-                /** @description A reservation (`[[dhcp.reservation]]`). */
-                reserved: boolean;
                 /**
-                 * @description `dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the
-                 *     name the device announces, `[clients] mdns`; no MAC).
+                 * @description `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
+                 *     `[clients] mdns`; no MAC).
                  */
                 source: string;
             }[];

@@ -52,7 +52,6 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     schedules(cfg, &mut r);
     alerts(cfg, &mut r);
     sinks(cfg, &mut r);
-    dhcp(cfg, &mut r);
     routers(cfg, &mut r);
     rewrites(cfg, &mut r);
     zones(cfg, &mut r);
@@ -245,54 +244,6 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
         }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca)"));
-        }
-    }
-}
-
-// REQ: OPS-008 (T7.19) — DHCP: the addresses it needs, a pool inside the subnet, valid
-// reservations.
-fn dhcp(cfg: &Config, r: &mut Report<'_>) {
-    let d = &cfg.dhcp;
-    if !d.enabled {
-        return;
-    }
-    let (Some(server), Some(start), Some(end)) = (d.server_ip, d.range_start, d.range_end) else {
-        r.err("dhcp", "set server_ip, range_start, and range_end");
-        return;
-    };
-    let mask = u32::from(d.subnet_mask);
-    if mask.leading_ones() + mask.trailing_zeros() != 32 {
-        r.err("dhcp.subnet_mask", "not a valid mask (e.g. 255.255.255.0)");
-    }
-    let net = |ip: std::net::Ipv4Addr| u32::from(ip) & mask;
-    if u32::from(start) > u32::from(end) {
-        r.err("dhcp.range_end", "must not be before range_start");
-    }
-    if net(start) != net(server) || net(end) != net(server) {
-        r.err("dhcp.range_start", "the pool must be in server_ip's subnet");
-    }
-    if d.lease_secs < 60 {
-        r.err("dhcp.lease_secs", "at least 60 seconds");
-    }
-    let mut macs = HashSet::new();
-    for (i, res) in d.reservation.iter().enumerate() {
-        let m = res.mac.to_ascii_lowercase().replace('-', ":");
-        let ok = m.len() == 17
-            && m.split(':')
-                .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()));
-        if !ok {
-            r.err(
-                format!("dhcp.reservation[{i}].mac"),
-                "a MAC address like aa:bb:cc:dd:ee:ff",
-            );
-        } else if !macs.insert(m) {
-            r.err(format!("dhcp.reservation[{i}].mac"), "reserved twice");
-        }
-        if net(res.ip) != net(server) {
-            r.err(
-                format!("dhcp.reservation[{i}].ip"),
-                "must be in server_ip's subnet",
-            );
         }
     }
 }

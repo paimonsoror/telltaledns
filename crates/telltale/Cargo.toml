@@ -16,7 +16,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-# REQ: OPS-008 (T7.19) — the DHCP socket (broadcast, an interface); already in the tree.
+# REQ: T8.3 — the mDNS listener socket (address and port reuse); already in the tree.
 socket2 = { version = "0.6.5", features = ["all"] }
 http = "1.5.0"
 base64 = "0.22.1"

@@ -121,7 +121,7 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 - **Alert-only:** findings go to the anomalies view, alert rules (§8), and MCP. Acting on one (e.g. moving a device to a "quarantine" group) is always an explicit, audited user or agent action through the plan/apply flow; the engine itself never blocks.
 - **Tunable, with per-device opt-out:** sensitivity per group (low / normal / high maps to MAD multipliers), allowlists for known-chatty domains (OS connectivity checks, NTP), mute per device or finding. Honors the client's privacy level: at levels that hide domains, findings show eTLD+1 only, or counts only.
 
-**Client naming:** sources merged in priority order: user-assigned name → DHCP lease (own DHCP or an imported dnsmasq/ISC/Kea lease file, or the UniFi/OPNsense API as a P2 integration) → reverse PTR via the conditional-forwarding upstream → mDNS/NetBIOS (P2) → IP. MAC vendor lookup via a shipped OUI table.
+**Client naming:** sources merged in priority order: user-assigned name → DHCP lease (the router's, through the UniFi/OPNsense API; TelltaleDNS runs no DHCP server, ADR-091) → reverse PTR via the conditional-forwarding upstream → mDNS/NetBIOS (P2) → IP. MAC vendor lookup via a shipped OUI table.
 
 ## 8. Alerts (OBS-010)
 Rule examples: upstream breaker open > 1 min; node missing from cluster > 2 min; snapshot lag > 3 versions; NXDOMAIN storm; new client seen; device anomaly (OBS-013: rate spike, domain volume, drift, beaconing); list fetch failing for > 48 h; qlog disk > 90% of budget. Destinations: webhook, ntfy, Gotify, SMTP, Slack-compatible webhook. Alerts are evaluated on the primary only, using federated data.

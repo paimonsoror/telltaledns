@@ -21,7 +21,7 @@ use serde_json::Value;
 use telltale_config::{RouterConfig, RouterKind};
 use tracing::{info, warn};
 
-use crate::dhcp::{Lease, Leases};
+use crate::devices::{Lease, Leases};
 
 /// Most bytes one answer may have.
 const MAX_ANSWER: u64 = 16 << 20;
@@ -247,7 +247,6 @@ fn rebuild(parts: &HashMap<String, Seen>, view: &ArcSwap<Leases>) {
                     ip: *ip,
                     hostname: name.clone(),
                     expires: 0,
-                    reserved: false,
                 },
             );
         }

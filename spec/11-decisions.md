@@ -1265,6 +1265,22 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-091 — No DHCP server: routers hand out addresses (Accepted)
+**Context:** T7.19 added an optional DHCPv4 server (OPS-008, ADR-078). The owner (2026-10-06): most people let their router serve DHCP, and DHCP sits outside what a DNS product should own. Keeping it means a privileged port (67), a lease state machine, and a failover question in clusters, all for few users.
+
+**Decision:**
+- The server goes: the code, `[dhcp]`, its end-to-end test, and its documentation. OPS-008 is descoped, and ADR-078 is superseded.
+- Device names keep coming from outside DHCP sources:
+  - routers' DHCP clients (`[[router]]`: UniFi, OPNsense);
+  - mDNS announcements;
+  - the importers, which still turn Pi-hole's and Technitium's DHCP reservations into named devices.
+- `GET /api/v1/dhcp/leases` stays: these are the router's DHCP leases. It drops `reserved` and `source = dhcp`.
+- A configuration that still has `[dhcp]` fails to load with the usual unknown-field error rather than being ignored. Neither of the owner's nodes used it.
+
+**Consequences:**
+- About 1,100 lines and a privileged port are gone. The scope stays DNS.
+- Anyone who wants TelltaleDNS to serve DHCP needs their router, or dnsmasq beside it.
+
 ## ADR-090 — DoH load from h2load; restart counts in the data directory (Proposed)
 **Context:** T9.13 picks up the deferrals of T0.3 (DoT/DoH load, a realistic profile) and T6.14 (restart counts, Grafana panels).
 
@@ -1458,7 +1474,8 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Users of dnscrypt-proxy's server list can paste stamps directly.
 - About 100 KiB more in the binary.
 
-## ADR-078 — DHCPv4: authoritative, broadcast replies, leases name devices (Proposed)
+## ADR-078 — DHCPv4: authoritative, broadcast replies, leases name devices (Superseded)
+**Superseded by:** ADR-091. The DHCP server was removed on 2026-10-06; this record stays for history.
 **Context:** T7.19 (OPS-008; `08` §7). The spec lists the options, static leases, and a lease file, but not the server's stance toward clients asking for foreign addresses, how replies reach clients without an address, or how leases "feed client naming".
 
 **Decision:**

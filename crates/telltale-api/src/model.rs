@@ -1328,23 +1328,22 @@ pub struct ConfigChange {
     pub keep_in_git: Option<String>,
 }
 
-/// A DHCP lease (REQ: OPS-008).
+/// A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DhcpLease {
     pub mac: String,
     pub ip: String,
-    /// The name the device gave (option 12), or its reservation's.
+    /// The name the router knows it by (its DHCP host name or alias), or the one it announces.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
     /// The device's name in TelltaleDNS (a named client, else the host name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
+    /// When the router's lease ends (Unix seconds; 0 when unknown).
     pub expires_unix_seconds: u64,
-    /// A reservation (`[[dhcp.reservation]]`).
-    pub reserved: bool,
-    /// `dhcp` (this node's DHCP server), `router` (read from a `[[router]]`), or `mdns` (the
-    /// name the device announces, `[clients] mdns`; no MAC).
+    /// `router` (read from a `[[router]]`) or `mdns` (the name the device announces,
+    /// `[clients] mdns`; no MAC).
     pub source: String,
 }
 

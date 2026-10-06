@@ -15,7 +15,7 @@ mod checks;
 mod cluster;
 mod ctl;
 mod datadir;
-mod dhcp;
+mod devices;
 mod dnstap;
 mod explain;
 mod federated;

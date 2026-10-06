@@ -116,7 +116,7 @@ Then point your router's DHCP DNS server setting at the Pi's address so every de
 
 The header lists what has no equivalent, by setting name (values, such as password hashes, are never copied):
 - clients matched by host name or network interface (add their IP or MAC instead);
-- the DHCP server itself (keep DHCP on your router or on Pi-hole for now);
+- the DHCP server (TelltaleDNS leaves DHCP to your router);
 - privacy level, web-server, and other Pi-hole-only settings. From v6, only settings marked as changed from their defaults are listed;
 - the `IP` blocking modes, entries switched off, and domain entries our regex engine can't run (backreferences and lookaround).
 
@@ -899,37 +899,8 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 - The Groups page shows each group's schedules and which are **on now**; the query log shows blocks as **schedule**.
 - **In the UI:** **Groups → Schedules** adds, changes, or removes schedules (windows one per line, like `weekdays 21:00-07:00`), and a group's editor picks the schedules it follows. Through the API: `PUT`/`DELETE /api/v1/schedules/{name}` with the same fields as `[[schedule]]` (agents need `config:write:groups`, and AI agents can plan one with the MCP tool `plan_set_schedule`).
 
-### DHCP server
-TelltaleDNS can hand out addresses too, so a Pi can replace the router's DHCP (Linux and Pi installs; off by default):
-```toml
-[dhcp]
-enabled = true
-server_ip = "192.168.1.2"          # this machine's address on that network
-range_start = "192.168.1.100"
-range_end = "192.168.1.200"
-subnet_mask = "255.255.255.0"
-router = "192.168.1.1"             # option 3
-# dns = ["192.168.1.2", "192.168.1.3"]   # option 6 (default: server_ip); list both of a pair
-domain = "lan"                     # option 15
-search = ["lan"]                   # option 119
-# ntp = ["192.168.1.1"]            # option 42
-lease_secs = 86400
-# interface = "eth0"               # only this interface (needs CAP_NET_RAW)
-
-[[dhcp.reservation]]
-mac = "aa:bb:cc:dd:ee:ff"
-ip = "192.168.1.10"
-hostname = "nas"
-```
-- **Devices get names:** a device you haven't named shows up under the host name it sent (or its reservation's) everywhere, the query log and top lists included. Name it yourself and your name wins.
-- Leases are kept in `<data_dir>/dhcp-leases.json`, so a restart doesn't hand out addresses twice. `GET /api/v1/dhcp/leases` lists them (MAC, address, host name, expiry).
-- It needs port 67 (`CAP_NET_BIND_SERVICE`, which the DNS port needs too). Turn the router's DHCP off first: two DHCP servers on one network hand out conflicting addresses.
-- A device that finds its address already in use tells the server (DECLINE), and that address is skipped for 10 minutes. A device asking for an address it may not have gets NAK and starts over.
-- **In a cluster**, enable it on one node only: there's no DHCP failover between nodes. Hand out both nodes as DNS servers (`dns = [...]`).
-- Changes to `[dhcp]` need a restart. *Not yet:* DHCPv6, names of leased devices answered in DNS (`laptop.lan`), leases shown on other cluster nodes.
-
 ### Names from your router (UniFi, OPNsense)
-When your router runs DHCP, TelltaleDNS can read its client list, so devices show up by name without running DHCP itself:
+TelltaleDNS doesn't hand out addresses: your router's DHCP does that, and TelltaleDNS can read its client list, so devices show up by name:
 ```toml
 [[router]]
 name = "udm"
@@ -950,7 +921,7 @@ api_secret_file = "/etc/telltale/opn-secret"
 ```
 - UniFi: the connected clients, named by the alias you gave them in UniFi, else their host name. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
 - Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
-- Names you give devices in TelltaleDNS win; then TelltaleDNS's own DHCP; then the routers. `GET /api/v1/dhcp/leases` lists them all (`source`: `dhcp` or `router`).
+- Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
 - Credentials stay in files, out of the configuration. Changes to `[[router]]` need a restart.
 
 ### Names devices announce (mDNS)
@@ -961,8 +932,8 @@ mdns = true
 ```
 - Listen only: TelltaleDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
 - It has to hear the LAN: a native install, the Pi bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
-- Names you give devices win, then DHCP leases (TelltaleDNS's, then the routers'), then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
-- `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered on your network** shows every device found by DHCP, a router, or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
+- Names you give devices win, then the routers' DHCP leases, then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
+- `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered on your network** shows every device found by a router or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
 - Changing it needs a restart.
 
 ### Naming devices in the UI

@@ -820,15 +820,6 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     }
     // REQ: CLU-011 (T8.1) — warm the cache from the cluster's hot names.
     tokio::spawn(crate::warm::run(Arc::clone(&sources), http_stopped.clone()));
-    // REQ: OPS-008 (T7.19) — DHCP (read at startup).
-    if cfg.dhcp.enabled {
-        tokio::spawn(crate::dhcp::run(
-            cfg.dhcp.clone(),
-            std::path::PathBuf::from(cfg.node.data_dir.as_str()),
-            Arc::clone(&pipeline.dhcp_leases),
-            http_stopped.clone(),
-        ));
-    }
     // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).
     tokio::spawn(crate::updates::run(
         Arc::clone(&sources.update),

@@ -66,7 +66,7 @@ Each is backed by a design mechanism *and* a measurable release gate (`spec/00 Â
 ## Risks and how the plan addresses them
 | Risk | Mitigation |
 |---|---|
-| Ambitious scope delays v1 | Strict P0/P1 split. Milestones front-load the core (performance, observability, Kubernetes, clustering); DoQ, recursion, and DHCP move to v1.x |
+| Ambitious scope delays v1 | Strict P0/P1 split. Milestones front-load the core (performance, observability, Kubernetes, clustering); DoQ and recursion move to v1.x; DHCP is out of scope (routers do it) |
 | Custom storage and index formats contain bugs | Versioned formats, fuzzing, golden tests, Parquet export as an escape hatch |
 | HA correctness | Deterministic multi-node simulation and a chaos suite; epoch fencing tested before release |
 | Benchmark claims challenged | Only harness-produced, reproducible numbers are published, with hardware and versions |

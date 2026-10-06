@@ -33,21 +33,13 @@ fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
     let clients = &state.policy.clients;
     let id = clients.identify(ip, None, None, &src.pipeline.neighbors);
     clients.client(id).map(|c| c.name.to_string()).or_else(|| {
-        // REQ: OPS-008 (T7.19) — an unnamed device is called by its DHCP host name.
+        // REQ: T8.2 — an unnamed device is called by the name its router's DHCP knows.
         let IpAddr::V4(v4) = ip else { return None };
         src.pipeline
-            .dhcp_leases
+            .router_leases
             .load()
             .get(&v4)
             .and_then(|l| l.hostname.clone())
-            // REQ: T8.2 — then the routers' DHCP clients.
-            .or_else(|| {
-                src.pipeline
-                    .router_leases
-                    .load()
-                    .get(&v4)
-                    .and_then(|l| l.hostname.clone())
-            })
             // REQ: T8.3 — then what the device announces over mDNS.
             .or_else(|| {
                 src.pipeline
@@ -1240,10 +1232,11 @@ impl Backend for ApiBackend {
 
     // REQ: OPS-008 (T7.19) — this node's DHCP leases.
     fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
+        // REQ: T8.2 — the routers' DHCP clients.
         let mut v: Vec<telltale_api::model::DhcpLease> = self
             .src
             .pipeline
-            .dhcp_leases
+            .router_leases
             .load()
             .values()
             .map(|l| telltale_api::model::DhcpLease {
@@ -1252,27 +1245,10 @@ impl Backend for ApiBackend {
                 hostname: l.hostname.clone(),
                 client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
                 expires_unix_seconds: l.expires,
-                reserved: l.reserved,
-                source: "dhcp".to_owned(),
+                source: "router".to_owned(),
             })
             .collect();
-        // REQ: T8.2 — the routers' DHCP clients too (TelltaleDNS's own leases win).
-        let own: std::collections::HashSet<String> = v.iter().map(|l| l.ip.clone()).collect();
-        for l in self.src.pipeline.router_leases.load().values() {
-            if own.contains(&l.ip.to_string()) {
-                continue;
-            }
-            v.push(telltale_api::model::DhcpLease {
-                mac: l.mac.clone(),
-                ip: l.ip.to_string(),
-                hostname: l.hostname.clone(),
-                client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
-                expires_unix_seconds: 0,
-                reserved: false,
-                source: "router".to_owned(),
-            });
-        }
-        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (leases and routers win).
+        // REQ: T8.3, T8.6 — and the names devices announce over mDNS (routers win).
         let known: std::collections::HashSet<String> = v.iter().map(|l| l.ip.clone()).collect();
         for l in self.src.pipeline.mdns_names.load().values() {
             if known.contains(&l.ip.to_string()) {
@@ -1284,7 +1260,6 @@ impl Backend for ApiBackend {
                 hostname: l.hostname.clone(),
                 client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
                 expires_unix_seconds: 0,
-                reserved: false,
                 source: "mdns".to_owned(),
             });
         }

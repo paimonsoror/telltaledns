@@ -111,7 +111,9 @@ services:
 - **Audit log (API-006):** append-only and hash-chained (each entry includes the previous hash), replicated.
 - **Vulnerability process:** `SECURITY.md`, private advisories, a 90-day disclosure policy.
 
-## 7. DHCP (OPS-008, P1, Linux/Pi only)
+## 7. DHCP (OPS-008, descoped)
+**Descoped (ADR-091):** TelltaleDNS doesn't run a DHCP server; the router does. Device names come from the router's DHCP clients (`[[router]]`) and mDNS. The original text, for the record:
+
 DHCPv4 server (static leases, options 3/6/15/42/119, lease file), disabled by default. In clusters, DHCP runs on exactly one designated node (no DHCP failover protocol in v1; documented). Leases feed client naming cluster-wide.
 
 ## 8. Backup / migration (API-007)

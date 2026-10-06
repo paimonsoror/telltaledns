@@ -1186,7 +1186,7 @@ impl<'a> Builder<'a> {
             });
         }
         if self.s.dhcp_active {
-            self.notes.push("Pi-hole's DHCP server isn't imported; keep DHCP on your router (or Pi-hole) for now. Reservations became named devices.".into());
+            self.notes.push("Pi-hole's DHCP server isn't imported: TelltaleDNS leaves DHCP to your router (or Pi-hole). Reservations became named devices.".into());
         }
         n
     }

@@ -211,7 +211,7 @@ pub trait Backend: Send + Sync + 'static {
         let _ = since_s;
         Vec::new()
     }
-    /// REQ: OPS-008 — this node's DHCP leases (empty when it doesn't run DHCP).
+    /// REQ: API-010 (T8.2, T8.3) — devices named by the routers' DHCP and by mDNS.
     fn dhcp_leases(&self) -> Vec<DhcpLease> {
         Vec::new()
     }
@@ -1109,11 +1109,12 @@ async fn anomalies(
     }))
 }
 
-/// DHCP leases (OPS-008).
+/// Devices found on the network (API-010; T8.2, T8.3).
 ///
-/// The addresses this node's DHCP server has handed out (and its reservations), with each
-/// device's MAC, the host name it gave, and its name in TelltaleDNS. Empty on a node that
-/// doesn't run DHCP (in a cluster, ask the node that does).
+/// The DHCP clients of the routers TelltaleDNS reads (`[[router]]`: UniFi, OPNsense), then the
+/// names devices announce over mDNS (`[clients] mdns`), each with the name the device has in
+/// TelltaleDNS. TelltaleDNS doesn't run a DHCP server itself (ADR-091); the path keeps its name
+/// because these are the router's DHCP leases.
 #[utoipa::path(get, path = "/api/v1/dhcp/leases", tag = "config",
     responses((status = 200, body = Items<DhcpLease>, description = "The result.")))]
 async fn dhcp_leases(State(b): State<Shared>) -> Json<Items<DhcpLease>> {

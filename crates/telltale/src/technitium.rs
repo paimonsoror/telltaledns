@@ -880,7 +880,7 @@ impl Builder<'_> {
             }
         }
         if active {
-            self.notes.push("Technitium's DHCP server isn't imported; keep DHCP where it is for now. Reservations became named devices.".into());
+            self.notes.push("Technitium's DHCP server isn't imported: TelltaleDNS leaves DHCP to your router (or Technitium). Reservations became named devices.".into());
         }
         n
     }

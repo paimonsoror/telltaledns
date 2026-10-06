@@ -368,12 +368,10 @@ pub(crate) struct Pipeline {
     pub(crate) pause: Pause,
     /// REQ: FLT-010 (T7.10) — schedules on now (the ticker in `server` updates it).
     pub(crate) schedules: arc_swap::ArcSwap<ScheduleNow>,
-    /// REQ: OPS-008 (T7.19) — DHCP leases by address (names for devices; the API).
-    pub(crate) dhcp_leases: Arc<arc_swap::ArcSwap<crate::dhcp::Leases>>,
     /// REQ: T8.2 — the routers' DHCP clients by address (names for devices; the API).
-    pub(crate) router_leases: Arc<arc_swap::ArcSwap<crate::dhcp::Leases>>,
+    pub(crate) router_leases: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
     /// REQ: T8.3 — the names devices announce over mDNS, by address.
-    pub(crate) mdns_names: Arc<arc_swap::ArcSwap<crate::dhcp::Leases>>,
+    pub(crate) mdns_names: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
     /// REQ: OBS-007 (T7.18) — the dnstap tap, set once at startup (one atomic load per query
     /// when unset).
     pub(crate) dnstap: std::sync::OnceLock<Arc<crate::dnstap::Tap>>,
@@ -448,7 +446,6 @@ impl Pipeline {
             pause: Pause::default(),
             schedules: arc_swap::ArcSwap::from_pointee(ScheduleNow::default()),
             dnstap: std::sync::OnceLock::new(),
-            dhcp_leases: Arc::default(),
             router_leases: Arc::default(),
             mdns_names: Arc::default(),
             flights: Singleflight::new(),

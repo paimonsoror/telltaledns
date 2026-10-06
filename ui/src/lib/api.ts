@@ -137,7 +137,7 @@ export const api = {
     get<S['Items_NewDomain']>('/analytics/new-domains', { since, limit: String(limit) }),
   // REQ: AGT-012 (T8.6) — vqlog, from the Analyze page.
   vqlog: (q: string, dryRun = false) => get<S['VqlogResult']>('/analytics/vqlog', { q, dryRun: dryRun ? 'true' : undefined }),
-  // REQ: OPS-008, T8.2, T8.3 — device names from DHCP, routers, and mDNS.
+  // REQ: T8.2, T8.3 — device names from the routers' DHCP and mDNS.
   dhcpLeases: () => get<S['Items_DhcpLease']>('/dhcp/leases'),
   // REQ: DNS-018 (T8.6)
   zones: () => get<S['Items_ZoneInfo']>('/zones'),

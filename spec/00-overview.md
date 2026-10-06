@@ -19,7 +19,7 @@ and to beat both on **performance, observability, and cloud-native operation**. 
 
 ## 3. Non-goals for v1
 - Authoritative DNS hosting beyond **local records and small local zones**. Use a real authoritative server (PowerDNS, Knot, BIND) for public zones. We will **not** chase Technitium's full authoritative feature set (DNSSEC signing, zone transfers as primary) in v1.
-- A full DHCP server in the Kubernetes deployment. DHCP is an optional add-on for Linux/Pi installs only (see `08`).
+- A DHCP server. Routers hand out addresses; TelltaleDNS reads their client lists for device names (ADR-091).
 - Windows/macOS native service packaging. Containers cover those hosts.
 - LDAP/Active Directory authentication. Auth is local users (basic auth) + OIDC only.
 - Running HTTP block pages. HTTPS makes them ineffective; we return DNS-level block responses with EDE codes instead.

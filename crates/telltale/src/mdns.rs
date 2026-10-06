@@ -16,7 +16,7 @@ use arc_swap::ArcSwap;
 use telltale_proto::{NameBuf, Section, read_name, records, rtype};
 use tracing::{info, warn};
 
-use crate::dhcp::{Lease, Leases};
+use crate::devices::{Lease, Leases};
 
 const GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MAX_NAMES: usize = 4096;
@@ -83,7 +83,7 @@ pub(crate) async fn run(
                     let m: Leases = names
                         .iter()
                         .map(|(ip, (name, _))| {
-                            (*ip, Lease { mac: String::new(), ip: *ip, hostname: Some(name.clone()), expires: 0, reserved: false })
+                            (*ip, Lease { mac: String::new(), ip: *ip, hostname: Some(name.clone()), expires: 0 })
                         })
                         .collect();
                     view.store(Arc::new(m));
