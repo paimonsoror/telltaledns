@@ -1051,6 +1051,7 @@ impl Backend for ApiBackend {
                 ))
                 .unwrap_or(0),
                 name: g.name.to_string(),
+                blocked_services: g.services.iter().map(ToString::to_string).collect(),
                 priority: g.priority,
                 lists: g
                     .lists
@@ -1246,6 +1247,23 @@ impl Backend for ApiBackend {
             cfg.updates.index_url.as_ref().map(ToString::to_string),
         );
         Box::pin(async move { Ok(fut.await) })
+    }
+
+    // REQ: FLT-012 (T7.9) — the blockable services catalog.
+    fn services(&self) -> Vec<telltale_api::model::ServiceInfo> {
+        telltale_config::services::catalog()
+            .iter()
+            .map(|s| telltale_api::model::ServiceInfo {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                category: s.category.clone(),
+                domains: s
+                    .rules
+                    .iter()
+                    .map(|r| r.trim_start_matches("||").trim_end_matches('^').to_owned())
+                    .collect(),
+            })
+            .collect()
     }
 
     // REQ: FLT-009 (T7.1) — this node's pauses.

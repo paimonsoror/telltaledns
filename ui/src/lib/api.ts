@@ -128,6 +128,8 @@ export const api = {
   explain: (q: { name: string; client?: string; qtype?: string }) => get<S['Explanation']>('/explain', q),
   lists: () => get<S['Items_ListInfo']>('/lists'),
   groups: () => get<S['Items_GroupInfo']>('/groups'),
+  // REQ: FLT-012 (T7.9) — the blockable services.
+  services: () => get<S['Items_ServiceInfo']>('/services'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
   anomalies: (since = '-7d') => get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since }),
   cluster: () => get<S['ClusterView']>('/cluster'),

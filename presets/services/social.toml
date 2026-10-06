@@ -1,0 +1,122 @@
+# TelltaleDNS blocked-services catalog (REQ: FLT-012, `spec/05` §4): social networks.
+#
+# Data, not code: compiled into the binary. Each service is a named list of Adblock-style
+# rules (`||domain^` blocks the domain and everything under it). A group blocks a service with
+# `blocked_services = ["tiktok"]`. Written for TelltaleDNS from the services' own public
+# domains; corrections welcome.
+
+[[service]]
+id = "tiktok"
+name = "TikTok"
+category = "social"
+rules = [
+  "||tiktok.com^",
+  "||tiktokv.com^",
+  "||tiktokv.us^",
+  "||tiktokcdn.com^",
+  "||tiktokcdn-us.com^",
+  "||tiktokw.us^",
+  "||ttwstatic.com^",
+  "||musical.ly^",
+  "||byteoversea.com^",
+  "||ibytedtos.com^",
+  "||ibyteimg.com^",
+]
+
+[[service]]
+id = "facebook"
+name = "Facebook"
+category = "social"
+rules = [
+  "||facebook.com^",
+  "||facebook.net^",
+  "||fb.com^",
+  "||fb.me^",
+  "||fbcdn.net^",
+  "||fbsbx.com^",
+  "||messenger.com^",
+]
+
+[[service]]
+id = "instagram"
+name = "Instagram"
+category = "social"
+rules = [
+  "||instagram.com^",
+  "||cdninstagram.com^",
+  "||ig.me^",
+  "||instagr.am^",
+]
+
+[[service]]
+id = "snapchat"
+name = "Snapchat"
+category = "social"
+rules = [
+  "||snapchat.com^",
+  "||snap.com^",
+  "||snapkit.com^",
+  "||snapads.com^",
+  "||sc-cdn.net^",
+  "||sc-static.net^",
+]
+
+[[service]]
+id = "twitter"
+name = "X (Twitter)"
+category = "social"
+rules = [
+  "||twitter.com^",
+  "||x.com^",
+  "||twimg.com^",
+  "||t.co^",
+  "||twttr.com^",
+]
+
+[[service]]
+id = "reddit"
+name = "Reddit"
+category = "social"
+rules = [
+  "||reddit.com^",
+  "||redd.it^",
+  "||redditmedia.com^",
+  "||redditstatic.com^",
+]
+
+[[service]]
+id = "pinterest"
+name = "Pinterest"
+category = "social"
+rules = [
+  "||pinterest.com^",
+  "||pinimg.com^",
+  "||pin.it^",
+]
+
+[[service]]
+id = "linkedin"
+name = "LinkedIn"
+category = "social"
+rules = [
+  "||linkedin.com^",
+  "||licdn.com^",
+  "||lnkd.in^",
+]
+
+[[service]]
+id = "tumblr"
+name = "Tumblr"
+category = "social"
+rules = [
+  "||tumblr.com^",
+]
+
+[[service]]
+id = "tinder"
+name = "Tinder"
+category = "dating"
+rules = [
+  "||tinder.com^",
+  "||gotinder.com^",
+]

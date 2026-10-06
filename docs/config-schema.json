@@ -1139,6 +1139,14 @@
           "default": 60,
           "minimum": 0
         },
+        "blocked_services": {
+          "description": "REQ: FLT-012 (T7.9) — services this group blocks (`tiktok`, `fortnite`, ...: see\n`telltale services list`), on top of its lists.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "color": {
           "description": "Color for this group in charts and chips (`#rrggbb`); one is picked when unset.",
           "type": [

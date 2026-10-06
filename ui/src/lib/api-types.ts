@@ -1036,6 +1036,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Blockable services.
+         * @description The catalog of services a group can block with one switch (`blocked_services` in a group:
+         *     `tiktok`, `fortnite`, `netflix`, ...), each with the domains it blocks. Compiled into the
+         *     binary; a service blocks its domains and everything under them for that group only.
+         */
+        get: operations["services"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/latency": {
         parameters: {
             query?: never;
@@ -2270,6 +2292,8 @@ export interface components {
              * @description Of those, blocked.
              */
             blocked24h: number;
+            /** @description REQ: FLT-012 (T7.9) — services this group blocks (IDs from `GET /api/v1/services`). */
+            blockedServices: string[];
             /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
             color: string;
             /**
@@ -2606,6 +2630,8 @@ export interface components {
                  * @description Of those, blocked.
                  */
                 blocked24h: number;
+                /** @description REQ: FLT-012 (T7.9) — services this group blocks (IDs from `GET /api/v1/services`). */
+                blockedServices: string[];
                 /** @description `#rrggbb` for charts and chips (configured, or a stable pick). */
                 color: string;
                 /**
@@ -2760,6 +2786,24 @@ export interface components {
                 note?: string | null;
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_ServiceInfo: {
+            items: {
+                /** @description `social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ... */
+                category: string;
+                /** @description The domains it blocks (with everything under them). */
+                domains: string[];
+                /**
+                 * @description For `blocked_services` in a group.
+                 * @example tiktok
+                 */
+                id: string;
+                /** @example TikTok */
+                name: string;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -3271,6 +3315,20 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /** @description REQ: FLT-012 (T7.9) — a blockable service. */
+        ServiceInfo: {
+            /** @description `social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ... */
+            category: string;
+            /** @description The domains it blocks (with everything under them). */
+            domains: string[];
+            /**
+             * @description For `blocked_services` in a group.
+             * @example tiktok
+             */
+            id: string;
+            /** @example TikTok */
+            name: string;
+        };
         SetupRequest: {
             /** @description At least 10 characters. */
             password: string;
@@ -5389,6 +5447,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    services: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every service, by category. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ServiceInfo"];
                 };
             };
         };

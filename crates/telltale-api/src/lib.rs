@@ -247,6 +247,10 @@ pub trait Backend: Send + Sync + 'static {
     fn config_version(&self) -> u64 {
         0
     }
+    /// REQ: FLT-012 (T7.9) — the blockable services catalog.
+    fn services(&self) -> Vec<crate::model::ServiceInfo> {
+        Vec::new()
+    }
     /// REQ: OPS-004 (ADR-046) — checks the signed release index now instead of waiting for the
     /// daily check, and returns the new status. At most one check a minute: sooner, the
     /// current status comes back without a fetch.
@@ -386,6 +390,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/explain", get(explain))
         .route("/api/v1/lists", get(lists))
         .route("/api/v1/groups", get(groups))
+        .route("/api/v1/services", get(services))
         .route("/api/v1/clients", get(clients))
         .route("/api/v1/analytics/anomalies", get(anomalies))
         .route("/api/v1/records", get(local_names))
@@ -482,7 +487,7 @@ async fn fallback(
     paths(
         system_info, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
-        explain, lists, groups, clients, upstreams,
+        explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
         auth::routes::get_me, auth::routes::change_password, auth::routes::totp_setup,
         auth::routes::totp_enable, auth::routes::totp_disable, auth::routes::list_tokens,
@@ -494,7 +499,7 @@ async fn fallback(
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
-        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
+        Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
         ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
@@ -932,6 +937,20 @@ async fn lists(State(b): State<Shared>) -> Json<Items<ListInfo>> {
     Json(Items {
         missing_nodes: Vec::new(),
         items: b.lists(),
+    })
+}
+
+/// Blockable services.
+///
+/// The catalog of services a group can block with one switch (`blocked_services` in a group:
+/// `tiktok`, `fortnite`, `netflix`, ...), each with the domains it blocks. Compiled into the
+/// binary; a service blocks its domains and everything under them for that group only.
+#[utoipa::path(get, path = "/api/v1/services", tag = "config",
+    responses((status = 200, body = Items<model::ServiceInfo>, description = "Every service, by category.")))]
+async fn services(State(b): State<Shared>) -> Json<Items<model::ServiceInfo>> {
+    Json(Items {
+        missing_nodes: Vec::new(),
+        items: b.services(),
     })
 }
 

@@ -2592,6 +2592,28 @@
         }
       }
     },
+    "/api/v1/services": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Blockable services.",
+        "description": "The catalog of services a group can block with one switch (`blocked_services` in a group:\n`tiktok`, `fortnite`, `netflix`, ...), each with the domains it blocks. Compiled into the\nbinary; a service blocks its domains and everything under them for that group only.",
+        "operationId": "services",
+        "responses": {
+          "200": {
+            "description": "Every service, by category.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ServiceInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/latency": {
       "get": {
         "tags": [
@@ -5796,7 +5818,8 @@
           "color",
           "queries24h",
           "blocked24h",
-          "devicesThisHour"
+          "devicesThisHour",
+          "blockedServices"
         ],
         "properties": {
           "blockMode": {
@@ -5813,6 +5836,13 @@
             "format": "int64",
             "description": "Of those, blocked.",
             "minimum": 0
+          },
+          "blockedServices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: FLT-012 (T7.9) — services this group blocks (IDs from `GET /api/v1/services`)."
           },
           "color": {
             "type": "string",
@@ -6714,7 +6744,8 @@
                 "color",
                 "queries24h",
                 "blocked24h",
-                "devicesThisHour"
+                "devicesThisHour",
+                "blockedServices"
               ],
               "properties": {
                 "blockMode": {
@@ -6731,6 +6762,13 @@
                   "format": "int64",
                   "description": "Of those, blocked.",
                   "minimum": 0
+                },
+                "blockedServices": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: FLT-012 (T7.9) — services this group blocks (IDs from `GET /api/v1/services`)."
                 },
                 "color": {
                   "type": "string",
@@ -7186,6 +7224,57 @@
                 "source": {
                   "type": "string",
                   "description": "`file` (read-only here) or `api`."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_ServiceInfo": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: FLT-012 (T7.9) — a blockable service.",
+              "required": [
+                "id",
+                "name",
+                "category",
+                "domains"
+              ],
+              "properties": {
+                "category": {
+                  "type": "string",
+                  "description": "`social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ..."
+                },
+                "domains": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The domains it blocks (with everything under them)."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "For `blocked_services` in a group.",
+                  "example": "tiktok"
+                },
+                "name": {
+                  "type": "string",
+                  "example": "TikTok"
                 }
               }
             }
@@ -8541,6 +8630,38 @@
           "write",
           "admin"
         ]
+      },
+      "ServiceInfo": {
+        "type": "object",
+        "description": "REQ: FLT-012 (T7.9) — a blockable service.",
+        "required": [
+          "id",
+          "name",
+          "category",
+          "domains"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "`social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ..."
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The domains it blocks (with everything under them)."
+          },
+          "id": {
+            "type": "string",
+            "description": "For `blocked_services` in a group.",
+            "example": "tiktok"
+          },
+          "name": {
+            "type": "string",
+            "example": "TikTok"
+          }
+        }
       },
       "SetupRequest": {
         "type": "object",

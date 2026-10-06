@@ -1,0 +1,83 @@
+# TelltaleDNS blocked-services catalog (REQ: FLT-012): games and game stores.
+# See social.toml for the format. Blocking a platform also stops its game downloads and
+# online play.
+
+[[service]]
+id = "roblox"
+name = "Roblox"
+category = "gaming"
+rules = [
+  "||roblox.com^",
+  "||rbxcdn.com^",
+  "||rbx.com^",
+  "||robloxlabs.com^",
+]
+
+[[service]]
+id = "fortnite"
+name = "Fortnite and Epic Games"
+category = "gaming"
+rules = [
+  "||fortnite.com^",
+  "||epicgames.com^",
+  "||epicgames.dev^",
+  "||unrealengine.com^",
+]
+
+[[service]]
+id = "minecraft"
+name = "Minecraft"
+category = "gaming"
+rules = [
+  "||minecraft.net^",
+  "||mojang.com^",
+  "||minecraftservices.com^",
+]
+
+[[service]]
+id = "steam"
+name = "Steam"
+category = "gaming"
+rules = [
+  "||steampowered.com^",
+  "||steamcommunity.com^",
+  "||steamstatic.com^",
+  "||steamcontent.com^",
+  "||steamserver.net^",
+  "||steamgames.com^",
+  "||valvesoftware.com^",
+]
+
+[[service]]
+id = "xbox"
+name = "Xbox network"
+category = "gaming"
+rules = [
+  "||xboxlive.com^",
+  "||xbox.com^",
+  "||xboxab.com^",
+  "||xboxservices.com^",
+]
+
+[[service]]
+id = "playstation"
+name = "PlayStation Network"
+category = "gaming"
+rules = [
+  "||playstation.com^",
+  "||playstation.net^",
+  "||sonyentertainmentnetwork.com^",
+]
+
+[[service]]
+id = "discord"
+name = "Discord"
+category = "gaming"
+rules = [
+  "||discord.com^",
+  "||discord.gg^",
+  "||discordapp.com^",
+  "||discordapp.net^",
+  "||discord.media^",
+  "||discordcdn.com^",
+]

@@ -635,6 +635,23 @@ pub struct GroupInfo {
     pub blocked_24h: u64,
     /// Devices seen in the group this hour.
     pub devices_this_hour: u64,
+    /// REQ: FLT-012 (T7.9) — services this group blocks (IDs from `GET /api/v1/services`).
+    pub blocked_services: Vec<String>,
+}
+
+/// REQ: FLT-012 (T7.9) — a blockable service.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceInfo {
+    /// For `blocked_services` in a group.
+    #[schema(example = "tiktok")]
+    pub id: String,
+    #[schema(example = "TikTok")]
+    pub name: String,
+    /// `social`, `video`, `music`, `gaming`, `messaging`, `dating`, `ai`, ...
+    pub category: String,
+    /// The domains it blocks (with everything under them).
+    pub domains: Vec<String>,
 }
 
 /// A configured client (device).

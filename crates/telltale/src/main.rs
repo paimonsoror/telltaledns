@@ -80,6 +80,11 @@ enum Command {
         #[command(subcommand)]
         command: PresetsCommand,
     },
+    /// REQ: FLT-012 (T7.9) — services a group can block (`blocked_services`).
+    Services {
+        #[command(subcommand)]
+        command: ServicesCommand,
+    },
     /// Filter lists (blocklists and allowlists).
     Lists {
         #[command(subcommand)]
@@ -467,6 +472,12 @@ enum QlogCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ServicesCommand {
+    /// List every service with its category and the domains it blocks.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
 enum PresetsCommand {
     /// List the catalog.
     List,
@@ -516,6 +527,9 @@ fn main() -> ExitCode {
         Command::Run { config } => run(config),
         Command::Config { command } => run_config(command),
         Command::Presets { command } => run_presets(command),
+        Command::Services {
+            command: ServicesCommand::List,
+        } => run_services_list(),
         Command::Lists { command } => run_lists(command),
         Command::Qlog {
             command:
@@ -1270,6 +1284,32 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
             }
         }
     }
+}
+
+/// `telltale services list`.
+fn run_services_list() -> io::Result<ExitCode> {
+    let mut out = io::stdout().lock();
+    writeln!(
+        out,
+        "{:<14} {:<26} {:<10} DOMAINS",
+        "ID", "NAME", "CATEGORY"
+    )?;
+    for s in telltale_config::services::catalog() {
+        let domains: Vec<&str> = s
+            .rules
+            .iter()
+            .map(|r| r.trim_start_matches("||").trim_end_matches('^'))
+            .collect();
+        writeln!(
+            out,
+            "{:<14} {:<26} {:<10} {}",
+            s.id,
+            s.name,
+            s.category,
+            domains.join(" ")
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_presets(cmd: PresetsCommand) -> io::Result<ExitCode> {

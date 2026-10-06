@@ -13,6 +13,8 @@
   let tops = $state<Record<string, { domains: S['TopItem'][]; blocked: S['TopItem'][] }>>({});
   let error = $state<unknown>(null);
   let listNames = $state<string[]>([]);
+  let services = $state<S['ServiceInfo'][]>([]);
+  const serviceName = (id: string) => services.find((s) => s.id === id)?.name ?? id;
 
   // REQ: API-002 (T7.5) — add and change groups here.
   const groupFields = $derived<Field[]>([
@@ -20,6 +22,9 @@
       help: 'One per line. Every device on these networks belongs to the group.' },
     { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
       help: 'Leave all unticked on a new group to use every enabled list.' },
+    // REQ: FLT-012 (T7.9)
+    { key: 'blocked_services', label: 'Blocked services', type: 'multi', options: services.map((s) => s.id),
+      help: 'Block a whole service (all its domains) for this group, on top of its lists.' },
     { key: 'block_mode', label: 'Blocked answer', type: 'select', options: ['null_ip', 'nxdomain', 'nodata', 'refused', 'custom_ip'], advanced: true },
     { key: 'priority', label: 'Priority', type: 'number', placeholder: '0', advanced: true,
       help: 'When a device matches several groups, the highest priority wins.' },
@@ -28,6 +33,7 @@
 
   function load() {
     api.lists().then((l) => (listNames = l.items.map((x) => x.name))).catch(() => {});
+    api.services().then((s) => (services = s.items)).catch(() => {});
     api
       .groups()
       .then(async (g) => {
@@ -69,6 +75,11 @@
         <div class="muted small mono">
           {g.networks.length ? g.networks.join(', ') : g.name === 'default' ? 'devices that match nothing else' : 'named devices only'}
         </div>
+        {#if g.blockedServices.length}
+          <div class="small" data-testid="group-services">
+            Blocks {g.blockedServices.map(serviceName).join(', ')}<HelpButton id="blocked-services" />
+          </div>
+        {/if}
         <dl class="stats">
           <div><dt>Queries (24 h)</dt><dd>{num(g.queries24h)}{#if total}<span class="muted small"> · {pct((g.queries24h / total) * 100, 0)}</span>{/if}</dd></div>
           <div><dt>Blocked</dt><dd>{g.queries24h ? pct((g.blocked24h / g.queries24h) * 100) : '–'}</dd></div>

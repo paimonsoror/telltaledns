@@ -545,6 +545,10 @@ pub struct GroupConfig {
     /// Color for this group in charts and chips (`#rrggbb`); one is picked when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<SafeString>,
+    /// REQ: FLT-012 (T7.9) — services this group blocks (`tiktok`, `fortnite`, ...: see
+    /// `telltale services list`), on top of its lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_services: Vec<SafeString>,
 }
 
 const fn default_block_ttl() -> u32 {

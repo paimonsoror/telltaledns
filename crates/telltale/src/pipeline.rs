@@ -156,23 +156,27 @@ impl FilterState {
             .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
             .unwrap_or_default();
         // A group's lists → list IDs in this snapshot (a group naming a list that isn't
-        // compiled yet simply doesn't get it until it is).
+        // compiled yet simply doesn't get it until it is). REQ: FLT-012 (T7.9) — blocked
+        // services (`svc-<id>` lists) apply only to the groups that name them, also when a
+        // group uses every list.
         let group_masks: Vec<ListMask> = clients
             .groups()
             .iter()
-            .map(|g| match &g.lists {
-                None => ListMask::all(names.len()),
-                Some(lists) => {
-                    let mut m = ListMask::default();
-                    for (i, n) in names.iter().enumerate() {
-                        if lists.iter().any(|l| **l == **n)
-                            && let Ok(id) = u16::try_from(i)
-                        {
-                            m.set(id);
-                        }
+            .map(|g| {
+                let mut m = ListMask::default();
+                for (i, n) in names.iter().enumerate() {
+                    let wanted = match telltale_config::services::of_list(n) {
+                        Some(s) => g.services.iter().any(|x| **x == *s.id),
+                        None => g
+                            .lists
+                            .as_ref()
+                            .is_none_or(|l| l.iter().any(|l| **l == **n)),
+                    };
+                    if wanted && let Ok(id) = u16::try_from(i) {
+                        m.set(id);
                     }
-                    m
                 }
+                m
             })
             .collect();
         let union = |groups: &[u16]| {
@@ -202,11 +206,17 @@ impl FilterState {
                 .collect(),
             reasons: names
                 .iter()
-                .map(|n| format!("blocked by list {n}"))
+                .map(|n| match telltale_config::services::of_list(n) {
+                    Some(s) => format!("blocked service {}", s.name),
+                    None => format!("blocked by list {n}"),
+                })
                 .collect(),
             cname_reasons: names
                 .iter()
-                .map(|n| format!("CNAME target blocked by list {n}"))
+                .map(|n| match telltale_config::services::of_list(n) {
+                    Some(s) => format!("CNAME target blocked: service {}", s.name),
+                    None => format!("CNAME target blocked by list {n}"),
+                })
                 .collect(),
             clients,
             matcher,
@@ -1436,6 +1446,110 @@ mod tests {
         let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
         let m = Matcher::with_lookup(Some(snap), Overlay::default(), lookup).unwrap();
         p.set_filter(Some(Arc::new(m)));
+    }
+
+    /// Compiles several named lists into one snapshot and installs it.
+    fn install_lists(p: &Pipeline, lists: &[(&str, &str)]) {
+        use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
+        use telltale_filter::matcher::{Lookup, Overlay};
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("snap");
+        let inputs = lists
+            .iter()
+            .map(|(name, rules)| ListInput {
+                name: (*name).into(),
+                options: telltale_filter::parse::ListOptions::default(),
+                data: ListData::Bytes(rules.as_bytes().to_vec()),
+                source_hash: telltale_filter::fetch::content_hash(rules.as_bytes()),
+                size: rules.len() as u64,
+            })
+            .collect();
+        compile(inputs, &out, &CompileOptions::default()).unwrap();
+        let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
+        let m = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+        p.set_filter(Some(Arc::new(m)));
+    }
+
+    /// REQ: FLT-012 (T7.9) — a blocked service applies to the groups that name it only, also
+    /// next to a group that uses every list, and says which service blocked the name.
+    #[test]
+    fn flt_012_blocked_services_apply_per_group() {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[[list]]
+name = "ads"
+rules = ["||ads.example.com^"]
+
+[[group]]
+name = "default"
+
+[[group]]
+name = "kids"
+networks = ["10.0.1.0/24"]
+blocked_services = ["tiktok"]
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let expanded = telltale_config::services::expand(&cfg);
+        let svc = expanded
+            .list
+            .iter()
+            .find(|l| l.name.as_str() == "svc-tiktok")
+            .expect("the service became a list");
+        let svc_rules = svc.rules.iter().fold(String::new(), |mut acc, r| {
+            acc.push_str(r.as_str());
+            acc.push('\n');
+            acc
+        });
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        install_lists(
+            &p,
+            &[("ads", "||ads.example.com^\n"), ("svc-tiktok", &svc_rules)],
+        );
+        let ask = |peer: &str, name: &str| {
+            let mut out = [0u8; 4096];
+            let meta = RequestMeta {
+                peer: peer.parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::A, true), &meta, &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => Vec::new(),
+            }
+        };
+        let blocked =
+            |r: &[u8]| summarize(r).is_ok_and(|s| s.rcode == rcode::NOERROR && s.answers == 1);
+        let kid = ask("10.0.1.5:1000", "www.tiktok.com");
+        assert!(blocked(&kid), "the kids group blocks TikTok");
+        let text = b"blocked service TikTok";
+        assert!(
+            kid.windows(text.len()).any(|w| w == text),
+            "EDE names the service"
+        );
+        assert!(
+            !blocked(&ask("10.0.0.9:1000", "www.tiktok.com")),
+            "other groups don't"
+        );
+        assert!(
+            blocked(&ask("10.0.0.9:1000", "ads.example.com")),
+            "every list still applies"
+        );
+        assert!(blocked(&ask("10.0.1.5:1000", "ads.example.com")));
     }
 
     #[test]

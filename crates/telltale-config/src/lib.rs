@@ -15,6 +15,7 @@
 
 mod env;
 pub mod schema;
+pub mod services;
 pub mod shared;
 mod types;
 mod validate;

@@ -644,6 +644,20 @@ networks = ["192.168.10.0/24"]
 - **In a cluster**, groups and networks are shared configuration, so every node attributes devices
   the same way.
 
+### Blocked services
+Block a whole service for a group with one setting, without finding its domains:
+```toml
+[[group]]
+name = "kids"
+networks = ["192.168.20.0/24"]
+blocked_services = ["tiktok", "roblox", "fortnite"]
+```
+- `telltale services list` (or `GET /api/v1/services`, or the Groups page) shows every service with the domains it blocks: social networks (TikTok, Instagram, Snapchat, ...), video and music (YouTube, Netflix, Twitch, Spotify, ...), games (Roblox, Fortnite, Minecraft, Steam, Xbox, PlayStation, Discord), messaging and AI chat.
+- A service blocks its domains and everything under them, for that group only. A group that uses every list still doesn't get other groups' services.
+- Blocks say which service did it: the query log shows the service, and the EDE text reads `blocked service TikTok`.
+- In the UI: **Groups → Manage groups → Edit → Blocked services**.
+- The catalog is part of the binary (`presets/services/*.toml`); services change with updates. To block one service's extra domain, add a quick rule.
+
 ### Naming devices in the UI
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 

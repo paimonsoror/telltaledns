@@ -549,6 +549,10 @@ impl Backend for Federated {
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
         self.local.promote(req, by)
     }
+    // The services catalog is compiled in: the same everywhere.
+    fn services(&self) -> Vec<telltale_api::model::ServiceInfo> {
+        self.local.services()
+    }
     // Updates are per node: the one serving the UI checks.
     fn check_updates(
         &self,

@@ -1,0 +1,34 @@
+# TelltaleDNS blocked-services catalog (REQ: FLT-012): messaging and AI chat.
+# See social.toml for the format.
+
+[[service]]
+id = "whatsapp"
+name = "WhatsApp"
+category = "messaging"
+rules = [
+  "||whatsapp.com^",
+  "||whatsapp.net^",
+  "||wa.me^",
+]
+
+[[service]]
+id = "telegram"
+name = "Telegram"
+category = "messaging"
+rules = [
+  "||telegram.org^",
+  "||telegram.me^",
+  "||t.me^",
+  "||telesco.pe^",
+]
+
+[[service]]
+id = "chatgpt"
+name = "ChatGPT"
+category = "ai"
+rules = [
+  "||chatgpt.com^",
+  "||openai.com^",
+  "||oaiusercontent.com^",
+  "||oaistatic.com^",
+]

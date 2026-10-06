@@ -1,0 +1,87 @@
+# TelltaleDNS blocked-services catalog (REQ: FLT-012): video, music, and streaming.
+# See social.toml for the format.
+
+[[service]]
+id = "youtube"
+name = "YouTube"
+category = "video"
+rules = [
+  "||youtube.com^",
+  "||youtu.be^",
+  "||ytimg.com^",
+  "||googlevideo.com^",
+  "||youtube-nocookie.com^",
+  "||youtubei.googleapis.com^",
+  "||youtubekids.com^",
+]
+
+[[service]]
+id = "netflix"
+name = "Netflix"
+category = "video"
+rules = [
+  "||netflix.com^",
+  "||netflix.net^",
+  "||nflxvideo.net^",
+  "||nflximg.net^",
+  "||nflximg.com^",
+  "||nflxext.com^",
+  "||nflxso.net^",
+]
+
+[[service]]
+id = "twitch"
+name = "Twitch"
+category = "video"
+rules = [
+  "||twitch.tv^",
+  "||ttvnw.net^",
+  "||jtvnw.net^",
+  "||twitchcdn.net^",
+  "||twitchsvc.net^",
+  "||ext-twitch.tv^",
+]
+
+[[service]]
+id = "disneyplus"
+name = "Disney+"
+category = "video"
+rules = [
+  "||disneyplus.com^",
+  "||disney-plus.net^",
+  "||bamgrid.com^",
+  "||dssott.com^",
+  "||disneystreaming.com^",
+]
+
+[[service]]
+id = "primevideo"
+name = "Prime Video"
+category = "video"
+rules = [
+  "||primevideo.com^",
+  "||aiv-cdn.net^",
+  "||aiv-delivery.net^",
+  "||amazonvideo.com^",
+]
+
+[[service]]
+id = "hulu"
+name = "Hulu"
+category = "video"
+rules = [
+  "||hulu.com^",
+  "||hulustream.com^",
+  "||huluim.com^",
+]
+
+[[service]]
+id = "spotify"
+name = "Spotify"
+category = "music"
+rules = [
+  "||spotify.com^",
+  "||scdn.co^",
+  "||spotifycdn.com^",
+  "||spoti.fi^",
+]

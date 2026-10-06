@@ -25,6 +25,8 @@ pub struct Group {
     pub networks: Vec<Cidr>,
     /// `#rrggbb`, when configured.
     pub color: Option<Box<str>>,
+    /// REQ: FLT-012 (T7.9) — blocked services (IDs), compiled as `svc-<id>` lists.
+    pub services: Vec<Box<str>>,
 }
 
 /// How a group's blocked queries are answered (FLT-008).
@@ -226,25 +228,32 @@ impl Default for ClientTable {
     }
 }
 
+impl Group {
+    fn from_config(g: &telltale_config::GroupConfig) -> Self {
+        Self {
+            name: g.name.as_str().into(),
+            lists: g
+                .lists
+                .as_ref()
+                .map(|l| l.iter().map(|n| n.as_str().into()).collect()),
+            priority: g.priority,
+            block: BlockPolicy::from_config(g),
+            networks: g.networks.clone(),
+            color: g.color.as_ref().map(|c| c.as_str().into()),
+            services: g
+                .blocked_services
+                .iter()
+                .map(|s| s.as_str().into())
+                .collect(),
+        }
+    }
+}
+
 impl ClientTable {
     /// Builds the table. The config is assumed validated (`telltale config check` rules);
     /// unparseable keys and unknown groups are skipped.
     pub fn from_config(cfg: &Config) -> Self {
-        let mut groups: Vec<Group> = cfg
-            .group
-            .iter()
-            .map(|g| Group {
-                name: g.name.as_str().into(),
-                lists: g
-                    .lists
-                    .as_ref()
-                    .map(|l| l.iter().map(|n| n.as_str().into()).collect()),
-                priority: g.priority,
-                block: BlockPolicy::from_config(g),
-                networks: g.networks.clone(),
-                color: g.color.as_ref().map(|c| c.as_str().into()),
-            })
-            .collect();
+        let mut groups: Vec<Group> = cfg.group.iter().map(Group::from_config).collect();
         let default_idx = if let Some(i) = groups.iter().position(|g| &*g.name == "default") {
             i
         } else {
@@ -255,6 +264,7 @@ impl ClientTable {
                 block: BlockPolicy::default(),
                 networks: Vec::new(),
                 color: None,
+                services: Vec::new(),
             });
             groups.len() - 1
         };

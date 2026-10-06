@@ -122,7 +122,8 @@ impl Lists {
     /// Starts the background fetcher and compiler if this node compiles lists and any are
     /// configured. Compiled snapshots are published to `pipeline`'s filter.
     pub(crate) fn start(cfg: &Config, pipeline: &Arc<Pipeline>) -> Option<Self> {
-        if cfg.node.role == Role::Resolver || cfg.list.is_empty() {
+        let any_service = cfg.group.iter().any(|g| !g.blocked_services.is_empty());
+        if cfg.node.role == Role::Resolver || (cfg.list.is_empty() && !any_service) {
             return None;
         }
         let fetcher = match build_fetcher(cfg) {
@@ -132,7 +133,7 @@ impl Lists {
                 return None;
             }
         };
-        let specs = ListSpec::from_config(cfg);
+        let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
         info!(
             lists = specs.len(),
             dir = %fetcher.store().dir().display(),
@@ -140,7 +141,9 @@ impl Lists {
         );
         let (specs_tx, specs_rx) = watch::channel(Arc::new(specs));
         let (changed_tx, changed) = watch::channel(0);
-        let (compile_tx, compile_rx) = watch::channel(Arc::new(compile_specs(cfg)));
+        let (compile_tx, compile_rx) = watch::channel(Arc::new(compile_specs(
+            &telltale_config::services::expand(cfg),
+        )));
         let shared = Arc::new(ListsShared {
             fetcher: Arc::clone(&fetcher),
             compiled: Mutex::new(None),
@@ -170,7 +173,7 @@ impl Lists {
     /// Applies a reloaded config: new, removed, or edited lists take effect at once.
     /// Fetch settings (`[filter]`) and `data_dir` need a restart.
     pub(crate) fn reload(&self, cfg: &Config) {
-        let specs = ListSpec::from_config(cfg);
+        let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
         self.specs.send_if_modified(|cur| {
             if **cur == specs {
                 false
@@ -179,7 +182,7 @@ impl Lists {
                 true
             }
         });
-        let compile = compile_specs(cfg);
+        let compile = compile_specs(&telltale_config::services::expand(cfg));
         self.compile_specs.send_if_modified(|cur| {
             if **cur == compile {
                 false
@@ -523,7 +526,7 @@ pub(crate) fn compile_now(
         settings.threads = t.max(1);
     }
     let io = |e: std::io::Error| e.to_string();
-    let specs = compile_specs(cfg);
+    let specs = compile_specs(&telltale_config::services::expand(cfg));
     let missing: Vec<&str> = specs
         .iter()
         .filter(|s| store.load_meta(&s.name).content_hash.is_none())
@@ -592,7 +595,7 @@ pub(crate) fn source_reader(cfg: &Config) -> impl Fn(&str) -> Option<Vec<u8>> + 
 /// `telltale lists fetch`: refresh every enabled list once and print the result.
 pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool, String> {
     let fetcher = build_fetcher(cfg)?;
-    let specs = ListSpec::from_config(cfg);
+    let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
     if specs.is_empty() {
         writeln!(out, "no enabled lists in the configuration").map_err(|e| e.to_string())?;
         return Ok(true);

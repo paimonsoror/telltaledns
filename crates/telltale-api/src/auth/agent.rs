@@ -139,6 +139,7 @@ pub fn required(method: &Method, path: &str) -> Need {
             }
             "/api/v1/queries" | "/api/v1/queries/stream" => return Need::Scope("querylog:read"),
             "/api/v1/lists"
+            | "/api/v1/services"
             | "/api/v1/groups"
             | "/api/v1/clients"
             | "/api/v1/upstreams"

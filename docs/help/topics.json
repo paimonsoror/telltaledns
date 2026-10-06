@@ -404,6 +404,16 @@
       "example": "An agent plans to block ads.example for the kids group; you see the plan, approve it, and the agent applies it.",
       "caution": "Turn approval on with [agents] require_approval = true. A plan expires after 10 minutes, and goes stale if the configuration changes before it's applied.",
       "docs": "plans-and-approval"
+    },
+    {
+      "id": "blocked-services",
+      "title": "Block a whole service",
+      "term": "Blocked services",
+      "summary": "One switch blocks every domain of a service (TikTok, Roblox, Netflix, ...) for a group, without hunting down its domains.",
+      "when": "A group (kids, guests) shouldn't reach a particular app or game at all.",
+      "example": "The kids group blocks TikTok and Fortnite; the rest of the house is unaffected.",
+      "caution": "Apps change domains over time; the catalog is updated with TelltaleDNS. Add a quick rule for anything it misses.",
+      "docs": "blocked-services"
     }
   ]
 }

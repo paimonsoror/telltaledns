@@ -48,10 +48,36 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     lists(cfg, &mut r);
     clients(cfg, &mut r);
     rules(cfg, &mut r);
+    services(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     r.warnings
+}
+
+// REQ: FLT-012 (T7.9) — blocked services exist; `svc-` list names are theirs.
+fn services(cfg: &Config, r: &mut Report<'_>) {
+    for (i, g) in cfg.group.iter().enumerate() {
+        for (j, s) in g.blocked_services.iter().enumerate() {
+            if crate::services::find(s.as_str()).is_none() {
+                r.err(
+                    format!("group[{i}].blocked_services[{j}]"),
+                    format!("no service `{}` (see `telltale services list`)", s.as_str()),
+                );
+            }
+        }
+    }
+    for (i, l) in cfg.list.iter().enumerate() {
+        if l.name.as_str().starts_with(crate::services::PREFIX) {
+            r.err(
+                format!("list[{i}].name"),
+                format!(
+                    "names starting with `{}` are kept for blocked services",
+                    crate::services::PREFIX
+                ),
+            );
+        }
+    }
 }
 
 // REQ: FLT-005 (T6.12, ADR-067) — quick rules: a real domain, known groups, devices that are

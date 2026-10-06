@@ -542,3 +542,28 @@ expires = "tomorrow"
         assert!(p.contains(&want), "{want} missing from {p:?}");
     }
 }
+
+/// REQ: FLT-012 (T7.9) — a group can only block services that exist, and `svc-` list names
+/// are kept for them.
+#[test]
+fn flt_012_blocked_services_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    assert!(
+        load("[[group]]\nname = \"kids\"\nblocked_services = [\"tiktok\", \"roblox\"]\n").is_ok()
+    );
+    let err = format!(
+        "{:?}",
+        load("[[group]]\nname = \"kids\"\nblocked_services = [\"myspace\"]\n").unwrap_err()
+    );
+    assert!(err.contains("no service `myspace`"), "{err}");
+    let err = format!(
+        "{:?}",
+        load("[[list]]\nname = \"svc-mine\"\nrules = [\"||x.example^\"]\n").unwrap_err()
+    );
+    assert!(err.contains("kept for blocked services"), "{err}");
+}
