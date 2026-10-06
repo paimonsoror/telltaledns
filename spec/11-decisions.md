@@ -1265,6 +1265,24 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-087 — Upstream follow-ups: DoH GET, UDP over SOCKS5, DNSCrypt relays, per-client ECS (Proposed)
+**Context:** T9.9 picks up the deferrals of T7.8 (DoH), T7.16 (proxies), T7.23 (ECS), and T7.24 (DNSCrypt).
+
+**Decision:**
+- **DoH GET:** `doh_method = "get"` puts the query in `?dns=` (base64url, no padding) with ID 0; POST stays the default (smaller requests, no URL length concerns).
+- **UDP through SOCKS5:** a `udp://` upstream with a `socks5://` proxy uses UDP ASSOCIATE (RFC 1928 §7). Up to four associations are kept for reuse; one whose control connection or relay fails is dropped. The TCP retry for a truncated answer goes through the proxy too. HTTP proxies still refuse `udp://` in the configuration check.
+- **Anonymized DNSCrypt:** `relay` (a relay stamp, type 0x81, or `ip:port`) on a DNSCrypt upstream prefixes every packet with the anonymized-DNSCrypt header (8 × 0xff, 0x0000, the server's address as IPv6, its port), the certificate query included, over UDP and TCP. One relay per upstream; choosing relays at random from a list is left to configuring several upstreams in a group.
+- **Per-client ECS (`ecs = "client"`):** the client's source address cut to /24 or /56 (RFC 7871 §11.1). Gaps resolved conservatively:
+  - nothing is sent for non-public sources (private, loopback, link-local, CGNAT, ULA);
+  - ECS options sent by clients are still never forwarded or echoed, so a downstream forwarder never caches an answer as if it were scoped;
+  - the cache key gains the packed subnet (8 bytes per key, 0 when unused), but only for groups that have a `"client"` member, which is a flag checked once per miss;
+  - entries are keyed by the source prefix, not the upstream's SCOPE: never shared more widely than the subnet sent, at the cost of fewer hits;
+  - scoped entries aren't written to the cache file, whose format has no subnet.
+
+**Consequences:**
+- DNSCrypt users get the anonymity dnscrypt-proxy's relays give, and SOCKS5 users keep UDP's latency.
+- `ecs = "client"` multiplies cache entries by the number of client subnets; it's meant for resolvers with public clients, and does nothing on a home network.
+
 ## ADR-086 — Recursion and DNSSEC follow-ups: priming, hedging, EDE reasons, an anchors file; RFC 5011 and 8198 deferred (Proposed)
 **Context:** T9.8 picks up the deferrals of T6.3 (DNSSEC) and T7.15 (recursion).
 

@@ -657,3 +657,38 @@ async fn dns_006_singleflight_coalesces_identical_misses() {
     drop(guard);
     assert_eq!(Flight::wait(rx).await, None);
 }
+
+/// REQ: DNS-015 (T9.9) — keys scoped to different client subnets never share an entry; an
+/// unscoped key is unchanged by `with_ecs(0)`.
+#[test]
+fn dns_015_ecs_scoped_keys() {
+    let req = query_bytes("cdn.example", rtype::A, None, 1);
+    let q = parse_query(&req).unwrap();
+    let base = CacheKey::new(&q, q.qname.hash64(SEED), 0);
+    assert_eq!(base.with_ecs(0), base);
+    assert_eq!(base.ecs(), 0);
+    let (a, b) = (
+        base.with_ecs((1 << 62) | 0xCB_0071),
+        base.with_ecs((1 << 62) | 0xCB_0072),
+    );
+    assert_ne!(a, b);
+    assert_ne!(a, base);
+    let cache = Cache::new(CachePolicy::default());
+    let client = Client::from_query(&q, None);
+    let resp = upstream_a(&q, &[300]);
+    let now = Instant::now();
+    cache.insert(&a, &q, &resp, now).unwrap();
+    let mut out = [0u8; 1500];
+    assert!(matches!(
+        cache.get(&a, &q.qname, &client, now, &mut out),
+        Lookup::Hit { .. }
+    ));
+    assert!(matches!(
+        cache.get(&b, &q.qname, &client, now, &mut out),
+        Lookup::Miss
+    ));
+    assert!(matches!(
+        cache.get(&base, &q.qname, &client, now, &mut out),
+        Lookup::Miss
+    ));
+}

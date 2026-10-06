@@ -38,8 +38,8 @@ pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};
 pub use tls::{TlsOptions, UpstreamTls, spki_pin};
 pub use upstream::{
-    ExchangeError, Question, Upstream, UpstreamOptions, encode_query, is_own_loop_tag,
-    matches_query, set_node_tag,
+    ExchangeError, Question, Upstream, UpstreamOptions, client_subnet, encode_query,
+    is_own_loop_tag, matches_query, set_node_tag,
 };
 
 /// Total time budget per client query (`spec/02` §8.3).
@@ -59,6 +59,7 @@ pub async fn active_health_checks(upstreams: Vec<Arc<Upstream>>, interval: Durat
         qclass: telltale_proto::class::IN,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     };
     loop {
         tick.tick().await;

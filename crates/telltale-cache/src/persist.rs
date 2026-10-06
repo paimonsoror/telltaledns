@@ -31,6 +31,11 @@ impl Cache {
         let mut err = None;
         for s in &self.shards {
             s.0.lock().fifo.retain(|k, e| {
+                // REQ: DNS-015 (T9.9) — subnet-scoped answers aren't kept: the dump format has
+                // no subnet, and reloaded they'd answer every client.
+                if k.ecs != 0 {
+                    return true;
+                }
                 if err.is_none()
                     && let Err(x) = write_entry(out, k, e, now)
                 {

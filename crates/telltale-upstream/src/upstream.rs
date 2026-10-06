@@ -34,6 +34,9 @@ pub struct Question {
     pub dnssec_ok: bool,
     /// Client set CD (checking disabled).
     pub checking_disabled: bool,
+    /// REQ: DNS-015 (T9.9) — the client's subnet, packed by [`client_subnet`] (0 = none), for
+    /// upstreams with `ecs = "client"`.
+    pub client_subnet: u64,
 }
 
 impl Question {
@@ -44,7 +47,75 @@ impl Question {
             qclass: q.qclass,
             dnssec_ok: q.edns.is_some_and(|e| e.dnssec_ok),
             checking_disabled: q.header.flags.cd(),
+            client_subnet: 0,
         }
+    }
+}
+
+/// REQ: DNS-015 (T9.9) — RFC 7871 §11.1's privacy defaults for a client's own subnet.
+const ECS_V4_PREFIX: u8 = 24;
+const ECS_V6_PREFIX: u8 = 56;
+
+/// REQ: DNS-015 (T9.9) — a client's subnet (/24 or /56) packed into a `u64` for the cache key:
+/// family in the top 2 bits, then the address bits. 0 for an address that isn't public
+/// (private, loopback, link-local, CGNAT, ULA…): announcing it would tell a CDN nothing and
+/// leak the network's layout.
+pub fn client_subnet(ip: std::net::IpAddr) -> u64 {
+    let ip = match ip {
+        std::net::IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or(std::net::IpAddr::V6(v6), std::net::IpAddr::V4),
+        v4 @ std::net::IpAddr::V4(_) => v4,
+    };
+    match ip {
+        std::net::IpAddr::V4(a) => {
+            let o = a.octets();
+            let cgnat = o[0] == 100 && (o[1] & 0xc0) == 64;
+            if a.is_private()
+                || a.is_loopback()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast()
+                || a.is_multicast()
+                || cgnat
+                || o[0] == 0
+            {
+                return 0;
+            }
+            (1u64 << 62) | u64::from(u32::from(a) >> (32 - ECS_V4_PREFIX))
+        }
+        std::net::IpAddr::V6(a) => {
+            let s = a.segments();
+            let ula = (s[0] & 0xfe00) == 0xfc00;
+            let link_local = (s[0] & 0xffc0) == 0xfe80;
+            if a.is_loopback() || a.is_unspecified() || a.is_multicast() || ula || link_local {
+                return 0;
+            }
+            let bits = u64::try_from(u128::from(a) >> (128 - ECS_V6_PREFIX)).unwrap_or(0);
+            (2u64 << 62) | bits
+        }
+    }
+}
+
+/// REQ: DNS-015 (T9.9) — the ECS option for a packed [`client_subnet`], if any.
+pub(crate) fn ecs_for_client(packed: u64) -> Option<Vec<u8>> {
+    let bits = packed & ((1u64 << 62) - 1);
+    match packed >> 62 {
+        1 => {
+            let a = u32::try_from(bits << (32 - ECS_V4_PREFIX)).ok()?;
+            Some(ecs_option(
+                std::net::Ipv4Addr::from(a).into(),
+                ECS_V4_PREFIX,
+            ))
+        }
+        2 => {
+            let a = u128::from(bits) << (128 - ECS_V6_PREFIX);
+            Some(ecs_option(
+                std::net::Ipv6Addr::from(a).into(),
+                ECS_V6_PREFIX,
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -190,13 +261,19 @@ pub struct UpstreamOptions {
     pub proxy: Option<Arc<crate::proxy::Proxy>>,
     /// REQ: DNS-015 (T7.23) — an ECS option sent instead of the client's subnet.
     pub ecs: Option<Vec<u8>>,
+    /// REQ: DNS-015 (T9.9) — `ecs = "client"`: send each client's own subnet.
+    pub ecs_client: bool,
     /// REQ: UPS-003 (T7.24) — a DNSCrypt stamp's provider key and name.
     pub dnscrypt: Option<([u8; 32], String)>,
+    /// REQ: UPS-003 (T9.9) — the anonymized DNSCrypt relay to go through.
+    pub dnscrypt_relay: Option<SocketAddr>,
     /// REQ: UPS-011 — this upstream's CA, client certificate, and pins.
     pub tls: crate::tls::UpstreamTls,
     /// REQ: UPS-011 — `exec://`: the program's arguments, and the directory for its socket.
     pub plugin_args: Vec<String>,
     pub plugin_dir: Option<std::path::PathBuf>,
+    /// REQ: UPS-011 (T9.9) — DoH over GET (`?dns=`) instead of POST.
+    pub doh_get: bool,
 }
 
 impl Default for UpstreamOptions {
@@ -213,10 +290,13 @@ impl Default for UpstreamOptions {
             recursive: telltale_recursor::Settings::default(),
             proxy: None,
             ecs: None,
+            ecs_client: false,
             dnscrypt: None,
+            dnscrypt_relay: None,
             plugin_args: Vec::new(),
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
+            doh_get: false,
         }
     }
 }
@@ -245,9 +325,11 @@ impl Target {
 }
 
 enum Transport {
-    /// UDP, with a TCP pool for truncated answers.
+    /// UDP, with a TCP pool for truncated answers, and (T9.9) through a SOCKS5 relay when
+    /// the upstream has a proxy.
     Udp {
         tcp: Pool,
+        relay: Option<RelayPool>,
     },
     Tcp(Pool),
     Tls(Pool),
@@ -300,6 +382,8 @@ pub struct Upstream {
     transport: Transport,
     /// REQ: DNS-015 — the ECS option added to every query (substitute mode).
     ecs: Option<Vec<u8>>,
+    /// REQ: DNS-015 (T9.9) — send the client's subnet (`ecs = "client"`).
+    pub ecs_client: bool,
 }
 
 /// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
@@ -420,7 +504,10 @@ impl Upstream {
         let pool = |c: Connector| Pool::new(c, opts.pool_size, opts.idle_timeout);
         let transport = match endpoint.protocol {
             Protocol::Udp => Transport::Udp {
-                tcp: pool(tcp_connector(Arc::clone(&target), None)),
+                // REQ: UPS-010 (T9.9) — with a SOCKS5 proxy, UDP goes through its relay and a
+                // truncated answer's TCP retry through the proxy too.
+                tcp: pool(tcp_connector(Arc::clone(&target), opts.proxy.clone())),
+                relay: opts.proxy.clone().map(RelayPool::new),
             },
             Protocol::Tcp => {
                 Transport::Tcp(pool(tcp_connector(Arc::clone(&target), opts.proxy.clone())))
@@ -453,7 +540,13 @@ impl Upstream {
                     server_name(&tls_name)?,
                     opts.proxy.clone(),
                 );
-                Transport::Https(Doh::new(conn, &authority, &endpoint.path, &opts.headers)?)
+                Transport::Https(Doh::new(
+                    conn,
+                    &authority,
+                    &endpoint.path,
+                    &opts.headers,
+                    opts.doh_get,
+                )?)
             }
             Protocol::H3 => {
                 let cfg = client_config(tls, &opts.tls, &[b"h3"], opts.tls_insecure_skip_verify)
@@ -498,7 +591,12 @@ impl Upstream {
                         ));
                     }
                 };
-                Transport::DnsCrypt(Box::new(crate::dnscrypt::DnsCrypt::new(addr, pk, &name)?))
+                Transport::DnsCrypt(Box::new(crate::dnscrypt::DnsCrypt::new(
+                    addr,
+                    pk,
+                    &name,
+                    opts.dnscrypt_relay,
+                )?))
             }
             Protocol::Unix => {
                 Transport::Plugin(pool(unix_connector(endpoint.path.clone().into())), None)
@@ -553,6 +651,7 @@ impl Upstream {
             target,
             transport,
             ecs: opts.ecs.clone(),
+            ecs_client: opts.ecs_client,
         })
     }
 
@@ -582,7 +681,7 @@ impl Upstream {
     /// Open pooled connections (TCP/DoT), for tests and metrics.
     pub fn pooled_connections(&self) -> usize {
         match &self.transport {
-            Transport::Udp { tcp } => tcp.len(),
+            Transport::Udp { tcp, .. } => tcp.len(),
             Transport::Tcp(p) | Transport::Tls(p) | Transport::Plugin(p, _) => p.len(),
             Transport::Https(_)
             | Transport::Quic(_)
@@ -636,14 +735,26 @@ impl Upstream {
             rand::random()
         };
         let mut buf = [0u8; 512];
-        let len = encode_query_with(q, id, &mut buf, self.ecs.as_deref().unwrap_or_default())
-            .ok_or(ExchangeError::BadResponse)?;
+        // REQ: DNS-015 (T9.9) — the client's subnet, when this upstream passes it on.
+        let client = if self.ecs_client {
+            ecs_for_client(q.client_subnet)
+        } else {
+            None
+        };
+        let ecs = client
+            .as_deref()
+            .or(self.ecs.as_deref())
+            .unwrap_or_default();
+        let len = encode_query_with(q, id, &mut buf, ecs).ok_or(ExchangeError::BadResponse)?;
         let query = &buf[..len];
         let resp = match &self.transport {
-            Transport::Udp { tcp } => {
+            Transport::Udp { tcp, relay } => {
                 let udp = async {
                     let addr = self.target.addr().await?;
-                    udp_exchange(addr, query, id).await
+                    match relay {
+                        Some(r) => r.exchange(addr, query, id).await,
+                        None => udp_exchange(addr, query, id).await,
+                    }
                 };
                 let resp = timed(tokio::time::timeout(timeout, udp).await)?;
                 if header::flags(&resp).tc() {
@@ -688,6 +799,49 @@ fn timed(
     r.unwrap_or(Err(ExchangeError::Timeout))
 }
 
+/// REQ: UPS-010 (T9.9) — SOCKS5 UDP associations kept for reuse (a few, each used by one
+/// query at a time); one that fails is dropped and a new one made next time.
+pub(crate) struct RelayPool {
+    proxy: Arc<crate::proxy::Proxy>,
+    idle: parking_lot::Mutex<Vec<crate::proxy::UdpRelay>>,
+}
+
+impl std::fmt::Debug for RelayPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayPool")
+            .field("proxy", &self.proxy)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RelayPool {
+    fn new(proxy: Arc<crate::proxy::Proxy>) -> Self {
+        Self {
+            proxy,
+            idle: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn exchange(
+        &self,
+        dest: SocketAddr,
+        query: &[u8],
+        id: u16,
+    ) -> Result<Vec<u8>, ExchangeError> {
+        let held = self.idle.lock().pop();
+        let relay = match held {
+            Some(r) => r,
+            None => self.proxy.udp_associate().await?,
+        };
+        let resp = relay.exchange(dest, query, id).await?;
+        let mut idle = self.idle.lock();
+        if idle.len() < 4 {
+            idle.push(relay);
+        }
+        Ok(resp)
+    }
+}
+
 async fn udp_exchange(addr: SocketAddr, query: &[u8], id: u16) -> Result<Vec<u8>, ExchangeError> {
     let bind: SocketAddr = if addr.is_ipv4() {
         (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
@@ -716,6 +870,47 @@ mod tests {
     /// REQ: DNS-015 (T7.23) — the substitute ECS option (RFC 7871 §6): family, prefix, scope
     /// 0, the address cut to the prefix; appended to the query's OPT with the right length.
     #[test]
+    fn dns_015_ecs_client_subnet() {
+        let p = client_subnet("203.0.113.77".parse().unwrap());
+        assert_ne!(p, 0);
+        assert_eq!(p, client_subnet("203.0.113.1".parse().unwrap()), "same /24");
+        assert_ne!(p, client_subnet("203.0.114.1".parse().unwrap()));
+        assert_eq!(
+            p,
+            client_subnet("::ffff:203.0.113.9".parse().unwrap()),
+            "v4-mapped"
+        );
+        assert_eq!(
+            ecs_for_client(p).unwrap(),
+            ecs_option("203.0.113.0".parse().unwrap(), 24)
+        );
+        let v6 = client_subnet("2001:db8:abcd:ef01::1".parse().unwrap());
+        assert_eq!(
+            v6,
+            client_subnet("2001:db8:abcd:efff::2".parse().unwrap()),
+            "same /56"
+        );
+        assert_eq!(
+            ecs_for_client(v6).unwrap(),
+            ecs_option("2001:db8:abcd:ef00::".parse().unwrap(), 56)
+        );
+        for private in [
+            "10.1.2.3",
+            "192.168.3.2",
+            "172.16.0.1",
+            "127.0.0.1",
+            "100.64.1.1",
+            "169.254.1.1",
+            "fd00::1",
+            "fe80::1",
+            "::1",
+        ] {
+            assert_eq!(client_subnet(private.parse().unwrap()), 0, "{private}");
+        }
+        assert!(ecs_for_client(0).is_none());
+    }
+
+    #[test]
     fn dns_015_ecs_substitute() {
         let o = ecs_option("203.0.113.77".parse().unwrap(), 24);
         assert_eq!(o, vec![0, 8, 0, 7, 0, 1, 24, 0, 203, 0, 113]);
@@ -732,6 +927,7 @@ mod tests {
             qclass: 1,
             dnssec_ok: false,
             checking_disabled: false,
+            client_subnet: 0,
         };
         let mut buf = [0u8; 512];
         let ecs = ecs_option("203.0.113.0".parse().unwrap(), 24);

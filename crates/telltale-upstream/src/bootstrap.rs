@@ -77,6 +77,7 @@ impl Bootstrap {
             qclass: 1,
             dnssec_ok: false,
             checking_disabled: false,
+            client_subnet: 0,
         };
         for &server in &self.servers {
             let id: u16 = rand::random();

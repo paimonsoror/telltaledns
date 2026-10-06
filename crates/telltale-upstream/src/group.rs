@@ -56,18 +56,27 @@ pub struct Group {
     rr: AtomicUsize,
     /// Smooth weighted round-robin state (current weights).
     wrr: Mutex<Vec<i64>>,
+    /// REQ: DNS-015 (T9.9) — a member sends clients' subnets, so answers are cached per subnet.
+    ecs_client: bool,
 }
 
 impl Group {
     pub fn new(name: impl Into<String>, members: Vec<Arc<Upstream>>, strategy: Strategy) -> Self {
         let n = members.len();
+        let ecs_client = members.iter().any(|u| u.ecs_client);
         Self {
+            ecs_client,
             name: name.into(),
             members,
             strategy,
             rr: AtomicUsize::new(0),
             wrr: Mutex::new(vec![0; n]),
         }
+    }
+
+    /// REQ: DNS-015 (T9.9) — true if answers depend on the client's subnet.
+    pub fn ecs_client(&self) -> bool {
+        self.ecs_client
     }
 
     pub fn members(&self) -> &[Arc<Upstream>] {

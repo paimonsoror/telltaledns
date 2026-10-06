@@ -97,6 +97,30 @@ async fn dot_server_with(tls: tokio_rustls::TlsAcceptor) -> SocketAddr {
     addr
 }
 
+/// GET requests the DoH test server answered (T9.9).
+static GETS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn b64url_decode(s: &str) -> Vec<u8> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'-' => 62,
+        _ => 63,
+    };
+    let mut out = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0);
+    for c in s.bytes() {
+        acc = (acc << 6) | u32::from(val(c));
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((acc >> bits) & 0xFF).unwrap());
+        }
+    }
+    out
+}
+
 async fn doh_server(c: &Cert) -> SocketAddr {
     let tls = acceptor(c, &[b"h2"]);
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -111,15 +135,25 @@ async fn doh_server(c: &Cert) -> SocketAddr {
                 };
                 while let Some(Ok((req, mut respond))) = conn.accept().await {
                     tokio::spawn(async move {
-                        let ok = req.method() == http::Method::POST
-                            && req.uri().path() == "/dns-query"
-                            && req.headers()[http::header::CONTENT_TYPE]
-                                == "application/dns-message";
-                        let mut body = req.into_body();
+                        // POST with the message as the body, or (T9.9) GET with `?dns=`.
+                        let get = req.method() == http::Method::GET;
+                        let ok = req.uri().path() == "/dns-query"
+                            && (get
+                                || (req.method() == http::Method::POST
+                                    && req.headers()[http::header::CONTENT_TYPE]
+                                        == "application/dns-message"));
                         let mut msg = Vec::new();
-                        while let Some(Ok(chunk)) = body.data().await {
-                            let _ = body.flow_control().release_capacity(chunk.len());
-                            msg.extend_from_slice(&chunk);
+                        if get {
+                            let query = req.uri().query().unwrap_or_default();
+                            let v = query.strip_prefix("dns=").unwrap_or_default();
+                            msg = b64url_decode(v);
+                            GETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        } else {
+                            let mut body = req.into_body();
+                            while let Some(Ok(chunk)) = body.data().await {
+                                let _ = body.flow_control().release_capacity(chunk.len());
+                                msg.extend_from_slice(&chunk);
+                            }
                         }
                         let status = if ok { 200 } else { 400 };
                         let resp = http::Response::builder()
@@ -144,6 +178,7 @@ fn question(name: &str) -> Question {
         qclass: 1,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     }
 }
 
@@ -440,4 +475,35 @@ async fn ups_011_client_certificates() {
         .await
         .unwrap();
     assert_eq!(summarize(&resp).unwrap().answers, 1);
+}
+
+/// REQ: UPS-011 (T9.9) — `doh_method = "get"`: the query travels in `?dns=` and the answer
+/// comes back the same.
+#[tokio::test]
+async fn ups_011_doh_get() {
+    let c = cert();
+    let addr = doh_server(&c).await;
+    let ep = Endpoint::parse(&format!("https://{addr}/dns-query")).unwrap();
+    let mut o = opts("dns.test");
+    o.doh_get = true;
+    let up = Upstream::build(
+        1,
+        "doh-get",
+        ep,
+        &o,
+        &TlsOptions {
+            extra_roots: vec![c.der.clone()],
+        },
+    )
+    .unwrap();
+    let before = GETS.load(std::sync::atomic::Ordering::Relaxed);
+    let resp = up
+        .exchange(&question("get.example"), Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(summarize(&resp).unwrap().answers, 1);
+    assert!(
+        GETS.load(std::sync::atomic::Ordering::Relaxed) > before,
+        "sent as GET"
+    );
 }

@@ -415,7 +415,7 @@ tls_server_name = "dns.adguard-dns.com"
 - **Hostname upstreams** are looked up through `bootstrap` servers, or the system resolvers from `/etc/resolv.conf` when `bootstrap` is empty (never through TelltaleDNS itself), and the result is cached for its TTL. To skip the lookup, put the IP in the URL and set `tls_server_name`.
 - Connections are kept open and reused: many queries share one DoT connection (`pool_size`, default 4; closed after `idle_timeout_ms`, default 30 s), and DoH multiplexes every query over a single HTTP/2 connection. DoQ keeps one QUIC connection per upstream with a stream per query, reconnects when it closes, and never uses 0-RTT; DoH over HTTP/3 does the same with a request per query.
 - `http_version = "3"` on an `https://` upstream uses HTTP/3 only; `"auto"` (the default) and `"2"` use HTTP/2.
-- Not yet supported (startup error if set): `spki_pins`, `proxy`, `ecs` other than `"strip"`.
+- `doh_method = "get"` sends DoH queries as `GET /dns-query?dns=…` (RFC 8484 §4.1) instead of POST, for providers or HTTP caches that prefer it. The query ID is 0 either way, so identical questions make identical URLs.
 
 ### DNSCrypt and DNS stamps
 Use a DNSCrypt server (as dnscrypt-proxy does next to a Pi-hole), or any server from a DNS stamp list (the public list at dnscrypt.info), by pasting its `sdns://` stamp as the URL:
@@ -426,7 +426,17 @@ url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFs
 ```
 - **DNSCrypt stamps** become a DNSCrypt v2 upstream: the server's certificate is fetched and checked against the provider key in the stamp, then every query is encrypted (X25519 with XChaCha20-Poly1305 or XSalsa20-Poly1305, whichever the certificate offers) and padded, over UDP with TCP for large answers. Certificates are refreshed hourly and when they expire.
 - **DoH, DoT, and DoQ stamps** become the matching `https://`, `tls://`, or `quic://` upstream, with the stamp's host name as the TLS name and its address (if any) pinned, so no bootstrap lookup is needed.
-- Tested against AdGuard, OpenDNS, CleanBrowsing, Comodo, and cryptostorm's DNSCrypt servers. *Not supported:* relays (anonymized DNSCrypt) and DNSCrypt over IPv6-only paths without an IPv6 route.
+- Tested against AdGuard, OpenDNS, CleanBrowsing, Comodo, and cryptostorm's DNSCrypt servers. *Not supported:* DNSCrypt over IPv6-only paths without an IPv6 route.
+
+**Anonymized DNSCrypt.** Add a relay, and the queries go through it: the relay sees your address but can't read the queries, and the resolver reads the queries but sees only the relay's address. Pick a relay run by someone other than the resolver (the public relay list at dnscrypt.info has stamps):
+```toml
+[[upstream]]
+name = "adguard-anon"
+url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20"
+relay = "sdns://gQ8yMDMuMC4xMTMuNzo0NDM"     # a relay stamp (this one is 203.0.113.7:443), or "ip:port"
+```
+- Everything goes through the relay, the certificate fetch included, over UDP and over TCP for large answers.
+- `relay` is only valid on a DNSCrypt (`sdns://`) upstream.
 
 ### Client subnet (ECS)
 Some CDNs pick a server near the client by the subnet a resolver sends along (EDNS Client Subnet, RFC 7871). TelltaleDNS never sends your devices' subnets. When a far-away public resolver gets you slow CDN answers, you can send a subnet of your choice instead, for example your ISP's public block:
@@ -439,7 +449,19 @@ ecs = "203.0.113.0/24"            # sent with every query (default: "strip", not
 ```
 - The same subnet goes with every query, so cached answers stay valid for everyone and no device's address leaves your network.
 - ECS options from your devices are never forwarded, and an upstream's ECS reply never reaches them.
-- *Not supported:* passing each client's own subnet through (`pass`).
+
+When TelltaleDNS serves clients on public addresses (a hosted resolver, or a VPS for a family spread over several ISPs), `ecs = "client"` sends each client's own subnet instead:
+```toml
+[[upstream]]
+name = "quad9-ecs"
+url = "tls://9.9.9.11"
+tls_server_name = "dns11.quad9.net"
+ecs = "client"                    # each client's /24 (IPv4) or /56 (IPv6)
+```
+- Only the subnet goes out: the address cut to /24 or /56, the privacy defaults RFC 7871 recommends.
+- Clients on private, loopback, link-local, CGNAT (100.64.0.0/10), or ULA (fc00::/7) addresses send nothing, since their subnet would tell a CDN nothing. On a home network that's every device, so `"client"` only matters for public clients.
+- Answers from an upstream group with a `"client"` member are cached per subnet, so one subnet's answer never reaches another. They're also left out of the cache file kept across restarts.
+- The subnet comes from the client's address (after PROXY protocol, if enabled). ECS options your clients send are still never forwarded.
 
 ### Through a proxy (Tor)
 Send an upstream's traffic through a SOCKS5 or HTTP proxy, for example Tor, so the resolver never sees your address:
@@ -449,7 +471,8 @@ name = "quad9-tor"
 url = "tls://dns.quad9.net"                 # the proxy resolves the name: no bootstrap, no leak
 proxy = "socks5://127.0.0.1:9050"           # or "http://127.0.0.1:3128", with optional user:pass@
 ```
-- Works with `tcp://`, `tls://`, and `https://` upstreams (a proxy carries TCP; use `tcp://` instead of `udp://`).
+- Works with `tcp://`, `tls://`, and `https://` upstreams, and with `udp://` through a SOCKS5 proxy that supports UDP ASSOCIATE (RFC 1928 §7, e.g. Dante). A truncated UDP answer is asked again over TCP through the same proxy. A few associations are kept open and reused.
+- Tor and HTTP proxies don't carry UDP: use `tcp://` (or `tls://`) with them.
 - A hostname in the URL is passed to the proxy as a name, so the lookup happens at the proxy's end (with Tor, at the exit).
 - Credentials in the proxy URL (`socks5://user:pass@host:port`) never appear in logs.
 

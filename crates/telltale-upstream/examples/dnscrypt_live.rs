@@ -19,6 +19,7 @@ async fn main() {
         qclass: 1,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     };
     let (mut ok, mut failed) = (0, 0);
     for arg in std::env::args().skip(1) {

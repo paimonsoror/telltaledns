@@ -352,6 +352,22 @@ pub struct TlsFiles {
     pub key: SafeString,
 }
 
+/// REQ: UPS-011 (T9.9) — the DoH request method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub enum DohMethod {
+    #[default]
+    #[serde(rename = "post")]
+    Post,
+    #[serde(rename = "get")]
+    Get,
+}
+
+impl DohMethod {
+    pub fn is_post(&self) -> bool {
+        *self == Self::Post
+    }
+}
+
 /// DoH HTTP version preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum HttpVersion {
@@ -391,6 +407,10 @@ pub struct Upstream {
     /// DoH HTTP version: `"auto"`, `"2"`, or `"3"`.
     #[serde(default)]
     pub http_version: HttpVersion,
+    /// REQ: UPS-011 (T9.9) — DoH request method: `post` (default) or `get` (RFC 8484 §4.1:
+    /// the query in `?dns=`, which some providers and HTTP caches prefer).
+    #[serde(default, skip_serializing_if = "DohMethod::is_post")]
+    pub doh_method: DohMethod,
     /// Extra HTTP headers for DoH (e.g. an auth token).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
@@ -418,9 +438,15 @@ pub struct Upstream {
     /// `socks5://host:port` or `http://host:port` proxy (P1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<SafeString>,
+    /// REQ: UPS-003 (T9.9) — an anonymized DNSCrypt relay for a DNSCrypt (`sdns://`)
+    /// upstream: a relay stamp (`sdns://g…`) or `ip:port`. The relay sees who asks but not
+    /// what; the resolver sees what is asked but not by whom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<SafeString>,
     /// REQ: DNS-015 (T7.23) — EDNS Client Subnet: `strip` (default: clients' subnets are
-    /// never sent) or a subnet to send instead (`203.0.113.0/24`), so CDNs answer for that
-    /// area without learning client addresses.
+    /// never sent), a subnet to send instead (`203.0.113.0/24`), so CDNs answer for that
+    /// area without learning client addresses, or (T9.9) `client`: each client's own /24
+    /// (IPv4) or /56 (IPv6), for public clients only, with answers cached per subnet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ecs: Option<SafeString>,
     /// Free-form labels.

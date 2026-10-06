@@ -180,9 +180,31 @@ pub struct CacheKey {
     qclass: u16,
     flags: u8,
     view: u16,
+    /// REQ: DNS-015 (T9.9) — the client's packed subnet when the answer depends on it (0 if
+    /// not).
+    ecs: u64,
 }
 
 impl CacheKey {
+    /// REQ: DNS-015 (T9.9) — the same key scoped to a client subnet (`ecs = "client"`
+    /// upstreams answer per subnet). 0 leaves the key as is.
+    #[must_use]
+    pub fn with_ecs(self, ecs: u64) -> Self {
+        if ecs == 0 {
+            return self;
+        }
+        Self {
+            mixed: fmix64(self.mixed ^ ecs.wrapping_mul(0xC2B2_AE3D_27D4_EB4F)),
+            ecs,
+            ..self
+        }
+    }
+
+    /// The packed client subnet this key is scoped to (0 = none).
+    pub fn ecs(&self) -> u64 {
+        self.ecs
+    }
+
     /// `name_hash` is the per-process seeded hash of the normalized qname (`NameBuf::hash64`).
     pub fn new(q: &Query<'_>, name_hash: u64, view: u16) -> Self {
         let dnssec_ok = q.edns.is_some_and(|e| e.dnssec_ok);
@@ -207,6 +229,7 @@ impl CacheKey {
             qclass,
             flags,
             view,
+            ecs: 0,
         }
     }
 }

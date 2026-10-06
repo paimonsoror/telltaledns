@@ -1,5 +1,6 @@
 //! Upstreams through a proxy (REQ: UPS-010, `spec/04` §2; T7.16): SOCKS5 (RFC 1928, with
-//! RFC 1929 username/password) or HTTP CONNECT, for the TCP-based protocols (tcp, tls, https).
+//! RFC 1929 username/password) or HTTP CONNECT, for the TCP-based protocols (tcp, tls, https),
+//! and (T9.9) plain UDP through a SOCKS5 proxy's UDP ASSOCIATE relay.
 //! A hostname upstream is handed to the proxy by name, so the proxy resolves it (Tor:
 //! `proxy = "socks5://127.0.0.1:9050"` with `url = "tls://dns.quad9.net"` needs no bootstrap
 //! and leaks no lookup).
@@ -9,7 +10,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 
 /// A configured proxy.
 #[derive(Clone, PartialEq, Eq)]
@@ -106,6 +107,54 @@ impl Proxy {
         }
     }
 
+    /// REQ: UPS-010 (T9.9) — a UDP relay through a SOCKS5 proxy (RFC 1928 §7). HTTP proxies
+    /// can't carry UDP.
+    pub(crate) async fn udp_associate(&self) -> io::Result<UdpRelay> {
+        let Self::Socks5 { addr, auth } = self else {
+            return Err(fail(
+                "an HTTP proxy can't carry UDP: use tcp:// or a socks5:// proxy",
+            ));
+        };
+        let mut s = socks5_greet(*addr, auth.as_ref()).await?;
+        // UDP ASSOCIATE; our UDP address isn't known yet, so all zeros (the proxy takes the
+        // datagrams' source).
+        s.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+        let mut head = [0u8; 4];
+        s.read_exact(&mut head).await?;
+        if head[0] != 5 || head[1] != 0 {
+            return Err(fail(format!(
+                "SOCKS5 proxy refused UDP (reply {}): it may not support UDP ASSOCIATE (Tor doesn't; use tcp://)",
+                head[1]
+            )));
+        }
+        let ip: IpAddr = match head[3] {
+            1 => {
+                let mut b = [0u8; 4];
+                s.read_exact(&mut b).await?;
+                IpAddr::from(b)
+            }
+            4 => {
+                let mut b = [0u8; 16];
+                s.read_exact(&mut b).await?;
+                IpAddr::from(b)
+            }
+            _ => return Err(fail("SOCKS5 proxy sent an unusable UDP relay address")),
+        };
+        let mut port = [0u8; 2];
+        s.read_exact(&mut port).await?;
+        // An unspecified relay address means "the proxy's own".
+        let ip = if ip.is_unspecified() { addr.ip() } else { ip };
+        let relay = SocketAddr::new(ip, u16::from_be_bytes(port));
+        let bind: SocketAddr = if relay.is_ipv4() {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        let sock = UdpSocket::bind(bind).await?;
+        sock.connect(relay).await?;
+        Ok(UdpRelay { _control: s, sock })
+    }
+
     /// A TCP stream to `dest` through the proxy.
     pub(crate) async fn connect(&self, dest: &Dest) -> io::Result<TcpStream> {
         match self {
@@ -119,12 +168,64 @@ fn fail(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
+/// REQ: UPS-010 (T9.9) — a SOCKS5 UDP association: the control connection (the relay lasts as
+/// long as it's open) and a socket connected to the relay.
+#[derive(Debug)]
+pub(crate) struct UdpRelay {
+    _control: TcpStream,
+    sock: UdpSocket,
+}
+
+impl UdpRelay {
+    /// Sends `query` to `dest` through the relay and returns the reply with ID `id`.
+    pub(crate) async fn exchange(
+        &self,
+        dest: SocketAddr,
+        query: &[u8],
+        id: u16,
+    ) -> io::Result<Vec<u8>> {
+        // RFC 1928 §7: RSV RSV FRAG ATYP DST.ADDR DST.PORT DATA.
+        let mut d = vec![0u8, 0, 0];
+        match dest.ip() {
+            IpAddr::V4(v4) => {
+                d.push(1);
+                d.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                d.push(4);
+                d.extend_from_slice(&v6.octets());
+            }
+        }
+        d.extend_from_slice(&dest.port().to_be_bytes());
+        d.extend_from_slice(query);
+        self.sock.send(&d).await?;
+        let mut buf = vec![0u8; 4096 + 32];
+        loop {
+            let n = self.sock.recv(&mut buf).await?;
+            let b = &buf[..n];
+            // No fragments; skip the header to the payload.
+            if b.len() < 4 || b[2] != 0 {
+                continue;
+            }
+            let start = match b[3] {
+                1 => 4 + 4 + 2,
+                4 => 4 + 16 + 2,
+                3 => 4 + 1 + usize::from(*b.get(4).unwrap_or(&0)) + 2,
+                _ => continue,
+            };
+            let Some(payload) = b.get(start..) else {
+                continue;
+            };
+            if payload.len() >= 2 && u16::from_be_bytes([payload[0], payload[1]]) == id {
+                return Ok(payload.to_vec());
+            }
+        }
+    }
+}
+
+/// Connects to a SOCKS5 proxy and authenticates (no auth, or RFC 1929).
 #[allow(clippy::many_single_char_names)] // protocol byte buffers
-async fn socks5(
-    proxy: SocketAddr,
-    auth: Option<&(String, String)>,
-    dest: &Dest,
-) -> io::Result<TcpStream> {
+async fn socks5_greet(proxy: SocketAddr, auth: Option<&(String, String)>) -> io::Result<TcpStream> {
     let mut s = TcpStream::connect(proxy).await?;
     s.set_nodelay(true)?;
     // Greeting: no authentication, or username/password.
@@ -158,6 +259,16 @@ async fn socks5(
             ));
         }
     }
+    Ok(s)
+}
+
+#[allow(clippy::many_single_char_names)] // protocol byte buffers
+async fn socks5(
+    proxy: SocketAddr,
+    auth: Option<&(String, String)>,
+    dest: &Dest,
+) -> io::Result<TcpStream> {
+    let mut s = socks5_greet(proxy, auth).await?;
     // CONNECT.
     let mut req = vec![5, 1, 0];
     let port = match dest {
@@ -291,6 +402,93 @@ mod tests {
         );
         assert_eq!(base64(b"user:pass"), "dXNlcjpwYXNz");
         assert_eq!(base64(b"ab"), "YWI=");
+    }
+
+    /// REQ: UPS-010 (T9.9) — UDP through a SOCKS5 UDP ASSOCIATE relay: the datagram carries
+    /// the destination in its header, the reply comes back through the relay, and the relay is
+    /// reused while its control connection stays open.
+    #[tokio::test]
+    #[allow(clippy::many_single_char_names)] // protocol byte buffers
+    async fn ups_010_socks5_udp_associate() {
+        use tokio::net::TcpListener;
+        // The "DNS server": answers with the query's ID and a marker byte.
+        let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dns_addr = dns.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = dns.recv_from(&mut b).await {
+                let mut r = b[..n].to_vec();
+                r.push(0xAB);
+                let _ = dns.send_to(&r, from).await;
+            }
+        });
+        // The fake proxy: no auth, UDP ASSOCIATE, a relay socket that unwraps and forwards.
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let associations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = std::sync::Arc::clone(&associations);
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = l.accept().await {
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let mut g = [0u8; 3];
+                    c.read_exact(&mut g).await.unwrap();
+                    c.write_all(&[5, 0]).await.unwrap();
+                    let mut req = [0u8; 10];
+                    c.read_exact(&mut req).await.unwrap();
+                    assert_eq!(&req[..4], &[5, 3, 0, 1], "UDP ASSOCIATE");
+                    let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                    let port = relay.local_addr().unwrap().port().to_be_bytes();
+                    // An unspecified relay address: "the proxy's own".
+                    c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, port[0], port[1]])
+                        .await
+                        .unwrap();
+                    let mut b = [0u8; 1024];
+                    let upstream = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                    loop {
+                        tokio::select! {
+                            r = relay.recv_from(&mut b) => {
+                                let Ok((n, client)) = r else { return };
+                                let d = &b[..n];
+                                assert_eq!(&d[..4], &[0, 0, 0, 1]);
+                                let dest = SocketAddr::new(IpAddr::from([d[4], d[5], d[6], d[7]]), u16::from_be_bytes([d[8], d[9]]));
+                                upstream.send_to(&d[10..], dest).await.unwrap();
+                                let mut rb = [0u8; 1024];
+                                let (m, from) = upstream.recv_from(&mut rb).await.unwrap();
+                                let mut out = vec![0, 0, 0, 1];
+                                if let IpAddr::V4(v4) = from.ip() {
+                                    out.extend_from_slice(&v4.octets());
+                                }
+                                out.extend_from_slice(&from.port().to_be_bytes());
+                                out.extend_from_slice(&rb[..m]);
+                                relay.send_to(&out, client).await.unwrap();
+                            }
+                            r = c.read_u8() => { if r.is_err() { return; } }
+                        }
+                    }
+                });
+            }
+        });
+        let p = Proxy::Socks5 { addr, auth: None };
+        let relay = p.udp_associate().await.unwrap();
+        for id in [0x1234u16, 0x5678] {
+            let q = [id.to_be_bytes().to_vec(), vec![1, 0, 0, 1]].concat();
+            let r = relay.exchange(dns_addr, &q, id).await.unwrap();
+            assert_eq!(&r[..2], &id.to_be_bytes());
+            assert_eq!(r.last(), Some(&0xAB));
+        }
+        assert_eq!(
+            associations.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "one association, reused"
+        );
+        assert!(
+            Proxy::parse("http://127.0.0.1:3128")
+                .unwrap()
+                .udp_associate()
+                .await
+                .is_err()
+        );
     }
 
     /// REQ: UPS-010 — a SOCKS5 CONNECT by name (the proxy resolves it), with credentials, and

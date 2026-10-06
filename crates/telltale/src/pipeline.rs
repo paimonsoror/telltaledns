@@ -1147,7 +1147,11 @@ impl Pipeline {
                 .and_then(|b| b.finish(edns).ok());
             return ready(len.map(|l| self.finish(&q, out, l, meta.transport)));
         };
-        let key = self.key(&q, sel.view);
+        let mut key = self.key(&q, sel.view);
+        // REQ: DNS-015 (T9.9) — a group passing clients' subnets on caches per subnet.
+        if sel.group.ecs_client() {
+            key = key.with_ecs(telltale_upstream::client_subnet(who.peer));
+        }
         let client = Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
         // REQ: DNS-016 (T7.21) — DNS64 for this client (AAAA only; a validating client that
         // sets CD gets the real answer).
@@ -1679,7 +1683,9 @@ impl Pipeline {
     async fn resolve_upstream(&self, q: &Query<'_>, key: CacheKey, view: u16) -> Option<Arc<[u8]>> {
         // A full Arc (not a borrowed guard): it's held across the upstream round trip.
         let st = self.state.load_full();
-        let question = Question::from_query(q);
+        let mut question = Question::from_query(q);
+        // REQ: DNS-015 (T9.9) — the subnet the key was scoped to (prefetches keep it too).
+        question.client_subnet = key.ecs();
         // The view chosen at selection time (by qname, qtype, and client groups) names the group.
         let group = Arc::clone(st.router.group_by_view(view)?);
         let started = Instant::now();
@@ -3202,6 +3208,7 @@ groups = ["kids"]
             qclass: 1,
             dnssec_ok: false,
             checking_disabled: false,
+            client_subnet: 0,
         };
         let mut buf = [0u8; 512];
         let len = telltale_upstream::encode_query(&q, 1, &mut buf).unwrap();

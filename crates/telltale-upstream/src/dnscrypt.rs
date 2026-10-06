@@ -110,6 +110,38 @@ fn text(b: &[u8]) -> Option<String> {
     String::from_utf8(b.to_vec()).ok()
 }
 
+/// REQ: UPS-003 (T9.9) — an anonymized DNSCrypt relay: a relay stamp (type 0x81, just an
+/// address, no properties) or `ip:port`.
+pub fn parse_relay(s: &str) -> Result<SocketAddr, String> {
+    let Some(body) = s.strip_prefix("sdns://") else {
+        return parse_addr(s, 443).ok_or_else(|| format!("relay `{s}`: not ip:port"));
+    };
+    let raw = b64url_decode(body).ok_or("not a valid relay stamp (base64)")?;
+    match raw.split_first() {
+        Some((0x81, mut b)) => {
+            let addr = lp(&mut b).and_then(text).ok_or("a malformed relay stamp")?;
+            parse_addr(&addr, 443).ok_or_else(|| format!("relay stamp address `{addr}`"))
+        }
+        _ => Err("not a relay stamp (sdns://g…)".to_owned()),
+    }
+}
+
+/// REQ: UPS-003 (T9.9) — what goes to the relay: the anonymized-DNSCrypt header (magic,
+/// the server's address as IPv6, its port), then the packet unchanged.
+fn relayed(server: SocketAddr, packet: &[u8]) -> Vec<u8> {
+    let ip = match server.ip() {
+        std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+        std::net::IpAddr::V6(v6) => v6,
+    };
+    let mut out = Vec::with_capacity(28 + packet.len());
+    out.extend_from_slice(&[0xff; 8]);
+    out.extend_from_slice(&[0, 0]);
+    out.extend_from_slice(&ip.octets());
+    out.extend_from_slice(&server.port().to_be_bytes());
+    out.extend_from_slice(packet);
+    out
+}
+
 /// Parses `sdns://…` (DNSCrypt, DoH, DoT, DoQ stamps).
 pub fn parse_stamp(s: &str) -> Result<Stamp, String> {
     let body = s
@@ -293,6 +325,8 @@ impl Box2 {
 /// The DNSCrypt transport of one upstream.
 pub(crate) struct DnsCrypt {
     addr: SocketAddr,
+    /// REQ: UPS-003 (T9.9) — everything goes through this anonymized relay when set.
+    relay: Option<SocketAddr>,
     provider: ed25519_dalek::VerifyingKey,
     provider_name: NameBuf,
     secret: SecretKey,
@@ -305,6 +339,7 @@ impl std::fmt::Debug for DnsCrypt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DnsCrypt")
             .field("addr", &self.addr)
+            .field("relay", &self.relay)
             .finish_non_exhaustive()
     }
 }
@@ -314,6 +349,7 @@ impl DnsCrypt {
         addr: SocketAddr,
         provider_pk: [u8; 32],
         provider_name: &str,
+        relay: Option<SocketAddr>,
     ) -> Result<Self, String> {
         let provider = ed25519_dalek::VerifyingKey::from_bytes(&provider_pk)
             .map_err(|_| "the stamp's provider key isn't a valid Ed25519 key".to_owned())?;
@@ -323,6 +359,7 @@ impl DnsCrypt {
         let public = *secret.public_key().as_bytes();
         Ok(Self {
             addr,
+            relay,
             provider,
             provider_name: name,
             secret,
@@ -348,7 +385,14 @@ impl DnsCrypt {
         if let Some(c) = fresh(&self.cert.lock()) {
             return Ok(c);
         }
-        let resp = plain_query(self.addr, &self.provider_name, rtype::TXT, timeout).await?;
+        let resp = plain_query(
+            self.addr,
+            self.relay,
+            &self.provider_name,
+            rtype::TXT,
+            timeout,
+        )
+        .await?;
         let now = unix_now();
         let best = txt_records(&resp)
             .iter()
@@ -397,11 +441,15 @@ impl DnsCrypt {
         packet.extend_from_slice(&self.public);
         packet.extend_from_slice(&half);
         packet.extend(sealed);
+        let (to, packet) = match self.relay {
+            Some(r) => (r, relayed(self.addr, &packet)),
+            None => (self.addr, packet),
+        };
         let raw = tokio::time::timeout(timeout, async {
             if tcp {
-                tcp_round(self.addr, &packet).await
+                tcp_round(to, &packet).await
             } else {
-                udp_round(self.addr, &packet, &half).await
+                udp_round(to, &packet, &half).await
             }
         })
         .await
@@ -460,7 +508,8 @@ async fn tcp_round(addr: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, ExchangeE
 
 /// A plain (unencrypted) query: the certificate fetch.
 async fn plain_query(
-    addr: SocketAddr,
+    server: SocketAddr,
+    relay: Option<SocketAddr>,
     name: &NameBuf,
     qtype: u16,
     timeout: Duration,
@@ -475,6 +524,11 @@ async fn plain_query(
     let len = telltale_proto::build_query(&mut buf, id, name, qtype, 1, true, Some(edns))
         .map_err(|_| ExchangeError::BadResponse)?;
     let q = &buf[..len];
+    // REQ: UPS-003 (T9.9) — through the relay, the certificate query carries the header too.
+    let (addr, sent) = match relay {
+        Some(r) => (r, relayed(server, q)),
+        None => (server, q.to_vec()),
+    };
     let resp = tokio::time::timeout(timeout, async {
         let bind: SocketAddr = if addr.is_ipv4() {
             (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
@@ -483,7 +537,7 @@ async fn plain_query(
         };
         let s = UdpSocket::bind(bind).await?;
         s.connect(addr).await?;
-        s.send(q).await?;
+        s.send(&sent).await?;
         let mut r = vec![0u8; 4096];
         loop {
             let n = s.recv(&mut r).await?;
@@ -498,8 +552,11 @@ async fn plain_query(
     if telltale_proto::Header::parse(&resp).is_some_and(|h| h.flags.tc()) {
         // Certificates sets can be large: ask again over TCP.
         let mut s = TcpStream::connect(addr).await?;
-        let mut framed = u16::try_from(q.len()).unwrap_or(0).to_be_bytes().to_vec();
-        framed.extend_from_slice(q);
+        let mut framed = u16::try_from(sent.len())
+            .unwrap_or(0)
+            .to_be_bytes()
+            .to_vec();
+        framed.extend_from_slice(&sent);
         s.write_all(&framed).await?;
         let mut lb = [0u8; 2];
         s.read_exact(&mut lb).await?;

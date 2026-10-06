@@ -119,6 +119,7 @@ impl DnsHandle for GroupHandle {
                 qclass: u16::from(q.query_class()),
                 dnssec_ok: true,
                 checking_disabled: true,
+                client_subnet: 0,
             };
             let a = group
                 .resolve(question, budget)

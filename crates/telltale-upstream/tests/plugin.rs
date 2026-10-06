@@ -17,6 +17,7 @@ fn question() -> Question {
         qclass: 1,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     }
 }
 

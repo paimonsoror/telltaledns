@@ -70,6 +70,14 @@ async fn serve(r: Arc<TestResolver>, served: Vec<u8>) -> std::net::SocketAddr {
 }
 
 fn upstream(addr: std::net::SocketAddr, provider: [u8; 32]) -> Upstream {
+    upstream_via(addr, provider, None)
+}
+
+fn upstream_via(
+    addr: std::net::SocketAddr,
+    provider: [u8; 32],
+    relay: Option<std::net::SocketAddr>,
+) -> Upstream {
     let ep = Endpoint {
         protocol: Protocol::DnsCrypt,
         host: Host::Ip(addr.ip()),
@@ -79,6 +87,7 @@ fn upstream(addr: std::net::SocketAddr, provider: [u8; 32]) -> Upstream {
     let opts = UpstreamOptions {
         timeout: Duration::from_secs(2),
         dnscrypt: Some((provider, PROVIDER.to_owned())),
+        dnscrypt_relay: relay,
         ..UpstreamOptions::default()
     };
     Upstream::build(1, "dnscrypt", ep, &opts, &TlsOptions::default()).unwrap()
@@ -91,6 +100,7 @@ fn question() -> Question {
         qclass: 1,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     }
 }
 
@@ -131,4 +141,64 @@ async fn ups_003_dnscrypt_rejects_a_foreign_certificate() {
             .await
             .is_err()
     );
+}
+
+/// A fake anonymized relay: checks the header, forwards the rest to the address it names,
+/// and passes the reply back. Counts what it relayed.
+async fn relay(count: Arc<std::sync::atomic::AtomicUsize>) -> std::net::SocketAddr {
+    let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = s.local_addr().unwrap();
+    tokio::spawn(async move {
+        let up = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let Ok((n, from)) = s.recv_from(&mut buf).await else {
+                return;
+            };
+            let pkt = &buf[..n];
+            assert_eq!(
+                &pkt[..10],
+                &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0]
+            );
+            let ip: [u8; 16] = pkt[10..26].try_into().unwrap();
+            let ip = std::net::Ipv6Addr::from(ip).to_ipv4_mapped().unwrap();
+            let port = u16::from_be_bytes([pkt[26], pkt[27]]);
+            up.send_to(&pkt[28..], (ip, port)).await.unwrap();
+            let mut rb = vec![0u8; 4096];
+            let (m, _) = up.recv_from(&mut rb).await.unwrap();
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _ = s.send_to(&rb[..m], from).await;
+        }
+    });
+    addr
+}
+
+/// REQ: UPS-003 (T9.9) — anonymized DNSCrypt: the certificate fetch and the encrypted
+/// queries all go through the relay, which forwards to the resolver its header names.
+#[tokio::test]
+async fn ups_003_dnscrypt_through_a_relay() {
+    let r = Arc::new(TestResolver::new(true));
+    let pk = r.provider.verifying_key().to_bytes();
+    let server = serve(Arc::clone(&r), r.cert.clone()).await;
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let via = relay(Arc::clone(&count)).await;
+    let up = upstream_via(server, pk, Some(via));
+    for _ in 0..2 {
+        let resp = up
+            .exchange(&question(), Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(resp.ends_with(&[10, 9, 9, 9]));
+    }
+    // One certificate fetch and two queries.
+    assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 3);
+    assert_eq!(
+        telltale_upstream::dnscrypt::parse_relay("sdns://gQ0xMjcuMC4wLjE6NDQz").unwrap(),
+        "127.0.0.1:443".parse().unwrap()
+    );
+    assert_eq!(
+        telltale_upstream::dnscrypt::parse_relay("203.0.113.7:8443").unwrap(),
+        "203.0.113.7:8443".parse().unwrap()
+    );
+    assert!(telltale_upstream::dnscrypt::parse_relay(&format!("sdns://{}", "AQ")).is_err());
 }

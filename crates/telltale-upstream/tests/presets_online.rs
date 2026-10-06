@@ -39,6 +39,7 @@ async fn ups_004_every_preset_endpoint_resolves_example_com() {
         qclass: 1,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     };
     let mut failures = Vec::new();
     let mut checked = 0;

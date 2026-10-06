@@ -170,11 +170,30 @@ fn stamp_endpoint(s: &crate::dnscrypt::Stamp) -> Endpoint {
     }
 }
 
+/// What an upstream's traffic goes through: a proxy (REQ: UPS-010, T7.16) and an anonymized
+/// DNSCrypt relay (REQ: UPS-003, T9.9).
+type Via = (Option<Arc<crate::proxy::Proxy>>, Option<SocketAddr>);
+fn via(u: &telltale_config::Upstream) -> Result<Via, String> {
+    let proxy = u
+        .proxy
+        .as_deref()
+        .map(crate::proxy::Proxy::parse)
+        .transpose()?
+        .map(Arc::new);
+    let relay = u
+        .relay
+        .as_deref()
+        .map(crate::dnscrypt::parse_relay)
+        .transpose()?;
+    Ok((proxy, relay))
+}
+
 /// REQ: DNS-015 (T7.23) — the ECS option to send: none for `strip` (the default), else the
 /// configured subnet's.
 fn ecs_option_for(u: &telltale_config::Upstream) -> Result<Option<Vec<u8>>, ()> {
     match u.ecs.as_deref() {
-        None | Some("strip") => Ok(None),
+        // `client` is per query (REQ: DNS-015, T9.9).
+        None | Some("strip" | "client") => Ok(None),
         Some(cidr) => telltale_config::Cidr::parse(cidr)
             .map(|c| Some(crate::upstream::ecs_option(c.addr, c.prefix)))
             .map_err(|_| ()),
@@ -235,14 +254,12 @@ fn build_upstreams<'c>(
                 continue;
             }
         };
-        // REQ: UPS-010 (T7.16)
-        let proxy = match u.proxy.as_deref().map(crate::proxy::Proxy::parse) {
-            Some(Ok(p)) => Some(Arc::new(p)),
-            Some(Err(e)) => {
+        let (proxy, dnscrypt_relay) = match via(u) {
+            Ok(x) => x,
+            Err(e) => {
                 errors.push(format!("upstream `{}`: {e}", u.name));
                 continue;
             }
-            None => None,
         };
         // REQ: UPS-011 (T7.16) — CA, client certificate, pins.
         let up_tls = match upstream_tls(u) {
@@ -301,10 +318,15 @@ fn build_upstreams<'c>(
             bootstrap,
             proxy,
             ecs,
+            // REQ: DNS-015 (T9.9)
+            ecs_client: u.ecs.as_deref() == Some("client"),
             dnscrypt,
+            // REQ: UPS-003 (T9.9)
+            dnscrypt_relay,
             // REQ: UPS-011 (T7.16)
             tls: up_tls,
             plugin_args: u.args.iter().map(ToString::to_string).collect(),
+            doh_get: u.doh_method == telltale_config::DohMethod::Get,
             plugin_dir: Some(std::path::Path::new(cfg.node.data_dir.as_str()).join("plugins")),
             // REQ: DNS-012 (T7.15)
             recursive: telltale_recursor::Settings {

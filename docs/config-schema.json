@@ -1383,6 +1383,14 @@
       },
       "additionalProperties": false
     },
+    "DohMethod": {
+      "description": "REQ: UPS-011 (T9.9) — the DoH request method.",
+      "type": "string",
+      "enum": [
+        "post",
+        "get"
+      ]
+    },
     "EdeKind": {
       "description": "EDE code on block answers.",
       "type": "string",
@@ -3077,8 +3085,12 @@
             "format": "ip"
           }
         },
+        "doh_method": {
+          "description": "REQ: UPS-011 (T9.9) — DoH request method: `post` (default) or `get` (RFC 8484 §4.1:\nthe query in `?dns=`, which some providers and HTTP caches prefer).",
+          "$ref": "#/$defs/DohMethod"
+        },
         "ecs": {
-          "description": "REQ: DNS-015 (T7.23) — EDNS Client Subnet: `strip` (default: clients' subnets are\nnever sent) or a subnet to send instead (`203.0.113.0/24`), so CDNs answer for that\narea without learning client addresses.",
+          "description": "REQ: DNS-015 (T7.23) — EDNS Client Subnet: `strip` (default: clients' subnets are\nnever sent), a subnet to send instead (`203.0.113.0/24`), so CDNs answer for that\narea without learning client addresses, or (T9.9) `client`: each client's own /24\n(IPv4) or /56 (IPv6), for public clients only, with answers cached per subnet.",
           "type": [
             "string",
             "null"
@@ -3140,6 +3152,14 @@
         "recursive": {
           "description": "REQ: DNS-012 (T7.15) — `recursive://` only: how the resolver asks the root servers\nand below.",
           "$ref": "#/$defs/RecursiveConfig"
+        },
+        "relay": {
+          "description": "REQ: UPS-003 (T9.9) — an anonymized DNSCrypt relay for a DNSCrypt (`sdns://`)\nupstream: a relay stamp (`sdns://g…`) or `ip:port`. The relay sees who asks but not\nwhat; the resolver sees what is asked but not by whom.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "spki_pins": {
           "description": "Base64 SHA-256 SPKI pins: the server's key must match one (see `docs/running.md`,\n\"Pinning and client certificates\", for how to get a server's pin).",

@@ -18,6 +18,8 @@ const DNS_MESSAGE: &str = "application/dns-message";
 pub(crate) struct Doh {
     connector: Connector,
     uri: String,
+    /// REQ: UPS-011 (T9.9) — GET with `?dns=` instead of POST.
+    get: bool,
     headers: Vec<(HeaderName, HeaderValue)>,
     sender: Mutex<Option<SendRequest<Bytes>>>,
 }
@@ -41,6 +43,7 @@ impl Doh {
         authority: &str,
         path: &str,
         headers: &[(String, String)],
+        get: bool,
     ) -> Result<Self, String> {
         let mut hs = Vec::new();
         for (k, v) in headers {
@@ -53,6 +56,7 @@ impl Doh {
         Ok(Self {
             connector,
             uri: format!("https://{authority}{path}"),
+            get,
             headers: hs,
             sender: Mutex::new(None),
         })
@@ -92,23 +96,33 @@ impl Doh {
             .ready()
             .await
             .map_err(|e| SendError::Connection(io_err(e)))?;
-        let mut req = Request::builder()
-            .method(Method::POST)
-            .uri(&self.uri)
-            .header(http::header::CONTENT_TYPE, DNS_MESSAGE)
-            .header(http::header::ACCEPT, DNS_MESSAGE)
-            .header(http::header::CONTENT_LENGTH, body.len())
-            .body(())
-            .map_err(|e| SendError::Other(io_err(e)))?;
+        let builder = if self.get {
+            // RFC 8484 §4.1: base64url without padding, in `dns=`.
+            let sep = if self.uri.contains('?') { '&' } else { '?' };
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("{}{sep}dns={}", self.uri, b64url(&body)))
+                .header(http::header::ACCEPT, DNS_MESSAGE)
+        } else {
+            Request::builder()
+                .method(Method::POST)
+                .uri(&self.uri)
+                .header(http::header::CONTENT_TYPE, DNS_MESSAGE)
+                .header(http::header::ACCEPT, DNS_MESSAGE)
+                .header(http::header::CONTENT_LENGTH, body.len())
+        };
+        let mut req = builder.body(()).map_err(|e| SendError::Other(io_err(e)))?;
         for (k, v) in &self.headers {
             req.headers_mut().insert(k.clone(), v.clone());
         }
         let (resp, mut stream) = sender
-            .send_request(req, false)
+            .send_request(req, self.get)
             .map_err(|e| SendError::Connection(io_err(e)))?;
-        stream
-            .send_data(body, true)
-            .map_err(|e| SendError::Connection(io_err(e)))?;
+        if !self.get {
+            stream
+                .send_data(body, true)
+                .map_err(|e| SendError::Connection(io_err(e)))?;
+        }
         let resp = resp.await.map_err(|e| SendError::Connection(io_err(e)))?;
         if resp.status() != http::StatusCode::OK {
             return Err(SendError::Other(io_err(format!("HTTP {}", resp.status()))));
@@ -125,6 +139,21 @@ impl Doh {
         }
         Ok(out)
     }
+}
+
+/// URL-safe base64 without padding (RFC 4648 §5).
+fn b64url(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..=c.len() {
+            s.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
+        }
+    }
+    s
 }
 
 enum SendError {

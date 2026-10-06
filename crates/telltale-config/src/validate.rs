@@ -888,6 +888,23 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// REQ: UPS-003 (T9.9) — relays carry DNSCrypt only.
+fn relay(u: &crate::schema::Upstream, scheme: &str, p: &str, r: &mut Report<'_>) {
+    let Some(relay) = &u.relay else { return };
+    let relay = relay.as_str();
+    if scheme != "sdns" {
+        r.err(
+            format!("{p}.relay"),
+            "only for DNSCrypt (sdns://) upstreams",
+        );
+    } else if !relay.starts_with("sdns://") && relay.parse::<std::net::SocketAddr>().is_err() {
+        r.err(
+            format!("{p}.relay"),
+            "a relay stamp (sdns://…) or ip:port, e.g. 203.0.113.7:443",
+        );
+    }
+}
+
 /// Validates upstreams and returns the set of their names.
 fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
     let mut names = HashSet::new();
@@ -925,18 +942,27 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                 }
                 // REQ: DNS-015 (T7.23)
                 if let Some(e) = &u.ecs
-                    && e.as_str() != "strip"
+                    && !matches!(e.as_str(), "strip" | "client")
                     && crate::Cidr::parse(e).is_err()
                 {
                     r.err(
                         format!("{p}.ecs"),
-                        "`strip` (the default: never sent) or a subnet to send instead of the client's, e.g. 203.0.113.0/24",
+                        "`strip` (the default: never sent), `client` (each public client's /24 or /56), or a subnet to send instead, e.g. 203.0.113.0/24",
                     );
                 }
                 // REQ: UPS-010 (T7.16)
-                if u.proxy.is_some() && !matches!(s, "tcp" | "tls" | "https") {
-                    r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams (use tcp:// instead of udp://)");
+                // REQ: UPS-010 (T9.9) — udp:// only through a SOCKS5 proxy's UDP relay.
+                let socks = u
+                    .proxy
+                    .as_ref()
+                    .is_some_and(|x| x.as_str().starts_with("socks5://"));
+                if u.proxy.is_some()
+                    && !matches!(s, "tcp" | "tls" | "https")
+                    && !(s == "udp" && socks)
+                {
+                    r.err(format!("{p}.proxy"), "only for tcp://, tls://, and https:// upstreams, or udp:// through a socks5:// proxy (use tcp:// with an HTTP proxy or Tor)");
                 }
+                relay(u, s, &p, r);
                 // REQ: DNS-012 (T7.15)
                 if s != "recursive" && u.recursive != crate::schema::RecursiveConfig::default() {
                     r.err(

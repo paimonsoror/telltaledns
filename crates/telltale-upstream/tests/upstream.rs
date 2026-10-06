@@ -116,6 +116,7 @@ fn question(name: &str) -> Question {
         qclass: 1,
         dnssec_ok: false,
         checking_disabled: false,
+        client_subnet: 0,
     }
 }
 
@@ -390,4 +391,47 @@ async fn ups_006_chaos_one_upstream_blackholed() {
         }
         assert!(results.is_empty(), "{strategy:?}: {results:?}");
     }
+}
+
+/// REQ: DNS-015 (T9.9) — `ecs = "client"`: the query carries the client's /24, and a
+/// question without a subnet (a private client) carries none.
+#[tokio::test]
+async fn dns_015_ecs_client_reaches_the_upstream() {
+    let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = s.local_addr().unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, from)) = s.recv_from(&mut buf).await {
+            let q = parse_query(&buf[..n]).unwrap();
+            let _ = tx.send(q.edns.and_then(|e| e.client_subnet()).map(<[u8]>::to_vec));
+            if let Some(r) = answer(&buf[..n], rcode::NOERROR, 1, false) {
+                let _ = s.send_to(&r, from).await;
+            }
+        }
+    });
+    let ep = Endpoint::parse(&format!("udp://{addr}")).unwrap();
+    let opts = telltale_upstream::UpstreamOptions {
+        ecs_client: true,
+        ..telltale_upstream::UpstreamOptions::default()
+    };
+    let up = Upstream::build(
+        1,
+        "ecs",
+        ep,
+        &opts,
+        &telltale_upstream::TlsOptions::default(),
+    )
+    .unwrap();
+    let mut q = question("cdn.example");
+    q.client_subnet = telltale_upstream::client_subnet("198.51.100.77".parse().unwrap());
+    up.exchange(&q, Duration::from_secs(2)).await.unwrap();
+    // family 1, source /24, scope 0, three address bytes.
+    assert_eq!(
+        rx.recv().await.unwrap().unwrap(),
+        vec![0, 1, 24, 0, 198, 51, 100]
+    );
+    let q = question("cdn.example");
+    up.exchange(&q, Duration::from_secs(2)).await.unwrap();
+    assert_eq!(rx.recv().await.unwrap(), None);
 }
