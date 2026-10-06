@@ -383,7 +383,8 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
 
 - [x] **T7.2 MCP resources and prompts.** *(AGT-010)* Resources: cluster status, the configuration (redacted), the daily summary. Prompts: investigate a device, weekly network report, tune blocklists, upstream health review.
   - *Done 2026-10-06:* `resources/list|read` (`telltale://cluster/status`, `telltale://config`, `telltale://reports/daily`: REST reads with the caller's credentials) and `prompts/list|get` (`investigate_device`, `weekly_network_report`, `tune_blocklists`, `upstream_health_review`); a unit test checks every tool a prompt names exists; `deploy/mcp-e2e.sh` reads each resource and renders a prompt with the official SDK.
-- [ ] **T7.3 Scope-aware analytics tools.** *(AGT-011)* Every analytics tool takes `scope` (cluster, site, node) and reports `missingNodes` (`12 §6`).
+- [x] **T7.3 Scope-aware analytics tools.** *(AGT-011)* Every analytics tool takes `scope` (cluster, site, node) and reports `missingNodes` (`12 §6`).
+  - *Done 2026-10-06:* REST analytics reads accept `site:<name>` and `node:<name or ID>` besides `cluster` and `node:local` (`Backend::scoped`; the federated backend reads only the nodes in scope, and `missingNodes` lists only those); the MCP analytics tools (`get_overview`, `top_items`, `search_queries`, `latency_breakdown`, `get_client_profile`) take `scope`, and every tool result carries `missingNodes`. Tested in `deploy/cluster/e2e.sh` (site and node scopes on two processes; an unknown site is a 400). `upstream_health` and `find_anomalies` stay per node (their REST reads aren't federated).
 - [ ] **T7.4 OAuth for MCP via OIDC.** *(AGT-008, P1 part)* Protected-resource metadata at `/.well-known/oauth-protected-resource`, the configured OIDC provider as the authorization server, scope consent.
 
 ## M8 — v2 (stretch)

@@ -214,6 +214,18 @@ pub(crate) struct Federated {
     cluster: Arc<Cluster>,
     /// Nodes the latest federated read couldn't reach (site labels).
     missing: Mutex<Vec<String>>,
+    /// REQ: AGT-011, CLU-002 (T7.3) — a read's `scope` narrowed to some nodes; `None` is the
+    /// whole cluster.
+    only: Option<Only>,
+}
+
+/// The nodes a scoped read covers.
+#[derive(Debug, Clone)]
+struct Only {
+    /// This node is in scope.
+    me: bool,
+    /// Peer node IDs in scope.
+    peers: Vec<String>,
 }
 
 impl std::fmt::Debug for Federated {
@@ -228,7 +240,63 @@ impl Federated {
             local,
             cluster,
             missing: Mutex::new(Vec::new()),
+            only: None,
         }
+    }
+
+    /// Whether this node's own data is in the read's scope.
+    fn with_me(&self) -> bool {
+        self.only.as_ref().is_none_or(|o| o.me)
+    }
+
+    /// Whether a peer is in the read's scope.
+    fn in_scope(&self, node_id: &str) -> bool {
+        self.only
+            .as_ref()
+            .is_none_or(|o| o.peers.iter().any(|p| p == node_id))
+    }
+
+    /// The reachable peers in the read's scope.
+    fn peers(&self) -> Vec<String> {
+        self.cluster
+            .reachable_peers()
+            .into_iter()
+            .filter(|p| self.in_scope(p))
+            .collect()
+    }
+
+    /// REQ: AGT-011, CLU-002 (T7.3) — the nodes `site:<name>` or `node:<id, site, or pod>`
+    /// names; an unknown one is the caller's mistake.
+    fn narrow(&self, scope: &str) -> Result<Only, Problem> {
+        let me = &self.cluster.identity.meta;
+        if let Some(site) = scope.strip_prefix("site:") {
+            let peers: Vec<String> = self
+                .cluster
+                .members()
+                .into_iter()
+                .filter(|m| m.site == site)
+                .map(|m| m.node_id)
+                .collect();
+            let mine = me.site == site;
+            if peers.is_empty() && !mine {
+                return Err(
+                    Problem::invalid(format!("`scope`: no site `{site}` in this cluster"))
+                        .hint("The Cluster page (or cluster_status) lists each node's site."),
+                );
+            }
+            return Ok(Only { me: mine, peers });
+        }
+        let node = scope.strip_prefix("node:").unwrap_or(scope);
+        Ok(match self.resolve_node(node)? {
+            None => Only {
+                me: true,
+                peers: Vec::new(),
+            },
+            Some(peer) => Only {
+                me: false,
+                peers: vec![peer],
+            },
+        })
     }
 
     fn label_of(&self, node: &str) -> String {
@@ -292,7 +360,7 @@ impl Federated {
             .cluster
             .members()
             .into_iter()
-            .filter(|m| !m.connected)
+            .filter(|m| !m.connected && self.in_scope(&m.node_id))
             .map(|m| if m.site.is_empty() { m.node_id } else { m.site })
             .collect();
         let calls: Vec<(String, Vec<u8>)> = reads
@@ -353,12 +421,7 @@ impl Federated {
         &self,
         read: impl Fn() -> Read,
     ) -> Vec<(String, T)> {
-        let reads = self
-            .cluster
-            .reachable_peers()
-            .into_iter()
-            .map(|p| (p, read()))
-            .collect();
+        let reads = self.peers().into_iter().map(|p| (p, read())).collect();
         self.gather(reads)
             .into_iter()
             .filter_map(|(peer, body)| {
@@ -440,12 +503,7 @@ impl Federated {
 
     /// Asks every reachable peer the same read; decoded answers.
     fn everyone<T: serde::de::DeserializeOwned>(&self, read: impl Fn() -> Read) -> Vec<T> {
-        let reads = self
-            .cluster
-            .reachable_peers()
-            .into_iter()
-            .map(|p| (p, read()))
-            .collect();
+        let reads = self.peers().into_iter().map(|p| (p, read())).collect();
         self.gather(reads)
             .into_iter()
             .filter_map(|(peer, body)| match serde_json::from_slice(&body) {
@@ -465,6 +523,19 @@ impl Backend for Federated {
     }
     fn system_info(&self) -> SystemInfo {
         self.local.system_info()
+    }
+    // REQ: AGT-011, CLU-002 (T7.3) — the same reads over some of the nodes.
+    fn scoped(&self, scope: &str) -> Result<Shared, Problem> {
+        let only = self.narrow(scope)?;
+        if only.me && only.peers.is_empty() {
+            return Ok(Arc::clone(&self.local));
+        }
+        Ok(Arc::new(Self {
+            local: Arc::clone(&self.local),
+            cluster: Arc::clone(&self.cluster),
+            missing: Mutex::new(Vec::new()),
+            only: Some(only),
+        }))
     }
     fn local(&self) -> Option<Shared> {
         Some(Arc::clone(&self.local))
@@ -505,7 +576,9 @@ impl Backend for Federated {
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
         let mut parts: Vec<Vec<TimeBucket>> =
             self.everyone(|| Read::Timeseries { step, from_s, to_s });
-        parts.push(self.local.timeseries(step, from_s, to_s));
+        if self.with_me() {
+            parts.push(self.local.timeseries(step, from_s, to_s));
+        }
         federation::merge_timeseries(parts)
     }
     fn tail(&self, p: &TailParams) -> Result<tokio::sync::mpsc::Receiver<TailItem>, Problem> {
@@ -519,7 +592,9 @@ impl Backend for Federated {
             limit,
             client,
         });
-        parts.push(self.local.top(kind, hour, limit, client));
+        if self.with_me() {
+            parts.push(self.local.top(kind, hour, limit, client));
+        }
         federation::merge_top(parts, limit)
     }
     fn top_in_group(
@@ -529,7 +604,11 @@ impl Backend for Federated {
         limit: usize,
         group: &str,
     ) -> Result<Vec<TopItem>, Problem> {
-        let own = self.local.top_in_group(kind, hour, limit, group)?;
+        let own = if self.with_me() {
+            self.local.top_in_group(kind, hour, limit, group)?
+        } else {
+            Vec::new()
+        };
         let mut parts: Vec<Vec<TopItem>> = self.everyone(|| Read::TopInGroup {
             kind,
             hour,
@@ -541,7 +620,9 @@ impl Backend for Federated {
     }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow> {
         let mut parts: Vec<Vec<LatencyRow>> = self.everyone(|| Read::Latency { by, hour });
-        parts.push(self.local.latency(by, hour));
+        if self.with_me() {
+            parts.push(self.local.latency(by, hour));
+        }
         federation::merge_latency(parts)
     }
 
@@ -566,8 +647,7 @@ impl Backend for Federated {
         params.cursor = None;
         let me = self.cluster.identity.meta.node_id.clone();
         let reads: Vec<(String, Read)> = self
-            .cluster
-            .reachable_peers()
+            .peers()
             .into_iter()
             .filter_map(|p| {
                 let to = until(&p)?;
@@ -592,7 +672,7 @@ impl Backend for Federated {
             }
         }
         let mut local_error = None;
-        if let Some(to) = until(&me) {
+        if let Some(to) = until(&me).filter(|_| self.with_me()) {
             match self.local.queries(&params, from_us, to, limit) {
                 Ok(page) => pages.push(NodePage {
                     node: me,

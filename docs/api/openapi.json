@@ -2063,7 +2063,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`.",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`\n(this node). Federated reads list nodes that didn't answer in `missingNodes`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2622,7 +2622,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`.",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`\n(this node). Federated reads list nodes that didn't answer in `missingNodes`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2683,7 +2683,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`.",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`\n(this node). Federated reads list nodes that didn't answer in `missingNodes`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2753,7 +2753,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`.",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`\n(this node). Federated reads list nodes that didn't answer in `missingNodes`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2842,7 +2842,7 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "`cluster` (default) or `node:local`.",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`\n(this node). Federated reads list nodes that didn't answer in `missingNodes`.",
             "required": false,
             "schema": {
               "type": "string"

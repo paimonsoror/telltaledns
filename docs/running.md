@@ -852,8 +852,11 @@ groups, and query log cover every node:
   - query-log rows interleave by time, and each row shows the node that answered it.
 - A node that doesn't answer within 2 seconds is left out, and the page says so ("Partial
   results: pi didn't answer"). It never hangs. The API lists those nodes in `missingNodes`.
-- `scope=node:local` on a stats or query-log request reads only the node you're asking, for
-  example `GET /api/v1/stats/summary?scope=node:local`.
+- `scope` on a stats or query-log request narrows it: `cluster` (the default, every node),
+  `site:<name>` (the nodes of one site, e.g. `site:k8s`), `node:<name or ID>` (one node, by
+  site, pod, or node ID), or `node:local` (the node you're asking). For example
+  `GET /api/v1/stats/summary?scope=site:home-pi`. An unknown site or node is a 400;
+  `missingNodes` lists only nodes inside the scope that didn't answer.
 - The live query stream, settings, and Explain are always this node's own.
 - Nodes answer each other's reads whether or not their own API is on.
 
@@ -1389,6 +1392,7 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 Three low-risk operations act at once, without a plan, and are audited like any change: `flush_cache` (`ops:cache`), `pause_blocking` for 1 to 60 minutes and `resume_blocking` (`ops:pause`). Every write tool needs a `reason`.
 
 **How the tools behave:**
+- **Cluster-wide by default.** `get_overview`, `top_items`, `search_queries`, `latency_breakdown`, and `get_client_profile` take `scope` (`cluster`, `site:<name>`, `node:<name>`, `node:local`), and every result has `missingNodes`: the nodes in scope that didn't answer within 2 seconds, so a partial answer is never mistaken for a whole one. Upstream health and anomalies are the connected node's own.
 - **Side effects are stated.** Each tool's description starts with what it does ("Read-only.", "Plans a change", "Changes at once"), and its MCP annotations agree (`readOnlyHint`, `destructiveHint`).
 - **Same checks as REST.** Every tool calls the REST API with the agent's own token, so its scopes, group restriction, rate limit, privacy level, and the kill switch all apply. A tool the token can't use answers with an error.
 - **Capped results.** Results stop at 200 rows / 32 KiB, with a note to narrow or page.

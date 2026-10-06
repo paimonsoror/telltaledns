@@ -166,12 +166,13 @@ pub enum Step {
     Day,
 }
 
-/// Which node's data an analytics call reads (`spec/07` §1, `spec/12` §6). Until clustering
-/// lands, `cluster` and `node:local` both mean this node; other values are rejected.
+/// Which nodes' data an analytics call reads (`spec/07` §1, `spec/12` §6, AGT-011). On a
+/// standalone node, `cluster` and `node:local` both mean this node.
 #[derive(Debug, Clone, Default, Deserialize, IntoParams, ToSchema)]
 #[into_params(parameter_in = Query)]
 pub struct ScopeParam {
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+    /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     #[param(example = "cluster")]
     pub scope: Option<String>,
 }
@@ -212,7 +213,8 @@ pub struct TimeseriesParams {
     pub to: Option<String>,
     /// Bucket size. Default: `minute`.
     pub step: Option<Step>,
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+    /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
 }
 
@@ -251,7 +253,8 @@ pub struct SummaryParams {
     pub from: Option<String>,
     /// End. Default: now.
     pub to: Option<String>,
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+    /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
 }
 
@@ -294,7 +297,8 @@ pub struct TopParams {
     pub client: Option<String>,
     /// Only this group's queries (a group name; not with `client`, not for `nxdomain`).
     pub group: Option<String>,
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+    /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
 }
 
@@ -338,7 +342,8 @@ pub struct LatencyParams {
     pub by: LatencyBy,
     /// Default: `current`.
     pub hour: Option<Hour>,
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+    /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
 }
 
@@ -406,7 +411,8 @@ pub struct QueryParams {
     pub limit: Option<usize>,
     /// Continue after a previous page (`nextCursor` from it).
     pub cursor: Option<String>,
-    /// `cluster` (default) or `node:local`.
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+    /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
 }
 

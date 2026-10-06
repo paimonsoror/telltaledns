@@ -162,6 +162,18 @@ own=$(get '/api/v1/stats/summary?scope=node:local' | field 'd["queries"]')
 [ "$both" -gt "$own" ] || fail "cluster totals ($both) don't exceed this node's ($own)"
 echo "ok (cluster $both queries, primary alone $own)"
 
+# REQ: AGT-011, CLU-002 (T7.3) — a read scoped to a site or a node reads only those nodes.
+echo "== scoped reads (AGT-011)"
+for s in site:r node:r; do
+  [ "$(get "/api/v1/queries?name=fed1.r.test&scope=$s" | field 'len(d["items"])')" -ge 1 ] \
+    || fail "scope=$s missed the replica's query"
+done
+site_r=$(get '/api/v1/stats/summary?scope=site:r' | field 'd["queries"]')
+{ [ "$site_r" -gt 0 ] && [ "$site_r" -lt "$both" ]; } || fail "site:r totals ($site_r) aren't a part of the cluster's ($both)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$E/jar" "$API/api/v1/stats/summary?scope=site:nowhere")
+[ "$code" = 400 ] || fail "an unknown site answered $code"
+echo "ok (site r: $site_r of $both)"
+
 echo "== write forwarding (CLU-002)"
 RAPI=http://127.0.0.1:28002
 RST=$(cat "$E/r/setup-token")

@@ -87,6 +87,16 @@ fn limit(args: &Value, default: u64) -> String {
         .to_string()
 }
 
+/// REQ: AGT-011 (T7.3) — which nodes an analytics tool reads.
+fn scope_schema() -> Value {
+    json!({"type": "string", "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes."})
+}
+
+/// `&scope=...` when the arguments name one.
+fn scope_q(args: &Value) -> String {
+    s(args, "scope").map_or_else(String::new, |v| format!("&scope={}", enc(&v)))
+}
+
 fn window_schema() -> Value {
     json!({"type": "string", "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h."})
 }
@@ -99,12 +109,12 @@ pub fn tools() -> Vec<Tool> {
         Tool {
             name: "get_overview",
             description: "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms). Start here to see whether anything is off.",
-            input_schema: || json!({"type": "object", "properties": {"window": window_schema()}, "additionalProperties": false}),
+            input_schema: || json!({"type": "object", "properties": {"window": window_schema(), "scope": scope_schema()}, "additionalProperties": false}),
             calls: |a| {
                 let from = s(a, "window").unwrap_or_else(|| "-24h".into());
                 Ok(vec![(
                     "overview".into(),
-                    format!("/api/v1/stats/summary?from={}", enc(&from)),
+                    format!("/api/v1/stats/summary?from={}{}", enc(&from), scope_q(a)),
                 )])
             },
         },
@@ -117,7 +127,8 @@ pub fn tools() -> Vec<Tool> {
                 "hour": {"type": "string", "enum": ["current", "previous"], "description": "Which hour (default current)."},
                 "client": {"type": "string", "description": "A client IP: its top domains (kind=domains only)."},
                 "group": {"type": "string", "description": "A client group's top items."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Items (default 10)."}
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Items (default 10)."},
+                "scope": scope_schema()
             }, "required": ["kind"], "additionalProperties": false})
             },
             calls: |a| {
@@ -135,6 +146,7 @@ pub fn tools() -> Vec<Tool> {
                             ("client", "client"),
                             ("group", "group"),
                             ("limit", "limit"),
+                            ("scope", "scope"),
                         ],
                     ),
                 )])
@@ -155,7 +167,8 @@ pub fn tools() -> Vec<Tool> {
                 "from": {"type": "string", "description": "Start (relative like -1h, or RFC 3339). Default: all retained."},
                 "to": {"type": "string", "description": "End (default now)."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows (default 50)."},
-                "cursor": {"type": "string", "description": "From the previous page's nextCursor."}
+                "cursor": {"type": "string", "description": "From the previous page's nextCursor."},
+                "scope": scope_schema()
             }, "additionalProperties": false})
             },
             calls: |a| {
@@ -173,6 +186,7 @@ pub fn tools() -> Vec<Tool> {
                         ("from", "from"),
                         ("to", "to"),
                         ("cursor", "cursor"),
+                        ("scope", "scope"),
                     ],
                 );
                 q.push(if q.contains('?') { '&' } else { '?' });
@@ -210,7 +224,8 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "Device name (as in the device list) or IP."},
-                "window": window_schema()
+                "window": window_schema(),
+                "scope": scope_schema()
             }, "required": ["client"], "additionalProperties": false})
             },
             calls: |a| {
@@ -225,7 +240,8 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "by": {"type": "string", "enum": ["stage", "upstream", "client", "qtype"], "description": "Break down by."},
-                "hour": {"type": "string", "enum": ["current", "previous"], "description": "Which hour (default current)."}
+                "hour": {"type": "string", "enum": ["current", "previous"], "description": "Which hour (default current)."},
+                "scope": scope_schema()
             }, "required": ["by"], "additionalProperties": false})
             },
             calls: |a| {
@@ -237,7 +253,7 @@ pub fn tools() -> Vec<Tool> {
                     query(
                         "/api/v1/stats/latency",
                         a,
-                        &[("by", "by"), ("hour", "hour")],
+                        &[("by", "by"), ("hour", "hour"), ("scope", "scope")],
                     ),
                 )])
             },
@@ -1071,6 +1087,21 @@ fn capped(v: &Value) -> (String, bool) {
     (text[..cut].to_owned(), true)
 }
 
+/// REQ: AGT-011 (T7.3) — `missingNodes` for a tool result: the nodes that didn't answer any of
+/// its reads (empty when every node in scope did).
+fn add_missing_nodes(out: &mut serde_json::Map<String, Value>) {
+    let mut missing: Vec<String> = out
+        .values()
+        .filter_map(|v| v.get("missingNodes").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    missing.sort();
+    missing.dedup();
+    out.insert("missingNodes".into(), json!(missing));
+}
+
 /// `resources/list`.
 fn resource_list() -> Value {
     json!({"resources": resources().iter().map(|r| json!({
@@ -1505,9 +1536,10 @@ impl Mcp {
                     ("slowQueries", "&minLatencyMs=200&limit=20"),
                 ] {
                     let path = format!(
-                        "/api/v1/queries?client={}&from={}{extra}",
+                        "/api/v1/queries?client={}&from={}{extra}{}",
                         enc(&ip),
-                        enc(&from)
+                        enc(&from),
+                        scope_q(&args)
                     );
                     let (ok, body) = self.get(&path, auth, client).await;
                     out.insert(key.into(), if ok { body } else { json!({"error": body}) });
@@ -1519,6 +1551,7 @@ impl Mcp {
                 );
             }
         }
+        add_missing_nodes(&mut out);
         let structured = Value::Object(out);
         let (text, truncated) = capped(&structured);
         let mut content = vec![json!({"type": "text", "text": text})];
@@ -1767,6 +1800,30 @@ mod tests {
         assert_eq!(q[0].1, "/api/v1/queries?client=tv%20room&limit=200");
         assert!((find("top_items").calls)(&json!({})).is_err());
         assert!((find("get_config").calls)(&json!({"section": "users"})).is_err());
+        // AGT-011 — scope passes through to every analytics read.
+        for (tool, args) in [
+            ("get_overview", json!({"scope": "site:home pi"})),
+            (
+                "top_items",
+                json!({"kind": "domains", "scope": "site:home pi"}),
+            ),
+            ("search_queries", json!({"scope": "site:home pi"})),
+            (
+                "latency_breakdown",
+                json!({"by": "stage", "scope": "site:home pi"}),
+            ),
+        ] {
+            let q = (find(tool).calls)(&args).unwrap();
+            assert!(
+                q[0].1.contains("scope=site:home%20pi"),
+                "{tool}: {}",
+                q[0].1
+            );
+            assert!(
+                (find(tool).input_schema)()["properties"]["scope"].is_object(),
+                "{tool}"
+            );
+        }
     }
 
     // AGT-010 — prompts name real tools, and fill in their arguments.

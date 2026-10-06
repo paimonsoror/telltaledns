@@ -63,6 +63,15 @@ pub trait Backend: Send + Sync + 'static {
     fn missing_nodes(&self) -> Vec<String> {
         Vec::new()
     }
+    /// REQ: AGT-011, CLU-002 (T7.3) — the same reads over the nodes `scope` names
+    /// (`site:<name>`, `node:<id, site, or pod>`). A standalone node has no other nodes.
+    fn scoped(&self, scope: &str) -> Result<Shared, Problem> {
+        Err(Problem::new(
+            problem::Code::UnsupportedScope,
+            format!("scope `{scope}`: this node isn't in a cluster"),
+        )
+        .hint("Use scope=cluster (or omit it): on a standalone node that's this node."))
+    }
     /// Makes this node the cluster's primary (ADR-051).
     fn promote(&self, req: PromoteRequest, by: String) -> Result<ClusterView, Problem> {
         let _ = (req, by);
@@ -540,25 +549,34 @@ fn not_found(uri: &axum::http::Uri) -> Problem {
         .hint("See /api/v1/openapi.json for every route.")
 }
 
-/// The backend a read's `scope` selects (`spec/12` §6, CLU-002): the whole cluster by default
-/// (federated when this node is in one), or `node:local` for this node alone.
+/// The backend a read's `scope` selects (`spec/12` §6, CLU-002, AGT-011): the whole cluster by
+/// default (federated when this node is in one), `node:local` for this node alone, or
+/// `site:<name>` / `node:<id, site, or pod>` for some of the nodes.
 fn pick(b: &Shared, scope: Option<&str>) -> Result<Shared, Problem> {
     check_scope(scope)?;
     Ok(match (scope, b.local()) {
+        (None | Some("" | "cluster"), _) | (Some("node:local"), None) => Arc::clone(b),
         (Some("node:local"), Some(local)) => local,
-        _ => Arc::clone(b),
+        (Some(s), _) => b.scoped(s)?,
     })
 }
 
-/// `scope` is `cluster` (default) or `node:local`; reading one named peer isn't offered yet.
+/// `scope` is `cluster` (default), `node:local`, `site:<name>`, or `node:<name>`.
 fn check_scope(scope: Option<&str>) -> Result<(), Problem> {
     match scope {
         None | Some("" | "cluster" | "node:local") => Ok(()),
+        Some(s)
+            if (s.starts_with("site:") || s.starts_with("node:"))
+                && s.len() > 5
+                && s.len() <= 128 =>
+        {
+            Ok(())
+        }
         Some(s) => Err(Problem::new(
             problem::Code::UnsupportedScope,
             format!("scope `{s}` isn't supported"),
         )
-        .hint("Use scope=cluster (or omit it) for every node, or scope=node:local for this one.")),
+        .hint("Use cluster (the default), site:<name>, node:<name or ID>, or node:local.")),
     }
 }
 

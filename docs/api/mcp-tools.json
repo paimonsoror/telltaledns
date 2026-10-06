@@ -10,6 +10,10 @@
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
         "window": {
           "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h.",
           "type": "string"
@@ -61,6 +65,10 @@
           "maximum": 100,
           "minimum": 1,
           "type": "integer"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
         }
       },
       "required": [
@@ -117,6 +125,10 @@
         },
         "rcode": {
           "description": "NOERROR, NXDOMAIN, SERVFAIL, ...",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
           "type": "string"
         },
         "status": {
@@ -178,6 +190,10 @@
           "description": "Device name (as in the device list) or IP.",
           "type": "string"
         },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
         "window": {
           "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h.",
           "type": "string"
@@ -217,6 +233,10 @@
             "current",
             "previous"
           ],
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
           "type": "string"
         }
       },
