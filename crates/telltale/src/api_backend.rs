@@ -1408,7 +1408,12 @@ impl Backend for ApiBackend {
             .zones
             .iter()
             .map(|z| {
-                let name = z.apex.display().to_string().trim_end_matches('.').to_owned();
+                let name = z
+                    .apex
+                    .display()
+                    .to_string()
+                    .trim_end_matches('.')
+                    .to_owned();
                 let file = cfg
                     .zone
                     .iter()
