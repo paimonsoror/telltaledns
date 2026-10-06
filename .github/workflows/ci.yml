@@ -304,6 +304,9 @@ jobs:
       # running node.
       - name: Event sinks and alerts
         run: bash deploy/sinks-e2e.sh target/bench-fast/telltale
+      # REQ: OPS-008 (T7.19) — a lease from a running node's DHCP server, on disk and in the API.
+      - name: DHCP server
+        run: bash deploy/dhcp-e2e.sh target/bench-fast/telltale
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
       # and v5 images, then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)

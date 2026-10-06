@@ -1255,6 +1255,28 @@
         }
       }
     },
+    "/api/v1/dhcp/leases": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "DHCP leases (OPS-008).",
+        "description": "The addresses this node's DHCP server has handed out (and its reservations), with each\ndevice's MAC, the host name it gave, and its name in TelltaleDNS. Empty on a node that\ndoesn't run DHCP (in a cluster, ask the node that does).",
+        "operationId": "dhcp_leases",
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_DhcpLease"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/explain": {
       "get": {
         "tags": [
@@ -5563,6 +5585,47 @@
           }
         }
       },
+      "DhcpLease": {
+        "type": "object",
+        "description": "A DHCP lease (REQ: OPS-008).",
+        "required": [
+          "mac",
+          "ip",
+          "expiresUnixSeconds",
+          "reserved"
+        ],
+        "properties": {
+          "clientName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The device's name in TelltaleDNS (a named client, else the host name)."
+          },
+          "expiresUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name the device gave (option 12), or its reservation's."
+          },
+          "ip": {
+            "type": "string"
+          },
+          "mac": {
+            "type": "string"
+          },
+          "reserved": {
+            "type": "boolean",
+            "description": "A reservation (`[[dhcp.reservation]]`)."
+          }
+        }
+      },
       "ExplainBlock": {
         "type": "object",
         "required": [
@@ -6753,6 +6816,66 @@
                 "source": {
                   "type": "string",
                   "description": "`file` (the config files), `added` (made through the UI or API), `override` (replaces\nthe files' entry of that name), or `hidden` (the files' entry is left out)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_DhcpLease": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A DHCP lease (REQ: OPS-008).",
+              "required": [
+                "mac",
+                "ip",
+                "expiresUnixSeconds",
+                "reserved"
+              ],
+              "properties": {
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The device's name in TelltaleDNS (a named client, else the host name)."
+                },
+                "expiresUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "hostname": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The name the device gave (option 12), or its reservation's."
+                },
+                "ip": {
+                  "type": "string"
+                },
+                "mac": {
+                  "type": "string"
+                },
+                "reserved": {
+                  "type": "boolean",
+                  "description": "A reservation (`[[dhcp.reservation]]`)."
                 }
               }
             }

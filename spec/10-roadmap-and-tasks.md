@@ -434,5 +434,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* the Frame Streams handshake; each sampled query gives both messages with the client, transport, and times; one in `sample_every`; a missing or slow reader drops copies and never delays DNS; nothing extra on the query path when off (bench-smoke).
   - *Done 2026-10-06:* `crates/telltale/src/dnstap.rs` (ADR-077, Proposed): the tap in `Pipeline::emit`, the writer thread, hand-written protobuf; `[telemetry.dnstap]` config and validation; test `obs_007_dnstap_over_frame_streams` (a reader doing the handshake and decoding the messages); bench-smoke unchanged. *Deferred:* `FORWARDER_*` messages; the client port.
 
+- [x] **T7.19 DHCP server.** *(OPS-008)* `[dhcp]`: a DHCPv4 server (pool, reservations, options 3/6/15/42/119 and the usual), a lease file, and lease host names naming devices. Off by default; one node in a cluster.
+  - *AC:* DISCOVER/OFFER/REQUEST/ACK hands out a pool address with the configured options; a reservation gets its address and name; renewals extend; someone else's address gets NAK; RELEASE frees and DECLINE avoids an address; the pool runs out cleanly; leases survive a restart; an unnamed device shows its host name; leases in the API.
+  - *Done 2026-10-06:* `crates/telltale/src/dhcp.rs` (ADR-078, Proposed): the RFC 2131 state machine, packet codec, reply addressing, lease file, the pipeline's lease view; `[dhcp]` config and validation; `GET /api/v1/dhcp/leases`; unit tests `ops_008_*`; `deploy/dhcp-e2e.sh` in CI (a Python client against a running node). *Deferred:* DHCPv6; DNS answers for leased names; cluster-wide lease view; split pools.
+
 ## M8 — v2 (stretch)
 Agent analytics DSL `vqlog` (AGT-012), WASM upstream plugins, io_uring, beaconing detection, cache-warm hints (CLU-011), mDNS client naming, router integrations (UniFi/OPNsense lease import).

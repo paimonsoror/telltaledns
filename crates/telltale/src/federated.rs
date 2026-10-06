@@ -719,6 +719,9 @@ impl Backend for Federated {
     fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
         self.local.anomalies(since_s)
     }
+    fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
+        self.local.dhcp_leases()
+    }
     fn new_domains(
         &self,
         since_s: u64,

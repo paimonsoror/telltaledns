@@ -1204,6 +1204,23 @@ pub struct ConfigChange {
     pub keep_in_git: Option<String>,
 }
 
+/// A DHCP lease (REQ: OPS-008).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpLease {
+    pub mac: String,
+    pub ip: String,
+    /// The name the device gave (option 12), or its reservation's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// The device's name in TelltaleDNS (a named client, else the host name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    pub expires_unix_seconds: u64,
+    /// A reservation (`[[dhcp.reservation]]`).
+    pub reserved: bool,
+}
+
 /// Names a list shares with another (OBS-009).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

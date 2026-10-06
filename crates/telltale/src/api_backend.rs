@@ -32,7 +32,15 @@ fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
     let state = src.pipeline.current();
     let clients = &state.policy.clients;
     let id = clients.identify(ip, None, None, &src.pipeline.neighbors);
-    clients.client(id).map(|c| c.name.to_string())
+    clients.client(id).map(|c| c.name.to_string()).or_else(|| {
+        // REQ: OPS-008 (T7.19) — an unnamed device is called by its DHCP host name.
+        let IpAddr::V4(v4) = ip else { return None };
+        src.pipeline
+            .dhcp_leases
+            .load()
+            .get(&v4)
+            .and_then(|l| l.hostname.clone())
+    })
 }
 
 /// The API backend over the server's shared state.
@@ -1202,6 +1210,27 @@ impl Backend for ApiBackend {
                 detail: f.detail,
             })
             .collect()
+    }
+
+    // REQ: OPS-008 (T7.19) — this node's DHCP leases.
+    fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
+        let mut v: Vec<telltale_api::model::DhcpLease> = self
+            .src
+            .pipeline
+            .dhcp_leases
+            .load()
+            .values()
+            .map(|l| telltale_api::model::DhcpLease {
+                mac: l.mac.clone(),
+                ip: l.ip.to_string(),
+                hostname: l.hostname.clone(),
+                client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
+                expires_unix_seconds: l.expires,
+                reserved: l.reserved,
+            })
+            .collect();
+        v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
+        v
     }
 
     // REQ: OBS-009 (T7.14) — first-seen domains with their DGA scores.

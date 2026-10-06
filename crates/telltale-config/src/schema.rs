@@ -44,6 +44,8 @@ pub struct Config {
     pub schedule: Vec<ScheduleConfig>,
     /// REQ: OBS-010 (T7.12) — alert rules and where they go.
     pub alerts: AlertsConfig,
+    /// REQ: OPS-008 (T7.19) — an optional DHCPv4 server (Linux and Pi installs).
+    pub dhcp: DhcpConfig,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
     /// Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,
@@ -100,6 +102,7 @@ impl Default for Config {
             group: Vec::new(),
             schedule: Vec::new(),
             alerts: AlertsConfig::default(),
+            dhcp: DhcpConfig::default(),
             client: Vec::new(),
             rule: Vec::new(),
             clients: ClientsConfig::default(),
@@ -667,6 +670,90 @@ pub struct ScheduleWindow {
     pub start: SafeString,
     /// `HH:MM`, 24-hour (`24:00` is the end of the day).
     pub end: SafeString,
+}
+
+/// REQ: OPS-008 (T7.19, `spec/08` §7) — the DHCPv4 server. Off by default; in a cluster,
+/// enable it on one node only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct DhcpConfig {
+    pub enabled: bool,
+    /// This server's address on the network it serves (the server identifier; also the DNS
+    /// server handed out unless `dns` is set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_ip: Option<std::net::Ipv4Addr>,
+    /// The pool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_start: Option<std::net::Ipv4Addr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_end: Option<std::net::Ipv4Addr>,
+    pub subnet_mask: std::net::Ipv4Addr,
+    /// Option 3: the default gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<std::net::Ipv4Addr>,
+    /// Option 6: DNS servers (default: `server_ip`). List both nodes of a pair for failover.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dns: Vec<std::net::Ipv4Addr>,
+    /// Option 42: NTP servers.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ntp: Vec<std::net::Ipv4Addr>,
+    /// Option 15: the domain name (`lan`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<SafeString>,
+    /// Option 119: the domain search list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub search: Vec<SafeString>,
+    /// Lease length in seconds.
+    pub lease_secs: u32,
+    /// Fixed addresses for known devices.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reservation: Vec<DhcpReservation>,
+    /// Only on this interface (`eth0`; needs `CAP_NET_RAW`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<SafeString>,
+    /// Address and ports to listen and reply on (67 and 68; others only for tests).
+    pub bind: std::net::Ipv4Addr,
+    pub port: u16,
+    pub client_port: u16,
+    /// Tests only: reply to the sender instead of broadcasting.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reply_to_source: bool,
+}
+
+impl Default for DhcpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server_ip: None,
+            range_start: None,
+            range_end: None,
+            subnet_mask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+            router: None,
+            dns: Vec::new(),
+            ntp: Vec::new(),
+            domain: None,
+            search: Vec::new(),
+            lease_secs: 86_400,
+            reservation: Vec::new(),
+            interface: None,
+            bind: std::net::Ipv4Addr::UNSPECIFIED,
+            port: 67,
+            client_port: 68,
+            reply_to_source: false,
+        }
+    }
+}
+
+/// A fixed address for one device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DhcpReservation {
+    /// `aa:bb:cc:dd:ee:ff`.
+    pub mac: SafeString,
+    pub ip: std::net::Ipv4Addr,
+    /// The name it gets (and shows under in TelltaleDNS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<SafeString>,
 }
 
 /// REQ: OBS-010 (T7.12, `spec/06` §8) — alerts: rules checked on the primary (or a standalone

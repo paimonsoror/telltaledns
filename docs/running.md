@@ -776,6 +776,35 @@ window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]
 - Schedules are checked every 15 seconds, so a window starts or ends within 15 s of its time. No query does any time maths, and nothing is recompiled.
 - The Groups page shows each group's schedules and which are **on now**; the query log shows blocks as **schedule**.
 
+### DHCP server
+TelltaleDNS can hand out addresses too, so a Pi can replace the router's DHCP (Linux and Pi installs; off by default):
+```toml
+[dhcp]
+enabled = true
+server_ip = "192.168.1.2"          # this machine's address on that network
+range_start = "192.168.1.100"
+range_end = "192.168.1.200"
+subnet_mask = "255.255.255.0"
+router = "192.168.1.1"             # option 3
+# dns = ["192.168.1.2", "192.168.1.3"]   # option 6 (default: server_ip); list both of a pair
+domain = "lan"                     # option 15
+search = ["lan"]                   # option 119
+# ntp = ["192.168.1.1"]            # option 42
+lease_secs = 86400
+# interface = "eth0"               # only this interface (needs CAP_NET_RAW)
+
+[[dhcp.reservation]]
+mac = "aa:bb:cc:dd:ee:ff"
+ip = "192.168.1.10"
+hostname = "nas"
+```
+- **Devices get names:** a device you haven't named shows up under the host name it sent (or its reservation's) everywhere, the query log and top lists included. Name it yourself and your name wins.
+- Leases are kept in `<data_dir>/dhcp-leases.json`, so a restart doesn't hand out addresses twice. `GET /api/v1/dhcp/leases` lists them (MAC, address, host name, expiry).
+- It needs port 67 (`CAP_NET_BIND_SERVICE`, which the DNS port needs too). Turn the router's DHCP off first: two DHCP servers on one network hand out conflicting addresses.
+- A device that finds its address already in use tells the server (DECLINE), and that address is skipped for 10 minutes. A device asking for an address it may not have gets NAK and starts over.
+- **In a cluster**, enable it on one node only: there's no DHCP failover between nodes. Hand out both nodes as DNS servers (`dns = [...]`).
+- Changes to `[dhcp]` need a restart. *Not yet:* DHCPv6, names of leased devices answered in DNS (`laptop.lan`), leases shown on other cluster nodes.
+
 ### Naming devices in the UI
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 

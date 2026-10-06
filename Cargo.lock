@@ -3209,6 +3209,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "socket2",
  "telltale-api",
  "telltale-cache",
  "telltale-cluster",

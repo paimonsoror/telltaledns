@@ -1258,6 +1258,21 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-078 — DHCPv4: authoritative, broadcast replies, leases name devices (Proposed)
+**Context:** T7.19 (OPS-008; `08` §7). The spec lists the options, static leases, and a lease file, but not the server's stance toward clients asking for foreign addresses, how replies reach clients without an address, or how leases "feed client naming".
+
+**Decision:**
+- A module of the binary (`crates/telltale/src/dhcp.rs`), its own task and socket (socket2: `SO_BROADCAST`, `SO_REUSEADDR`, optional `SO_BINDTODEVICE`), never on the DNS path.
+- Authoritative for its subnet (like `dhcp-authoritative` in dnsmasq): REQUEST for an address this client may not have (someone else's, outside the pool, another subnet) gets NAK; INIT-REBOOT for a free pool address is granted. Offers are held 60 s; DECLINEd addresses are skipped for 10 minutes; no ping-before-offer.
+- Replies (RFC 2131 §4.1): to `giaddr:67` via a relay, to `ciaddr:68` when the client has an address, else broadcast to `255.255.255.255:68` (no raw-socket unicast to an unconfigured client: broadcast is allowed and needs no extra capability).
+- Options 1, 3, 6 (default: the server's address), 15, 28, 42, 51, 54, 58, 59, 119 (RFC 3397, uncompressed; split per RFC 3396 when long).
+- Leases persist to `<data_dir>/dhcp-leases.json` after every change; the live view (address → lease) is published on the pipeline, so device names fall back to the lease host name (a configured client name wins), and `GET /api/v1/dhcp/leases` reads it.
+- In a cluster, one node runs it (documented); other nodes don't see its leases yet.
+
+**Consequences:**
+- A Pi can replace the router's DHCP; unnamed devices get readable names immediately.
+- Without failover, a second DHCP node needs split pools (not supported in config yet).
+
 ## ADR-077 — dnstap: a sampled copy of the wire messages, off by default (Proposed)
 **Context:** T7.18 (OBS-007; `06` §5). dnstap needs the query and response messages, which query events don't carry (`02` §3: no allocation on the hot path).
 
