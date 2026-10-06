@@ -799,15 +799,16 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OPS-007 — not ready first (load balancers stop sending), stop taking new TCP
     // connections, let in-flight upstream lookups finish (bounded), then stop UDP workers.
     ready.store(false, Ordering::Release);
-    let _ = stop_http.send(true);
     // REQ: CLU-009 — a resolver pod leaves the cluster now rather than showing as down until
     // it expires (2 s at most; if the primary can't be reached, expiry still cleans up).
+    // Before the stop signal: it closes the stream to the primary that the leave goes over.
     if let Some(c) = &sources.cluster
         && current.cluster.ephemeral
         && let Err(e) = c.leave(Duration::from_secs(2)).await
     {
         info!("cluster: leaving: {e}");
     }
+    let _ = stop_http.send(true);
     // Keep answering while load balancers notice: a Kubernetes Service takes a moment to drop
     // a terminating pod, and queries sent to it meanwhile would otherwise be lost.
     let delay = current.node.drain_delay_secs.min(60);

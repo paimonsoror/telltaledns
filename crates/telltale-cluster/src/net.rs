@@ -766,10 +766,21 @@ impl Cluster {
     /// [`Self::remove_ephemeral`], which refuses members that aren't ephemeral). Bounded by
     /// `timeout`.
     pub async fn leave(&self, timeout: Duration) -> Result<(), String> {
-        let primary = self
-            .reachable_primary()
-            .ok_or("the primary isn't reachable; this member will expire instead")?;
-        self.call(&primary, LEAVE, Vec::new(), timeout)
+        // The stream may be reconnecting right now: wait for it (within `timeout`).
+        let deadline = tokio::time::Instant::now() + timeout;
+        let primary = loop {
+            if let Some(p) = self.reachable_primary() {
+                break p;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err("the primary isn't reachable; this member will expire instead".into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let left = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .max(Duration::from_millis(500));
+        self.call(&primary, LEAVE, Vec::new(), left)
             .await
             .map(|_| ())
     }
