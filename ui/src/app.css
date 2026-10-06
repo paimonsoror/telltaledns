@@ -286,6 +286,25 @@ button.link {
   padding: 2px 4px;
   min-height: 0;
 }
+/* Round icon-only buttons in the header (theme, pause, menu). Global, so every component's
+   header button looks the same. */
+button.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+}
+button.icon-btn:hover,
+button.icon-btn[aria-expanded='true'] {
+  background: var(--surface-2);
+  color: var(--text);
+}
 button:disabled {
   opacity: 0.55;
   cursor: default;

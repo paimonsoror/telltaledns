@@ -378,22 +378,6 @@
     outline: 2px solid var(--focus);
     outline-offset: 1px;
   }
-  .icon-btn {
-    display: inline-grid;
-    place-items: center;
-    width: 36px;
-    height: 36px;
-    min-height: 36px;
-    padding: 0;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--muted);
-  }
-  .icon-btn:hover {
-    background: var(--surface-2);
-    color: var(--text);
-  }
   .who {
     display: flex;
     align-items: center;

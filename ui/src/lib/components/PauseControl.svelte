@@ -108,6 +108,7 @@
   }
   .pause-menu {
     position: relative;
+    display: inline-flex;
   }
   .menu {
     position: absolute;

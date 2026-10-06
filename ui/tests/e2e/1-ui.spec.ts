@@ -130,6 +130,23 @@ test('the menu links to the project on GitHub and its site', async () => {
   );
 });
 
+// The header's icon buttons match: the pause button (its own component) is the same round,
+// borderless button as the theme toggle, on the same line (owner report 2026-10-06).
+test('header icon buttons are the same size and aligned', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  const pause = page.getByRole('button', { name: 'Pause blocking' });
+  const theme = page.getByRole('button', { name: /^Theme:/ });
+  await page.getByRole('heading', { level: 1 }).first().waitFor();
+  const [p, t] = [await pause.boundingBox(), await theme.boundingBox()];
+  expect(p && t).toBeTruthy();
+  expect(Math.round(p!.width)).toBe(Math.round(t!.width));
+  expect(Math.round(p!.height)).toBe(Math.round(t!.height));
+  expect(Math.abs(p!.y + p!.height / 2 - (t!.y + t!.height / 2))).toBeLessThanOrEqual(1);
+  expect(await pause.evaluate((b) => getComputedStyle(b).borderTopWidth)).toBe('0px');
+  await page.locator('header').first().screenshot({ path: '.shots/header-buttons.png' });
+});
+
 test('lists, groups, clients, upstreams, local DNS render', async () => {
   for (const [path, text] of [
     ['/#/lists', 'e2e-block'],
