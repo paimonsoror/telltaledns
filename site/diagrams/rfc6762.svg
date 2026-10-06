@@ -1,0 +1,9 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>A device's mDNS announcement names it in TelltaleDNS, which only listens</title>
+<rect x="10" y="12" width="140" height="30" rx="8" class="svg-box"/><text x="80" y="32" text-anchor="middle" class="svg-mono">nas.local</text>
+<path d="M150 27 H180" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="180" y="12" width="130" height="30" rx="8" class="svg-box"/><text x="245" y="32" text-anchor="middle" class="svg-sub">224.0.0.251:5353</text>
+<path d="M245 42 V60" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="160" y="60" width="150" height="30" rx="8" class="svg-ok" opacity=".8"/><text x="235" y="80" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">192.168.1.9 → nas</text>
+<rect x="10" y="60" width="140" height="30" rx="8" class="svg-box"/><text x="80" y="80" text-anchor="middle" class="svg-sub">your names win</text>
+<text x="160" y="124" text-anchor="middle" class="svg-sub">listen only · nothing sent</text>
+</svg>

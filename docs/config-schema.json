@@ -110,6 +110,8 @@
       "$ref": "#/$defs/ClientsConfig",
       "default": {
         "infrastructure": [],
+        "mdns": false,
+        "mdns_port": 5353,
         "neighbor_refresh_secs": 60,
         "neighbor_table": true,
         "trust_edns_mac_from": []
@@ -924,6 +926,19 @@
             "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
             "type": "string"
           }
+        },
+        "mdns": {
+          "description": "REQ: T8.3 — name unnamed devices by the `<name>.local` they announce over mDNS\n(listen only). Needs to be on the LAN: a native install or host networking.",
+          "type": "boolean",
+          "default": false
+        },
+        "mdns_port": {
+          "description": "The mDNS port (5353; shared with avahi or the OS responder).",
+          "type": "integer",
+          "format": "uint16",
+          "default": 5353,
+          "maximum": 65535,
+          "minimum": 0
         },
         "neighbor_refresh_secs": {
           "description": "How often the neighbor table is re-read.",

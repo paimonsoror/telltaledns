@@ -924,6 +924,17 @@ api_secret_file = "/etc/telltale/opn-secret"
 - Names you give devices in TelltaleDNS win; then TelltaleDNS's own DHCP; then the routers. `GET /api/v1/dhcp/leases` lists them all (`source`: `dhcp` or `router`).
 - Credentials stay in files, out of the configuration. Changes to `[[router]]` need a restart.
 
+### Names devices announce (mDNS)
+Phones, speakers, printers, and NAS boxes announce themselves on the local network (`Kitchen-HomePod.local`). TelltaleDNS can listen and use those names for devices you haven't named:
+```toml
+[clients]
+mdns = true
+```
+- Listen only: TelltaleDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
+- It has to hear the LAN: a native install, the Pi bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
+- Names you give devices win, then DHCP leases (TelltaleDNS's, then the routers'), then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
+- Changing it needs a restart.
+
 ### Naming devices in the UI
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 

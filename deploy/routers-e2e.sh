@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQ: T8.2 — router integrations against fake UniFi OS and OPNsense APIs: a UniFi login
+# REQ: T8.2, T8.3 — router integrations against fake UniFi OS and OPNsense APIs, and mDNS: a UniFi login
 # (cookie) and its client list, OPNsense leases with an API key, the leases in the API, and a
 # device named from the router in the query log. Needs python3, dig, curl.
 # Usage: deploy/routers-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
@@ -105,6 +105,9 @@ type = "opnsense"
 url = "http://127.0.0.1:26982"
 api_key_file = "$E/opn-key"
 api_secret_file = "$E/opn-secret"
+[clients]
+mdns = true
+mdns_port = 25353
 EOF
 "$B" run -c "$E/telltale.toml" > "$E/node.log" 2>&1 & P=$!
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
@@ -133,4 +136,23 @@ rows = json.load(sys.stdin)["items"]
 assert rows and rows[0]["clientName"] == "Desk laptop", rows[:1]
 print("query log: the device is named Desk laptop")
 ' || fail "naming"
+
+# REQ: T8.3 — a device that announces nas-box.local over mDNS (sent unicast here) is named so.
+python3 - <<'EOF'
+import socket
+def wire(n):
+    return b"".join(bytes([len(l)]) + l.encode() for l in n.split(".")) + b"\0"
+m = bytes([0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0]) + wire("nas-box.local")
+m += bytes([0, 1, 0x80, 1, 0, 0, 0, 120, 0, 4, 127, 0, 0, 2])
+socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(m, ("127.0.0.1", 25353))
+EOF
+sleep 6
+dig +short -b 127.0.0.2 -p 25992 @127.0.0.1 nas.routers.test >/dev/null
+sleep 2
+curl -sf -b "$E/jar" "$API/api/v1/queries?name=nas.routers.test" | python3 -c '
+import json, sys
+rows = [r for r in json.load(sys.stdin)["items"] if r["client"] == "127.0.0.2"]
+assert rows and rows[0]["clientName"] == "nas-box", rows[:1]
+print("query log: the mDNS device is named nas-box")
+' || fail "mDNS naming"
 echo "routers-e2e: ok"

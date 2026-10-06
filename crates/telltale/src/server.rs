@@ -495,6 +495,9 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     {
         v.push("[clients] neighbor_table / neighbor_refresh_secs");
     }
+    if old.clients.mdns != new.clients.mdns || old.clients.mdns_port != new.clients.mdns_port {
+        v.push("[clients] mdns / mdns_port");
+    }
     v
 }
 
@@ -790,6 +793,14 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&pipeline.router_leases),
         http_stopped.clone(),
     ));
+    // REQ: T8.3 — device names from mDNS announcements (read at startup).
+    if cfg.clients.mdns {
+        tokio::spawn(crate::mdns::run(
+            cfg.clients.mdns_port,
+            Arc::clone(&pipeline.mdns_names),
+            http_stopped.clone(),
+        ));
+    }
     // REQ: CLU-011 (T8.1) — warm the cache from the cluster's hot names.
     tokio::spawn(crate::warm::run(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-008 (T7.19) — DHCP (read at startup).

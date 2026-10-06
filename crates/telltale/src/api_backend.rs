@@ -48,6 +48,14 @@ fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
                     .get(&v4)
                     .and_then(|l| l.hostname.clone())
             })
+            // REQ: T8.3 — then what the device announces over mDNS.
+            .or_else(|| {
+                src.pipeline
+                    .mdns_names
+                    .load()
+                    .get(&v4)
+                    .and_then(|l| l.hostname.clone())
+            })
     })
 }
 

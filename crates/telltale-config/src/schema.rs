@@ -1081,6 +1081,11 @@ pub struct ClientsConfig {
     /// UI warns that client IPs appear masked (OPS-003). Loopback, this host's default
     /// gateways, and `TELLTALE_NODE_IPS` (set by the Helm chart) are always included.
     pub infrastructure: Vec<Cidr>,
+    /// REQ: T8.3 — name unnamed devices by the `<name>.local` they announce over mDNS
+    /// (listen only). Needs to be on the LAN: a native install or host networking.
+    pub mdns: bool,
+    /// The mDNS port (5353; shared with avahi or the OS responder).
+    pub mdns_port: u16,
 }
 
 impl Default for ClientsConfig {
@@ -1090,6 +1095,8 @@ impl Default for ClientsConfig {
             neighbor_refresh_secs: 60,
             trust_edns_mac_from: Vec::new(),
             infrastructure: Vec::new(),
+            mdns: false,
+            mdns_port: 5353,
         }
     }
 }

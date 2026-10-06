@@ -1258,6 +1258,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-081 — mDNS device naming: passive, A records of `<name>.local` (Proposed)
+**Context:** T8.3 (M8 "mDNS client naming"; API-010 lists mDNS as a naming source). Many devices announce their host name over mDNS (RFC 6762) whether or not anyone asks.
+
+**Decision:**
+- `[clients] mdns` (off by default): join 224.0.0.251 on the mDNS port (5353, address and port reuse) and read A records owned by a two-label `<name>.local` in the answer and additional sections of responses others send. Never send queries or responses (no probing, no load on the network). IPv4 only, like the DHCP and router names.
+- The latest name per address is kept in memory (4096 at most, the oldest tenth dropped when full) and published every 5 s; device names fall back to configured clients, DHCP leases, router leases, then mDNS.
+- Service instance names (`Living Room._airplay._tcp.local`), link-local and unspecified addresses are ignored.
+- Not done: asking (`QU` queries to fill the gaps), IPv6 (AAAA owners would need the neighbor table to match clients), persisting across restarts, showing the names in the leases API.
+
+**Consequences:**
+- Devices get readable names without a router integration or DHCP, on networks where TelltaleDNS can hear multicast.
+
 ## ADR-080 — Router integrations: read-only polling of UniFi and OPNsense (Proposed)
 **Context:** T8.2 (M8 "router integrations"; API-010 lists DHCP leases as a naming source). Most homes run DHCP on the router, so TelltaleDNS's own DHCP (T7.19) doesn't see those leases.
 
