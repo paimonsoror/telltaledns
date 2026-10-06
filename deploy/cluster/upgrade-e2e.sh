@@ -104,7 +104,15 @@ echo "== 1. both on N-1"
 start_p "$OLD"
 wait_answer 25501 10.0.0.1 10 || fail "the old primary never answered"
 T=$("$OLD" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
-"$OLD" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28642 -c "$E/r.toml" >/dev/null
+# DNS answers a moment before the cluster port listens: retry the join briefly.
+joined=
+for _ in $(seq 50); do
+  if "$OLD" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28642 -c "$E/r.toml" >/dev/null 2>&1; then
+    joined=1; break
+  fi
+  sleep 0.2
+done
+[ -n "$joined" ] || fail "the replica couldn't join the old primary"
 start_r "$OLD"
 wait_answer 25502 10.0.0.1 15 || fail "the old replica never followed"
 python3 "$E/q.py" load 25501 25502 "$E/stop" > "$E/load.txt" & LOAD=$!

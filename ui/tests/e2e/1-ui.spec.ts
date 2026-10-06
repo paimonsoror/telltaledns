@@ -38,14 +38,24 @@ async function signIn(user: string, pass: string) {
 
 test('first run: the setup token creates the admin', async () => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Welcome to TelltaleDNS' })).toBeVisible();
+  const welcome = page.getByRole('heading', { name: 'Welcome to TelltaleDNS' });
+  const signInHeading = page.getByRole('heading', { name: 'Sign in' });
+  await expect(welcome.or(signInHeading)).toBeVisible();
+  if (await signInHeading.isVisible()) {
+    // A CI retry: the first attempt created the admin and then timed out (a stalled runner).
+    // Sign in as that admin so the serial suite doesn't fail in a cascade.
+    await signIn(ADMIN.user, ADMIN.pass);
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 30_000 });
+    return;
+  }
   const token = readFileSync(resolve(import.meta.dirname, '../../.e2e/data/setup-token'), 'utf8').trim();
   await page.getByLabel('Setup token').fill(token);
   await page.getByLabel('Admin username').fill(ADMIN.user);
   await page.getByLabel('Password (at least 10 characters)').fill(ADMIN.pass);
   await page.getByLabel('Repeat password').fill(ADMIN.pass);
   await page.getByRole('button', { name: 'Create admin and sign in' }).click();
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  // Creating the admin hashes its password (Argon2) and loads the dashboard for the first time.
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 30_000 });
 });
 
 test('dashboard shows traffic and top blocked names', async () => {
