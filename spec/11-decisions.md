@@ -1258,6 +1258,21 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-073 — DGA scoring and NXDOMAIN storms: fixed formulas, shipped bigrams, absolute storm bar (Proposed)
+**Context:** T7.14 (OBS-009; `06` §7). The spec names the signals (entropy, consonant runs, bigram log-likelihood) and the storm rule shape ("> X/min and > Y%") but not the weights, thresholds, the bigram source, or how findings are grouped.
+
+**Decision:**
+- The bigram table is 27 × 27 signed bytes (`presets/bigrams.bin`, `round(4 × log2 P(next | previous))` with start and end symbols) built from the public-domain dwyl/english-words list, embedded in the binary.
+- The score of a registrable domain's own label (8 to 63 characters, not `xn--`) is `0.7 × max(bigram, mix) + 0.2 × consonants + 0.1 × entropy`, each clamped to 0..1: bigram = (mean bits per letter pair − 6) / 2; mix = (letter/digit switches − 2) / 4; consonants = (longest run − 5) / 3; entropy = (normalized entropy − 0.85) / 0.15. Calibrated on ~200 real service domains (none reach 0.2) and random-letter and hex labels (0.8 to 1.0). Logs come from tables, so the score is identical on every architecture.
+- Only first-seen domains of devices past their learning period are scored for findings; a `dga` finding needs at least 2 at or above the sensitivity's threshold (0.75, 0.6, 0.5) in one hour, and is one finding per device-hour with samples.
+- An NXDOMAIN storm is absolute (no baseline): at least `nxdomain_per_minute` (30) NXDOMAIN answers and `nxdomain_percent` (50 %) of the device's queries in a calendar minute; once per device per hour.
+- The first-seen feed starts after a device's first day (its initial learning would flood it) and keeps the last 2000 entries, persisted with the engine.
+- List overlap is counted at compile time (pairs of lists per shared name); `hits` are this node's counts since start, not 24 h / 7 d windows from the query log.
+
+**Consequences:**
+- Dictionary-word DGAs and short generated labels aren't caught; some vendor IDs may score high (the UI shows the score, not a verdict).
+- A restart resets list hits; overlap is exact for the active snapshot.
+
 ## ADR-072 — Event sinks: one bounded buffer per sink, API-shaped JSON, no disk spill (Proposed)
 **Context:** T7.13 (OBS-010; `06` §5). The spec asks for JSON-lines, syslog, and webhook sinks "with retry and a disk spill cap", but not the event format, how a slow sink is kept off the query path, or how retries are bounded.
 

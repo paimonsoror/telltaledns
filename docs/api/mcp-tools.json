@@ -269,7 +269,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Filter lists: size, last update, errors, and how many blocks each caused. Find dead or useless lists.",
+    "description": "Read-only. Filter lists: size, last update, errors, hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -284,7 +284,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, and beaconing (regular call-home patterns). Alert-only; nothing is blocked automatically.",
+    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains. Alert-only; nothing is blocked automatically.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -296,6 +296,36 @@
       "type": "object"
     },
     "name": "find_anomalies"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "Only this device's address.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "At most this many (default 200).",
+          "maximum": 2000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "since": {
+          "description": "First seen since (relative like -24h, or RFC 3339). Default -24h.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "new_domains"
   },
   {
     "annotations": {

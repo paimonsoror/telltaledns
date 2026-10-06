@@ -719,6 +719,14 @@ impl Backend for Federated {
     fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
         self.local.anomalies(since_s)
     }
+    fn new_domains(
+        &self,
+        since_s: u64,
+        client: Option<&str>,
+        limit: usize,
+    ) -> Vec<telltale_api::model::NewDomain> {
+        self.local.new_domains(since_s, client, limit)
+    }
     fn local_names(&self) -> Vec<LocalName> {
         self.local.local_names()
     }

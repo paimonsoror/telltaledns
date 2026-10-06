@@ -591,6 +591,9 @@ fn merge_domains(
     let mut sets = ListSetBuilder::new(lists);
     let mut names = [0u64; 3];
     let mut builders = shard::FstSink::new(dir, shards)?;
+    // REQ: OBS-009 (T7.14) — pairwise overlap, from names on more than one list.
+    let mut pairs: HashMap<(u16, u16), u64> = HashMap::new();
+    let mut members: Vec<u16> = Vec::with_capacity(lists);
     let mut flush = |key: &[u8],
                      sets: &mut ListSetBuilder,
                      builders: &mut shard::FstSink|
@@ -605,6 +608,14 @@ fn merge_domains(
             && let Some(l) = first
         {
             per_list[usize::from(l)].unique += 1;
+        } else if count > 1 {
+            members.clear();
+            sets.for_each_list(|l| members.push(l));
+            for (i, &a) in members.iter().enumerate() {
+                for &b in &members[i + 1..] {
+                    *pairs.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+                }
+            }
         }
         let scope = usize::from(key[0]);
         names[scope] += 1;
@@ -644,6 +655,12 @@ fn merge_domains(
         flush(&current, &mut sets, &mut builders)?;
     }
     builders.finish()?;
+    let mut overlap: Vec<snapshot::ListOverlap> = pairs
+        .into_iter()
+        .map(|((a, b), names)| snapshot::ListOverlap { a, b, names })
+        .collect();
+    overlap.sort_unstable_by_key(|o| (o.a, o.b));
+    stats.overlap = overlap;
     stats.badfiltered = badfiltered;
     [
         stats.subtree_names,

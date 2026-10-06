@@ -1355,6 +1355,11 @@ pub struct AnomalyConfig {
     pub max_clients: u32,
     /// Registrable domains never reported (e.g. connectivity checks you expect).
     pub ignore_domains: Vec<SafeString>,
+    /// REQ: OBS-009 (T7.14) — an NXDOMAIN storm: at least this many NXDOMAIN answers to one
+    /// device in a minute...
+    pub nxdomain_per_minute: u32,
+    /// ...that are at least this percentage of its queries in that minute.
+    pub nxdomain_percent: u32,
 }
 
 impl Default for AnomalyConfig {
@@ -1365,6 +1370,8 @@ impl Default for AnomalyConfig {
             sensitivity: AnomalySensitivity::Normal,
             max_clients: 1024,
             ignore_domains: Vec::new(),
+            nxdomain_per_minute: 30,
+            nxdomain_percent: 50,
         }
     }
 }

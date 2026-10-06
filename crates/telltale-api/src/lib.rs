@@ -37,10 +37,10 @@ use crate::model::{
     ClusterSource, ClusterView, ConfigChange, ConfigEntry, EntriesQuery, ExplainBlock,
     ExplainClient, ExplainFilter, ExplainLine, ExplainParams, ExplainRoute, ExplainRule,
     Explanation, ForwardInfo, ForwardInput, GroupInfo, HostInfo, HostPoint, HostReport, Hour,
-    Items, LatencyBy, LatencyParams, LatencyRow, ListInfo, LocalName, MaskedClients, NameMatch,
-    PromoteRequest, QueryPage, QueryParams, QueryRow, RecordInput, RecordsInput, ScanStats, Step,
-    Summary, SummaryParams, SystemInfo, TailDropped, TailItem, TailParams, TimeBucket,
-    TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
+    Items, LatencyBy, LatencyParams, LatencyRow, ListInfo, ListShare, LocalName, MaskedClients,
+    NameMatch, NewDomain, NewDomainParams, PromoteRequest, QueryPage, QueryParams, QueryRow,
+    RecordInput, RecordsInput, ScanStats, Step, Summary, SummaryParams, SystemInfo, TailDropped,
+    TailItem, TailParams, TimeBucket, TimeseriesParams, TopItem, TopKind, TopParams, UpstreamInfo,
 };
 use crate::problem::Problem;
 
@@ -159,6 +159,12 @@ pub trait Backend: Send + Sync + 'static {
     /// Device anomaly findings whose window started at or after `since_s`, newest first.
     fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
         let _ = since_s;
+        Vec::new()
+    }
+    /// REQ: OBS-009 — domains devices contacted for the first time since `since_s`, newest
+    /// first, optionally for one device, at most `limit`.
+    fn new_domains(&self, since_s: u64, client: Option<&str>, limit: usize) -> Vec<NewDomain> {
+        let _ = (since_s, client, limit);
         Vec::new()
     }
     /// Names TelltaleDNS answers itself (files and API), by name.
@@ -393,6 +399,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/services", get(services))
         .route("/api/v1/clients", get(clients))
         .route("/api/v1/analytics/anomalies", get(anomalies))
+        .route("/api/v1/analytics/new-domains", get(new_domains))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/forwards", get(forwards))
         .route("/api/v1/rules", get(rules))
@@ -495,14 +502,14 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, forwards, rules, anomalies, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, forwards, rules, anomalies, new_domains, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, ListShare, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -1019,6 +1026,31 @@ async fn anomalies(
     Ok(Json(Items {
         missing_nodes: Vec::new(),
         items: b.anomalies(since),
+    }))
+}
+
+/// Domains devices contacted for the first time (OBS-009).
+///
+/// Each device's first-seen registrable domains (after its first day, so the initial learning
+/// doesn't flood the feed), with a score for how machine-generated the name looks (DGA
+/// likelihood, 0 to 1). Newest first. A device that contacts several high-scoring new domains
+/// in an hour also shows up in `/analytics/anomalies` as `dga`.
+#[utoipa::path(get, path = "/api/v1/analytics/new-domains", tag = "stats",
+    params(NewDomainParams),
+    responses((status = 200, body = Items<NewDomain>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
+async fn new_domains(
+    State(b): State<Shared>,
+    Query(p): Query<NewDomainParams>,
+) -> Result<Json<Items<NewDomain>>, Problem> {
+    let now = b.now_unix_seconds();
+    let since = time_param(p.since.as_deref(), now.saturating_sub(86_400), now, "since")?;
+    Ok(Json(Items {
+        missing_nodes: Vec::new(),
+        items: b.new_domains(
+            since,
+            p.client.as_deref(),
+            p.limit.unwrap_or(200).clamp(1, 2000),
+        ),
     }))
 }
 

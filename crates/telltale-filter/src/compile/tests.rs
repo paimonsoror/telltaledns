@@ -118,6 +118,9 @@ fn flt_003_compile_and_look_up() {
     // ads: ads, ok.ads, shared, imp, exact, wild (6 names) + 2 regexes; tracker was badfiltered.
     assert_eq!((ads.entries, ads.unique), (8, 5));
     assert_eq!((more.entries, more.unique), (2, 1));
+    // REQ: OBS-009 (T7.14) — the overlap matrix: shared.example.com is on all three lists.
+    let pair = |a, b| crate::snapshot::ListOverlap { a, b, names: 1 };
+    assert_eq!(st.overlap, vec![pair(0, 1), pair(0, 2), pair(1, 2)]);
     assert_eq!(report.parse[0].rules, 10);
 }
 

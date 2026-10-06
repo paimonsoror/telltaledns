@@ -291,6 +291,8 @@
           "ignore_domains": [],
           "learning_days": 7,
           "max_clients": 1024,
+          "nxdomain_per_minute": 30,
+          "nxdomain_percent": 50,
           "sensitivity": "normal"
         },
         "metrics": {
@@ -580,6 +582,20 @@
           "type": "integer",
           "format": "uint32",
           "default": 1024,
+          "minimum": 0
+        },
+        "nxdomain_per_minute": {
+          "description": "REQ: OBS-009 (T7.14) — an NXDOMAIN storm: at least this many NXDOMAIN answers to one\ndevice in a minute...",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "nxdomain_percent": {
+          "description": "...that are at least this percentage of its queries in that minute.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 50,
           "minimum": 0
         },
         "sensitivity": {
@@ -2379,6 +2395,8 @@
             "ignore_domains": [],
             "learning_days": 7,
             "max_clients": 1024,
+            "nxdomain_per_minute": 30,
+            "nxdomain_percent": 50,
             "sensitivity": "normal"
           }
         },

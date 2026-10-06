@@ -27,6 +27,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/new-domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Domains devices contacted for the first time (OBS-009).
+         * @description Each device's first-seen registrable domains (after its first day, so the initial learning
+         *     doesn't flood the feed), with a score for how machine-generated the name looks (DGA
+         *     likelihood, 0 to 1). Newest first. A device that contacts several high-scoring new domains
+         *     in an hour also shows up in `/analytics/anomalies` as `dga`.
+         */
+        get: operations["new_domains"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -1390,7 +1413,7 @@ export interface components {
              */
             domain?: string | null;
             /**
-             * @description `rate_spike`, `domain_volume`, `drift`, or `beacon`.
+             * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
              * @example domain_volume
              */
             kind: string;
@@ -2482,7 +2505,7 @@ export interface components {
                  */
                 domain?: string | null;
                 /**
-                 * @description `rate_spike`, `domain_volume`, `drift`, or `beacon`.
+                 * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
                  * @example domain_volume
                  */
                 kind: string;
@@ -2711,6 +2734,11 @@ export interface components {
                  */
                 entries: number;
                 error?: string | null;
+                /**
+                 * Format: int64
+                 * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+                 */
+                hits: number;
                 /** @description `block` or `allow`. */
                 kind: string;
                 /** Format: int64 */
@@ -2720,10 +2748,17 @@ export interface components {
                 /** Format: int64 */
                 lines: number;
                 name: string;
+                /** @description Lists it shares names with, most shared first. */
+                overlap: components["schemas"]["ListShare"][];
                 /** @description URL, file path, or `inline`. */
                 source: string;
                 /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
                 state: string;
+                /**
+                 * Format: int64
+                 * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
+                 */
+                unique: number;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -2736,6 +2771,24 @@ export interface components {
                 records: components["schemas"]["RecordInput"][];
                 /** @description `file` (read-only here) or `api`. */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_NewDomain: {
+            items: {
+                client: string;
+                clientName?: string | null;
+                /**
+                 * Format: float
+                 * @description How machine-generated its name looks, 0 to 1 (0.6 and up is suspicious; `06` §7).
+                 */
+                dgaScore: number;
+                /** @example vendor.example */
+                domain: string;
+                /** @description When it was first seen (RFC 3339). */
+                time: string;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -2951,6 +3004,11 @@ export interface components {
              */
             entries: number;
             error?: string | null;
+            /**
+             * Format: int64
+             * @description Queries it blocked (or allowed, for an allow list) on this node since it started.
+             */
+            hits: number;
             /** @description `block` or `allow`. */
             kind: string;
             /** Format: int64 */
@@ -2960,10 +3018,23 @@ export interface components {
             /** Format: int64 */
             lines: number;
             name: string;
+            /** @description Lists it shares names with, most shared first. */
+            overlap: components["schemas"]["ListShare"][];
             /** @description URL, file path, or `inline`. */
             source: string;
             /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
             state: string;
+            /**
+             * Format: int64
+             * @description REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
+             */
+            unique: number;
+        };
+        /** @description Names a list shares with another (OBS-009). */
+        ListShare: {
+            list: string;
+            /** Format: int64 */
+            names: number;
         };
         /** @description List wrapper. */
         Listed_TokenInfo: {
@@ -3080,6 +3151,20 @@ export interface components {
          * @enum {string}
          */
         NameMatch: "substring" | "exact" | "suffix" | "glob" | "regex";
+        /** @description A registrable domain a device contacted for the first time (REQ: OBS-009). */
+        NewDomain: {
+            client: string;
+            clientName?: string | null;
+            /**
+             * Format: float
+             * @description How machine-generated its name looks, 0 to 1 (0.6 and up is suspicious; `06` §7).
+             */
+            dgaScore: number;
+            /** @example vendor.example */
+            domain: string;
+            /** @description When it was first seen (RFC 3339). */
+            time: string;
+        };
         NewToken: {
             info: components["schemas"]["TokenInfo"];
             /** @description The token, shown only now: send as `Authorization: Bearer <token>`. */
@@ -3645,6 +3730,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_AnomalyFinding"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    new_domains: {
+        parameters: {
+            query?: {
+                /** @description Only domains first seen after this (RFC 3339 or relative, default `-24h`). */
+                since?: string;
+                /** @description Only this device (its address). */
+                client?: string;
+                /** @description At most this many (default 200, at most 2000). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_NewDomain"];
                 };
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */

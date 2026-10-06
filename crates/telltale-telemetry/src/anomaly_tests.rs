@@ -250,3 +250,94 @@ fn obs_013_state_survives_a_restart() {
     let back: Engine = serde_json::from_str(&saved).unwrap();
     assert_eq!(back, e);
 }
+
+/// REQ: OBS-009 (T7.14) — an NXDOMAIN storm: one finding (with sample names) when a minute
+/// has enough NXDOMAIN answers and they're most of the device's queries; not for a device
+/// whose failures are a small share, and once per hour.
+#[test]
+fn obs_009_nxdomain_storm() {
+    let mut e = Engine::new(Settings::default());
+    let t = DAY0 + 600;
+    // Device A: 40 NXDOMAIN of 50 queries in one minute, twice in the hour.
+    for m in [0u64, 5] {
+        for i in 0..50u64 {
+            let rc = if i < 40 { 3 } else { 0 };
+            e.observe_answer(
+                t + m * 60 + i % 60,
+                ip(1),
+                &wire(&format!("q{i}.bad.example")),
+                Some(rc),
+            );
+        }
+    }
+    // Device B: 40 NXDOMAIN among 400 queries (10%).
+    for i in 0..400u64 {
+        let rc = if i % 10 == 0 { 3 } else { 0 };
+        e.observe_answer(t + i % 60, ip(2), &wire("ok.example"), Some(rc));
+    }
+    // Close the hour.
+    e.observe_answer(t + 3600, ip(3), &wire("x.example"), Some(0));
+    let storms: Vec<&Finding> = e
+        .findings()
+        .iter()
+        .filter(|f| f.kind == Kind::NxdomainStorm)
+        .collect();
+    assert_eq!(storms.len(), 1, "{storms:?}");
+    let f = storms[0];
+    assert_eq!(
+        (f.client, f.observed, f.baseline, f.window_s),
+        (ip(1), 40.0, 50.0, 60)
+    );
+    assert!(
+        f.detail.contains("80% of 50") && f.detail.contains("q0.bad.example"),
+        "{}",
+        f.detail
+    );
+}
+
+/// REQ: OBS-009 (T7.14) — DGA-like first-seen domains of a learned device are reported (once
+/// per hour, with scores); normal new domains go to the first-seen feed only.
+#[test]
+fn obs_009_dga_and_first_seen_feed() {
+    let mut e = Engine::new(Settings {
+        learning_days: 1,
+        ..Settings::default()
+    });
+    // Day 0: learning.
+    e.observe(DAY0 + 10, ip(7), &wire("www.google.com"));
+    let t = DAY0 + 2 * 86_400;
+    e.observe(t, ip(7), &wire("cdn.netflix.com"));
+    for (i, d) in ["xjwqkzpvb.com", "qwhdkzlmpx.net", "a8f3k2j9x1.org"]
+        .iter()
+        .enumerate()
+    {
+        e.observe(t + 60 * (i as u64 + 1), ip(7), &wire(d));
+    }
+    e.observe(t + 3600, ip(7), &wire("www.google.com"));
+    let dga: Vec<&Finding> = e
+        .findings()
+        .iter()
+        .filter(|f| f.kind == Kind::Dga)
+        .collect();
+    assert_eq!(dga.len(), 1, "{:?}", e.findings());
+    assert_eq!(dga[0].observed, 3.0);
+    assert!(
+        dga[0].detail.contains("xjwqkzpvb.com (1.00)"),
+        "{}",
+        dga[0].detail
+    );
+    let feed: Vec<(&str, bool)> = e
+        .new_domains()
+        .map(|d| (d.domain.as_str(), d.dga_score >= 0.6))
+        .collect();
+    assert_eq!(
+        feed,
+        vec![
+            ("netflix.com", false),
+            ("xjwqkzpvb.com", true),
+            ("qwhdkzlmpx.net", true),
+            ("a8f3k2j9x1.org", true)
+        ],
+        "the first day isn't in the feed; known domains aren't new"
+    );
+}

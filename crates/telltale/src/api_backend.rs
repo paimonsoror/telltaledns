@@ -994,17 +994,54 @@ impl Backend for ApiBackend {
                 .as_ref()
                 .map(|c| c.manifest.clone())
         });
+        // REQ: OBS-009 (T7.14) — hits per list ID on this node since it started.
+        let mut hits: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
+        for ((_, list), n) in &self.src.pipeline.telemetry.aggregates().exported.blocked {
+            *hits.entry(*list).or_insert(0) += n;
+        }
         cfg.list
             .iter()
             .map(|l| {
                 let meta = status.iter().find(|(n, _)| *n == *l.name).map(|(_, m)| m);
-                let entries = compiled.as_ref().map_or(0, |m| {
-                    m.lists
-                        .iter()
-                        .position(|x| x.name == *l.name)
-                        .and_then(|i| m.stats.per_list.get(i))
-                        .map_or(0, |s| s.entries)
-                });
+                let id = compiled
+                    .as_ref()
+                    .and_then(|m| m.lists.iter().position(|x| x.name == *l.name));
+                let per = compiled
+                    .as_ref()
+                    .zip(id)
+                    .and_then(|(m, i)| m.stats.per_list.get(i));
+                let entries = per.map_or(0, |s| s.entries);
+                let unique = per.map_or(0, |s| s.unique);
+                let list_hits = id
+                    .and_then(|i| u16::try_from(i).ok())
+                    .and_then(|i| hits.get(&i).copied())
+                    .unwrap_or(0);
+                let mut overlap: Vec<telltale_api::model::ListShare> = match (&compiled, id) {
+                    (Some(m), Some(i)) => {
+                        let i = u16::try_from(i).unwrap_or(u16::MAX);
+                        m.stats
+                            .overlap
+                            .iter()
+                            .filter_map(|o| {
+                                let other = if o.a == i {
+                                    o.b
+                                } else if o.b == i {
+                                    o.a
+                                } else {
+                                    return None;
+                                };
+                                m.lists.get(usize::from(other)).map(|x| {
+                                    telltale_api::model::ListShare {
+                                        list: x.name.clone(),
+                                        names: o.names,
+                                    }
+                                })
+                            })
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                };
+                overlap.sort_by(|a, b| b.names.cmp(&a.names).then(a.list.cmp(&b.list)));
                 let source = l
                     .url
                     .as_ref()
@@ -1025,6 +1062,9 @@ impl Backend for ApiBackend {
                     bytes: meta.map_or(0, |m| m.bytes),
                     lines: meta.map_or(0, |m| m.lines),
                     entries,
+                    unique,
+                    hits: list_hits,
+                    overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
                     last_changed_unix_seconds: meta.and_then(|m| m.last_changed),
                 }
@@ -1160,6 +1200,32 @@ impl Backend for ApiBackend {
                 spread: f.spread,
                 threshold: f.threshold,
                 detail: f.detail,
+            })
+            .collect()
+    }
+
+    // REQ: OBS-009 (T7.14) — first-seen domains with their DGA scores.
+    fn new_domains(
+        &self,
+        since_s: u64,
+        client: Option<&str>,
+        limit: usize,
+    ) -> Vec<telltale_api::model::NewDomain> {
+        let Some(a) = &self.src.anomalies else {
+            return Vec::new();
+        };
+        let want = client.map(str::trim).filter(|c| !c.is_empty());
+        a.new_domains(since_s, usize::MAX)
+            .into_iter()
+            .map(|d| (telltale_telemetry::agg::client_text(d.client), d))
+            .filter(|(c, _)| want.is_none_or(|w| w == c))
+            .take(limit)
+            .map(|(c, d)| telltale_api::model::NewDomain {
+                time: format_us(d.ts_s.saturating_mul(1_000_000)),
+                client: c,
+                client_name: device_name(&self.src, d.client),
+                domain: d.domain,
+                dga_score: (d.dga_score * 100.0).round() / 100.0,
             })
             .collect()
     }

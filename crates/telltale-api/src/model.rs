@@ -605,6 +605,12 @@ pub struct ListInfo {
     pub lines: u64,
     /// Names this list contributes to the active snapshot.
     pub entries: u64,
+    /// REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).
+    pub unique: u64,
+    /// Queries it blocked (or allowed, for an allow list) on this node since it started.
+    pub hits: u64,
+    /// Lists it shares names with, most shared first.
+    pub overlap: Vec<ListShare>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_checked_unix_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1198,6 +1204,41 @@ pub struct ConfigChange {
     pub keep_in_git: Option<String>,
 }
 
+/// Names a list shares with another (OBS-009).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListShare {
+    pub list: String,
+    pub names: u64,
+}
+
+/// `GET /analytics/new-domains` parameters.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct NewDomainParams {
+    /// Only domains first seen after this (RFC 3339 or relative, default `-24h`).
+    pub since: Option<String>,
+    /// Only this device (its address).
+    pub client: Option<String>,
+    /// At most this many (default 200, at most 2000).
+    pub limit: Option<usize>,
+}
+
+/// A registrable domain a device contacted for the first time (REQ: OBS-009).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NewDomain {
+    /// When it was first seen (RFC 3339).
+    pub time: String,
+    pub client: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    #[schema(example = "vendor.example")]
+    pub domain: String,
+    /// How machine-generated its name looks, 0 to 1 (0.6 and up is suspicious; `06` §7).
+    pub dga_score: f32,
+}
+
 /// `GET /analytics/anomalies` parameters.
 #[derive(Debug, Clone, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -1210,7 +1251,7 @@ pub struct AnomalyParams {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AnomalyFinding {
-    /// `rate_spike`, `domain_volume`, `drift`, or `beacon`.
+    /// `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
     #[schema(example = "domain_volume")]
     pub kind: String,
     /// The device's address, and its name when known.

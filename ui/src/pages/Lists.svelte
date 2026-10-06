@@ -58,7 +58,7 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th></tr>
+            <tr><th>List</th><th>Kind<HelpButton id="list-kind" /></th><th>State<HelpButton id="list-refresh" /></th><th class="num">Names used</th><th class="num">Unique<HelpButton id="list-overlap" /></th><th class="num">Hits</th>{#if advanced}<th class="num">Lines</th><th class="num">Size</th>{/if}<th>Checked</th><th>Changed</th></tr>
           </thead>
           <tbody>
             {#each lists as l (l.name)}
@@ -71,6 +71,14 @@
                 <td><span class="badge {l.kind === 'allow' ? 'ok' : 'bad'}">{l.kind}</span></td>
                 <td><StatusBadge value={l.state} /></td>
                 <td class="num">{num(l.entries)}{#if info?.filterNames && l.kind !== 'allow'}<ShareBar value={(l.entries / info.filterNames) * 100} color="--s-blocked" label="share of the blocked names in the snapshot" />{/if}</td>
+                <!-- REQ: OBS-009 (T7.14) — unique contribution, overlap, hits. -->
+                <td class="num" data-testid="list-unique">
+                  {num(l.unique)}
+                  {#if l.entries > 0 && l.overlap.length && l.overlap[0].names / l.entries >= 0.95}
+                    <div class="small warn-text">{Math.round((l.overlap[0].names / l.entries) * 100)}% also in {l.overlap[0].list}</div>
+                  {/if}
+                </td>
+                <td class="num">{num(l.hits)}{#if l.state === 'ok' && l.entries > 0 && l.hits === 0}<div class="small muted">none yet</div>{/if}</td>
                 {#if advanced}
                   <td class="num">{num(l.lines)}</td>
                   <td class="num">{bytes(l.bytes)}</td>
@@ -87,7 +95,7 @@
   <ConfigEditor kind="list" path="lists" title="Manage lists" noun="list" fields={listFields}
     summary={(d) => `${String(d.kind ?? 'block')} · ${d.url ? String(d.url) : `${((d.rules as string[]) ?? []).length} rules`}${d.enabled === false ? ' · off' : ''}`}
     onchanged={async () => (lists = (await api.lists()).items)} />
-  <p class="muted small">"Names used" counts what this list adds to the active snapshot after removing names other lists already cover.</p>
+  <p class="muted small">"Names used" counts the names this list puts in the active snapshot; "Unique" the ones no other list has (what removing it would lose). "Hits" counts the queries it decided on this node since it started.</p>
 </div>
 
 <style>
@@ -97,6 +105,9 @@
   }
   .err {
     color: var(--bad);
+  }
+  .warn-text {
+    color: var(--warn);
   }
   tr.off {
     opacity: 0.6;

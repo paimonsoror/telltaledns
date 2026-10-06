@@ -16,6 +16,7 @@
 
 pub mod agg;
 pub mod anomaly;
+pub mod dga;
 pub mod event;
 #[cfg(test)]
 mod events_tests;

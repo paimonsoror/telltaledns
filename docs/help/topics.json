@@ -445,6 +445,26 @@
       "caution": "Set for_secs long enough that short blips stay quiet. Keep tokens in token_file, not in the config.",
       "docs": "alerts",
       "general": true
+    },
+    {
+      "id": "new-domains",
+      "title": "New domains",
+      "term": "First-seen domains and DGA scores",
+      "summary": "Domains a device contacted for the first time, each with a score for how machine-generated its name looks (0 to 1).",
+      "when": "Checking what a new app or device started talking to, or looking for malware that generates its domains (DGA).",
+      "example": "A laptop that suddenly looks up xjwqkzpvb.com and a8f3k2j9x1.org (scores 1.00 and 0.80) is worth a look.",
+      "caution": "Names made of real words score low even when generated, and some vendor IDs score high: treat the score as a hint. A device's first day isn't listed, while its usual domains are learned.",
+      "docs": "device-anomalies"
+    },
+    {
+      "id": "list-overlap",
+      "title": "Unique names and overlap",
+      "term": "List overlap",
+      "summary": "Unique names are the ones no other list has. When almost everything in a list is also in another, the list adds little.",
+      "when": "Deciding which lists to drop to save memory and compile time.",
+      "example": "\"97% also in hagezi-pro\": removing this list would lose only its unique names.",
+      "caution": "Hits count since the node started, so a list with no hits after a restart may just be new.",
+      "docs": "filter-lists"
     }
   ]
 }

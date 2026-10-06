@@ -10,6 +10,14 @@
 //!   daily-new baseline.
 //! - **Beaconing:** a tracked domain queried at a regular interval (low jitter) for at least
 //!   [`BEACON_HOURS`] consecutive hours, when it wasn't periodic while the device was learning.
+//! - **NXDOMAIN storm** (T7.14): in one minute, at least `nxdomain_per_minute` NXDOMAIN
+//!   answers and `nxdomain_percent` of the device's queries (absolute: no learning needed; at
+//!   most one finding per device per hour).
+//! - **DGA-like names** (T7.14): first-seen registrable domains whose label looks generated
+//!   ([`crate::dga::score`]); one finding per device per hour with at least
+//!   [`DGA_MIN_PER_HOUR`] of them.
+//!
+//! It also keeps a feed of first-seen domains (after a device's first day), with their scores.
 //!
 //! **Deterministic:** time comes only from event timestamps (windows close when an event from a
 //! later window arrives), state is ordered (`BTreeMap`), hashing is FNV-1a, and the math is
@@ -37,6 +45,10 @@ const SAMPLES: usize = 5;
 const MAX_DOMAIN: usize = 64;
 /// Findings kept in memory (oldest dropped first).
 const MAX_FINDINGS: usize = 1000;
+/// Random-looking new domains in an hour before a device is reported.
+pub const DGA_MIN_PER_HOUR: u32 = 2;
+/// First-seen domains kept in the feed (oldest dropped first).
+const MAX_NEW_DOMAINS: usize = 2000;
 
 /// Detector sensitivity: the spread multiplier for "observed > center + k × spread".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -56,6 +68,15 @@ impl Sensitivity {
             Self::High => 4.0,
         }
     }
+
+    /// The DGA score a first-seen domain must reach.
+    fn dga_threshold(self) -> f32 {
+        match self {
+            Self::Low => 0.75,
+            Self::Normal => 0.6,
+            Self::High => 0.5,
+        }
+    }
 }
 
 /// Engine settings.
@@ -68,6 +89,18 @@ pub struct Settings {
     pub max_clients: usize,
     /// Registrable domains never reported (OS connectivity checks, NTP, ...).
     pub ignore_domains: Vec<String>,
+    /// NXDOMAIN storm: answers per minute, and their share of the device's queries (percent).
+    #[serde(default = "default_nx_per_minute")]
+    pub nxdomain_per_minute: u32,
+    #[serde(default = "default_nx_percent")]
+    pub nxdomain_percent: u32,
+}
+
+const fn default_nx_per_minute() -> u32 {
+    30
+}
+const fn default_nx_percent() -> u32 {
+    50
 }
 
 impl Default for Settings {
@@ -77,6 +110,8 @@ impl Default for Settings {
             sensitivity: Sensitivity::Normal,
             max_clients: 1024,
             ignore_domains: Vec::new(),
+            nxdomain_per_minute: default_nx_per_minute(),
+            nxdomain_percent: default_nx_percent(),
         }
     }
 }
@@ -89,14 +124,18 @@ pub enum Kind {
     DomainVolume,
     Drift,
     Beacon,
+    NxdomainStorm,
+    Dga,
 }
 
 impl Kind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::RateSpike,
         Self::DomainVolume,
         Self::Drift,
         Self::Beacon,
+        Self::NxdomainStorm,
+        Self::Dga,
     ];
     pub const fn label(self) -> &'static str {
         match self {
@@ -104,6 +143,8 @@ impl Kind {
             Self::DomainVolume => "domain_volume",
             Self::Drift => "drift",
             Self::Beacon => "beacon",
+            Self::NxdomainStorm => "nxdomain_storm",
+            Self::Dga => "dga",
         }
     }
 }
@@ -127,6 +168,17 @@ pub struct Finding {
     pub threshold: f64,
     /// More evidence in words (beacon period, sample new domains, ...).
     pub detail: String,
+}
+
+/// A registrable domain a device contacted for the first time (that the device's learned set
+/// doesn't hold), with how generated its label looks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewDomain {
+    pub ts_s: u64,
+    pub client: [u8; 16],
+    pub domain: String,
+    /// [`crate::dga::score`] of its label, 0 to 1.
+    pub dga_score: f32,
 }
 
 /// Exponentially weighted mean and mean absolute deviation.
@@ -226,6 +278,23 @@ struct Client {
     new_today: u32,
     new_samples: Vec<String>,
     daily_new: Ewm,
+    /// NXDOMAIN storm: this minute's queries and NXDOMAIN answers, a few of the names, and
+    /// the hour last reported.
+    #[serde(default)]
+    minute: u64,
+    #[serde(default)]
+    min_total: u32,
+    #[serde(default)]
+    min_nx: u32,
+    #[serde(default)]
+    nx_samples: Vec<String>,
+    #[serde(default)]
+    storm_hour: u64,
+    /// DGA-like new domains this hour, with a few of them and their scores.
+    #[serde(default)]
+    dga_hour: u32,
+    #[serde(default)]
+    dga_samples: Vec<(String, f32)>,
 }
 
 impl Client {
@@ -240,15 +309,55 @@ impl Client {
             new_today: 0,
             new_samples: Vec::new(),
             daily_new: Ewm::default(),
+            minute: 0,
+            min_total: 0,
+            min_nx: 0,
+            nx_samples: Vec::new(),
+            storm_hour: 0,
+            dga_hour: 0,
+            dga_samples: Vec::new(),
         }
     }
 
-    /// Drift: remembers the domain; counts it if it's new for the device.
-    fn learn(&mut self, fp: u64, span: &[u8], day: u32) {
+    /// Closes the device's minute: an NXDOMAIN storm finding if it was one (once an hour).
+    fn close_minute(&mut self, key: [u8; 16], s: &Settings) -> Option<Finding> {
+        let (nx, total) = (self.min_nx, self.min_total);
+        let minute = self.minute;
+        let samples = std::mem::take(&mut self.nx_samples);
+        self.min_nx = 0;
+        self.min_total = 0;
+        let hour = minute / 60;
+        let storm = total > 0
+            && nx >= s.nxdomain_per_minute
+            && u64::from(nx) * 100 >= u64::from(s.nxdomain_percent) * u64::from(total);
+        if !storm || self.storm_hour == hour {
+            return None;
+        }
+        self.storm_hour = hour;
+        let pct = u64::from(nx) * 100 / u64::from(total);
+        Some(Finding {
+            kind: Kind::NxdomainStorm,
+            client: key,
+            domain: None,
+            window_start_s: minute * 60,
+            window_s: 60,
+            observed: f64::from(nx),
+            baseline: f64::from(total),
+            spread: 0.0,
+            threshold: f64::from(s.nxdomain_per_minute),
+            detail: format!(
+                "{nx} NXDOMAIN answers in a minute ({pct}% of {total} queries), e.g. {}",
+                samples.join(", ")
+            ),
+        })
+    }
+
+    /// Drift: remembers the domain; counts it if it's new for the device (and says so).
+    fn learn(&mut self, fp: u64, span: &[u8], day: u32) -> bool {
         let fp32 = u32::try_from((fp >> 32) ^ (fp & 0xffff_ffff)).unwrap_or(0);
         if let Some(e) = self.learned.iter_mut().find(|(f, _)| *f == fp32) {
             e.1 = day;
-            return;
+            return false;
         }
         if self.learned.len() >= LEARNED
             && let Some(i) = self
@@ -265,6 +374,7 @@ impl Client {
         if self.new_samples.len() < SAMPLES {
             self.new_samples.push(span_text(span));
         }
+        true
     }
 
     /// Volume and beaconing: counts a query to a tracked pair (tracking it if there's room or
@@ -342,6 +452,9 @@ pub struct Engine {
     findings: Vec<Finding>,
     pub evicted: u64,
     pub total: BTreeMap<Kind, u64>,
+    /// First-seen domains, oldest first (T7.14).
+    #[serde(default)]
+    new_domains: std::collections::VecDeque<NewDomain>,
     /// Fingerprints of `settings.ignore_domains` (rebuilt from the settings).
     #[serde(skip)]
     ignore_fps: Vec<u64>,
@@ -457,6 +570,7 @@ impl Engine {
             findings: Vec::new(),
             evicted: 0,
             total: BTreeMap::new(),
+            new_domains: std::collections::VecDeque::new(),
             ignore_fps: Vec::new(),
         }
         .with_ignores()
@@ -487,6 +601,11 @@ impl Engine {
         &self.findings
     }
 
+    /// First-seen domains, oldest first (at most the last 2000).
+    pub fn new_domains(&self) -> impl DoubleEndedIterator<Item = &NewDomain> {
+        self.new_domains.iter()
+    }
+
     /// Devices with state.
     pub fn clients(&self) -> usize {
         self.clients.len()
@@ -512,6 +631,12 @@ impl Engine {
 
     /// Folds in one query from `client` for `wire` at `ts_s` (event time, non-decreasing).
     pub fn observe(&mut self, ts_s: u64, client: [u8; 16], wire: &[u8]) {
+        self.observe_answer(ts_s, client, wire, None);
+    }
+
+    /// [`Self::observe`] with the answer's RCODE (`None` when nothing was sent), for the
+    /// NXDOMAIN storm detector.
+    pub fn observe_answer(&mut self, ts_s: u64, client: [u8; 16], wire: &[u8], rcode: Option<u8>) {
         let hour = ts_s / 3600;
         if self.hour == 0 {
             self.hour = hour;
@@ -536,21 +661,64 @@ impl Engine {
             }
         }
         let day = u32::try_from(ts_s / 86_400).unwrap_or(u32::MAX);
+        let learning = self.settings.learning_days;
         let c = self
             .clients
             .entry(client)
             .or_insert_with(|| Client::new(ts_s));
         c.last_s = ts_s;
         c.hour_count = c.hour_count.saturating_add(1);
-        let Some(span) = registrable_span(wire) else {
-            return;
-        };
-        let fp = span_fp(span);
-        if self.ignore_fps.contains(&fp) {
-            return;
+        // NXDOMAIN storm, per minute.
+        let minute = ts_s / 60;
+        let mut storm = None;
+        if c.minute != minute {
+            if c.min_total > 0 {
+                storm = c.close_minute(client, &self.settings);
+            }
+            c.minute = minute;
         }
-        c.learn(fp, span, day);
-        c.track(fp, span, ts_s);
+        c.min_total = c.min_total.saturating_add(1);
+        if rcode == Some(3) {
+            c.min_nx = c.min_nx.saturating_add(1);
+            if c.nx_samples.len() < SAMPLES {
+                let mut name = crate::event::dotted(wire);
+                name.truncate(MAX_DOMAIN);
+                if !c.nx_samples.contains(&name) {
+                    c.nx_samples.push(name);
+                }
+            }
+        }
+        let learned = ts_s.saturating_sub(c.first_s) >= u64::from(learning) * 86_400;
+        let past_first_day = ts_s.saturating_sub(c.first_s) >= 86_400;
+        if let Some(span) = registrable_span(wire) {
+            let fp = span_fp(span);
+            if !self.ignore_fps.contains(&fp) {
+                if c.learn(fp, span, day) && past_first_day {
+                    // REQ: OBS-009 — first-seen domains, scored for DGA likelihood.
+                    let label = &span[1..=usize::from(span[0])];
+                    let score = crate::dga::score(label);
+                    if learned && score >= self.settings.sensitivity.dga_threshold() {
+                        c.dga_hour = c.dga_hour.saturating_add(1);
+                        if c.dga_samples.len() < SAMPLES {
+                            c.dga_samples.push((span_text(span), score));
+                        }
+                    }
+                    if self.new_domains.len() >= MAX_NEW_DOMAINS {
+                        self.new_domains.pop_front();
+                    }
+                    self.new_domains.push_back(NewDomain {
+                        ts_s,
+                        client,
+                        domain: span_text(span),
+                        dga_score: score,
+                    });
+                }
+                c.track(fp, span, ts_s);
+            }
+        }
+        if let Some(f) = storm {
+            self.push(f);
+        }
     }
 
     fn push(&mut self, f: Finding) {
@@ -577,6 +745,22 @@ impl Engine {
             let Some(client) = self.clients.get_mut(&key) else {
                 continue;
             };
+            // The minute that ends with the hour.
+            if client.min_total > 0
+                && let Some(f) = client.close_minute(key, &self.settings)
+            {
+                out.push(f);
+            }
+            if client.dga_hour >= DGA_MIN_PER_HOUR {
+                out.push(Self::dga_finding(
+                    client,
+                    key,
+                    start,
+                    self.settings.sensitivity,
+                ));
+            }
+            client.dga_hour = 0;
+            client.dga_samples.clear();
             // Domain volume first, so a rate spike one domain explains is reported once.
             let explained = Self::close_pairs(client, key, start, end, learned, mult, &mut out);
             if let Some(f) = Self::close_rate(client, key, start, hod, learned, mult, explained) {
@@ -665,6 +849,32 @@ impl Engine {
             t.hour = 0;
         }
         explained
+    }
+
+    /// DGA-like new domains this hour.
+    fn dga_finding(client: &Client, key: [u8; 16], start: u64, s: Sensitivity) -> Finding {
+        let samples: Vec<String> = client
+            .dga_samples
+            .iter()
+            .map(|(d, sc)| format!("{d} ({sc:.2})"))
+            .collect();
+        Finding {
+            kind: Kind::Dga,
+            client: key,
+            domain: client.dga_samples.first().map(|(d, _)| d.clone()),
+            window_start_s: start,
+            window_s: 3600,
+            observed: f64::from(client.dga_hour),
+            baseline: 0.0,
+            spread: 0.0,
+            threshold: f64::from(DGA_MIN_PER_HOUR),
+            detail: format!(
+                "{} new domains this hour look machine-generated (score at least {:.2}), e.g. {}",
+                client.dga_hour,
+                s.dga_threshold(),
+                samples.join(", ")
+            ),
+        }
     }
 
     /// The rate-spike check for one device, unless domain findings explain most of it.

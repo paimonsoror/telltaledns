@@ -8,6 +8,10 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
 
   let items = $state<S['AnomalyFinding'][]>([]);
+  // REQ: OBS-009 (T7.14) — first-seen domains, with how machine-generated each name looks.
+  let fresh = $state<S['NewDomain'][]>([]);
+  let suspiciousOnly = $state(false);
+  const shown = $derived(suspiciousOnly ? fresh.filter((d) => d.dgaScore >= 0.6) : fresh);
   let error = $state<unknown>(null);
   let loaded = $state(false);
   let range = $state('-7d');
@@ -17,7 +21,12 @@
     domain_volume: 'Unusual traffic to one domain',
     drift: 'Many new domains',
     beacon: 'Regular phone-home',
+    nxdomain_storm: 'Burst of failed lookups',
+    dga: 'Machine-generated-looking domains',
   };
+  // Findings measured against an absolute bar, not the device's usual value.
+  const absolute = new Set(['nxdomain_storm', 'dga']);
+  const windowText = (s: number) => (s >= 86400 ? `${s / 86400} day` : s >= 3600 ? `${s / 3600} h` : `${s / 60} min`);
 
   $effect(() => {
     void range;
@@ -28,6 +37,10 @@
         loaded = true;
       })
       .catch((e) => (error = e));
+    api
+      .newDomains(range === '-24h' ? '-24h' : range, 500)
+      .then((r) => (fresh = r.items))
+      .catch(() => (fresh = []));
   });
 </script>
 
@@ -63,13 +76,45 @@
       <p>{f.detail}</p>
       <dl class="evidence small">
         <dt>Observed</dt><dd>{num(Math.round(f.observed * 10) / 10)}</dd>
-        <dt>Usual</dt><dd>{num(Math.round(f.baseline * 10) / 10)} ± {num(Math.round(f.spread * 10) / 10)}</dd>
+        {#if f.kind === 'nxdomain_storm'}
+          <dt>Queries</dt><dd>{num(f.baseline)}</dd>
+        {:else if !absolute.has(f.kind)}
+          <dt>Usual</dt><dd>{num(Math.round(f.baseline * 10) / 10)} ± {num(Math.round(f.spread * 10) / 10)}</dd>
+        {/if}
         <dt>Threshold</dt><dd>{num(Math.round(f.threshold * 10) / 10)}</dd>
-        <dt>Window</dt><dd>{f.windowSeconds >= 86400 ? `${f.windowSeconds / 86400} day` : `${f.windowSeconds / 3600} h`}</dd>
+        <dt>Window</dt><dd>{windowText(f.windowSeconds)}</dd>
       </dl>
       <a class="small" href={href('/queries', { client: f.client, name: f.domain ?? undefined, match: f.domain ? 'suffix' : undefined })}>Show these queries</a>
     </section>
   {/each}
+
+  <section class="card" data-testid="new-domains">
+    <div class="row head">
+      <h2>New domains<HelpButton id="new-domains" /></h2>
+      <span class="spacer"></span>
+      <label class="small"><input type="checkbox" bind:checked={suspiciousOnly} /> Only machine-generated-looking</label>
+    </div>
+    <p class="muted small">Domains each device contacted for the first time (after its first day), newest first. The score says how generated the name looks (0.6 and up is suspicious).</p>
+    {#if shown.length === 0}
+      <p class="empty">No new domains in this period.</p>
+    {:else}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>First seen</th><th>Device</th><th>Domain</th><th class="num">Score</th></tr></thead>
+          <tbody>
+            {#each shown.slice(0, 200) as d, i (i)}
+              <tr>
+                <td class="small">{dateTime(Date.parse(d.time) / 1000)}</td>
+                <td>{d.clientName ?? d.client}</td>
+                <td class="mono"><a href={href('/queries', { client: d.client, name: d.domain, match: 'suffix' })}>{d.domain}</a></td>
+                <td class="num">{#if d.dgaScore >= 0.6}<span class="badge bad">{d.dgaScore.toFixed(2)}</span>{:else}<span class="muted">{d.dgaScore.toFixed(2)}</span>{/if}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
 </div>
 
 <style>
@@ -87,6 +132,13 @@
     color: var(--muted);
   }
   .evidence dd {
+    margin: 0;
+  }
+  .head {
+    gap: 10px;
+    align-items: center;
+  }
+  .head h2 {
     margin: 0;
   }
 </style>

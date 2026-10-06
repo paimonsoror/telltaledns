@@ -39,6 +39,8 @@ fn settings(cfg: &Config) -> Settings {
             .iter()
             .map(|d| d.trim_end_matches('.').to_ascii_lowercase())
             .collect(),
+        nxdomain_per_minute: a.nxdomain_per_minute.max(1),
+        nxdomain_percent: a.nxdomain_percent.min(100),
     }
 }
 
@@ -79,6 +81,22 @@ impl Anomalies {
         let mut v = self.lock().findings().to_vec();
         v.reverse();
         v
+    }
+
+    /// REQ: OBS-009 (T7.14) — first-seen domains since `since` (Unix seconds), newest first,
+    /// at most `limit`.
+    pub(crate) fn new_domains(
+        &self,
+        since: u64,
+        limit: usize,
+    ) -> Vec<telltale_telemetry::anomaly::NewDomain> {
+        self.lock()
+            .new_domains()
+            .rev()
+            .take_while(|d| d.ts_s >= since)
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     /// Findings so far by kind, devices with state, and devices evicted (for `/metrics`).
@@ -130,9 +148,12 @@ pub(crate) struct AnomalySink {
 impl Sink for AnomalySink {
     fn record(&mut self, r: &Record) {
         if let Record::Query(e, name) = r {
-            self.shared
-                .lock()
-                .observe(e.ts_us / 1_000_000, e.client_ip, name.as_wire());
+            self.shared.lock().observe_answer(
+                e.ts_us / 1_000_000,
+                e.client_ip,
+                name.as_wire(),
+                e.rcode,
+            );
         }
     }
 

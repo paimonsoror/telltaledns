@@ -266,13 +266,13 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "list_effectiveness",
-            description: "Read-only. Filter lists: size, last update, errors, and how many blocks each caused. Find dead or useless lists.",
+            description: "Read-only. Filter lists: size, last update, errors, hits since start, unique names (only that list has them), and which lists overlap. Find dead, failing, or redundant lists.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("lists".into(), "/api/v1/lists".into())]),
         },
         Tool {
             name: "find_anomalies",
-            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, and beaconing (regular call-home patterns). Alert-only; nothing is blocked automatically.",
+            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains. Alert-only; nothing is blocked automatically.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "since": {"type": "string", "description": "Findings since (relative like -7d, or RFC 3339). Default -7d."}
@@ -283,6 +283,29 @@ pub fn tools() -> Vec<Tool> {
                     "anomalies".into(),
                     query("/api/v1/analytics/anomalies", a, &[("since", "since")]),
                 )])
+            },
+        },
+        Tool {
+            name: "new_domains",
+            description: "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "since": {"type": "string", "description": "First seen since (relative like -24h, or RFC 3339). Default -24h."},
+                "client": {"type": "string", "description": "Only this device's address."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "At most this many (default 200)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let mut path = query(
+                    "/api/v1/analytics/new-domains",
+                    a,
+                    &[("since", "since"), ("client", "client")],
+                );
+                if let Some(n) = a.get("limit").and_then(Value::as_u64) {
+                    let sep = if path.contains('?') { '&' } else { '?' };
+                    path = format!("{path}{sep}limit={n}");
+                }
+                Ok(vec![("newDomains".into(), path)])
             },
         },
         Tool {

@@ -52,6 +52,68 @@
         }
       }
     },
+    "/api/v1/analytics/new-domains": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Domains devices contacted for the first time (OBS-009).",
+        "description": "Each device's first-seen registrable domains (after its first day, so the initial learning\ndoesn't flood the feed), with a score for how machine-generated the name looks (DGA\nlikelihood, 0 to 1). Newest first. A device that contacts several high-scoring new domains\nin an hour also shows up in `/analytics/anomalies` as `dga`.",
+        "operationId": "new_domains",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only domains first seen after this (RFC 3339 or relative, default `-24h`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Only this device (its address).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many (default 200, at most 2000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_NewDomain"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -3581,7 +3643,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`rate_spike`, `domain_volume`, `drift`, or `beacon`.",
+            "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
             "example": "domain_volume"
           },
           "observed": {
@@ -6328,7 +6390,7 @@
                 },
                 "kind": {
                   "type": "string",
-                  "description": "`rate_spike`, `domain_volume`, `drift`, or `beacon`.",
+                  "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
                   "example": "domain_volume"
                 },
                 "observed": {
@@ -6966,7 +7028,10 @@
                 "state",
                 "bytes",
                 "lines",
-                "entries"
+                "entries",
+                "unique",
+                "hits",
+                "overlap"
               ],
               "properties": {
                 "bytes": {
@@ -6988,6 +7053,12 @@
                     "string",
                     "null"
                   ]
+                },
+                "hits": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Queries it blocked (or allowed, for an allow list) on this node since it started.",
+                  "minimum": 0
                 },
                 "kind": {
                   "type": "string",
@@ -7017,6 +7088,13 @@
                 "name": {
                   "type": "string"
                 },
+                "overlap": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ListShare"
+                  },
+                  "description": "Lists it shares names with, most shared first."
+                },
                 "source": {
                   "type": "string",
                   "description": "URL, file path, or `inline`."
@@ -7024,6 +7102,12 @@
                 "state": {
                   "type": "string",
                   "description": "`ok`, `failed`, or `pending` (not downloaded yet)."
+                },
+                "unique": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+                  "minimum": 0
                 }
               }
             }
@@ -7068,6 +7152,59 @@
                 "source": {
                   "type": "string",
                   "description": "`file` (read-only here) or `api`."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_NewDomain": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A registrable domain a device contacted for the first time (REQ: OBS-009).",
+              "required": [
+                "time",
+                "client",
+                "domain",
+                "dgaScore"
+              ],
+              "properties": {
+                "client": {
+                  "type": "string"
+                },
+                "clientName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "dgaScore": {
+                  "type": "number",
+                  "format": "float",
+                  "description": "How machine-generated its name looks, 0 to 1 (0.6 and up is suspicious; `06` §7)."
+                },
+                "domain": {
+                  "type": "string",
+                  "example": "vendor.example"
+                },
+                "time": {
+                  "type": "string",
+                  "description": "When it was first seen (RFC 3339)."
                 }
               }
             }
@@ -7654,7 +7791,10 @@
           "state",
           "bytes",
           "lines",
-          "entries"
+          "entries",
+          "unique",
+          "hits",
+          "overlap"
         ],
         "properties": {
           "bytes": {
@@ -7676,6 +7816,12 @@
               "string",
               "null"
             ]
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries it blocked (or allowed, for an allow list) on this node since it started.",
+            "minimum": 0
           },
           "kind": {
             "type": "string",
@@ -7705,6 +7851,13 @@
           "name": {
             "type": "string"
           },
+          "overlap": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListShare"
+            },
+            "description": "Lists it shares names with, most shared first."
+          },
           "source": {
             "type": "string",
             "description": "URL, file path, or `inline`."
@@ -7712,6 +7865,30 @@
           "state": {
             "type": "string",
             "description": "`ok`, `failed`, or `pending` (not downloaded yet)."
+          },
+          "unique": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: OBS-009 (T7.14) — names no other list has (what removing it would lose).",
+            "minimum": 0
+          }
+        }
+      },
+      "ListShare": {
+        "type": "object",
+        "description": "Names a list shares with another (OBS-009).",
+        "required": [
+          "list",
+          "names"
+        ],
+        "properties": {
+          "list": {
+            "type": "string"
+          },
+          "names": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -8034,6 +8211,40 @@
           "glob",
           "regex"
         ]
+      },
+      "NewDomain": {
+        "type": "object",
+        "description": "A registrable domain a device contacted for the first time (REQ: OBS-009).",
+        "required": [
+          "time",
+          "client",
+          "domain",
+          "dgaScore"
+        ],
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "clientName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dgaScore": {
+            "type": "number",
+            "format": "float",
+            "description": "How machine-generated its name looks, 0 to 1 (0.6 and up is suspicious; `06` §7)."
+          },
+          "domain": {
+            "type": "string",
+            "example": "vendor.example"
+          },
+          "time": {
+            "type": "string",
+            "description": "When it was first seen (RFC 3339)."
+          }
+        }
       },
       "NewToken": {
         "type": "object",

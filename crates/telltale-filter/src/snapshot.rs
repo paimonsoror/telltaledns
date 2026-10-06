@@ -129,6 +129,18 @@ pub struct CompileStats {
     /// Bytes of FSTs + list sets per distinct name (the `05` §3.1 ≤ 12 B target).
     pub bytes_per_name: f64,
     pub per_list: Vec<ListCompileStats>,
+    /// REQ: OBS-009 (T7.14) — names two lists share, for each pair that shares any (list IDs
+    /// `a` < `b`): the overlap matrix behind "this list adds nothing".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlap: Vec<ListOverlap>,
+}
+
+/// Names lists `a` and `b` both hold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListOverlap {
+    pub a: u16,
+    pub b: u16,
+    pub names: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

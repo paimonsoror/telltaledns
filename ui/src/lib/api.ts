@@ -132,6 +132,9 @@ export const api = {
   services: () => get<S['Items_ServiceInfo']>('/services'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
   anomalies: (since = '-7d') => get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since }),
+  // REQ: OBS-009 (T7.14)
+  newDomains: (since = '-24h', limit = 200) =>
+    get<S['Items_NewDomain']>('/analytics/new-domains', { since, limit: String(limit) }),
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
   localNames: () => get<S['Items_LocalName']>('/records'),

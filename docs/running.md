@@ -532,6 +532,8 @@ telltale lists compile -c telltale.toml     # compile now and show per-list numb
 ```
 `unique` counts the names no other list has. A list with few unique names adds little beyond your other lists.
 
+The **Lists** page and `GET /api/v1/lists` show the same per list: `unique`, `hits` (queries it decided on this node since it started), and `overlap` (the lists it shares names with, and how many). A list that's 95% or more inside another is marked, and one with no hits is marked "none yet".
+
 ### Blocking
 A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream:
 ```
@@ -1339,6 +1341,10 @@ TelltaleDNS learns how each device usually behaves and points out when that chan
 - **Unusual traffic to one domain** (`domain_volume`): queries to one registrable domain in an hour against that device's usual volume for it. A spike one domain explains is reported once, as this.
 - **Many new domains** (`drift`): registrable domains the device has never contacted, per day, against its usual number of new ones.
 - **Regular phone-home** (`beacon`): a domain queried at a regular interval (low jitter) for at least 4 hours, when it wasn't periodic while the device was being learned.
+- **Burst of failed lookups** (`nxdomain_storm`): in one minute, at least 30 NXDOMAIN answers to a device that are at least half its queries (malware probing generated names, or a broken app). This one needs no learning period; it's reported at most once an hour per device.
+- **Machine-generated-looking domains** (`dga`): new domains whose names look generated (`xjwqkzpvb.com`, `a8f3k2j9x1.org`), at least 2 in an hour. The score (0 to 1) uses how English-like the letter pairs are, letter/digit mixing, consonant runs, and character variety; 0.6 and up counts (0.75 at `low` sensitivity, 0.5 at `high`). Names made of real words score low even when generated.
+
+**New domains:** the Anomalies page also lists each device's first-seen domains (after its first day), with their scores; `GET /api/v1/analytics/new-domains?since=-24h&client=<ip>` and the MCP tool `new_domains` return the same.
 
 Every finding shows its evidence (what was seen, the usual value ± spread, the threshold, the window). Devices are quiet for their first `learning_days` (7) while their baseline forms; an alerted spike doesn't become the new normal. Findings never block anything: act on them yourself (look at the device's queries, move it to a stricter group).
 ```toml
@@ -1347,6 +1353,8 @@ enabled = true
 learning_days = 7
 sensitivity = "normal"         # low | normal | high
 ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity checks)
+nxdomain_per_minute = 30       # NXDOMAIN storm: answers per minute...
+nxdomain_percent = 50          # ...that are at least this share of the device's queries
 ```
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level = 3` (names aren't kept). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
@@ -1505,8 +1513,9 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `get_client_profile` | a device: identity, groups, recent and slow queries |
 | `latency_breakdown` | percentiles by stage, upstream, client, or query type |
 | `upstream_health` | upstream health, breakers, latency |
-| `list_effectiveness` | list sizes, updates, errors, and blocks |
-| `find_anomalies` | device anomalies with evidence |
+| `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
+| `find_anomalies` | device anomalies with evidence (including NXDOMAIN storms and DGA-like names) |
+| `new_domains` | domains devices contacted for the first time, with DGA scores |
 | `cluster_status` | members, roles, sync, versions, checks |
 | `get_config` | one configuration section (no secrets) |
 
