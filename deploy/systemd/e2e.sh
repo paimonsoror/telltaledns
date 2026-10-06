@@ -19,6 +19,19 @@ case "$(uname -m)" in
   *) echo "unsupported test arch"; exit 1 ;;
 esac
 
+# Failures become CI annotations with the installer's output and the service's journal (the
+# job log isn't always at hand).
+fail() {
+  echo "FAIL: $*"
+  local extra=""
+  if [ -f "$WORK/guided.out" ]; then
+    extra=" | install.sh: $(tail -n 8 "$WORK/guided.out" | tr '\n' ' ' | cut -c1-600)"
+  fi
+  echo "::error title=systemd-e2e::FAIL: $*$extra | journal: $(journalctl -u telltale --no-pager -n 8 2>/dev/null | tr '\n' ' ' | cut -c1-800)"
+  exit 1
+}
+trap 'fail "line $LINENO: \`$BASH_COMMAND\` failed"' ERR
+
 command -v minisign >/dev/null || { apt-get update -qq && apt-get install -y -qq minisign dnsutils; }
 command -v dig >/dev/null || apt-get install -y -qq dnsutils
 
@@ -49,21 +62,21 @@ for _ in $(seq 1 20); do
   if dig +short +time=2 +tries=1 @127.0.0.1 example.com A | grep -qE '^[0-9.]+$'; then ok=1; break; fi
   sleep 1
 done
-[ -n "$ok" ] || { journalctl -u telltale --no-pager | tail -30; echo "FAIL: no DNS answer"; exit 1; }
-dig +short +tcp @127.0.0.1 example.com A | grep -qE '^[0-9.]+$' || { echo "FAIL: TCP"; exit 1; }
+[ -n "$ok" ] || { journalctl -u telltale --no-pager | tail -30; fail "no DNS answer"; }
+dig +short +tcp @127.0.0.1 example.com A | grep -qE '^[0-9.]+$' || { fail "TCP"; }
 /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz
 
 echo "== runs as telltale, sandboxed"
 user="$(ps -o user= -C telltale | head -1)"
-[ "$user" = telltale ] || { echo "FAIL: running as $user"; exit 1; }
+[ "$user" = telltale ] || { fail "running as $user"; }
 systemd-analyze security telltale --no-pager | tail -1
-[ -f /var/lib/telltale/setup-token ] || { echo "FAIL: no setup token in the data directory"; exit 1; }
+[ -f /var/lib/telltale/setup-token ] || { fail "no setup token in the data directory"; }
 sudo -u telltale /usr/local/bin/telltale auth setup-token -c /etc/telltale/telltale.toml >/dev/null
 
 echo "== re-run upgrades in place and keeps the config"
 echo "# local edit" >> /etc/telltale/telltale.toml
 sh "$HERE/install.sh" --disable-resolved-stub >/dev/null
-grep -q "# local edit" /etc/telltale/telltale.toml || { echo "FAIL: config overwritten"; exit 1; }
+grep -q "# local edit" /etc/telltale/telltale.toml || { fail "config overwritten"; }
 systemctl is-active --quiet telltale
 
 # REQ: OPS-001 (T7.6) — the guided setup on a fresh machine: answers on stdin, the first admin
@@ -73,14 +86,14 @@ systemctl stop telltale
 rm -rf /etc/telltale /var/lib/telltale/*
 printf '2\n\n\n0\n\n\n2\nalice\ne2e-guided-pass-1\ne2e-guided-pass-1\n3\n\ny\n' \
   | sh "$HERE/install.sh" --interactive > "$WORK/guided.out" 2>&1 \
-  || { cat "$WORK/guided.out"; journalctl -u telltale --no-pager | tail -30; echo "FAIL: guided install"; exit 1; }
-grep -q 'retention_days = 3' /etc/telltale/telltale.toml || { cat /etc/telltale/telltale.toml; echo "FAIL: answers not in the config"; exit 1; }
-grep -q '\[\[list\]\]' /etc/telltale/telltale.toml && { echo "FAIL: lists written for 'none'"; exit 1; }
-[ -f /etc/systemd/system/telltale.service.d/10-first-admin.conf ] && { echo "FAIL: the first-admin drop-in is still there"; exit 1; }
-grep -q 'sign in as alice' "$WORK/guided.out" || { cat "$WORK/guided.out"; echo "FAIL: closing message"; exit 1; }
+  || { cat "$WORK/guided.out"; journalctl -u telltale --no-pager | tail -30; fail "guided install"; }
+grep -q 'retention_days = 3' /etc/telltale/telltale.toml || { cat /etc/telltale/telltale.toml; fail "answers not in the config"; }
+grep -q '\[\[list\]\]' /etc/telltale/telltale.toml && { fail "lists written for 'none'"; }
+[ -f /etc/systemd/system/telltale.service.d/10-first-admin.conf ] && { fail "the first-admin drop-in is still there"; }
+grep -q 'sign in as alice' "$WORK/guided.out" || { cat "$WORK/guided.out"; fail "closing message"; }
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
   -d '{"username":"alice","password":"e2e-guided-pass-1"}' http://127.0.0.1:8053/api/v1/auth/login)
-[ "$code" = 200 ] || { echo "FAIL: alice can't sign in ($code)"; exit 1; }
+[ "$code" = 200 ] || { fail "alice can't sign in ($code)"; }
 systemctl restart telltale   # the drop-in is gone: a restart doesn't need it
 for _ in $(seq 1 20); do /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz >/dev/null 2>&1 && break; sleep 0.5; done
 /usr/local/bin/telltale health --url http://127.0.0.1:8053/readyz
@@ -88,10 +101,10 @@ for _ in $(seq 1 20); do /usr/local/bin/telltale health --url http://127.0.0.1:8
 echo "== tampered release is refused"
 cp "$BIN" "$WORK/evil" && printf 'x' >> "$WORK/evil"
 cp "$WORK/evil" "$REL/$ASSET"     # binary swapped after signing
-if sh "$HERE/install.sh" --no-start >/dev/null 2>&1; then echo "FAIL: tampered binary installed"; exit 1; fi
+if sh "$HERE/install.sh" --no-start >/dev/null 2>&1; then fail "tampered binary installed"; fi
 publish "$BIN"
 printf 'x' >> "$REL/SHA256SUMS"   # checksums changed after signing
-if sh "$HERE/install.sh" --no-start >/dev/null 2>&1; then echo "FAIL: bad signature accepted"; exit 1; fi
-cmp -s "$BIN" /usr/local/bin/telltale || { echo "FAIL: binary changed by a refused install"; exit 1; }
+if sh "$HERE/install.sh" --no-start >/dev/null 2>&1; then fail "bad signature accepted"; fi
+cmp -s "$BIN" /usr/local/bin/telltale || { fail "binary changed by a refused install"; }
 
 echo "PASS"
