@@ -1205,7 +1205,11 @@ mode = "ship"
   `buffer_bytes` the oldest are dropped. Metrics: `telltale_qlog_ship_pending_segments`,
   `telltale_qlog_ship_errors_total`, and on the target
   `telltale_qlog_received_segments_total`.
-- Dashboard counts (per-minute rollups) stay on each node; they're small.
+- Dashboard counts go too: every `interval_secs` (at most a minute) the node sends its last
+  30 minutes of per-minute counts to the target, which keeps them for 7 days. While the node
+  answers, the dashboard uses its own numbers; once it's gone (a Kubernetes resolver pod
+  replaced in a rollout), the target's copy keeps its traffic in the cluster's history
+  instead of the totals dropping. Ranges past 7 days use what each node kept itself.
 - To spare an SD card entirely, put the buffer on a RAM disk: the query log lives in
   `<data_dir>/qlog`.
 

@@ -813,7 +813,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Exactly one copy:** a row is either in the sender's buffer or on the receiver. The receiver's search includes shipped logs, labelled by node, and federated reads reach the sender's unshipped rows, so a cluster-wide search sees each row once.
 - **Target:** `[telemetry.ship] to` (a node ID or site), defaulting to the primary. A primary in ship mode with no other target keeps its log (logged once).
 - **Deferred:**
-  - **Rollup shipping.** Per-minute counts stay on each node: they're small, the dashboard already federates them, and shipping them only matters for ephemeral pods (T5.10).
+  - **Rollup shipping.** Per-minute counts stay on each node: they're small, the dashboard already federates them, and shipping them only matters for ephemeral pods (T5.10). *Done in T9.3:* ship-mode nodes send their last 30 minutes of minutes every `interval_secs` (≤ 60 s); the target keeps them per node for 7 days (`shipped_minute`), and the cluster view adds only those of nodes that didn't answer live, so nothing counts twice.
   - **`both` mode.** It would need dedup between a live sender and its shipped copy. Not needed for the hybrid Pi + k8s setup.
 - **Safety:**
   - Receivers accept only from cluster members (mTLS), only hex node IDs become paths, and segments over 256 MiB are refused.

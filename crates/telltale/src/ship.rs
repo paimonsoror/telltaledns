@@ -38,6 +38,107 @@ const EVERY: Duration = Duration::from_secs(15);
 /// How long one chunk may take.
 const CHUNK_DEADLINE: Duration = Duration::from_secs(30);
 
+/// REQ: CLU-007 (T9.3) — the RPC that carries a node's recent per-minute counts.
+pub(crate) const ROLLUP_KIND: &str = "rollup.put";
+/// Minutes re-sent each time (covers late events and a target that was briefly away).
+const ROLLUP_WINDOW_S: u64 = 30 * 60;
+
+/// `[start u64][len u32][encoded Counts]...`, big-endian.
+fn encode_minutes(rows: &[(u64, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (start, data) in rows {
+        out.extend_from_slice(&start.to_be_bytes());
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(0).to_be_bytes());
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+fn decode_minutes(mut b: &[u8]) -> Result<Vec<(u64, Vec<u8>)>, String> {
+    let mut rows = Vec::new();
+    while !b.is_empty() {
+        let start = b
+            .get(..8)
+            .and_then(|x| <[u8; 8]>::try_from(x).ok())
+            .map(u64::from_be_bytes);
+        let len = b
+            .get(8..12)
+            .and_then(|x| <[u8; 4]>::try_from(x).ok())
+            .map(u32::from_be_bytes);
+        let (Some(start), Some(len)) = (start, len) else {
+            return Err("short minute".into());
+        };
+        let len = usize::try_from(len).map_err(|e| e.to_string())?;
+        let data = b.get(12..12 + len).ok_or("short minute data")?;
+        rows.push((start, data.to_vec()));
+        b = &b[12 + len..];
+        if rows.len() > 2 * 1440 {
+            return Err("too many minutes".into());
+        }
+    }
+    Ok(rows)
+}
+
+/// Stores minutes `peer` (its mTLS node ID) sent (T9.3).
+pub(crate) fn receive_rollups(
+    db: &telltale_store::rollup::Rollups,
+    peer: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    if !valid_node_id(peer) {
+        return Err("bad node ID".into());
+    }
+    let rows = decode_minutes(body)?;
+    db.put_shipped(peer, &rows).map_err(|e| e.to_string())?;
+    Ok(b"ok".to_vec())
+}
+
+/// REQ: CLU-007 (T9.3) — a node in ship mode sends its recent per-minute counts to the same
+/// target as its query log, so the dashboard keeps them after the node is gone (an
+/// ephemeral pod restarts with an empty volume).
+pub(crate) async fn run_rollups(
+    cluster: Arc<Cluster>,
+    db: Arc<telltale_store::rollup::Rollups>,
+    to: Option<String>,
+    every: Duration,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep(every) => {}
+            r = stop.changed() => if r.is_err() || *stop.borrow() { return; },
+        }
+        let me = cluster.identity.meta.node_id.clone();
+        let Some(t) = target(&cluster, to.as_deref()).filter(|t| *t != me) else {
+            continue;
+        };
+        let now = now_s();
+        let d = Arc::clone(&db);
+        let rows = tokio::task::spawn_blocking(move || {
+            d.range(
+                telltale_store::rollup::Level::Minute,
+                now.saturating_sub(ROLLUP_WINDOW_S),
+                now,
+            )
+        })
+        .await;
+        let Ok(Ok(rows)) = rows else { continue };
+        if rows.is_empty() {
+            continue;
+        }
+        let rows: Vec<(u64, Vec<u8>)> = rows
+            .iter()
+            .map(|(s, c)| (*s, telltale_store::rollup::encode(c)))
+            .collect();
+        if let Err(e) = cluster
+            .call(&t, ROLLUP_KIND, encode_minutes(&rows), CHUNK_DEADLINE)
+            .await
+        {
+            debug!("rollup shipping: {e}");
+        }
+    }
+}
+
 /// Where a node keeps the query logs others ship to it.
 pub(crate) fn shipped_root(data_dir: &str) -> PathBuf {
     Path::new(data_dir).join("qlog-nodes")
@@ -379,6 +480,36 @@ mod tests {
             c.iter().map(|(id, _)| id.part).collect::<Vec<_>>(),
             [0, 1],
             "the newest is still being written"
+        );
+    }
+
+    /// REQ: CLU-007 (T9.3) — minutes survive the trip and land per node; damaged bodies
+    /// are refused.
+    #[test]
+    fn clu_007_rollup_minutes_ship() {
+        let db = telltale_store::rollup::Rollups::in_memory().unwrap();
+        let c = telltale_telemetry::agg::Counts {
+            total: 7,
+            ..Default::default()
+        };
+        let rows = vec![
+            (600, telltale_store::rollup::encode(&c)),
+            (660, telltale_store::rollup::encode(&c)),
+        ];
+        let body = encode_minutes(&rows);
+        assert_eq!(receive_rollups(&db, "abc123", &body).unwrap(), b"ok");
+        assert!(receive_rollups(&db, "abc123", &body[..body.len() - 1]).is_err());
+        assert!(receive_rollups(&db, "../etc", &body).is_err());
+        let got = db.shipped_range(0, 10_000, &[]).unwrap();
+        assert_eq!(
+            got.iter().map(|(s, c)| (*s, c.total)).collect::<Vec<_>>(),
+            vec![(600, 7), (660, 7)]
+        );
+        assert!(
+            db.shipped_range(0, 10_000, &["abc123".to_owned()])
+                .unwrap()
+                .is_empty(),
+            "a live node isn't counted twice"
         );
     }
 }

@@ -779,6 +779,21 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             http_stopped.clone(),
         ));
     }
+    // REQ: CLU-007 (T9.3) — ship mode also sends per-minute counts (dashboard history).
+    if let (Some(c), Some(db)) = (&sources.cluster, &sources.rollups)
+        && cfg.telemetry.mode == telltale_config::TelemetryMode::Ship
+    {
+        tokio::spawn(crate::ship::run_rollups(
+            Arc::clone(c),
+            Arc::clone(db),
+            cfg.telemetry.ship.to.as_ref().map(ToString::to_string),
+            // As often as query-log parts, at most once a minute (minutes complete then).
+            std::time::Duration::from_secs(
+                u64::from(cfg.telemetry.ship.interval_secs).clamp(5, 60),
+            ),
+            http_stopped.clone(),
+        ));
+    }
     // REQ: FLT-010 (T7.10) — schedules: which are on, every 15 s.
     tokio::spawn(schedule_ticker(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OBS-010 (T7.12)

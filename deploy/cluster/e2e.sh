@@ -273,7 +273,14 @@ shipped=$(curl -s http://127.0.0.1:29001/metrics | awk '/^telltale_qlog_received
 [ "${shipped:-0}" -gt 0 ] || fail "the primary never received the replica's query log"
 ls "$E/p/qlog-nodes/"*/ >/dev/null 2>&1 || fail "no shipped query log under the primary's qlog-nodes"
 [ "$node" = r ] || fail "the primary's own search doesn't show the shipped row as the replica's (got '$node')"
-echo "ok ($shipped parts received)"
+# REQ: CLU-007 (T9.3) — and its per-minute counts (dashboard history that outlives the node).
+minutes=0
+for _ in $(seq 90); do
+  minutes=$(python3 -c "import sqlite3; print(sqlite3.connect('$E/p/rollups.db').execute('SELECT count(*) FROM shipped_minute').fetchone()[0])" 2>/dev/null || echo 0)
+  [ "${minutes:-0}" -gt 0 ] && break; sleep 1
+done
+[ "${minutes:-0}" -gt 0 ] || fail "the replica's per-minute counts never reached the primary"
+echo "ok ($shipped parts and $minutes minutes received)"
 
 # The cluster's settings travel too: a new authority on the primary reaches the replica.
 "$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null

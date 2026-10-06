@@ -244,7 +244,11 @@ impl Rollups {
                  start INTEGER NOT NULL, key TEXT NOT NULL, count INTEGER NOT NULL,
                  p50 INTEGER NOT NULL, p90 INTEGER NOT NULL, p99 INTEGER NOT NULL,
                  p999 INTEGER NOT NULL, max INTEGER NOT NULL,
-                 PRIMARY KEY (start, key)) WITHOUT ROWID;",
+                 PRIMARY KEY (start, key)) WITHOUT ROWID;
+             -- REQ: CLU-007 (T9.3) — minutes other nodes (ephemeral pods) shipped here.
+             CREATE TABLE IF NOT EXISTS shipped_minute (
+                 node TEXT NOT NULL, start INTEGER NOT NULL, data BLOB NOT NULL,
+                 PRIMARY KEY (node, start)) WITHOUT ROWID;",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -288,6 +292,60 @@ impl Rollups {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// REQ: CLU-007 (T9.3) — stores minutes `node` shipped (replacing ones with the same
+    /// start). Undecodable rows are refused before anything is written.
+    pub fn put_shipped(&self, node: &str, rows: &[(u64, Vec<u8>)]) -> Result<()> {
+        if rows.iter().any(|(_, b)| decode(b).is_none()) {
+            return Err(
+                rusqlite::Error::InvalidParameterName("undecodable shipped minute".into()).into(),
+            );
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut put = tx.prepare_cached(
+                "INSERT OR REPLACE INTO shipped_minute (node, start, data) VALUES (?1, ?2, ?3)",
+            )?;
+            for (start, data) in rows {
+                put.execute(params![node, sql(*start), data])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// REQ: CLU-007 (T9.3) — shipped minutes in `[from_s, to_s)` summed per minute over every
+    /// node except `exclude` (nodes answering live, whose own numbers already count).
+    pub fn shipped_range(
+        &self,
+        from_s: u64,
+        to_s: u64,
+        exclude: &[String],
+    ) -> Result<Vec<(u64, Counts)>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT node, start, data FROM shipped_minute WHERE start >= ?1 AND start < ?2 ORDER BY start",
+        )?;
+        let mut by: std::collections::BTreeMap<u64, Counts> = std::collections::BTreeMap::new();
+        let rows = st.query_map(params![sql(from_s), sql(to_s)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                unsql(r.get(1)?),
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (node, start, data) = row?;
+            if exclude.contains(&node) {
+                continue;
+            }
+            if let Some(c) = decode(&data) {
+                merge(by.entry(start).or_default(), &c);
+            }
+        }
+        Ok(by.into_iter().collect())
     }
 
     /// Buckets of `level` with start in `[from_s, to_s)`, oldest first.
@@ -405,6 +463,7 @@ impl Rollups {
         let m = sql(now_s.saturating_sub(MINUTE_RETENTION_S));
         let h = sql(now_s.saturating_sub(HOUR_RETENTION_S));
         let mut n = conn.execute("DELETE FROM rollup_minute WHERE start < ?1", [m])?;
+        n += conn.execute("DELETE FROM shipped_minute WHERE start < ?1", [m])?;
         n += conn.execute("DELETE FROM rollup_hour WHERE start < ?1", [h])?;
         n += conn.execute("DELETE FROM hour_top WHERE start < ?1", [h])?;
         n += conn.execute("DELETE FROM hour_latency WHERE start < ?1", [h])?;

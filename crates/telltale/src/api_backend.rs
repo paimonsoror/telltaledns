@@ -693,74 +693,36 @@ impl Backend for ApiBackend {
     }
 
     // REQ: OBS-004, `spec/06` §3 — live windows from memory, longer ranges from rollups.
+    // REQ: CLU-007 (T9.3) — shipped minutes, in the requested step (minutes are kept 7 days).
+    fn shipped_timeseries(
+        &self,
+        step: Step,
+        from_s: u64,
+        to_s: u64,
+        live: &[String],
+    ) -> Vec<TimeBucket> {
+        let width = match step {
+            Step::Second => return Vec::new(),
+            Step::Minute => 60,
+            Step::Hour => 3600,
+            Step::Day => 86_400,
+        };
+        let Some(db) = self.src.rollups.as_ref() else {
+            return Vec::new();
+        };
+        let rows = db.shipped_range(from_s, to_s, live).unwrap_or_else(|e| {
+            tracing::warn!("rollups: {e}");
+            Vec::new()
+        });
+        let mut by = std::collections::BTreeMap::<u64, Counts>::new();
+        for (start, c) in rows {
+            merge(by.entry(start - start % width).or_default(), &c);
+        }
+        time_buckets(&self.src, by.into_iter().collect())
+    }
+
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
-        let series = self.counts(step, from_s, to_s);
-        let groups: Vec<String> = self
-            .src
-            .pipeline
-            .current()
-            .policy
-            .clients
-            .groups()
-            .iter()
-            .map(|g| g.name.to_string())
-            .collect();
-        series
-            .into_iter()
-            .map(|(start, c)| {
-                let mut b = TimeBucket {
-                    start_unix_seconds: start,
-                    total: c.total,
-                    upstream_queries: c.upstreams.iter().sum(),
-                    upstream_failures: c.upstream_failures,
-                    ..TimeBucket::default()
-                };
-                for (i, s) in Status::ALL.iter().enumerate() {
-                    if c.status[i] > 0 {
-                        b.by_status.insert(s.label().to_owned(), c.status[i]);
-                    }
-                }
-                for (i, n) in c.qtype.iter().enumerate() {
-                    if *n > 0 {
-                        let key = QTYPES.get(i).map_or("other", |(_, name)| name);
-                        b.by_qtype.insert(key.to_owned(), *n);
-                    }
-                }
-                for (i, n) in c.rcode.iter().enumerate() {
-                    if *n > 0 {
-                        let key = if i == N_RCODE - 1 {
-                            "other".to_owned()
-                        } else {
-                            rcode_name(u8::try_from(i).unwrap_or(u8::MAX))
-                        };
-                        b.by_rcode.insert(key, *n);
-                    }
-                }
-                // ADR-050 — by group (index → name; indexes past the table are "other").
-                for (i, n) in c.groups.iter().enumerate() {
-                    if *n > 0 {
-                        let key = groups.get(i).cloned().unwrap_or_else(|| "other".into());
-                        *b.by_group.entry(key).or_default() += n;
-                    }
-                }
-                for (i, n) in c.group_blocked.iter().enumerate() {
-                    if *n > 0 {
-                        let key = groups.get(i).cloned().unwrap_or_else(|| "other".into());
-                        *b.blocked_by_group.entry(key).or_default() += n;
-                    }
-                }
-                // T6.16 — stored buckets carry groups by name.
-                for g in &c.named_groups {
-                    if g.total > 0 {
-                        *b.by_group.entry(g.name.to_string()).or_default() += g.total;
-                    }
-                    if g.blocked > 0 {
-                        *b.blocked_by_group.entry(g.name.to_string()).or_default() += g.blocked;
-                    }
-                }
-                b
-            })
-            .collect()
+        time_buckets(&self.src, self.counts(step, from_s, to_s))
     }
 
     // REQ: FLT-005 (ADR-050)
@@ -3093,6 +3055,75 @@ fn cache_settings(c: &telltale_config::CacheConfig) -> telltale_api::model::Cach
         prefetch_min_hits: c.prefetch_min_hits,
         persist: c.persist,
     }
+}
+
+/// Count buckets as API time buckets (groups by their current names).
+fn time_buckets(src: &Sources, series: Vec<(u64, Counts)>) -> Vec<TimeBucket> {
+    let groups: Vec<String> = src
+        .pipeline
+        .current()
+        .policy
+        .clients
+        .groups()
+        .iter()
+        .map(|g| g.name.to_string())
+        .collect();
+    series
+        .into_iter()
+        .map(|(start, c)| {
+            let mut b = TimeBucket {
+                start_unix_seconds: start,
+                total: c.total,
+                upstream_queries: c.upstreams.iter().sum(),
+                upstream_failures: c.upstream_failures,
+                ..TimeBucket::default()
+            };
+            for (i, s) in Status::ALL.iter().enumerate() {
+                if c.status[i] > 0 {
+                    b.by_status.insert(s.label().to_owned(), c.status[i]);
+                }
+            }
+            for (i, n) in c.qtype.iter().enumerate() {
+                if *n > 0 {
+                    let key = QTYPES.get(i).map_or("other", |(_, name)| name);
+                    b.by_qtype.insert(key.to_owned(), *n);
+                }
+            }
+            for (i, n) in c.rcode.iter().enumerate() {
+                if *n > 0 {
+                    let key = if i == N_RCODE - 1 {
+                        "other".to_owned()
+                    } else {
+                        rcode_name(u8::try_from(i).unwrap_or(u8::MAX))
+                    };
+                    b.by_rcode.insert(key, *n);
+                }
+            }
+            // ADR-050 — by group (index → name; indexes past the table are "other").
+            for (i, n) in c.groups.iter().enumerate() {
+                if *n > 0 {
+                    let key = groups.get(i).cloned().unwrap_or_else(|| "other".into());
+                    *b.by_group.entry(key).or_default() += n;
+                }
+            }
+            for (i, n) in c.group_blocked.iter().enumerate() {
+                if *n > 0 {
+                    let key = groups.get(i).cloned().unwrap_or_else(|| "other".into());
+                    *b.blocked_by_group.entry(key).or_default() += n;
+                }
+            }
+            // T6.16 — stored buckets carry groups by name.
+            for g in &c.named_groups {
+                if g.total > 0 {
+                    *b.by_group.entry(g.name.to_string()).or_default() += g.total;
+                }
+                if g.blocked > 0 {
+                    *b.blocked_by_group.entry(g.name.to_string()).or_default() += g.blocked;
+                }
+            }
+            b
+        })
+        .collect()
 }
 
 #[cfg(test)]

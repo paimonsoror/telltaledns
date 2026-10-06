@@ -204,6 +204,15 @@ pub(crate) fn rpc_handler(
                 .await
                 .map_err(|e| format!("receive worker failed: {e}"))?;
             }
+            if kind == crate::ship::ROLLUP_KIND {
+                // REQ: CLU-007 (T9.3) — a node in ship mode delivering its minutes.
+                return tokio::task::spawn_blocking(move || {
+                    let db = src.rollups.as_ref().ok_or("this node keeps no rollups")?;
+                    crate::ship::receive_rollups(db, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("receive worker failed: {e}"))?;
+            }
             if kind != KIND {
                 return Err(format!("unknown call `{kind}`"));
             }
@@ -770,10 +779,27 @@ impl Backend for Federated {
 
     // REQ: CLU-002 — counters sum across nodes.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
-        let mut parts: Vec<Vec<TimeBucket>> =
-            self.everyone(|| Read::Timeseries { step, from_s, to_s });
+        let answers = self.gather(
+            self.peers()
+                .into_iter()
+                .map(|p| (p, Read::Timeseries { step, from_s, to_s }))
+                .collect(),
+        );
+        let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
+        let mut parts: Vec<Vec<TimeBucket>> = Vec::new();
+        for (peer, body) in answers {
+            if let Ok(v) = serde_json::from_slice(&body) {
+                parts.push(v);
+                live.push(peer);
+            }
+        }
         if self.with_me() {
             parts.push(self.local.timeseries(step, from_s, to_s));
+        }
+        // REQ: CLU-007 (T9.3) — minutes shipped here by nodes that aren't answering (an
+        // ephemeral pod that restarted), for the whole cluster's view only.
+        if self.only.is_none() {
+            parts.push(self.local.shipped_timeseries(step, from_s, to_s, &live));
         }
         federation::merge_timeseries(parts)
     }

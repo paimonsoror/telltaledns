@@ -144,6 +144,17 @@ pub trait Backend: Send + Sync + 'static {
         ))
     }
     fn latency(&self, by: LatencyBy, hour: Hour) -> Vec<LatencyRow>;
+    /// REQ: CLU-007 (T9.3) — counts other nodes shipped here, except those of `live` nodes.
+    fn shipped_timeseries(
+        &self,
+        step: Step,
+        from_s: u64,
+        to_s: u64,
+        live: &[String],
+    ) -> Vec<TimeBucket> {
+        let _ = (step, from_s, to_s, live);
+        Vec::new()
+    }
     /// REQ: CLU-002 (T9.2) — the histograms behind `latency`, for an exact cluster merge.
     fn latency_hists(&self, by: LatencyBy, hour: Hour) -> Vec<model::LatencyHist> {
         let _ = (by, hour);
