@@ -313,7 +313,8 @@
           "buffer_bytes": "64MiB",
           "interval_secs": 300,
           "to": null
-        }
+        },
+        "sink": []
       }
     },
     "updates": {
@@ -2192,6 +2193,143 @@
       },
       "additionalProperties": false
     },
+    "SinkConfig": {
+      "description": "REQ: OBS-010 (T7.13, `spec/06` §5) — one event sink: every query event (after the query\nlog's privacy level) as one JSON object, written off the query path; a sink that can't\nkeep up drops events (counted), never slows DNS.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "`syslog`: `udp://host:514` or `tcp://host:514`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "batch": {
+          "description": "`webhook`: events per batch, and the most seconds an event waits for one.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 500,
+          "minimum": 0
+        },
+        "facility": {
+          "description": "`syslog`: the facility number (16 = local0).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 16,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "flush_secs": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 5,
+          "minimum": 0
+        },
+        "format": {
+          "description": "`webhook`: `json_lines` (Loki-style collectors, Vector, Fluent Bit) or `json_array`.",
+          "$ref": "#/$defs/SinkFormat",
+          "default": "json_lines"
+        },
+        "keep": {
+          "description": "`file`: rotated files kept.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 3,
+          "minimum": 0
+        },
+        "max_buffer": {
+          "description": "Events held while the destination is slow or down; beyond it, events are dropped.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10000,
+          "minimum": 0
+        },
+        "max_bytes": {
+          "description": "`file`: rotate when the file reaches this size (to `<path>.1`, ...).",
+          "default": "100MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
+            }
+          ]
+        },
+        "name": {
+          "description": "Unique name (logs and metrics).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "path": {
+          "description": "`file`: the file to append to.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "statuses": {
+          "description": "Only these statuses (`blocked`, `cached`, ...); empty means all.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "token_file": {
+          "description": "`webhook`: a file holding a token sent as `Authorization: <token_scheme> <token>`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "token_scheme": {
+          "description": "`webhook`: the scheme for the token (`Bearer`; Splunk HEC uses `Splunk`).",
+          "type": "string",
+          "default": "Bearer",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "type": {
+          "description": "`file` (JSON lines, rotated), `syslog` (RFC 5424), or `webhook` (batched HTTP POST).",
+          "$ref": "#/$defs/SinkKind"
+        },
+        "url": {
+          "description": "`webhook`: where batches are posted (newline-delimited JSON, or a JSON array with\n`format = \"json_array\"`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type"
+      ]
+    },
+    "SinkFormat": {
+      "description": "A webhook sink's body format.",
+      "type": "string",
+      "enum": [
+        "json_lines",
+        "json_array"
+      ]
+    },
+    "SinkKind": {
+      "description": "An event sink's kind.",
+      "type": "string",
+      "enum": [
+        "file",
+        "syslog",
+        "webhook"
+      ]
+    },
     "SpecialConfig": {
       "description": "Built-in handling of special names (`spec/03` §3 step 4).",
       "type": "object",
@@ -2281,6 +2419,14 @@
             "buffer_bytes": "64MiB",
             "interval_secs": 300,
             "to": null
+          }
+        },
+        "sink": {
+          "description": "REQ: OBS-010 (T7.13) — query events copied to files, syslog, or HTTP collectors.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SinkConfig"
           }
         }
       },

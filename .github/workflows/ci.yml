@@ -300,6 +300,10 @@ jobs:
       # and `telltale mcp --stdio`, including the "why is the TV slow?" story.
       - name: MCP server
         run: bash deploy/mcp-e2e.sh target/bench-fast/telltale
+      # REQ: OBS-010 (T7.12, T7.13) — event sinks (file, syslog, webhook) and an alert from a
+      # running node.
+      - name: Event sinks and alerts
+        run: bash deploy/sinks-e2e.sh target/bench-fast/telltale
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
       # and v5 images, then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)

@@ -51,10 +51,95 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     services(cfg, &mut r);
     schedules(cfg, &mut r);
     alerts(cfg, &mut r);
+    sinks(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
     r.warnings
+}
+
+// REQ: OBS-010 (T7.13) — event sinks: unique names and what each kind needs.
+fn sinks(cfg: &Config, r: &mut Report<'_>) {
+    use crate::SinkKind;
+    const STATUSES: &[&str] = &[
+        "cached",
+        "forwarded",
+        "stale",
+        "local",
+        "special",
+        "blocked",
+        "refused",
+        "rate_limited",
+        "malformed",
+        "servfail",
+        "dropped",
+    ];
+    let mut names = HashSet::new();
+    for (i, s) in cfg.telemetry.sink.iter().enumerate() {
+        let p = format!("telemetry.sink[{i}]");
+        if s.name.is_empty() || !names.insert(s.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        match s.kind {
+            SinkKind::File => {
+                if s.path.as_ref().is_none_or(|x| x.is_empty()) {
+                    r.err(format!("{p}.path"), "a file sink needs `path`");
+                }
+                if s.max_bytes.bytes() < 1024 * 1024 {
+                    r.err(format!("{p}.max_bytes"), "at least 1 MiB");
+                }
+            }
+            SinkKind::Syslog => {
+                let a = s.address.as_ref().map_or("", |x| x.as_str());
+                let ok = a
+                    .strip_prefix("udp://")
+                    .or_else(|| a.strip_prefix("tcp://"))
+                    .is_some_and(|hp| {
+                        hp.rsplit_once(':')
+                            .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok())
+                    });
+                if !ok {
+                    r.err(
+                        format!("{p}.address"),
+                        "use udp://host:port or tcp://host:port",
+                    );
+                }
+                if s.facility > 23 {
+                    r.err(format!("{p}.facility"), "a syslog facility from 0 to 23");
+                }
+            }
+            SinkKind::Webhook => {
+                let u = s.url.as_ref().map_or("", |x| x.as_str());
+                if !(u.starts_with("https://") || u.starts_with("http://")) {
+                    r.err(
+                        format!("{p}.url"),
+                        "a webhook sink needs an http:// or https:// `url`",
+                    );
+                }
+                if s.batch == 0 || s.batch > 10_000 {
+                    r.err(format!("{p}.batch"), "from 1 to 10000");
+                }
+                if s.flush_secs == 0 {
+                    r.err(format!("{p}.flush_secs"), "at least 1");
+                }
+            }
+        }
+        if s.max_buffer < 100 {
+            r.err(format!("{p}.max_buffer"), "at least 100");
+        }
+        for (j, st) in s.statuses.iter().enumerate() {
+            if !STATUSES.contains(&st.as_str()) {
+                r.err(
+                    format!("{p}.statuses[{j}]"),
+                    format!(
+                        "unknown status `{}` (one of {})",
+                        st.as_str(),
+                        STATUSES.join(", ")
+                    ),
+                );
+            }
+        }
+    }
 }
 
 // REQ: OBS-010 (T7.12) — alerts: unique names, rules sent to destinations that exist,

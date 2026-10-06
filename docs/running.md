@@ -1301,6 +1301,38 @@ fsync = false                # true: sync every write (slower on SD cards)
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
+### Event sinks
+Copy every query event to your own log pipeline (Loki, Elastic, Splunk, Graylog, a SIEM) as it happens:
+```toml
+[[telemetry.sink]]
+name = "archive"
+type = "file"                            # JSON lines, rotated
+path = "/var/log/telltale/queries.jsonl"
+max_bytes = "100MiB"                     # then queries.jsonl.1, .2, ...
+keep = 3
+
+[[telemetry.sink]]
+name = "siem"
+type = "syslog"                          # RFC 5424
+address = "udp://192.168.1.20:514"       # or tcp:// (octet-counted frames)
+facility = 16                            # local0
+statuses = ["blocked"]                   # only blocks; empty means every event
+
+[[telemetry.sink]]
+name = "loki"
+type = "webhook"                         # batched HTTP POST
+url = "https://logs.example.net/ingest"
+format = "json_lines"                    # or json_array
+token_file = "/run/secrets/ingest-token" # sent as "Authorization: Bearer <token>"
+# token_scheme = "Splunk"                # for Splunk HEC
+batch = 500                              # events per POST
+flush_secs = 5                           # or whatever arrived in 5 s
+```
+- Each event is the same JSON object as a row of `GET /api/v1/queries` (`time`, `client`, `clientName`, `group`, `name`, `qtype`, `status`, `rcode`, `proto`, `list`, `rule`, `totalMs`, `upstreamMs`, `answers`, `node`), with the query log's `privacy_level` applied (names hashed at 1, clients removed at 2).
+- Syslog messages are `<PRI>1 <time> <host> telltale - query - <JSON>`, with severity *notice* for blocks and *informational* for the rest.
+- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped and logged once a minute (`event sink fell behind`). A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped. Nothing is spilled to disk.
+- Sinks are read at startup: restart after changing them.
+
 ## Device anomalies
 TelltaleDNS learns how each device usually behaves and points out when that changes (the **Anomalies** page, `GET /api/v1/analytics/anomalies`, and the metric `telltale_anomalies_total{kind}`):
 - **Many more queries than usual** (`rate_spike`): this hour's queries against the device's usual count for this hour of the day.

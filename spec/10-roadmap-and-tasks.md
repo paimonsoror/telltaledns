@@ -410,7 +410,9 @@ Owner decision 2026-10-06: finish M6, then M7, before a v1.0 release.
   - *AC:* an alert goes out once a condition has held `for_secs`, once per subject, and a resolved message when it clears; blips shorter than `for_secs` stay quiet; anomalies and updates go out once each; destinations that fail are logged, never retried without bound; nothing on the DNS path; config errors for unknown destinations, bad URLs, intervals, thresholds.
   - *Done 2026-10-06:* `crates/telltale/src/alerts.rs` (a pure `Engine::step` with per-rule, per-subject timers; observation through the API backend, `Federated` in a cluster; delivery through the list fetcher's HTTP client with a 10 s timeout); `[alerts]` schema and validation; docs, help topic `alerts`; tests `obs_010_*`. *Deferred:* SMTP; snapshot-lag, new-client, and qlog-disk rules; alerts for pending agent plans; a UI editor.
 
-- [ ] **T7.13 Event sinks.** *(OBS-010)* Query events to a JSON-lines file, syslog (RFC 5424), and a batched HTTP webhook, from the telemetry thread.
+- [x] **T7.13 Event sinks.** *(OBS-010)* Query events to a JSON-lines file, syslog (RFC 5424), and a batched HTTP webhook, from the telemetry thread.
+  - *AC:* every event reaches each sink as the API's query-row JSON (privacy level applied); a `statuses` filter; the file rotates; syslog frames are RFC 5424; webhook batches are newline-delimited JSON or an array, with a token; a slow or dead sink drops (counted) without slowing DNS.
+  - *Done 2026-10-06:* `crates/telltale/src/sinks.rs` (ADR-072, Proposed): a sink on the aggregator pass with a bounded channel and a writer thread per sink; `[[telemetry.sink]]` schema and validation; `deploy/sinks-e2e.sh` in CI (file, syslog over UDP, webhook, and the T7.12 alert against a running node). *Deferred:* syslog over TLS; a disk spill for the webhook; a dropped-events metric per sink (logged for now).
 
 - [ ] **T7.14 More analytics.** *(OBS-013)* NXDOMAIN storms, DGA-like names, first-seen domains, list overlap.
 

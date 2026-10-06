@@ -1258,6 +1258,20 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-072 — Event sinks: one bounded buffer per sink, API-shaped JSON, no disk spill (Proposed)
+**Context:** T7.13 (OBS-010; `06` §5). The spec asks for JSON-lines, syslog, and webhook sinks "with retry and a disk spill cap", but not the event format, how a slow sink is kept off the query path, or how retries are bounded.
+
+**Decision:**
+- An event is the API's query row (`QueryRow`: the same fields and names as `GET /api/v1/queries`, names resolved when the event is written, the query log's privacy level applied), so a sink's output and the API's agree.
+- The aggregator thread formats each event once and offers it to every sink with `try_send` on a bounded channel (`max_buffer`); each sink writes from its own thread. A full buffer drops the event, counted and logged once a minute. DNS and the query log never wait for a sink.
+- The webhook posts batches (`batch` events or `flush_secs`), retries a failed batch twice (1 s, 2 s), then drops it. Events buffer in memory only; the "disk spill cap" isn't implemented: the query log already keeps every event on disk.
+- Syslog is RFC 5424 over UDP or TCP (RFC 6587 octet counting); TLS isn't implemented yet. Severity is *notice* for blocks and *informational* otherwise.
+- Sinks are started once at startup (like the query log's writer); a reload doesn't change them.
+
+**Consequences:**
+- A collector outage loses events beyond the buffer; the query log, which sinks don't replace, still has them.
+- Syslog over TLS needs a forwarder (rsyslog, Vector) until it's added.
+
 ## ADR-071 — MCP over OAuth: JWT access tokens from the OIDC provider, for existing users only (Proposed)
 **Context:** T7.4 (AGT-008, P1). MCP clients sign in with OAuth 2.1: the server publishes RFC 9728 metadata naming an authorization server, and accepts that server's access tokens. The spec says to use the configured OIDC provider but not how tokens become principals, or which tokens are accepted.
 

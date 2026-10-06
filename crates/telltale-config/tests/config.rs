@@ -669,3 +669,55 @@ to = ["phone"]
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// REQ: OBS-010 (T7.13) — event sinks: each kind's required settings; known statuses.
+#[test]
+fn obs_010_sinks_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = r#"
+[[telemetry.sink]]
+name = "file"
+type = "file"
+path = "/var/log/q.jsonl"
+[[telemetry.sink]]
+name = "siem"
+type = "syslog"
+address = "udp://10.0.0.2:514"
+statuses = ["blocked"]
+[[telemetry.sink]]
+name = "hook"
+type = "webhook"
+url = "https://logs.example.net/in"
+"#;
+    assert!(load(ok).is_ok(), "{:?}", load(ok).err());
+    for (bad, why) in [
+        (
+            ok.replace("path = \"/var/log/q.jsonl\"\n", ""),
+            "needs `path`",
+        ),
+        (
+            ok.replace("udp://10.0.0.2:514", "10.0.0.2"),
+            "udp://host:port",
+        ),
+        (
+            ok.replace("https://logs", "ftp://logs"),
+            "http:// or https://",
+        ),
+        (
+            ok.replace("\"blocked\"", "\"naughty\""),
+            "unknown status `naughty`",
+        ),
+        (
+            ok.replace("name = \"hook\"", "name = \"file\""),
+            "must be unique",
+        ),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}

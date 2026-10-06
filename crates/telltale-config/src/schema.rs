@@ -1219,6 +1219,8 @@ pub struct TelemetryConfig {
     pub metrics: MetricsConfig,
     /// Per-device anomaly detection (OBS-013): alert-only, deterministic, explainable.
     pub anomaly: AnomalyConfig,
+    /// REQ: OBS-010 (T7.13) — query events copied to files, syslog, or HTTP collectors.
+    pub sink: Vec<SinkConfig>,
 }
 
 impl Default for TelemetryConfig {
@@ -1230,8 +1232,101 @@ impl Default for TelemetryConfig {
             qlog: QlogConfig::default(),
             metrics: MetricsConfig::default(),
             anomaly: AnomalyConfig::default(),
+            sink: Vec::new(),
         }
     }
+}
+
+/// REQ: OBS-010 (T7.13, `spec/06` §5) — one event sink: every query event (after the query
+/// log's privacy level) as one JSON object, written off the query path; a sink that can't
+/// keep up drops events (counted), never slows DNS.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SinkConfig {
+    /// Unique name (logs and metrics).
+    pub name: SafeString,
+    /// `file` (JSON lines, rotated), `syslog` (RFC 5424), or `webhook` (batched HTTP POST).
+    #[serde(rename = "type")]
+    pub kind: SinkKind,
+    /// `file`: the file to append to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<SafeString>,
+    /// `file`: rotate when the file reaches this size (to `<path>.1`, ...).
+    #[serde(default = "default_sink_max_bytes")]
+    pub max_bytes: ByteSize,
+    /// `file`: rotated files kept.
+    #[serde(default = "default_sink_keep")]
+    pub keep: u32,
+    /// `syslog`: `udp://host:514` or `tcp://host:514`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<SafeString>,
+    /// `syslog`: the facility number (16 = local0).
+    #[serde(default = "default_sink_facility")]
+    pub facility: u8,
+    /// `webhook`: where batches are posted (newline-delimited JSON, or a JSON array with
+    /// `format = "json_array"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<SafeString>,
+    /// `webhook`: `json_lines` (Loki-style collectors, Vector, Fluent Bit) or `json_array`.
+    #[serde(default)]
+    pub format: SinkFormat,
+    /// `webhook`: a file holding a token sent as `Authorization: <token_scheme> <token>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<SafeString>,
+    /// `webhook`: the scheme for the token (`Bearer`; Splunk HEC uses `Splunk`).
+    #[serde(default = "default_token_scheme")]
+    pub token_scheme: SafeString,
+    /// `webhook`: events per batch, and the most seconds an event waits for one.
+    #[serde(default = "default_sink_batch")]
+    pub batch: u32,
+    #[serde(default = "default_sink_flush")]
+    pub flush_secs: u32,
+    /// Events held while the destination is slow or down; beyond it, events are dropped.
+    #[serde(default = "default_sink_buffer")]
+    pub max_buffer: u32,
+    /// Only these statuses (`blocked`, `cached`, ...); empty means all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub statuses: Vec<SafeString>,
+}
+
+/// An event sink's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SinkKind {
+    File,
+    Syslog,
+    Webhook,
+}
+
+/// A webhook sink's body format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SinkFormat {
+    #[default]
+    JsonLines,
+    JsonArray,
+}
+
+const fn default_sink_max_bytes() -> ByteSize {
+    ByteSize::mib(100)
+}
+const fn default_sink_keep() -> u32 {
+    3
+}
+const fn default_sink_facility() -> u8 {
+    16
+}
+fn default_token_scheme() -> SafeString {
+    SafeString::new("Bearer").unwrap_or_default()
+}
+const fn default_sink_batch() -> u32 {
+    500
+}
+const fn default_sink_flush() -> u32 {
+    5
+}
+const fn default_sink_buffer() -> u32 {
+    10_000
 }
 
 /// How readily the anomaly engine reports (`spec/06` §7.1).

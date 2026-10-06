@@ -33,6 +33,7 @@ mod rollups;
 mod selfupdate;
 mod server;
 mod ship;
+mod sinks;
 mod tail;
 mod technitium;
 mod updates;

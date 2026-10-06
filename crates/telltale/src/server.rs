@@ -608,7 +608,15 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let anomaly_sink = anomalies
         .as_ref()
         .map(|a| Box::new(a.sink()) as Box<dyn telltale_telemetry::ring::Sink>);
-    let sink = crate::tail::combine(qlog, tail.as_deref(), anomaly_sink);
+    // REQ: OBS-010 (T7.13) — event sinks (file, syslog, webhook) on the same pass.
+    let events = crate::sinks::start(&cfg, &pipeline, &tokio::runtime::Handle::current());
+    let extra =
+        match (anomaly_sink, events) {
+            (Some(a), Some(b)) => Some(Box::new(crate::tail::Fanout(vec![a, b]))
+                as Box<dyn telltale_telemetry::ring::Sink>),
+            (a, b) => a.or(b),
+        };
+    let sink = crate::tail::combine(qlog, tail.as_deref(), extra);
     let _aggregator = pipeline
         .telemetry
         .spawn_aggregator(Duration::from_millis(25), sink)?;

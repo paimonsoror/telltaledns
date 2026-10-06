@@ -69,7 +69,7 @@ const RCODES: [&str; 16] = [
     "RCODE15",
 ];
 
-fn rcode_name(rc: u8) -> String {
+pub(crate) fn rcode_name(rc: u8) -> String {
     RCODES
         .get(usize::from(rc))
         .map_or_else(|| format!("RCODE{rc}"), |s| (*s).to_owned())
@@ -84,7 +84,7 @@ fn rcode_value(name: &str) -> Option<u8> {
         .or_else(|| up.strip_prefix("RCODE").and_then(|n| n.parse().ok()))
 }
 
-fn qtype_name(t: u16) -> String {
+pub(crate) fn qtype_name(t: u16) -> String {
     QTYPES
         .iter()
         .find(|(v, _)| *v == t)
@@ -92,7 +92,7 @@ fn qtype_name(t: u16) -> String {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn ms(us: u64) -> f64 {
+pub(crate) fn ms(us: u64) -> f64 {
     (us as f64 / 10.0).round() / 100.0
 }
 
