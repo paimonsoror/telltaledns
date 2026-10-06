@@ -316,10 +316,12 @@ fn api_007_technitium_minimal() {
     };
     let im = convert(&ex, "x");
     assert!(im.notes.iter().any(|n| n.contains("no forwarders")));
-    assert!(
-        telltale_config::Loader::new()
-            .toml_str("import", im.toml)
-            .load()
-            .is_ok()
-    );
+    // REQ: UPS-012 (T7.15) — it resolved recursively, and so will the import.
+    let cfg = telltale_config::Loader::new()
+        .toml_str("import", im.toml)
+        .load()
+        .unwrap()
+        .config;
+    assert_eq!(cfg.upstream[0].url.as_str(), "recursive://");
+    assert_eq!(cfg.upstream_group[0].members[0].as_str(), "recursive");
 }

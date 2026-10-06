@@ -613,6 +613,19 @@ fn upstreams<'c>(cfg: &'c Config, r: &mut Report<'_>) -> HashSet<&'c str> {
                 if s != "https" && s != "h3" && !u.headers.is_empty() {
                     r.err(format!("{p}.headers"), "only valid for DoH upstreams");
                 }
+                // REQ: DNS-012 (T7.15)
+                if s != "recursive" && u.recursive != crate::schema::RecursiveConfig::default() {
+                    r.err(
+                        format!("{p}.recursive"),
+                        "only valid for recursive:// upstreams",
+                    );
+                }
+                if s == "recursive" && !matches!(u.url.as_str(), "recursive://" | "recursive:///") {
+                    r.err(
+                        format!("{p}.url"),
+                        "write it as `recursive://` (it starts at the root servers)",
+                    );
+                }
             }
             Some(s) => r.err(
                 format!("{p}.url"),

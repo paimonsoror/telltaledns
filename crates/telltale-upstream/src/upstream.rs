@@ -142,6 +142,8 @@ pub struct UpstreamOptions {
     pub headers: Vec<(String, String)>,
     /// Resolver for hostname URLs.
     pub bootstrap: Option<Arc<Bootstrap>>,
+    /// REQ: DNS-012 — `recursive://` settings.
+    pub recursive: telltale_recursor::Settings,
 }
 
 impl Default for UpstreamOptions {
@@ -155,6 +157,7 @@ impl Default for UpstreamOptions {
             tls_insecure_skip_verify: false,
             headers: Vec::new(),
             bootstrap: None,
+            recursive: telltale_recursor::Settings::default(),
         }
     }
 }
@@ -194,6 +197,8 @@ enum Transport {
     Quic(Box<Doq>),
     /// REQ: UPS-002 (T7.8) — DoH over HTTP/3.
     H3(Box<Doh3>),
+    /// REQ: UPS-012 (T7.15) — our own iterative resolver.
+    Recursive(Box<telltale_recursor::Recursor>),
 }
 
 impl std::fmt::Debug for Transport {
@@ -205,6 +210,7 @@ impl std::fmt::Debug for Transport {
             Self::Https(_) => "Https",
             Self::Quic(_) => "Quic",
             Self::H3(_) => "H3",
+            Self::Recursive(_) => "Recursive",
         })
     }
 }
@@ -271,6 +277,7 @@ impl Upstream {
     }
 
     /// Builds any upstream. Fails on invalid TLS names, headers, or missing bootstrap.
+    #[allow(clippy::too_many_lines)] // one arm per protocol
     pub fn build(
         id: u16,
         name: impl Into<String>,
@@ -279,7 +286,10 @@ impl Upstream {
         tls: &TlsOptions,
     ) -> Result<Self, String> {
         let name = name.into();
-        if matches!(endpoint.host, Host::Name(_)) && opts.bootstrap.is_none() {
+        if matches!(endpoint.host, Host::Name(_))
+            && opts.bootstrap.is_none()
+            && endpoint.protocol != Protocol::Recursive
+        {
             return Err(format!(
                 "upstream `{name}`: hostname URL needs bootstrap servers"
             ));
@@ -352,6 +362,9 @@ impl Upstream {
                     opts.idle_timeout,
                 )?))
             }
+            Protocol::Recursive => Transport::Recursive(Box::new(
+                telltale_recursor::Recursor::new(opts.recursive.clone()),
+            )),
             Protocol::Quic => {
                 let cfg = client_config(tls, &[b"doq"], opts.tls_insecure_skip_verify)
                     .map_err(|e| e.to_string())?;
@@ -382,6 +395,11 @@ impl Upstream {
 
     /// Per-attempt timeout: min(configured, 3 × EWMA + 50 ms, 1 s) per `spec/04` §4.
     pub fn attempt_timeout(&self) -> Duration {
+        // REQ: DNS-012 — a cold recursion walks several servers: give it the time it needs
+        // (the query's overall budget still bounds it).
+        if matches!(self.transport, Transport::Recursive(_)) {
+            return self.timeout.max(Duration::from_secs(3));
+        }
         let adaptive = self
             .health
             .ewma()
@@ -403,7 +421,10 @@ impl Upstream {
         match &self.transport {
             Transport::Udp { tcp } => tcp.len(),
             Transport::Tcp(p) | Transport::Tls(p) => p.len(),
-            Transport::Https(_) | Transport::Quic(_) | Transport::H3(_) => 0,
+            Transport::Https(_)
+            | Transport::Quic(_)
+            | Transport::H3(_)
+            | Transport::Recursive(_) => 0,
         }
     }
 
@@ -478,6 +499,13 @@ impl Upstream {
                 timed(tokio::time::timeout(timeout, doq.exchange(query)).await)?
             }
             Transport::H3(h3) => timed(tokio::time::timeout(timeout, h3.exchange(query)).await)?,
+            Transport::Recursive(r) => tokio::time::timeout(timeout, r.answer(query))
+                .await
+                .map_err(|_| ExchangeError::Timeout)?
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "recursion failed");
+                    ExchangeError::BadResponse
+                })?,
         };
         if matches_query(&resp, query, id) && summarize(&resp).is_ok() {
             Ok(resp)

@@ -361,6 +361,32 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
 - Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
 - In Kubernetes, enable `encrypted.dot` / `encrypted.doh` (plus `encrypted.doh.http3`) / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
 
+## Recursive resolution (no forwarder)
+TelltaleDNS can resolve names itself, from the root servers down, like `unbound` next to a Pi-hole, so no public resolver sees your lookups:
+```toml
+[[upstream]]
+name = "recursive"
+url = "recursive://"
+
+[[upstream_group]]
+name = "default"
+members = ["recursive"]
+
+# Optional (these are the defaults):
+# [upstream.recursive]
+# qname_minimization = true    # each server sees only as much of the name as it needs (RFC 9156)
+# case_randomization = false   # 0x20: random letter case, checked in answers (spoofing defense)
+# ipv6 = false                 # also ask servers over IPv6 (needs an IPv6 route)
+```
+- **Private by default:** with QNAME minimization the root servers see only `com`, the `com` servers only `example.com`, and only `example.com`'s own servers see `www.example.com`. If a server mishandles the shortened question, the full one is sent (relaxed mode).
+- **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization`, servers that don't echo the letter case are remembered and asked without it.
+- **Fast after the first time:** zone cuts and server addresses are remembered (bounded, by their TTLs), answers go to the normal cache, and servers are picked by measured response time. A first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.
+- **DNSSEC:** with `[dnssec] mode = "validate"` the signatures come along and are checked from the root's trust anchor, as for forwarded answers.
+- It's an upstream like any other: mix it into a group with forwarders (for example `strategy = "failover"` with a public resolver as the fallback), or route only some domains through it.
+- Limits that stop loops and broken zones: 16 CNAME hops, 32 referrals, 96 queries per question; servers get at most 1.2 s each.
+- *Not yet:* aggressive use of NSEC records (RFC 8198) to answer non-existent names without asking.
+- Moving from Pi-hole with unbound, or from Technitium without forwarders: the importers note it (Technitium's import uses `recursive://` directly).
+
 ## Encrypted upstreams
 ```toml
 [[upstream]]

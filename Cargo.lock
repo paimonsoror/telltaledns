@@ -3395,6 +3395,14 @@ dependencies = [
 [[package]]
 name = "telltale-recursor"
 version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "rand 0.10.3",
+ "telltale-proto",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "telltale-store"
@@ -3443,6 +3451,7 @@ dependencies = [
  "telltale-config",
  "telltale-net",
  "telltale-proto",
+ "telltale-recursor",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",

@@ -1258,6 +1258,22 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-074 — Our own iterative resolver, conservative defaults (Proposed)
+**Context:** T7.15 (DNS-012, UPS-012; `03` §6). `02` §2 allows building on `hickory-recursor`. The spec fixes the limits (16 CNAME hops, 32 referrals) and asks for QNAME minimization, 0x20 (configurable), SRTT server selection, glue in bailiwick, and RFC 8198, but not the defaults, the timeouts, or how the resolver meets the per-query budget.
+
+**Decision:**
+- `telltale-recursor` is our own iterative resolver on `telltale-proto` (no new dependencies): exact control over minimization, bailiwick rules, and limits, and nothing added to the image beyond its code.
+- It's a transport of `telltale-upstream` (`recursive://`), so groups, hedging, health, the answer cache, and DNSSEC validation (which then fetches DNSKEY and DS through it) work unchanged. Its attempt timeout is at least 3 s (not the 1 s cap of forwarders); the query's overall budget (2 s) still bounds a client's wait, and zone cuts learned meanwhile stay cached, so a retry continues from there.
+- Defaults: QNAME minimization on, relaxed (RFC 9156 §2.3: the full name after NXDOMAIN or failure on a minimized query; at most 10 minimized steps); 0x20 off (a few authoritative servers don't echo case; when on, such servers are remembered and asked plainly); IPv6 off (many home networks lack an IPv6 route); root hints built in, no priming query.
+- Bailiwick: answers only for names under the zone being asked; glue only for server names under the referring zone; upward or sideways referrals are lame. A server name inside its own zone without glue is skipped.
+- Caches: zone cuts with addresses and server-name addresses (20,000 entries each, TTLs clamped to 30 s..1 day), server SRTT (EWMA). Final answers are cached by the answer cache only.
+- Limits: 16 CNAME/DNAME hops, 32 referrals per lookup, 4 nested lookups for server names, 96 queries per client question, 4 servers tried per question, 1.2 s per server at most.
+- RFC 8198 (aggressive NSEC) is deferred: it needs validated NSEC records kept below the validator.
+
+**Consequences:**
+- The common "Pi-hole + unbound" setup becomes one upstream; imports from Technitium without forwarders use it directly.
+- A cold resolution in a zone with slow or broken servers can exceed the 2 s budget the first time (the client gets SERVFAIL or a stale answer; the next query succeeds from the learned cuts).
+
 ## ADR-073 — DGA scoring and NXDOMAIN storms: fixed formulas, shipped bigrams, absolute storm bar (Proposed)
 **Context:** T7.14 (OBS-009; `06` §7). The spec names the signals (entropy, consonant runs, bigram log-likelihood) and the storm rule shape ("> X/min and > Y%") but not the weights, thresholds, the bigram source, or how findings are grouped.
 

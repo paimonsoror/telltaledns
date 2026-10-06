@@ -406,6 +406,40 @@ pub struct Upstream {
     /// Free-form labels.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<SafeString>,
+    /// REQ: DNS-012 (T7.15) — `recursive://` only: how the resolver asks the root servers
+    /// and below.
+    #[serde(default, skip_serializing_if = "RecursiveConfig::is_default")]
+    pub recursive: RecursiveConfig,
+}
+
+/// Options for a `recursive://` upstream (`spec/03` §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct RecursiveConfig {
+    /// RFC 9156: each server sees only as much of the name as it needs.
+    pub qname_minimization: bool,
+    /// 0x20: random letter case in queries, checked in answers (spoofing defense; servers
+    /// that don't echo the case are asked again without it).
+    pub case_randomization: bool,
+    /// Ask servers over IPv6 too (needs an IPv6 route to the Internet).
+    pub ipv6: bool,
+}
+
+impl Default for RecursiveConfig {
+    fn default() -> Self {
+        Self {
+            qname_minimization: true,
+            case_randomization: false,
+            ipv6: false,
+        }
+    }
+}
+
+impl RecursiveConfig {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if signature
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 const fn default_weight() -> u32 {

@@ -719,7 +719,7 @@ impl<'a> Builder<'a> {
             );
             if local {
                 self.notes.push(format!(
-                    "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, which reaches it at the same address when they share a machine."
+                    "Upstream {u} runs on the Pi-hole machine itself (often unbound): keep it running next to TelltaleDNS, which reaches it at the same address when they share a machine. Or let TelltaleDNS resolve from the root servers itself: `url = \"recursive://\"` (`docs/running.md`, Recursive resolution)."
                 ));
             }
             members.push(name);

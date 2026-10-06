@@ -18,12 +18,14 @@ pub enum Protocol {
     Quic,
     /// REQ: UPS-002 (T7.8) — DNS over HTTPS over HTTP/3.
     H3,
+    /// REQ: UPS-012 (T7.15) — our own resolver, from the root servers down.
+    Recursive,
 }
 
 impl Protocol {
     pub const fn default_port(self) -> u16 {
         match self {
-            Self::Udp | Self::Tcp => 53,
+            Self::Udp | Self::Tcp | Self::Recursive => 53,
             Self::Tls | Self::Quic => 853,
             Self::Https | Self::H3 => 443,
         }
@@ -39,6 +41,7 @@ impl fmt::Display for Protocol {
             Self::Https => "https",
             Self::Quic => "quic",
             Self::H3 => "h3",
+            Self::Recursive => "recursive",
         })
     }
 }
@@ -67,6 +70,18 @@ impl Endpoint {
         let (scheme, rest) = url
             .split_once("://")
             .ok_or_else(|| format!("`{url}`: missing scheme (e.g. udp://9.9.9.9)"))?;
+        // REQ: UPS-012 — `recursive://` has no host: it starts at the root servers.
+        if scheme == "recursive" {
+            if !rest.is_empty() && rest != "/" {
+                return Err(format!("`{url}`: write `recursive://` (no host)"));
+            }
+            return Ok(Self {
+                protocol: Protocol::Recursive,
+                host: Host::Name("root-servers".into()),
+                port: 53,
+                path: String::new(),
+            });
+        }
         let protocol = match scheme {
             "udp" => Protocol::Udp,
             "tcp" => Protocol::Tcp,
@@ -119,6 +134,9 @@ impl Endpoint {
 
 impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.protocol == Protocol::Recursive {
+            return f.write_str("recursive://");
+        }
         match &self.host {
             Host::Ip(IpAddr::V6(ip)) => {
                 write!(f, "{}://[{ip}]:{}{}", self.protocol, self.port, self.path)

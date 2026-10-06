@@ -188,12 +188,13 @@
     {
       "rfc": "9156",
       "title": "QNAME minimization",
-      "status": "planned",
+      "status": "supported",
       "reqs": [
-        "DNS-012"
+        "DNS-012",
+        "UPS-012"
       ],
-      "summary": "Recursive resolution that reveals only as much of the name as each server needs.",
-      "diagram": "planned"
+      "summary": "The recursive:// upstream asks each server only for the next label (relaxed mode: a failed minimized query falls back to the full name), so the root sees `com`, not `www.example.com`.",
+      "diagram": "rfc9156"
     },
     {
       "rfc": "8198",
@@ -202,7 +203,7 @@
       "reqs": [
         "DNS-012"
       ],
-      "summary": "Answer non-existent names from validated NSEC records without asking upstream.",
+      "summary": "Answer non-existent names from validated NSEC records without asking. Planned for the recursive:// upstream; NSEC proofs already pass through for validation.",
       "diagram": "planned"
     },
     {

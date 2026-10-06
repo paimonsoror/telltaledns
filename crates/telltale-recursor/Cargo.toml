@@ -12,3 +12,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
+parking_lot = "0.12.5"
+rand = "0.10.3"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["net", "time", "io-util"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["net", "time", "io-util", "rt", "macros"] }

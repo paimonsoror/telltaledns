@@ -402,8 +402,14 @@ impl Builder<'_> {
             }
         }
         if members.is_empty() {
-            self.notes.push("Technitium resolved names itself (no forwarders). TelltaleDNS forwards: add upstreams, for example from the presets (`docs/running.md`, Upstream presets).".into());
-            return 0;
+            // REQ: UPS-012 (T7.15) — no forwarders: Technitium resolved from the root servers,
+            // and so does TelltaleDNS.
+            let _ = writeln!(
+                self.body,
+                "\n[[upstream]]\nname = \"recursive\"\nurl = \"recursive://\"\n\n[[upstream_group]]\nname = \"default\"\nmembers = [\"recursive\"]"
+            );
+            self.notes.push("Technitium resolved names itself (no forwarders): imported as a `recursive://` upstream, so TelltaleDNS resolves from the root servers too. To forward instead, replace it with upstreams from the presets (`docs/running.md`, Upstream presets).".into());
+            return 1;
         }
         // Concurrent forwarding asks several forwarders at once and takes the first answer.
         // It needs two forwarders to mean anything (and our `parallel` needs two).

@@ -30,6 +30,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1.0.229", features = ["derive"] }
 telltale-config = { version = "0.1.0", path = "../telltale-config" }
 telltale-proto = { version = "0.1.0", path = "../telltale-proto" }
+# REQ: UPS-012 (T7.15) — `recursive://` upstreams.
+telltale-recursor = { version = "0.1.0", path = "../telltale-recursor" }
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }

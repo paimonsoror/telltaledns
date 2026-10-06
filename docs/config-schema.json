@@ -1925,6 +1925,28 @@
       },
       "additionalProperties": false
     },
+    "RecursiveConfig": {
+      "description": "Options for a `recursive://` upstream (`spec/03` §6).",
+      "type": "object",
+      "properties": {
+        "case_randomization": {
+          "description": "0x20: random letter case in queries, checked in answers (spoofing defense; servers\nthat don't echo the case are asked again without it).",
+          "type": "boolean",
+          "default": false
+        },
+        "ipv6": {
+          "description": "Ask servers over IPv6 too (needs an IPv6 route to the Internet).",
+          "type": "boolean",
+          "default": false
+        },
+        "qname_minimization": {
+          "description": "RFC 9156: each server sees only as much of the name as it needs.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
     "Role": {
       "description": "Process role (`spec/02` §1).",
       "oneOf": [
@@ -2574,6 +2596,10 @@
             "null"
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "recursive": {
+          "description": "REQ: DNS-012 (T7.15) — `recursive://` only: how the resolver asks the root servers\nand below.",
+          "$ref": "#/$defs/RecursiveConfig"
         },
         "spki_pins": {
           "description": "Base64 SHA-256 SPKI pins.",

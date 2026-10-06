@@ -130,6 +130,13 @@ fn build_upstreams<'c>(
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             bootstrap,
+            // REQ: DNS-012 (T7.15)
+            recursive: telltale_recursor::Settings {
+                qname_minimization: u.recursive.qname_minimization,
+                case_randomization: u.recursive.case_randomization,
+                ..telltale_recursor::Settings::default()
+            }
+            .with_ipv6(u.recursive.ipv6),
         };
         match Upstream::build(id, u.name.as_str(), ep, &opts, tls) {
             Ok(up) => {
