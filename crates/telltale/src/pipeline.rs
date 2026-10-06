@@ -406,6 +406,28 @@ pub(crate) struct Dnssec {
 /// Largest response we build for a deferred answer (TCP may carry up to 64 KiB).
 const MAX_RESPONSE: usize = u16::MAX as usize;
 
+/// REQ: DNS-013 (T9.8) — a bogus answer travels through the shared lookup as two bytes,
+/// `[0xBE, code]`: shorter than any DNS message (at least 12), so nothing mistakes it for one.
+fn bogus_marker(code: u16) -> Arc<[u8]> {
+    Arc::from(vec![0xBE, u8::try_from(code).unwrap_or(6)])
+}
+
+fn bogus_code(resp: &[u8]) -> Option<u16> {
+    match resp {
+        [0xBE, c] => Some(u16::from(*c)),
+        _ => None,
+    }
+}
+
+fn bogus_text(code: u16) -> &'static str {
+    match code {
+        ede::SIGNATURE_EXPIRED => "DNSSEC validation failed: signature expired",
+        ede::SIGNATURE_NOT_YET_VALID => "DNSSEC validation failed: signature not yet valid",
+        ede::RRSIGS_MISSING => "DNSSEC validation failed: signatures missing",
+        _ => "DNSSEC validation failed",
+    }
+}
+
 impl Pipeline {
     pub(crate) fn new(
         settings: Settings,
@@ -467,8 +489,10 @@ impl Pipeline {
         for r in cfg.route.iter().filter(|r| r.dnssec_nta) {
             nta.extend(r.match_suffix.iter().map(ToString::to_string));
         }
+        // REQ: DNS-011 (T9.8) — root anchors from a file when one is set.
         let validator =
-            telltale_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats));
+            telltale_upstream::dnssec::Validator::new(&nta, Arc::clone(&self.dnssec_stats))
+                .with_anchors_file(cfg.dnssec.trust_anchors_file.as_deref());
         self.dnssec.store(Some(Arc::new(Dnssec {
             validator,
             permissive,
@@ -1590,16 +1614,12 @@ impl Pipeline {
             _ => None,
         };
         match answer {
-            // REQ: DNS-011 — validation failed: SERVFAIL with EDE 6, never a stale answer.
-            Some(resp) if resp.is_empty() => self.fallback(
-                &q,
-                key,
-                false,
-                ede::DNSSEC_BOGUS,
-                "DNSSEC validation failed",
-                &mut out,
-                transport,
-            ),
+            // REQ: DNS-011 — validation failed: SERVFAIL with EDE 6 (or why: T9.8), never a
+            // stale answer.
+            Some(resp) if resp.is_empty() || bogus_code(&resp).is_some() => {
+                let code = bogus_code(&resp).unwrap_or(ede::DNSSEC_BOGUS);
+                self.fallback(&q, key, false, code, bogus_text(code), &mut out, transport)
+            }
             Some(resp) => {
                 let client =
                     Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
@@ -1726,7 +1746,7 @@ impl Pipeline {
         });
         let v = result.ok()?;
         if v.verdict == Verdict::Bogus && !d.permissive {
-            return Some(Arc::from(Vec::new()));
+            return Some(bogus_marker(v.ede));
         }
         if v.verdict == Verdict::Bogus && v.bytes.is_empty() {
             // Permissive, with nothing to serve: fetch it again, unvalidated.

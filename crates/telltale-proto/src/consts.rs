@@ -99,7 +99,9 @@ pub mod ede {
     pub const STALE_ANSWER: u16 = 3;
     pub const DNSSEC_BOGUS: u16 = 6;
     pub const SIGNATURE_EXPIRED: u16 = 7;
+    pub const SIGNATURE_NOT_YET_VALID: u16 = 8;
     pub const DNSKEY_MISSING: u16 = 9;
+    pub const RRSIGS_MISSING: u16 = 10;
     pub const NOT_READY: u16 = 14;
     pub const BLOCKED: u16 = 15;
     pub const CENSORED: u16 = 16;

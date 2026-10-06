@@ -1403,6 +1403,12 @@ pub struct DnssecConfig {
     /// Domains not validated (negative trust anchors, RFC 7646), e.g. an internal domain
     /// forwarded to a server that isn't signed. Routes with `dnssec_nta = true` add theirs.
     pub negative_trust_anchors: Vec<SafeString>,
+    /// REQ: DNS-011 (T9.8) — root trust anchors from a file instead of the built-in ones
+    /// (KSK-2017 and KSK-2024): DNSKEY records in zone-file form, as `dig DNSKEY . +noall
+    /// +answer` prints them or Unbound's `root.key` holds. Read at start and on reload; a
+    /// file that can't be read or has no keys leaves the built-in anchors in place (logged).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_anchors_file: Option<SafeString>,
 }
 
 impl Default for DnssecConfig {
@@ -1410,6 +1416,7 @@ impl Default for DnssecConfig {
         Self {
             mode: DnssecMode::Off,
             negative_trust_anchors: Vec::new(),
+            trust_anchors_file: None,
         }
     }
 }

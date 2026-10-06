@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,6 +25,8 @@ struct Zone {
     poison: bool,
     /// Always refers back to the root (lame).
     lame: bool,
+    /// Milliseconds to wait before answering (changeable while running).
+    delay_ms: Option<Arc<AtomicU64>>,
 }
 
 fn wire(name: &str) -> Vec<u8> {
@@ -99,6 +102,17 @@ fn respond(z: &Zone, query: &[u8]) -> Vec<u8> {
             for r in at.iter().filter(|r| r.1 == qtype) {
                 rr(&mut an, r.0, r.1, 300, &r.2);
                 na += 1;
+                // Glue for NS answers, from this zone's own records.
+                if qtype == rtype::NS {
+                    let mut target = NameBuf::default();
+                    read_name(&r.2, 0, &mut target).unwrap();
+                    let t = target.display().to_string();
+                    let t = t.trim_end_matches('.');
+                    for g in z.records.iter().filter(|g| g.0 == t && g.1 == rtype::A) {
+                        rr(&mut ad, g.0, g.1, 300, &g.2);
+                        nd += 1;
+                    }
+                }
             }
             if z.poison {
                 rr(&mut an, "www.victim.net", rtype::A, 300, &[6, 6, 6, 6]);
@@ -162,6 +176,12 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                     })
                     .collect();
                 log.lock().unwrap().push((ip, raw));
+            }
+            if let Some(d) = &z.delay_ms {
+                let ms = d.load(Ordering::Relaxed);
+                if ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
             }
             let _ = s.send_to(&respond(&z, q), from).await;
         }
@@ -251,6 +271,8 @@ async fn tree(mutate: impl FnOnce(&mut Vec<(u8, Zone)>)) -> (Settings, Log) {
         roots: vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))],
         port,
         server_timeout: Duration::from_millis(300),
+        // The query-log assertions count every query: priming has its own test.
+        prime: false,
         ..Settings::default()
     };
     (s, log)
@@ -422,4 +444,96 @@ async fn dns_012_answer_message() {
     );
     let s = telltale_proto::summarize(&resp).unwrap();
     assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+}
+
+/// REQ: DNS-012 (T9.8) — RFC 8109: the hints are only asked for the root's NS set; its
+/// answer (with glue) becomes the root servers from then on.
+#[tokio::test]
+async fn dns_012_root_priming() {
+    let (mut s, log) = tree(|zones| {
+        // The real root also answers its own NS set: a.root.com at 127.0.0.2, with glue.
+        zones[0].1.records.push(("", rtype::NS, wire("a.root.com")));
+        zones[0]
+            .1
+            .records
+            .push(("a.root.com", rtype::A, a([127, 0, 0, 2])));
+        // A stand-in "hint" root at .9 with the same data.
+        let hint = zones[0].1.clone();
+        zones.push((9, hint));
+    })
+    .await;
+    s.roots = vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 9))];
+    s.prime = true;
+    let r = Recursor::new(s);
+    let res = r
+        .resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+    let seen = log.lock().unwrap().clone();
+    let hint: Vec<&String> = seen
+        .iter()
+        .filter(|(ip, _)| *ip == 9)
+        .map(|(_, n)| n)
+        .collect();
+    assert_eq!(
+        hint,
+        vec!["."],
+        "the hint saw only the priming query: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|(ip, n)| *ip == 2 && n == ".com."),
+        "{seen:?}"
+    );
+}
+
+/// REQ: DNS-012 (T9.8) — a server slower than usual is hedged: the next one answers first.
+#[tokio::test]
+async fn dns_012_hedged_queries() {
+    let slow = Arc::new(AtomicU64::new(0));
+    let other = Arc::new(AtomicU64::new(5));
+    let (slow2, other2) = (Arc::clone(&slow), Arc::clone(&other));
+    let (s, _) = tree(move |zones| {
+        // example.com has two servers: .4 (made slow later) and .10, a copy.
+        let com = &mut zones[1].1;
+        com.cuts
+            .push(("example.com", "ns2.example.com", Some([127, 0, 0, 10])));
+        let mut copy = zones[2].1.clone();
+        copy.delay_ms = Some(other2);
+        zones[2].1.delay_ms = Some(slow2);
+        zones.push((10, copy));
+    })
+    .await;
+    let mut s = s;
+    s.server_timeout = Duration::from_millis(1200);
+    for hedge in [true, false] {
+        // The fake server answers one query at a time: let a slow one from the last round finish.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        slow.store(0, Ordering::Relaxed);
+        let mut st = s.clone();
+        st.hedge = hedge;
+        let r = Recursor::new(st);
+        // Learn both servers: .4 answers at once, .10 after 5 ms, so .4 is tried first.
+        for _ in 0..4 {
+            r.resolve(name("www.example.com"), rtype::A, false)
+                .await
+                .unwrap();
+            r.resolve(name("deep.ent.example.com"), rtype::A, false)
+                .await
+                .unwrap();
+        }
+        slow.store(700, Ordering::Relaxed);
+        let t0 = std::time::Instant::now();
+        let res = r
+            .resolve(name("www.example.com"), rtype::A, false)
+            .await
+            .unwrap();
+        let took = t0.elapsed();
+        assert_eq!(addrs(&res), vec![IpAddr::from([10, 0, 0, 1])]);
+        if hedge {
+            assert!(took < Duration::from_millis(240), "hedged: {took:?}");
+        } else {
+            assert!(took >= Duration::from_millis(240), "not hedged: {took:?}");
+        }
+    }
 }

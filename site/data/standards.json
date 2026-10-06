@@ -131,7 +131,7 @@
       "reqs": [
         "DNS-011"
       ],
-      "summary": "Forwarded answers are validated from the root key down (with [dnssec] mode = \"validate\"): secure answers get AD, unsigned ones pass as they are, and bogus ones become SERVFAIL with EDE 6.",
+      "summary": "Forwarded and recursive answers are validated from the root key down (with [dnssec] mode = \"validate\"; the 2017 and 2024 root keys are built in, or a trust anchors file): secure answers get AD, unsigned ones pass as they are, and bogus ones become SERVFAIL with EDE 6, or 7, 8, or 10 when the signatures show why.",
       "diagram": "rfc4033"
     },
     {
@@ -203,7 +203,7 @@
       "reqs": [
         "DNS-012"
       ],
-      "summary": "Answer non-existent names from validated NSEC records without asking. Planned for the recursive:// upstream; NSEC proofs already pass through for validation.",
+      "summary": "Answer non-existent names from validated NSEC records without asking. Deferred (ADR-086): it needs a cache of validated NSEC ranges next to the validator; the NSEC proofs already pass through for validation.",
       "diagram": "planned"
     },
     {
@@ -245,6 +245,16 @@
       ],
       "summary": "Opt-in and listen-only: the <name>.local a device announces names it in the query log and the UI when you haven't named it. TelltaleDNS never sends mDNS and doesn't answer .local queries.",
       "diagram": "rfc6762"
+    },
+    {
+      "rfc": "8109",
+      "title": "Initializing a DNS resolver with priming queries",
+      "status": "supported",
+      "reqs": [
+        "DNS-012"
+      ],
+      "summary": "The recursive:// upstream asks the built-in root hints for the root's current servers once, then uses that list (renewed daily), so a root server's new address needs no new build.",
+      "diagram": "rfc8109"
     }
   ]
 }

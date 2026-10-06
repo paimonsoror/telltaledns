@@ -84,6 +84,9 @@ impl Stats {
 pub struct Validated {
     pub bytes: Vec<u8>,
     pub verdict: Verdict,
+    /// REQ: DNS-013 (T9.8) — for a bogus answer, the EDE code saying why: 7 (a signature
+    /// expired), 8 (not yet valid), 10 (no signatures), else 6.
+    pub ede: u16,
     pub upstream_id: u16,
     pub attempts: u8,
 }
@@ -163,6 +166,37 @@ impl Validator {
         }
     }
 
+    /// REQ: DNS-011 (T9.8) — root trust anchors from `path` (DNSKEY records in zone-file
+    /// form) instead of the built-in ones. A file that can't be read or holds no key keeps the
+    /// built-in anchors (and says so).
+    #[must_use]
+    pub fn with_anchors_file(mut self, path: Option<&str>) -> Self {
+        let Some(path) = path else {
+            return self;
+        };
+        match TrustAnchors::from_file(std::path::Path::new(path)) {
+            Ok(a) if !a.is_empty() => {
+                tracing::info!(path, keys = a.len(), "DNSSEC: trust anchors from file");
+                self.anchors = Arc::new(a);
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    path,
+                    "DNSSEC: no keys in the trust anchors file; using the built-in anchors"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(path, error = %e, "DNSSEC: can't read the trust anchors file; using the built-in anchors");
+            }
+        }
+        self
+    }
+
+    /// Root trust anchors in use (tests, metrics).
+    pub fn anchor_count(&self) -> usize {
+        self.anchors.len()
+    }
+
     /// Whether `name` (presentation form) is validated: not under a negative trust anchor.
     pub fn covers(&self, name: &str) -> bool {
         let n = name.trim_end_matches('.').to_ascii_lowercase();
@@ -235,6 +269,7 @@ impl Validator {
                 return Ok(Validated {
                     bytes: Vec::new(),
                     verdict: Verdict::Bogus,
+                    ede: telltale_proto::ede::DNSSEC_BOGUS,
                     upstream_id,
                     attempts,
                 });
@@ -244,6 +279,16 @@ impl Validator {
         let verdict = verdict(&response);
         self.stats.count(verdict);
         let mut message = response.into_message();
+        // Before DNSSEC records are stripped: why a bogus answer failed.
+        let ede = if verdict == Verdict::Bogus {
+            message
+                .to_vec()
+                .map_or(telltale_proto::ede::DNSSEC_BOGUS, |b| {
+                    bogus_reason(&b, unix_now_u32())
+                })
+        } else {
+            0
+        };
         if !client_do {
             strip_dnssec(&mut message, q.qtype);
         }
@@ -253,9 +298,58 @@ impl Validator {
         Ok(Validated {
             bytes,
             verdict,
+            ede,
             upstream_id,
             attempts,
         })
+    }
+}
+
+fn unix_now_u32() -> u32 {
+    let s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // RRSIG times are 32-bit serial numbers (RFC 4034 §3.1.5): the low 32 bits.
+    #[allow(clippy::cast_possible_truncation)]
+    let t = s as u32;
+    t
+}
+
+/// REQ: DNS-013 (T9.8) — RFC 8914's code for why a bogus response failed, from its RRSIGs:
+/// none for the records that answer (10), all expired (7), all not yet valid (8), else 6.
+/// Times compare as serial numbers (RFC 1982), so they work across the 2106 wrap.
+pub fn bogus_reason(msg: &[u8], now: u32) -> u16 {
+    use telltale_proto::{Section, ede, records, rtype};
+    let Ok(it) = records(msg) else {
+        return ede::DNSSEC_BOGUS;
+    };
+    let all: Vec<_> = it.flatten().collect();
+    let has_answer = all.iter().any(|r| r.section == Section::Answer);
+    let section = if has_answer {
+        Section::Answer
+    } else {
+        Section::Authority
+    };
+    let sigs: Vec<(u32, u32)> = all
+        .iter()
+        .filter(|r| r.section == section && r.rtype == rtype::RRSIG && r.rdlen >= 16)
+        .map(|r| {
+            let d = r.rdata(msg);
+            let expiration = u32::from_be_bytes([d[8], d[9], d[10], d[11]]);
+            let inception = u32::from_be_bytes([d[12], d[13], d[14], d[15]]);
+            (expiration, inception)
+        })
+        .collect();
+    // `a` is before `b` in serial-number order.
+    let before = |a: u32, b: u32| a != b && b.wrapping_sub(a) < 0x8000_0000;
+    if sigs.is_empty() {
+        ede::RRSIGS_MISSING
+    } else if sigs.iter().all(|&(exp, _)| before(exp, now)) {
+        ede::SIGNATURE_EXPIRED
+    } else if sigs.iter().all(|&(_, inc)| before(now, inc)) {
+        ede::SIGNATURE_NOT_YET_VALID
+    } else {
+        ede::DNSSEC_BOGUS
     }
 }
 
@@ -314,6 +408,7 @@ pub fn unvalidated(a: Answer) -> Validated {
     Validated {
         bytes: a.bytes,
         verdict: Verdict::Indeterminate,
+        ede: 0,
         upstream_id: a.upstream_id,
         attempts: a.attempts,
     }
@@ -322,6 +417,148 @@ pub fn unvalidated(a: Answer) -> Validated {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: DNS-011 (T9.8) — both root KSKs are trusted: KSK-2017 (20326) and KSK-2024
+    /// (38696), so the root's key rollover doesn't break validation.
+    #[test]
+    fn dns_011_root_trust_anchors() {
+        use hickory_net::proto::dnssec::PublicKey as _;
+        let anchors = TrustAnchors::default();
+        let mut tags = Vec::new();
+        for i in 0..anchors.len() {
+            let key = anchors.get(i).unwrap();
+            // DNSKEY RDATA: flags 257 (KSK), protocol 3, algorithm 8, the key.
+            let mut rdata = vec![1, 1, 3, 8];
+            rdata.extend_from_slice(key.public_bytes());
+            // RFC 4034 Appendix B.
+            let mut ac: u32 = 0;
+            for (i, b) in rdata.iter().enumerate() {
+                ac += if i % 2 == 0 {
+                    u32::from(*b) << 8
+                } else {
+                    u32::from(*b)
+                };
+            }
+            ac += (ac >> 16) & 0xFFFF;
+            tags.push(ac & 0xFFFF);
+        }
+        tags.sort_unstable();
+        assert_eq!(tags, vec![20326, 38696]);
+    }
+
+    /// REQ: DNS-011 (T9.8) — anchors from a file replace the built-in ones; a bad file
+    /// doesn't.
+    #[test]
+    fn dns_011_trust_anchors_file() {
+        use hickory_net::proto::dnssec::PublicKey as _;
+        fn b64(data: &[u8]) -> String {
+            const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut s = String::new();
+            for c in data.chunks(3) {
+                let n = (u32::from(c[0]) << 16)
+                    | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+                    | u32::from(*c.get(2).unwrap_or(&0));
+                for i in 0..4 {
+                    if i <= c.len() {
+                        s.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
+                    } else {
+                        s.push('=');
+                    }
+                }
+            }
+            s
+        }
+        let ksk2024 = TrustAnchors::default()
+            .get(1)
+            .unwrap()
+            .public_bytes()
+            .to_vec();
+        let dir = std::env::temp_dir().join(format!("tt-anchors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("root.key");
+        std::fs::write(
+            &good,
+            format!(". 172800 IN DNSKEY 257 3 8 {}\n", b64(&ksk2024)),
+        )
+        .unwrap();
+        let stats = Arc::new(Stats::default());
+        let v = Validator::new(&[], Arc::clone(&stats)).with_anchors_file(good.to_str());
+        assert_eq!(v.anchor_count(), 1);
+        let bad = dir.join("bad.key");
+        std::fs::write(&bad, "not a zone file").unwrap();
+        let v = Validator::new(&[], Arc::clone(&stats)).with_anchors_file(bad.to_str());
+        assert_eq!(v.anchor_count(), 2, "the built-in anchors stay");
+        let v = Validator::new(&[], stats).with_anchors_file(Some("/nonexistent/root.key"));
+        assert_eq!(v.anchor_count(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// REQ: DNS-013 (T9.8) — why a bogus answer failed, from its signatures.
+    #[test]
+    fn dns_013_bogus_reasons() {
+        // A response for example.com A: one A record and, optionally, an RRSIG with the given
+        // expiration and inception.
+        let msg = |sig: Option<(u32, u32)>| {
+            let mut m = vec![
+                0,
+                1,
+                0x81,
+                0x80,
+                0,
+                1,
+                0,
+                if sig.is_some() { 2 } else { 1 },
+                0,
+                0,
+                0,
+                0,
+            ];
+            let name = [
+                7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0,
+            ];
+            m.extend(name);
+            m.extend([0, 1, 0, 1]);
+            m.extend([0xC0, 12, 0, 1, 0, 1, 0, 0, 1, 0, 0, 4, 10, 0, 0, 1]);
+            if let Some((exp, inc)) = sig {
+                let mut rd = vec![0, 1, 8, 2, 0, 0, 1, 0];
+                rd.extend(exp.to_be_bytes());
+                rd.extend(inc.to_be_bytes());
+                rd.extend([0x12, 0x34]);
+                rd.extend(name);
+                rd.extend([0xAA; 8]);
+                m.extend([0xC0, 12, 0, 46, 0, 1, 0, 0, 1, 0]);
+                m.extend(u16::try_from(rd.len()).unwrap().to_be_bytes());
+                m.extend(rd);
+            }
+            m
+        };
+        let now = 1_791_300_000u32;
+        assert_eq!(
+            bogus_reason(&msg(None), now),
+            telltale_proto::ede::RRSIGS_MISSING
+        );
+        assert_eq!(
+            bogus_reason(&msg(Some((now - 10, now - 1000))), now),
+            telltale_proto::ede::SIGNATURE_EXPIRED
+        );
+        assert_eq!(
+            bogus_reason(&msg(Some((now + 1000, now + 10))), now),
+            telltale_proto::ede::SIGNATURE_NOT_YET_VALID
+        );
+        assert_eq!(
+            bogus_reason(&msg(Some((now + 1000, now - 1000))), now),
+            telltale_proto::ede::DNSSEC_BOGUS
+        );
+        // Serial arithmetic: an expiration just past the 32-bit wrap is still in the future.
+        assert_eq!(
+            bogus_reason(&msg(Some((5, u32::MAX - 100))), u32::MAX - 10),
+            telltale_proto::ede::DNSSEC_BOGUS
+        );
+        assert_eq!(
+            bogus_reason(b"junk", now),
+            telltale_proto::ede::DNSSEC_BOGUS
+        );
+    }
     use hickory_net::proto::rr::{RData, Record, rdata};
 
     fn rec(name: &str, data: RData, proof: Proof) -> Record {

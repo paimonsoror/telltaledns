@@ -1265,6 +1265,22 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-086 — Recursion and DNSSEC follow-ups: priming, hedging, EDE reasons, an anchors file; RFC 5011 and 8198 deferred (Proposed)
+**Context:** T9.8 picks up the deferrals of T6.3 (DNSSEC) and T7.15 (recursion).
+
+**Decision:**
+- **Root priming (RFC 8109):** on first use, the hints are asked for `. NS`; the answer's glue (or, without it, lookups of the names) becomes the cached root zone cut, renewed when it expires (TTL capped at a day). A failed attempt waits a minute before the next.
+- **Hedged queries:** a server that hasn't answered after 1.5 × its smoothed RTT (at least 150 ms; 400 ms when unknown) is joined by the next server; the first usable answer wins. It costs at most one extra query per slow step, inside the 96-query budget.
+- **EDE reasons:** a bogus answer's RRSIGs give the code: none for the records that answer → 10, all expired → 7, all not yet valid → 8 (serial-number time comparison), else 6. The library's validator doesn't expose its reason, so this reads the signatures it returns.
+- **Trust anchors:** both current root KSKs (20326, 38696) ship built in (a test pins them). `[dnssec] trust_anchors_file` replaces them with a file of DNSKEY records; a bad file keeps the built-in ones.
+- **Deferred — RFC 5011** automated trust-anchor updates: they need a persistent state machine with a 30-day hold-down for a root KSK change that happens every several years, which builds already carry. The anchors file covers the gap.
+- **Deferred — RFC 8198** aggressive NSEC caching: it needs a cache of validated NSEC/NSEC3 ranges next to the library's validator and answer synthesis on the query path; worth doing with measurements, not as a follow-up.
+
+**Consequences:**
+- Recursive lookups ride out a slow server and a moved root server.
+- SERVFAILs say why a signature failed.
+- Validation survives the root key rollover with no action.
+
 ## ADR-085 — Alert email: a small built-in SMTP submission client (Proposed)
 **Context:** T9.4 (OBS-010 lists email as a destination; deferred in T7.12). The owner has no relay of their own.
 

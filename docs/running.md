@@ -381,10 +381,12 @@ members = ["recursive"]
 - **Private by default:** with QNAME minimization the root servers see only `com`, the `com` servers only `example.com`, and only `example.com`'s own servers see `www.example.com`. If a server mishandles the shortened question, the full one is sent (relaxed mode).
 - **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization`, servers that don't echo the letter case are remembered and asked without it.
 - **Fast after the first time:** zone cuts and server addresses are remembered (bounded, by their TTLs), answers go to the normal cache, and servers are picked by measured response time. A first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.
+- **Hedged:** when a server is slower than usual (1.5 times its usual response time, at least 150 ms), the next server is asked too, and the first good answer wins, so one sluggish server doesn't hold up a lookup.
+- **Root priming** (RFC 8109): on first use, the built-in root server addresses are only used to ask for the root's current list, which is then remembered for a day. A root server that changes address doesn't need a new TelltaleDNS.
 - **DNSSEC:** with `[dnssec] mode = "validate"` the signatures come along and are checked from the root's trust anchor, as for forwarded answers.
 - It's an upstream like any other: mix it into a group with forwarders (for example `strategy = "failover"` with a public resolver as the fallback), or route only some domains through it.
 - Limits that stop loops and broken zones: 16 CNAME hops, 32 referrals, 96 queries per question; servers get at most 1.2 s each.
-- *Not yet:* aggressive use of NSEC records (RFC 8198) to answer non-existent names without asking.
+- *Not yet:* aggressive use of NSEC records (RFC 8198) to answer non-existent names without asking (ADR-086).
 - Moving from Pi-hole with unbound, or from Technitium without forwarders: the importers note it (Technitium's import uses `recursive://` directly).
 
 ## Encrypted upstreams
@@ -1148,7 +1150,14 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   The first lookup in a new zone fetches its keys, and a cold start fetches the root's and
   the TLD's; after that they're cached.
 - **Counted** in `telltale_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
-- The trust anchors are the root's 2017 and 2024 keys, built in.
+- **Why it failed:** a bogus answer's SERVFAIL says why when its signatures show it: EDE 7 (signature expired), 8 (signature not yet valid), 10 (signatures missing), else 6. A clock that's far off shows up as 7 or 8 everywhere, which is worth checking first.
+- **Trust anchors:** the root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you. To use other anchors (a future key before TelltaleDNS is updated, or a test root), give a file of DNSKEY records in zone-file form, as `dig DNSKEY . +noall +answer` prints them or Unbound's `root.key` holds:
+  ```toml
+  [dnssec]
+  mode = "validate"
+  trust_anchors_file = "/etc/telltale/root.key"
+  ```
+  It replaces the built-in anchors; a file that can't be read or holds no key is logged and the built-in anchors stay. Automatic tracking of key changes (RFC 5011) isn't done (ADR-086).
 
 ## Clusters
 

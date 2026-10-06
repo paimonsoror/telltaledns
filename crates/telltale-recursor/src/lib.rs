@@ -10,6 +10,11 @@
 //!   zone, and optional 0x20 letter-case randomization (servers that don't echo the case are
 //!   remembered and asked without it).
 //! - **Server choice** by smoothed RTT; a timeout or lame answer moves to the next server.
+//!   A server slower than usual is hedged: the next one is asked too, and the first useful
+//!   answer wins (T9.8).
+//! - **Root priming** (RFC 8109, T9.8): the root servers' current names and addresses are
+//!   asked of the built-in hints once, then cached like any zone cut (and asked again a day
+//!   later), so a changed root server address doesn't need a new build.
 //! - **Limits:** 16 CNAME/DNAME hops, 32 referrals per lookup, at most 4 nested lookups for
 //!   server names, and 96 queries per client question.
 //! - **Caches:** zone cuts with their server addresses and server-name addresses (bounded,
@@ -80,6 +85,7 @@ const MAX_TRIES: usize = 4;
 
 /// Resolver settings (`[[upstream]]` with `url = "recursive://"`).
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // independent on/off switches, not a state machine
 pub struct Settings {
     /// RFC 9156 QNAME minimization (on by default).
     pub qname_minimization: bool,
@@ -93,6 +99,10 @@ pub struct Settings {
     pub port: u16,
     /// The most a single server is waited for.
     pub server_timeout: Duration,
+    /// REQ: DNS-012 (T9.8) — RFC 8109 root priming (on by default).
+    pub prime: bool,
+    /// Ask the next server too when one is slower than usual (on by default).
+    pub hedge: bool,
 }
 
 impl Default for Settings {
@@ -104,6 +114,8 @@ impl Default for Settings {
             roots: ROOT_HINTS_V4.iter().map(|a| IpAddr::from(*a)).collect(),
             port: 53,
             server_timeout: Duration::from_millis(1200),
+            prime: true,
+            hedge: true,
         }
     }
 }
@@ -167,6 +179,8 @@ type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct Recursor {
     settings: Settings,
     caches: Caches,
+    /// When priming was last tried (it's not tried again for a minute after a failure).
+    primed_at: parking_lot::Mutex<Option<Instant>>,
 }
 
 /// `name` cut to its last `n` labels.
@@ -187,6 +201,71 @@ impl Recursor {
         Self {
             settings,
             caches: Caches::default(),
+            primed_at: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// REQ: DNS-012 (T9.8) — RFC 8109: asks the hints for the root's NS set and its
+    /// addresses (the glue in the same answer, else a lookup of the names), and caches it as
+    /// the root zone cut. Quiet on failure: the hints keep working.
+    async fn prime(&self, work: &mut Work) {
+        let root = NameBuf::default();
+        if !self.settings.prime || self.caches.closest(&root, false).is_some() {
+            return;
+        }
+        {
+            let mut at = self.primed_at.lock();
+            if at.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+                return;
+            }
+            *at = Some(Instant::now());
+        }
+        for (ip, _, _) in self
+            .caches
+            .order(&self.settings.roots)
+            .into_iter()
+            .take(MAX_TRIES)
+        {
+            if work.spend().is_err() {
+                return;
+            }
+            let addr = SocketAddr::new(ip, self.settings.port);
+            let Ok(resp) = net::ask(
+                addr,
+                &root,
+                rtype::NS,
+                false,
+                false,
+                self.settings.server_timeout,
+            )
+            .await
+            else {
+                continue;
+            };
+            let Some(p) = msg::parse(&resp) else { continue };
+            let ns: Vec<&Rr> = p
+                .answer
+                .iter()
+                .filter(|r| r.rtype == rtype::NS && r.name.is_root())
+                .collect();
+            if ns.is_empty() {
+                continue;
+            }
+            let ttl = ns.iter().map(|r| r.ttl).min().unwrap_or(86_400);
+            let names: Vec<NameBuf> = ns.iter().filter_map(|r| r.target()).collect();
+            let glue: Vec<(NameBuf, IpAddr)> = p
+                .additional
+                .iter()
+                .filter(|r| names.contains(&r.name))
+                .filter_map(|r| r.addr().map(|a| (r.name, a)))
+                .collect();
+            let addrs = self.delegation(&root, &names, &glue, work, 0).await;
+            if addrs.is_empty() {
+                continue;
+            }
+            debug!(servers = addrs.len(), "root priming");
+            self.caches.put_zone(root, names, addrs, ttl);
+            return;
         }
     }
 
@@ -209,6 +288,7 @@ impl Recursor {
         let opt_at = end + 4;
         let dnssec_ok = header.arcount > 0 && query.get(opt_at + 7).is_some_and(|b| b & 0x80 != 0);
         let mut work = Work::default();
+        self.prime(&mut work).await;
         let r = self.lookup(name, qtype, dnssec_ok, &mut work, 0).await?;
         msg::encode(query, r.rcode, &r.answer, &r.authority).ok_or(Error::Question)
     }
@@ -221,6 +301,7 @@ impl Recursor {
         dnssec_ok: bool,
     ) -> Result<Resolved, Error> {
         let mut work = Work::default();
+        self.prime(&mut work).await;
         self.lookup(name, qtype, dnssec_ok, &mut work, 0).await
     }
 
@@ -451,7 +532,9 @@ impl Recursor {
         Vec::new()
     }
 
-    /// Asks `servers` (fastest first) until one gives a usable answer for `zone`.
+    /// Asks `servers` (fastest first) until one gives a usable answer for `zone`. A server
+    /// slower than its usual (1.5 × its smoothed RTT, at least 150 ms) is hedged: the next one
+    /// is asked as well, and the first usable answer wins (T9.8).
     async fn ask(
         &self,
         servers: &[IpAddr],
@@ -461,37 +544,97 @@ impl Recursor {
         zone: &NameBuf,
         work: &mut Work,
     ) -> Result<(Outcome, IpAddr), Error> {
-        let order = self.caches.order(servers);
-        for (ip, srtt_us, no_case) in order.into_iter().take(MAX_TRIES) {
+        let order: Vec<_> = self
+            .caches
+            .order(servers)
+            .into_iter()
+            .take(MAX_TRIES)
+            .collect();
+        let mut i = 0;
+        while i < order.len() {
+            let (ip, srtt_us, no_case) = order[i];
             work.spend()?;
-            let timeout = match srtt_us {
-                None => self.settings.server_timeout,
-                Some(s) => (Duration::from_micros(u64::from(s)) * 3 + Duration::from_millis(100))
-                    .clamp(Duration::from_millis(250), self.settings.server_timeout),
-            };
-            let addr = SocketAddr::new(ip, self.settings.port);
-            let mix = self.settings.case_randomization && !no_case;
-            let t0 = Instant::now();
-            let mut res = net::ask(addr, qn, qt, dnssec_ok, mix, timeout).await;
-            if res == Err(NetError::CaseMismatch) {
-                // REQ: DNS-012 — 0x20: this server changes the case; ask it plainly.
-                self.caches.no_case(ip);
-                work.spend()?;
-                res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
-            }
-            let Ok(resp) = res else {
-                self.caches.record(ip, None, timeout);
+            let first = self.try_server(ip, srtt_us, no_case, qn, qt, dnssec_ok, zone);
+            tokio::pin!(first);
+            let next = order.get(i + 1).copied().filter(|_| self.settings.hedge);
+            let Some((ip2, srtt2, no_case2)) = next else {
+                if let Some(o) = first.await {
+                    return Ok(o);
+                }
+                i += 1;
                 continue;
             };
-            self.caches.record(ip, Some(t0.elapsed()), timeout);
-            let Some(p) = msg::parse(&resp) else { continue };
-            let o = msg::classify(&p, qn, qt, zone);
-            if o == Outcome::Lame {
-                continue;
+            let hedge_after = srtt_us.map_or(Duration::from_millis(400), |s| {
+                (Duration::from_micros(u64::from(s)) * 3 / 2).max(Duration::from_millis(150))
+            });
+            tokio::select! {
+                r = &mut first => {
+                    if let Some(o) = r {
+                        return Ok(o);
+                    }
+                    // Failed quickly: the next server, hedged in turn.
+                    i += 1;
+                    continue;
+                }
+                () = tokio::time::sleep(hedge_after) => {}
             }
-            return Ok((o, ip));
+            // REQ: DNS-012 (T9.8) — slower than usual: ask the next server as well.
+            work.spend()?;
+            let second = self.try_server(ip2, srtt2, no_case2, qn, qt, dnssec_ok, zone);
+            tokio::pin!(second);
+            let won = tokio::select! {
+                r = &mut first => match r {
+                    Some(o) => Some(o),
+                    None => second.await,
+                },
+                r = &mut second => match r {
+                    Some(o) => Some(o),
+                    None => first.await,
+                },
+            };
+            if let Some(o) = won {
+                return Ok(o);
+            }
+            i += 2;
         }
         Err(Error::NoServer(zone.display().to_string()))
+    }
+
+    /// One server, once (twice when it breaks 0x20): its usable outcome, or `None`. Records
+    /// the server's RTT or timeout.
+    #[allow(clippy::too_many_arguments)]
+    async fn try_server(
+        &self,
+        ip: IpAddr,
+        srtt_us: Option<u32>,
+        no_case: bool,
+        qn: &NameBuf,
+        qt: u16,
+        dnssec_ok: bool,
+        zone: &NameBuf,
+    ) -> Option<(Outcome, IpAddr)> {
+        let timeout = match srtt_us {
+            None => self.settings.server_timeout,
+            Some(s) => (Duration::from_micros(u64::from(s)) * 3 + Duration::from_millis(100))
+                .clamp(Duration::from_millis(250), self.settings.server_timeout),
+        };
+        let addr = SocketAddr::new(ip, self.settings.port);
+        let mix = self.settings.case_randomization && !no_case;
+        let t0 = Instant::now();
+        let mut res = net::ask(addr, qn, qt, dnssec_ok, mix, timeout).await;
+        if res == Err(NetError::CaseMismatch) {
+            // REQ: DNS-012 — 0x20: this server changes the case; ask it plainly.
+            self.caches.no_case(ip);
+            res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
+        }
+        let Ok(resp) = res else {
+            self.caches.record(ip, None, timeout);
+            return None;
+        };
+        self.caches.record(ip, Some(t0.elapsed()), timeout);
+        let p = msg::parse(&resp)?;
+        let o = msg::classify(&p, qn, qt, zone);
+        (o != Outcome::Lame).then_some((o, ip))
     }
 }
 
