@@ -137,6 +137,39 @@ impl Client {
         })
     }
 
+    /// A client that also trusts the certificates in the PEM file at `path` (a self-signed
+    /// router console, a private CA).
+    pub fn with_ca_file(resolver: Arc<dyn Resolve>, path: &str) -> Result<Self, String> {
+        use rustls::pki_types::pem::PemObject;
+        let roots = CertificateDer::pem_file_iter(path)
+            .map_err(|e| format!("{path}: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("{path}: {e}"))?;
+        Self::new(resolver, &roots)
+    }
+
+    /// A client that skips certificate verification (signatures are still checked, so the
+    /// handshake is sound, but not the server's identity): only for the explicit
+    /// `tls_insecure_skip_verify` of router integrations with self-signed consoles.
+    pub fn insecure(resolver: Arc<dyn Resolve>) -> Result<Self, String> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut cfg = ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
+            .with_no_client_auth();
+        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(Self {
+            tls: TlsConnector::from(Arc::new(cfg)),
+            resolver,
+            user_agent: format!(
+                "TelltaleDNS/{} (+https://github.com/paimonsoror/telltaledns)",
+                env!("CARGO_PKG_VERSION")
+            ),
+        })
+    }
+
     /// GETs `url`, following up to 5 redirects (never from https to http), and fails once
     /// the body exceeds `max_bytes`. The caller applies the overall timeout.
     pub async fn get(
@@ -434,5 +467,54 @@ mod tests {
         assert_eq!(r("/other.txt"), "https://lists.example.com/other.txt");
         assert_eq!(r("next.txt"), "https://lists.example.com/a/b/next.txt");
         assert_eq!(r("//mirror.example.org/l"), "https://mirror.example.org/l");
+    }
+}
+
+/// Accepts any server certificate (see [`Client::insecure`]).
+#[derive(Debug)]
+struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
     }
 }

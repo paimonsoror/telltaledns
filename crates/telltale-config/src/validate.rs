@@ -53,6 +53,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     alerts(cfg, &mut r);
     sinks(cfg, &mut r);
     dhcp(cfg, &mut r);
+    routers(cfg, &mut r);
     rewrites(cfg, &mut r);
     zones(cfg, &mut r);
     otlp(cfg, &mut r);
@@ -199,6 +200,44 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
                     "an IP address or a domain",
                 );
             }
+        }
+    }
+}
+
+// REQ: T8.2 — router integrations: unique names, http(s) URLs, the credentials each kind needs.
+fn routers(cfg: &Config, r: &mut Report<'_>) {
+    let mut names = HashSet::new();
+    for (i, x) in cfg.router.iter().enumerate() {
+        let p = format!("router[{i}]");
+        if x.name.is_empty() || !names.insert(x.name.as_str()) {
+            r.err(format!("{p}.name"), "must be unique and not empty");
+        }
+        if !(x.url.starts_with("https://") || x.url.starts_with("http://")) {
+            r.err(
+                format!("{p}.url"),
+                "an https:// URL, e.g. https://192.168.1.1",
+            );
+        }
+        match x.kind {
+            crate::RouterKind::Unifi => {
+                if x.api_key_file.is_none() && (x.username.is_none() || x.password_file.is_none()) {
+                    r.err(
+                        p.clone(),
+                        "UniFi needs api_key_file, or username and password_file",
+                    );
+                }
+            }
+            crate::RouterKind::Opnsense => {
+                if x.api_key_file.is_none() || x.api_secret_file.is_none() {
+                    r.err(p.clone(), "OPNsense needs api_key_file and api_secret_file");
+                }
+            }
+        }
+        if x.interval_secs < 30 {
+            r.err(format!("{p}.interval_secs"), "at least 30 seconds");
+        }
+        if x.tls_insecure_skip_verify {
+            r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca)"));
         }
     }
 }

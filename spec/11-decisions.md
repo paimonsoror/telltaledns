@@ -1258,6 +1258,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-080 — Router integrations: read-only polling of UniFi and OPNsense (Proposed)
+**Context:** T8.2 (M8 "router integrations"; API-010 lists DHCP leases as a naming source). Most homes run DHCP on the router, so TelltaleDNS's own DHCP (T7.19) doesn't see those leases.
+
+**Decision:**
+- `[[router]]` entries are polled read-only (`interval_secs`, 300; 15 s after a failure). UniFi: `stat/sta` (connected clients) with an API key (`X-API-KEY`), or a local user's login (UniFi OS `/api/auth/login` and `/proxy/network/...`, falling back to the classic `/api/login`); the UniFi alias wins over the host name. OPNsense: the lease search of Dnsmasq, then Kea, then ISC, with the API key and secret (basic auth).
+- The result replaces that router's part of a lease view next to the DHCP server's; device names fall back to configured clients, then DHCP leases, then router leases. `GET /api/v1/dhcp/leases` lists both with a `source`.
+- Self-signed consoles: `tls_ca` (the console's certificate), or `tls_insecure_skip_verify` with a configuration warning. Secrets come from files.
+- Not done: OPNsense static mappings without a lease, UniFi's offline known clients (`rest/user`), pfSense, OpenWrt.
+
+**Consequences:**
+- Device names appear on networks where the router runs DHCP, with no change on the router beyond a read-only account or key.
+
 ## ADR-079 — DNSCrypt with RustCrypto's crypto_box; stamps map to existing transports (Proposed)
 **Context:** T7.24 (UPS-003; `04` §2). DNSCrypt v2 needs X25519 and libsodium's box constructions; `02` §7 lists no crate for them. Stamps may name DNSCrypt, DoH, DoT, or DoQ servers.
 

@@ -899,6 +899,31 @@ hostname = "nas"
 - **In a cluster**, enable it on one node only: there's no DHCP failover between nodes. Hand out both nodes as DNS servers (`dns = [...]`).
 - Changes to `[dhcp]` need a restart. *Not yet:* DHCPv6, names of leased devices answered in DNS (`laptop.lan`), leases shown on other cluster nodes.
 
+### Names from your router (UniFi, OPNsense)
+When your router runs DHCP, TelltaleDNS can read its client list, so devices show up by name without running DHCP itself:
+```toml
+[[router]]
+name = "udm"
+type = "unifi"                         # UniFi OS consoles (UDM, UCG, Cloud Key) and the Network application
+url = "https://192.168.1.1"            # the classic Network application: https://controller:8443
+api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
+# username = "telltale"                # or a local read-only user...
+# password_file = "/etc/telltale/unifi-pass"
+# site = "default"
+tls_ca = "/etc/telltale/udm.pem"       # the console's certificate (self-signed); or tls_insecure_skip_verify = true
+
+[[router]]
+name = "firewall"
+type = "opnsense"
+url = "https://opnsense.lan"
+api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
+api_secret_file = "/etc/telltale/opn-secret"
+```
+- UniFi: the connected clients, named by the alias you gave them in UniFi, else their host name. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
+- Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
+- Names you give devices in TelltaleDNS win; then TelltaleDNS's own DHCP; then the routers. `GET /api/v1/dhcp/leases` lists them all (`source`: `dhcp` or `router`).
+- Credentials stay in files, out of the configuration. Changes to `[[router]]` need a restart.
+
 ### Naming devices in the UI
 Click a device's address anywhere (the dashboard's top clients, the query log, the live view, Clients) and choose **Name this device…** or **Add to group…**. The name shows everywhere at once, including on past queries: names are looked up when data is read, never written into the query log, so renaming relabels history and forgetting a device brings the address back.
 

@@ -472,3 +472,7 @@ Beaconing detection shipped in T3.13 (the anomaly engine).
 - [x] **T8.1 Cache-warm hints.** *(CLU-011)* A node joining a cluster resolves the cluster's hot names in the background.
   - *AC:* once the cluster's configuration is applied, the node takes the merged top queried names (this hour and the last, from the other nodes) and resolves up to `[cache] warm_names` of them, A and AAAA, paced, through the normal upstream path without query events; off with `0`; never on the DNS path.
   - *Done 2026-10-06:* `crates/telltale/src/warm.rs` (the federated top read, the internal lookup from T7.21); `[cache] warm_names` (300); unit test `clu_011_hot_names`; the cluster e2e checks the replica takes the primary's hot names; docs.
+
+- [x] **T8.2 Router integrations.** *(API-010 naming sources)* `[[router]]`: UniFi (API key or local user) and OPNsense (API key and secret) DHCP clients name devices.
+  - *AC:* a UniFi OS login (cookie) or API key reads the client list (alias over host name); OPNsense's leases from whichever DHCP server it runs; unnamed devices take those names (the query log, the API); the leases API shows them with `source = router`; a router that's down keeps its last list and is retried; config errors for missing credentials.
+  - *Done 2026-10-06:* `crates/telltale/src/routers.rs` (ADR-080, Proposed), `Client::insecure` and `Client::with_ca_file` in the fetch client, the router lease view and naming fallback, `source` on leases; config and validation; unit tests; `deploy/routers-e2e.sh` in CI (fake UniFi OS and OPNsense APIs); docs.

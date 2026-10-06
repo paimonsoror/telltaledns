@@ -310,6 +310,9 @@ jobs:
       # REQ: API-008 (T7.25) — `telltale ctl` against a running node.
       - name: telltale ctl
         run: bash deploy/ctl-e2e.sh target/bench-fast/telltale
+      # REQ: T8.2 — router integrations against fake UniFi and OPNsense APIs.
+      - name: Router integrations
+        run: bash deploy/routers-e2e.sh target/bench-fast/telltale
       # REQ: API-007 (T6.3) — Pi-hole import from real Teleporter exports of the official v6
       # and v5 images, then the imported configuration's answers.
       - name: Pi-hole import (v6 and v5 Teleporter)

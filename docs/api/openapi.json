@@ -5592,7 +5592,8 @@
           "mac",
           "ip",
           "expiresUnixSeconds",
-          "reserved"
+          "reserved",
+          "source"
         ],
         "properties": {
           "clientName": {
@@ -5623,6 +5624,10 @@
           "reserved": {
             "type": "boolean",
             "description": "A reservation (`[[dhcp.reservation]]`)."
+          },
+          "source": {
+            "type": "string",
+            "description": "`dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`)."
           }
         }
       },
@@ -6845,7 +6850,8 @@
                 "mac",
                 "ip",
                 "expiresUnixSeconds",
-                "reserved"
+                "reserved",
+                "source"
               ],
               "properties": {
                 "clientName": {
@@ -6876,6 +6882,10 @@
                 "reserved": {
                   "type": "boolean",
                   "description": "A reservation (`[[dhcp.reservation]]`)."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`)."
                 }
               }
             }

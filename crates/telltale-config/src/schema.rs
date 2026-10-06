@@ -48,6 +48,8 @@ pub struct Config {
     pub alerts: AlertsConfig,
     /// REQ: OPS-008 (T7.19) — an optional DHCPv4 server (Linux and Pi installs).
     pub dhcp: DhcpConfig,
+    /// REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).
+    pub router: Vec<RouterConfig>,
     /// Known devices and how to recognize them (FLT-006).
     pub client: Vec<ClientConfig>,
     /// Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,
@@ -106,6 +108,7 @@ impl Default for Config {
             zone: Vec::new(),
             alerts: AlertsConfig::default(),
             dhcp: DhcpConfig::default(),
+            router: Vec::new(),
             client: Vec::new(),
             rule: Vec::new(),
             clients: ClientsConfig::default(),
@@ -794,6 +797,56 @@ impl Default for DhcpConfig {
             reply_to_source: false,
         }
     }
+}
+
+/// REQ: T8.2 — a router whose DHCP clients name devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouterConfig {
+    /// Unique name (logs, the leases' source).
+    pub name: SafeString,
+    /// `unifi` (UniFi OS consoles and the Network application) or `opnsense`.
+    #[serde(rename = "type")]
+    pub kind: RouterKind,
+    /// The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`
+    /// (Network application), `https://opnsense.lan`.
+    pub url: SafeString,
+    /// UniFi: the site (default `default`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<SafeString>,
+    /// UniFi: an API key (UniFi Network 9+), or OPNsense: the API key. A file holding it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_file: Option<SafeString>,
+    /// OPNsense: the API secret (a file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_secret_file: Option<SafeString>,
+    /// UniFi without an API key: a local (read-only is enough) user and a file holding its
+    /// password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<SafeString>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_file: Option<SafeString>,
+    /// A PEM file with the console's certificate (or its CA), for self-signed consoles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca: Option<SafeString>,
+    /// Skip certificate verification (dangerous; logs a warning).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tls_insecure_skip_verify: bool,
+    /// Seconds between reads.
+    #[serde(default = "default_router_interval")]
+    pub interval_secs: u32,
+}
+
+const fn default_router_interval() -> u32 {
+    300
+}
+
+/// A router integration's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterKind {
+    Unifi,
+    Opnsense,
 }
 
 /// A fixed address for one device.

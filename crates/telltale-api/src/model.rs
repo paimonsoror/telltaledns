@@ -1219,6 +1219,8 @@ pub struct DhcpLease {
     pub expires_unix_seconds: u64,
     /// A reservation (`[[dhcp.reservation]]`).
     pub reserved: bool,
+    /// `dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`).
+    pub source: String,
 }
 
 /// Names a list shares with another (OBS-009).

@@ -34,6 +34,7 @@ mod qlog_cli;
 mod replay;
 mod replication;
 mod rollups;
+mod routers;
 mod selfupdate;
 mod server;
 mod ship;

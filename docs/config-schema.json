@@ -269,6 +269,14 @@
         "$ref": "#/$defs/Route"
       }
     },
+    "router": {
+      "description": "REQ: T8.2 — routers whose DHCP names devices (UniFi, OPNsense).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RouterConfig"
+      }
+    },
     "rule": {
       "description": "Quick rules (T6.12, ADR-067): allow or block a domain for some devices, some groups,\nor everyone, optionally until a time. They decide before any list.",
       "type": "array",
@@ -2326,6 +2334,98 @@
       "additionalProperties": false,
       "required": [
         "upstream_group"
+      ]
+    },
+    "RouterConfig": {
+      "description": "REQ: T8.2 — a router whose DHCP clients name devices.",
+      "type": "object",
+      "properties": {
+        "api_key_file": {
+          "description": "UniFi: an API key (UniFi Network 9+), or OPNsense: the API key. A file holding it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "api_secret_file": {
+          "description": "OPNsense: the API secret (a file).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "interval_secs": {
+          "description": "Seconds between reads.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "name": {
+          "description": "Unique name (logs, the leases' source).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "password_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "site": {
+          "description": "UniFi: the site (default `default`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "tls_ca": {
+          "description": "A PEM file with the console's certificate (or its CA), for self-signed consoles.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "tls_insecure_skip_verify": {
+          "description": "Skip certificate verification (dangerous; logs a warning).",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "`unifi` (UniFi OS consoles and the Network application) or `opnsense`.",
+          "$ref": "#/$defs/RouterKind"
+        },
+        "url": {
+          "description": "The console or controller: `https://192.168.1.1` (UniFi OS), `https://controller:8443`\n(Network application), `https://opnsense.lan`.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "username": {
+          "description": "UniFi without an API key: a local (read-only is enough) user and a file holding its\npassword.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "url"
+      ]
+    },
+    "RouterKind": {
+      "description": "A router integration's kind.",
+      "type": "string",
+      "enum": [
+        "unifi",
+        "opnsense"
       ]
     },
     "RuleAction": {

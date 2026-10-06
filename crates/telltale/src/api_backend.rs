@@ -40,6 +40,14 @@ fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
             .load()
             .get(&v4)
             .and_then(|l| l.hostname.clone())
+            // REQ: T8.2 — then the routers' DHCP clients.
+            .or_else(|| {
+                src.pipeline
+                    .router_leases
+                    .load()
+                    .get(&v4)
+                    .and_then(|l| l.hostname.clone())
+            })
     })
 }
 
@@ -1234,8 +1242,25 @@ impl Backend for ApiBackend {
                 client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
                 expires_unix_seconds: l.expires,
                 reserved: l.reserved,
+                source: "dhcp".to_owned(),
             })
             .collect();
+        // REQ: T8.2 — the routers' DHCP clients too (TelltaleDNS's own leases win).
+        let own: std::collections::HashSet<String> = v.iter().map(|l| l.ip.clone()).collect();
+        for l in self.src.pipeline.router_leases.load().values() {
+            if own.contains(&l.ip.to_string()) {
+                continue;
+            }
+            v.push(telltale_api::model::DhcpLease {
+                mac: l.mac.clone(),
+                ip: l.ip.to_string(),
+                hostname: l.hostname.clone(),
+                client_name: device_name(&self.src, l.ip.to_ipv6_mapped().octets()),
+                expires_unix_seconds: 0,
+                reserved: false,
+                source: "router".to_owned(),
+            });
+        }
         v.sort_by_key(|l| l.ip.parse::<std::net::Ipv4Addr>().map_or(0, u32::from));
         v
     }

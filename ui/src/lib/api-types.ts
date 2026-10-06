@@ -2247,6 +2247,8 @@ export interface components {
             mac: string;
             /** @description A reservation (`[[dhcp.reservation]]`). */
             reserved: boolean;
+            /** @description `dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`). */
+            source: string;
         };
         ExplainBlock: {
             /** Format: int32 */
@@ -2685,6 +2687,8 @@ export interface components {
                 mac: string;
                 /** @description A reservation (`[[dhcp.reservation]]`). */
                 reserved: boolean;
+                /** @description `dhcp` (this node's DHCP server) or `router` (read from a `[[router]]`). */
+                source: string;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];

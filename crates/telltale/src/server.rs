@@ -784,6 +784,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     ));
     // REQ: OBS-006 (T7.17)
     tokio::spawn(crate::otlp::run(Arc::clone(&sources), http_stopped.clone()));
+    // REQ: T8.2 — device names from the routers' DHCP (read at startup).
+    tokio::spawn(crate::routers::run(
+        cfg.router.clone(),
+        Arc::clone(&pipeline.router_leases),
+        http_stopped.clone(),
+    ));
     // REQ: CLU-011 (T8.1) — warm the cache from the cluster's hot names.
     tokio::spawn(crate::warm::run(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-008 (T7.19) — DHCP (read at startup).
