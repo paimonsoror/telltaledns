@@ -275,3 +275,5 @@ svg.has-sel .arch-node:not(.hov-node):not(.hov-linked):not(.sel-node):not(.sel-l
 .result::before { content: "↳ "; color: var(--ok); font-weight: 700; }
 /* Grid items with code blocks: let <pre> scroll instead of widening the page. */
 .steps > *, .chat-grid > *, .two > * { min-width: 0; }
+/* Long inline paths and commands wrap on phones (code blocks scroll instead). */
+:not(pre) > code { overflow-wrap: anywhere; }

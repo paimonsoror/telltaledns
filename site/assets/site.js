@@ -66,7 +66,16 @@
           if (e.key === "ArrowLeft") { show((i - 1 + tabs.length) % tabs.length); tabs[(i - 1 + tabs.length) % tabs.length].focus(); }
         });
       });
-      show(0);
+      // A link to a panel (start.html#k8s) opens that tab.
+      function fromHash() {
+        var id = location.hash.slice(1);
+        var i = -1;
+        panels.forEach(function (p, j) { if (id && (p.id === id || p.querySelector("#" + CSS.escape(id)))) i = j; });
+        if (i >= 0) show(i);
+        return i >= 0;
+      }
+      if (!fromHash()) show(0);
+      window.addEventListener("hashchange", fromHash);
     });
   });
 })();
