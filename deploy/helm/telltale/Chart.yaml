@@ -4,7 +4,7 @@ description: >-
   TelltaleDNS: a filtering, encrypted, observable DNS resolver with a built-in web UI and API.
 type: application
 # REQ: OPS-002 — chart version; appVersion is the image tag used when image.tag is empty.
-version: 0.1.0
+version: 0.2.0
 appVersion: "edge"
 kubeVersion: ">=1.26.0-0"
 home: https://paimonsoror.github.io/telltaledns/
