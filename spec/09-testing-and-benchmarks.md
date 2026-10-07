@@ -37,3 +37,11 @@ It runs the corpora and produces `bench/compare/report.md` (tables + charts): th
 
 ## 4. CI pipeline
 fmt → clippy (`-D warnings`, pedantic subset) → test (linux x86_64 + aarch64 via QEMU for unit tests) → cargo-deny → build images (multi-arch) → integration + helm on kind → bench gate → SBOM + sign (release only). Nightly: fuzz (30 min per target), full bench, cluster chaos suite, comparative bench (weekly).
+
+## 5. Test coverage (T9.23)
+Coverage is measured to find untested code, not as a score:
+- **Nightly:** `cargo llvm-cov` over the workspace tests (the nightly workflow's `coverage` job). The per-file summary goes on the run's summary page, and the HTML report is published on the project site at `/coverage/` (newest run; a placeholder until the first).
+- **No threshold and no badge.** Line coverage says which lines ran, not whether a test checked what they did; a target number invites tests that run code without asserting anything. Many of the strongest tests run the built binary end to end (DNSSEC against the live root, install and uninstall on a real machine, the browser suite) and count only partly.
+- **How to use it:** look for untested branches in the query path (`telltale-proto`, `-net`, `-cache`, `-filter`, `-policy`, the pipeline), DNSSEC, and configuration changes, and add tests that assert behavior there. Low numbers in CLI glue or importers matter less.
+- Locally: `cargo llvm-cov --workspace --html` (needs `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov`).
+

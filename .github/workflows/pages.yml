@@ -16,6 +16,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: read
 
 concurrency:
   group: pages
@@ -30,6 +31,19 @@ jobs:
         with: { python-version: "3.12" }
       - name: Build site (injects partials, renders standards, checks coverage + links)
         run: python3 site/build.py
+      # T9.23 — the newest nightly coverage report at /coverage/ (a placeholder until one exists).
+      - name: Coverage report from the nightly workflow
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          mkdir -p site/_site/coverage
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" -w nightly --limit 10 --json databaseId -q '.[].databaseId'); do
+            if gh run download "$id" -R "$GITHUB_REPOSITORY" -n coverage -D site/_site/coverage 2>/dev/null; then
+              echo "coverage from nightly run $id"; break
+            fi
+          done
+          if [ ! -f site/_site/coverage/index.html ]; then
+            printf '<!doctype html><meta charset="utf-8"><title>Test coverage</title><p>No coverage report yet: the nightly workflow makes one.</p>\n' > site/_site/coverage/index.html
+          fi
       - name: Lighthouse (all categories >= 0.9)
         uses: treosh/lighthouse-ci-action@v12
         with:

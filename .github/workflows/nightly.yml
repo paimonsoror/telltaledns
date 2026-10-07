@@ -25,3 +25,39 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Download and parse published lists
         run: cargo test -p telltale-filter --test lists_online -- --ignored --nocapture
+
+  # T9.23 — test coverage, to find untested code (no threshold, no badge: see spec/09 §5).
+  # The HTML report is published on the project site at /coverage/ by the pages workflow,
+  # which this job starts when the report is ready.
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with: { components: llvm-tools-preview }
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run the tests under coverage
+        # A failing or flaky test shouldn't cost the report: tests are CI's job.
+        run: cargo llvm-cov --workspace --no-report --no-fail-fast -- --skip flt_004_a_slow_list || true
+      - name: Report
+        run: |
+          cargo llvm-cov report --html --output-dir target/cov
+          {
+            echo '## Test coverage'
+            echo
+            echo '```'
+            cargo llvm-cov report --summary-only | tail -n 60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: target/cov/html
+          retention-days: 14
+      - name: Publish on the project site
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh workflow run pages.yml --ref main -R "$GITHUB_REPOSITORY"
