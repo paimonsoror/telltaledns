@@ -852,12 +852,21 @@ test('api_002 upstreams and lists can be added, overridden, and reverted', async
   res = await r.put('/api/v1/upstreams/router', { headers: h, data: { url: 'udp://127.0.0.1:15399', timeout_ms: 900 } });
   expect(res.status()).toBe(200);
   expect(await overrides()).toEqual(['upstream:extra:added', 'upstream:router:override']);
-  // Hiding an upstream the default group uses would break the configuration.
+  // Hiding the only upstream of the default group is refused, and says what to do.
   res = await r.delete('/api/v1/upstreams/nowhere', { headers: h });
   expect(res.status()).toBe(422);
-  // Revert the override, remove the added one.
-  expect((await r.delete('/api/v1/upstreams/router', { headers: h })).status()).toBe(200);
+  expect(JSON.stringify(await res.json())).toContain('only upstream in upstream group');
+  // REQ: API-002 (T9.22) — removing an upstream a group shares takes it out of the group too.
+  expect((await r.put('/api/v1/upstream-groups/router', { headers: h, data: { members: ['router', 'extra'] } })).status()).toBe(200);
+  res = await r.delete('/api/v1/upstreams/extra?dryRun=true', { headers: h });
+  expect(res.status()).toBe(200);
+  expect((await res.json()).impact).toContain('upstream group `router`');
   expect((await r.delete('/api/v1/upstreams/extra', { headers: h })).status()).toBe(200);
+  const groups = (await (await r.get('/api/v1/config/entries')).json()).items as { kind: string; name: string; definition: { members?: string[] } }[];
+  expect(groups.find((g) => g.kind === 'upstream_group' && g.name === 'router')?.definition.members).toEqual(['router']);
+  // Revert the overrides.
+  expect((await r.delete('/api/v1/upstream-groups/router', { headers: h })).status()).toBe(200);
+  expect((await r.delete('/api/v1/upstreams/router', { headers: h })).status()).toBe(200);
   expect(await overrides()).toEqual([]);
   // A list: added, then removed.
   res = await r.put('/api/v1/lists/e2e-extra', { headers: h, data: { rules: ['||extra.e2e.test^'] } });

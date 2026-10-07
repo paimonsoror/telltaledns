@@ -2460,6 +2460,9 @@ struct ManagedPlan {
     recent_queries: u64,
     impact: String,
     warnings: Vec<String>,
+    /// REQ: API-002 (T9.22) — entries the change also needs, stored first: removing an
+    /// upstream takes it out of the upstream groups that use it. (kind, name, body).
+    also: AlsoStored,
 }
 
 /// Parses a records body into stored form.
@@ -2694,6 +2697,7 @@ fn plan_managed(
         recent_queries,
         impact,
         warnings,
+        also: Vec::new(),
     })
 }
 
@@ -2736,6 +2740,85 @@ where
     Ok((before, body))
 }
 
+/// REQ: API-002 (T9.22) — the impact sentence, plus the upstream groups a removal changes.
+fn with_cascade(impact: String, groups: &[String]) -> String {
+    if groups.is_empty() {
+        return impact;
+    }
+    let list = groups
+        .iter()
+        .map(|g| format!("`{g}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (s, verb) = if groups.len() == 1 {
+        ("", "keeps")
+    } else {
+        ("s", "keep")
+    };
+    format!(
+        "{impact} It's also taken out of upstream group{s} {list}, which {verb} its other upstreams."
+    )
+}
+
+/// What a change stores besides its own entry: (kind, name, body).
+type AlsoStored = Vec<(&'static str, String, Option<String>)>;
+
+/// REQ: API-002 (T9.22) — removing upstream `name`: each upstream group that lists it, without
+/// it (stored before the upstream is hidden, so a stop halfway leaves a valid configuration),
+/// and the groups' names. A group it's the only member of has to change first.
+fn upstream_cascade(
+    name: &str,
+    file: &telltale_config::Config,
+    before_cfg: &telltale_config::Config,
+    entries: &mut crate::managed::Entries,
+) -> Result<(AlsoStored, Vec<String>), Problem> {
+    use crate::managed::Named;
+    let mut also = Vec::new();
+    let mut groups = Vec::new();
+    for g in before_cfg
+        .upstream_group
+        .iter()
+        .filter(|g| g.members.iter().any(|m| m.as_str() == name))
+    {
+        let members: Vec<_> = g
+            .members
+            .iter()
+            .filter(|m| m.as_str() != name)
+            .cloned()
+            .collect();
+        if members.is_empty() {
+            return Err(Problem::new(
+                Code::InvalidConfig,
+                format!(
+                    "`{name}` is the only upstream in upstream group `{}`",
+                    g.name.as_str()
+                ),
+            )
+            .hint(format!(
+                "Add another upstream to `{}` first (Upstream groups → Edit), or remove the group.",
+                g.name.as_str()
+            )));
+        }
+        let mut trimmed = g.clone();
+        trimmed.members = members;
+        let mut body = serde_json::to_value(&trimmed).unwrap_or_default();
+        if let Some(o) = body.as_object_mut() {
+            o.remove("name");
+        }
+        let gname = g.name.to_string();
+        let (_, stored) = override_step(
+            &gname,
+            Some(&body),
+            file.upstream_group.iter().any(|x| x.name() == gname),
+            Some(g),
+            &mut entries.upstream_groups,
+        )?;
+        also.push(("upstream_group", gname.clone(), stored));
+        groups.push(gname);
+    }
+    Ok((also, groups))
+}
+
 /// The entry named `name`, as JSON.
 fn named_json<T: crate::managed::Named + Serialize>(
     items: &[T],
@@ -2764,6 +2847,16 @@ fn plan_override(
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
     let before_cfg = crate::managed::merge(&file, &entries).unwrap_or_else(|_| (*file).clone());
+    // REQ: API-002 (T9.22) — removing an upstream also takes it out of its upstream groups.
+    // A DELETE that reverts an override of the files' entry (or un-hides it) brings the
+    // upstream back: nothing to cascade.
+    let reverting = entries.upstreams.iter().any(|(n, _)| *n == name)
+        && file.upstream.iter().any(|u| u.name() == name);
+    let (also, also_groups) = if w.kind == ManagedKind::Upstream && w.body.is_none() && !reverting {
+        upstream_cascade(&name, &file, &before_cfg, &mut entries)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     let (before, body) = match w.kind {
         ManagedKind::Upstream => override_step(
@@ -2833,6 +2926,7 @@ fn plan_override(
     };
     let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
     let (recent_queries, impact) = managed_impact(src, w.kind, &name, w.body.is_some());
+    let impact = with_cascade(impact, &also_groups);
     Ok(ManagedPlan {
         name,
         before,
@@ -2841,6 +2935,7 @@ fn plan_override(
         recent_queries,
         impact,
         warnings,
+        also,
     })
 }
 
@@ -3037,20 +3132,32 @@ impl ApiBackend {
                 return Ok(change(false, current));
             }
             let stored = {
-                let (state, w, name, body) = (
+                let (state, w, name, body, also) = (
                     Arc::clone(&state),
                     w.clone(),
                     plan.name.clone(),
                     plan.body.clone(),
+                    plan.also.clone(),
                 );
                 tokio::task::spawn_blocking(move || {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_secs());
                     let kind = kind_name(w.kind);
+                    // REQ: API-002 (T9.22) — what the change also needs, first; the version
+                    // check applies to the first write.
+                    let mut expect = w.expect;
+                    for (k, n, b) in &also {
+                        let r = match b {
+                            Some(b) => state.put_managed(k, n, b, None, expect, now, &w.by),
+                            None => state.delete_managed(k, n, expect),
+                        };
+                        r?;
+                        expect = None;
+                    }
                     match &body {
-                        Some(b) => state.put_managed(kind, &name, b, None, w.expect, now, &w.by),
-                        None => state.delete_managed(kind, &name, w.expect),
+                        Some(b) => state.put_managed(kind, &name, b, None, expect, now, &w.by),
+                        None => state.delete_managed(kind, &name, expect),
                     }
                 })
                 .await
