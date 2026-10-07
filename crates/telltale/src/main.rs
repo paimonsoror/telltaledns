@@ -59,8 +59,16 @@ use tracing::{error, info, warn};
 
 // REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
 // allocator, which roughly halved cache-hit throughput in the bench harness.
+#[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+// REQ: NFR-002 (T10.2) — heap profiling for development only (`--features dhat-heap`, never
+// in a release): every allocation site with its bytes at the heap's peak and at exit, written
+// to `dhat-heap.json` in the working directory on a clean shutdown. `bench/heapprof.py` runs it.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static GLOBAL: dhat::Alloc = dhat::Alloc;
 
 /// Default config file location (`spec/08` §3.4).
 const DEFAULT_CONFIG: &str = "/etc/telltale/telltale.toml";
@@ -555,6 +563,8 @@ enum ConfigCommand {
 
 #[allow(clippy::too_many_lines)] // one arm per subcommand
 fn main() -> ExitCode {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Run { config } => run(config),

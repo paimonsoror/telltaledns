@@ -27,7 +27,12 @@ use super::{retention, segment_path};
 
 /// Dictionary entries per segment part (names and clients each); beyond that a new part
 /// starts. Bounds the builder's memory under floods of unique names.
-pub const MAX_DICT: usize = 1 << 16;
+///
+/// REQ: NFR-002 (T10.2) — 16,384 keeps the open part's dictionary near 1 MiB. At 65,536 its
+/// name table grew to 131,072 buckets (4 MiB) plus the names during a burst of unique names;
+/// a home network rarely sees more than 16,384 new names in an hour, and when it does, the
+/// hour just gets another part.
+pub const MAX_DICT: usize = 1 << 14;
 /// Blocks queued for the writer thread.
 const QUEUE: usize = 8;
 

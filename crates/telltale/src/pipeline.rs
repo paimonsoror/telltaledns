@@ -1775,7 +1775,11 @@ impl Pipeline {
         transport: Transport,
     ) -> Option<(Vec<u8>, Status)> {
         let q = parse_query(&req).ok()?;
-        let mut out = vec![0u8; MAX_RESPONSE];
+        // REQ: NFR-002 (T10.2) — the client's response buffer is allocated once the answer is
+        // in, sized to it. Allocated here, a 64 KiB buffer per query waiting upstream added up
+        // under load (12.5 MiB with 200 in flight) and stayed resident in the allocator after.
+        // The fallbacks (stale, SERVFAIL) are rare and get the largest size.
+        let full = || vec![0u8; MAX_RESPONSE];
 
         let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
             // Overloaded (02 §8.4): stale if we have it, else SERVFAIL + EDE 23.
@@ -1785,7 +1789,7 @@ impl Pipeline {
                 stale_ok,
                 ede::NETWORK_ERROR,
                 "resolver overloaded",
-                &mut out,
+                &mut full(),
                 transport,
             );
         };
@@ -1806,11 +1810,21 @@ impl Pipeline {
             // stale answer.
             Some(resp) if resp.is_empty() || bogus_code(&resp).is_some() => {
                 let code = bogus_code(&resp).unwrap_or(ede::DNSSEC_BOGUS);
-                self.fallback(&q, key, false, code, bogus_text(code), &mut out, transport)
+                self.fallback(
+                    &q,
+                    key,
+                    false,
+                    code,
+                    bogus_text(code),
+                    &mut full(),
+                    transport,
+                )
             }
             Some(resp) => {
                 let client =
                     Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
+                // The answer plus our OPT (with room for an EDE and its text).
+                let mut out = vec![0u8; (resp.len() + 512).min(MAX_RESPONSE)];
                 match Cache::render(&q, &resp, &client, &mut out) {
                     Some(len) => {
                         let len = self.finish(&q, &mut out, len, transport);
@@ -1823,7 +1837,7 @@ impl Pipeline {
                         stale_ok,
                         ede::OTHER,
                         "unusable upstream answer",
-                        &mut out,
+                        &mut full(),
                         transport,
                     ),
                 }
@@ -1834,7 +1848,7 @@ impl Pipeline {
                 stale_ok,
                 ede::NO_REACHABLE_AUTHORITY,
                 "no upstream answered",
-                &mut out,
+                &mut full(),
                 transport,
             ),
         }

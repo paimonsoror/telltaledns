@@ -65,6 +65,12 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "m
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }
+# REQ: NFR-002 (T10.2) — development-only heap profiling (`--features dhat-heap`); not in
+# release builds or the image.
+dhat = { version = "0.3.3", optional = true }
+
+[features]
+dhat-heap = ["dep:dhat"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
