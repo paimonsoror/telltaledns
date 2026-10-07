@@ -16,7 +16,7 @@ A specific combination for people who run Kubernetes *and* a Raspberry Pi and wa
 
 | Focus | What it means |
 |---|---|
-| A Pi-class footprint | A small static binary in a ~9 MiB image; a compact list index (a few bytes per blocked name); about 60 MB of memory on a Pi 4 with 2.7 million blocked names |
+| A Pi-class footprint | A small static binary in an ~11 MiB image; a compact list index (a few bytes per blocked name); about 85 MB of memory on a Pi 4 with 2.7 million blocked names |
 | Every core, no pauses | Rust, a per-core UDP fast path, no garbage collector |
 | Encrypted DNS both ways | DoT and DoH for devices and upstreams; DNSSEC validation |
 | One cluster, one management plane | A Pi and Kubernetes pods share signed, versioned configuration; any node's UI manages the whole cluster |
