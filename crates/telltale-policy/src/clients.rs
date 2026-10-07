@@ -618,6 +618,11 @@ impl ClientTable {
     }
 
     /// The group whose settings apply (highest priority).
+    /// The `default` group's index: where devices no group claims belong.
+    pub fn default_group_id(&self) -> u16 {
+        self.default_group[0]
+    }
+
     pub fn primary_group(&self, id: Identity) -> &Group {
         let g = self
             .group_ids(id)

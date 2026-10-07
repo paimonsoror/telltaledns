@@ -591,6 +591,8 @@ impl Pipeline {
     ) -> Response {
         let st = self.state.load();
         oc.status = Status::Malformed;
+        // A query that can't be parsed has no device: it counts for `default`.
+        oc.group = st.policy.clients.default_group_id();
         let q = match parse_query(req) {
             Ok(q) => q,
             Err(QueryError::Drop) => {
@@ -604,21 +606,10 @@ impl Pipeline {
             }
         };
         oc.qtype = q.qtype;
-        let special = match self.pre_checks(&q, meta, out, start, oc) {
-            Ok(special) => special,
-            Err(early) => return early,
-        };
-        // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
-        if let Some(len) =
-            st.policy
-                .local
-                .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
-        {
-            oc.status = Status::Local;
-            return Response::Ready(self.finish(&q, out, len, meta.transport));
-        }
         // REQ: FLT-006 — client identification (`spec/03` §3 step 2), including client IDs from
-        // the DoT SNI or the DoH path.
+        // the DoT SNI or the DoH path. First, so every answer below (refusals, local records)
+        // is logged with the device and its group (owner report 2026-10-07: local names were
+        // logged under the first configured group).
         let who = Who {
             peer: meta.peer.ip(),
             mac: q.edns.as_ref().and_then(telltale_proto::Edns::client_mac),
@@ -638,6 +629,19 @@ impl Pipeline {
             .first()
             .copied()
             .unwrap_or(0);
+        let special = match self.pre_checks(&q, meta, out, start, oc) {
+            Ok(special) => special,
+            Err(early) => return early,
+        };
+        // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
+        if let Some(len) =
+            st.policy
+                .local
+                .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
+        {
+            oc.status = Status::Local;
+            return Response::Ready(self.finish(&q, out, len, meta.transport));
+        }
         // REQ: DNS-018 (T7.22) — authoritative zones (per group), before any filtering.
         if !st.policy.zones.is_empty()
             && let Some(len) = self.zone_answer(&q, st.policy.clients.group_names(ident), out)
@@ -3805,6 +3809,93 @@ mod reload_tests {
             answer(&p),
             Some((rcode::NOERROR, 1)),
             "new local record answered after reload"
+        );
+    }
+
+    /// REQ: FLT-006, OBS-001 — every answer is logged with the device's group, also answers
+    /// from local records and refusals, which return before filtering (owner report
+    /// 2026-10-07: they were logged under the first configured group).
+    #[test]
+    fn flt_006_local_answers_keep_the_device_group() {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                r#"
+[access]
+allowed_networks = ["192.168.0.0/16"]
+
+[[group]]
+name = "Management"
+networks = ["192.168.1.0/24"]
+
+[[group]]
+name = "LAB"
+networks = ["192.168.5.0/24"]
+
+[[record]]
+name = "argo.example.test"
+type = "A"
+value = "192.168.5.100"
+"#,
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&cfg);
+        let p = Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy::from_config(&cfg, local),
+        );
+        let clients = Arc::clone(&p.current().policy.clients);
+        let id = |name: &str| {
+            u16::try_from(
+                clients
+                    .groups()
+                    .iter()
+                    .position(|g| &*g.name == name)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let outcome = |name: &str, peer: &str, raw: Option<&[u8]>| {
+            let mut buf = [0u8; 512];
+            let n = NameBuf::from_presentation(name).unwrap();
+            let len = build_query(&mut buf, 1, &n, rtype::A, 1, true, None).unwrap();
+            let meta = RequestMeta {
+                peer: format!("{peer}:5353").parse().unwrap(),
+                local: None,
+                transport: Transport::Udp,
+                client_id: None,
+            };
+            let mut out = [0u8; 1024];
+            let mut oc = Outcome {
+                status: Status::Dropped,
+                qtype: 0,
+                client_ref: 0,
+                group: 0,
+                rule: None,
+            };
+            let req = raw.unwrap_or(&buf[..len]);
+            let _ = p.handle_sync(req, &meta, &mut out, Instant::now(), &mut oc);
+            (oc.status, oc.group)
+        };
+        assert_eq!(
+            outcome("argo.example.test", "192.168.5.2", None),
+            (Status::Local, id("LAB")),
+            "a local record, from a LAB device"
+        );
+        assert_eq!(
+            outcome("argo.example.test", "10.9.9.9", None),
+            (Status::Refused, id("default")),
+            "refused (not allowed): the device's group, default here"
+        );
+        assert_eq!(
+            outcome("x", "192.168.5.2", Some(&[0u8; 3])).1,
+            id("default"),
+            "unparseable: default"
         );
     }
 }
