@@ -28,8 +28,8 @@ This page records each target, the latest measurement, how it was taken, and the
 | Cache-hit throughput, Raspberry Pi 4 | ≥ 25k qps | not measured | ⏳ needs a Pi 4 that isn't serving the home network |
 | Added latency, cache hit (p99 at 50 % load) | ≤ 250 µs | p50 101 µs, **p99 4.2 ms** | ❌ unproven: needs a separate load generator |
 | Added latency, blocked answer (p99 at 50 % load) | ≤ 250 µs | p50 125 µs, **p99 2.0 ms** | ❌ unproven: same |
-| Idle RSS, no lists | ≤ 20 MiB | **25.2 MiB** | ❌ fail |
-| RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 64 MiB | **130.4 MiB** (99,880 entries; 168.5 MiB peak during the compile) | ❌ fail |
+| Idle RSS, no lists | ≤ 20 MiB | 18.8 MiB with the shipped binary (v0.1.0, musl); 25.2 MiB with the bench build, which carries more code | ✅ pass (shipped binary) |
+| RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 64 MiB | **84.2 MiB** after T10.2 so far (was 130.4; bench build, `bench/memprobe.py`) | ❌ fail |
 | Compressed container image | ≤ 15 MiB per arch | amd64 11.1, arm64 10.6, arm/v7 11.0 MiB (`:latest` = 0.1.0) | ✅ pass |
 | List recompile, 2M names, Pi 4 | ≤ 8 s, p99 regression ≤ 10 % during the compile | this host: 2.0 s first compile, 3.1 s recompile. Pi 4 (2026-10-03): 6.4 s on 2 threads, **11.6 s on 1 thread (the recompile default)**. p99 under a recompile: within noise on the homelab (T2.7) | ❌ the Pi recompile misses |
 | Cold start to serving, snapshot on disk | ≤ 500 ms | **565 ms** until blocking works (53 ms until it answers). A cluster replica in CI: ≤ 500 ms | ❌ fail (by 65 ms) |
@@ -39,9 +39,10 @@ This page records each target, the latest measurement, how it was taken, and the
 | Primary failover with a witness | writes back ≤ 30 s | elected within 30 s, 100 % DNS answered (CI, `deploy/cluster/failover-e2e.sh`) | ✅ pass |
 | Telemetry loss under sustained load | 0 % for counters and histograms | 0 dropped; 2,475,363 events for 2,475,363 queries at 75 % of max | ✅ pass |
 
-On the live Pi 4 (2026-10-07, 2.7M blocked names from the cluster's lists, a small cache),
-the process uses 82 MiB (97 MiB peak). The project's earlier "about 60 MB" figure was out of
-date and has been corrected everywhere it appeared.
+On the live Pi 4 (2.7M blocked names from the cluster's lists, a small cache), the process
+used 82 MiB (97 MiB peak) on 2026-10-07 before the T10.2 work and 49.6 MiB (68 MiB peak) after
+it (edge 185). The project's earlier "about 60 MB" figure was out of date; the published
+figure is now about 50 MB.
 
 ## The rest of the gate
 
