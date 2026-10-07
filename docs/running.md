@@ -87,11 +87,16 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
 7. **The query log:** how many days to keep, and how much it records (privacy level 0 to 3).
 
 A summary comes before anything is installed. The answers become `/etc/telltale/telltale.toml`, checked with `telltale config check` before the service starts.
-- **No questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/telltale/telltale.toml` already exists (re-runs only upgrade).
+- **No questions** when stdin isn't a terminal (`curl … | sh`, automation), with `--yes`, or when `/etc/telltale/telltale.toml` already exists (re-runs only upgrade). To see the questions again on a machine that already has TelltaleDNS, run `sh install.sh --config-only /tmp/test.toml` (it changes nothing), or uninstall first (below).
 - **Automation:** `--interactive` asks even without a terminal and reads the answers from stdin; `--config-only FILE` writes the config and stops (no root needed), to see what the answers produce.
 - **The first admin "now"** is created on the service's first start from an Argon2id hash in a root-only systemd drop-in, which the installer removes once the service is up. The password itself isn't stored.
 
 Re-running it upgrades the binary in place. `sudo telltale self-update --restart` does the same check-and-swap from the binary itself (`--channel edge` for builds from main, `--check` to only look): it verifies the signature with the release key built into the binary and the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as `telltale.old`. In containers it refuses (pull a new image instead).
+
+**Uninstalling:** `sudo sh install.sh --uninstall` stops and disables the service and removes its unit and the binary (`telltale.old` too).
+- **The system resolver:** if the install turned off systemd-resolved's stub listener, it asks to restore it (the default). `/etc/resolv.conf` is put back as the install found it (the install records the link it replaced, or keeps a copy of the file), and systemd-resolved is restarted, so the machine resolves names again without TelltaleDNS. Without a terminal or with `--yes` it restores without asking; `--keep-resolver` leaves it as the install set it. Installs from before this was recorded get the usual stub link (`/run/systemd/resolve/stub-resolv.conf`).
+- **Config and data** (`/etc/telltale`, `/var/lib/telltale`: users, query log, lists) are kept, so a later install picks them up. It asks whether to delete them; `--purge` deletes them and the `telltale` user without asking.
+- Point your router's DNS setting back at your previous server if it handed out this machine.
 
 **Port 53 already in use:** on Ubuntu and some Debian setups, systemd-resolved's stub listener holds `127.0.0.53:53`. `install.sh` offers to turn it off (`--disable-resolved-stub` does it without asking: the machine then resolves through TelltaleDNS); for Compose, add `DNSStubListener=no` under `[Resolve]` in `/etc/systemd/resolved.conf.d/telltale.conf` and `sudo systemctl restart systemd-resolved`. Alternatively listen on the LAN address only with `[[listen]]`. Pi-hole or another resolver on the same machine must be stopped first.
 

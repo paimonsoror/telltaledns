@@ -22,6 +22,11 @@
 #   --disable-resolved-stub  turn off systemd-resolved's stub listener on 127.0.0.53:53
 #                            (needed when it holds port 53; asked interactively otherwise)
 #   --no-start               install but don't enable or start the service
+#   --uninstall              stop and remove the service, its unit, and the binary; offers to
+#                            restore systemd-resolved if the install changed it, and keeps
+#                            /etc/telltale and /var/lib/telltale unless you say otherwise
+#   --purge                  with --uninstall: also delete the config, the data, and the user
+#   --keep-resolver          with --uninstall: leave systemd-resolved as the install set it
 # Environment (mirrors and tests): TELLTALE_RELEASE_URL (base URL of the release files),
 # TELLTALE_RELEASE_PUBKEY (minisign public key), TELLTALE_PREFIX (default /usr/local).
 set -eu
@@ -37,6 +42,9 @@ DISABLE_STUB=ask
 START=yes
 INTERACTIVE=auto
 CONFIG_ONLY=
+UNINSTALL=no
+PURGE=ask
+RESTORE_RESOLVER=ask
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -49,7 +57,10 @@ while [ $# -gt 0 ]; do
     --yes|-y) INTERACTIVE=no ;;
     --interactive) INTERACTIVE=yes ;;
     --config-only) shift; [ $# -gt 0 ] || die "--config-only needs a file"; CONFIG_ONLY=$1 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --uninstall) UNINSTALL=yes ;;
+    --purge) PURGE=yes ;;
+    --keep-resolver) RESTORE_RESOLVER=no ;;
+    -h|--help) sed -n '2,/^set -eu$/{/^#/p;}' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
   shift
@@ -104,6 +115,89 @@ yes_no() { # prompt default(y/n) → 0 for yes
   ask "$1 (y/n)" "$2"
   case "$REPLY" in y|Y|yes|Yes|YES) return 0 ;; *) return 1 ;; esac
 }
+
+# The drop-in the install writes when it turns systemd-resolved's stub listener off; it also
+# records what /etc/resolv.conf was, for --uninstall.
+RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/telltale.conf
+RESOLV_BACKUP=/etc/resolv.conf.telltale-backup
+
+# REQ: OPS-004 (T9.21) — puts systemd-resolved back as it was before the install: its stub
+# listener on, and /etc/resolv.conf pointing where it did (the recorded link, the backed-up
+# file, or, for installs from before the record, the usual stub link).
+restore_resolver() {
+  was="$(sed -n 's/^# resolv.conf was: //p' "$RESOLVED_DROPIN" 2>/dev/null | head -n 1)"
+  rm -f "$RESOLVED_DROPIN"
+  if [ "$was" = file ] && [ -f "$RESOLV_BACKUP" ]; then
+    mv -f "$RESOLV_BACKUP" /etc/resolv.conf
+  elif [ -n "$was" ] && [ "$was" != file ]; then
+    ln -sf "$was" /etc/resolv.conf
+  elif [ -e /run/systemd/resolve/stub-resolv.conf ]; then
+    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+  fi
+  systemctl restart systemd-resolved 2>/dev/null || true
+  say "Restored systemd-resolved: this machine resolves through it again ($(readlink /etc/resolv.conf 2>/dev/null || echo /etc/resolv.conf))"
+}
+
+# REQ: OPS-004 (T9.21) — `--uninstall`: the reverse of an install. Asks (in a terminal) whether
+# to restore systemd-resolved (if the install changed it) and whether to delete the config and
+# data; without a terminal (or with --yes), restores the resolver and keeps the config and data.
+uninstall() {
+  [ "$(id -u)" -eq 0 ] || die "run as root (sudo sh install.sh --uninstall)"
+  asking=no
+  case "$INTERACTIVE" in
+    yes) asking=yes ;;
+    auto) if [ -t 0 ]; then asking=yes; fi ;;
+  esac
+  if [ -f "$RESOLVED_DROPIN" ] && [ "$RESTORE_RESOLVER" = ask ]; then
+    RESTORE_RESOLVER=yes
+    if [ "$asking" = yes ]; then
+      echo "The install turned off systemd-resolved's stub listener so TelltaleDNS could use port 53,"
+      echo "and pointed this machine's own lookups at TelltaleDNS. Without TelltaleDNS, they'd go nowhere."
+      yes_no "Restore systemd-resolved as this machine's resolver?" y || RESTORE_RESOLVER=no
+    fi
+  fi
+  if [ "$PURGE" = ask ]; then
+    PURGE=no
+    if [ "$asking" = yes ] && { [ -d /etc/telltale ] || [ -d /var/lib/telltale ]; }; then
+      yes_no "Also delete the configuration and data (/etc/telltale, /var/lib/telltale: users, query log, lists)?" n \
+        && PURGE=yes
+    fi
+  fi
+
+  if systemctl list-unit-files telltale.service >/dev/null 2>&1; then
+    say "Stopping and removing the telltale service"
+    systemctl disable --now telltale >/dev/null 2>&1 || true
+  fi
+  rm -f /etc/systemd/system/telltale.service
+  rm -rf /etc/systemd/system/telltale.service.d
+  systemctl daemon-reload
+  systemctl reset-failed telltale >/dev/null 2>&1 || true
+  rm -f "$PREFIX/bin/telltale" "$PREFIX/bin/telltale.old" "$PREFIX/bin/telltale.new"
+  say "Removed $PREFIX/bin/telltale"
+
+  if [ -f "$RESOLVED_DROPIN" ]; then
+    if [ "$RESTORE_RESOLVER" = yes ]; then
+      restore_resolver
+    else
+      say "Left systemd-resolved as the install set it: $RESOLVED_DROPIN still points lookups at 127.0.0.1"
+    fi
+  fi
+
+  if [ "$PURGE" = yes ]; then
+    rm -rf /etc/telltale /var/lib/telltale
+    userdel telltale >/dev/null 2>&1 || true
+    groupdel telltale >/dev/null 2>&1 || true
+    say "Deleted /etc/telltale, /var/lib/telltale, and the telltale user"
+  else
+    say "Kept /etc/telltale and /var/lib/telltale (a later install picks them up; --purge deletes them)"
+  fi
+  say "TelltaleDNS is uninstalled. Point your router's DNS setting back at your previous server if it used this machine."
+}
+
+if [ "$UNINSTALL" = yes ]; then
+  uninstall
+  exit 0
+fi
 
 # Defaults: what a plain `sudo sh install.sh` has always installed.
 UPSTREAMS=1
@@ -451,7 +545,12 @@ if systemctl is-active --quiet systemd-resolved 2>/dev/null \
   if [ "$DISABLE_STUB" = yes ]; then
     say "Turning off systemd-resolved's stub listener (this machine now resolves through TelltaleDNS)"
     install -d /etc/systemd/resolved.conf.d
-    printf '[Resolve]\nDNSStubListener=no\nDNS=127.0.0.1\n' > /etc/systemd/resolved.conf.d/telltale.conf
+    # REQ: OPS-004 (T9.21) — what /etc/resolv.conf was, so --uninstall can put it back.
+    if [ -L /etc/resolv.conf ]; then was="$(readlink /etc/resolv.conf)"
+    elif [ -f /etc/resolv.conf ]; then cp -p /etc/resolv.conf "$RESOLV_BACKUP"; was=file
+    else was=; fi
+    printf '# Written by TelltaleDNS install.sh; install.sh --uninstall removes it.\n# resolv.conf was: %s\n[Resolve]\nDNSStubListener=no\nDNS=127.0.0.1\n' \
+      "$was" > "$RESOLVED_DROPIN"
     ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
     systemctl restart systemd-resolved
   else

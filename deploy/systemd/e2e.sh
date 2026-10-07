@@ -109,4 +109,27 @@ printf 'x' >> "$REL/SHA256SUMS"   # checksums changed after signing
 if sh "$HERE/install.sh" --no-start >/dev/null 2>&1; then fail "bad signature accepted"; fi
 cmp -s "$BIN" /usr/local/bin/telltale || { fail "binary changed by a refused install"; }
 
+# REQ: OPS-004 (T9.21) — uninstall: the service, unit, and binary go; systemd-resolved is put
+# back as the first install found it; the config and data stay; --purge removes them too.
+echo "== uninstall"
+was="$(sed -n 's/^# resolv.conf was: //p' /etc/systemd/resolved.conf.d/telltale.conf)"
+[ -n "$was" ] || fail "the install didn't record what /etc/resolv.conf was"
+sh "$HERE/install.sh" --uninstall --yes
+systemctl is-active --quiet telltale && fail "the service still runs"
+[ -e /etc/systemd/system/telltale.service ] && fail "the unit is still there"
+[ -e /usr/local/bin/telltale ] && fail "the binary is still there"
+[ -e /etc/systemd/resolved.conf.d/telltale.conf ] && fail "the resolved drop-in is still there"
+if [ "$was" != file ]; then
+  [ "$(readlink /etc/resolv.conf)" = "$was" ] || fail "resolv.conf points at $(readlink /etc/resolv.conf), not $was"
+fi
+ok=""
+for _ in $(seq 1 10); do getent hosts example.com >/dev/null && { ok=1; break; }; sleep 1; done
+[ -n "$ok" ] || fail "the machine can't resolve after uninstalling"
+[ -f /etc/telltale/telltale.toml ] || fail "the config was deleted without --purge"
+echo "== uninstall --purge (again, idempotent)"
+sh "$HERE/install.sh" --uninstall --purge --yes
+[ -e /etc/telltale ] && fail "/etc/telltale is still there"
+[ -e /var/lib/telltale ] && fail "/var/lib/telltale is still there"
+id telltale >/dev/null 2>&1 && fail "the telltale user is still there"
+
 echo "PASS"

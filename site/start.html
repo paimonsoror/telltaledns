@@ -117,6 +117,7 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>
         <li>If systemd-resolved holds port 53 (Ubuntu, some Debian setups), it offers to turn the stub listener off (<code>--disable-resolved-stub</code> does it without asking).</li>
         <li>Updates: <code>sudo telltale self-update --restart</code> (add <code>--channel edge</code> if you installed with <code>--edge</code>). The previous binary is kept as <code>telltale.old</code>.</li>
         <li>Logs: <code>journalctl -u telltale -f</code>. Reload after editing the config: <code>sudo systemctl reload telltale</code>.</li>
+        <li>Uninstall: <code>sudo sh install.sh --uninstall</code>. It removes the service and binary, offers to give the machine its own resolver back (systemd-resolved, as it was before), and keeps your config and data unless you ask it to delete them (<code>--purge</code>).</li>
       </ul>
     </div>
 
