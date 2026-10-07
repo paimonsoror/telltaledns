@@ -468,7 +468,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Telemetry:** `Proto` gains `dot` and `doh` (metrics labels, query log, aggregates). Rollup rows carry a transport-column count (format version 2); version-1 rows still decode.
 - **Helm:** `encrypted.dot` / `encrypted.doh` add ports to the same DNS LoadBalancer (so `externalTrafficPolicy: Local` keeps client IPs), with a certificate from an existing Secret or a cert-manager `Certificate`; pods listen on 8853/8443 unless on the host network.
 
-**Consequences:** Clients must trust the certificate (a public CA, or a private one distributed to devices). DoQ and DoH3 remain skipped until their listeners (M7).
+**Consequences:** Clients must trust the certificate (a public CA, or a private one distributed to devices). DoQ and DoH3 remain skipped until their listeners (M7). *(Update: both shipped in M7, T7.7 and T7.8.)*
 
 ## ADR-040 — Config made through the API before clustering: managed entries in state.db (Proposed)
 **Context:** API-002 (everything configurable through the API) and API-010 (name a device from the UI) need API writes now. Today the configuration is files only (on Kubernetes, the chart's values), and `spec/12` describes the end state: a change log held by the cluster primary, with GitOps mode refusing writes. Rewriting config files from the server would fight GitOps and lose comments.

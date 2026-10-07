@@ -34,7 +34,7 @@ strategy = "fastest"      # failover | round_robin | weighted | fastest | parall
 telltale run -c dev.toml
 dig @127.0.0.1 -p 5300 example.com
 ```
-Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT and DoH listeners are described in "Encrypted DNS for your devices"; DoQ and DoH3 listeners are accepted in config but skipped with a warning.
+Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, DoQ, and DoH3 listeners are described in "[Encrypted DNS for your devices](#encrypted-dns-for-your-devices-dot-doh-and-doq)".
 
 ## Container image
 `ghcr.io/paimonsoror/telltale:edge` is built from every commit on `main` for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 3 MiB compressed, with no shell. It runs as user `65532:65532`. Versioned tags (`:1`, `:1.2.3`) start with the first release.
@@ -333,7 +333,7 @@ telltale presets list                                   # Cloudflare, Google, Qu
 telltale presets show quad9 --proto tls,https --group default >> telltale.toml
 telltale presets show nextdns --param profile=abc123    # templated presets need your account ID
 ```
-`show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. DoQ (`quic://`) endpoints are listed but skipped until DoQ support lands.
+`show` prints explicit `[[upstream]]` entries plus a `fastest` group. Your config always lists exactly what's used and never depends on the catalog, which only helps you write it. The catalog covers every Pi-hole preset plus the common encrypted resolvers; a nightly job checks that every entry still answers. That includes the DoQ (`quic://`) endpoints.
 
 ## Encrypted DNS for your devices (DoT, DoH, and DoQ)
 Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS", RFC 7858), DNS over HTTPS (browsers, iOS and macOS profiles, RFC 8484), or DNS over QUIC (RFC 9250; AdGuard and other apps, some routers), so nobody on the network path can read or change their lookups:

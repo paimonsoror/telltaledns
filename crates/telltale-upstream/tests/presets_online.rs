@@ -1,8 +1,8 @@
 //! T1.6 AC: every preset endpoint resolves example.com (online; nightly; flaky-tolerant).
 //!
 //! Run: `cargo test -p telltale-upstream --test presets_online -- --ignored --nocapture`
-//! Templated presets (NextDNS, Control D custom) need an account and are skipped; DoQ endpoints
-//! are skipped until DoQ lands; IPv6 endpoints are skipped when the host has no IPv6 route.
+//! Templated presets (NextDNS, Control D custom) need an account and are skipped; IPv6 endpoints
+//! are skipped when the host has no IPv6 route. DoQ endpoints are checked like the rest (T7.7).
 
 #![allow(clippy::unwrap_used, clippy::print_stdout)]
 
