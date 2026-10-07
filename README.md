@@ -1,5 +1,8 @@
 # TelltaleDNS
 
+[![CI](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/paimonsoror/telltaledns/actions/workflows/ci.yml?query=branch%3Amain)
+[![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+
 **See every question. Answer on your terms.**
 
 Every connection on your network starts with a DNS lookup. TelltaleDNS answers it in microseconds, filters it by your rules per device, and shows you exactly who asked, what they asked, and why it answered the way it did. It runs on a Raspberry Pi, in Kubernetes, or on both as one cluster that keeps answering even when parts of it fail.
@@ -38,3 +41,6 @@ Give everyone who runs a home or small network an honest, real-time view of what
 11. [Decisions (ADRs)](spec/11-decisions.md)
 12. [Clustering and HA](spec/12-clustering-and-ha.md)
 13. [Agent API and MCP](spec/13-agent-api-and-mcp.md)
+
+## License
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
