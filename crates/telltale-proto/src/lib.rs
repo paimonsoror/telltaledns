@@ -44,7 +44,8 @@ pub use name::{
 };
 pub use query::{Query, QueryError, parse_query};
 pub use record::{
-    Record, RecordIter, ResponseSummary, Section, patch_ttls, records, set_ttls, summarize,
+    Record, RecordIter, ResponseSummary, Section, patch_ttls, patch_ttls_packed, records, set_ttls,
+    set_ttls_packed, summarize,
 };
 pub use writer::{
     BufferTooSmall, ResponseBuilder, Writer, append_opt, badvers_from_raw, error_from_raw,

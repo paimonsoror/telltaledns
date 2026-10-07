@@ -190,6 +190,29 @@ pub fn patch_ttls(msg: &mut [u8], offsets: &[u16], elapsed: u32, floor: u32) {
     }
 }
 
+/// [`patch_ttls`] with the offsets packed as little-endian `u16` pairs (how the cache stores
+/// them, next to the answer in one allocation; REQ: NFR-002, T10.2).
+pub fn patch_ttls_packed(msg: &mut [u8], offsets: &[u8], elapsed: u32, floor: u32) {
+    for o in offsets.as_chunks::<2>().0 {
+        let off = usize::from(u16::from_le_bytes(*o));
+        if let Some(b) = msg.get_mut(off..off + 4) {
+            let ttl = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+            let new = ttl.saturating_sub(elapsed).max(floor);
+            b.copy_from_slice(&new.to_be_bytes());
+        }
+    }
+}
+
+/// [`set_ttls`] with packed little-endian offsets.
+pub fn set_ttls_packed(msg: &mut [u8], offsets: &[u8], ttl: u32) {
+    for o in offsets.as_chunks::<2>().0 {
+        let off = usize::from(u16::from_le_bytes(*o));
+        if let Some(b) = msg.get_mut(off..off + 4) {
+            b.copy_from_slice(&ttl.to_be_bytes());
+        }
+    }
+}
+
 /// Sets every TTL at `offsets` to `ttl` (used for stale answers, RFC 8767 §4).
 pub fn set_ttls(msg: &mut [u8], offsets: &[u16], ttl: u32) {
     for &off in offsets {

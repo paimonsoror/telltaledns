@@ -14,7 +14,7 @@
 //!   the serve-stale window).
 
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::entry::Entry;
 use crate::{Cache, CacheKey};
@@ -80,8 +80,8 @@ impl Cache {
             let (qtype, qclass, flags, view) = (r.u16()?, r.u16()?, r.u8()?, r.u16()?);
             let (age, ttl, hits, question_end) = (r.u32()?, r.u32()?, r.u32()?, r.u16()?);
             let age = age.saturating_add(down);
-            let name: Box<[u8]> = r.bytes16()?.into();
-            let wire: Box<[u8]> = r.bytes32()?.into();
+            let name = r.bytes16()?;
+            let wire = r.bytes32()?;
             let count = usize::from(r.u16()?);
             let mut offsets = Vec::with_capacity(count);
             for _ in 0..count {
@@ -93,20 +93,12 @@ impl Cache {
             if offsets.iter().any(|&o| usize::from(o) + 4 > wire.len()) {
                 return Err("corrupt dump (TTL offset outside the answer)".into());
             }
-            let Some(h) = name_hash(&name) else { continue };
-            let Some(inserted) = now.checked_sub(Duration::from_secs(u64::from(age))) else {
-                continue;
-            };
+            let Some(h) = name_hash(name) else { continue };
             let key = CacheKey::from_parts(h, qtype, qclass, flags, view);
-            let e = Entry {
-                name,
-                wire,
-                ttl_offsets: offsets.into(),
-                question_end,
-                inserted,
-                ttl,
-                hits,
-                prefetch_signaled: false,
+            // Older than the cache's time reference (or too large to store): skip it.
+            let Some(e) = Entry::restore(name, wire, &offsets, question_end, age, now, ttl, hits)
+            else {
+                continue;
             };
             let w = e.weight();
             self.shard(&key).lock().fifo.insert(key, e, w);
@@ -133,23 +125,23 @@ fn write_entry(out: &mut impl Write, k: &CacheKey, e: &Entry, now: Instant) -> i
     out.write_all(&e.hits.to_le_bytes())?;
     out.write_all(&e.question_end.to_le_bytes())?;
     out.write_all(
-        &u16::try_from(e.name.len())
+        &u16::try_from(e.name().len())
             .map_err(|_| too_big())?
             .to_le_bytes(),
     )?;
-    out.write_all(&e.name)?;
+    out.write_all(e.name())?;
     out.write_all(
-        &u32::try_from(e.wire.len())
+        &u32::try_from(e.wire().len())
             .map_err(|_| too_big())?
             .to_le_bytes(),
     )?;
-    out.write_all(&e.wire)?;
+    out.write_all(e.wire())?;
     out.write_all(
-        &u16::try_from(e.ttl_offsets.len())
+        &u16::try_from(e.ttl_offsets().count())
             .map_err(|_| too_big())?
             .to_le_bytes(),
     )?;
-    for o in &e.ttl_offsets {
+    for o in e.ttl_offsets() {
         out.write_all(&o.to_le_bytes())?;
     }
     Ok(())

@@ -3,40 +3,141 @@
 //! REQ: DNS-006 — wire-format storage with TTL offsets; TTL clamps; negative caching
 //! (RFC 2308); SERVFAIL caching (RFC 9520). `spec/03` §4.
 
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use telltale_proto::{
-    EdnsOut, FlagBit, HEADER_LEN, NameBuf, Query, append_opt, header, rcode, read_name, records,
-    set_ttls, summarize,
+    EdnsOut, FlagBit, HEADER_LEN, NameBuf, Query, append_opt, header, patch_ttls_packed, rcode,
+    read_name, records, set_ttls, set_ttls_packed, summarize,
 };
 
 use crate::CachePolicy;
 
 /// A cached response, stored with ID 0, without OPT, TTLs already clamped.
+///
+/// REQ: NFR-002 (T10.2) — one allocation per entry: `data` holds the TTL offsets (little-endian
+/// `u16`s), then the name, then the answer. Three boxes and an `Instant` cost about 100 bytes
+/// more per entry (two allocations' rounding, three fat pointers, 16 bytes of `Instant`).
 #[derive(Debug)]
 pub(crate) struct Entry {
-    /// Normalized qname (wire format); compared on every hit so a hash collision is a miss.
-    pub(crate) name: Box<[u8]>,
-    pub(crate) wire: Box<[u8]>,
-    pub(crate) ttl_offsets: Box<[u16]>,
-    /// End of the question section (start of answers).
+    data: Box<[u8]>,
+    /// Number of TTL offsets (2 bytes each, at the start of `data`).
+    offsets: u16,
+    /// Length of the normalized qname (wire format) after the offsets; compared on every hit so
+    /// a hash collision is a miss.
+    name_len: u16,
+    /// End of the question section (start of answers), within the answer.
     pub(crate) question_end: u16,
-    pub(crate) inserted: Instant,
+    /// When the entry was stored: tenths of a second since [`epoch`].
+    inserted: u32,
     /// Seconds the entry is fresh for.
     pub(crate) ttl: u32,
     pub(crate) hits: u32,
     pub(crate) prefetch_signaled: bool,
 }
 
+/// The reference point for `Entry::inserted`. Set a month back where the clock allows, so an
+/// entry restored from disk with an age (warm start) still fits after it.
+fn epoch() -> Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    *EPOCH.get_or_init(|| {
+        let now = Instant::now();
+        [30 * 86_400, 86_400, 3_600]
+            .iter()
+            .find_map(|&s| now.checked_sub(Duration::from_secs(s)))
+            .unwrap_or(now)
+    })
+}
+
+/// Tenths of a second since [`epoch`] (saturating; 13 years fit in a `u32`).
+fn tenths(t: Instant) -> u32 {
+    u32::try_from(t.saturating_duration_since(epoch()).as_millis() / 100).unwrap_or(u32::MAX)
+}
+
 impl Entry {
-    /// Approximate memory cost used for the byte budget.
+    /// Packs the parts into one allocation. `None` if a part is too large to describe.
+    pub(crate) fn new(
+        name: &[u8],
+        wire: &[u8],
+        offsets: &[u16],
+        question_end: u16,
+        inserted: u32,
+        ttl: u32,
+        hits: u32,
+    ) -> Option<Self> {
+        let mut data = Vec::with_capacity(offsets.len() * 2 + name.len() + wire.len());
+        for o in offsets {
+            data.extend_from_slice(&o.to_le_bytes());
+        }
+        data.extend_from_slice(name);
+        data.extend_from_slice(wire);
+        Some(Self {
+            data: data.into_boxed_slice(),
+            offsets: u16::try_from(offsets.len()).ok()?,
+            name_len: u16::try_from(name.len()).ok()?,
+            question_end,
+            inserted,
+            ttl,
+            hits,
+            prefetch_signaled: false,
+        })
+    }
+
+    /// An entry restored with its age (warm start): `None` if it would predate the epoch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore(
+        name: &[u8],
+        wire: &[u8],
+        offsets: &[u16],
+        question_end: u16,
+        age_secs: u32,
+        now: Instant,
+        ttl: u32,
+        hits: u32,
+    ) -> Option<Self> {
+        let inserted = tenths(now).checked_sub(age_secs.checked_mul(10)?)?;
+        Self::new(name, wire, offsets, question_end, inserted, ttl, hits)
+    }
+
+    fn name_start(&self) -> usize {
+        usize::from(self.offsets) * 2
+    }
+
+    fn wire_start(&self) -> usize {
+        self.name_start() + usize::from(self.name_len)
+    }
+
+    /// The TTL offsets, packed (little-endian `u16`s).
+    pub(crate) fn packed_offsets(&self) -> &[u8] {
+        &self.data[..self.name_start()]
+    }
+
+    pub(crate) fn ttl_offsets(&self) -> impl Iterator<Item = u16> + '_ {
+        self.packed_offsets()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|o| u16::from_le_bytes(*o))
+    }
+
+    pub(crate) fn name(&self) -> &[u8] {
+        &self.data[self.name_start()..self.wire_start()]
+    }
+
+    pub(crate) fn wire(&self) -> &[u8] {
+        &self.data[self.wire_start()..]
+    }
+
+    /// Memory cost used for the byte budget: the data, the entry itself, its slot in the map
+    /// (a 32-byte key beside it, at the map's typical load), its queue slot, and the
+    /// allocator's rounding. Measured with `bench/memprobe.py` (T10.2).
     pub(crate) fn weight(&self) -> usize {
-        const OVERHEAD: usize = 96; // struct, map slot, queue slot
-        self.name.len() + self.wire.len() + self.ttl_offsets.len() * 2 + OVERHEAD
+        const OVERHEAD: usize = 160;
+        self.data.len() + OVERHEAD
     }
 
     pub(crate) fn elapsed_secs(&self, now: Instant) -> u32 {
-        u32::try_from(now.saturating_duration_since(self.inserted).as_secs()).unwrap_or(u32::MAX)
+        tenths(now).saturating_sub(self.inserted) / 10
     }
 }
 
@@ -153,24 +254,26 @@ fn finish(
         offsets.push(u16::try_from(r.ttl_off).map_err(|_| Uncacheable::Malformed)?);
         ttls.push(r.ttl);
     }
-    let mut wire: Box<[u8]> = resp[..end].into();
-    header::set_id(&mut wire, 0);
+    let mut entry = Entry::new(
+        q.qname.as_wire(),
+        &resp[..end],
+        &offsets,
+        u16::try_from(question_end).map_err(|_| Uncacheable::Malformed)?,
+        tenths(now),
+        ttl,
+        0,
+    )
+    .ok_or(Uncacheable::Malformed)?;
+    let start = entry.wire_start();
+    let wire = &mut entry.data[start..];
+    header::set_id(wire, 0);
     wire[10..12].copy_from_slice(&arcount.to_be_bytes());
     // Clamp each record's TTL into [min_ttl, cap] so clients never see more than we allow.
     for (&off, &t) in offsets.iter().zip(&ttls) {
         let clamped = t.max(min_ttl).min(cap);
-        set_ttls(&mut wire, &[off], clamped);
+        set_ttls(wire, &[off], clamped);
     }
-    Ok(Entry {
-        name: q.qname.as_wire().into(),
-        wire,
-        ttl_offsets: offsets.into_boxed_slice(),
-        question_end: u16::try_from(question_end).map_err(|_| Uncacheable::Malformed)?,
-        inserted: now,
-        ttl,
-        hits: 0,
-        prefetch_signaled: false,
-    })
+    Ok(entry)
 }
 
 /// Client-specific parts of a response built from the cache.
@@ -207,12 +310,13 @@ pub(crate) fn write(
     ttl_override: Option<u32>,
     out: &mut [u8],
 ) -> Option<usize> {
-    let len = e.wire.len();
+    let wire = e.wire();
+    let len = wire.len();
     let qend = usize::from(e.question_end);
     if client.question.len() != qend - HEADER_LEN {
         return None;
     }
-    out.get_mut(..len)?.copy_from_slice(&e.wire);
+    out.get_mut(..len)?.copy_from_slice(wire);
     header::set_id(out, client.id);
     let mut flags = header::flags(out)
         .with(FlagBit::Rd, client.rd)
@@ -223,8 +327,8 @@ pub(crate) fn write(
     header::set_flags(out, flags);
     out[HEADER_LEN..qend].copy_from_slice(client.question);
     match ttl_override {
-        Some(t) => set_ttls(&mut out[..len], &e.ttl_offsets, t),
-        None => telltale_proto::patch_ttls(&mut out[..len], &e.ttl_offsets, e.elapsed_secs(now), 0),
+        Some(t) => set_ttls_packed(&mut out[..len], e.packed_offsets(), t),
+        None => patch_ttls_packed(&mut out[..len], e.packed_offsets(), e.elapsed_secs(now), 0),
     }
     match &client.edns {
         Some(edns) => append_opt(out, len, edns).ok(),

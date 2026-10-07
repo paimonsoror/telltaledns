@@ -110,7 +110,7 @@ use crate::s3fifo::S3Fifo;
 
 /// What [`Cache::inspect`] and [`Cache::top`] report for one entry.
 fn entry_info(k: &CacheKey, e: &Entry, now: Instant) -> EntryInfo {
-    let flags = e.wire.get(3).copied().unwrap_or(0);
+    let flags = e.wire().get(3).copied().unwrap_or(0);
     EntryInfo {
         qtype: k.qtype,
         view: k.view,
@@ -119,7 +119,7 @@ fn entry_info(k: &CacheKey, e: &Entry, now: Instant) -> EntryInfo {
         rcode: flags & 0x0f,
         authentic: flags & 0x20 != 0,
         answers: e
-            .wire
+            .wire()
             .get(6..8)
             .map_or(0, |b| u16::from_be_bytes([b[0], b[1]])),
         ttl: e.ttl,
@@ -366,7 +366,7 @@ impl Cache {
         let shard = &mut *guard;
         let p = &self.policy;
         let outcome = match shard.fifo.get_mut(key) {
-            Some(e) if *e.name == *qname.as_wire() => {
+            Some(e) if e.name() == qname.as_wire() => {
                 let age = e.elapsed_secs(now);
                 if age < e.ttl {
                     e.hits = e.hits.saturating_add(1);
@@ -419,7 +419,7 @@ impl Cache {
         let mut guard = self.shard(key).lock();
         let shard = &mut *guard;
         let e = shard.fifo.peek(key)?;
-        if *e.name != *qname.as_wire() {
+        if e.name() != qname.as_wire() {
             return None;
         }
         let age = e.elapsed_secs(now);
@@ -477,7 +477,7 @@ impl Cache {
         let mut out = Vec::new();
         for s in &self.shards {
             s.0.lock().fifo.for_each(|k, e| {
-                if *e.name == *name.as_wire() {
+                if e.name() == name.as_wire() {
                     out.push(entry_info(k, e, now));
                 }
             });
@@ -497,9 +497,9 @@ impl Cache {
         let mut seq = 0u64;
         for s in &self.shards {
             s.0.lock().fifo.for_each(|k, e| {
-                let flags = e.wire.get(3).copied().unwrap_or(0);
+                let flags = e.wire().get(3).copied().unwrap_or(0);
                 let answers = e
-                    .wire
+                    .wire()
                     .get(6..8)
                     .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
                 let age = e.elapsed_secs(now);
@@ -529,7 +529,7 @@ impl Cache {
                     score,
                     seq,
                     entry: TopEntry {
-                        name: e.name.clone(),
+                        name: e.name().into(),
                         info: entry_info(k, e, now),
                     },
                 }));
@@ -568,10 +568,10 @@ impl Cache {
             s.0.lock().fifo.retain(|_, e| {
                 let hit = if subtree {
                     let mut n = NameBuf::default();
-                    telltale_proto::read_name_uncompressed(&e.name, 0, &mut n)
+                    telltale_proto::read_name_uncompressed(e.name(), 0, &mut n)
                         .is_ok_and(|_| n.is_subdomain_of(name))
                 } else {
-                    *e.name == *name.as_wire()
+                    e.name() == name.as_wire()
                 };
                 removed += usize::from(hit);
                 !hit
