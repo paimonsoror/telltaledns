@@ -26,6 +26,9 @@ pub(crate) struct Import {
     pub(crate) records: Vec<Record>,
     /// Skipped lines, each with the reason (for the report).
     pub(crate) skipped: Vec<String>,
+    /// REQ: DNS-018 (T9.18) — the apex's SOA and NS records (type, data tokens): a served
+    /// zone answers with them; `telltale import zone` doesn't need them.
+    pub(crate) apex: Vec<(String, Vec<String>)>,
 }
 
 const SUPPORTED: &[&str] = &["A", "AAAA", "CNAME", "PTR", "TXT", "MX", "SRV"];
@@ -176,6 +179,7 @@ pub(crate) fn parse_zone(text: &str, origin: Option<&str>) -> Import {
         let rdata = &t[i + 1..];
         match rtype.as_str() {
             "SOA" | "NS" if owner == im.origin => {
+                im.apex.push((rtype.clone(), rdata.to_vec()));
                 im.skipped.push(format!(
                     "{owner} {rtype}: not needed (TelltaleDNS answers these names itself)"
                 ));

@@ -1265,6 +1265,24 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-094 — Local zones answer SOA and NS at their apex; no zone transfers (Proposed)
+**Context:** T7.22's zones answered their records, but not `SOA` or `NS` at the apex. Their negative answers carried a placeholder SOA owned by the question name. Tools (`dig SOA`, monitoring checks, some resolvers' zone-cut detection) expect real ones.
+
+**Decision:**
+- **From the zone file:** if it has SOA and NS at its apex, they're served as written. Relative names are completed with the origin.
+- **Otherwise, made up** as Unbound does for local zones:
+  - NS `localhost.`;
+  - SOA `localhost. hostmaster.<zone>`;
+  - serial = load time;
+  - refresh 3600, retry 600, expire 86400;
+  - MINIMUM = `negative_ttl`.
+- **Negative answers** (NXDOMAIN and NODATA) carry that SOA owned by the apex, with TTL `negative_ttl` (RFC 2308).
+- **Not done:** zone transfers (AXFR/IXFR). They need TSIG and secondary servers, which home and lab installs rarely have. The zone file, or Git, is the source to copy instead.
+
+**Consequences:**
+- `dig SOA`/`NS` and negative caching downstream behave as with any authoritative server.
+- The made-up `localhost.` name server can't be queried from outside, which is the point: these zones are served by the resolver itself.
+
 ## ADR-093 — DNS stamps: enforce their certificate hashes (Proposed)
 **Context:** T7.24 parsed DoH/DoT/DoQ stamps but skipped their hashes. A stamp's hashes are SHA-256 digests of the `tbsCertificate` of certificates in the server's chain: the publisher's way of saying "only these CAs (or this certificate) may vouch for it". dnscrypt-proxy enforces them.
 

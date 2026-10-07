@@ -139,6 +139,26 @@ impl<'b> ResponseBuilder<'b> {
         Ok(self)
     }
 
+    /// REQ: DNS-018 (T9.18) — an authority record with pre-encoded `rdata`, owned by `owner`
+    /// (a zone's SOA at its apex in a negative answer).
+    pub fn authority_rdata(
+        &mut self,
+        owner: &NameBuf,
+        rtype: u16,
+        ttl: u32,
+        rdata: &[u8],
+    ) -> Result<&mut Self, BufferTooSmall> {
+        let rdlen = u16::try_from(rdata.len()).map_err(|_| BufferTooSmall)?;
+        self.w.bytes(owner.as_wire())?;
+        self.w.u16(rtype)?;
+        self.w.u16(class::IN)?;
+        self.w.u32(ttl)?;
+        self.w.u16(rdlen)?;
+        self.w.bytes(rdata)?;
+        self.counts[1] += 1;
+        Ok(self)
+    }
+
     /// Adds an `A` answer owned by the question name.
     pub fn answer_a(&mut self, ttl: u32, ip: Ipv4Addr) -> Result<&mut Self, BufferTooSmall> {
         self.rr_header(rtype::A, ttl, 4)?;

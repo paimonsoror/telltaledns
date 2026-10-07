@@ -84,6 +84,12 @@ pub(crate) struct Zone {
     /// Groups that see it (empty: everyone).
     pub(crate) groups: Vec<Box<str>>,
     pub(crate) negative_ttl: u32,
+    /// REQ: DNS-018 (T9.18) — the apex's SOA (RDATA) and name servers: the zone file's, else
+    /// made up (`localhost.`, as resolvers serving local zones do).
+    pub(crate) soa: Vec<u8>,
+    pub(crate) ns: Vec<NameBuf>,
+    /// TTL of the SOA and NS answers.
+    pub(crate) ttl: u32,
 }
 
 impl Policy {
@@ -701,6 +707,19 @@ impl Pipeline {
                 && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
         })?;
         let edns = response_edns(q, self.settings.edns_payload, None);
+        // REQ: DNS-018 (T9.18) — the apex's SOA and NS.
+        if q.qname == z.apex && matches!(q.qtype, rtype::SOA | rtype::NS) {
+            let mut b = ResponseBuilder::new(q, out, rcode::NOERROR).ok()?;
+            b.authoritative(true);
+            if q.qtype == rtype::SOA {
+                b.answer_rdata(None, rtype::SOA, z.ttl, &z.soa).ok()?;
+            } else {
+                for ns in &z.ns {
+                    b.answer_rdata(None, rtype::NS, z.ttl, ns.as_wire()).ok()?;
+                }
+            }
+            return b.finish(edns).ok();
+        }
         if let Some(len) = z.data.answer(q, out, edns) {
             return Some(len);
         }
@@ -711,7 +730,10 @@ impl Pipeline {
             rcode::NXDOMAIN
         };
         let mut b = ResponseBuilder::new(q, out, rc).ok()?;
-        b.authoritative(true).authority_soa(z.negative_ttl).ok()?;
+        // The zone's own SOA, owned by the apex (RFC 2308), with the negative TTL.
+        b.authoritative(true)
+            .authority_rdata(&z.apex, rtype::SOA, z.negative_ttl, &z.soa)
+            .ok()?;
         b.finish(response_edns(q, self.settings.edns_payload, None))
             .ok()
     }
@@ -2919,6 +2941,32 @@ groups = ["kids"]
                 &[192, 168, 9, 9]
             ),
             "the zone file, for everyone"
+        );
+        // REQ: DNS-018 (T9.18) — SOA and NS at the apex: the file's, else made up; negative
+        // answers carry the zone's SOA, owned by the apex.
+        let soa = ask_from(&p, "10.0.0.5", "lab.example", rtype::SOA);
+        let s = summarize(&soa).unwrap();
+        assert_eq!(
+            (s.rcode, s.answers, s.header.flags.aa()),
+            (rcode::NOERROR, 1, true)
+        );
+        let ns1 = NameBuf::from_presentation("ns1.lab.example").unwrap();
+        assert!(contains(&soa, ns1.as_wire()), "the file's SOA (mname ns1)");
+        let ns = ask_from(&p, "10.0.0.5", "lab.example", rtype::NS);
+        assert_eq!(summarize(&ns).unwrap().answers, 1);
+        assert!(contains(&ns, ns1.as_wire()), "the file's NS");
+        let made = ask_from(&p, office, "corp.example", rtype::SOA);
+        let localhost = NameBuf::from_presentation("localhost").unwrap();
+        assert!(
+            summarize(&made).unwrap().answers == 1 && contains(&made, localhost.as_wire()),
+            "made up: localhost."
+        );
+        let nx = ask_from(&p, office, "nope.corp.example", rtype::A);
+        let apex = NameBuf::from_presentation("corp.example").unwrap();
+        let hostmaster = NameBuf::from_presentation("hostmaster.corp.example").unwrap();
+        assert!(
+            contains(&nx, apex.as_wire()) && contains(&nx, hostmaster.as_wire()),
+            "the zone's SOA in the authority"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

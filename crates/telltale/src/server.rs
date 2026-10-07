@@ -128,10 +128,12 @@ pub(crate) fn load_zones(cfg: &Config) -> Result<Vec<crate::pipeline::Zone>, Vec
         };
         let mut data = LocalData::default();
         let ttl = cfg.local.default_ttl;
+        let mut apex_records = Vec::new();
         if let Some(f) = &z.file {
             match std::fs::read_to_string(f.as_str()) {
                 Ok(text) => {
-                    let im = crate::import::parse_zone(&text, Some(z.name.as_str()));
+                    let mut im = crate::import::parse_zone(&text, Some(z.name.as_str()));
+                    apex_records = std::mem::take(&mut im.apex);
                     for k in &im.skipped {
                         if !k.contains("SOA") && !k.contains(" NS") {
                             warn!(zone = %z.name.as_str(), "zone file: skipped {k}");
@@ -153,11 +155,15 @@ pub(crate) fn load_zones(cfg: &Config) -> Result<Vec<crate::pipeline::Zone>, Vec
             }
         }
         info!(zone = %z.name.as_str(), records = data.len(), "zone loaded");
+        let (soa, ns) = apex_soa_ns(&apex, &apex_records, z.negative_ttl);
         zones.push(crate::pipeline::Zone {
             apex,
             data,
             groups: z.groups.iter().map(|g| g.as_str().into()).collect(),
             negative_ttl: z.negative_ttl,
+            soa,
+            ns,
+            ttl,
         });
     }
     if !errors.is_empty() {
@@ -166,6 +172,66 @@ pub(crate) fn load_zones(cfg: &Config) -> Result<Vec<crate::pipeline::Zone>, Vec
     // Most specific first; group views before the zone for everyone.
     zones.sort_by_key(|z| (std::cmp::Reverse(z.apex.wire_len()), z.groups.is_empty()));
     Ok(zones)
+}
+
+/// A zone-file name: `@` is the apex, a name without a final dot is relative to it.
+fn zone_name(token: &str, apex: &telltale_proto::NameBuf) -> Option<telltale_proto::NameBuf> {
+    let text = if token == "@" {
+        apex.display().to_string()
+    } else if token.ends_with('.') {
+        token.to_owned()
+    } else {
+        format!("{token}.{}", apex.display())
+    };
+    telltale_proto::NameBuf::from_presentation(text.trim_end_matches('.')).ok()
+}
+
+/// REQ: DNS-018 (T9.18) — a zone's SOA RDATA and name servers: the zone file's apex records,
+/// or made up as resolvers serving local zones do (`localhost.`, `hostmaster.<apex>`, the
+/// negative TTL as MINIMUM).
+fn apex_soa_ns(
+    apex: &telltale_proto::NameBuf,
+    records: &[(String, Vec<String>)],
+    negative_ttl: u32,
+) -> (Vec<u8>, Vec<telltale_proto::NameBuf>) {
+    let localhost = telltale_proto::NameBuf::from_presentation("localhost").unwrap_or_default();
+    let soa = records
+        .iter()
+        .find(|(t, _)| t == "SOA")
+        .and_then(|(_, d)| {
+            let [mname, rname, nums @ ..] = d.as_slice() else {
+                return None;
+            };
+            let nums: Vec<u32> = nums.iter().map(|n| n.parse().ok()).collect::<Option<_>>()?;
+            if nums.len() != 5 {
+                return None;
+            }
+            let mut out = zone_name(mname, apex)?.as_wire().to_vec();
+            out.extend_from_slice(zone_name(rname, apex)?.as_wire());
+            for n in nums {
+                out.extend_from_slice(&n.to_be_bytes());
+            }
+            Some(out)
+        })
+        .unwrap_or_else(|| {
+            let hostmaster = zone_name("hostmaster", apex).unwrap_or_default();
+            let serial = u32::try_from(crate::pipeline::unix_now()).unwrap_or(1);
+            let mut out = localhost.as_wire().to_vec();
+            out.extend_from_slice(hostmaster.as_wire());
+            for n in [serial, 3600, 600, 86_400, negative_ttl] {
+                out.extend_from_slice(&n.to_be_bytes());
+            }
+            out
+        });
+    let mut ns: Vec<telltale_proto::NameBuf> = records
+        .iter()
+        .filter(|(t, _)| t == "NS")
+        .filter_map(|(_, d)| zone_name(d.first()?, apex))
+        .collect();
+    if ns.is_empty() {
+        ns.push(localhost);
+    }
+    (soa, ns)
 }
 
 /// REQ: FLT-006 — keeps the IP → MAC map fresh while any client is identified by MAC.

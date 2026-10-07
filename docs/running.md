@@ -575,10 +575,11 @@ name = "intranet.corp.example.com"
 type = "A"
 value = "10.10.0.5"
 ```
-- Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry an SOA with `negative_ttl`.
+- Answers are authoritative (AA). The zone's apex and names that only have names below them exist (no data, not NXDOMAIN). Negative answers carry the zone's SOA, owned by its apex, with `negative_ttl`.
+- **SOA and NS at the apex** (`dig SOA home.example`, `dig NS home.example`) answer with the zone file's own records. Without a file, or a file without them, they're made up as resolvers serving local zones do: `localhost.` as the name server, `hostmaster.<zone>` as the contact, and `negative_ttl` as the SOA minimum.
 - **Split horizon:** with `groups`, only those groups' devices see the zone; everyone else resolves the domain normally (the public answer). Several zones for the same domain can serve different groups.
 - The most specific zone wins (`a.corp.example.com` over `corp.example.com`). Zones are answered before filtering, like local records.
-- Zone files use the record types local records support (A, AAAA, CNAME, PTR, TXT, MX, SRV); SOA and NS lines are read past. Changes need a reload (`SIGHUP`).
+- Zone files use the record types local records support (A, AAAA, CNAME, PTR, TXT, MX, SRV), plus the apex's SOA and NS. Changes need a reload (`SIGHUP`).
 
 ## Filter lists
 > **Status:** lists are downloaded, compiled, and **enforced** per client group, including names reached through a CNAME.
