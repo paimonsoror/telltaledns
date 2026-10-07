@@ -1961,9 +1961,9 @@ impl Pipeline {
         if v.verdict == Verdict::Bogus && !d.permissive {
             return Some(bogus_marker(v.ede));
         }
-        if v.bytes.is_empty() && matches!(v.verdict, Verdict::Bogus | Verdict::Indeterminate) {
-            // Nothing validated to serve (permissive, or validation couldn't finish): fetch it
-            // again, unvalidated.
+        if v.bytes.is_empty() && v.verdict != Verdict::Secure {
+            // Nothing validated to serve (permissive, validation couldn't finish, or a zone
+            // proven unsigned, T10.9): fetch it unvalidated.
             let a = group.resolve(*question, self.settings.budget).await.ok()?;
             let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
             return Some(a.bytes.into());

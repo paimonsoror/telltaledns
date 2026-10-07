@@ -151,6 +151,9 @@ pub struct Validator {
     nsec: Mutex<HashMap<usize, crate::nsec::Ranges>>,
     /// Use them (RFC 8198; `[dnssec] aggressive_nsec`).
     aggressive: bool,
+    /// REQ: DNS-011 (T10.9, ADR-098) — zones proven unsigned (a validated denial of their DS
+    /// at the parent), lowercase without the trailing dot, until when the proof is trusted.
+    insecure: Mutex<HashMap<String, std::time::Instant>>,
     pub stats: Arc<Stats>,
 }
 
@@ -175,6 +178,7 @@ impl Validator {
             handles: Mutex::new(HashMap::new()),
             nsec: Mutex::new(HashMap::new()),
             aggressive: true,
+            insecure: Mutex::new(HashMap::new()),
             stats,
         }
     }
@@ -270,23 +274,15 @@ impl Validator {
         }
         let name = Name::from_ascii(&text).map_err(|_| ResolveError::Empty)?;
         let group_key = Arc::as_ptr(group) as usize;
-        // REQ: DNS-011 (T9.16) — a denial the cached NSEC ranges already prove (RFC 8198).
-        if self.aggressive && q.qclass == 1 {
-            let synth = self.nsec.lock().get(&group_key).and_then(|r| {
-                r.synthesize(&name, RecordType::from(q.qtype), std::time::Instant::now())
-            });
-            if let Some(bytes) =
-                synth.and_then(|s| synthesized(&name, q.qtype, s, client_do, client_ad))
-            {
-                self.stats.synthesized.fetch_add(1, Ordering::Relaxed);
-                return Ok(Validated {
-                    bytes,
-                    verdict: Verdict::Secure,
-                    ede: 0,
-                    upstream_id: 0,
-                    attempts: 0,
-                });
-            }
+        if let Some(v) = self.nsec_answer(group_key, &name, &q, client_do, client_ad) {
+            return Ok(v);
+        }
+        // REQ: DNS-011 (T10.9) — a name in a zone already proven unsigned isn't validated again
+        // (hickory can loop on some of them); the pipeline fetches it unvalidated.
+        let qkey = zone_key(&name);
+        if self.known_insecure(&qkey) {
+            self.stats.count(Verdict::Insecure);
+            return Ok(insecure_unfetched());
         }
         let mut query = Query::query(name, RecordType::from(q.qtype));
         query.set_query_class(q.qclass.into());
@@ -303,8 +299,11 @@ impl Validator {
             // An upstream failure is an upstream failure (stale or SERVFAIL as usual).
             Ok(Some(Err(e))) if is_transport(&e) => return Err(ResolveError::Empty),
             Ok(Some(Err(e))) => {
-                let verdict = error_verdict(&e);
+                let mut verdict = error_verdict(&e);
                 tracing::debug!(name = %q.name.display().to_string(), ?verdict, "DNSSEC: {e}");
+                if self.proven_insecure(group, &handle, &qkey, budget).await {
+                    verdict = Verdict::Insecure;
+                }
                 self.stats.count(verdict);
                 return Ok(Validated {
                     bytes: Vec::new(),
@@ -314,9 +313,22 @@ impl Validator {
                     attempts,
                 });
             }
+            // Validation took too long (hickory can loop): unsigned after all?
+            Err(_) if self.proven_insecure(group, &handle, &qkey, budget).await => {
+                self.stats.count(Verdict::Insecure);
+                return Ok(insecure_unfetched());
+            }
             Ok(None) | Err(_) => return Err(ResolveError::Empty),
         };
-        let verdict = verdict(&response);
+        let mut verdict = verdict(&response);
+        if verdict == Verdict::Bogus
+            && self
+                .all_unsigned(group, &handle, &response, &qkey, budget)
+                .await
+        {
+            tracing::debug!(name = %qkey, "DNSSEC: bogus verdict corrected: the zone is unsigned");
+            verdict = Verdict::Insecure;
+        }
         self.stats.count(verdict);
         let mut message = response.into_message();
         // REQ: DNS-011 (T9.16) — a secure denial's NSEC ranges, for later questions.
@@ -400,6 +412,213 @@ pub fn bogus_reason(msg: &[u8], now: u32) -> u16 {
         ede::SIGNATURE_NOT_YET_VALID
     } else {
         ede::DNSSEC_BOGUS
+    }
+}
+
+/// How many zone levels the unsigned-zone check looks at below the top-level domain.
+const MAX_ZONE_LEVELS: usize = 6;
+/// How long a proof that a zone is unsigned is trusted.
+const INSECURE_FOR: Duration = Duration::from_mins(15);
+/// Zones remembered as unsigned (the map is cleared beyond this).
+const MAX_INSECURE_ZONES: usize = 4096;
+
+/// `name` lowercase, without the trailing dot.
+fn zone_key(name: &Name) -> String {
+    name.to_ascii().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// The ancestors of `name` with at least two labels, shortest first, ending with `name`.
+fn zone_candidates(name: &str) -> Vec<String> {
+    let labels: Vec<&str> = name.split('.').filter(|l| !l.is_empty()).collect();
+    (2..=labels.len())
+        .map(|n| labels[labels.len() - n..].join("."))
+        .collect()
+}
+
+/// A verdict without bytes: the caller fetches the answer unvalidated.
+fn insecure_unfetched() -> Validated {
+    Validated {
+        bytes: Vec::new(),
+        verdict: Verdict::Insecure,
+        ede: 0,
+        upstream_id: 0,
+        attempts: 0,
+    }
+}
+
+impl Validator {
+    /// REQ: DNS-011 (T9.16) — a denial the cached NSEC ranges already prove (RFC 8198).
+    fn nsec_answer(
+        &self,
+        group_key: usize,
+        name: &Name,
+        q: &Question,
+        client_do: bool,
+        client_ad: bool,
+    ) -> Option<Validated> {
+        if !self.aggressive || q.qclass != 1 {
+            return None;
+        }
+        let synth = self.nsec.lock().get(&group_key).and_then(|r| {
+            r.synthesize(name, RecordType::from(q.qtype), std::time::Instant::now())
+        })?;
+        let bytes = synthesized(name, q.qtype, synth, client_do, client_ad)?;
+        self.stats.synthesized.fetch_add(1, Ordering::Relaxed);
+        Some(Validated {
+            bytes,
+            verdict: Verdict::Secure,
+            ede: 0,
+            upstream_id: 0,
+            attempts: 0,
+        })
+    }
+
+    /// REQ: DNS-011 (T10.9, ADR-098) — hickory judges some answers in unsigned zones bogus
+    /// (CNAME chains such as www.netflix.com): whether every owner in the answer, and the
+    /// question, is in a zone proven unsigned.
+    async fn all_unsigned(
+        &self,
+        group: &Arc<Group>,
+        handle: &DnssecDnsHandle<GroupHandle>,
+        response: &Message,
+        qkey: &str,
+        budget: Duration,
+    ) -> bool {
+        let mut owners: Vec<String> = response
+            .answers
+            .iter()
+            .filter(|r| r.record_type() != RecordType::RRSIG)
+            .map(|r| zone_key(&r.name))
+            .collect();
+        owners.push(qkey.to_owned());
+        owners.sort();
+        owners.dedup();
+        for o in &owners {
+            if !self.proven_insecure(group, handle, o, budget).await {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// REQ: DNS-011 (T10.9) — `name` is in a zone already proven unsigned.
+    fn known_insecure(&self, name: &str) -> bool {
+        let now = std::time::Instant::now();
+        let zones = self.insecure.lock();
+        zone_candidates(name)
+            .iter()
+            .any(|z| zones.get(z).is_some_and(|until| *until > now))
+    }
+
+    /// REQ: DNS-011 (T10.9, ADR-098) — whether `name` is in an unsigned zone, proven the way a
+    /// resolver proves it: walking down from the top, the first zone apex whose DS the parent
+    /// validly denies (secure NSEC, or NSEC3 opt-out, which validates as insecure) is unsigned,
+    /// and so is everything below it. Whether a name is an apex (it has its own SOA) comes from
+    /// an ordinary query; that's safe because the DS denial is what's trusted, and a signed
+    /// zone's DS can't be denied validly. Anything that can't be proven: `false`.
+    async fn proven_insecure(
+        &self,
+        group: &Arc<Group>,
+        handle: &DnssecDnsHandle<GroupHandle>,
+        name: &str,
+        budget: Duration,
+    ) -> bool {
+        if self.known_insecure(name) {
+            return true;
+        }
+        let plain = GroupHandle {
+            group: Arc::clone(group),
+            budget,
+            last: Arc::new(Mutex::new((0, 0))),
+        };
+        for zone in zone_candidates(name).into_iter().take(MAX_ZONE_LEVELS) {
+            let Ok(apex) = Name::from_ascii(format!("{zone}.")) else {
+                return false;
+            };
+            if !is_apex(&plain, &apex, budget).await {
+                tracing::debug!(%zone, "DNSSEC: unsigned-zone proof: not an apex");
+                continue;
+            }
+            let ds = ds_signed(handle, &apex, budget).await;
+            tracing::debug!(%zone, ?ds, "DNSSEC: unsigned-zone proof: DS");
+            match ds {
+                Some(true) => {}
+                Some(false) => {
+                    let mut zones = self.insecure.lock();
+                    if zones.len() >= MAX_INSECURE_ZONES {
+                        zones.clear();
+                    }
+                    zones.insert(zone, std::time::Instant::now() + INSECURE_FOR);
+                    return true;
+                }
+                None => return false,
+            }
+        }
+        false
+    }
+}
+
+fn request(name: &Name, rtype: RecordType) -> DnsRequest {
+    let mut opts = DnsRequestOptions::default();
+    opts.use_edns = true;
+    DnsRequest::from_query(Query::query(name.clone(), rtype), opts)
+}
+
+/// `apex` has its own SOA (an unvalidated query).
+async fn is_apex(plain: &GroupHandle, apex: &Name, budget: Duration) -> bool {
+    let mut s = plain.send(request(apex, RecordType::SOA));
+    match tokio::time::timeout(budget, s.next()).await {
+        Ok(Some(Ok(r))) => {
+            tracing::debug!(%apex, answers = ?r.answers.iter().map(|a| (a.name.to_ascii(), a.record_type())).collect::<Vec<_>>(), rcode = ?r.metadata.response_code, "DNSSEC: unsigned-zone proof: SOA response");
+            r.answers
+                .iter()
+                .any(|a| a.record_type() == RecordType::SOA && a.name == *apex)
+        }
+        other => {
+            tracing::debug!(%apex, ?other, "DNSSEC: unsigned-zone proof: no SOA answer");
+            false
+        }
+    }
+}
+
+/// The validated DS answer for `apex`: `Some(true)` signed, `Some(false)` validly denied
+/// (unsigned), `None` unknown.
+async fn ds_signed(
+    handle: &DnssecDnsHandle<GroupHandle>,
+    apex: &Name,
+    budget: Duration,
+) -> Option<bool> {
+    let mut s = handle.send(request(apex, RecordType::DS));
+    let r = match tokio::time::timeout(budget, s.next()).await {
+        Ok(Some(Ok(r))) => r,
+        // hickory returns a negative answer whose proof isn't secure as an error carrying
+        // the proof: for a DS, `Insecure` is NSEC3 opt-out (an unsigned delegation; a signed
+        // one needs its own NSEC3 record, so an opt-out span can't cover it).
+        Ok(Some(Err(NetError::Dns(hickory_net::DnsError::Nsec {
+            proof, response, ..
+        })))) => {
+            let has_ds = response
+                .answers
+                .iter()
+                .any(|a| a.record_type() == RecordType::DS);
+            tracing::debug!(%apex, ?proof, has_ds, "DNSSEC: unsigned-zone proof: DS denial");
+            return (!has_ds && matches!(proof, Proof::Secure | Proof::Insecure)).then_some(false);
+        }
+        other => {
+            tracing::debug!(%apex, ?other, "DNSSEC: unsigned-zone proof: no DS answer");
+            return None;
+        }
+    };
+    tracing::debug!(%apex, verdict = ?verdict(&r), answers = r.answers.len(), "DNSSEC: unsigned-zone proof: DS response");
+    let has_ds = r.answers.iter().any(|a| a.record_type() == RecordType::DS);
+    let other = r
+        .answers
+        .iter()
+        .any(|a| !matches!(a.record_type(), RecordType::DS | RecordType::RRSIG));
+    match (has_ds, other, verdict(&r)) {
+        (true, _, Verdict::Secure) => Some(true),
+        (false, false, Verdict::Secure | Verdict::Insecure) => Some(false),
+        _ => None,
     }
 }
 
@@ -510,6 +729,17 @@ pub fn unvalidated(a: Answer) -> Validated {
 #[cfg(test)]
 mod depth_tests {
     use super::*;
+
+    /// REQ: DNS-011 (T10.9) — the zones an unsigned-zone proof walks, top down.
+    #[test]
+    fn dns_011_zone_candidates() {
+        assert_eq!(
+            zone_candidates("www.netflix.com"),
+            vec!["netflix.com".to_owned(), "www.netflix.com".to_owned()]
+        );
+        assert_eq!(zone_candidates("com"), Vec::<String>::new());
+        assert_eq!(zone_candidates("a.b.c.d"), vec!["c.d", "b.c.d", "a.b.c.d"]);
+    }
 
     /// REQ: DNS-011 (ADR-098) — the depth limit is indeterminate; other errors stay bogus.
     #[test]

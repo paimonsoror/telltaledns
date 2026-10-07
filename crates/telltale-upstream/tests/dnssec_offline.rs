@@ -2,7 +2,8 @@
 //! key is the trust anchor (an anchors file), and a fake upstream serves the zone's records with
 //! their signatures, NSEC denials, and one forged signature. Covers the validator's secure,
 //! NODATA, NXDOMAIN, bogus, and wrong-anchor paths, and RFC 8198 answering from cached NSEC
-//! ranges without another upstream query.
+//! ranges without another upstream query. The root also delegates `u.` without a DS: an
+//! unsigned zone with a CNAME chain (T10.9).
 
 #![allow(clippy::unwrap_used, clippy::too_many_lines)]
 
@@ -15,7 +16,7 @@ use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
 use hickory_net::proto::dnssec::rdata::{DNSKEY, DNSSECRData, NSEC, RRSIG};
 use hickory_net::proto::dnssec::{DnssecSigner, PublicKey as _, SigningKey};
 use hickory_net::proto::op::{Message, OpCode, ResponseCode};
-use hickory_net::proto::rr::rdata::{A, NS, SOA};
+use hickory_net::proto::rr::rdata::{A, CNAME, NS, SOA};
 use hickory_net::proto::rr::{DNSClass, Name, RData, Record, RecordSet, RecordType};
 use telltale_proto::{NameBuf, rtype};
 use telltale_upstream::dnssec::{Stats, Validator, Verdict};
@@ -31,6 +32,8 @@ fn n(s: &str) -> Name {
 /// The signed test root: record sets with their signatures, by (owner, type).
 struct Zone {
     sets: BTreeMap<(Name, RecordType), Vec<Record>>,
+    /// T10.9 — the unsigned zone `u.`, delegated from the root without a DS.
+    plain: BTreeMap<(Name, RecordType), Vec<Record>>,
     /// The DNSKEY's RDATA, for the anchors file.
     key: Vec<u8>,
 }
@@ -106,8 +109,16 @@ fn zone() -> Zone {
         (
             n("bad."),
             vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
-                n("."),
+                n("u."),
                 [RecordType::A, RecordType::RRSIG, RecordType::NSEC],
+            )))],
+        ),
+        // T10.9 — `u.` is delegated without a DS: the NSEC proves NS and no DS.
+        (
+            n("u."),
+            vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
+                n("."),
+                [RecordType::NS, RecordType::RRSIG, RecordType::NSEC],
             )))],
         ),
     ];
@@ -140,9 +151,52 @@ fn zone() -> Zone {
     }
     let mut key_rdata = vec![1u8, 1, 3, 15]; // flags 257, protocol 3, algorithm 15 (Ed25519)
     key_rdata.extend_from_slice(public.public_bytes());
+    // The unsigned zone: `www.u.` is a CNAME to `cdn.u.`, which has an address.
+    let u_soa = SOA::new(n("ns.u."), n("admin.u."), 1, 1800, 900, 604_800, 300);
+    let plain_sets: Vec<(Name, RData)> = vec![
+        (n("u."), RData::SOA(u_soa)),
+        (n("u."), RData::NS(NS(n("ns.u.")))),
+        (n("www.u."), RData::CNAME(CNAME(n("cdn.u.")))),
+        (n("cdn.u."), RData::A(A::new(192, 0, 2, 80))),
+    ];
+    let mut plain = BTreeMap::new();
+    for (name, d) in plain_sets {
+        let t = d.record_type();
+        plain.insert((name.clone(), t), vec![Record::from_rdata(name, ttl, d)]);
+    }
     Zone {
         sets,
+        plain,
         key: key_rdata,
+    }
+}
+
+/// T10.9 — `name` is in the unsigned zone `u.` (the delegation's DS question goes to the root).
+fn in_plain(qn: &Name, qt: RecordType) -> bool {
+    let u = n("u.");
+    (*qn == u && qt != RecordType::DS) || (qn != &u && u.zone_of(qn))
+}
+
+/// T10.9 — an answer from the unsigned zone, chasing a CNAME the way a recursive resolver
+/// does (also for a DS question about the CNAME's owner).
+fn plain_answer(z: &Zone, m: &mut Message, qn: &Name, qt: RecordType) {
+    let mut name = qn.clone();
+    for _ in 0..4 {
+        if let Some(rs) = z.plain.get(&(name.clone(), qt)) {
+            m.add_answers(rs.clone());
+            return;
+        }
+        let Some(c) = z.plain.get(&(name.clone(), RecordType::CNAME)) else {
+            break;
+        };
+        m.add_answers(c.clone());
+        let RData::CNAME(CNAME(target)) = c[0].data.clone() else {
+            break;
+        };
+        name = target;
+    }
+    if m.answers.is_empty() {
+        m.add_authorities(z.plain[&(n("u."), RecordType::SOA)].clone());
     }
 }
 
@@ -173,7 +227,9 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
                 m.add_authorities(z.sets[&(n("."), RecordType::SOA)].clone());
                 m.add_authorities(z.sets[&(owner.clone(), RecordType::NSEC)].clone());
             };
-            if let Some(rs) = z.sets.get(&(qn.clone(), qt)) {
+            if in_plain(&qn, qt) {
+                plain_answer(&z, &mut m, &qn, qt);
+            } else if let Some(rs) = z.sets.get(&(qn.clone(), qt)) {
                 m.add_answers(rs.clone());
             } else if z.sets.keys().any(|(o, _)| *o == qn) {
                 authority(&mut m, &qn);
@@ -374,4 +430,40 @@ async fn dns_011_offline_wrong_anchor_is_bogus() {
         .await
         .unwrap();
     assert_ne!(r.verdict, Verdict::Secure);
+}
+
+/// REQ: DNS-011 (T10.9, ADR-098) — an answer in a zone delegated without a DS, reached through
+/// a CNAME, is insecure (served, no AD), not bogus. Real resolvers answer the validator's DS
+/// question about a CNAME's owner with the CNAME, as the fake root does.
+#[tokio::test]
+async fn dns_011_offline_unsigned_zone_through_cname_is_insecure() {
+    let (v, g, _, stats, _dir) = setup(true).await;
+    let budget = Duration::from_secs(5);
+    let r = v
+        .resolve(&g, question("www.u", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.verdict,
+        Verdict::Insecure,
+        "www.u. A (CNAME into the unsigned zone)"
+    );
+    assert_ne!(r.bytes.len(), 0, "an answer to serve");
+    assert!(!telltale_proto::Header::parse(&r.bytes).unwrap().flags.ad());
+    let r = v
+        .resolve(&g, question("cdn.u", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Insecure, "cdn.u. A");
+    // The signed root is unaffected: a forged signature is still bogus.
+    let r = v
+        .resolve(&g, question("bad", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Bogus);
+    assert_eq!(
+        stats.bogus.load(Ordering::Relaxed),
+        1,
+        "only the forged signature"
+    );
 }

@@ -79,28 +79,32 @@ impl Pool {
 
     /// Sends `msg` (whose ID is `id`) and waits for the response with the same ID. The caller
     /// applies the timeout and validates the response.
-    pub(crate) async fn exchange(&self, msg: Vec<u8>, id: u16) -> Result<Vec<u8>, ExchangeError> {
-        // One retry on a fresh connection if the pooled one turns out to be closed.
-        let mut msg = Some(msg);
+    pub(crate) async fn exchange(
+        &self,
+        mut msg: Vec<u8>,
+        id: u16,
+    ) -> Result<Vec<u8>, ExchangeError> {
+        // One retry on a fresh connection if the pooled one turns out to be closed: either
+        // before the query is written, or (T10.9) after, when the server closes an idle
+        // connection just as the query goes out and never answers. Queries are idempotent.
         for attempt in 0..2 {
             let conn = self.get(attempt > 0).await?;
             let (reply, rx) = oneshot::channel();
-            let Some(m) = msg.take() else { break };
+            let m = if attempt == 0 {
+                msg.clone()
+            } else {
+                std::mem::take(&mut msg)
+            };
             conn.inflight.fetch_add(1, Ordering::AcqRel);
             let _guard = Decrement(Arc::clone(&conn.inflight));
-            if let Err(mpsc::error::SendError(req)) =
-                conn.tx.send(Request { msg: m, id, reply }).await
-            {
+            if conn.tx.send(Request { msg: m, id, reply }).await.is_err() {
                 conn.dead.store(true, Ordering::Release);
-                msg = Some(req.msg);
                 continue;
             }
-            return rx.await.map_err(|_| {
-                ExchangeError::Io(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "upstream connection closed",
-                ))
-            });
+            if let Ok(resp) = rx.await {
+                return Ok(resp);
+            }
+            conn.dead.store(true, Ordering::Release);
         }
         Err(ExchangeError::Io(io::Error::new(
             io::ErrorKind::ConnectionReset,
@@ -179,11 +183,13 @@ async fn run_conn(
         }
     });
     let mut pending: HashMap<u16, oneshot::Sender<Vec<u8>>> = HashMap::new();
+    let (mut sent, mut answered) = (0u32, 0u32);
+    let why: &str;
     loop {
         let idle_timer = tokio::time::sleep(idle);
         tokio::select! {
             req = rx.recv() => {
-                let Some(req) = req else { break };
+                let Some(req) = req else { why = "unused"; break };
                 // Drop waiters that already gave up (timed out), so a server that stopped
                 // answering doesn't keep the connection alive forever.
                 pending.retain(|_, w| !w.is_closed());
@@ -195,22 +201,32 @@ async fn run_conn(
                 framed.extend_from_slice(&len.to_be_bytes());
                 framed.extend_from_slice(&req.msg);
                 if wr.write_all(&framed).await.is_err() {
+                    why = "write failed";
                     break;
                 }
+                sent += 1;
                 pending.insert(req.id, req.reply);
             }
             resp = resp_rx.recv() => {
-                let Some(resp) = resp else { break };
+                let Some(resp) = resp else { why = "closed by the server"; break };
                 if resp.len() >= 2 {
                     let id = u16::from_be_bytes([resp[0], resp[1]]);
                     if let Some(w) = pending.remove(&id) {
+                        answered += 1;
                         let _ = w.send(resp);
                     }
                 }
             }
-            () = idle_timer, if pending.is_empty() => break,
+            () = idle_timer, if pending.is_empty() => { why = "idle"; break },
         }
     }
+    tracing::debug!(
+        why,
+        sent,
+        answered,
+        unanswered = pending.len(),
+        "upstream connection ended"
+    );
     dead.store(true, Ordering::Release);
     reader.abort();
     let _ = wr.shutdown().await;

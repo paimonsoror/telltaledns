@@ -1123,12 +1123,15 @@ fn init_logging() {
         .unwrap_or(tracing::level_filters::LevelFilter::INFO);
     // REQ: DNS-011 (ADR-098) — hickory's validator logs every unsigned NODATA (a warning) and
     // its depth limit (an error); TelltaleDNS counts and logs each verdict itself.
+    // `TELLTALE_LOG_DNSSEC_LIBRARY=1` turns its log back on, for debugging validation.
+    let library = if std::env::var_os("TELLTALE_LOG_DNSSEC_LIBRARY").is_some() {
+        level
+    } else {
+        tracing::level_filters::LevelFilter::OFF
+    };
     let targets = tracing_subscriber::filter::Targets::new()
         .with_default(level)
-        .with_target(
-            "hickory_net::dnssec",
-            tracing::level_filters::LevelFilter::OFF,
-        );
+        .with_target("hickory_net::dnssec", library);
     tracing_subscriber::fmt()
         .with_max_level(level)
         .with_target(false)
