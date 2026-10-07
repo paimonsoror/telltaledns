@@ -435,3 +435,40 @@ async fn dns_015_ecs_client_reaches_the_upstream() {
     up.exchange(&q, Duration::from_secs(2)).await.unwrap();
     assert_eq!(rx.recv().await.unwrap(), None);
 }
+
+/// REQ: OBS-007 (T9.19) — the exchange observer sees the query exactly as sent, the answer,
+/// the upstream's address, and its protocol.
+#[tokio::test]
+async fn obs_007_exchange_observer() {
+    use std::sync::Mutex;
+    type Seen = Vec<(
+        Vec<u8>,
+        Option<Vec<u8>>,
+        Option<SocketAddr>,
+        telltale_upstream::Protocol,
+    )>;
+    static SEEN: Mutex<Seen> = Mutex::new(Vec::new());
+    telltale_upstream::set_exchange_observer(Box::new(|e| {
+        SEEN.lock().unwrap().push((
+            e.query.to_vec(),
+            e.response.map(<[u8]>::to_vec),
+            e.addr,
+            e.protocol,
+        ));
+    }));
+    let addr = fake(Fake::Healthy {
+        tag: 7,
+        delay: Duration::ZERO,
+    })
+    .await;
+    let up = upstream(1, addr, 1);
+    let resp = up
+        .exchange(&question("seen.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    let seen = SEEN.lock().unwrap();
+    let (q, r, a, p) = seen.iter().find(|x| x.2 == Some(addr)).expect("observed");
+    assert_eq!(&q[..2], &resp[..2], "the query as sent (same ID)");
+    assert_eq!(r.as_deref(), Some(resp.as_slice()));
+    assert_eq!((*a, *p), (Some(addr), telltale_upstream::Protocol::Udp));
+}

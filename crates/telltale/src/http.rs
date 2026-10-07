@@ -552,6 +552,22 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
         "1 if a newer build exists on this build's channel (from the signed release index).",
     )
     .sample("telltale_update_available", &[], u64::from(available));
+    // REQ: OBS-010 (T9.19) — events each sink dropped.
+    let drops = crate::sinks::drops();
+    if !drops.is_empty() {
+        let f = w.family(
+            "telltale_sink_dropped_total",
+            "counter",
+            "Query events an event sink dropped: its buffer was full, or its collector refused a batch (and it couldn't be kept on disk).",
+        );
+        for (name, n) in &drops {
+            f.sample(
+                "telltale_sink_dropped_total",
+                &[("sink", name.as_str())],
+                *n,
+            );
+        }
+    }
     // REQ: OBS-002 (T9.13) — restarts survive restarts: counted in the data directory.
     let runs = crate::datadir::runs();
     w.family(

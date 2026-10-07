@@ -1595,7 +1595,8 @@ buffer = 10000                  # copies held while the reader is slow
 ```
 - Each sampled query becomes a `CLIENT_QUERY` and a `CLIENT_RESPONSE` message with the client's address, the transport (UDP, TCP, DoT, DoH, DoQ), the times, and the full query and response messages.
 - Frame Streams with the usual handshake; if the reader isn't there, TelltaleDNS keeps retrying (every few seconds) and drops copies meanwhile. DNS never waits for it: copies go through a bounded queue (`buffer`), and with dnstap off the query path does nothing extra.
-- Read at startup: restart after changing it. Not yet: upstream (`FORWARDER_*`) messages.
+- **Upstream traffic too** (`forwarder = true` under `[telemetry.dnstap]`): each query TelltaleDNS sends to an upstream and its answer become `FORWARDER_QUERY` and `FORWARDER_RESPONSE` messages with the upstream's address, port, and protocol (UDP, TCP, DoT, DoH, DoQ, DNSCrypt), sampled like client messages. The built-in recursive resolver's own queries aren't included.
+- Read at startup: restart after changing it.
 
 ### Event sinks
 Copy every query event to your own log pipeline (Loki, Elastic, Splunk, Graylog, a SIEM) as it happens:
@@ -1629,7 +1630,7 @@ flush_secs = 5                           # or whatever arrived in 5 s
 - Each event is the same JSON object as a row of `GET /api/v1/queries` (`time`, `client`, `clientName`, `group`, `name`, `qtype`, `status`, `rcode`, `proto`, `list`, `rule`, `totalMs`, `upstreamMs`, `answers`, `node`), with the query log's `privacy_level` applied (names hashed at 1, clients removed at 2).
 - Syslog messages are `<PRI>1 <time> <host> telltale - query - <JSON>`, with severity *notice* for blocks and *informational* for the rest.
 - **Syslog over TLS** (`tls://`, RFC 5425) sends the same octet-counted frames as `tcp://`, encrypted. The collector's certificate must name the host in `address` and come from a public CA or the one in `tls_ca`.
-- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped and logged once a minute (`event sink fell behind`). A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped.
+- Sinks never slow DNS: each one has its own buffer (`max_buffer`, 10,000 events) and thread. When a destination is slow or down, the buffer fills and new events are dropped, logged once a minute (`event sink fell behind`), and counted in `telltale_sink_dropped_total{sink}`. A webhook batch that fails is retried twice (after 1 s and 2 s), then dropped.
 - **Spill to disk** (webhook sinks, `spill_max_bytes`): instead of being dropped, a refused batch is appended to `<data_dir>/sinks/<name>.spill`. Once the collector accepts a batch again (or on the next quiet moment), the kept events go first, oldest first, up to 20 batches at a time; the file is removed when it's empty. Past `spill_max_bytes`, batches are dropped as before. The file survives restarts. Off by default, and best kept modest on an SD card.
 - Sinks are read at startup: restart after changing them.
 

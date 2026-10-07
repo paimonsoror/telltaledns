@@ -47,6 +47,22 @@ pub(crate) struct EventSinks {
     last_report: Instant,
 }
 
+/// REQ: OBS-010 (T9.19) — each sink's dropped-event counter, by name, for `/metrics` (set
+/// once at startup with the sinks).
+static DROPS: std::sync::OnceLock<Vec<(String, Arc<AtomicU64>)>> = std::sync::OnceLock::new();
+
+/// Events each sink dropped since start (buffer full, or a batch the collector refused).
+pub(crate) fn drops() -> Vec<(String, u64)> {
+    DROPS
+        .get()
+        .map(|v| {
+            v.iter()
+                .map(|(n, d)| (n.clone(), d.load(Ordering::Relaxed)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Starts the configured sinks (at startup; changing them needs a restart, like the query
 /// log). `rt` runs the webhook requests.
 pub(crate) fn start(
@@ -93,6 +109,11 @@ pub(crate) fn start(
             reported: 0,
         });
     }
+    let _ = DROPS.set(
+        outs.iter()
+            .map(|o| (o.name.clone(), Arc::clone(&o.dropped)))
+            .collect(),
+    );
     if outs.is_empty() {
         return None;
     }

@@ -1487,6 +1487,9 @@ pub struct DnstapConfig {
     pub sample_every: u32,
     /// Copies held while the reader is slow; beyond, they're dropped.
     pub buffer: u32,
+    /// REQ: OBS-007 (T9.19) — also copy queries to upstreams and their answers
+    /// (`FORWARDER_QUERY`, `FORWARDER_RESPONSE`), sampled the same way.
+    pub forwarder: bool,
 }
 
 impl Default for DnstapConfig {
@@ -1496,6 +1499,7 @@ impl Default for DnstapConfig {
             address: None,
             sample_every: 1,
             buffer: 10_000,
+            forwarder: false,
         }
     }
 }

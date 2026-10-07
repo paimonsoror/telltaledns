@@ -1,5 +1,7 @@
 //! dnstap output (REQ: OBS-007, `spec/06` §5; T7.18): client queries and responses as dnstap
-//! messages (`CLIENT_QUERY`, `CLIENT_RESPONSE`) over Frame Streams, to a Unix socket or TCP
+//! messages (`CLIENT_QUERY`, `CLIENT_RESPONSE`), and (T9.19, `forwarder = true`) queries to
+//! upstreams and their answers (`FORWARDER_QUERY`, `FORWARDER_RESPONSE`), over Frame Streams,
+//! to a Unix socket or TCP
 //! (`dnstap-read`, `fstrm_capture`, Vector, Logstash and others read it).
 //!
 //! The query path pays one relaxed atomic load while dnstap is off. When it's on, one query in
@@ -15,6 +17,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use telltale_net::Transport;
+use telltale_upstream::Protocol;
 use tracing::{info, warn};
 
 const CONTENT_TYPE: &[u8] = b"protobuf:dnstap.Dnstap";
@@ -29,11 +32,23 @@ const FIELD_CONTENT_TYPE: u32 = 1;
 /// dnstap `Message.Type`.
 const CLIENT_QUERY: u64 = 5;
 const CLIENT_RESPONSE: u64 = 6;
+const FORWARDER_QUERY: u64 = 7;
+const FORWARDER_RESPONSE: u64 = 8;
+
+/// Who the exchange was with.
+enum Side {
+    /// A client's query to us.
+    Client { peer: IpAddr, transport: Transport },
+    /// Our query to an upstream (its address, if known, and dnstap's `SocketProtocol`).
+    Forwarder {
+        upstream: Option<std::net::SocketAddr>,
+        protocol: u64,
+    },
+}
 
 /// One sampled exchange.
 struct Copy {
-    peer: IpAddr,
-    transport: Transport,
+    side: Side,
     query: Vec<u8>,
     response: Option<Vec<u8>>,
     /// Wall clock of the query and of the response, in nanoseconds since the epoch.
@@ -45,6 +60,8 @@ struct Copy {
 pub(crate) struct Tap {
     every: u64,
     seen: AtomicU64,
+    /// REQ: OBS-007 (T9.19) — upstream exchanges seen (sampled on their own count).
+    seen_forwarder: AtomicU64,
     tx: SyncSender<Copy>,
     pub(crate) dropped: AtomicU64,
 }
@@ -81,11 +98,49 @@ impl Tap {
             return;
         }
         let c = Copy {
-            peer,
-            transport,
+            side: Side::Client { peer, transport },
             query: query.to_vec(),
             response: response.map(<[u8]>::to_vec),
             query_ns: u128::from(query_us) * 1000,
+            response_ns: now_ns(),
+        };
+        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self.tx.try_send(c) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Tap {
+    /// REQ: OBS-007 (T9.19) — offers one exchange with an upstream; copies it if sampled.
+    pub(crate) fn offer_forwarder(&self, e: &telltale_upstream::Exchange<'_>) {
+        if !self
+            .seen_forwarder
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(self.every)
+        {
+            return;
+        }
+        // dnstap SocketProtocol: UDP 1, TCP 2, DOT 3, DOH 4, DNSCryptUDP 5, DOQ 7.
+        let protocol = match e.protocol {
+            Protocol::Udp => 1,
+            Protocol::Tls => 3,
+            Protocol::Https | Protocol::H3 => 4,
+            Protocol::DnsCrypt => 5,
+            Protocol::Quic => 7,
+            _ => 2,
+        };
+        let sent_ns = e
+            .sent
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let c = Copy {
+            side: Side::Forwarder {
+                upstream: e.addr,
+                protocol,
+            },
+            query: e.query.to_vec(),
+            response: e.response.map(<[u8]>::to_vec),
+            query_ns: sent_ns,
             response_ns: now_ns(),
         };
         if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self.tx.try_send(c) {
@@ -112,12 +167,19 @@ pub(crate) fn start(cfg: &telltale_config::Config) -> Option<std::sync::Arc<Tap>
         return None;
     }
     info!(sample_every = d.sample_every, "dnstap output started");
-    Some(std::sync::Arc::new(Tap {
+    let tap = std::sync::Arc::new(Tap {
         every: u64::from(d.sample_every.max(1)),
         seen: AtomicU64::new(0),
+        seen_forwarder: AtomicU64::new(0),
         tx,
         dropped: AtomicU64::new(0),
-    }))
+    });
+    // REQ: OBS-007 (T9.19) — upstream exchanges too.
+    if d.forwarder {
+        let t = std::sync::Arc::clone(&tap);
+        telltale_upstream::set_exchange_observer(Box::new(move |e| t.offer_forwarder(e)));
+    }
+    Some(tap)
 }
 
 #[derive(Debug, Clone)]
@@ -220,8 +282,12 @@ fn writer(target: &Target, rx: &Receiver<Copy>, identity: &[u8]) {
             continue;
         };
         let mut frames = Vec::with_capacity(1024);
-        for kind in [CLIENT_QUERY, CLIENT_RESPONSE] {
-            if kind == CLIENT_RESPONSE && c.response.is_none() {
+        let kinds = match c.side {
+            Side::Client { .. } => [CLIENT_QUERY, CLIENT_RESPONSE],
+            Side::Forwarder { .. } => [FORWARDER_QUERY, FORWARDER_RESPONSE],
+        };
+        for kind in kinds {
+            if matches!(kind, CLIENT_RESPONSE | FORWARDER_RESPONSE) && c.response.is_none() {
                 continue;
             }
             let payload = dnstap(identity, version.as_bytes(), kind, &c);
@@ -266,30 +332,47 @@ fn fixed32(out: &mut Vec<u8>, field: u32, v: u32) {
 fn dnstap(identity: &[u8], version: &[u8], kind: u64, c: &Copy) -> Vec<u8> {
     let mut m = Vec::with_capacity(64 + c.query.len() + c.response.as_ref().map_or(0, Vec::len));
     uint(&mut m, 1, kind);
-    let (family, addr) = match c.peer {
+    let family_addr = |ip: IpAddr| match ip {
         IpAddr::V4(v4) => (1, v4.octets().to_vec()),
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => (1, v4.octets().to_vec()),
             None => (2, v6.octets().to_vec()),
         },
     };
-    uint(&mut m, 2, family);
-    // SocketProtocol: UDP 1, TCP 2, DOT 3, DOH 4, DOQ 7.
-    let proto = match c.transport {
-        Transport::Udp => 1,
-        Transport::Tcp => 2,
-        Transport::Dot => 3,
-        Transport::Doh => 4,
-        Transport::Doq => 7,
-    };
-    uint(&mut m, 3, proto);
-    bytes(&mut m, 4, &addr);
+    match c.side {
+        Side::Client { peer, transport } => {
+            let (family, addr) = family_addr(peer);
+            uint(&mut m, 2, family);
+            // SocketProtocol: UDP 1, TCP 2, DOT 3, DOH 4, DOQ 7.
+            let proto = match transport {
+                Transport::Udp => 1,
+                Transport::Tcp => 2,
+                Transport::Dot => 3,
+                Transport::Doh => 4,
+                Transport::Doq => 7,
+            };
+            uint(&mut m, 3, proto);
+            bytes(&mut m, 4, &addr);
+        }
+        // REQ: OBS-007 (T9.19) — the upstream is the responder: response_address/port.
+        Side::Forwarder { upstream, protocol } => {
+            if let Some(a) = upstream {
+                let (family, addr) = family_addr(a.ip());
+                uint(&mut m, 2, family);
+                uint(&mut m, 3, protocol);
+                bytes(&mut m, 5, &addr);
+                uint(&mut m, 7, u64::from(a.port()));
+            } else {
+                uint(&mut m, 3, protocol);
+            }
+        }
+    }
     let secs = |ns: u128| u64::try_from(ns / 1_000_000_000).unwrap_or(0);
     let nanos = |ns: u128| u32::try_from(ns % 1_000_000_000).unwrap_or(0);
     uint(&mut m, 8, secs(c.query_ns));
     fixed32(&mut m, 9, nanos(c.query_ns));
     bytes(&mut m, 10, &c.query);
-    if kind == CLIENT_RESPONSE
+    if matches!(kind, CLIENT_RESPONSE | FORWARDER_RESPONSE)
         && let Some(r) = &c.response
     {
         uint(&mut m, 12, secs(c.response_ns));
@@ -416,5 +499,35 @@ mod tests {
         }
         assert_eq!(tap.seen.load(Ordering::Relaxed), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// REQ: OBS-007 (T9.19) — a forwarder copy: `FORWARDER_QUERY`/`FORWARDER_RESPONSE` with the
+    /// upstream as the responder (address, port, protocol) and both wire messages.
+    #[test]
+    fn obs_007_dnstap_forwarder_messages() {
+        let q =
+            b"\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x01a\x00\x00\x01\x00\x01".to_vec();
+        let c = Copy {
+            side: Side::Forwarder {
+                upstream: Some("9.9.9.9:853".parse().unwrap()),
+                protocol: 3,
+            },
+            query: q.clone(),
+            response: Some(q.clone()),
+            query_ns: 1_700_000_000_000_000_000,
+            response_ns: 1_700_000_000_500_000_000,
+        };
+        for kind in [FORWARDER_QUERY, FORWARDER_RESPONSE] {
+            let top = fields(&dnstap(b"node", b"v", kind, &c));
+            let inner = fields(&top.iter().find(|x| x.0 == 14).unwrap().1);
+            let get = |f: u32| inner.iter().find(|x| x.0 == f).unwrap();
+            assert_eq!(get(1).2, kind);
+            assert_eq!((get(2).2, get(3).2), (1, 3), "INET, DOT");
+            assert_eq!(get(5).1, vec![9, 9, 9, 9], "the upstream answers");
+            assert_eq!(get(7).2, 853);
+            assert!(inner.iter().all(|x| x.0 != 4), "no client address");
+            assert_eq!(get(10).1, q);
+            assert_eq!(inner.iter().any(|x| x.0 == 14), kind == FORWARDER_RESPONSE);
+        }
     }
 }

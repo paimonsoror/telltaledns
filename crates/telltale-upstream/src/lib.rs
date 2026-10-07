@@ -39,8 +39,8 @@ pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};
 pub use tls::{TlsOptions, UpstreamTls, spki_pin, tbs_hash};
 pub use upstream::{
-    ExchangeError, Question, Upstream, UpstreamOptions, client_subnet, encode_query,
-    is_own_loop_tag, matches_query, set_node_tag,
+    Exchange, ExchangeError, ExchangeObserver, Question, Upstream, UpstreamOptions, client_subnet,
+    encode_query, is_own_loop_tag, matches_query, set_exchange_observer, set_node_tag,
 };
 
 /// Total time budget per client query (`spec/02` §8.3).

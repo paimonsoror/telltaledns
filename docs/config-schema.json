@@ -309,6 +309,7 @@
         },
         "dnstap": {
           "buffer": 10000,
+          "forwarder": false,
           "sample_every": 1
         },
         "metrics": {
@@ -1205,6 +1206,11 @@
           "format": "uint32",
           "default": 10000,
           "minimum": 0
+        },
+        "forwarder": {
+          "description": "REQ: OBS-007 (T9.19) — also copy queries to upstreams and their answers\n(`FORWARDER_QUERY`, `FORWARDER_RESPONSE`), sampled the same way.",
+          "type": "boolean",
+          "default": false
         },
         "sample_every": {
           "description": "One query in this many is copied (1 = every query).",
@@ -2830,6 +2836,7 @@
           "$ref": "#/$defs/DnstapConfig",
           "default": {
             "buffer": 10000,
+            "forwarder": false,
             "sample_every": 1
           }
         },

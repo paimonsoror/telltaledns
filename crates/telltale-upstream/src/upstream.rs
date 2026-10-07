@@ -137,6 +137,31 @@ const UPSTREAM_EDNS_PAYLOAD: u16 = 1232;
 
 static NODE_TAG: OnceLock<[u8; 8]> = OnceLock::new();
 
+/// REQ: OBS-007 (T9.19) — one exchange with an upstream, as an observer sees it (dnstap's
+/// `FORWARDER_QUERY` and `FORWARDER_RESPONSE`).
+#[derive(Debug)]
+pub struct Exchange<'a> {
+    pub protocol: Protocol,
+    /// The upstream's address, when it has one (not for plugins).
+    pub addr: Option<SocketAddr>,
+    /// The query exactly as sent.
+    pub query: &'a [u8],
+    /// The response, if one came.
+    pub response: Option<&'a [u8]>,
+    pub sent: std::time::SystemTime,
+}
+
+/// What observes exchanges.
+pub type ExchangeObserver = Box<dyn Fn(&Exchange<'_>) + Send + Sync>;
+
+static OBSERVER: OnceLock<ExchangeObserver> = OnceLock::new();
+
+/// REQ: OBS-007 (T9.19) — sets the exchange observer (once, at startup). Without one, an
+/// exchange pays a single `OnceLock` load.
+pub fn set_exchange_observer(f: ExchangeObserver) {
+    let _ = OBSERVER.set(f);
+}
+
 /// Sets this node's loop-detection tag (once, at startup). Outbound queries carry it in EDNS
 /// option 65429; a client query arriving with our own tag means we are forwarding to ourselves.
 pub fn set_node_tag(tag: u64) {
@@ -747,6 +772,41 @@ impl Upstream {
             .unwrap_or_default();
         let len = encode_query_with(q, id, &mut buf, ecs).ok_or(ExchangeError::BadResponse)?;
         let query = &buf[..len];
+        // REQ: OBS-007 (T9.19) — dnstap's forwarder messages, when observed (not for our own
+        // resolver, whose queries go to many servers).
+        let observer = OBSERVER
+            .get()
+            .filter(|_| !matches!(self.transport, Transport::Recursive(_)));
+        let sent = observer.map(|_| std::time::SystemTime::now());
+        let result = self.send(query, id, timeout).await;
+        if let (Some(obs), Some(sent)) = (observer, sent) {
+            let addr = match &self.transport {
+                Transport::Plugin(..) => None,
+                _ => self.target.addr().await.ok(),
+            };
+            obs(&Exchange {
+                protocol: self.endpoint.protocol,
+                addr,
+                query,
+                response: result.as_ref().ok().map(Vec::as_slice),
+                sent,
+            });
+        }
+        let resp = result?;
+        if matches_query(&resp, query, id) && summarize(&resp).is_ok() {
+            Ok(resp)
+        } else {
+            Err(ExchangeError::BadResponse)
+        }
+    }
+
+    /// Sends `query` over this upstream's transport and returns what came back.
+    async fn send(
+        &self,
+        query: &[u8],
+        id: u16,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, ExchangeError> {
         let resp = match &self.transport {
             Transport::Udp { tcp, relay } => {
                 let udp = async {
@@ -784,11 +844,7 @@ impl Upstream {
                     ExchangeError::BadResponse
                 })?,
         };
-        if matches_query(&resp, query, id) && summarize(&resp).is_ok() {
-            Ok(resp)
-        } else {
-            Err(ExchangeError::BadResponse)
-        }
+        Ok(resp)
     }
 }
 
