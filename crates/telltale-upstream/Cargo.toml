@@ -48,4 +48,7 @@ webpki-roots = "1.0.9"
 # T7.8: the HTTP/3 upstream is tested against the real DoH3 listener.
 telltale-net = { version = "0.1.0", path = "../telltale-net" }
 rcgen = "0.14.10"
+# T9.24: the offline signed-zone DNSSEC test (RRSIG inception) and its anchors file.
+time = "0.3.55"
+tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }

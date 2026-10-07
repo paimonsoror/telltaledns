@@ -492,15 +492,21 @@ impl Upstream {
         tls: &TlsOptions,
     ) -> Result<Self, String> {
         let name = name.into();
-        // REQ: UPS-010 — TCP-based protocols only (UDP through SOCKS5 is P2).
+        // REQ: UPS-010 — TCP-based protocols, and (T9.9) UDP through a SOCKS5 proxy's UDP
+        // ASSOCIATE relay.
+        let socks5 = matches!(
+            opts.proxy.as_deref(),
+            Some(crate::proxy::Proxy::Socks5 { .. })
+        );
         if opts.proxy.is_some()
             && !matches!(
                 endpoint.protocol,
                 Protocol::Tcp | Protocol::Tls | Protocol::Https
             )
+            && !(endpoint.protocol == Protocol::Udp && socks5)
         {
             return Err(format!(
-                "upstream `{name}`: a proxy works with tcp://, tls://, and https:// upstreams (use tcp:// instead of udp://)"
+                "upstream `{name}`: a proxy works with tcp://, tls://, and https:// upstreams, or udp:// through a socks5:// proxy (use tcp:// with an HTTP proxy)"
             ));
         }
         if matches!(endpoint.host, Host::Name(_))

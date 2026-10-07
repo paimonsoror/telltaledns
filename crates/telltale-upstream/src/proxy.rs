@@ -404,25 +404,11 @@ mod tests {
         assert_eq!(base64(b"ab"), "YWI=");
     }
 
-    /// REQ: UPS-010 (T9.9) — UDP through a SOCKS5 UDP ASSOCIATE relay: the datagram carries
-    /// the destination in its header, the reply comes back through the relay, and the relay is
-    /// reused while its control connection stays open.
-    #[tokio::test]
+    /// A fake SOCKS5 proxy: no auth, UDP ASSOCIATE, a relay socket that unwraps and forwards.
+    /// Returns its address and how many associations it made.
     #[allow(clippy::many_single_char_names)] // protocol byte buffers
-    async fn ups_010_socks5_udp_associate() {
+    async fn fake_socks5_udp() -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use tokio::net::TcpListener;
-        // The "DNS server": answers with the query's ID and a marker byte.
-        let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let dns_addr = dns.local_addr().unwrap();
-        tokio::spawn(async move {
-            let mut b = [0u8; 512];
-            while let Ok((n, from)) = dns.recv_from(&mut b).await {
-                let mut r = b[..n].to_vec();
-                r.push(0xAB);
-                let _ = dns.send_to(&r, from).await;
-            }
-        });
-        // The fake proxy: no auth, UDP ASSOCIATE, a relay socket that unwraps and forwards.
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let associations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -469,6 +455,27 @@ mod tests {
                 });
             }
         });
+        (addr, associations)
+    }
+
+    /// REQ: UPS-010 (T9.9) — UDP through a SOCKS5 UDP ASSOCIATE relay: the datagram carries
+    /// the destination in its header, the reply comes back through the relay, and the relay is
+    /// reused while its control connection stays open.
+    #[tokio::test]
+    #[allow(clippy::many_single_char_names)] // protocol byte buffers
+    async fn ups_010_socks5_udp_associate() {
+        // The "DNS server": answers with the query's ID and a marker byte.
+        let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dns_addr = dns.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = dns.recv_from(&mut b).await {
+                let mut r = b[..n].to_vec();
+                r.push(0xAB);
+                let _ = dns.send_to(&r, from).await;
+            }
+        });
+        let (addr, associations) = fake_socks5_udp().await;
         let p = Proxy::Socks5 { addr, auth: None };
         let relay = p.udp_associate().await.unwrap();
         for id in [0x1234u16, 0x5678] {
@@ -566,5 +573,61 @@ mod tests {
         s.write_all(b"pong").await.unwrap();
         s.read_exact(&mut back).await.unwrap();
         assert_eq!(&back, b"pong");
+    }
+
+    /// REQ: UPS-010 (T9.9, T9.24) — a `udp://` upstream built with a `socks5://` proxy resolves
+    /// through the relay (the path a configuration takes; `Upstream::build` refused it before).
+    #[tokio::test]
+    async fn ups_010_udp_upstream_through_socks5() {
+        let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dns_addr = dns.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = dns.recv_from(&mut b).await {
+                let q = telltale_proto::parse_query(&b[..n]).unwrap();
+                let mut out = [0u8; 512];
+                let mut rb = telltale_proto::ResponseBuilder::new(
+                    &q,
+                    &mut out,
+                    telltale_proto::rcode::NOERROR,
+                )
+                .unwrap();
+                rb.answer_a(60, std::net::Ipv4Addr::new(192, 0, 2, 9))
+                    .unwrap();
+                let len = rb.finish(None).unwrap();
+                let _ = dns.send_to(&out[..len], from).await;
+            }
+        });
+        let (proxy, associations) = fake_socks5_udp().await;
+        let ep = crate::Endpoint::parse(&format!("udp://{dns_addr}")).unwrap();
+        let opts = crate::UpstreamOptions {
+            proxy: Some(std::sync::Arc::new(Proxy::Socks5 {
+                addr: proxy,
+                auth: None,
+            })),
+            ..crate::UpstreamOptions::default()
+        };
+        let up = crate::Upstream::build(1, "socks-udp", ep, &opts, &crate::TlsOptions::default())
+            .unwrap();
+        let q = crate::Question {
+            name: telltale_proto::NameBuf::from_presentation("through.socks.test").unwrap(),
+            qtype: telltale_proto::rtype::A,
+            qclass: 1,
+            dnssec_ok: false,
+            checking_disabled: false,
+            client_subnet: 0,
+        };
+        for _ in 0..2 {
+            let r = up
+                .exchange(&q, std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+            assert!(r.ends_with(&[192, 0, 2, 9]));
+        }
+        assert_eq!(
+            associations.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "one association, reused across queries"
+        );
     }
 }

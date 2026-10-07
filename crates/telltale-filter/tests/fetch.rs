@@ -625,3 +625,109 @@ async fn flt_004_run_loop_signals_changes_and_prunes() {
         .unwrap()
         .unwrap();
 }
+
+// ---------------------------------------------------------------- Client::request (T9.24)
+
+/// A TLS acceptor for `lists.test` and its certificate as PEM (what `tls_ca` files hold).
+fn tls_pem() -> (tokio_rustls::TlsAcceptor, String) {
+    let ck = rcgen::generate_simple_self_signed(vec!["lists.test".to_owned()]).unwrap();
+    let pem = ck.cert.pem();
+    let cert = CertificateDer::from(ck.cert.der().to_vec());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let cfg = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .unwrap();
+    (tokio_rustls::TlsAcceptor::from(Arc::new(cfg)), pem)
+}
+
+/// REQ: API-004, OBS-010 — `Client::request` (OIDC, alert webhooks, event sinks, checks): one
+/// request as built, with our user agent; the status and body back; a cap on the body; no
+/// unknown schemes.
+#[tokio::test]
+async fn flt_004_client_request() {
+    let srv = serve(
+        handler(|req, _| match req.path.as_str() {
+            "/big" => ok(&"x".repeat(2000)),
+            _ => status(201).header("x-reply", "yes"),
+        }),
+        None,
+    )
+    .await;
+    let client = Client::new(Arc::new(Loopback), &[]).unwrap();
+    let req = http::Request::post(srv.url("http", "hooks.test", "/ingest?k=1"))
+        .header("x-test", "42")
+        .body(b"{}".to_vec())
+        .unwrap();
+    let resp = client.request(req, 1024).await.unwrap();
+    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.headers()["x-reply"], "yes");
+    let seen = &srv.requests()[0];
+    assert_eq!(seen.path, "/ingest?k=1");
+    assert_eq!(seen.headers["x-test"], "42");
+    assert!(
+        seen.headers["user-agent"].starts_with("TelltaleDNS/"),
+        "{:?}",
+        seen.headers
+    );
+    assert!(seen.headers["host"].starts_with("hooks.test:"));
+
+    let big = http::Request::get(srv.url("http", "hooks.test", "/big"))
+        .body(Vec::new())
+        .unwrap();
+    let e = client.request(big, 1024).await.unwrap_err();
+    assert!(e.message.contains("larger than 1024"), "{}", e.message);
+
+    let ftp = http::Request::get("ftp://hooks.test/x")
+        .body(Vec::new())
+        .unwrap();
+    let e = client.request(ftp, 1024).await.unwrap_err();
+    assert!(e.message.contains("unsupported scheme"), "{}", e.message);
+}
+
+/// REQ: T8.2, OBS-010 — HTTPS to a self-signed server: refused by default, accepted with its
+/// certificate as a CA file (`tls_ca`), or with verification off (`tls_insecure_skip_verify`);
+/// a CA file that isn't there says so.
+#[tokio::test]
+async fn flt_004_client_tls_options() {
+    let (acceptor, pem) = tls_pem();
+    let srv = serve(handler(|_, _| ok("hello")), Some(acceptor)).await;
+    let url = srv.url("https", "lists.test", "/x");
+    let get = || http::Request::get(url.clone()).body(Vec::new()).unwrap();
+
+    let e = Client::new(Arc::new(Loopback), &[])
+        .unwrap()
+        .request(get(), 1024)
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("TLS"), "{}", e.message);
+
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, &pem).unwrap();
+    let with_ca = Client::with_ca_file(Arc::new(Loopback), ca.to_str().unwrap()).unwrap();
+    assert_eq!(with_ca.request(get(), 1024).await.unwrap().body(), b"hello");
+
+    let insecure = Client::insecure(Arc::new(Loopback)).unwrap();
+    assert_eq!(
+        insecure.request(get(), 1024).await.unwrap().body(),
+        b"hello"
+    );
+
+    let missing = dir.path().join("nope.pem");
+    let e = Client::with_ca_file(Arc::new(Loopback), missing.to_str().unwrap()).unwrap_err();
+    assert!(e.contains("nope.pem"), "{e}");
+}
+
+/// REQ: FLT-004 — the system resolver finds loopback for `localhost`.
+#[tokio::test]
+async fn flt_004_system_resolver() {
+    let ips = telltale_filter::fetch::SystemResolver
+        .resolve("localhost")
+        .await
+        .unwrap();
+    assert!(ips.iter().any(IpAddr::is_loopback), "{ips:?}");
+}
