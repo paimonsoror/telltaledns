@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow starts CI for the commit it pushes to main (T9.26).
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

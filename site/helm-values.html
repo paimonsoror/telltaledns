@@ -19,8 +19,8 @@
   <p class="lede">Every option of the Kubernetes chart, generated from the chart's own <code>values.yaml</code> and its comments, so it can't drift from the chart.</p>
   <ul>
     <li>The whole file, with its comments, for the version you install:
-<pre><code>helm show values oci://ghcr.io/paimonsoror/charts/telltale --devel > values.yaml
-# or one version: --version 0.1.0-edge.N</code></pre></li>
+<pre><code>helm show values oci://ghcr.io/paimonsoror/charts/telltale > values.yaml
+# or one version: --version X.Y.Z (builds from main: --devel, or --version X.Y.Z-edge.N)</code></pre></li>
     <li>The file on GitHub: <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/helm/telltale/values.yaml"><code>deploy/helm/telltale/values.yaml</code></a>.</li>
     <li>Keep only what you change in your own file and install with <code>-f my-values.yaml</code>. The chart checks values against its schema, so a mistyped value fails the install with the key's path.</li>
     <li>TelltaleDNS's own settings go in <code>config:</code> as TOML; every key is in the <a href="config.html">configuration reference</a>.</li>

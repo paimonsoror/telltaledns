@@ -9,7 +9,7 @@
 name: telltale
 services:
   telltale:
-    image: ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-edge}
+    image: ghcr.io/paimonsoror/telltale:${TELLTALE_TAG:-latest}
     command: ["run", "-c", "/etc/telltale/telltale.toml"]
     network_mode: host
     restart: unless-stopped

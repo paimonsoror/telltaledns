@@ -1,0 +1,68 @@
+# REQ: OPS-004 (T9.26, ADR-097) — cut a stable release with one button, the same way every
+# time (docs/releasing.md): Actions → release → Run workflow → version.
+#   1. preflight: X.Y.Z matches Cargo.toml and the chart, the tag is new, release notes
+#      exist, CI passed on main's head;
+#   2. tags main's head vX.Y.Z and starts the image workflow on the tag (a tag pushed with
+#      this workflow's token starts no workflows by itself). That run builds, signs, and
+#      publishes the binaries, images, chart, and GitHub release, then verifies them;
+#   3. moves main to the next version (`deploy/release/bump.sh`), so edge builds become
+#      `<next>-edge.N`, newer than the release, and starts CI and edge for that commit.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, X.Y.Z (must match Cargo.toml on main)"
+        required: true
+      next:
+        description: "Version main moves to afterwards (default: the next minor, X.Y+1.0)"
+        required: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      NEXT: ${{ inputs.next }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Preflight
+        run: sh deploy/release/preflight.sh "$VERSION"
+
+      - name: Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "TelltaleDNS $VERSION"
+          git push origin "v$VERSION"
+          echo "::notice title=tagged::v$VERSION at $(git rev-parse --short HEAD)"
+
+      - name: Build and publish the tag
+        run: |
+          gh workflow run image.yml --ref "v$VERSION"
+          echo "::notice title=building::the image workflow publishes and verifies v$VERSION (Actions → image, ref v$VERSION)"
+
+      - name: Move main to the next version
+        run: |
+          next=${NEXT:-$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')}
+          sh deploy/release/bump.sh "$next"
+          git commit -am "chore: start $next development (after v$VERSION) [OPS-004]"
+          git push origin HEAD:main
+          # A push with this workflow's token starts no workflows: start CI and edge.
+          gh workflow run ci.yml --ref main
+          gh workflow run image.yml --ref main
+          echo "::notice title=main moved on::$next (edge builds are now $next-edge.N)"

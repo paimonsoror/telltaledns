@@ -109,7 +109,7 @@ dig @192.168.1.2 doubleclick.net      # 0.0.0.0 or NXDOMAIN: the blocklist works
       <p>No Docker: a single static binary as a sandboxed systemd service, on any systemd distribution (x86-64, arm64, or 32-bit ARM). The installer checks the release's signature and checksum before installing anything, so read it, then run it:</p>
 <pre><code>curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
 less install.sh
-sudo sh install.sh --edge          # without --edge: the latest tagged release
+sudo sh install.sh                 # the latest release; --edge: builds from main
 sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code></pre>
       <ul>
         <li>It asks first: press Enter for the recommended settings, or <b>walk me through the options</b> to pick upstreams (encrypted presets or your own server), starting blocklists (or none), the listen address, the first admin (a setup token, or a password now), and the query log's retention and privacy. Every step shows its default; Enter keeps it. Piped or automated runs (and <code>--yes</code>) ask nothing.</li>
@@ -126,7 +126,7 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>
   -p 53:53/udp -p 53:53/tcp -p 8053:8053 -p 9153:9153 \
   -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
   -v telltale-data:/var/lib/telltale \
-  ghcr.io/paimonsoror/telltale:edge
+  ghcr.io/paimonsoror/telltale:latest
 docker exec telltale telltale auth setup-token</code></pre>
       <p class="muted">amd64, arm64, and arm/v7; about 9 MiB compressed, web UI included; runs as a non-root user. Published ports can hide each device's own address behind Docker's (the UI warns if they do): on a home network, <code>--network host</code> (or the Pi Compose bundle) makes sure each device shows up as itself. A starter config is in <a href="#configure">step 2</a>.</p>
     </div>
@@ -154,15 +154,15 @@ docker exec telltale telltale auth setup-token</code></pre>
           <text x="777" y="148" text-anchor="middle" fill="#e8eef6" font-size="12">ServiceMonitor · alerts</text>
         </svg>
       </figure>
-<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --devel \
+<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale \
   -n telltale --create-namespace \
   --set service.dns.annotations."metallb\.universe\.tf/loadBalancerIPs"=192.168.1.53
 kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: your DNS server address
 kubectl -n telltale exec telltale-0 -- /usr/local/bin/telltale auth setup-token \
   -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml</code></pre>
       <ul>
-        <li><b>Every option:</b> <code>helm show values oci://ghcr.io/paimonsoror/charts/telltale --devel &gt; values.yaml</code> prints the chart's commented values file; the <a href="helm-values.html">Helm values reference</a> lists each key with its default and meaning. Keep what you change in your own file and pass it with <code>-f</code>.</li>
-        <li><b>Chart versions:</b> every build from main publishes <code>0.1.0-edge.N</code>, which is what <code>--devel</code> picks; pin one with <code>--version</code> instead.</li>
+        <li><b>Every option:</b> <code>helm show values oci://ghcr.io/paimonsoror/charts/telltale &gt; values.yaml</code> prints the chart's commented values file; the <a href="helm-values.html">Helm values reference</a> lists each key with its default and meaning. Keep what you change in your own file and pass it with <code>-f</code>.</li>
+        <li><b>Chart versions:</b> without <code>--version</code>, Helm installs the newest stable release (chart and image versions match). Builds from main publish <code>X.Y.Z-edge.N</code> charts with the <code>:edge</code> image: add <code>--devel</code> for the newest, or pin one with <code>--version</code>.</li>
         <li><b>Keep <code>externalTrafficPolicy: Local</code></b> (the default): with <code>Cluster</code>, every query looks like it came from a node, and TelltaleDNS shows a "client IPs appear masked" banner.</li>
         <li>Your settings go in <code>config:</code> (TOML, the same keys as the <a href="config.html">configuration reference</a>); secrets come from existing Secrets.</li>
         <li>Encrypted DNS for phones: <code>encrypted.dot.enabled</code> / <code>encrypted.doh.enabled</code> with a cert-manager certificate.</li>

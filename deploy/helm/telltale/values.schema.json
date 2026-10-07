@@ -171,6 +171,9 @@
         },
         "size": {
           "type": "string"
+        },
+        "existingClaim": {
+          "type": "string"
         }
       }
     },

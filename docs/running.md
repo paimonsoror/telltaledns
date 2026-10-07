@@ -37,14 +37,14 @@ dig @127.0.0.1 -p 5300 example.com
 Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, DoQ, and DoH3 listeners are described in "[Encrypted DNS for your devices](#encrypted-dns-for-your-devices-dot-doh-and-doq)".
 
 ## Container image
-`ghcr.io/paimonsoror/telltale:edge` is built from every commit on `main` for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 3 MiB compressed, with no shell. It runs as user `65532:65532`. Versioned tags (`:1`, `:1.2.3`) start with the first release.
+`ghcr.io/paimonsoror/telltale:latest` is the newest stable release (also `:X.Y.Z`, `:X.Y`, and `:X`; `:edge` is built from every commit on `main`), for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 3 MiB compressed, with no shell. It runs as user `65532:65532`.
 ```sh
 docker run -d --name telltale --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -p 53:53/udp -p 53:53/tcp -p 9153:9153 \
   -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
   -v telltale-data:/var/lib/telltale \
-  ghcr.io/paimonsoror/telltale:edge
+  ghcr.io/paimonsoror/telltale:latest
 ```
 - The config is read from `/etc/telltale/telltale.toml` when it exists; otherwise the built-in defaults apply. `/var/lib/telltale` is the only path written to.
 - With `-p` (bridge networking), port 53 works with every capability dropped: Docker lets unprivileged users bind low ports inside the container's own network namespace.
@@ -74,7 +74,7 @@ The container uses the host network, a read-only root filesystem, and only `NET_
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/systemd/install.sh
 less install.sh                     # read before running as root
-sudo sh install.sh --edge           # builds from main; without --edge: the latest tagged release
+sudo sh install.sh                  # the latest release; --edge: builds from main
 sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml
 ```
 **Guided setup.** Run in a terminal on a new machine, the installer asks one question first: press Enter for the recommended settings (the starter config above), or choose **Walk me through the options**. Each step shows its default in `[brackets]`; Enter or `skip` keeps it:

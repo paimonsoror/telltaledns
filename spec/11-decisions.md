@@ -1265,6 +1265,21 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-097 — Releases: one workflow, checked before and verified after; main moves on at once (Proposed)
+**Context:** T9.26 (OPS-004, owner request 2026-10-07: cut v0.1.0, and make releases deterministic for future agents). Tag builds already published signed binaries, versioned images, and a chart (ADR-038, ADR-046), but cutting one was a manual tag push, nothing checked the version against `Cargo.toml` or the chart, nothing confirmed the result, and edge builds kept the released version's number.
+
+**Decision:**
+- A `release` workflow (manual, input `X.Y.Z`) runs `deploy/release/preflight.sh`: X.Y.Z with no suffix, equal to `Cargo.toml`'s and the chart's version, a new tag, a notes file `deploy/release/notes/vX.Y.Z.md`, and a passing CI run on `main`'s head. Only then does it tag `main`'s head.
+- A tag pushed with the workflow's token starts no workflows, so the release workflow starts the image workflow on the tag itself (`workflow_dispatch`). The image workflow's publish jobs run for pushes and dispatches on `main` or `v*` tags.
+- The tag's build ends with `verify` (`deploy/release/verify.sh`): signatures, the binary's version and channel, "latest release", the four image tags as one multi-arch image, and the chart's version and appVersion. The release is done when it passes.
+- Right after tagging, `main` moves to the next version (default: next minor) with `deploy/release/bump.sh`, because semver sorts `X.Y.Z-edge.N` below `X.Y.Z`. The workflow then starts CI and edge for that commit.
+- A published tag is never moved or reused; a broken release is followed by a patch release.
+- Release notes are hand-written per version; GitHub's generated changelog is appended.
+
+**Consequences:**
+- Releases are one button with the same checks every time; `docs/releasing.md` is the procedure for maintainers and agents.
+- The workflow pushes one commit to `main` per release. If branch protection is added later, the bump step needs an exception or becomes a pull request.
+
 ## ADR-096 — A client group's own upstream group (Accepted)
 **Context:** T9.25 (UPS-007, owner request 2026-10-06). UPS-007 already routes by client group (`[[route]] match_group`), but that lives in routing, not on the group, and the UI had no way to set it. The spec doesn't say how it ranks against domain routes, which group wins for a device in several, or what removing an upstream group a group uses does.
 

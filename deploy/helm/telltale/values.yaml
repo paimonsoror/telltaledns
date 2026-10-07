@@ -155,6 +155,9 @@ persistence:
   size: 2Gi
   storageClass: ""
   accessModes: [ReadWriteOnce]
+  # Use this PersistentVolumeClaim instead of creating one (size, storageClass, and
+  # accessModes are then ignored): for moving an existing install's data to this chart.
+  existingClaim: ""
 
 resources:
   requests:
