@@ -64,7 +64,7 @@ jobs:
       # arm images uses QEMU (T0.4 AC: runs on arm64 under QEMU).
       - name: Smoke test each platform
         run: |
-          sudo apt-get update && sudo apt-get install -y dnsutils
+          sh .github/scripts/apt-install.sh dnsutils
           for p in ${PLATFORMS//,/ }; do
             tag="telltale:smoke-${p//\//-}"
             docker buildx build $BUILD_ARGS --platform "$p" --cache-from type=gha --load -t "$tag" .
@@ -170,7 +170,7 @@ jobs:
             echo "::warning title=release not published::Add the MINISIGN_SECRET_KEY repository secret to publish signed binaries (install.sh and self-update refuse unsigned ones)."
             echo "signed=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          sh .github/scripts/apt-install.sh minisign
           # REQ: OPS-004 (ADR-046) — the release index nodes check for updates.
           python3 deploy/release/index.py dist "${{ needs.image.outputs.build_channel }}" \
             "${{ needs.image.outputs.build_version }}" "${{ needs.image.outputs.build_commit }}" \
@@ -228,7 +228,7 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Verify the release
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          sh .github/scripts/apt-install.sh minisign
           # The registry and "latest release" can lag the publish by a little.
           for i in 1 2 3; do
             sh deploy/release/verify.sh "${GITHUB_REF_NAME#v}" && exit 0

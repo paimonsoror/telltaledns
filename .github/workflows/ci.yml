@@ -67,11 +67,13 @@ jobs:
   # regression gate (09 §2 needs a fixed machine), so this fails only on loss or errors.
   bench-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y dnsperf
+      - run: sh .github/scripts/apt-install.sh dnsperf
+        timeout-minutes: 12
       - run: make bench-smoke
       - uses: actions/upload-artifact@v4
         if: always()
@@ -210,7 +212,8 @@ jobs:
       - name: Install k3d
         if: matrix.tool == 'k3d'
         run: curl -sSfL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
-      - run: sudo apt-get update && sudo apt-get install -y dnsutils
+      - run: sh .github/scripts/apt-install.sh dnsutils
+        timeout-minutes: 12
       - name: DNS through a LoadBalancer; client IP in the query log
         run: KEEP=1 E2E_KUBECONFIG="$RUNNER_TEMP/kubeconfig" TOOL=${{ matrix.tool }} bash deploy/helm/e2e.sh
       - name: ct install (every ci/*-values.yaml)
@@ -229,7 +232,7 @@ jobs:
       - run: cargo build --profile bench-fast -p telltale
       - name: Compose bundle
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils minisign
+          sh .github/scripts/apt-install.sh dnsutils minisign
           mkdir ctx && cp target/bench-fast/telltale ctx/
           printf '%s\n' 'FROM ubuntu:24.04' \
             'COPY telltale /usr/local/bin/telltale' \
@@ -290,7 +293,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --profile bench-fast -p telltale
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils
+      - run: sh .github/scripts/apt-install.sh dnsutils
+        timeout-minutes: 12
       # REQ: API-007 (T6.7) — a backup from a running node restores onto a fresh one.
       - name: Backup and restore
         run: bash deploy/backup-e2e.sh target/bench-fast/telltale
