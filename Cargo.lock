@@ -3364,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "telltale"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -3408,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "axum",
@@ -3431,7 +3431,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-cache"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "allocation-counter",
  "criterion",
@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-cluster"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -3468,7 +3468,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jiff",
  "schemars 1.2.2",
@@ -3481,7 +3481,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-filter"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -3515,7 +3515,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-git"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "miniz_oxide",
@@ -3526,7 +3526,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "h3",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-policy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "parking_lot",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "hickory-proto",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-recursor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "parking_lot",
  "rand 0.10.3",
@@ -3583,7 +3583,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "memchr",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-telemetry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "allocation-counter",
  "hdrhistogram",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "telltale-upstream"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "crypto_box",

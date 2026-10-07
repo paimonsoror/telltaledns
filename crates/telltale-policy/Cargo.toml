@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 arc-swap = "1.9.2"
 parking_lot = "0.12.5"
-telltale-config = { version = "0.2.0", path = "../telltale-config" }
-telltale-proto = { version = "0.2.0", path = "../telltale-proto" }
+telltale-config = { version = "0.3.0", path = "../telltale-config" }
+telltale-proto = { version = "0.3.0", path = "../telltale-proto" }
 # T6.12: hashes quick-rule domains (already in the binary via telltale-proto and -filter).
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
