@@ -86,7 +86,9 @@ check with `deploy/release/verify.sh X.Y.Z` once the tag's build is green.
   image workflow's publish steps run for pushes *and* dispatches on `main` or `v*` tags.
 - **Workspace crates name each other's version** (`telltale-proto = { version = "X.Y.Z",
   path = … }`). A version change has to update them and `Cargo.lock` too: use
-  `deploy/release/bump.sh`, never a hand edit.
+  `deploy/release/bump.sh`, never a hand edit. The committed OpenAPI document
+  (`docs/api/openapi.json`, `info.version`) carries the version too; CI fails if it's stale,
+  and `bump.sh` updates it (learned from v0.1.0: the first bump missed it).
 - **`Chart.yaml` says `appVersion: "edge"`** on `main`. The tag's build packages the chart
   with appVersion `X.Y.Z`, so a stable chart installs the matching stable image.
 - **Signing needs the `MINISIGN_SECRET_KEY` secret.** Without it the build warns and
