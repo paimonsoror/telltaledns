@@ -304,8 +304,11 @@ struct CompiledMod {
     dnstype: Vec<NegValue<u16>>,
     /// Reversed keys of `$denyallow` names.
     deny: Vec<Vec<u8>>,
-    /// `$dnsrewrite` rules don't block or allow (rewrites are FLT-014).
+    /// `$dnsrewrite` rules don't block or allow: they rewrite (FLT-014, T9.20).
     rewrite: bool,
+    /// What a rewrite does (none for an exception's `$dnsrewrite`).
+    action: Option<crate::rewrite::RewriteAction>,
+    allow: bool,
 }
 
 fn scope_of(t: ScopeTag) -> Scope {
@@ -330,12 +333,19 @@ impl CompiledMod {
             dnstype: m.dnstype.clone(),
             deny: m.denyallow.iter().map(|d| reversed_key(d)).collect(),
             rewrite: m.dnsrewrite.is_some(),
+            action: m.dnsrewrite.as_deref().and_then(crate::rewrite::parse),
+            allow: m.allow,
         }
     }
 
     /// Does this rule apply to `qkey` (full reversed qname) for this client and qtype?
     fn applies(&self, qkey: &[u8], qtype: u16, client: &ClientCtx<'_>) -> bool {
-        if self.rewrite || !dnstype_ok(&self.dnstype, qtype) {
+        !self.rewrite && self.applies_to(qkey, qtype, client)
+    }
+
+    /// The rule's predicates (`$dnstype`, `$denyallow`, `$client`), whatever it does.
+    fn applies_to(&self, qkey: &[u8], qtype: u16, client: &ClientCtx<'_>) -> bool {
+        if !dnstype_ok(&self.dnstype, qtype) {
             return false;
         }
         if self.deny.iter().any(|d| qkey.starts_with(d)) {
@@ -672,6 +682,9 @@ pub struct Matcher {
     mods: Vec<CompiledMod>,
     regexes: RegexSets,
     overlay: Overlay,
+    /// REQ: FLT-014 (T9.20) — any `$dnsrewrite` rule at all (else [`Matcher::rewrites`] is
+    /// one bool check).
+    has_rewrites: bool,
 }
 
 /// Per-worker scratch (regex caches and match sets). Create one per thread with
@@ -799,6 +812,8 @@ impl Matcher {
             ),
             None => (Vec::new(), RegexSets::new(Vec::new())?, None),
         };
+        let has_rewrites = mods.iter().any(|m: &CompiledMod| m.rewrite)
+            || overlay.mods.values().flatten().any(|m| m.rewrite);
         Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             snapshot,
@@ -806,7 +821,13 @@ impl Matcher {
             mods,
             regexes,
             overlay,
+            has_rewrites,
         })
+    }
+
+    /// REQ: FLT-014 (T9.20) — whether any list has `$dnsrewrite` rules.
+    pub fn has_rewrites(&self) -> bool {
+        self.has_rewrites
     }
 
     pub fn snapshot(&self) -> Option<&Arc<Snapshot>> {
@@ -846,6 +867,69 @@ impl Matcher {
         let mut best = Best::default();
         self.run(&name, qname, qtype, client, mask, scratch, &mut best);
         best.decision()
+    }
+
+    /// REQ: FLT-014 (T9.20) — the `$dnsrewrite` answer for `qname`/`qtype`, if a rewrite rule in
+    /// a list this client uses applies (and no exception turns it off), with the first rule's
+    /// list. A rewrite wins over blocking (AdGuard's semantics). One bool check when no list
+    /// has rewrites.
+    pub fn rewrites(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+    ) -> Option<(crate::rewrite::ListRewrite, u16)> {
+        if !self.has_rewrites {
+            return None;
+        }
+        let name = Name::from_wire(qname)?;
+        let mut hits: Vec<&CompiledMod> = Vec::new();
+        let take = |m: &'_ CompiledMod, labels: usize| {
+            m.rewrite
+                && mask.contains(m.list)
+                && scope_applies(m.scope, labels, name.labels)
+                && m.applies_to(name.key(), qtype, client)
+        };
+        if let Some(s) = &self.snapshot {
+            let mods = &self.mods;
+            let mut found: Vec<usize> = Vec::new();
+            walk(
+                s.modrules_index.as_fst(),
+                &name,
+                1,
+                name.labels,
+                |labels, v| {
+                    if let (Ok(start), Ok(count)) =
+                        (usize::try_from(v >> 32), usize::try_from(v & 0xffff_ffff))
+                    {
+                        for (i, m) in mods.iter().enumerate().skip(start).take(count) {
+                            if take(m, labels) {
+                                found.push(i);
+                            }
+                        }
+                    }
+                },
+            );
+            hits.extend(found.into_iter().filter_map(|i| mods.get(i)));
+        }
+        for labels in 1..=name.labels {
+            if let Some(mods) = self.overlay.mods.get(name.prefix(labels)) {
+                hits.extend(mods.iter().filter(|m| take(m, labels)));
+            }
+        }
+        // An exception (`@@…$dnsrewrite`) turns rewrites off.
+        if hits.is_empty() || hits.iter().any(|m| m.allow) {
+            return None;
+        }
+        // Important rules first, then the most specific (exact, deeper) as listed.
+        hits.sort_by_key(|m| std::cmp::Reverse(matches!(m.tier, Tier::ImportantBlock)));
+        let actions: Vec<&crate::rewrite::RewriteAction> =
+            hits.iter().filter_map(|m| m.action.as_ref()).collect();
+        if actions.is_empty() {
+            return None;
+        }
+        Some((crate::rewrite::combine(&actions, qtype), hits[0].list))
     }
 
     /// Every rule in every list (and the overlay) that matches `qname` for this client and

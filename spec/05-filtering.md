@@ -21,7 +21,7 @@
 | AdBlock | `||ads.example.com^` | subtree block |
 | AdBlock exception | `@@||good.example.com^` | subtree allow |
 | AdBlock exact | `|ads.example.com^` | exact |
-| modifiers | `$important`, `$badfilter`, `$client=…`, `$dnstype=AAAA\|A`, `$denyallow=a.com\|b.com`, `$dnsrewrite=…` (P1) | modifier-rule table (§3.3) |
+| modifiers | `$important`, `$badfilter`, `$client=…`, `$dnstype=AAAA\|A`, `$denyallow=a.com\|b.com`, `$dnsrewrite=…` (T9.20: address, CNAME, rcode; wins over blocking; `@@…$dnsrewrite` exceptions) | modifier-rule table (§3.3) |
 | Pi-hole regex | `(^\|\.)doubleclick\.net$;querytype=A` / `;invert` | regex set with metadata |
 | AdBlock regex | `/^ad[0-9]+\./` | regex set |
 | comments | `#`, `!`, `[Adblock Plus 2.0]` | ignored |

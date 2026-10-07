@@ -639,9 +639,13 @@ Every common format works, and formats can be mixed in one list:
 | `\|\|example.com^$client=192.168.1.0/24\|'Kids tablet'` | only for these clients (`~` excludes) |
 | `\|\|example.com^$denyallow=mail.example.com` | block `example.com` except these names below it |
 | `\|\|ads.example.com^$badfilter` | cancels the same rule without `$badfilter` |
+| `\|\|nas.example^$dnsrewrite=192.168.1.20` | answer with this address instead (also an IPv6 address, a name for a CNAME, `NXDOMAIN`/`REFUSED`, or the full `NOERROR;A;…`, `NOERROR;AAAA;…`, `NOERROR;CNAME;…`, `NXDOMAIN;;` forms) |
+| `@@\|\|nas.example^$dnsrewrite` | turns rewrites off for these names |
 | `/^ad[0-9]+\./` | AdBlock regex |
 | `(^\|\.)doubleclick\.net$` | Pi-hole regex; add `;querytype=A,AAAA` (or `=!A` to exclude) or `;invert` |
 | `# ...`, `! ...`, `[Adblock Plus 2.0]` | comments |
+
+**Rewrites in lists** (`$dnsrewrite`, AdGuard's syntax): a matching rewrite wins over blocking, and `$client`, `$dnstype`, and `$denyallow` narrow it as for other rules. Several address rewrites for one name answer together. A name rewritten only to IPv4 answers an IPv6 question with an empty NOERROR (and the other way round). A CNAME rewrite is resolved like any name. The query log shows the list. Rewrites of other record types (MX, TXT, HTTPS, …) are counted as unsupported. Rewrites in the configuration (`[[group.rewrite]]`) are per group, and come after list blocking.
 
 Names are lowercased, internationalized names are converted to punycode, and a trailing dot is ignored. Regexes match the lowercase query name and can't use backreferences or lookaround: the regex engine runs in linear time, so a pattern can't stall a query.
 

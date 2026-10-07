@@ -665,6 +665,11 @@ impl Pipeline {
                 if let Some(len) = self.schedule_block(&q, out, &st.policy, ident, oc) {
                     return ready(Some(self.finish(&q, out, len, meta.transport)));
                 }
+                // REQ: FLT-014 (T9.20) — list rewrites (`$dnsrewrite`) win over blocking.
+                if let Some(r) = self.list_rewrite(&q, who) {
+                    let groups = st.policy.clients.group_names(ident);
+                    return self.list_rewrite_answer(req, &q, r, groups, who, meta, out, start, oc);
+                }
                 if let Some(blocked) = self.filter_block(&q, meta, out, oc, who) {
                     return blocked;
                 }
@@ -980,6 +985,88 @@ impl Pipeline {
             );
             Some(bytes)
         }))
+    }
+
+    /// REQ: FLT-014 (T9.20) — the `$dnsrewrite` answer for this client, if a list it uses has
+    /// one for the name. One bool check when no list has rewrites.
+    fn list_rewrite(
+        &self,
+        q: &Query<'_>,
+        who: Who,
+    ) -> Option<(telltale_filter::rewrite::ListRewrite, u16)> {
+        let guard = self.filter.load();
+        let f = guard.as_ref()?;
+        if !f.matcher.has_rewrites() {
+            return None;
+        }
+        let ident = f.clients.identify(
+            who.peer,
+            who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+            who.mac,
+            &self.neighbors,
+        );
+        if self
+            .pause
+            .is_paused(&f.clients.primary_group(ident).name, unix_now)
+        {
+            return None;
+        }
+        let client = ClientCtx {
+            ip: who.peer,
+            name: f.clients.client(ident).map(|c| &*c.name),
+            client_id: who.client_id.as_ref().map(telltale_net::ClientId::as_str),
+        };
+        f.matcher
+            .rewrites(q.qname.as_wire(), q.qtype, &client, f.mask(ident))
+    }
+
+    /// REQ: FLT-014 (T9.20) — answers with a list rewrite: addresses of the asked family (60 s),
+    /// a CNAME resolved like any name, or an rcode with no records; attributed to the list.
+    #[allow(clippy::too_many_arguments)] // the same inputs as resolve_or_defer
+    fn list_rewrite_answer(
+        self: &Arc<Self>,
+        req: &[u8],
+        q: &Query<'_>,
+        (rewrite, list): (telltale_filter::rewrite::ListRewrite, u16),
+        groups: &[Box<str>],
+        who: Who,
+        meta: &RequestMeta,
+        out: &mut [u8],
+        start: Instant,
+        oc: &mut Outcome,
+    ) -> Response {
+        use telltale_filter::rewrite::ListRewrite;
+        oc.status = Status::Local;
+        oc.rule = Some(Rule {
+            list,
+            kind: RuleKind::Modifier,
+            allow: false,
+        });
+        match rewrite {
+            ListRewrite::Rcode(rc) => self.simple(q, out, rc, None, meta),
+            ListRewrite::Cname(target) => match NameBuf::from_presentation(&target) {
+                Ok(t) => self.safe_search(req, q, &t, groups, who, meta, out, start, oc),
+                Err(_) => self.simple(q, out, rcode::SERVFAIL, None, meta),
+            },
+            ListRewrite::Addrs(ips) => {
+                let edns = response_edns(q, self.settings.edns_payload, None);
+                let built = ResponseBuilder::new(q, out, rcode::NOERROR)
+                    .ok()
+                    .and_then(|mut b| {
+                        for ip in &ips {
+                            match ip {
+                                std::net::IpAddr::V4(a) => b.answer_a(60, *a).ok()?,
+                                std::net::IpAddr::V6(a) => b.answer_aaaa(60, *a).ok()?,
+                            };
+                        }
+                        b.finish(edns).ok()
+                    });
+                match built {
+                    Some(len) => Response::Ready(self.finish(q, out, len, meta.transport)),
+                    None => self.simple(q, out, rcode::SERVFAIL, None, meta),
+                }
+            }
+        }
     }
 
     /// REQ: FLT-014 (T7.20) — a rewrite to an address: A or AAAA as asked (no data for the
@@ -3040,6 +3127,54 @@ groups = ["kids"]
             parts.push(format!("{:x}", b >> 4));
         }
         format!("{}.ip6.arpa", parts.join("."))
+    }
+
+    /// REQ: FLT-014 (T9.20) — `$dnsrewrite` in lists: an address for its family (empty
+    /// NOERROR for the other), over a block of the same name, an rcode, a CNAME resolved like
+    /// any name, and an exception that turns it off.
+    #[test]
+    fn flt_014_list_dnsrewrite() {
+        let p = pipeline_with(
+            UPSTREAM,
+            "||rw.example^$dnsrewrite=192.0.2.55\n\
+             ||both.example^\n||both.example^$dnsrewrite=NOERROR;A;192.0.2.66\n\
+             ||nx.example^$dnsrewrite=NXDOMAIN\n\
+             ||cn.example^$dnsrewrite=target.example\n\
+             ||ex.example^$dnsrewrite=192.0.2.77\n@@||ex.example^$dnsrewrite\n",
+        );
+        let r = ask_from(&p, "10.0.0.5", "www.rw.example", rtype::A);
+        assert!(contains(&r, &[192, 0, 2, 55]), "subtree rewrite");
+        let s = summarize(&ask_from(&p, "10.0.0.5", "rw.example", rtype::AAAA)).unwrap();
+        assert_eq!(
+            (s.rcode, s.answers),
+            (rcode::NOERROR, 0),
+            "other family: empty"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.0.5", "both.example", rtype::A),
+                &[192, 0, 2, 66]
+            ),
+            "over the block"
+        );
+        assert_eq!(
+            summarize(&ask_from(&p, "10.0.0.5", "nx.example", rtype::A))
+                .unwrap()
+                .rcode,
+            rcode::NXDOMAIN
+        );
+        cache_a(&p, "target.example", Ipv4Addr::new(198, 51, 100, 9));
+        let r = ask_from(&p, "10.0.0.5", "cn.example", rtype::A);
+        let s = summarize(&r).unwrap();
+        assert_eq!(s.answers, 2, "CNAME + the target's A");
+        assert!(contains(&r, &[198, 51, 100, 9]));
+        assert!(
+            !contains(
+                &ask_from(&p, "10.0.0.5", "ex.example", rtype::A),
+                &[192, 0, 2, 77]
+            ),
+            "the exception"
+        );
     }
 
     /// REQ: DNS-016 (T9.10) — the exclusion set: an excluded (or IPv4-mapped) AAAA counts as

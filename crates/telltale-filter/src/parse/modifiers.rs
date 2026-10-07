@@ -25,7 +25,8 @@ pub struct Modifiers {
     pub dnstype: Vec<Negatable<u16>>,
     /// `$denyallow=`: subdomains excluded from a blocking rule.
     pub denyallow: Vec<String>,
-    /// `$dnsrewrite=` (P1): kept verbatim for the compiler.
+    /// `$dnsrewrite=` (FLT-014, T9.20): kept verbatim for the compiler; empty for an
+    /// exception that turns rewrites off.
     pub dnsrewrite: Option<String>,
 }
 
@@ -77,11 +78,23 @@ pub(super) fn parse(text: &str) -> Result<Modifiers, (bool, String)> {
                     m.denyallow.push(name);
                 }
             }
-            ("dnsrewrite", Some(v)) if !v.is_empty() => m.dnsrewrite = Some(v.to_owned()),
+            // REQ: FLT-014 (T9.20) — a supported rewrite, or none (an exception's `$dnsrewrite`).
+            ("dnsrewrite", None | Some("")) => m.dnsrewrite = Some(String::new()),
+            ("dnsrewrite", Some(v)) => {
+                if crate::rewrite::parse(v).is_none() {
+                    return Err((
+                        true,
+                        format!(
+                            "$dnsrewrite `{v}`: only addresses, CNAMEs, and rcodes are supported"
+                        ),
+                    ));
+                }
+                m.dnsrewrite = Some(v.to_owned());
+            }
             ("important" | "badfilter", Some(_)) => {
                 return Err((false, format!("${key} takes no value")));
             }
-            ("client" | "dnstype" | "denyallow" | "dnsrewrite", _) => {
+            ("client" | "dnstype" | "denyallow", _) => {
                 return Err((false, format!("${key} needs a value")));
             }
             ("", _) => return Err((false, "empty modifier".into())),

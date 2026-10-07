@@ -1265,6 +1265,28 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-095 — `$dnsrewrite` in lists: AdGuard's precedence, a supported subset (Proposed)
+**Context:** T2.3 kept `$dnsrewrite` rules in the snapshot but didn't apply them (T7.20 put rewrites in the configuration). AdGuard-format lists and personal rule sets use them for local names, safe-search CNAMEs, and blanking names out. Without them those lists lose part of their meaning.
+
+**Decision:**
+- **Values supported:**
+  - an address, either family (A/AAAA);
+  - a name (CNAME);
+  - `NXDOMAIN`, `REFUSED`, or `SERVFAIL`;
+  - the full form for `NOERROR` with A, AAAA, or CNAME, and any rcode with an empty answer.
+  Other record types (MX, TXT, SRV, HTTPS, …) make the line unsupported (counted, skipped), so a list author's intent is never half-applied.
+- **Precedence, as AdGuard does it:**
+  - a matching rewrite wins over blocking;
+  - an exception (`@@…$dnsrewrite`, with or without a value) turns rewrites off for the names it covers;
+  - `$client`, `$dnstype`, and `$denyallow` narrow a rewrite like any rule;
+  - schedules and quick rules still come first.
+- **Combining:** an rcode wins, then the first CNAME, then every address of the asked family. When the name is rewritten only for the other family, the answer is an empty NOERROR.
+- **On the query path:** a matcher flag skips everything when no list has rewrites. Otherwise the modifier index is walked once more for the name. The answer has TTL 60, is attributed to the list in the event, and a CNAME is resolved through the normal path (cache, upstreams, filtering of the target).
+
+**Consequences:**
+- AdGuard-style lists and personal rules work as their authors meant.
+- Configuration rewrites (`[[group.rewrite]]`) stay the per-group tool. List rewrites follow the lists a group uses.
+
 ## ADR-094 — Local zones answer SOA and NS at their apex; no zone transfers (Proposed)
 **Context:** T7.22's zones answered their records, but not `SOA` or `NS` at the apex. Their negative answers carried a placeholder SOA owned by the question name. Tools (`dig SOA`, monitoring checks, some resolvers' zone-cut detection) expect real ones.
 

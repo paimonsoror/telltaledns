@@ -10,4 +10,5 @@ pub mod explain;
 pub mod fetch;
 pub mod matcher;
 pub mod parse;
+pub mod rewrite;
 pub mod snapshot;
