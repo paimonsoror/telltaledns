@@ -1,6 +1,6 @@
 # 11 — Architecture Decision Records
 
-Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`). An agent must not contradict an accepted ADR without adding a superseding ADR and flagging it to the owner.
+Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`). The owner accepted every ADR proposed through ADR-096 on 2026-10-07; new ones start as Proposed. An agent must not contradict an accepted ADR without adding a superseding ADR and flagging it to the owner.
 
 ## ADR-001 — Language: Rust (Accepted)
 **Context:** Performance and footprint are paramount: a small, steady memory footprint on a Raspberry Pi and microsecond cache hits. That rules out garbage-collection pauses and runtime memory overhead, and we want memory safety at the same time.
@@ -60,7 +60,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 **Decision:** A small SPA compiled to static assets and embedded via `rust-embed`. No Node runtime in the product.
 **Consequences:** One binary. The UI build is part of CI (Node only at build time).
 
-## ADR-011 — Project name and identifiers: TelltaleDNS (Proposed)
+## ADR-011 — Project name and identifiers: TelltaleDNS (Accepted)
 **Context:** "Vigil" was a working name and collides with an existing Rust project (a status-page monitor). The owner chose **TelltaleDNS** on 2026-10-02. A telltale shows what the wind is doing; DNS shows what the network is doing, which matches the observability-first mission.
 **Decision:** The brand is `TelltaleDNS`. Machine identifiers use the short form `telltale`:
 - binary/CLI `telltale`, crate prefix `telltale-*`, env vars `TELLTALE_*`
@@ -70,7 +70,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 Workspace crates set `publish = false`, so the short prefix can't collide on crates.io.
 **Consequences:** Short, typeable identifiers. If crates are ever published or the registry name is taken, switch the published names to `telltaledns-*` without renaming internal crates. *Owner to confirm:* short `telltale` form vs. `telltaledns` everywhere.
 
-## ADR-012 — Project site: hand-written static HTML + inline SVG on GitHub Pages (Proposed)
+## ADR-012 — Project site: hand-written static HTML + inline SVG on GitHub Pages (Accepted)
 **Context:** The owner wants a GitHub Pages site for two audiences (non-technical and deeply technical), visual-first, including a standards page with diagrams per RFC (DOC-001..006). The project values a lightweight footprint and minimal tooling.
 **Decision:**
 - A `site/` directory of plain HTML pages, one shared CSS file, and inline SVG diagrams (hand-authored, or exported from Mermaid/Excalidraw sources committed beside them). No site generator and no Node build.
@@ -96,7 +96,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Interaction:** the map's crates are plain links to their descriptions further down. `assets/nerds.js` adds the side panel and edge highlighting.
 - **Pages deploys:** they now also run on `crates/**`, `spec/**` and `Cargo.toml` changes, so the line counts and arrows stay current.
 - **Contrast:** small accent-coloured text (section eyebrows) uses `--accent-text` (5.2:1) in the light theme.
-## ADR-013 — Hedged upstream attempts and a faster breaker trip (Proposed)
+## ADR-013 — Hedged upstream attempts and a faster breaker trip (Accepted)
 **Context:** `spec/04` §4–5 retries the next upstream only after an attempt fails or times out (up to 400 ms), and opens a breaker only after ≥ 10 samples with > 50% errors. With one dead upstream that makes the first ~10 queries, and every exploration or half-open probe, wait a full timeout. That breaks T1.5's chaos criterion (p99 within 1.5× of healthy).
 **Decision:**
 - **Hedging:** if an attempt hasn't answered within its upstream's hedge delay (≈ 3 × EWMA + 10 ms, bounded to [20 ms, attempt timeout]; 100 ms before there is data), the next member starts in parallel. The first good answer wins.
@@ -106,7 +106,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Measured in-process (debug build), one blackholed upstream out of two: 0 failures and p99 1.04–1.15× of baseline for failover, round_robin, fastest, and parallel. The cost is a few extra upstream queries while a member is degraded, and detached attempts holding a socket for up to one attempt timeout.
 
-## ADR-014 — Access, rate-limit, and special-name defaults (Proposed)
+## ADR-014 — Access, rate-limit, and special-name defaults (Accepted)
 **Context:** DNS-014, DNS-019, `spec/03` §3 step 4, and `spec/08` §6 name these behaviors but leave several defaults open.
 **Decision:**
 - **Access:** queries from outside `[access] allowed_networks` get REFUSED + EDE 18. The default list is RFC 1918, 100.64/10 (CGNAT, Tailscale), 169.254/16, 127/8, fc00::/7, fe80::/10, and ::1. Pod/service CIDR auto-detection waits for the Helm work (T4.1). Allowing `0.0.0.0/0` triggers a startup warning.
@@ -121,7 +121,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Safe by default on a home network. Users exposing TelltaleDNS beyond RFC 1918 must widen `allowed_networks` deliberately. Each special-name rule can be turned off under `[special]`.
 
-## ADR-015 — Image build, allocator tuning, and port 53 for non-root host networking (Proposed)
+## ADR-015 — Image build, allocator tuning, and port 53 for non-root host networking (Accepted)
 **Context:** OPS-001 and `spec/08` §2 require a static musl image that runs as 65532. T0.4 turned up three things the spec leaves open:
 1. Compiling arm64/armv7 under QEMU with fat LTO takes hours on CI runners.
 2. musl's allocator roughly halved cache-hit throughput in the bench harness (≈100–125k vs ≈190–210k qps for glibc). With mimalloc, transparent huge pages (THP; `madvise` mode on WSL and many distros) raised idle RSS from ≈6 MiB to ≈22 MiB, over the 20 MiB gate.
@@ -134,7 +134,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** CI image builds take minutes, not hours. musl matches glibc throughput, and idle RSS stays ≈6 MiB. The `spec/08` §3 compose example must change before the compose bundle ships (T4.3); the owner chooses between the sysctl and the root-with-one-capability fallback as the documented default.
 
-## ADR-016 — List fetcher behavior and configuration (Proposed)
+## ADR-016 — List fetcher behavior and configuration (Accepted)
 **Context:** FLT-004 and `spec/05` §3.4 step 1 define the fetcher's duties (conditional GETs, size caps, retries, stored sources) but not its configuration, scheduling, name resolution, or edge cases. T2.1 needed answers.
 
 **Decision:**
@@ -148,7 +148,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** One small request per list per day once lists are cached. A broken upstream list or a captive portal never empties a blocklist. Gzip transfer and per-list custom headers/auth are left for later (P1) if users need them.
 
-## ADR-017 — List parsing rules and synthetic golden fixtures (Proposed)
+## ADR-017 — List parsing rules and synthetic golden fixtures (Accepted)
 **Context:** FLT-001 and `spec/05` §2 list the syntaxes, but not how to tell them apart line by line or what to do with near-misses. `spec/09` §1 asks for golden tests on vendored copies of StevenBlack, HaGeZi Pro, OISD small, an AdGuard DNS filter, and Pi-hole regex samples. Several of those are GPL-licensed data (HaGeZi, AdGuard), which shouldn't be committed into an Apache-2.0/MIT repository.
 
 **Decision:**
@@ -160,7 +160,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Real lists parse without spurious errors, and browser-only rules never widen DNS blocking. The golden tests stay license-clean. Real-list drift is caught by the online test rather than by snapshot diffs.
 
-## ADR-018 — Filter snapshot layout and compile scheduling (Proposed)
+## ADR-018 — Filter snapshot layout and compile scheduling (Accepted)
 **Context:** `spec/05` §3 describes FSTs with list bitsets, and `spec/02` §5 names per-group blobs (`filter-<group>.fst`, `regex-<set>.dfa`, `rules.idx`). T2.3 needed a concrete on-disk layout, a way to handle `*.name` scope and the four precedence tiers, a rule for when to compile, and an answer for mmap, which needs `unsafe` that only `telltale-net` may contain.
 
 **Decision:**
@@ -172,7 +172,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** One snapshot format for every group and node, and only content-changed blobs ship in cluster sync. Measured on the owner's **Raspberry Pi 4** (4 GB, Cortex-A72 1.5 GHz; production Technitium running alongside, compile at nice 10), names from HaGeZi TIF: 2M names in 11.6 s on 1 thread, **6.4 s on 2** (gate ≤ 8 s met), and 4.7 s on 3, at 8.2–9.1 B/name; 1.5M names in 8.6 / 6.2 / 3.7 s. Peak RSS while compiling was 136–204 MiB. Sharding costs about 0.5 B/name per extra thread (still ≤ 10 B/name at 4 threads), and one thread writes one FST per scope, so it loses nothing. Whether compiling on 2 threads at nice 10 disturbs query latency on a Pi is T2.7's acceptance test.
 
-## ADR-019 — Deterministic device anomaly detection (Proposed)
+## ADR-019 — Deterministic device anomaly detection (Accepted)
 **Context:** The owner wants TelltaleDNS to notice when a device behaves differently: abnormal traffic, many queries to one domain, or IoT/appliance phone-homes, in a safe and deterministic way. OBS-009 already lists per-client rate anomalies, first-seen domains, NXDOMAIN storms, DGA scoring, and beaconing (P2), but has no per-domain volume, no drift baseline, and no rules on determinism, explainability, or acting on findings.
 
 **Decision:** Add OBS-013 (P1) and `06` §7.1. Detection uses fixed-math streaming statistics (EWMA, MAD, Space-Saving top-K, cuckoo filters, inter-arrival histograms), timed by event timestamps so replays are reproducible. Every finding carries its evidence. A device must pass a learning period before it can alert. State is bounded and lives in the aggregator, off the query path. Findings only inform: alerts, UI, and MCP. Any response, such as quarantining a device, is a separate explicit, audited action. Beaconing moves from P2 to P1, because periodic phone-home is the motivating IoT case. Scheduled as T3.11, after the aggregator (T3.1).
@@ -181,14 +181,14 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Owners get actionable, explainable alerts ("plug contacted 37 new domains; usual 0–1") with no black box, at bounded cost. Detection quality depends on baselines, so the first week after install (or after a device appears) is quiet by design.
 
-## ADR-020 — Query-time hash index over the snapshot FSTs (Proposed)
+## ADR-020 — Query-time hash index over the snapshot FSTs (Accepted)
 **Context:** T2.4 requires a filter lookup p99 ≤ 1 µs (no regex) on x86. Walking the snapshot FSTs byte by byte measured p50 0.65 µs and p99 1.65–1.8 µs on a native x86 machine (Ryzen 5 5500U) with 2.6M names. The walk is a chain of dependent compressed-node decodes, about 30 ns per byte, so tuning can't fix it. ADR-003 picked FSTs for size and O(|qname|) lookups; it didn't fix the query-time structure.
 
 **Decision:** Keep FSTs as the snapshot and sync format (compact, content-addressed, ~9 B/name). Each resolver builds an in-memory index from them on load: one table per scope, in 64-byte buckets of 8 entries, each entry `48-bit fingerprint | 16-bit list-set ID`, with a seeded xxh3 hash (random seed per load) and a 75% load factor. A lookup is one probe per (scope, reversed suffix), almost always one cache line each, and the probes are independent memory reads. A false match needs a fingerprint collision inside one bucket: ~6e-14 per probe, about once per few thousand years of a busy resolver, and the seed changes on every load. Snapshots with more than 65,536 distinct list combinations use the FST walk. A new snapshot is served with the walk the moment it's loaded, and the indexed matcher is swapped in when ready (built at nice 10), so the index never delays a cold start or a list update.
 
 **Consequences:** Measured with 2.6M real names and no regex: p50 0.32 µs and **p99 0.93–0.94 µs** on the Ryzen (0.61–0.64 µs on the i5 laptop), versus 1.65 µs for the walk. The cost is ~10 B/name of RAM on top of the FSTs (26.9 MiB for 2.6M names), built in ~0.9 s. At the `00` §5 RSS gate (1M names) that's ~10 MiB, within budget. Zero allocations per lookup in both modes (tested). The regex path adds ~0.2 µs with AdGuard's 29 regexes.
 
-## ADR-021 — Groups, clients, and identification (Proposed)
+## ADR-021 — Groups, clients, and identification (Accepted)
 **Context:** FLT-005/006 and `spec/03` §3 step 2 define groups and the identification chain, but not the configuration, the trust model for client-supplied identity, or how group lists meet the compiled snapshot.
 
 **Decision:**
@@ -200,7 +200,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Pi-hole-style per-device filtering, with MAC identification that survives DHCP and IPv6 privacy addresses on host-networked installs. Identification costs a few hash lookups per query and allocates nothing.
 
-## ADR-022 — Block answers, CNAME inspection, and pause semantics (Proposed)
+## ADR-022 — Block answers, CNAME inspection, and pause semantics (Accepted)
 **Context:** FLT-007/008/009 list the block modes, CNAME deep inspection, and pause, but not the default mode, the TTL, how CNAME inspection meets the policy-neutral cache (`spec/03` §4), or what pausing means for a device in several groups.
 
 **Decision:**
@@ -210,7 +210,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Block behavior matches the owner's current resolvers by default and is tunable per group. CNAME cloaking (trackers behind first-party CNAMEs) is caught, for cached answers too, at the cost of a records walk on answers that have CNAMEs.
 
-## ADR-023 — Background work under load: priorities, thread counts, and deferred frees (Proposed)
+## ADR-023 — Background work under load: priorities, thread counts, and deferred frees (Accepted)
 **Context:** T2.7 requires a recompile during the `realistic-home` run to raise p99 by at most 10%, with zero errors. ADR-018 ran compiles at nice 10 on half the cores (1–4) and left this measurement to T2.7. On the homelab (Ryzen 5 5500U, 6 cores / 12 threads, 2.7M names, 20k qps, `bench.py swap`), the first measurement showed large p99 spikes, and a long run crashed the server.
 
 **Decision:**
@@ -224,7 +224,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** A list refresh on a Pi 4 takes about 11.6 s for 2M names (1 thread) instead of 6.4 s, while the first compile keeps 2 threads. Users who prefer faster refreshes over latency can set `compile_threads`. The p99 measurement is noisy on a shared host: quiet-window p99 alone varied from 65 to 847 µs between rounds, so `bench.py swap` gates on the median over rounds with alternating order.
 
-## ADR-024 — Explain: rule identity, line lookup, and surfaces (Proposed)
+## ADR-024 — Explain: rule identity, line lookup, and surfaces (Accepted)
 **Context:** FLT-013 says every decision records "list ID + rule ID" and that the API can explain "why was X blocked for client Y". `spec/05` §5 lists what explain returns: the client resolution, groups, schedule state, every matching rule across tiers with list name, line number and text, the winner, and the would-be upstream group. The snapshot (ADR-018) stores plain domain rules only as names in FSTs, with no line numbers. The API comes in M3 (T3.4).
 
 **Decision:**
@@ -236,7 +236,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** No snapshot growth and no query-path cost. Explaining a name that matches big lists costs a parse of those lists. Measured on the WSL laptop with 2.7M names: 0.15 s for a name in two lists totalling 6.5 MB, and 0.02 s for an unmatched name (peak RSS 54 MiB). A Pi 4 is several times slower. That's fine for an interactive "Why?" but not for bulk use. If the UI needs bulk explain (for example, annotating every row in a log view), the query log's stored attribution covers it without line text.
 
-## ADR-025 — Compile memory peaks vs small memory limits (Proposed)
+## ADR-025 — Compile memory peaks vs small memory limits (Accepted)
 **Context:** `00` §1 targets a 128 MiB Kubernetes pod limit and small Pis (Pi Zero 2 W: 512 MiB). Steady-state RSS is well within budget: 25–35 MiB with the `09` §2 bench lists (430k names) and about 70 MiB with 2.7M names, roughly 20 B per name plus a ~17 MiB base. But compiling a snapshot is transient and much larger: peak RSS 106–109 MiB with the bench lists and **297 MiB with 2.7M names** (homelab and WSL measurements, 2026-10-03). `[filter] compile_memory` (128 MiB) bounds only the external sort; parsing, FST building, index building, and the old and new matchers coexisting (ADR-020, ADR-023) add to it. In a pod with a 128 MiB limit, a large list set gets the process OOM-killed mid-compile, taking DNS down with it, which violates "DNS never depends on anything else".
 
 **Decision (proposed, for the owner):**
@@ -248,7 +248,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Until this is implemented (proposed for M4, with the Helm chart), standalone deployments need a memory limit of at least ~3× the steady-state RSS for their list set, or 256 MiB for list sets over ~1M names. `docs/` will say so with the measured numbers.
 
-## ADR-026 — Event capture: byte rings, sizes, and precision (Proposed)
+## ADR-026 — Event capture: byte rings, sizes, and precision (Accepted)
 **Context:** `spec/06` §1–2 describes a fixed-size, ~128-byte `QueryEvent` with a 64-byte inline qname, per-worker rings of 65,536 slots (~8 MiB each), and HDR histograms with 3 significant digits. T3.1's AC is "drop counter 0 at 100k qps sustained on x86 with default ring sizes". The footprint priority and the M2 RSS budget (64 MiB with telemetry on) push back on several of those sizes.
 
 **Decision:**
@@ -266,7 +266,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Full names in every event. About 2–8 MiB of rings depending on thread count, and bounded aggregate memory (windows ~1 MiB, top-K ~1 MiB, histograms ≤ ~7 MiB). If a host's aggregator can't keep up (a slow Pi under a flood), events drop and are counted, and DNS is unaffected.
 
-## ADR-027 — Query-log segment format and search (Proposed)
+## ADR-027 — Query-log segment format and search (Accepted)
 **Context:** `spec/06` §4 defines the query log: hourly columnar segments, blocks of up to 8192 rows, per-column encodings with zstd, a block index with a 1 KiB bloom over name and client IDs, a segment dictionary, dictionary-first search, and a small search pool with "1 thread on Pi by default". T3.2's AC: a search over a 50M-row synthetic dataset in ≤ 2 s on a Pi 4, with the format fuzzed. Measuring against that AC changed several details.
 
 **Decision:**
@@ -300,7 +300,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Interactive search stays within 2 s on a Pi for a month of a busy home's queries, without stealing CPU from DNS. Heavier work (a multi-month substring scan, or a much higher share of unique names) degrades linearly. If that matters, the next step is a cross-segment name index (one dictionary per day or week), not more threads.
 
-## ADR-028 — API listener, crate boundary, and the read-only first slice (Proposed)
+## ADR-028 — API listener, crate boundary, and the read-only first slice (Accepted)
 **Context:** `spec/07` defines the API conventions and resource map but no listener: `06` §5 says only that `/metrics` is "also on the API port". T3.4 (API-001, API-002) is the skeleton, and the owner asked for a UI next for testing, which needs an API. API-003 (auth) is T3.5.
 
 **Decision:**
@@ -313,7 +313,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** The UI and agents have a documented, typed surface now. Every later endpoint follows the same pattern (types and doc comments in `telltale-api`, data from `Backend`).
 
-## ADR-029 — Local sign-in details (Proposed)
+## ADR-029 — Local sign-in details (Accepted)
 **Context:** `spec/08` §6 and API-003 define local users (Argon2id), session cookies with CSRF, opt-in HTTP Basic, scoped API tokens, TOTP, lockout, RBAC, and a first-run setup token. Several details are left open.
 
 **Decision:**
@@ -332,7 +332,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** The API is safe to expose on the LAN, and the UI (T3.9) can build sign-in and first-run screens on `/auth/status`. TLS on the API listener and OIDC (API-004) are later tasks; until TLS, HTTP Basic needs a TLS-terminating proxy.
 
-## ADR-030 — Web UI MVP: serving, security, and scope (Proposed)
+## ADR-030 — Web UI MVP: serving, security, and scope (Accepted)
 **Context:** T3.9 (API-005) asks for a UI MVP: login, dashboard, query log + explain, groups, lists, upstreams, local DNS, and settings, ≤ 400 KiB gzipped, with a Playwright suite. ADR-009 fixes the stack (Svelte + uPlot, embedded). The API has no configuration mutations yet, no live tail (T3.7), and no OIDC (T3.6).
 
 **Decision:**
@@ -346,7 +346,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** The resolver ships its own UI in one binary with no runtime dependencies. Each new API feature can add its page incrementally; the suite and the type drift check keep the UI and API in step.
 
-## ADR-031 — Prometheus metric set and SQLite rollups (Proposed)
+## ADR-031 — Prometheus metric set and SQLite rollups (Accepted)
 **Context:** T3.3 completes the `06` §5 metric set (OBS-005, OBS-011), ships a Grafana dashboard, and persists rollups (`06` §3, moved here by ADR-027). Rule 4 forbids new hot-path work without a benchmark.
 
 **Decision:**
@@ -359,7 +359,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Charts and summaries reach back 400 days and survive restarts with ~1 KiB per stored minute at most. Querying a past hour's top-K through the API is not exposed yet (stored for the analytics pages).
 
-## ADR-032 — Live tail over Server-Sent Events (Proposed)
+## ADR-032 — Live tail over Server-Sent Events (Accepted)
 **Context:** OBS-008 / `06` §6: `GET /api/v1/queries/stream` (SSE) "or `/ws`", server-side filters (client, group, status set, qname glob, upstream, min latency, node), and a per-subscriber rate cap (default 500 events/s) with inline drop counts. Rule 4 forbids hot-path cost; rule 5 says telemetry can't affect DNS.
 
 **Decision:**
@@ -371,7 +371,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** "Watch it happen" works in the UI, from `curl -N`, and for agents. Subscriber tasks share the async runtime with upstream I/O, which is why the cap, the subscriber limit, and allocation-free filtering matter; if a home ever needs more, move subscribers to a dedicated thread.
 
-## ADR-033 — Audit log: what, where, and how it is chained (Proposed)
+## ADR-033 — Audit log: what, where, and how it is chained (Accepted)
 **Context:** API-006 asks for an audit log of every config change (who, when, diff), replicated cluster-wide; `08` §6 makes it append-only and hash-chained; AGT-005 asks for agent attribution and a reason. Today the only mutations are sign-in administration and config reloads (config editing through the API comes later).
 
 **Decision:**
@@ -384,7 +384,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Sign-in administration and reloads are accountable now, and every future mutation endpoint gets auditing by calling `Auth::record` with a diff.
 
-## ADR-034 — OIDC sign-in: library, flow, and account rules (Proposed)
+## ADR-034 — OIDC sign-in: library, flow, and account rules (Accepted)
 **Context:** API-004 / `08` §6: Authorization Code + PKCE, discovery, multiple providers, claim → role mapping, JIT provisioning, optional verified email, back-channel and RP-initiated logout, ID-token validation with JWKS rotation, local sessions after sign-in, a canonical `public_url`, and `disable_local_login` with a break-glass admin from `allowed_admin_networks`. AC: integration tests against Keycloak and Authentik.
 
 **Decision:**
@@ -401,7 +401,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Homes and labs with an identity provider sign in with it; local passwords become optional. Each provider must be registered with the exact redirect URI.
 
-## ADR-035 — Helm chart: allInOne first, client-IP proof in CI (Proposed)
+## ADR-035 — Helm chart: allInOne first, client-IP proof in CI (Accepted)
 **Context:** T4.1 / OPS-002/003 asks for `allInOne`, `scaled`, and `daemonSet` shapes, Services with `externalTrafficPolicy: Local`, PDB, HPA, probes, NetworkPolicy, ServiceMonitor, cert-manager, `existingSecret` everywhere; AC: `ct install` on kind and k3d arm64, DNS via the LB, and client IPs preserved in the query log in an e2e test. Clustering (M5) doesn't exist yet.
 
 **Decision:**
@@ -416,7 +416,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** One-replica deployments are production-ready on any LoadBalancer implementation; HA within Kubernetes waits for clustering.
 
-## ADR-036 — Guided UI: task-first names, help panels with diagrams, Simple/Advanced (Proposed)
+## ADR-036 — Guided UI: task-first names, help panels with diagrams, Simple/Advanced (Accepted)
 **Context:** The owner (2026-10-04): Pi-hole is easy for non-experts; Technitium is powerful but assumes DNS expertise (zones, SOA, zone types). TelltaleDNS should offer the depth without demanding the expertise, and visual cues should help novices see what an option does. Recorded as API-011.
 
 **Decision:**
@@ -430,7 +430,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** More UI content to write and keep current (one glossary file, checked in CI). The editing pages (T3.12 and later) are designed around this from the start; the read-only pages get help panels and diagrams in T3.11.
 
-## ADR-037 — Masked-client-IP detector: what counts as infrastructure (Proposed)
+## ADR-037 — Masked-client-IP detector: what counts as infrastructure (Accepted)
 **Context:** OPS-003 / `spec/08` §3.2: "the resolver detects when > 90% of queries come from ≤ 3 IPs inside the pod/node CIDRs and raises a UI banner". A pod doesn't know the pod or node CIDRs, and on a homelab the node network *is* the LAN, so "inside the node CIDR" would also match real devices.
 
 **Decision:**
@@ -441,7 +441,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Multi-node clusters with `externalTrafficPolicy: Cluster` SNAT to *other* nodes' addresses, which are only recognized when listed in `[clients] infrastructure` (the chart's install notes already warn on `Cluster`).
 
-## ADR-038 — Native installs: release assets, signing, install.sh, self-update, Compose defaults (Proposed)
+## ADR-038 — Native installs: release assets, signing, install.sh, self-update, Compose defaults (Accepted)
 **Context:** OPS-004 / `spec/08` §4 asks for a static binary with systemd unit and install script that "downloads + verifies (cosign/minisign)", `telltale self-update`, and the Compose bundle of §3.4. No release pipeline existed, and the §3.4 Compose example (`user: 65532` + `cap_add`) can't bind port 53: Docker doesn't give a non-root user ambient capabilities.
 
 **Decision:**
@@ -456,7 +456,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** The owner must add `MINISIGN_SECRET_KEY` once before the first binaries are published. The cluster-version check of `self-update` (spec §4) waits for clustering (T5.11).
 
-## ADR-039 — DoT and DoH listeners, client IDs from certificates, PROXY v2 rules (Proposed)
+## ADR-039 — DoT and DoH listeners, client IDs from certificates, PROXY v2 rules (Accepted)
 **Context:** T4.5 (DNS-002/003) and T4.4 (DNS-020). The spec names SNI and DoH-path client IDs (`<clientid>.dns.example.com`) but not how the server knows which part of the name is the ID, how certificates are reloaded, or how PROXY headers are trusted.
 
 **Decision:**
@@ -470,7 +470,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Clients must trust the certificate (a public CA, or a private one distributed to devices). DoQ and DoH3 remain skipped until their listeners (M7). *(Update: both shipped in M7, T7.7 and T7.8.)*
 
-## ADR-040 — Config made through the API before clustering: managed entries in state.db (Proposed)
+## ADR-040 — Config made through the API before clustering: managed entries in state.db (Accepted)
 **Context:** API-002 (everything configurable through the API) and API-010 (name a device from the UI) need API writes now. Today the configuration is files only (on Kubernetes, the chart's values), and `spec/12` describes the end state: a change log held by the cluster primary, with GitOps mode refusing writes. Rewriting config files from the server would fight GitOps and lose comments.
 
 **Decision:**
@@ -482,14 +482,14 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** With clustering (M5), the managed table becomes change-log entries on the primary and replicates (CLU-003); GitOps mode will refuse these writes (`409 gitops_managed`). Other kinds (groups, records, routes; T3.12) reuse the same table and endpoints.
 
-## ADR-041 — Importing zones: per-name local records, not a whole-zone authority (Proposed)
+## ADR-041 — Importing zones: per-name local records, not a whole-zone authority (Accepted)
 **Context:** The owner is moving the internal `sororlab.dev` zone from Technitium (split-horizon: the same domain is public in Route 53). T6.4 (Technitium importer) covers zones as "local names and routes". Technitium is authoritative for the whole zone (unknown names get NXDOMAIN); TelltaleDNS local records are per name (unknown names go upstream).
 
 **Decision:** `telltale import zone FILE` converts RFC 1035 zone files (Technitium export, BIND, PowerDNS) into `[[record]]` TOML for the supported types (A, AAAA, CNAME, PTR, TXT, MX, SRV), skips SOA/NS at the apex, and lists everything else in a header report; the output is validated as config before it's written. Imported names behave as per-name local records, so unimported names under the zone fall through to the upstreams (the owner chose this: public-only hosts keep working from inside). A "this server owns the whole zone" mode (NXDOMAIN for unknown names) belongs to T3.12's zone-lite view.
 
 **Consequences:** The rest of T6.4 (forwarders and conditional forwarders → upstreams and routes, block/allow lists, and a Technitium API source) remains open. Moving a zone: import, add the records while keeping the route to the old server (local records win over routes, so anything missed still resolves there), compare answers name by name, then remove the route.
 
-## ADR-042 — Names on my network and forwarded domains through the API (Proposed)
+## ADR-042 — Names on my network and forwarded domains through the API (Accepted)
 **Context:** T3.12 (API-011, DNS-010, UPS-007) needs local names and conditional forwarding editable from the UI and the API, following ADR-040's managed entries.
 
 **Decision:**
@@ -501,7 +501,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** The UI covers the common cases without the config file. Hosts files stay file-only. The MCP tools for these writes come with T6.6 / M7.
 
-## ADR-043 — Anomaly engine v1: concrete detectors, thresholds, and persistence (Proposed)
+## ADR-043 — Anomaly engine v1: concrete detectors, thresholds, and persistence (Accepted)
 **Context:** T3.13 implements OBS-013 under ADR-019 and `spec/06` §7.1, which fix the principles (deterministic, explainable, learn first, bounded, alert-only) but not the statistics, thresholds, or how state survives restarts.
 
 **Decision:**
@@ -514,7 +514,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Deferred:** the TTL-violation flag (events don't carry answer TTLs yet), per-group sensitivity, mute/acknowledge, and the alert-rule engine's own destinations (OBS-010).
 
-## ADR-044 — Cluster channel v1: identity files, reusable join tokens, and peer trust (Proposed)
+## ADR-044 — Cluster channel v1: identity files, reusable join tokens, and peer trust (Accepted)
 **Context:** T5.1 implements CLU-001 under `spec/12` §3, which fixes the shape (Ed25519 CA, join token with CA fingerprint + URLs + secret, 90-day node certificates, mTLS over HTTP/2 with protobuf, persistent streams, replicas dial out) but not the token format, how peers name each other in TLS, where identity lives, or whether a token is single-use.
 
 **Decision:**
@@ -528,7 +528,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Deferred:** certificate renewal at 2/3 of life and CA rotation (with T5.4 promotion, since only the CA holder can issue), eligible-to-eligible streams, and ephemeral Kubernetes members joining from a Secret at startup (T5.10). The cluster health page and per-peer lag (T5.9); heartbeats carry `qps`, which is still 0.
 
-## ADR-045 — Sign-in across cluster nodes: replicated identities, per-node sessions and OIDC callbacks (Proposed)
+## ADR-045 — Sign-in across cluster nodes: replicated identities, per-node sessions and OIDC callbacks (Accepted)
 **Context:** `spec/12` §6 says users, RBAC, and OIDC config are part of the replicated config, so sign-in works on every node even with the primary down. It doesn't say where sessions live, how one OIDC client serves several nodes reached at different URLs, or what happens to users that already exist on a node that joins (the owner's homelab node has its own users, and the Pi got its own admin before clustering).
 
 **Decision:**
@@ -552,7 +552,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - A name on both nodes takes the primary's record (logged), as decided.
 - The OIDC provider settings already replicate with the shared configuration. The session-revocation list isn't needed: deleting or disabling a user on the primary removes or blocks them everywhere on the next sync, and with them their sessions.
 
-## ADR-046 — Version management: one build identity, a signed release index, and update status everywhere (Proposed)
+## ADR-046 — Version management: one build identity, a signed release index, and update status everywhere (Accepted)
 **Context:** owner request 2026-10-04: the user should always know which version they run, which versions exist, and whether they're on the latest, the same way on every architecture and install type. Today an edge binary reports only `telltale 0.1.0` (the Pi shows exactly that), so two different builds look identical, and nothing tells the user an update exists.
 
 **Decision:**
@@ -587,7 +587,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Not yet:** `self-update` still reads `SHA256SUMS` (it works and is verified the same way). Moving it onto the index is a follow-up, as is an MCP tool for update status.
 
 
-## ADR-047 — Config replication v1: whole-version manifests, shared vs node-local sections (Proposed)
+## ADR-047 — Config replication v1: whole-version manifests, shared vs node-local sections (Accepted)
 **Context:** T5.2 implements CLU-003 under `spec/02` §5 and `spec/12` §4. Those describe a change log of semantic ops (JSON-Patch) that replicas replay, with a full snapshot as fallback. They don't say which settings are node-local before T5.5, how UI/API-made entries (ADR-040) replicate, or what a replica does with its own lists and config file.
 
 **Decision:**
@@ -608,7 +608,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** with the Pi as primary, the homelab node's GitOps values for shared sections stop applying once it syncs. The Pi's config file (or UI) becomes the place to change shared settings, until write forwarding (T5.7) and a GitOps primary option are settled with the owner.
 
-## ADR-048 — Config authority: the cluster, not whichever node is primary, decides where configuration comes from (Proposed)
+## ADR-048 — Config authority: the cluster, not whichever node is primary, decides where configuration comes from (Accepted)
 **Context:** owner question 2026-10-04: in a mixed cluster (a Kubernetes node managed by GitOps plus a Pi edited by hand), nothing stops the wrong node from becoming primary, by `cluster init` on it, a promotion during an outage (T5.4), or a quorum election. That node would then replicate its own file over the GitOps one: every node follows a config nobody committed, and the next GitOps sync fights it. Recency or availability must not decide what the source of truth is; the operator does, once.
 
 **Decision:**
@@ -633,7 +633,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - The price is that with a GitOps authority, configuration is frozen (never lost or wrong) while no GitOps node is up. That is the right trade for a homelab where the k8s node is the one being changed.
 - Implemented with T5.4 (elections and promotion) and T5.7 (writes); until then the owner's cluster uses the convention of the homelab node as primary, set up by hand.
 
-## ADR-049 — Git as the cluster's config source: the primary fetches, the cluster distributes (Proposed)
+## ADR-049 — Git as the cluster's config source: the primary fetches, the cluster distributes (Accepted)
 **Context:** owner idea 2026-10-04, building on ADR-048: let nodes that aren't in Kubernetes (the Pi) also take their configuration from the Git repository, an "external control plane" every node sources from. Two shapes were weighed:
 1. **Every node pulls Git.** Rejected as the default:
    - nodes poll on their own schedules, so they run different commits for a while and "which config is live?" has no single answer;
@@ -687,7 +687,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
   - the UI's "propose this change";
   - the Helm chart reading the same `shared.toml` (use an Argo multi-source app meanwhile).
 
-## ADR-050 — Network groups: groups match subnets, and groups are an analytics dimension (Proposed)
+## ADR-050 — Network groups: groups match subnets, and groups are an analytics dimension (Accepted)
 **Context:** owner request 2026-10-05: categorize devices by VLAN (Management 192.168.1.0/24, IOT .2, AUX .3, LAB .5, SONOS .6, Surveillance .7, Trust .10) and see, per category, what traffic each kind of device makes.
 - **Today:** a subnet can only be matched by a `[[client]]` entry (`match = ["192.168.2.0/24"]`). That entry also *names* every device in it, so the query log would show "IOT" instead of each device.
 - **Groups:** they carry filtering (their lists, block mode), but they're not a first-class dimension in analytics. Per-group data exists internally (time series and blocked counters) without a UI or API around it.
@@ -711,7 +711,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** "which kinds of devices talk to what" becomes one click (e.g. IOT: 38% of queries, 21% blocked, top: amazon devices and Roku telemetry). Per-device names keep working inside each group. The owner's setup needs seven `[[group]]` entries in homelab-charts and nothing else.
 
-## ADR-051 — Manual failover v1: roles and epochs, key sharing with eligible nodes, fencing, orphaned versions (Proposed)
+## ADR-051 — Manual failover v1: roles and epochs, key sharing with eligible nodes, fencing, orphaned versions (Accepted)
 **Context:** T5.4 implements CLU-005 under `spec/12` §5 and ADR-048. The owner's topology is two eligible nodes and no witness, so the `manual` mode comes first: T5.4 is split into **T5.4a** (manual promotion, fencing, conflicts, config authority) and **T5.4b** (witness and quorum election with leases, plus the `telltale-sim` partition checker). T5.1–T5.2 tied "primary" to "holds the CA key", which makes promotion impossible.
 
 **Decision:**
@@ -750,7 +750,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - With the owner's homelab node as the GitOps primary, the Pi becomes an *emergency* primary candidate: if k8s is down for long, promoting the Pi keeps the cluster coordinated while configuration stays frozen. ADR-049 (Git source) later makes the Pi a full candidate.
 - Existing clusters migrate in place: the CA holder becomes `role = primary` at epoch 1, and eligible replicas receive the key on their next connection.
 
-## ADR-052 — Node-local overrides: node-only records, and warn (not refuse) on shared settings in a replica's file (Proposed)
+## ADR-052 — Node-local overrides: node-only records, and warn (not refuse) on shared settings in a replica's file (Accepted)
 **Context:** T5.5 (CLU-006). `spec/12` §4 says a node's own overrides allow listen addresses, cache size, query-log retention, worker count, site, and local-only records, and that overriding anything else is "rejected at startup with a clear error". ADR-047 already makes the node-local sections (`node`, `cluster`, `listen`, `api`, `auth`, `telemetry`, `cache`) stay with each node, and replaces everything else with the primary's.
 
 **Decision:**
@@ -763,7 +763,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner's Pi shows a failing `node_settings` check until its file is trimmed to node-local settings. Promoting to the spec's strict refusal stays possible later, as an opt-in `[cluster] strict_overrides = true`.
 
-## ADR-053 — Federated reads v1: what's exact, what's approximate, and which scopes exist (Proposed)
+## ADR-053 — Federated reads v1: what's exact, what's approximate, and which scopes exist (Accepted)
 **Context:** T5.6 (CLU-002, OBS-012). `spec/12` §6 says analytics reads fan out to the peers in `scope` and merge, with HDR histograms merged exactly, query logs k-way merged with per-node cursors, a 2 s per-peer timeout, and `missing_nodes`. It names the scopes `node:<id>`, `site:<name>` and `cluster`.
 
 **Decision:**
@@ -782,7 +782,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** any node's UI is a full management view for reads. Exact cluster-wide latency, named-node/site scopes and a federated live tail are follow-ups.
 
-## ADR-054 — Write forwarding v1: the entry node vouches for the user over mTLS (Proposed)
+## ADR-054 — Write forwarding v1: the entry node vouches for the user over mTLS (Accepted)
 **Context:** T5.7 (CLU-002). `spec/12` §6 says a write on any node is forwarded to the primary with the user's identity, "signed by the receiving node", so the audit log shows both the user and the entry node. Users aren't replicated yet (ADR-045 is still to come), so a user exists only on the node they signed in to.
 
 **Decision:**
@@ -800,7 +800,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner can manage the cluster from the Pi's UI as well as the homelab node's, as long as both are on the API authority. Today's cluster is GitOps-managed, so there it stays read-only, by design.
 
-## ADR-055 — Query-log ship mode v1: closed segment files, delivered once, searched where they land (Proposed)
+## ADR-055 — Query-log ship mode v1: closed segment files, delivered once, searched where they land (Accepted)
 **Context:** T5.8 (CLU-007). `spec/12` §7 describes `ship` mode: raw events are streamed to a target in batches of columnar blocks, spilled to a 64 MiB buffer when the target is unreachable, and replayed; rollups are shipped as per-minute aggregates; `both` mode does both; receivers keep per-source-node segments.
 
 **Decision:**
@@ -822,7 +822,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner's Pi can set `mode = "ship"` to move its query log to the homelab node's volume. Rows then appear with up to `interval_secs` of delay in the homelab node's own search; cluster-wide search shows them at once.
 
-## ADR-056 — Automatic failover v1: one vote per epoch, voter-granted leases, pre-vote, a vote-only witness (Proposed)
+## ADR-056 — Automatic failover v1: one vote per epoch, voter-granted leases, pre-vote, a vote-only witness (Accepted)
 **Context:** T5.4b (CLU-005). `spec/12` §5 has `witness` and `quorum` modes: a candidate needs a majority of eligible nodes plus witness for `epoch + 1`, and promotes only after the old primary's lease (15 s, renewed every 5 s) has expired; "a primary accepts writes only while it holds a valid lease". The AC is a simulator: 10k randomized partition schedules, never two writers in one epoch, orphaned writes always surfaced.
 
 **Decision:**
@@ -865,7 +865,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** the owner's Pi + homelab cluster stays `manual` until a witness exists. A witness on any third device (for example the NAS) makes failover automatic, with the Pi as an emergency primary while the configuration authority is GitOps.
 
-## ADR-057 — Node certificate renewal over the cluster channel, same key (Proposed)
+## ADR-057 — Node certificate renewal over the cluster channel, same key (Accepted)
 **Context:** T5.4c (CLU-001). Node certificates last 90 days (ADR-044), and nothing renewed them, so a cluster would lose its links about 90 days after its nodes joined. The owner's cluster joined on 2026-10-04. `spec/12` §3 says certificates renew automatically; the CA rotation half of T5.4c is rarer, because the CA lasts 10 years.
 
 **Decision:**
@@ -881,7 +881,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** clusters keep their links indefinitely while a CA holder is reachable at least once every 30 days. A witness or replica cut off from every CA holder for 90 days loses its certificate and must rejoin with a token.
 
-## ADR-058 — Kubernetes resolver pods: a shared bootstrap secret with proof of possession, ephemeral members, sync-gated readiness (Proposed)
+## ADR-058 — Kubernetes resolver pods: a shared bootstrap secret with proof of possession, ephemeral members, sync-gated readiness (Accepted)
 **Context:** T5.10 (CLU-009). `spec/12` §2 says resolver pods join with a long-lived token from a Secret, get a fresh identity per start, expire after `ephemeral_ttl` (10 min) without heartbeats, and display under their site. A join token pins the CA fingerprint, which only exists after the controller creates the cluster. So a chart can't put a token in a Secret without the controller writing to the Kubernetes API, which needs RBAC and a client library.
 
 **Decision:**
@@ -912,7 +912,7 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - `deploy/helm/scaled-e2e.sh` (CI, this build's binary on kind) proves the controller and two pods join and sync, a pod answers DNS, an outside node joins through the cluster port, and a deleted pod is replaced and expires.
 - A pod restart is a new member, by design. A registry of long-gone pods is cleaned within `ttl + 1 min`.
 
-## ADR-059 — Version compatibility v1: a protocol window, a schema stamp, and refusal over guessing (Proposed)
+## ADR-059 — Version compatibility v1: a protocol window, a schema stamp, and refusal over guessing (Accepted)
 **Context:** T5.11 (CLU-010). `spec/12` §9 says RPC carries a protocol version and manifests a schema version; nodes accept N and N−1; the primary refuses to emit features the oldest connected node doesn't support, and warns. Until now, peers needed the exact same protocol, and manifests carried no schema. The shared configuration is parsed strictly (`deny_unknown_fields`), so an older replica would reject a newer primary's new settings.
 
 **Decision:**
@@ -934,7 +934,7 @@ An edit reaches the replica at every stage, and a client with both servers confi
 
 **Addendum (2026-10-05):** the shared configuration leaves out top-level sections that are at their defaults, and a replica reads a missing section as the default. Without this, adding any new section (DNSSEC, ADR-060) broke N−1 replicas even when no one used it: CI's upgrade test caught it. A new setting now reaches an older replica only once someone actually sets it. That is the case the "no down-converting" rule is for.
 
-## ADR-060 — DNSSEC validation v1: hickory's validator over our upstream groups, off by default (Proposed)
+## ADR-060 — DNSSEC validation v1: hickory's validator over our upstream groups, off by default (Accepted)
 **Context:** T6.1 (DNS-011). `spec/03` §5 asks for:
 - modes `off`, `validate` (the default once stable) and `validate_permissive`;
 - DO=1 upstream, validation from the root trust anchor, and CD=1 clients getting unvalidated data;
@@ -974,7 +974,7 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 - per-reason EDE codes (7, 9, 10, 12) instead of 6;
 - the `dnssec` field in query events and the Settings UI.
 
-## ADR-061 — Pi-hole import v1: a reviewed starting configuration, faithful group semantics (Proposed)
+## ADR-061 — Pi-hole import v1: a reviewed starting configuration, faithful group semantics (Accepted)
 **Context:** T6.3 (API-007; `spec/08` §8) asks for an importer of Pi-hole v5 and v6 Teleporter archives covering adlists, domain lists, groups, clients, local DNS/CNAME records, upstreams, and conditional forwarding, with a report of every unmapped setting. The spec doesn't say whether the result is applied or reviewed, how Pi-hole's per-entry group assignments map onto our per-group list sets, or what happens to Pi-hole behaviors we don't have.
 
 **Decision:**
@@ -1003,7 +1003,7 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 - Merging into an existing configuration is manual (both define `default`).
 - The importer's e2e showed that the first blocking snapshot waited for every list's first fetch, including retries, so an unreachable adlist delayed all blocking at first start. Fixed: the fetcher signals the compiler at most 10 s (`settle`) after the first update in a round, so lists that arrive together still compile once.
 
-## ADR-062 — Technitium import v1: read the API, not the backup (Proposed)
+## ADR-062 — Technitium import v1: read the API, not the backup (Accepted)
 **Context:** T6.4 (API-007, P1). `spec/08` §8 says "backup zip → blocked/allowed zones, block-list URLs, forwarders + protocols, Advanced Blocking app config → groups". Technitium's backup holds `dns.config`, zone files, and the allowed/blocked lists in its own versioned binary serialization. That format is undocumented and changes between releases. Its HTTP API returns the same data as documented JSON.
 
 **Decision:**
@@ -1035,7 +1035,7 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 - A backup-zip reader can follow if the format gets documented.
 - The e2e found a real-data bug: concurrent forwarding with a single usable forwarder produced an invalid `parallel` group. Fixed and tested.
 
-## ADR-063 — Backups v1: a checked archive of config and local data, without the cluster key (Proposed)
+## ADR-063 — Backups v1: a checked archive of config and local data, without the cluster key (Accepted)
 **Context:** T6.7 (API-007, P0) asks for Teleporter parity: one archive with config and local data, optionally with query history. `spec/08` §8 sketches `telltale ctl backup create [--include-qlog]` writing a `.ttbk` (tar.zst + manifest + signature) restored onto a new primary. `ctl` (the API-wrapping CLI, API-008) doesn't exist yet. The spec doesn't say what the signature is signed with or whether cluster identity is included.
 
 **Decision:**
@@ -1068,7 +1068,7 @@ In hickory 0.26 the chain-of-trust logic (`DnssecDnsHandle`, with NSEC/NSEC3 den
 - **Download:** `GET /api/v1/backup` (admin, audited `backup.create`, without the query log) and a Settings → System button. Restore through the API is deferred: restoring under a running server is risky.
 - `--include-cluster-key` (for disaster recovery of a lone primary) and passphrase encryption are follow-ups.
 
-## ADR-064 — Agent principals v1: scoped tokens, deny by default, a reason for every change (Proposed)
+## ADR-064 — Agent principals v1: scoped tokens, deny by default, a reason for every change (Accepted)
 **Context:** T6.5 (AGT-001..005, AGT-009). `spec/13` §2 asks for:
 - agent tokens with an owner, scopes, an optional group restriction, rate limits, and expiry;
 - attribution `agent:<token> (owner: <user>)` with the client and a required reason;
@@ -1115,7 +1115,7 @@ Tokens so far had a role-like `scope` (read/write/admin), and the audit log alre
 - Per-group analytics views beyond top lists would let restricted agents see more.
 - OAuth for agents (AGT-008) stays P1.
 
-## ADR-065 — MCP server v1: read-only tools over the REST routes, one implementation for two transports (Proposed)
+## ADR-065 — MCP server v1: read-only tools over the REST routes, one implementation for two transports (Accepted)
 **Context:** T6.6 (AGT-006, AGT-008 bearer part, AGT-009; ADR-010). `spec/13` §3.1 lists the read-only tools, and §4 suggests a `telltale-mcp` crate with schemas generated from the Rust types (`schemars`) and a catalog snapshot test. The AC asks for:
 - an MCP conformance test;
 - scope and privacy authorization tests;
@@ -1143,7 +1143,7 @@ Tokens so far had a role-like `scope` (read/write/admin), and the audit log alre
 - MCP resources and prompts are later.
 - An SSE stream (`GET /mcp`) would be needed only for server-initiated messages.
 
-## ADR-066 — CA rotation: two trusted CAs, three member-gated phases (Proposed)
+## ADR-066 — CA rotation: two trusted CAs, three member-gated phases (Accepted)
 **Context:** T5.4c (CLU-001, CLU-005). `spec/12` and the roadmap ask for:
 - CA rotation: a new key, a cross-signed transition, node certificate renewal over the channel, and the old CA retired;
 - re-sharing the key with eligible nodes.
@@ -1182,7 +1182,7 @@ ADR-057 already renews node certificates (same key) over the channel. A CA rotat
 - Join tokens pin the CA fingerprint, so tokens from before a rotation stop working.
 - A forced rotation (with members down) is a possible follow-up.
 
-## ADR-067 — Quick rules: their own layer, the most specific scope wins, expiry on the server (Proposed)
+## ADR-067 — Quick rules: their own layer, the most specific scope wins, expiry on the server (Accepted)
 **Context:** T6.12 (owner request 2026-10-05) wants everyday per-person rules:
 - unblock a game's server for one phone for two hours;
 - block a site for the kids' devices until tomorrow.
@@ -1215,7 +1215,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Expiry depends on node clocks being roughly right. A node whose clock is off keeps or drops a rule early or late by that offset, and the Cluster page flags offsets of 2 s or more.
 - **Mixed versions (CLU-010):** the config schema rejects unknown keys, and an empty `rule` list is left out of the shared configuration. So an N−1 replica follows the cluster as long as nobody has made a quick rule. Once one exists, the replica refuses that version and keeps serving its last good one until it's upgraded. Quick rules therefore wait for a cluster-wide upgrade, as any new shared section does.
 
-## ADR-068 — One process per data directory: an exclusive lock held for the process's life (Proposed)
+## ADR-068 — One process per data directory: an exclusive lock held for the process's life (Accepted)
 **Context:** T6.14 (owner request 2026-10-05). Scaling a single-volume Deployment (or starting a second `telltale run` with the same configuration) makes two processes share one data directory: the node identity and cluster certificates, `state.db`, the query-log segments, and the cache dump. Nothing stopped it, and the damage is silent: two nodes with one identity, interleaved query-log writes, and SQLite contention.
 
 **Decision:**
@@ -1230,7 +1230,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - A rolling update of a single-volume Deployment would wait for the old pod forever. The chart uses a StatefulSet and the homelab Deployment uses `Recreate`, and the docs tell people with their own manifests to do the same.
 - On network file systems `flock` may be emulated or local-only. That is acceptable for a guard against mistakes.
 
-## ADR-069 — Editing upstreams, lists, and groups from the UI: overrides in state.db, the files untouched (Proposed)
+## ADR-069 — Editing upstreams, lists, and groups from the UI: overrides in state.db, the files untouched (Accepted)
 **Context:** T7.5 (owner report 2026-10-06). On a node installed with `install.sh`, the upstreams and lists come in the starter `/etc/telltale/telltale.toml`. ADR-040 makes anything the files define read-only through the API ("files win"), so none of them could be changed in the UI. Rewriting the file isn't an option either: Docker and Kubernetes mount it read-only, and on Git-managed nodes the next deploy would replace it.
 
 **Decision:**
@@ -1249,7 +1249,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Two sources of truth for the same name are possible; the UI and the `GET` endpoints show which one is in effect (`source`: `file`, `api`, or `override`).
 - A file change to an overridden entry has no effect until the override is reverted; the UI says so on the entry.
 
-## ADR-070 — Agents' plans: a dry run kept in memory on the node that made it, applied with If-Match (Proposed)
+## ADR-070 — Agents' plans: a dry run kept in memory on the node that made it, applied with If-Match (Accepted)
 **Context:** T7.1 (AGT-007). A `plan_*` MCP tool must show what a change would do and let the agent apply it later, only if nothing changed meanwhile and, with `[agents] require_approval`, only after an operator approves. The spec doesn't say where plans live, how long they last beyond "10 minutes", or how a cluster shares them.
 
 **Decision:**
@@ -1265,7 +1265,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-096 — A client group's own upstream group (Proposed)
+## ADR-096 — A client group's own upstream group (Accepted)
 **Context:** T9.25 (UPS-007, owner request 2026-10-06). UPS-007 already routes by client group (`[[route]] match_group`), but that lives in routing, not on the group, and the UI had no way to set it. The spec doesn't say how it ranks against domain routes, which group wins for a device in several, or what removing an upstream group a group uses does.
 
 **Decision:**
@@ -1277,7 +1277,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - No hot-path cost: routes are consulted only on a cache miss, and the cache is already keyed by upstream group, so groups never share answers from different resolvers.
 - `[[route]] match_group` stays for narrower cases (one group's `TXT` questions, say).
 
-## ADR-095 — `$dnsrewrite` in lists: AdGuard's precedence, a supported subset (Proposed)
+## ADR-095 — `$dnsrewrite` in lists: AdGuard's precedence, a supported subset (Accepted)
 **Context:** T2.3 kept `$dnsrewrite` rules in the snapshot but didn't apply them (T7.20 put rewrites in the configuration). AdGuard-format lists and personal rule sets use them for local names, safe-search CNAMEs, and blanking names out. Without them those lists lose part of their meaning.
 
 **Decision:**
@@ -1299,7 +1299,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - AdGuard-style lists and personal rules work as their authors meant.
 - Configuration rewrites (`[[group.rewrite]]`) stay the per-group tool. List rewrites follow the lists a group uses.
 
-## ADR-094 — Local zones answer SOA and NS at their apex; no zone transfers (Proposed)
+## ADR-094 — Local zones answer SOA and NS at their apex; no zone transfers (Accepted)
 **Context:** T7.22's zones answered their records, but not `SOA` or `NS` at the apex. Their negative answers carried a placeholder SOA owned by the question name. Tools (`dig SOA`, monitoring checks, some resolvers' zone-cut detection) expect real ones.
 
 **Decision:**
@@ -1317,7 +1317,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `dig SOA`/`NS` and negative caching downstream behave as with any authoritative server.
 - The made-up `localhost.` name server can't be queried from outside, which is the point: these zones are served by the resolver itself.
 
-## ADR-093 — DNS stamps: enforce their certificate hashes (Proposed)
+## ADR-093 — DNS stamps: enforce their certificate hashes (Accepted)
 **Context:** T7.24 parsed DoH/DoT/DoQ stamps but skipped their hashes. A stamp's hashes are SHA-256 digests of the `tbsCertificate` of certificates in the server's chain: the publisher's way of saying "only these CAs (or this certificate) may vouch for it". dnscrypt-proxy enforces them.
 
 **Decision:**
@@ -1331,7 +1331,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - When a provider rotates its intermediate CA before republishing the stamp, that upstream fails until the stamp is updated. A group with another member fails over meanwhile.
 - No built-in preset uses stamps.
 
-## ADR-092 — Aggressive NSEC (RFC 8198): NSEC ranges per upstream group, NSEC3 later (Proposed)
+## ADR-092 — Aggressive NSEC (RFC 8198): NSEC ranges per upstream group, NSEC3 later (Accepted)
 **Context:** ADR-086 deferred RFC 8198. The owner asked for the deferred features that make TelltaleDNS a more complete DNS product. Unbound and BIND both do this by default, and on a home network the root zone's NSEC records cover the steady trickle of made-up TLDs (`.lan`, `.home`, `.localdomain`).
 
 **Decision:**
@@ -1370,7 +1370,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - About 1,100 lines and a privileged port are gone. The scope stays DNS.
 - Anyone who wants TelltaleDNS to serve DHCP needs their router, or dnsmasq beside it.
 
-## ADR-090 — DoH load from h2load; restart counts in the data directory (Proposed)
+## ADR-090 — DoH load from h2load; restart counts in the data directory (Accepted)
 **Context:** T9.13 picks up the deferrals of T0.3 (DoT/DoH load, a realistic profile) and T6.14 (restart counts, Grafana panels).
 
 **Decision:**
@@ -1388,7 +1388,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - What DoT and DoH cost compared with UDP is measured, and repeatable on any machine with h2load.
 - A crash loop shows up as a number on the dashboard instead of a short uptime.
 
-## ADR-089 — vqlog `or` and rollup windows; pre-save checks (Proposed)
+## ADR-089 — vqlog `or` and rollup windows; pre-save checks (Accepted)
 **Context:** T9.12 picks up ADR-082's "not done" (`or`, rollup-backed long windows) and the pre-save checks deferred from T7.5.
 
 **Decision:**
@@ -1409,7 +1409,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Questions that need names or clients stay limited to what the log keeps, and the answer says so.
 - A typo in an upstream URL or a dead list URL shows up before it's saved.
 
-## ADR-088 — DNS64 exclusions and reverse names; syslog over TLS; a webhook spill (Proposed)
+## ADR-088 — DNS64 exclusions and reverse names; syslog over TLS; a webhook spill (Accepted)
 **Context:** T9.10 and T9.11 pick up the deferrals of T7.21 (DNS64) and T7.13 (event sinks).
 
 **Decision:**
@@ -1425,7 +1425,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - A SIEM can take events over TLS.
 - A collector outage no longer loses events, up to the cap. The disk writes happen only during an outage, on the sink's own thread.
 
-## ADR-087 — Upstream follow-ups: DoH GET, UDP over SOCKS5, DNSCrypt relays, per-client ECS (Proposed)
+## ADR-087 — Upstream follow-ups: DoH GET, UDP over SOCKS5, DNSCrypt relays, per-client ECS (Accepted)
 **Context:** T9.9 picks up the deferrals of T7.8 (DoH), T7.16 (proxies), T7.23 (ECS), and T7.24 (DNSCrypt).
 
 **Decision:**
@@ -1443,7 +1443,8 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - DNSCrypt users get the anonymity dnscrypt-proxy's relays give, and SOCKS5 users keep UDP's latency.
 - `ecs = "client"` multiplies cache entries by the number of client subnets; it's meant for resolvers with public clients, and does nothing on a home network.
 
-## ADR-086 — Recursion and DNSSEC follow-ups: priming, hedging, EDE reasons, an anchors file; RFC 5011 and 8198 deferred (Proposed)
+## ADR-086 — Recursion and DNSSEC follow-ups: priming, hedging, EDE reasons, an anchors file; RFC 5011 and 8198 deferred (Accepted)
+**Amended by:** ADR-092. RFC 8198 (aggressive NSEC) was implemented later; RFC 5011 stays deferred.
 **Context:** T9.8 picks up the deferrals of T6.3 (DNSSEC) and T7.15 (recursion).
 
 **Decision:**
@@ -1459,7 +1460,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - SERVFAILs say why a signature failed.
 - Validation survives the root key rollover with no action.
 
-## ADR-085 — Alert email: a small built-in SMTP submission client (Proposed)
+## ADR-085 — Alert email: a small built-in SMTP submission client (Accepted)
 **Context:** T9.4 (OBS-010 lists email as a destination; deferred in T7.12). The owner has no relay of their own.
 
 **Decision:**
@@ -1470,7 +1471,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 
 **Consequences:** email works with any provider that offers SMTP submission, for about 30 KiB of code and no new dependency.
 
-## ADR-084 — WASM upstream plugins: deferred, and wasmi rather than wasmtime if built (Proposed)
+## ADR-084 — WASM upstream plugins: deferred, and wasmi rather than wasmtime if built (Accepted)
 **Context:** M8 lists WASM upstream plugins; `04` §3 and ADR-007 name wasmtime behind a feature flag. T7.16 shipped the out-of-process plugins (`unix://` and `exec://`, DNS wire format), which already let any language implement an upstream.
 
 **Measured (2026-10-06):** stripped, LTO, `panic = "abort"` release binaries of a program that compiles one module, against an empty program, on x86_64 Linux:
@@ -1491,7 +1492,7 @@ The release binaries are 19–23 MiB raw today, and the image budget is 15 MiB c
 - M8 closes without code here.
 - The plugin story stays the process boundary: crash isolation, and any language.
 
-## ADR-083 — io_uring UDP: measured, not adopted (Proposed)
+## ADR-083 — io_uring UDP: measured, not adopted (Accepted)
 **Context:** M8 lists io_uring; `02` §3 calls it "a P2 experiment behind a feature flag". The UDP listener already batches with `recvmmsg`/`sendmmsg` on one `SO_REUSEPORT` socket per worker, so the syscall cost per query is already amortized.
 
 **Measured (2026-10-06):** a standalone spike, not in the repo: one server thread doing the same per-datagram work both ways (64-slot `RecvMsg`/`SendMsg` io_uring ring vs 64-message `recvmmsg`/`sendmmsg`), loopback, WSL2 kernel 6.18, 8 cores, alternating 5-second rounds.
@@ -1511,7 +1512,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - One UDP code path.
 - The M8 item is closed with data rather than code.
 
-## ADR-082 — vqlog: a pipe language compiled to qlog searches, aggregated in memory (Proposed)
+## ADR-082 — vqlog: a pipe language compiled to qlog searches, aggregated in memory (Accepted)
 **Context:** T8.4, AGT-012: "a constrained, safe query DSL (`vqlog`) over the query log and rollups (filter, group by, top-K, percentiles, time bucket), with a cost estimate, exposed as one tool". The spec doesn't fix the syntax, the limits, or the scope.
 
 **Decision:**
@@ -1525,7 +1526,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - One MCP tool answers most analytics questions with exact numbers and a visible cost; the narrow tools stay for the common ones.
 - Long windows on busy networks are slow (it scans), and the limits say so instead of degrading DNS (search threads run at background priority).
 
-## ADR-081 — mDNS device naming: passive, A records of `<name>.local` (Proposed)
+## ADR-081 — mDNS device naming: passive, A records of `<name>.local` (Accepted)
 **Context:** T8.3 (M8 "mDNS client naming"; API-010 lists mDNS as a naming source). Many devices announce their host name over mDNS (RFC 6762) whether or not anyone asks.
 
 **Decision:**
@@ -1537,7 +1538,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 **Consequences:**
 - Devices get readable names without a router integration or DHCP, on networks where TelltaleDNS can hear multicast.
 
-## ADR-080 — Router integrations: read-only polling of UniFi and OPNsense (Proposed)
+## ADR-080 — Router integrations: read-only polling of UniFi and OPNsense (Accepted)
 **Context:** T8.2 (M8 "router integrations"; API-010 lists DHCP leases as a naming source). Most homes run DHCP on the router, so TelltaleDNS's own DHCP (T7.19) doesn't see those leases.
 
 **Decision:**
@@ -1549,7 +1550,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 **Consequences:**
 - Device names appear on networks where the router runs DHCP, with no change on the router beyond a read-only account or key.
 
-## ADR-079 — DNSCrypt with RustCrypto's crypto_box; stamps map to existing transports (Proposed)
+## ADR-079 — DNSCrypt with RustCrypto's crypto_box; stamps map to existing transports (Accepted)
 **Context:** T7.24 (UPS-003; `04` §2). DNSCrypt v2 needs X25519 and libsodium's box constructions; `02` §7 lists no crate for them. Stamps may name DNSCrypt, DoH, DoT, or DoQ servers.
 
 **Decision:**
@@ -1579,7 +1580,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - A Pi can replace the router's DHCP; unnamed devices get readable names immediately.
 - Without failover, a second DHCP node needs split pools (not supported in config yet).
 
-## ADR-077 — dnstap: a sampled copy of the wire messages, off by default (Proposed)
+## ADR-077 — dnstap: a sampled copy of the wire messages, off by default (Accepted)
 **Context:** T7.18 (OBS-007; `06` §5). dnstap needs the query and response messages, which query events don't carry (`02` §3: no allocation on the hot path).
 
 **Decision:**
@@ -1590,7 +1591,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 **Consequences:**
 - At `sample_every = 1` every query costs two small allocations and a channel send; the docs say to sample on busy resolvers.
 
-## ADR-076 — OTLP over HTTP with JSON, metrics converted from our exposition (Proposed)
+## ADR-076 — OTLP over HTTP with JSON, metrics converted from our exposition (Accepted)
 **Context:** T7.17 (OBS-006; `06` §5). The spec asks for "the same metric set via OTLP/HTTP" and optional QueryEvent logs, without an encoding or a mapping.
 
 **Decision:**
@@ -1603,7 +1604,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Collectors that convert back to Prometheus see `_total` already in counter names (most keep it as is).
 - A counter reset (restart) shows as a new start time, as OTLP expects.
 
-## ADR-075 — Proxies, socket plugins, pins, and client certificates (Proposed)
+## ADR-075 — Proxies, socket plugins, pins, and client certificates (Accepted)
 **Context:** T7.16 (UPS-010, UPS-011; `04` §2, §6). The spec names the features but not where a proxied hostname is resolved, how an `exec://` plugin learns its socket, how plugins restart, or how pins interact with `tls_insecure_skip_verify`.
 
 **Decision:**
@@ -1616,7 +1617,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Tor users point an encrypted upstream at the Tor SOCKS port with a hostname URL and nothing else.
 - A plugin that needs state across reloads must keep it itself (it's restarted on configuration changes).
 
-## ADR-074 — Our own iterative resolver, conservative defaults (Proposed)
+## ADR-074 — Our own iterative resolver, conservative defaults (Accepted)
 **Context:** T7.15 (DNS-012, UPS-012; `03` §6). `02` §2 allows building on `hickory-recursor`. The spec fixes the limits (16 CNAME hops, 32 referrals) and asks for QNAME minimization, 0x20 (configurable), SRTT server selection, glue in bailiwick, and RFC 8198, but not the defaults, the timeouts, or how the resolver meets the per-query budget.
 
 **Decision:**
@@ -1632,7 +1633,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - The common "Pi-hole + unbound" setup becomes one upstream; imports from Technitium without forwarders use it directly.
 - A cold resolution in a zone with slow or broken servers can exceed the 2 s budget the first time (the client gets SERVFAIL or a stale answer; the next query succeeds from the learned cuts).
 
-## ADR-073 — DGA scoring and NXDOMAIN storms: fixed formulas, shipped bigrams, absolute storm bar (Proposed)
+## ADR-073 — DGA scoring and NXDOMAIN storms: fixed formulas, shipped bigrams, absolute storm bar (Accepted)
 **Context:** T7.14 (OBS-009; `06` §7). The spec names the signals (entropy, consonant runs, bigram log-likelihood) and the storm rule shape ("> X/min and > Y%") but not the weights, thresholds, the bigram source, or how findings are grouped.
 
 **Decision:**
@@ -1647,7 +1648,8 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - Dictionary-word DGAs and short generated labels aren't caught; some vendor IDs may score high (the UI shows the score, not a verdict).
 - A restart resets list hits; overlap is exact for the active snapshot.
 
-## ADR-072 — Event sinks: one bounded buffer per sink, API-shaped JSON, no disk spill (Proposed)
+## ADR-072 — Event sinks: one bounded buffer per sink, API-shaped JSON, no disk spill (Accepted)
+**Amended by:** ADR-088. Syslog over TLS and a capped disk spill for webhook sinks were added later.
 **Context:** T7.13 (OBS-010; `06` §5). The spec asks for JSON-lines, syslog, and webhook sinks "with retry and a disk spill cap", but not the event format, how a slow sink is kept off the query path, or how retries are bounded.
 
 **Decision:**
@@ -1661,7 +1663,7 @@ Revisit if a profile on real hardware shows syscalls dominating at the owner's t
 - A collector outage loses events beyond the buffer; the query log, which sinks don't replace, still has them.
 - Syslog over TLS needs a forwarder (rsyslog, Vector) until it's added.
 
-## ADR-071 — MCP over OAuth: JWT access tokens from the OIDC provider, for existing users only (Proposed)
+## ADR-071 — MCP over OAuth: JWT access tokens from the OIDC provider, for existing users only (Accepted)
 **Context:** T7.4 (AGT-008, P1). MCP clients sign in with OAuth 2.1: the server publishes RFC 9728 metadata naming an authorization server, and accepts that server's access tokens. The spec says to use the configured OIDC provider but not how tokens become principals, or which tokens are accepted.
 
 **Decision:**
