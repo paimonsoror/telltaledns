@@ -1265,6 +1265,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-096 — A client group's own upstream group (Proposed)
+**Context:** T9.25 (UPS-007, owner request 2026-10-06). UPS-007 already routes by client group (`[[route]] match_group`), but that lives in routing, not on the group, and the UI had no way to set it. The spec doesn't say how it ranks against domain routes, which group wins for a device in several, or what removing an upstream group a group uses does.
+
+**Decision:**
+- `[[group]] upstreams = "<upstream group>"`, validated like a route's `upstream_group`. The router turns it into a route for the group's clients that matches any name, placed after the explicit `[[route]]` entries. Precedence: a domain route (deeper suffix), then an explicit route of equal depth (a `match_group` route, which comes first), then the group's `upstreams`, then `default`.
+- A device in several groups: the derived routes are ordered by group priority (highest first), then configuration order, so its highest-priority group with `upstreams` decides.
+- Removing an upstream group that a client group or a route still uses is refused with a hint, rather than clearing the choice. Clearing it would quietly send, say, the kids' questions to `default` instead of a family resolver. Reverting an API override of the files' entry is allowed (the group stays).
+
+**Consequences:**
+- No hot-path cost: routes are consulted only on a cache miss, and the cache is already keyed by upstream group, so groups never share answers from different resolvers.
+- `[[route]] match_group` stays for narrower cases (one group's `TXT` questions, say).
+
 ## ADR-095 — `$dnsrewrite` in lists: AdGuard's precedence, a supported subset (Proposed)
 **Context:** T2.3 kept `$dnsrewrite` rules in the snapshot but didn't apply them (T7.20 put rewrites in the configuration). AdGuard-format lists and personal rule sets use them for local names, safe-search CNAMEs, and blanking names out. Without them those lists lose part of their meaning.
 

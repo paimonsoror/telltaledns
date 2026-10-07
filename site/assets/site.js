@@ -23,7 +23,7 @@
     // starts closed behind ☰; the Reference menu closes on Escape or a click elsewhere.
     var menu = document.querySelector(".top .menu");
     if (menu) {
-      var narrow = matchMedia("(max-width: 860px)");
+      var narrow = matchMedia("(max-width: 1120px)");
       var fit = function () { menu.open = !narrow.matches; };
       fit();
       if (narrow.addEventListener) narrow.addEventListener("change", fit);

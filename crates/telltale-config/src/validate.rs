@@ -1023,6 +1023,17 @@ fn groups<'c>(cfg: &'c Config, upstreams: &HashSet<&str>, r: &mut Report<'_>) ->
 }
 
 fn routes(cfg: &Config, groups: &HashSet<&str>, r: &mut Report<'_>) {
+    // REQ: UPS-007 (T9.25) — a client group's own upstream group.
+    for (i, g) in cfg.group.iter().enumerate() {
+        if let Some(u) = &g.upstreams
+            && !groups.contains(u.as_str())
+        {
+            r.err(
+                format!("group[{i}].upstreams"),
+                format!("unknown upstream group `{u}`"),
+            );
+        }
+    }
     for (i, route) in cfg.route.iter().enumerate() {
         let p = format!("route[{i}]");
         if !groups.contains(route.upstream_group.as_str()) {

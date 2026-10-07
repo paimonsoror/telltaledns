@@ -419,6 +419,25 @@ impl Router {
                 target,
             });
         }
+        // REQ: UPS-007 (T9.25) — `[[group]] upstreams`: a route for the group's clients, after
+        // the explicit ones (so they win ties), highest priority first (a device in several
+        // groups goes where its primary group says).
+        let mut own: Vec<_> = cfg
+            .group
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| {
+                let target = *by_name.get(g.upstreams.as_deref()?)?;
+                Some((std::cmp::Reverse(g.priority), i, g.name.to_string(), target))
+            })
+            .collect();
+        own.sort();
+        routes.extend(own.into_iter().map(|(_, _, name, target)| Route {
+            suffixes: Vec::new(),
+            client_groups: vec![name],
+            qtypes: Vec::new(),
+            target,
+        }));
         let default = by_name.get("default").copied();
         if errors.is_empty() {
             Ok(Self {

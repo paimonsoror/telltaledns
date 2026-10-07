@@ -760,7 +760,7 @@ match = ["10.0.5.0/24"]                  # no groups: its network's group, else 
   trust_edns_mac_from = ["192.168.1.1/32"]
   ```
 - `$client=` rules match the device's name (`$client='Kids tablet'`), its client ID, or its IP or CIDR.
-- `[[route]] match_group = ["kids"]` sends a group's queries to its own upstreams (for example, a family-filtering resolver).
+- A group can also send its questions to its own upstream servers (for example, a family-filtering resolver): see [Upstream servers per group](#upstream-servers-per-group).
 - Changes apply on reload (`SIGHUP`). Metric: `telltale_neighbors` (entries in the neighbor table).
 
 ### Groups for your networks (VLANs)
@@ -798,6 +798,85 @@ networks = ["192.168.10.0/24"]
   - the metric `telltale_group_queries_total{group,status}`.
 - **In a cluster**, groups and networks are shared configuration, so every node attributes devices
   the same way.
+
+### Upstream servers per group
+Each group can send its questions to its own `[[upstream_group]]` instead of `default`: a
+family-filtering resolver for the kids, a privacy resolver for the trusted network, or the
+ISP's resolver for streaming boxes that care where they're answered from. Make the upstream
+groups first, from [presets](#upstream-presets) or by hand:
+```sh
+telltale presets show cloudflare-family --proto tls --group family >> telltale.toml
+telltale presets show quad9 --proto tls,https --group privacy >> telltale.toml
+```
+Then point groups at them:
+```toml
+[[group]]
+name = "Kids"
+networks = ["192.168.20.0/24"]
+upstreams = "family"
+priority = 10
+
+[[group]]
+name = "Trust"
+networks = ["192.168.10.0/24"]
+upstreams = "privacy"
+```
+- **In the UI:** Groups → Edit → **Upstream servers**. *(default)* means the `default` upstream
+  group. The group's card shows the choice.
+- **What wins,** most specific first:
+  1. a `[[route]]` for a domain (`match_suffix`), such as `home.arpa` to your router, applies
+     to every group, so local names keep working;
+  2. a `[[route]]` with `match_group` naming the group (for example, only its `TXT`
+     questions);
+  3. the group's `upstreams`;
+  4. `default`.
+- **A device in several groups** (a network group plus a `[[client]]` group) goes where its
+  highest-priority group with `upstreams` says.
+- **Caching is per upstream group.** An answer one group got from its resolver is never served
+  to a group that uses another, so a family resolver's answers stay with the family group.
+- **Removing an upstream group** that a group (or a route) still uses is refused; pick other
+  upstream servers for that group first.
+- No cost on cached answers: the choice is made only when a question goes upstream.
+
+### Example: a home with VLANs
+Networks, lists, schedules, and upstream servers combine. Each VLAN gets its own rules, and
+every chart and log line shows which one a question came from:
+```toml
+[[group]]
+name = "Trust"                    # laptops and phones
+networks = ["192.168.10.0/24"]
+lists = ["hagezi-pro"]
+upstreams = "privacy"
+
+[[group]]
+name = "Kids"
+networks = ["192.168.20.0/24"]
+lists = ["hagezi-pro", "family-extra"]
+blocked_services = ["tiktok", "fortnite"]
+safe_search = true
+schedules = ["bedtime"]
+upstreams = "family"
+priority = 10
+
+[[group]]
+name = "IoT"                      # TVs, plugs, cameras
+networks = ["192.168.30.0/24"]
+lists = ["hagezi-pro", "smart-tv"]
+rebinding_protection = true
+
+[[group]]
+name = "Guest"
+networks = ["192.168.40.0/24"]
+lists = ["hagezi-light"]
+block_mode = "nxdomain"
+```
+- IoT has no `upstreams`, so it uses `default`.
+- To see the effect, filter the query log by group, or ask
+  `from -24h | where group = Kids | top 10 upstream` (see
+  [Analytics in one query](#analytics-in-one-query-vqlog)).
+- Devices must reach TelltaleDNS **with their own addresses** for their network to count: route
+  the VLANs to it rather than through a forwarder that rewrites them (see
+  [Seeing real client IPs](#seeing-real-client-ips)).
 
 ### Blocked services
 Block a whole service for a group with one setting, without finding its domains:

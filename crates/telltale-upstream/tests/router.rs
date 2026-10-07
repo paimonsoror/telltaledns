@@ -288,3 +288,87 @@ members = ["subnet", "client", "socks"]
     ));
     assert!(ok.is_ok(), "{:?}", ok.err());
 }
+
+/// REQ: UPS-007 (T9.25) — `[[group]] upstreams`: a group's devices go to its upstream group; a
+/// device in several goes where its highest-priority group says; a domain route, or a route
+/// that names the group, still wins; and an unknown upstream group is a configuration error.
+#[test]
+fn ups_007_group_upstreams() {
+    let r = router(
+        r#"[[upstream]]
+name = "a"
+url = "udp://127.0.0.1:9"
+[[upstream_group]]
+name = "default"
+members = ["a"]
+[[upstream_group]]
+name = "family"
+members = ["a"]
+[[upstream_group]]
+name = "vpn"
+members = ["a"]
+[[upstream_group]]
+name = "lan"
+members = ["a"]
+[[route]]
+match_suffix = ["home.arpa"]
+upstream_group = "lan"
+[[route]]
+match_group = ["guest"]
+match_qtype = ["TXT"]
+upstream_group = "lan"
+[[group]]
+name = "iot"
+upstreams = "vpn"
+[[group]]
+name = "kids"
+priority = 10
+upstreams = "family"
+[[group]]
+name = "guest"
+upstreams = "vpn"
+"#,
+    )
+    .unwrap();
+    let pick = |name: &str, qtype: u16, groups: &[&str]| {
+        r.select(&q(name, qtype), groups)
+            .unwrap()
+            .group
+            .name
+            .clone()
+    };
+    assert_eq!(pick("example.org", rtype::A, &["kids"]), "family");
+    assert_eq!(pick("example.org", rtype::A, &["iot"]), "vpn");
+    assert_eq!(
+        pick("example.org", rtype::A, &["iot", "kids"]),
+        "family",
+        "the higher-priority group"
+    );
+    assert_eq!(pick("example.org", rtype::A, &[]), "default");
+    assert_eq!(
+        pick("nas.home.arpa", rtype::A, &["kids"]),
+        "lan",
+        "a domain route wins"
+    );
+    assert_eq!(
+        pick("example.org", rtype::TXT, &["guest"]),
+        "lan",
+        "a route naming the group wins"
+    );
+    assert_eq!(pick("example.org", rtype::A, &["guest"]), "vpn");
+
+    let err = telltale_config::Loader::new()
+        .toml_str(
+            "t.toml",
+            "[[upstream]]\nname = \"a\"\nurl = \"udp://127.0.0.1:9\"\n[[upstream_group]]\nname = \"default\"\nmembers = [\"a\"]\n[[group]]\nname = \"kids\"\nupstreams = \"nope\"\n",
+        )
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .err()
+        .unwrap();
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("group[0].upstreams") && text.contains("unknown upstream group `nope`"),
+        "{text}"
+    );
+}

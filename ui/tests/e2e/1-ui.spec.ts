@@ -1041,3 +1041,20 @@ test('flt_010 schedules are edited from the UI', async () => {
   await row.getByRole('button', { name: 'Remove' }).click();
   await expect(row).toHaveCount(0);
 });
+
+// REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.
+test('ups_007 a group picks its upstream group from the UI', async () => {
+  await page.goto('/#/groups');
+  const g = page.getByTestId('editor-group').getByTestId('entry-row').filter({ hasText: 'ipv6only' });
+  await g.getByRole('button', { name: 'Edit' }).click();
+  await page.getByLabel('Upstream servers').selectOption('router');
+  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  const card = page.getByTestId('group-card').filter({ hasText: 'ipv6only' });
+  await expect(async () => {
+    await page.reload();
+    await expect(card.getByTestId('group-upstreams')).toContainText('router', { timeout: 2000 });
+  }).toPass({ timeout: 30_000 });
+  await g.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(g).toContainText('config file');
+});

@@ -1155,26 +1155,9 @@ impl Backend for ApiBackend {
                 rewrites: Vec::new(),
                 dns64: false,
                 dns64_prefix: None,
+                upstreams: None,
             })
-            // REQ: T8.6 — answer filtering, rewrites, DNS64 (from the group's config).
-            .map(|mut info| {
-                if let Some(c) = cfg.group.iter().find(|x| x.name.as_str() == info.name) {
-                    info.rebinding_protection = c.rebinding_protection;
-                    info.block_answer_ips =
-                        c.block_answer_ips.iter().map(ToString::to_string).collect();
-                    info.rewrites = c
-                        .rewrite
-                        .iter()
-                        .map(|r| telltale_api::model::RewriteInfo {
-                            domain: r.domain.to_string(),
-                            answer: r.answer.to_string(),
-                        })
-                        .collect();
-                    info.dns64 = c.dns64;
-                    info.dns64_prefix = c.dns64_prefix.as_ref().map(ToString::to_string);
-                }
-                info
-            })
+            .map(|info| with_group_config(info, &cfg))
             .collect()
     }
 
@@ -2819,6 +2802,77 @@ fn upstream_cascade(
     Ok((also, groups))
 }
 
+/// REQ: UPS-007 (T9.25) — an upstream group a client group or a route still sends questions to
+/// can't be removed (sending them to `default` instead could quietly drop, say, a family
+/// resolver). Reverting an override of the files' entry keeps the group, so that's fine.
+fn upstream_group_in_use(
+    name: &str,
+    file: &telltale_config::Config,
+    entries: &crate::managed::Entries,
+    before_cfg: &telltale_config::Config,
+) -> Result<(), Problem> {
+    use crate::managed::Named;
+    if entries.upstream_groups.iter().any(|(n, _)| *n == name)
+        && file.upstream_group.iter().any(|g| g.name() == name)
+    {
+        return Ok(());
+    }
+    let groups: Vec<_> = before_cfg
+        .group
+        .iter()
+        .filter(|g| g.upstreams.as_deref() == Some(name))
+        .map(|g| format!("`{}`", g.name.as_str()))
+        .collect();
+    let routes = before_cfg
+        .route
+        .iter()
+        .filter(|r| r.upstream_group.as_str() == name)
+        .count();
+    if groups.is_empty() && routes == 0 {
+        return Ok(());
+    }
+    let mut users = Vec::new();
+    if !groups.is_empty() {
+        users.push(format!(
+            "group{} {}",
+            if groups.len() == 1 { "" } else { "s" },
+            groups.join(", ")
+        ));
+    }
+    if routes > 0 {
+        users.push(format!(
+            "{routes} route{}",
+            if routes == 1 { "" } else { "s" }
+        ));
+    }
+    Err(Problem::new(
+        Code::InvalidConfig,
+        format!("upstream group `{name}` is in use by {}", users.join(" and ")),
+    )
+    .hint("Pick other upstream servers for those groups first (Groups → Edit), or remove their `[[route]]` entries."))
+}
+
+/// REQ: T8.6 — answer filtering, rewrites, DNS64 (from the group's config); UPS-007 (T9.25) —
+/// its upstream group.
+fn with_group_config(mut info: GroupInfo, cfg: &telltale_config::Config) -> GroupInfo {
+    if let Some(c) = cfg.group.iter().find(|x| x.name.as_str() == info.name) {
+        info.rebinding_protection = c.rebinding_protection;
+        info.block_answer_ips = c.block_answer_ips.iter().map(ToString::to_string).collect();
+        info.rewrites = c
+            .rewrite
+            .iter()
+            .map(|r| telltale_api::model::RewriteInfo {
+                domain: r.domain.to_string(),
+                answer: r.answer.to_string(),
+            })
+            .collect();
+        info.dns64 = c.dns64;
+        info.dns64_prefix = c.dns64_prefix.as_ref().map(ToString::to_string);
+        info.upstreams = c.upstreams.as_ref().map(ToString::to_string);
+    }
+    info
+}
+
 /// The entry named `name`, as JSON.
 fn named_json<T: crate::managed::Named + Serialize>(
     items: &[T],
@@ -2857,6 +2911,9 @@ fn plan_override(
     } else {
         (Vec::new(), Vec::new())
     };
+    if w.kind == ManagedKind::UpstreamGroup && w.body.is_none() {
+        upstream_group_in_use(&name, &file, &entries, &before_cfg)?;
+    }
 
     let (before, body) = match w.kind {
         ManagedKind::Upstream => override_step(
@@ -3454,5 +3511,63 @@ mod keep_in_git_tests {
         assert!(gone.starts_with("# Remove the [[list]] `ads`"), "{gone}");
         let back = keep_in_git(ManagedKind::List, "ads", None, Some(&serde_json::json!({})));
         assert!(back.contains("Nothing to change in Git"), "{back}");
+    }
+}
+
+#[cfg(test)]
+mod upstream_group_tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> telltale_config::Config {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config
+    }
+
+    /// REQ: UPS-007 (T9.25) — an upstream group in use by a client group or a route can't be
+    /// removed; one nothing uses can, and so can reverting an override of the files' entry.
+    #[test]
+    fn ups_007_upstream_group_in_use() {
+        let c = cfg(r#"[[upstream]]
+name = "a"
+url = "udp://127.0.0.1:9"
+[[upstream_group]]
+name = "default"
+members = ["a"]
+[[upstream_group]]
+name = "family"
+members = ["a"]
+[[upstream_group]]
+name = "spare"
+members = ["a"]
+[[route]]
+match_suffix = ["home.arpa"]
+upstream_group = "family"
+[[group]]
+name = "kids"
+upstreams = "family"
+"#);
+        let none = crate::managed::Entries::default();
+        let err = upstream_group_in_use("family", &c, &none, &c).unwrap_err();
+        let text = format!("{err:?}");
+        assert!(
+            text.contains("in use by group `kids` and 1 route"),
+            "{text}"
+        );
+        assert!(upstream_group_in_use("spare", &c, &none, &c).is_ok());
+        let mut overridden = crate::managed::Entries::default();
+        let g = c
+            .upstream_group
+            .iter()
+            .find(|g| g.name.as_str() == "family")
+            .unwrap();
+        overridden
+            .upstream_groups
+            .push(("family".into(), crate::managed::Ovr::Set(g.clone())));
+        assert!(upstream_group_in_use("family", &c, &overridden, &c).is_ok());
     }
 }

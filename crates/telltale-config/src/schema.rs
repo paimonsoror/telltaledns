@@ -672,6 +672,10 @@ pub struct GroupConfig {
     /// networks are never made into AAAA. `::ffff:0:0/96` is always excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dns64_exclude: Vec<Cidr>,
+    /// REQ: UPS-007 (T9.25) — the `[[upstream_group]]` this group's queries go to (instead of
+    /// `default`). A `[[route]]` for a domain, or one that names the group, still wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstreams: Option<SafeString>,
 }
 
 /// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.

@@ -16,6 +16,7 @@
   let services = $state<S['ServiceInfo'][]>([]);
   // REQ: FLT-010 (T9.7) — schedules, edited below the groups.
   let scheduleNames = $state<string[]>([]);
+  let upstreamGroupNames = $state<string[]>([]);
   type Window = { days: string[]; start: string; end: string };
   const windowText = (v: unknown) =>
     ((v as Window[] | undefined) ?? []).map((w) => `${w.days.join(',')} ${w.start}-${w.end}`).join('\n');
@@ -48,6 +49,9 @@
       help: 'One per line. Every device on these networks belongs to the group.' },
     { key: 'lists', label: 'Lists', type: 'multi', options: listNames,
       help: 'Leave all unticked on a new group to use every enabled list.' },
+    // REQ: UPS-007 (T9.25)
+    { key: 'upstreams', label: 'Upstream servers', type: 'select', options: upstreamGroupNames,
+      help: 'The upstream group this group’s questions go to. (default) uses the default group; routes for a domain still win.' },
     // REQ: FLT-011 (T7.11)
     { key: 'safe_search', label: 'Safe search', type: 'bool',
       help: 'Google, Bing, DuckDuckGo, Yandex, and Pixabay show only safe results; YouTube uses Restricted Mode.' },
@@ -78,6 +82,10 @@
   function load() {
     api.lists().then((l) => (listNames = l.items.map((x) => x.name))).catch(() => {});
     api.services().then((s) => (services = s.items)).catch(() => {});
+    api
+      .configEntries('upstream_group')
+      .then((e) => (upstreamGroupNames = e.items.filter((x) => x.source !== 'hidden').map((x) => x.name)))
+      .catch(() => {});
     api
       .configEntries('schedule')
       .then((e) => (scheduleNames = e.items.filter((x) => x.source !== 'hidden').map((x) => x.name)))
@@ -153,6 +161,11 @@
         {#if g.rewrites.length}
           <div class="small" data-testid="group-rewrites">
             Rewrites: {#each g.rewrites as r, i (r.domain)}{i ? ', ' : ''}<span class="mono">{r.domain} → {r.answer}</span>{/each}<HelpButton id="rewrites" />
+          </div>
+        {/if}
+        {#if g.upstreams}
+          <div class="small" data-testid="group-upstreams">
+            Upstream servers: <span class="mono">{g.upstreams}</span>
           </div>
         {/if}
         {#if g.dns64}

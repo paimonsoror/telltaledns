@@ -2,7 +2,7 @@
   "ci": {
     "collect": {
       "staticDistDir": "site/_site",
-      "url": ["/index.html", "/start.html", "/install.html", "/how-it-works.html", "/config.html", "/glossary.html", "/performance.html", "/standards.html", "/nerds.html"],
+      "url": ["/index.html", "/start.html", "/install.html", "/how-it-works.html", "/groups.html", "/config.html", "/glossary.html", "/performance.html", "/standards.html", "/nerds.html"],
       "numberOfRuns": 3
     },
     "assert": {

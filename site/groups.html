@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Groups and VLANs — TelltaleDNS</title>
+<meta name="description" content="Different DNS rules for different networks: TelltaleDNS device groups give each VLAN or set of devices its own block lists, blocked services, safe search, schedules, and upstream servers, and show every question by group.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="groups">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Groups and VLANs</p>
+  <h1>Different rules for different networks</h1>
+  <p class="lede">Kids, guests, smart TVs, and your own laptops don't need the same DNS. Give each VLAN, or any set of devices, a <b>group</b>: its own block lists, blocked services, safe search, schedules, and upstream servers. Every chart and log line then shows which group a question came from.</p>
+  <figure class="figure">
+    <svg viewBox="0 0 900 300" role="img">
+      <title>Four VLANs, each a group with its own lists, sending its questions to its own upstream group</title>
+      <defs><marker id="g-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+      <text x="10" y="16" class="svg-sub">Network → group</text>
+      <text x="290" y="16" class="svg-sub">What the group gets</text>
+      <text x="660" y="16" class="svg-sub">Upstream servers</text>
+      <g class="svg-stroke-brand" stroke-width="2" marker-end="url(#g-arrow)">
+        <path d="M230 52 H282"/><path d="M230 120 H282"/><path d="M230 188 H282"/><path d="M230 256 H282"/>
+        <path d="M570 52 C610 52 610 58 652 58"/>
+        <path d="M570 120 C610 120 610 150 652 150"/>
+        <path d="M570 188 C610 188 610 242 652 242"/>
+        <path d="M570 256 C610 256 610 250 652 250"/>
+      </g>
+      <g>
+        <rect x="10" y="28" width="220" height="48" rx="10" class="svg-box"/>
+        <text x="24" y="48" class="svg-text">Trust</text><text x="24" y="66" class="svg-mono">192.168.10.0/24</text>
+        <rect x="10" y="96" width="220" height="48" rx="10" class="svg-box"/>
+        <text x="24" y="116" class="svg-text">Kids</text><text x="24" y="134" class="svg-mono">192.168.20.0/24</text>
+        <rect x="10" y="164" width="220" height="48" rx="10" class="svg-box"/>
+        <text x="24" y="184" class="svg-text">IoT</text><text x="24" y="202" class="svg-mono">192.168.30.0/24</text>
+        <rect x="10" y="232" width="220" height="48" rx="10" class="svg-box"/>
+        <text x="24" y="252" class="svg-text">Guest</text><text x="24" y="270" class="svg-mono">192.168.40.0/24</text>
+      </g>
+      <g>
+        <rect x="290" y="28" width="280" height="48" rx="10" class="svg-box"/>
+        <text x="304" y="48" class="svg-sub">ads and trackers</text><text x="304" y="66" class="svg-sub">→ privacy resolvers</text>
+        <rect x="290" y="96" width="280" height="48" rx="10" class="svg-box"/>
+        <text x="304" y="116" class="svg-sub">+ family lists, TikTok blocked, safe search</text><text x="304" y="134" class="svg-sub">bedtime schedule → family resolver</text>
+        <rect x="290" y="164" width="280" height="48" rx="10" class="svg-box"/>
+        <text x="304" y="184" class="svg-sub">+ smart-TV tracking lists</text><text x="304" y="202" class="svg-sub">rebinding protection</text>
+        <rect x="290" y="232" width="280" height="48" rx="10" class="svg-box"/>
+        <text x="304" y="252" class="svg-sub">a light list</text><text x="304" y="270" class="svg-sub">blocked names answer NXDOMAIN</text>
+      </g>
+      <g>
+        <rect x="660" y="34" width="230" height="48" rx="10" class="svg-brand" opacity=".2"/>
+        <text x="674" y="54" class="svg-text">privacy</text><text x="674" y="72" class="svg-sub">Quad9 over DoT and DoH</text>
+        <rect x="660" y="126" width="230" height="48" rx="10" class="svg-ok" opacity=".25"/>
+        <text x="674" y="146" class="svg-text">family</text><text x="674" y="164" class="svg-sub">Cloudflare for Families</text>
+        <rect x="660" y="222" width="230" height="48" rx="10" class="svg-box"/>
+        <text x="674" y="242" class="svg-text">default</text><text x="674" y="260" class="svg-sub">everyone else</text>
+      </g>
+    </svg>
+    <figcaption>An example home: each VLAN is a group. Groups without their own upstream servers use <code>default</code>.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">Who's in which group</p>
+  <h2>A device finds its group on its own</h2>
+  <p class="muted">Give a group the networks it owns and every device on them belongs to it, with no per-device setup. For a single device, a <code>[[client]]</code> entry (or <b>Name this device</b> in the UI) can pick its groups. The first match wins:</p>
+  <ol class="steps">
+    <li class="step"><h3>Client ID</h3><p>From an encrypted connection: the DoH path <code>/dns-query/&lt;id&gt;</code> or a DoT/DoH server name <code>&lt;id&gt;.dns.example.com</code>. Follows a phone off the home network.</p></li>
+    <li class="step"><h3>MAC address</h3><p>From the kernel's neighbor table, or from a router you trust to pass it along. Survives DHCP changes and IPv6 privacy addresses.</p></li>
+    <li class="step"><h3>IP address</h3><p>An exact address named in a <code>[[client]]</code> entry.</p></li>
+    <li class="step"><h3>Network</h3><p>The group that owns the most specific matching network, such as a VLAN's <code>/24</code>.</p></li>
+    <li class="step"><h3>Default</h3><p>Everything else gets the <code>default</code> group.</p></li>
+  </ol>
+</section>
+
+<section>
+  <p class="eyebrow">What a group decides</p>
+  <h2>One place for a network's rules</h2>
+  <div class="grid">
+    <div class="card"><h3>Block lists</h3><p>Which lists apply. A device in several groups gets the lists of all of them; other settings come from its highest-priority group.</p></div>
+    <div class="card"><h3>Blocked services</h3><p>A whole service in one click (TikTok, Fortnite, and more), with every domain it uses.</p></div>
+    <div class="card"><h3>Safe search</h3><p>Google, Bing, DuckDuckGo, Yandex, and Pixabay show only safe results; YouTube gets Restricted Mode.</p></div>
+    <div class="card"><h3>Schedules</h3><p>Bedtime or homework hours: block everything, or add lists and services, on a weekly timetable.</p></div>
+    <div class="card"><h3>Upstream servers</h3><p>Where the group's questions go: a family-filtering resolver for the kids, a privacy resolver for your laptops. <a href="#upstreams">More below</a>.</p></div>
+    <div class="card"><h3>Answers</h3><p>How blocked names are answered, rewrites to your own addresses, DNS rebinding protection, and DNS64 for IPv6-only networks.</p></div>
+  </div>
+</section>
+
+<section id="upstreams">
+  <div class="two">
+    <div>
+      <p class="eyebrow">Upstream servers per group</p>
+      <h2>Each network asks its own resolver</h2>
+      <p class="muted">Make an <b>upstream group</b> (one or more servers and how to pick between them), then choose it under <b>Groups → Edit → Upstream servers</b>. What wins, most specific first:</p>
+      <ol>
+        <li>a route for a domain, such as <code>home.arpa</code> to your router, so local names keep working for every group;</li>
+        <li>a route that names the group;</li>
+        <li>the group's upstream servers;</li>
+        <li><code>default</code>.</li>
+      </ol>
+      <p class="muted">Answers are cached per upstream group, so an answer from the family resolver is never served to a group that uses another. Cached answers cost nothing extra: the choice is made only when a question goes upstream.</p>
+    </div>
+<pre><code>[[group]]
+name = "Kids"
+networks = ["192.168.20.0/24"]
+lists = ["hagezi-pro", "family-extra"]
+blocked_services = ["tiktok", "fortnite"]
+safe_search = true
+schedules = ["bedtime"]
+upstreams = "family"
+priority = 10
+
+[[group]]
+name = "Trust"
+networks = ["192.168.10.0/24"]
+upstreams = "privacy"</code></pre>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">See the difference</p>
+  <h2>Every question, by group</h2>
+  <div class="grid">
+    <div class="card"><h3>Dashboard</h3><p><b>Traffic by group</b>, and the top names and top blocked for any one group.</p></div>
+    <div class="card"><h3>Groups page</h3><p>Each group's networks, settings, queries and block rate over 24 hours, and devices this hour.</p></div>
+    <div class="card"><h3>Query log</h3><p>A group chip on every row and a <b>Group</b> filter. <b>Why?</b> names the list and line that decided.</p></div>
+    <div class="card"><h3>One-line analytics</h3><p><code>from -24h | where group = Kids | top 10 upstream</code> with <a href="agents.html#vqlog">vqlog</a>, or the <code>group</code> label on metrics.</p></div>
+  </div>
+  <p class="muted">In a cluster, groups are shared configuration, so every node puts a device in the same group. Devices must reach TelltaleDNS with their own addresses for their network to count: route the VLANs to it rather than through a forwarder that rewrites them.</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#groups-and-devices">Groups documentation</a>
+    <a class="btn" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upstream-servers-per-group">Upstream servers per group</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

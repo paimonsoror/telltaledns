@@ -2689,6 +2689,11 @@ export interface components {
             /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
             schedules: string[];
             schedulesOn: string[];
+            /**
+             * @description REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
+             *     or wherever `[[route]]` entries send them).
+             */
+            upstreams?: string | null;
             youtubeRestrict?: string | null;
         };
         /** @description One host sample, with sizes in bytes and shares in percent. */
@@ -3073,6 +3078,11 @@ export interface components {
                 /** @description REQ: FLT-010 (T7.10) — the group's schedules, and which of them are on now. */
                 schedules: string[];
                 schedulesOn: string[];
+                /**
+                 * @description REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
+                 *     or wherever `[[route]]` entries send them).
+                 */
+                upstreams?: string | null;
                 youtubeRestrict?: string | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */

@@ -6834,6 +6834,13 @@
               "type": "string"
             }
           },
+          "upstreams": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,\nor wherever `[[route]]` entries send them)."
+          },
           "youtubeRestrict": {
             "type": [
               "string",
@@ -7877,6 +7884,13 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "upstreams": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,\nor wherever `[[route]]` entries send them)."
                 },
                 "youtubeRestrict": {
                   "type": [

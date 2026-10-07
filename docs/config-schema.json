@@ -1624,6 +1624,14 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
           }
         },
+        "upstreams": {
+          "description": "REQ: UPS-007 (T9.25) — the `[[upstream_group]]` this group's queries go to (instead of\n`default`). A `[[route]]` for a domain, or one that names the group, still wins.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "youtube_restrict": {
           "description": "With `safe_search`: YouTube's restriction (`strict`, `moderate`, or `off`).",
           "$ref": "#/$defs/YoutubeRestrict"

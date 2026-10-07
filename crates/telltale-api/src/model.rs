@@ -666,6 +666,10 @@ pub struct GroupInfo {
     pub dns64: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dns64_prefix: Option<String>,
+    /// REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
+    /// or wherever `[[route]]` entries send them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstreams: Option<String>,
 }
 
 /// A group's rewrite: `domain` (or `*.domain`) answered with `answer`.
