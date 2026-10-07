@@ -1949,11 +1949,21 @@ impl Pipeline {
             attempts,
         });
         let v = result.ok()?;
+        // REQ: DNS-011 (ADR-098) — which names fail, while trying validation out.
+        if v.verdict == Verdict::Bogus && d.permissive {
+            tracing::info!(
+                name = %question.name.display(),
+                qtype = question.qtype,
+                ede = v.ede,
+                "DNSSEC: bogus answer served (permissive mode)"
+            );
+        }
         if v.verdict == Verdict::Bogus && !d.permissive {
             return Some(bogus_marker(v.ede));
         }
-        if v.verdict == Verdict::Bogus && v.bytes.is_empty() {
-            // Permissive, with nothing to serve: fetch it again, unvalidated.
+        if v.bytes.is_empty() && matches!(v.verdict, Verdict::Bogus | Verdict::Indeterminate) {
+            // Nothing validated to serve (permissive, or validation couldn't finish): fetch it
+            // again, unvalidated.
             let a = group.resolve(*question, self.settings.budget).await.ok()?;
             let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
             return Some(a.bytes.into());

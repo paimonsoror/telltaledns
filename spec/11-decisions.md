@@ -1265,6 +1265,18 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-098 — DNSSEC: library limits are indeterminate; bogus names are logged while trying validation (Proposed)
+**Context:** Running `[dnssec] mode = "permissive"` on the live cluster (2026-10-07) counted 14 bogus answers in five minutes. hickory 0.26's validator returns an error both for a broken proof and for its own limit ("exceeded max validation depth", logged at ERROR); TelltaleDNS treated every non-network error as bogus, so `validate` mode would have answered SERVFAIL for such names. Its log named none of them. On `prod.ftl.netflix.com` (unsigned zone, CNAMEs) hickory repeats NS and DS lookups for the same name until the limit. Raising the limit from 26 to 40 overflowed a runtime thread's stack in a debug build.
+
+**Decision:**
+- The depth limit stays at hickory's default (26). Hitting it is **indeterminate**: the answer is fetched again unvalidated and served without AD, in both modes. Other validation errors stay bogus.
+- In permissive mode every bogus answer is logged at INFO with its name, type, and EDE code (`DNSSEC: bogus answer served (permissive mode)`), so a trial shows which names would fail.
+- hickory's `hickory_net::dnssec` log target is off: TelltaleDNS counts and logs each verdict itself (that module warned on every unsigned NODATA).
+
+**Consequences:**
+- Switching to `validate` can't SERVFAIL a name only because hickory gave up.
+- **Known issue:** the trial also showed hickory judging names in unsigned zones reached through CNAMEs as bogus (`www.netflix.com`, EDE 10), so `validate` would break them. Until an insecure-delegation check corrects such verdicts (T10.9), `validate` isn't safe to recommend; permissive is, at the cost of a second, unvalidated fetch (and up to about 2 s for looping names) on cache misses for the affected names.
+
 ## ADR-097 — Releases: one workflow, checked before and verified after; main moves on at once (Proposed)
 **Context:** T9.26 (OPS-004, owner request 2026-10-07: cut v0.1.0, and make releases deterministic for future agents). Tag builds already published signed binaries, versioned images, and a chart (ADR-038, ADR-046), but cutting one was a manual tag push, nothing checked the version against `Cargo.toml` or the chart, nothing confirmed the result, and edge builds kept the released version's number.
 

@@ -505,6 +505,7 @@ Every `00 §5` gate and the other v1.0 gate items, measured and closed. Status: 
 - [ ] **T10.5 Measurements on separate hardware.** *(NFR-001)* p99 at 50 % load (cache hit, blocked) with the load generator on another machine; Pi 4 throughput on a Pi that isn't serving the home network; cross-site config propagation p95. Needs hardware or the owner's OK for the live cluster.
 - [ ] **T10.6 Requirement check.** Every P0 requirement in `spec/01` against its test or evidence.
 - [ ] **T10.7 Security review.** Sign-in (local and OIDC), the cluster channel (mTLS, join, forwarding, failover), and the parsers (DNS wire, lists, config, the query log).
+- [ ] **T10.9 DNSSEC: insecure delegations reached through CNAMEs (live trial 2026-10-07).** *(DNS-011, ADR-098)* hickory 0.26 judges answers in unsigned zones reached through CNAMEs as bogus (`www.netflix.com`: EDE 10) or loops on NS/DS lookups (`prod.ftl.netflix.com`). Before accepting a bogus verdict, check whether an ancestor of each name in the chain is provably unsigned (a secure denial of its DS at the parent); if so, the answer is insecure. Tests on real chains; a bug report for hickory. *Done so far (2026-10-07):* the depth limit is indeterminate, bogus names are logged in permissive mode, hickory's validator log is off, and replicas no longer repeat config warnings on every applied change.
 - [ ] **T10.8 Comparative report.** Owner decision: publish our own numbers and method only, or change the gate.
 
 ## M9 — Follow-ups to v1 (owner request 2026-10-06)

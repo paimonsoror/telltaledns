@@ -303,11 +303,12 @@ impl Validator {
             // An upstream failure is an upstream failure (stale or SERVFAIL as usual).
             Ok(Some(Err(e))) if is_transport(&e) => return Err(ResolveError::Empty),
             Ok(Some(Err(e))) => {
-                tracing::debug!(name = %q.name.display().to_string(), "DNSSEC: {e}");
-                self.stats.count(Verdict::Bogus);
+                let verdict = error_verdict(&e);
+                tracing::debug!(name = %q.name.display().to_string(), ?verdict, "DNSSEC: {e}");
+                self.stats.count(verdict);
                 return Ok(Validated {
                     bytes: Vec::new(),
-                    verdict: Verdict::Bogus,
+                    verdict,
                     ede: telltale_proto::ede::DNSSEC_BOGUS,
                     upstream_id,
                     attempts,
@@ -402,6 +403,19 @@ pub fn bogus_reason(msg: &[u8], now: u32) -> u16 {
     }
 }
 
+/// REQ: DNS-011 (ADR-098) — what a validation error says about the answer. Hitting the
+/// validator's depth limit (hickory's default 26; raising it overflowed a runtime thread's
+/// stack in testing) means the proof couldn't be finished, not that a signature failed:
+/// indeterminate, served without AD in both modes. Seen with `prod.ftl.netflix.com`, where
+/// hickory 0.26 repeats NS and DS lookups for the same name until the limit. Anything else
+/// is bogus.
+pub(crate) fn error_verdict(e: &NetError) -> Verdict {
+    match e {
+        NetError::Message(m) if m.contains("max validation depth") => Verdict::Indeterminate,
+        _ => Verdict::Bogus,
+    }
+}
+
 fn is_transport(e: &NetError) -> bool {
     let s = e.to_string();
     s.starts_with("upstream:") || matches!(e, NetError::Timeout)
@@ -490,6 +504,24 @@ pub fn unvalidated(a: Answer) -> Validated {
         ede: 0,
         upstream_id: a.upstream_id,
         attempts: a.attempts,
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    /// REQ: DNS-011 (ADR-098) — the depth limit is indeterminate; other errors stay bogus.
+    #[test]
+    fn dns_011_depth_limit_is_indeterminate() {
+        assert_eq!(
+            error_verdict(&NetError::from("exceeded max validation depth")),
+            Verdict::Indeterminate
+        );
+        assert_eq!(
+            error_verdict(&NetError::from("rrsig validation failed")),
+            Verdict::Bogus
+        );
     }
 }
 

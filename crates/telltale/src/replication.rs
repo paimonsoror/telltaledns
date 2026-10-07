@@ -382,7 +382,7 @@ async fn apply(
     sources: &Sources,
 ) -> Result<(), String> {
     // Check the merged configuration before anything changes on disk.
-    let file = crate::server::load_files(files)
+    let file = crate::server::load_files_quiet(files)
         .ok_or("this node's own configuration files are invalid")?;
     // REQ: CLU-010 — a newer primary's settings this build doesn't know: keep serving the
     // last version and say what to do.

@@ -33,6 +33,17 @@ pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
 
 /// Loads and validates `files` + environment only (without what the UI/API stored).
 pub(crate) fn load_files(files: &[PathBuf]) -> Option<Config> {
+    load_files_logging(files, true)
+}
+
+/// Like [`load_files`], logging only errors: for re-checking the node's own files on every
+/// replicated change, where its warnings (a replica's file has no upstreams, by design)
+/// would repeat what start-up already said.
+pub(crate) fn load_files_quiet(files: &[PathBuf]) -> Option<Config> {
+    load_files_logging(files, false)
+}
+
+fn load_files_logging(files: &[PathBuf], warnings: bool) -> Option<Config> {
     match files
         .iter()
         .fold(Loader::new(), Loader::file)
@@ -40,8 +51,10 @@ pub(crate) fn load_files(files: &[PathBuf]) -> Option<Config> {
         .load()
     {
         Ok(l) => {
-            for w in &l.warnings {
-                warn!("config: {w}");
+            if warnings {
+                for w in &l.warnings {
+                    warn!("config: {w}");
+                }
             }
             Some(l.config)
         }

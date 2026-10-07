@@ -1237,6 +1237,14 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   The first lookup in a new zone fetches its keys, and a cold start fetches the root's and
   the TLD's; after that they're cached.
 - **Counted** in `telltale_dnssec_validation_total{result="secure|insecure|bogus|indeterminate"}`.
+  In `permissive` mode each bogus answer is also logged at INFO with its name, type, and
+  EDE code (`DNSSEC: bogus answer served (permissive mode)`), so a trial shows which names
+  `validate` would refuse.
+- **Indeterminate** (validation couldn't finish, such as the validator's depth limit): the
+  answer is fetched again without validation and served without AD, in both modes.
+- **Known issue (ADR-098):** names in unsigned zones reached through CNAMEs can be judged
+  bogus (for example `www.netflix.com`). Try `permissive` first and read the log before
+  switching to `validate`; a fix is tracked as T10.9.
 - **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
 - **Why it failed:** a bogus answer's SERVFAIL says why when its signatures show it: EDE 7 (signature expired), 8 (signature not yet valid), 10 (signatures missing), else 6. A clock that's far off shows up as 7 or 8 everywhere, which is worth checking first.
 - **Trust anchors:** the root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you. To use other anchors (a future key before TelltaleDNS is updated, or a test root), give a file of DNSKEY records in zone-file form, as `dig DNSKEY . +noall +answer` prints them or Unbound's `root.key` holds:

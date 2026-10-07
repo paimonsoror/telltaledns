@@ -1115,15 +1115,27 @@ fn run_self_update(channel: selfupdate::Channel, check: bool, restart: bool) -> 
 }
 
 fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
     let level = std::env::var("TELLTALE_LOG")
         .ok()
         .and_then(|v| v.parse::<tracing::level_filters::LevelFilter>().ok())
         .unwrap_or(tracing::level_filters::LevelFilter::INFO);
+    // REQ: DNS-011 (ADR-098) — hickory's validator logs every unsigned NODATA (a warning) and
+    // its depth limit (an error); TelltaleDNS counts and logs each verdict itself.
+    let targets = tracing_subscriber::filter::Targets::new()
+        .with_default(level)
+        .with_target(
+            "hickory_net::dnssec",
+            tracing::level_filters::LevelFilter::OFF,
+        );
     tracing_subscriber::fmt()
         .with_max_level(level)
         .with_target(false)
         .with_ansi(io::IsTerminal::is_terminal(&io::stderr()))
         .with_writer(io::stderr)
+        .finish()
+        .with(targets)
         .init();
 }
 
