@@ -569,7 +569,7 @@ struct Bucket([u64; 8]);
 const MAX_INDEXED_LISTSETS: u64 = 1 << 16;
 
 impl ScopeIndex {
-    fn build(maps: &[fst::Map<Vec<u8>>], seed: u64) -> Result<Self, String> {
+    fn build(maps: &[fst::Map<crate::snapshot::FstData>], seed: u64) -> Result<Self, String> {
         use fst::Streamer;
         let n: usize = maps.iter().map(fst::Map::len).sum();
         if n == 0 {
@@ -762,7 +762,13 @@ impl Name {
 
 /// Walks `fst` along `key`, calling `f(labels, value)` at every label boundary in
 /// `from..=to` (label counts) where the FST has a final state.
-fn walk(fst: &Fst<Vec<u8>>, name: &Name, from: usize, to: usize, mut f: impl FnMut(usize, u64)) {
+fn walk<D: AsRef<[u8]>>(
+    fst: &Fst<D>,
+    name: &Name,
+    from: usize,
+    to: usize,
+    mut f: impl FnMut(usize, u64),
+) {
     if fst.is_empty() {
         return;
     }

@@ -22,6 +22,38 @@ pub use doh3::{Doh3Config, Doh3Server};
 pub use doq::{DoqConfig, DoqServer, DoqStats};
 pub use handler::{ClientId, Deferred, QueryHandler, RequestMeta, Response, Transport};
 pub use neigh::{Neighbor, neighbors};
+#[cfg(target_os = "linux")]
+pub use sys::MappedFile;
+
+/// REQ: NFR-002 (T10.2) — elsewhere a "mapped" file is read into memory.
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+pub struct MappedFile(Box<[u8]>);
+
+#[cfg(not(target_os = "linux"))]
+impl MappedFile {
+    pub fn open(path: &std::path::Path) -> std::io::Result<Self> {
+        Ok(Self(std::fs::read(path)?.into_boxed_slice()))
+    }
+
+    pub fn release(&self) {}
+}
+
+#[cfg(not(target_os = "linux"))]
+impl std::ops::Deref for MappedFile {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl AsRef<[u8]> for MappedFile {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 pub use tcp::{TcpConfig, TcpServer, TcpStats};
 pub use tls::CertStore;
 pub use udp::{LocalAddr, UdpConfig, UdpListener, WorkerStats};

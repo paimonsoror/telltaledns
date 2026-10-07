@@ -530,6 +530,101 @@ pub(crate) fn statvfs(path: &std::path::Path) -> io::Result<(u64, u64)> {
     Ok((blocks.saturating_mul(frsize), avail.saturating_mul(frsize)))
 }
 
+/// REQ: NFR-002 (T10.2) — a read-only, private memory map of a whole file: the filter's FST
+/// snapshot files, so their pages are file-backed and can leave the process's resident set
+/// (`release`) once the lookup index answers queries.
+///
+/// Only for files nothing modifies while they're mapped: snapshot files are written once into
+/// a fresh directory and never rewritten or truncated in place (ADR-018). If another process
+/// truncated one anyway, reading past the new end would raise SIGBUS; the files live in the
+/// data directory, which only the service user can write.
+#[derive(Debug)]
+pub struct MappedFile {
+    ptr: ptr::NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: the mapping is read-only and private, and `MappedFile` hands out only shared
+// slices of it, so sharing or sending it between threads is as safe as for a `Box<[u8]>`.
+unsafe impl Send for MappedFile {}
+// SAFETY: as above: no interior mutability; every access is a read.
+unsafe impl Sync for MappedFile {}
+
+impl MappedFile {
+    /// Maps `path` (an empty file maps to an empty slice without a mapping).
+    pub fn open(path: &std::path::Path) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+        if len == 0 {
+            return Ok(Self {
+                ptr: ptr::NonNull::dangling(),
+                len: 0,
+            });
+        }
+        // SAFETY: a fresh read-only private mapping of an open file descriptor, at an address
+        // the kernel picks; the arguments are valid and the result is checked below. The
+        // mapping stays valid after `file` closes.
+        let p = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let ptr = ptr::NonNull::new(p.cast::<u8>())
+            .ok_or_else(|| io::Error::other("mmap returned null"))?;
+        Ok(Self { ptr, len })
+    }
+
+    /// Drops this process's copies of the pages (`MADV_DONTNEED`). The data stays valid: the
+    /// next read faults the page back in from the file (usually still in the page cache).
+    pub fn release(&self) {
+        if self.len == 0 {
+            return;
+        }
+        // SAFETY: the range is exactly this mapping; for a private, unmodified file mapping
+        // MADV_DONTNEED only discards resident pages, which reads restore from the file.
+        // Failure is harmless (the pages just stay resident), so the result is ignored.
+        unsafe {
+            libc::madvise(self.ptr.as_ptr().cast(), self.len, libc::MADV_DONTNEED);
+        }
+    }
+}
+
+impl std::ops::Deref for MappedFile {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        // SAFETY: `ptr` is a live, readable mapping of `len` bytes (or dangling with `len` 0)
+        // that stays mapped until `drop`, and nothing writes to it.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl AsRef<[u8]> for MappedFile {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl Drop for MappedFile {
+    fn drop(&mut self) {
+        if self.len > 0 {
+            // SAFETY: unmaps exactly the mapping `open` created; no slice of it outlives
+            // `self` (they borrow it).
+            unsafe {
+                libc::munmap(self.ptr.as_ptr().cast(), self.len);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

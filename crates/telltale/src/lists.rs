@@ -412,11 +412,17 @@ impl Publisher {
         // The index build is background work like compiling: never at the cost of queries.
         telltale_net::background_thread();
         let t = std::time::Instant::now();
-        if let Ok(m) = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed) {
+        if let Ok(m) =
+            Matcher::with_lookup(Some(Arc::clone(&snap)), Overlay::default(), Lookup::Indexed)
+        {
             #[allow(clippy::cast_precision_loss)] // MiB for a log line
             let mib = m.index_bytes() as f64 / f64::from(1u32 << 20);
             let lookup = m.lookup();
             if store(m) {
+                // REQ: NFR-002 (T10.2) — the index answers now: the FSTs' pages can go.
+                if lookup == Lookup::Indexed {
+                    snap.release_pages();
+                }
                 info!(
                     version,
                     ?lookup,

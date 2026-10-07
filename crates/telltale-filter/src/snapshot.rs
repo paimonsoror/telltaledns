@@ -223,13 +223,18 @@ pub(crate) struct Regexes {
     pub(crate) rules: Vec<RegexRule>,
 }
 
-/// A loaded snapshot. FSTs are read into memory for now (mmap needs `unsafe`, which only
-/// `telltale-net` may use; ADR-018).
+/// A domain FST file, memory-mapped (REQ: NFR-002, T10.2; the mapping lives in
+/// `telltale-net`, the only crate allowed `unsafe`).
+pub type FstData = telltale_net::MappedFile;
+
+/// A loaded snapshot. The domain FSTs are memory-mapped, so once the lookup index answers
+/// queries their pages can leave the resident set ([`Snapshot::release_pages`]); the small
+/// blobs are read into memory.
 #[derive(Debug)]
 pub struct Snapshot {
     pub manifest: Manifest,
     /// Domain FSTs: `[scope][shard]`, scopes in [`SCOPE_NAMES`] order.
-    pub domains: [Vec<Map<Vec<u8>>>; 3],
+    pub domains: [Vec<Map<FstData>>; 3],
     pub listsets: ListSetTable,
     pub modrules_index: Map<Vec<u8>>,
     pub modrules: Vec<ModRule>,
@@ -260,21 +265,32 @@ impl Snapshot {
                 manifest.format
             )));
         }
-        let read = |name: &str| -> io::Result<Vec<u8>> {
-            let data = fs::read(dir.join(name))?;
+        let check = |name: &str, data: &[u8]| -> io::Result<()> {
             let blob = manifest
                 .blobs
                 .iter()
                 .find(|b| b.name == name)
                 .ok_or_else(|| invalid(format!("{name} missing from manifest")))?;
             if data.len() as u64 != blob.bytes
-                || blake3::hash(&data).to_hex().as_str() != blob.blake3
+                || blake3::hash(data).to_hex().as_str() != blob.blake3
             {
                 return Err(invalid(format!(
                     "{name}: content doesn't match the manifest"
                 )));
             }
+            Ok(())
+        };
+        let read = |name: &str| -> io::Result<Vec<u8>> {
+            let data = fs::read(dir.join(name))?;
+            check(name, &data)?;
             Ok(data)
+        };
+        // Checking a mapped FST reads every page; drop them again right after.
+        let mapped = |name: &str| -> io::Result<Map<FstData>> {
+            let data = FstData::open(&dir.join(name))?;
+            check(name, &data)?;
+            data.release();
+            Map::new(data).map_err(|e| invalid(format!("{name}: {e}")))
         };
         let fst = |name: &str| -> io::Result<Map<Vec<u8>>> {
             Map::new(read(name)?).map_err(|e| invalid(format!("{name}: {e}")))
@@ -287,10 +303,10 @@ impl Snapshot {
         if !(1..=MAX_FST_SHARDS).contains(&shards) {
             return Err(invalid(format!("manifest: {shards} FST shards")));
         }
-        let mut domains: [Vec<Map<Vec<u8>>>; 3] = Default::default();
+        let mut domains: [Vec<Map<FstData>>; 3] = Default::default();
         for (scope, maps) in domains.iter_mut().enumerate() {
             for shard in 0..shards {
-                maps.push(fst(&domain_fst(scope, shard))?);
+                maps.push(mapped(&domain_fst(scope, shard))?);
             }
         }
         Ok(Self {
@@ -301,6 +317,17 @@ impl Snapshot {
             regexes: regexes.rules,
             manifest,
         })
+    }
+
+    /// REQ: NFR-002 (T10.2) — drops the resident pages of the domain FSTs. Call it once the
+    /// lookup index answers queries: after that only explain and list-set lookups beyond the
+    /// index read the FSTs, and they fault in just the pages they touch.
+    pub fn release_pages(&self) {
+        for maps in &self.domains {
+            for m in maps {
+                m.as_fst().as_inner().release();
+            }
+        }
     }
 
     /// Every suffix of `qname` with a domain entry, most specific last. Simple and allocating:
