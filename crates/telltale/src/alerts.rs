@@ -36,7 +36,12 @@ pub(crate) struct Engine {
     since: HashMap<(usize, String), u64>,
     firing: HashMap<(usize, String), String>,
     sent_once: HashSet<(usize, String)>,
+    /// `sent_once` in the order sent, so the oldest go first past [`SENT_ONCE_CAP`].
+    sent_order: std::collections::VecDeque<(usize, String)>,
 }
+
+/// One-off subjects remembered (REQ: OBS-010, review 04-10).
+const SENT_ONCE_CAP: usize = 5000;
 
 /// Conditions that go out once per subject and never "clear".
 fn one_off(w: AlertWhen) -> bool {
@@ -63,6 +68,7 @@ impl Engine {
             if one_off(rule.when) {
                 for (subject, summary) in seen {
                     if self.sent_once.insert((i, subject.clone())) {
+                        self.sent_order.push_back((i, subject.clone()));
                         out.push(Notice {
                             rule: i,
                             subject: subject.clone(),
@@ -71,9 +77,13 @@ impl Engine {
                         });
                     }
                 }
-                // Bounded: keep the most recent few thousand.
-                if self.sent_once.len() > 5000 {
-                    self.sent_once.clear();
+                // Bounded: keep the most recent few thousand. Forgetting only the oldest means
+                // subjects still being observed (the last hour's) aren't sent again
+                // (review 04-10: clearing the whole set re-sent all of them at once).
+                while self.sent_order.len() > SENT_ONCE_CAP {
+                    if let Some(old) = self.sent_order.pop_front() {
+                        self.sent_once.remove(&old);
+                    }
                 }
                 continue;
             }
@@ -728,6 +738,31 @@ mod tests {
             e.step(1300, &rules, &[seen(&["cloudflare"]), seen(&[])])
                 .is_empty(),
             "the timer restarted"
+        );
+    }
+
+    /// REQ: OBS-010 (review 04-10) — past the cap, only the oldest one-off subjects are
+    /// forgotten: one still being observed isn't sent again.
+    #[test]
+    fn obs_010_one_off_alerts_forget_only_the_oldest() {
+        let rules = vec![rule(AlertWhen::Anomaly, 0)];
+        let mut e = Engine::default();
+        let all: Vec<String> = (0..=SENT_ONCE_CAP)
+            .map(|i| format!("finding-{i}"))
+            .collect();
+        for chunk in all.chunks(500) {
+            let names: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            assert_eq!(e.step(0, &rules, &[seen(&names)]).len(), chunk.len());
+        }
+        let newest = format!("finding-{SENT_ONCE_CAP}");
+        assert!(
+            e.step(1, &rules, &[seen(&[newest.as_str()])]).is_empty(),
+            "still remembered"
+        );
+        assert_eq!(
+            e.step(2, &rules, &[seen(&["finding-0"])]).len(),
+            1,
+            "the oldest was forgotten"
         );
     }
 
