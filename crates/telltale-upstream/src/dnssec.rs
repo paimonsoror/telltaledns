@@ -28,11 +28,12 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use futures_util::stream::{self, Stream};
 use hickory_net::dnssec::DnssecDnsHandle;
+use hickory_net::proto::dnssec::rdata::DNSSECRData;
 use hickory_net::proto::dnssec::{Proof, TrustAnchors};
 use hickory_net::proto::op::{
     DnsRequest, DnsRequestOptions, DnsResponse, Edns, Message, OpCode, Query, ResponseCode,
 };
-use hickory_net::proto::rr::{Name, RecordType};
+use hickory_net::proto::rr::{Name, RData, Record, RecordType, RecordTypeSet};
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_net::{DnsHandle, NetError};
 use parking_lot::Mutex;
@@ -615,11 +616,63 @@ async fn ds_signed(
         .answers
         .iter()
         .any(|a| !matches!(a.record_type(), RecordType::DS | RecordType::RRSIG));
+    // REQ: DNS-011 (ADR-098) — a secure denial of DS proves an unsigned delegation only when
+    // the record that denies it also shows a zone cut: NS present, SOA and DS absent (RFC 4035
+    // §5.2, RFC 5155 §8.9; what hickory's own insecure-delegation check asks for). Every name
+    // inside a signed zone has a secure DS denial too, and whether `apex` has an SOA came from
+    // an unvalidated answer, so the denial alone let a spoofed answer pass as insecure.
+    let cut = r
+        .authorities
+        .iter()
+        .any(|a| a.proof == Proof::Secure && denies_ds_at_cut(a, apex));
     match (has_ds, other, verdict(&r)) {
         (true, _, Verdict::Secure) => Some(true),
-        (false, false, Verdict::Secure | Verdict::Insecure) => Some(false),
+        (false, false, Verdict::Secure) if cut => Some(false),
+        (false, false, Verdict::Insecure) => Some(false),
         _ => None,
     }
+}
+
+/// REQ: DNS-011 (ADR-098) — `rec` is an NSEC or NSEC3 that denies a DS at `apex` and shows it
+/// as a zone cut (NS, no SOA, no DS). An NSEC3 is matched by hashing `apex` the way its owner
+/// was hashed.
+fn denies_ds_at_cut(rec: &Record, apex: &Name) -> bool {
+    let cut = |types: &RecordTypeSet| {
+        types.contains(RecordType::NS)
+            && !types.contains(RecordType::SOA)
+            && !types.contains(RecordType::DS)
+    };
+    match &rec.data {
+        RData::DNSSEC(DNSSECRData::NSEC(n)) => rec.name == *apex && cut(n.type_set()),
+        RData::DNSSEC(DNSSECRData::NSEC3(n)) => {
+            cut(n.type_set())
+                && n
+                    .hash_algorithm()
+                    .hash(n.salt(), apex, n.iterations())
+                    .is_ok_and(|h| {
+                        rec.name.iter().next().is_some_and(|label| {
+                            label.eq_ignore_ascii_case(base32hex(h.as_ref()).as_bytes())
+                        })
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// Base32 with the extended hex alphabet, no padding (RFC 4648 §7): NSEC3 owner labels.
+fn base32hex(data: &[u8]) -> String {
+    const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+    let mut out = String::with_capacity(data.len().div_ceil(5) * 8);
+    for chunk in data.chunks(5) {
+        let mut block = [0u8; 8];
+        block[3..3 + chunk.len()].copy_from_slice(chunk);
+        let v = u64::from_be_bytes(block);
+        for i in 0..(chunk.len() * 8).div_ceil(5) {
+            let idx = usize::try_from((v >> (35 - 5 * i)) & 31).unwrap_or(0);
+            out.push(char::from(T[idx]));
+        }
+    }
+    out
 }
 
 /// REQ: DNS-011 (ADR-098) — what a validation error says about the answer. Hitting the
@@ -739,6 +792,78 @@ mod depth_tests {
         );
         assert_eq!(zone_candidates("com"), Vec::<String>::new());
         assert_eq!(zone_candidates("a.b.c.d"), vec!["c.d", "b.c.d", "a.b.c.d"]);
+    }
+
+    /// REQ: DNS-011 (ADR-098) — base32hex (RFC 4648 §10 vectors, lowercase, unpadded).
+    #[test]
+    fn dns_011_base32hex() {
+        assert_eq!(base32hex(b""), "");
+        assert_eq!(base32hex(b"f"), "co");
+        assert_eq!(base32hex(b"fo"), "cpng");
+        assert_eq!(base32hex(b"foo"), "cpnmu");
+        assert_eq!(base32hex(b"foob"), "cpnmuog");
+        assert_eq!(base32hex(b"fooba"), "cpnmuoj1");
+        assert_eq!(base32hex(b"foobar"), "cpnmuoj1e8");
+    }
+
+    /// REQ: DNS-011 (ADR-098) — only a delegation's NSEC or NSEC3 (NS without SOA or DS)
+    /// proves a zone unsigned: not the NSEC of an ordinary name inside a signed zone, nor
+    /// another name's.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn dns_011_ds_denial_must_show_a_cut() {
+        use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
+        use hickory_net::proto::dnssec::rdata::{NSEC, NSEC3};
+        use RecordType::{A, DS, NS, NSEC as T_NSEC, NSEC3 as T_NSEC3, RRSIG, SOA};
+        let apex = Name::from_ascii("child.example.").unwrap();
+        let nsec = |owner: &str, types: &[RecordType]| {
+            let next = Name::from_ascii("z.example.").unwrap();
+            let data = RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(next, types.iter().copied())));
+            let mut r = Record::from_rdata(Name::from_ascii(owner).unwrap(), 300, data);
+            r.proof = Proof::Secure;
+            r
+        };
+        assert!(denies_ds_at_cut(&nsec("child.example.", &[NS, RRSIG, T_NSEC]), &apex));
+        assert!(
+            !denies_ds_at_cut(&nsec("child.example.", &[A, RRSIG, T_NSEC]), &apex),
+            "a name inside the zone, not a cut"
+        );
+        assert!(
+            !denies_ds_at_cut(&nsec("child.example.", &[NS, SOA, T_NSEC]), &apex),
+            "the child's own NSEC"
+        );
+        assert!(
+            !denies_ds_at_cut(&nsec("child.example.", &[NS, DS, T_NSEC]), &apex),
+            "a signed delegation"
+        );
+        assert!(
+            !denies_ds_at_cut(&nsec("other.example.", &[NS, T_NSEC]), &apex),
+            "another owner"
+        );
+        // NSEC3: the owner is the hash of the apex.
+        let salt = b"\xab\xcd";
+        let hash = Nsec3HashAlgorithm::SHA1.hash(salt, &apex, 5).unwrap();
+        let owner = Name::from_ascii(format!("{}.example.", base32hex(hash.as_ref()))).unwrap();
+        let nsec3 = |owner: &Name, types: &[RecordType]| {
+            let n = NSEC3::new(
+                Nsec3HashAlgorithm::SHA1,
+                false,
+                5,
+                salt.to_vec(),
+                vec![0; 20],
+                types.iter().copied(),
+            );
+            let mut r = Record::from_rdata(owner.clone(), 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
+            r.proof = Proof::Secure;
+            r
+        };
+        assert!(denies_ds_at_cut(&nsec3(&owner, &[NS, RRSIG, T_NSEC3]), &apex));
+        assert!(!denies_ds_at_cut(&nsec3(&owner, &[A, RRSIG, T_NSEC3]), &apex));
+        let wrong = Name::from_ascii("0123456789abcdefghijklmnopqrstuv.example.").unwrap();
+        assert!(
+            !denies_ds_at_cut(&nsec3(&wrong, &[NS, T_NSEC3]), &apex),
+            "another name's hash"
+        );
     }
 
     /// REQ: DNS-011 (ADR-098) — the depth limit is indeterminate; other errors stay bogus.

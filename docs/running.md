@@ -1243,7 +1243,8 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
 - **Indeterminate** (validation couldn't finish, such as the validator's depth limit): the
   answer is fetched again without validation and served without AD, in both modes.
 - **Unsigned zones:** before refusing an answer, TelltaleDNS proves whether its zone is
-  simply unsigned (the parent's signed denial of the zone's DS), and if so serves it as
+  simply unsigned (the parent's signed denial of the zone's DS, which must also show that
+  the name is a delegation: NS present, SOA and DS absent), and if so serves it as
   insecure. This corrects the validation library's verdict on CNAME chains in unsigned zones
   (`www.netflix.com`, `www.amazon.com`); proven zones are remembered for 15 minutes (ADR-098).
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only

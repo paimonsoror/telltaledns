@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
@@ -36,6 +36,9 @@ struct Zone {
     plain: BTreeMap<(Name, RecordType), Vec<Record>>,
     /// The DNSKEY's RDATA, for the anchors file.
     key: Vec<u8>,
+    /// ADR-098 — spoof `b.a.`: answer its A and SOA unsigned (an attacker's forgery for a
+    /// name inside the signed root, with a made-up SOA so that it looks like a zone apex).
+    forge: AtomicBool,
 }
 
 fn b64(data: &[u8]) -> String {
@@ -100,6 +103,15 @@ fn zone() -> Zone {
         (n("a."), vec![RData::A(A::new(192, 0, 2, 1))]),
         (
             n("a."),
+            vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
+                n("b.a."),
+                [RecordType::A, RecordType::RRSIG, RecordType::NSEC],
+            )))],
+        ),
+        // An ordinary name inside the root (not a zone cut): its NSEC has no NS.
+        (n("b.a."), vec![RData::A(A::new(192, 0, 2, 7))]),
+        (
+            n("b.a."),
             vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
                 n("bad."),
                 [RecordType::A, RecordType::RRSIG, RecordType::NSEC],
@@ -168,6 +180,7 @@ fn zone() -> Zone {
         sets,
         plain,
         key: key_rdata,
+        forge: AtomicBool::new(false),
     }
 }
 
@@ -227,7 +240,17 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
                 m.add_authorities(z.sets[&(n("."), RecordType::SOA)].clone());
                 m.add_authorities(z.sets[&(owner.clone(), RecordType::NSEC)].clone());
             };
-            if in_plain(&qn, qt) {
+            if z.forge.load(Ordering::Relaxed)
+                && qn == n("b.a.")
+                && matches!(qt, RecordType::A | RecordType::SOA)
+            {
+                let data = if qt == RecordType::A {
+                    RData::A(A::new(192, 0, 2, 66))
+                } else {
+                    RData::SOA(SOA::new(n("ns.b.a."), n("x.b.a."), 1, 1800, 900, 604_800, 300))
+                };
+                m.add_answers(vec![Record::from_rdata(qn.clone(), 300, data)]);
+            } else if in_plain(&qn, qt) {
                 plain_answer(&z, &mut m, &qn, qt);
             } else if let Some(rs) = z.sets.get(&(qn.clone(), qt)) {
                 m.add_answers(rs.clone());
@@ -285,7 +308,19 @@ async fn setup(
     Arc<Stats>,
     tempfile::TempDir,
 ) {
-    let z = Arc::new(zone());
+    setup_zone(anchor, Arc::new(zone())).await
+}
+
+async fn setup_zone(
+    anchor: bool,
+    z: Arc<Zone>,
+) -> (
+    Validator,
+    Arc<Group>,
+    Arc<AtomicUsize>,
+    Arc<Stats>,
+    tempfile::TempDir,
+) {
     let asked = Arc::new(AtomicUsize::new(0));
     let addr = serve(Arc::clone(&z), Arc::clone(&asked)).await;
     let dir = tempfile::tempdir().unwrap();
@@ -465,5 +500,41 @@ async fn dns_011_offline_unsigned_zone_through_cname_is_insecure() {
         stats.bogus.load(Ordering::Relaxed),
         1,
         "only the forged signature"
+    );
+}
+
+/// REQ: DNS-011 (ADR-098) — a spoofed, unsigned answer for a name inside the signed root
+/// stays bogus even when the spoofer also forges an SOA for it. The root's secure denial of a
+/// DS at `b.a.` proves there is no DS there, not that `b.a.` is a zone cut (its NSEC has no
+/// NS), so the unsigned-zone proof must not accept it, and must not remember `b.a.` as an
+/// unsigned zone for the questions that follow.
+#[tokio::test]
+async fn dns_011_offline_forged_apex_inside_signed_zone_stays_bogus() {
+    let z = Arc::new(zone());
+    let budget = Duration::from_secs(5);
+    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    let r = v
+        .resolve(&g, question("b.a", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Secure, "b.a. A, signed");
+
+    z.forge.store(true, Ordering::Relaxed);
+    let (v, g, _, stats, _dir2) = setup_zone(true, Arc::clone(&z)).await;
+    for round in 1..=2 {
+        let r = v
+            .resolve(&g, question("b.a", rtype::A), budget, true, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.verdict,
+            Verdict::Bogus,
+            "an unsigned answer inside the signed root (question {round})"
+        );
+    }
+    assert_eq!(
+        stats.insecure.load(Ordering::Relaxed),
+        0,
+        "never judged insecure"
     );
 }
