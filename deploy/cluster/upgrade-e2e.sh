@@ -103,7 +103,10 @@ echo "== 1. both on N-1"
 "$OLD" cluster init --name up --advertise https://127.0.0.1:28641 -c "$E/p.toml" >/dev/null
 start_p "$OLD"
 wait_answer 25501 10.0.0.1 10 || fail "the old primary never answered"
-T=$("$OLD" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
+# The token decides eligibility (05-01): ask for an eligible one. Builds from before that
+# change have no --eligible here and took the joiner's word for it.
+T=$("$OLD" cluster token create --eligible --ttl 10m -c "$E/p.toml" 2>/dev/null ||
+    "$OLD" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
 # DNS answers a moment before the cluster port listens: retry the join briefly.
 joined=
 for _ in $(seq 50); do
