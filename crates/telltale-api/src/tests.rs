@@ -798,7 +798,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 70);
+    assert_eq!(paths.len(), 72);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -1705,4 +1705,58 @@ async fn api_003_forwarded_proto_counts_only_from_trusted_peers() {
     );
     let (s, _, v) = send(&app, from([127, 0, 0, 1])).await;
     assert_eq!(s, StatusCode::OK, "a TLS terminator on this host: {v}");
+}
+
+// REQ: API-003, API-006 (review 06-06) — an admin lists another user's API tokens and revokes
+// one without touching the user; the revocation is audited with the owner.
+#[tokio::test]
+async fn api_003_admins_revoke_other_users_tokens() {
+    let (app, _) = app();
+    let ana = app
+        .auth
+        .create_user(
+            "ana",
+            "another long password",
+            auth::Role::Operator,
+            false,
+            NOW,
+        )
+        .unwrap();
+    app.auth
+        .state()
+        .create_token("tk1", ana.id, "laptop script", b"hash", "write", None, NOW)
+        .unwrap();
+    let (s, _, v) = get(&app, &format!("/api/v1/users/{}/tokens", ana.id)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["id"], "tk1", "{v}");
+    let delete = |path: String| {
+        Request::delete(path)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let path = format!("/api/v1/users/{}/tokens/tk1", ana.id);
+    let (s, _, v) = send(&app, delete(path.clone())).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (_, _, v) = get(&app, &format!("/api/v1/users/{}/tokens", ana.id)).await;
+    assert_eq!(v["items"].as_array().map(Vec::len), Some(0), "{v}");
+    let (s, _, _) = send(&app, delete(path)).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "already gone");
+    let revoked = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("token.revoke"), None)
+        .unwrap();
+    assert_eq!(revoked.len(), 1, "{revoked:?}");
+    assert!(
+        revoked[0].detail.contains("\"owner\":\"ana\""),
+        "{revoked:?}"
+    );
+    assert!(
+        app.auth
+            .state()
+            .user(ana.id)
+            .unwrap()
+            .is_some_and(|u| !u.disabled)
+    );
 }

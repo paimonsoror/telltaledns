@@ -108,6 +108,9 @@ export const api = {
   createUser: (b: S['CreateUser']) => post<S['UserInfo']>('/users', b),
   updateUser: (id: number, b: S['UpdateUser']) => call<S['UserInfo']>('PATCH', `/users/${id}`, { body: b }),
   deleteUser: (id: number) => call<void>('DELETE', `/users/${id}`),
+  userTokens: (id: number) => get<S['Listed_TokenInfo']>(`/users/${id}/tokens`),
+  revokeUserToken: (id: number, token: string) =>
+    call<void>('DELETE', `/users/${id}/tokens/${encodeURIComponent(token)}`),
   audit: (q: { action?: string; cursor?: string; limit?: number }) => get<S['AuditPage']>('/audit', q),
   auditVerify: () => get<S['AuditVerify']>('/audit/verify'),
 

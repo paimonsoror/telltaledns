@@ -205,6 +205,31 @@
       userError = err;
     }
   }
+  // REQ: API-003 (review 06-06) — an admin sees and revokes another user's API tokens.
+  let tokensOf = $state<number | null>(null);
+  let userTokens = $state<S['TokenInfo'][]>([]);
+  async function showTokens(u: S['UserInfo']) {
+    userError = null;
+    if (tokensOf === u.id) {
+      tokensOf = null;
+      return;
+    }
+    try {
+      userTokens = (await api.userTokens(u.id)).items;
+      tokensOf = u.id;
+    } catch (err) {
+      userError = err;
+    }
+  }
+  async function revokeUserToken(u: S['UserInfo'], token: string) {
+    userError = null;
+    try {
+      await api.revokeUserToken(u.id, token);
+      userTokens = (await api.userTokens(u.id)).items;
+    } catch (err) {
+      userError = err;
+    }
+  }
   // Two-step delete without a modal dialog: the first click arms the button.
   let armed = $state<number | null>(null);
   function confirmDelete(u: S['UserInfo']): boolean {
@@ -452,11 +477,36 @@
                   <button class="link" onclick={() => patchUser(u, { disabled: !u.disabled })}>{u.disabled ? 'Disabled · enable' : 'Active · disable'}</button>
                 </td>
                 <td class="num">
+                  <button class="link" aria-expanded={tokensOf === u.id} onclick={() => showTokens(u)}>Tokens</button>
                   {#if u.id !== session.user?.id}
                     <button class="danger" onclick={() => removeUser(u)}>{armed === u.id ? 'Really delete?' : 'Delete'}</button>
                   {/if}
                 </td>
               </tr>
+              {#if tokensOf === u.id}
+                <tr class="user-tokens">
+                  <td colspan="6">
+                    {#if userTokens.length === 0}
+                      <span class="muted small">{u.username} has no API tokens.</span>
+                    {:else}
+                      <table>
+                        <thead><tr><th>{u.username}'s token</th><th>Scope</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+                        <tbody>
+                          {#each userTokens as t (t.id)}
+                            <tr>
+                              <td><strong>{t.name}</strong><div class="muted small mono">tt_{t.id}_…</div></td>
+                              <td>{#if t.kind === 'agent'}<span class="badge">agent</span>{:else}<span class="badge">{t.scope}</span>{/if}</td>
+                              <td class="small">{ago(t.lastUsedUnixSeconds)}</td>
+                              <td class="small">{t.expiresUnixSeconds ? dateTime(t.expiresUnixSeconds) : 'never'}</td>
+                              <td class="num"><button class="danger" onclick={() => revokeUserToken(u, t.id)}>Revoke</button></td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                    {/if}
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>

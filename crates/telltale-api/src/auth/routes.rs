@@ -695,6 +695,11 @@ pub fn admin(auth: AuthState) -> Router {
     Router::new()
         .route("/api/v1/users", get(list_users).post(create_user))
         .route("/api/v1/users/{id}", patch(update_user).delete(delete_user))
+        .route("/api/v1/users/{id}/tokens", get(user_tokens))
+        .route(
+            "/api/v1/users/{id}/tokens/{token}",
+            delete(revoke_user_token),
+        )
         .route("/api/v1/audit", get(audit_log))
         .route("/api/v1/audit/verify", get(audit_verify))
         .with_state(auth)
@@ -1510,6 +1515,74 @@ pub(crate) async fn delete_token(
             Ok(StatusCode::NO_CONTENT)
         } else {
             Err(Problem::not_found(format!("you have no token `{id}`")))
+        }
+    })
+    .await
+}
+
+/// A user's API tokens (admin).
+///
+/// Name, kind, scope, expiry, and last use of each of the user's tokens, so an admin can find a
+/// leaked one without disabling its owner. The secrets are never shown.
+#[utoipa::path(get, path = "/api/v1/users/{id}/tokens", tag = "auth",
+    params(("id" = i64, Path, description = "User ID")),
+    responses((status = 200, body = Listed<TokenInfo>, description = "The result."),
+        (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction)."),
+        (status = 404, body = Problem, description = "Not found.")))]
+pub(crate) async fn user_tokens(
+    State(auth): State<AuthState>,
+    Path(id): Path<i64>,
+) -> Result<Json<Listed<TokenInfo>>, Problem> {
+    blocking(move || {
+        if auth.state().user(id).map_err(db)?.is_none() {
+            return Err(Problem::not_found(format!("no user {id}")));
+        }
+        let items = auth.state().tokens_for(id).map_err(db)?;
+        Ok(Json(Listed {
+            items: items.iter().map(token_info).collect(),
+        }))
+    })
+    .await
+}
+
+/// Revoke a user's API token (admin).
+///
+/// REQ: API-003, API-006 (review 06-06) — stops a leaked token at once without touching the
+/// owner's other tokens or sessions. Audited as `token.revoke` with the owner.
+#[utoipa::path(delete, path = "/api/v1/users/{id}/tokens/{tokenId}", tag = "auth",
+    params(("id" = i64, Path, description = "User ID"), ("tokenId" = String, Path, description = "Token ID")),
+    responses((status = 204, description = "Revoked."),
+        (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction)."),
+        (status = 404, body = Problem, description = "Not found.")))]
+pub(crate) async fn revoke_user_token(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
+    Path((id, token)): Path<(i64, String)>,
+) -> Result<StatusCode, Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
+    let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
+    blocking(move || {
+        let who = auth.actor(&p, ip, why);
+        let Some(owner) = auth.state().user(id).map_err(db)? else {
+            return Err(Problem::not_found(format!("no user {id}")));
+        };
+        let name = auth.state().token(&token).map_err(db)?.map(|t| t.name);
+        if auth.state().delete_token(&token, id).map_err(db)? {
+            auth.record(
+                &who,
+                "token.revoke",
+                &token,
+                &serde_json::json!({ "name": name, "owner": owner.username }),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(Problem::not_found(format!(
+                "{} has no token `{token}`",
+                owner.username
+            )))
         }
     })
     .await

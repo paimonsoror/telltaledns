@@ -4370,6 +4370,116 @@
         }
       }
     },
+    "/api/v1/users/{id}/tokens": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "A user's API tokens (admin).",
+        "description": "Name, kind, scope, expiry, and last use of each of the user's tokens, so an admin can find a\nleaked one without disabling its owner. The secrets are never shown.",
+        "operationId": "user_tokens",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Listed_TokenInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/{id}/tokens/{tokenId}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revoke a user's API token (admin).",
+        "description": "REQ: API-003, API-006 (review 06-06) — stops a leaked token at once without touching the\nowner's other tokens or sessions. Audited as `token.revoke` with the owner.",
+        "operationId": "revoke_user_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "tokenId",
+            "in": "path",
+            "description": "Token ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/zones": {
       "get": {
         "tags": [
