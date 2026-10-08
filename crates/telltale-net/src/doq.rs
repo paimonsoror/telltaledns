@@ -38,6 +38,9 @@ pub struct DoqConfig {
     pub max_streams: u32,
     /// Max concurrent connections; beyond it, new ones are refused.
     pub max_connections: usize,
+    /// Max concurrent connections from one client address (an IPv6 /64), once its handshake
+    /// proved the address; 0 = no limit (review 01 q2).
+    pub max_connections_per_address: usize,
 }
 
 impl DoqConfig {
@@ -48,6 +51,7 @@ impl DoqConfig {
             idle_timeout: Duration::from_secs(30),
             max_streams: 100,
             max_connections: 1024,
+            max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
         }
     }
 }
@@ -58,6 +62,8 @@ pub struct DoqStats {
     pub connections: AtomicU64,
     /// Connections refused because `max_connections` was reached.
     pub rejected: AtomicU64,
+    /// Connections closed because their client address already held the per-address maximum.
+    pub rejected_per_address: AtomicU64,
     pub queries: AtomicU64,
     /// Streams that broke RFC 9250 (bad length, a non-zero message ID): the connection closes.
     pub protocol_errors: AtomicU64,
@@ -101,7 +107,7 @@ impl DoqServer {
             handler,
             Arc::clone(&stats),
             rx,
-            cfg.max_connections,
+            (cfg.max_connections, cfg.max_connections_per_address),
             cfg.idle_timeout,
         ));
         Ok(Self {
@@ -138,12 +144,13 @@ async fn accept_loop<H: QueryHandler>(
     handler: Arc<H>,
     stats: Arc<DoqStats>,
     mut stop: watch::Receiver<bool>,
-    max_connections: usize,
+    (max_connections, max_per_address): (usize, usize),
     read_timeout: Duration,
 ) {
     // REQ: DNS-004 — the same cap as TCP (`spec/03` §1): a connection beyond it is refused
     // (QUIC CONNECTION_REFUSED) instead of accepted without bound.
     let slots = Arc::new(Semaphore::new(max_connections.max(1)));
+    let per_address = crate::peer_limit::PeerLimit::new(max_per_address);
     loop {
         let incoming = tokio::select! {
             _ = stop.changed() => return,
@@ -157,6 +164,7 @@ async fn accept_loop<H: QueryHandler>(
         };
         let (certs, handler, stats) =
             (Arc::clone(&certs), Arc::clone(&handler), Arc::clone(&stats));
+        let per_address = Arc::clone(&per_address);
         tokio::spawn(async move {
             let peer = incoming.remote_address();
             let conn = match incoming.await {
@@ -165,6 +173,15 @@ async fn accept_loop<H: QueryHandler>(
                     debug!(%peer, error = %e, "doq handshake failed");
                     return;
                 }
+            };
+            // The handshake proved the address (it can't be spoofed any more).
+            let Some(_place) = per_address.acquire(conn.remote_address().ip()) else {
+                stats.rejected_per_address.fetch_add(1, Ordering::Relaxed);
+                conn.close(
+                    quinn::VarInt::from_u32(DOQ_NO_ERROR),
+                    b"too many connections",
+                );
+                return;
             };
             stats.connections.fetch_add(1, Ordering::Relaxed);
             let client_id = conn

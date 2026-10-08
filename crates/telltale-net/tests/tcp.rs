@@ -201,3 +201,68 @@ async fn dns_001_tcp_runt_length_closes_connection() {
     assert!(matches!(r, Ok(Err(_))));
     server.shutdown().await;
 }
+
+/// REQ: DNS-001 (review 01 q2) — one client address can't hold every connection slot: the
+/// third connection from 127.0.0.1 is closed with a per-address cap of 2 (and counted), the
+/// ones already open keep working, and a slot is free again once one of them closes.
+#[tokio::test]
+async fn dns_001_tcp_per_address_cap() {
+    let mut c = cfg();
+    c.max_connections_per_address = 2;
+    let server = TcpServer::bind(c, Arc::new(echo)).unwrap();
+    let mut first = TcpStream::connect(server.local_addr()).await.unwrap();
+    let mut second = TcpStream::connect(server.local_addr()).await.unwrap();
+    for conn in [&mut first, &mut second] {
+        conn.write_all(&frame(1)).await.unwrap();
+        read_frame(conn).await.unwrap();
+    }
+    let mut third = TcpStream::connect(server.local_addr()).await.unwrap();
+    let _ = third.write_all(&frame(3)).await;
+    let r = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut third)).await;
+    assert!(matches!(r, Ok(Err(_))), "the third is closed: {r:?}");
+    assert_eq!(
+        server
+            .stats()
+            .rejected_per_address
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    // The open ones are unaffected, and closing one frees its place.
+    first.write_all(&frame(4)).await.unwrap();
+    read_frame(&mut first).await.unwrap();
+    drop(second);
+    let mut reused = false;
+    for _ in 0..50 {
+        let mut again = TcpStream::connect(server.local_addr()).await.unwrap();
+        if again.write_all(&frame(5)).await.is_ok() && read_frame(&mut again).await.is_ok() {
+            reused = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reused, "a place came back after a close");
+    server.shutdown().await;
+}
+
+/// REQ: DNS-001 — 0 turns the per-address cap off.
+#[tokio::test]
+async fn dns_001_tcp_per_address_cap_zero_is_unlimited() {
+    let mut c = cfg();
+    c.max_connections_per_address = 0;
+    let server = TcpServer::bind(c, Arc::new(echo)).unwrap();
+    let mut open = Vec::new();
+    for i in 0..40u16 {
+        let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
+        s.write_all(&frame(i)).await.unwrap();
+        read_frame(&mut s).await.unwrap();
+        open.push(s);
+    }
+    assert_eq!(
+        server
+            .stats()
+            .rejected_per_address
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    server.shutdown().await;
+}

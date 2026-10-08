@@ -1123,6 +1123,11 @@ fn write_doq_metrics(w: &mut PromWriter, src: &Sources) {
             qsum(|s| s.rejected.load(Relaxed)),
         ),
         (
+            "telltale_doq_rejected_per_address_total",
+            "DoQ connections closed because their client address held the per-address maximum.",
+            qsum(|s| s.rejected_per_address.load(Relaxed)),
+        ),
+        (
             "telltale_doq_queries_total",
             "DoQ queries received (one per stream).",
             qsum(|s| s.queries.load(Relaxed)),
@@ -1192,6 +1197,11 @@ fn write_tcp_metrics(w: &mut PromWriter, src: &Sources) {
             tsum(|s| s.rejected.load(Relaxed)),
         ),
         (
+            "telltale_tcp_rejected_per_address_total",
+            "TCP and DoT connections refused because their client address held the per-address maximum.",
+            tsum(|s| s.rejected_per_address.load(Relaxed)),
+        ),
+        (
             "telltale_tcp_idle_closed_total",
             "TCP connections closed for idleness.",
             tsum(|s| s.idle_closed.load(Relaxed)),
@@ -1243,6 +1253,11 @@ fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
             "telltale_doh_rejected_total",
             "DoH connections (HTTP/2 and HTTP/3) refused at the connection cap.",
             dsum(|s| s.rejected.load(Relaxed)),
+        ),
+        (
+            "telltale_doh_rejected_per_address_total",
+            "DoH connections (HTTP/2 and HTTP/3) refused because their client address held the per-address maximum.",
+            dsum(|s| s.rejected_per_address.load(Relaxed)),
         ),
         (
             "telltale_doh_requests_total",

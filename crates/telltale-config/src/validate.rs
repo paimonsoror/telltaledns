@@ -855,6 +855,23 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for tcp, dot, and doh listeners",
             );
         }
+        if l.proto == crate::ListenProto::Udp {
+            if l.max_connections.is_some() {
+                r.err(
+                    format!("{p}.max_connections"),
+                    "not valid for udp listeners",
+                );
+            }
+            if l.max_connections_per_address.is_some() {
+                r.err(
+                    format!("{p}.max_connections_per_address"),
+                    "not valid for udp listeners",
+                );
+            }
+        }
+        if l.max_connections == Some(0) {
+            r.err(format!("{p}.max_connections"), "must be at least 1");
+        }
     }
 }
 

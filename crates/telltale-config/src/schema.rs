@@ -328,6 +328,16 @@ pub struct Listener {
     /// Accept PROXY protocol v2 (TCP-based listeners only).
     #[serde(default)]
     pub proxy_protocol: bool,
+    /// Connections open at once on this listener (default 1,024); more are refused. Not for
+    /// `udp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u32>,
+    /// Connections open at once from one client address, an IPv6 /64 counting as one (default
+    /// 32; 0 = no limit), so one host can't take every slot. The address is the client's:
+    /// from the PROXY header when `proxy_protocol` is on. Behind a load balancer that hides
+    /// client addresses (no PROXY protocol, source NAT), raise it or set 0. Not for `udp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_address: Option<u32>,
 }
 
 impl Listener {
@@ -338,6 +348,8 @@ impl Listener {
             path: None,
             tls: None,
             proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
         }
     }
 }

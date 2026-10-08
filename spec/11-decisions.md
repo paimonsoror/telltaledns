@@ -1265,6 +1265,19 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-099 — Connection limits per listener, and per client address (Proposed)
+**Context:** Code review of v0.2.0, pass 01 (owner's answer to question 2, 2026-10-07: a per-address cap of 32, configurable). Every stream listener capped connections globally at 1,024 and nothing per client, so one host could take every slot (TCP, DoT, DoH) until a restart; the QUIC listeners had no cap at all (01-02). The spec doesn't say how a client is told apart, or what a balancer does to the count.
+
+**Decision:**
+- `[[listen]] max_connections` (default 1,024) and `max_connections_per_address` (default **32**, `0` = no limit) on `tcp`, `dot`, `doh`, `doh3`, and `doq` listeners. Over a limit, a connection is refused or closed at once and counted (`telltale_{tcp,doh,doq}_rejected_total` for the overall limit, `…_rejected_per_address_total` for the per-address one).
+- The address counted is the **client's**: after the PROXY protocol v2 header when `proxy_protocol` is on (a balancer's own address is never counted for everyone), and after the QUIC handshake for `doq` and `doh3` (before it, the source address can be spoofed, which would let an attacker spend a victim's budget). An IPv4 client is one address; an IPv6 client is its **/64**, because a host rotates through its prefix; IPv4-mapped IPv6 addresses count as IPv4.
+- No address is exempt (loopback included): a limit of 32 is far above what a client needs, and operators who proxy many clients through one address set the limit higher or `0`.
+
+**Consequences:**
+- Behind a load balancer that hides client addresses (no PROXY protocol, source NAT, Kubernetes `externalTrafficPolicy: Cluster`), every client shares one count, so the default 32 can starve legitimate TCP/DoT/DoH clients. `docs/running.md` says so next to the key; the Helm chart's default exposure (`externalTrafficPolicy: Local`) keeps client addresses.
+- Changing a limit restarts that listener (the existing replace-on-change rule); open connections finish first.
+- The count is one short lock per accepted connection, off the UDP path.
+
 ## ADR-098 — DNSSEC: library limits are indeterminate; bogus names are logged while trying validation (Proposed)
 **Context:** Running `[dnssec] mode = "permissive"` on the live cluster (2026-10-07) counted 14 bogus answers in five minutes. hickory 0.26's validator returns an error both for a broken proof and for its own limit ("exceeded max validation depth", logged at ERROR); TelltaleDNS treated every non-network error as bogus, so `validate` mode would have answered SERVFAIL for such names. Its log named none of them. On `prod.ftl.netflix.com` (unsigned zone, CNAMEs) hickory repeats NS and DS lookups for the same name until the limit. Raising the limit from 26 to 40 overflowed a runtime thread's stack in a debug build.
 

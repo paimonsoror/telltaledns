@@ -721,3 +721,35 @@ url = "https://logs.example.net/in"
         assert!(err.contains(why), "{why}: {err}");
     }
 }
+
+/// REQ: DNS-001 (review 01 q2) — a listener's connection caps parse, `0` per address means no
+/// limit, and neither applies to a udp listener (or `max_connections = 0`).
+#[test]
+fn dns_001_listener_connection_caps() {
+    let c = load_str(
+        "[[listen]]\nproto = \"tcp\"\naddr = \"0.0.0.0:53\"\nmax_connections = 256\nmax_connections_per_address = 0\n",
+    )
+    .unwrap()
+    .config;
+    assert_eq!(c.listen[0].max_connections, Some(256));
+    assert_eq!(c.listen[0].max_connections_per_address, Some(0));
+    let plain = load_str("[[listen]]\nproto = \"tcp\"\naddr = \"0.0.0.0:53\"\n")
+        .unwrap()
+        .config;
+    assert_eq!(
+        plain.listen[0].max_connections_per_address, None,
+        "unset = the default"
+    );
+
+    let errs = load_str(
+        "[[listen]]\nproto = \"udp\"\naddr = \"0.0.0.0:53\"\nmax_connections = 5\nmax_connections_per_address = 5\n\n[[listen]]\nproto = \"tcp\"\naddr = \"0.0.0.0:53\"\nmax_connections = 0\n",
+    )
+    .unwrap_err();
+    let p = paths(&errs);
+    assert!(p.contains(&"listen[0].max_connections"), "{p:?}");
+    assert!(
+        p.contains(&"listen[0].max_connections_per_address"),
+        "{p:?}"
+    );
+    assert!(p.contains(&"listen[1].max_connections"), "{p:?}");
+}

@@ -43,6 +43,9 @@ pub struct TcpConfig {
     pub max_inflight: usize,
     /// Max concurrent connections; extra connections are closed immediately.
     pub max_connections: usize,
+    /// Max concurrent connections from one client address (an IPv6 /64), after the PROXY
+    /// header if there is one; 0 = no limit (review 01 q2).
+    pub max_connections_per_address: usize,
     /// `Tcp`, or `Dot` with `tls` set.
     pub transport: Transport,
     /// The certificate for DoT.
@@ -58,6 +61,7 @@ impl TcpConfig {
             idle_timeout: Duration::from_secs(10),
             max_inflight: 64,
             max_connections: 1024,
+            max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
             transport: Transport::Tcp,
             tls: None,
             proxy_protocol: false,
@@ -71,6 +75,8 @@ pub struct TcpStats {
     pub accepted: AtomicU64,
     /// Connections refused because `max_connections` was reached.
     pub rejected: AtomicU64,
+    /// Connections refused because their client address already held the per-address maximum.
+    pub rejected_per_address: AtomicU64,
     pub queries: AtomicU64,
     pub replies: AtomicU64,
     pub idle_closed: AtomicU64,
@@ -188,6 +194,7 @@ async fn accept_loop<H: QueryHandler>(
         },
         None => None,
     };
+    let per_address = crate::peer_limit::PeerLimit::new(cfg.max_connections_per_address);
     let cfg = Arc::new(cfg);
     let mut conns = tokio::task::JoinSet::new();
     loop {
@@ -214,8 +221,14 @@ async fn accept_loop<H: QueryHandler>(
             Arc::clone(&stats),
         );
         let acceptor = acceptor.clone();
+        let per_address = Arc::clone(&per_address);
         conns.spawn(async move {
-            open(stream, peer, acceptor, &*handler, &cfg, stop, &stats).await;
+            let ctx = Open {
+                cfg: &cfg,
+                per_address: &per_address,
+                stats: &stats,
+            };
+            open(stream, peer, acceptor, &*handler, &ctx, stop).await;
             drop(permit);
         });
         // Reap finished connections so the set doesn't grow without bound.
@@ -225,16 +238,28 @@ async fn accept_loop<H: QueryHandler>(
     while conns.join_next().await.is_some() {}
 }
 
-/// Reads the PROXY header (if configured), completes the TLS handshake (if any), then serves.
+/// What `open` needs besides the connection itself.
+struct Open<'a> {
+    cfg: &'a TcpConfig,
+    per_address: &'a Arc<crate::peer_limit::PeerLimit>,
+    stats: &'a Arc<TcpStats>,
+}
+
+/// Reads the PROXY header (if configured), takes the client address's place in the
+/// per-address count, completes the TLS handshake (if any), then serves.
 async fn open<H: QueryHandler + ?Sized>(
     mut stream: TcpStream,
     mut peer: SocketAddr,
     acceptor: Option<tokio_rustls::TlsAcceptor>,
     handler: &H,
-    cfg: &TcpConfig,
+    ctx: &Open<'_>,
     stop: watch::Receiver<bool>,
-    stats: &Arc<TcpStats>,
 ) {
+    let Open {
+        cfg,
+        per_address,
+        stats,
+    } = *ctx;
     if cfg.proxy_protocol {
         match timeout(cfg.idle_timeout, crate::proxy::read_header(&mut stream)).await {
             Ok(Ok(Some(src))) => peer = src,
@@ -245,6 +270,12 @@ async fn open<H: QueryHandler + ?Sized>(
             }
         }
     }
+    // REQ: DNS-001 (review 01 q2) — one client address can't hold every slot. The address is
+    // the client's: after the PROXY header, so a balancer's isn't counted for everyone.
+    let Some(_place) = per_address.acquire(peer.ip()) else {
+        stats.rejected_per_address.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
     let Some(acceptor) = acceptor else {
         serve_conn(stream, peer, None, handler, cfg, stop, stats).await;
         return;

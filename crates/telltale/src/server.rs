@@ -470,6 +470,12 @@ impl Listeners {
                 }
                 cfg.proxy_protocol = l.proxy_protocol;
                 cfg.alt_svc = alt_svc.map(str::to_owned);
+                if let Some(n) = l.max_connections {
+                    cfg.max_connections = n as usize;
+                }
+                if let Some(n) = l.max_connections_per_address {
+                    cfg.max_connections_per_address = n as usize;
+                }
                 let s = DohServer::bind(cfg, handler)?;
                 info!(addr = %s.local_addr(), proxy_protocol = l.proxy_protocol, "listening (doh)");
                 Ok(Stream::Doh(s, watch_cert(store)))
@@ -479,21 +485,37 @@ impl Listeners {
                 if let Some(p) = &l.path {
                     p.as_str().trim_end_matches('/').clone_into(&mut cfg.path);
                 }
+                if let Some(n) = l.max_connections {
+                    cfg.max_connections = n as usize;
+                }
+                if let Some(n) = l.max_connections_per_address {
+                    cfg.max_connections_per_address = n as usize;
+                }
                 let s = telltale_net::Doh3Server::bind(&cfg, handler)?;
                 info!(addr = %s.local_addr(), "listening (doh3)");
                 Ok(Stream::Doh3(s, watch_cert(store)))
             }
             (ListenProto::Doq, Some(store)) => {
-                let s = telltale_net::DoqServer::bind(
-                    &telltale_net::DoqConfig::new(l.addr, Arc::clone(&store)),
-                    handler,
-                )?;
+                let mut cfg = telltale_net::DoqConfig::new(l.addr, Arc::clone(&store));
+                if let Some(n) = l.max_connections {
+                    cfg.max_connections = n as usize;
+                }
+                if let Some(n) = l.max_connections_per_address {
+                    cfg.max_connections_per_address = n as usize;
+                }
+                let s = telltale_net::DoqServer::bind(&cfg, handler)?;
                 info!(addr = %s.local_addr(), "listening (doq)");
                 Ok(Stream::Doq(s, watch_cert(store)))
             }
             (proto, store) => {
                 let mut cfg = TcpConfig::new(l.addr);
                 cfg.proxy_protocol = l.proxy_protocol;
+                if let Some(n) = l.max_connections {
+                    cfg.max_connections = n as usize;
+                }
+                if let Some(n) = l.max_connections_per_address {
+                    cfg.max_connections_per_address = n as usize;
+                }
                 if proto == ListenProto::Dot {
                     cfg.transport = Transport::Dot;
                     cfg.tls.clone_from(&store);

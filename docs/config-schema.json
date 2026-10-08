@@ -1716,6 +1716,24 @@
           "description": "Address and port to bind.",
           "type": "string"
         },
+        "max_connections": {
+          "description": "Connections open at once on this listener (default 1,024); more are refused. Not for\n`udp`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_connections_per_address": {
+          "description": "Connections open at once from one client address, an IPv6 /64 counting as one (default\n32; 0 = no limit), so one host can't take every slot. The address is the client's:\nfrom the PROXY header when `proxy_protocol` is on. Behind a load balancer that hides\nclient addresses (no PROXY protocol, source NAT), raise it or set 0. Not for `udp`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "path": {
           "description": "URL path for DoH (default `/dns-query`; `/dns-query/{client-id}` also matches).",
           "type": [
