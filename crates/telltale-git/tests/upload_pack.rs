@@ -190,6 +190,26 @@ async fn clu_003_git_source_reads_the_file_and_notices_changes() {
     }
 }
 
+// REQ: CLU-003 (review 05-08) — more commits since the one in use than the check reads (50
+// without partial clone) is said as such, not blamed on a force-push alone.
+#[tokio::test]
+async fn clu_003_a_long_gap_is_not_called_only_a_rewind() {
+    let (_tmp, dir) = repo();
+    let c1 = commit(&dir, "x = 0\n", "start");
+    for i in 1..=60 {
+        commit(&dir, &format!("x = {i}\n"), "step");
+    }
+    let t = Local {
+        dir,
+        no_filter: true,
+    };
+    let e = fetch_file(&t, &req(Some(c1))).await.unwrap_err();
+    assert!(
+        e.refused && e.message.contains("more than 50 commits since"),
+        "{e:?}"
+    );
+}
+
 #[tokio::test]
 async fn clu_003_annotated_tags_resolve_to_their_commit() {
     let (_tmp, dir) = repo();

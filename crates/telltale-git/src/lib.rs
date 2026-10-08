@@ -302,6 +302,14 @@ pub async fn fetch_file(t: &dyn Transport, req: &Request) -> Result<Outcome, Err
         )
         .await?;
         if !descends(&objs, &head, old) {
+            // REQ: CLU-003 (review 05-08) — a history longer than the check fetched looks the
+            // same as a rewind; say which it may be when the fetch was cut at its depth.
+            let commits = objs.values().filter(|o| o.kind == Kind::Commit).count();
+            if caps.shallow && commits >= usize::try_from(deepen).unwrap_or(usize::MAX) {
+                return Err(refuse(format!(
+                    "{head} doesn't descend from {old}, the commit in use, within the {deepen} commits this check reads: a force-push or rewind, or more than {deepen} commits since it was last read (refused; set allow_rewind once to accept it)"
+                )));
+            }
             return Err(refuse(format!(
                 "{head} doesn't descend from {old}, the commit in use: a force-push or rewind (refused; set allow_rewind to accept it)"
             )));
