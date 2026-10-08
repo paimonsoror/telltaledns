@@ -592,15 +592,21 @@ impl Identity {
             .unwrap_or_default();
         let h = Token::secret_hash(&req.secret);
         let t = now();
-        // REQ: CLU-009 — the shared bootstrap secret works like a token that never expires.
-        let ok = recs
+        let by_token = recs
             .iter()
-            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()))
-            || bootstrap
+            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()));
+        // REQ: CLU-009 — the shared bootstrap secret works like a token that never expires.
+        let by_bootstrap = !by_token
+            && bootstrap
                 .is_some_and(|b| !b.is_empty() && same(b.as_bytes(), req.secret.as_bytes()));
-        if !ok {
+        if !by_token && !by_bootstrap {
             return Err("the join token is unknown or expired".into());
         }
+        // REQ: CLU-001, CLU-009 (ADR-051, ADR-058) — standing is decided here, not claimed.
+        // The bootstrap secret is in every resolver pod, so a join with it is an ephemeral
+        // member whatever it asks for: eligibility (and with it the cluster key) and a
+        // witness's vote come only with a join token.
+        let ephemeral = req.ephemeral || by_bootstrap;
         let (node_id, cert_pem) =
             pki::issue(&ca, &req.csr_pem, &hosts(&req.advertise)).map_err(|e| e.to_string())?;
         let mut nodes = self.registry();
@@ -608,11 +614,11 @@ impl Identity {
         nodes.push(NodeRecord {
             node_id: node_id.clone(),
             site: req.site.clone(),
-            eligible: req.eligible && !req.witness && !req.ephemeral,
+            eligible: req.eligible && !req.witness && !ephemeral,
             advertise: req.advertise.clone(),
             joined: t,
-            witness: req.witness && !req.ephemeral,
-            ephemeral: req.ephemeral,
+            witness: req.witness && !ephemeral,
+            ephemeral,
         });
         self.save_registry(&nodes)?;
         let mut primary_urls = self.meta.advertise.clone();

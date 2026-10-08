@@ -738,3 +738,88 @@ async fn clu_002_a_pod_that_left_is_not_asked_by_federated_reads() {
     let _ = pod_stop_tx.send(true);
     let _ = stop_tx.send(true);
 }
+
+// REQ: CLU-001, CLU-009 (ADR-051, ADR-058) — a member decides nothing about its own standing:
+// a join with the shared bootstrap secret is an ephemeral member whatever it asks for, and a
+// Hello can't make a known member eligible, so the cluster key is never shared on a peer's
+// say-so. A join token may still bring an eligible node, which then gets the key.
+#[test]
+fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let primary = Cluster::new(id, "0.1.0");
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: true,
+        ephemeral: false,
+        secret: "s3cret".into(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "k8s".into(),
+        eligible: true,
+        version: "0.1.0".into(),
+    };
+    let resp = primary.identity.accept_join(&req, Some("s3cret")).unwrap();
+    let record = |id: &str| {
+        primary
+            .identity
+            .registry()
+            .into_iter()
+            .find(|n| n.node_id == id)
+            .unwrap()
+    };
+    let rec = record(&resp.node_id);
+    assert!(
+        rec.ephemeral && !rec.eligible && !rec.witness && !rec.voter(),
+        "a bootstrap join is ephemeral: {rec:?}"
+    );
+    // Its Hello claims eligibility: the registry keeps what the join decided, and no key
+    // share is due.
+    let mut peer = Some(resp.node_id.clone());
+    let hello = Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: primary.identity.meta.cluster_id.clone(),
+            node_id: resp.node_id.clone(),
+            version: "0.1.0".into(),
+            site: "k8s".into(),
+            eligible: true,
+            advertise: vec![],
+            epoch: 1,
+            applied_seq: 0,
+            primary: false,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    primary
+        .on_frame(&mut peer, hello, "inbound", &EchoSlot::default())
+        .unwrap();
+    assert!(
+        !record(&resp.node_id).eligible,
+        "a Hello can't raise eligibility"
+    );
+    assert!(primary.key_share_for(&resp.node_id).is_none());
+    // A token join may be eligible, and then the key share is due.
+    let token = primary.identity.create_token(60, None).unwrap();
+    let key2 = pki::new_node_key().unwrap();
+    let req2 = JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret: token.secret,
+        csr_pem: key2.csr_pem,
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: true,
+        version: "0.1.0".into(),
+    };
+    let resp2 = primary.identity.accept_join(&req2, Some("s3cret")).unwrap();
+    assert!(record(&resp2.node_id).eligible && !record(&resp2.node_id).ephemeral);
+    assert!(primary.key_share_for(&resp2.node_id).is_some());
+}

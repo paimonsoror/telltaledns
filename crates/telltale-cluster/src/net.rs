@@ -604,7 +604,10 @@ impl Cluster {
         let rec = crate::node::NodeRecord {
             node_id: m.node_id.clone(),
             site: m.site.clone(),
-            eligible: m.eligible,
+            // ADR-051, ADR-058 — eligibility was decided at join (a node from before the
+            // registry existed is taken at its word once): a Hello can't raise it, so the
+            // key share never follows a peer's claim.
+            eligible: known.map_or(m.eligible, |n| n.eligible),
             advertise: m.advertise.clone(),
             joined: known.map_or_else(|| now_ms() / 1000, |n| n.joined),
             // Set at join (ADR-056, CLU-009); Hello doesn't carry them.

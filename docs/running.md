@@ -1403,9 +1403,12 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   Cluster page's **node_settings** check fails until they're removed.
 
 **When the primary is gone: promote another node (manual failover).**
-- **Who can be promoted:** a node joined with `--eligible`. The primary shares the cluster's
-  signing key with eligible nodes once they connect, so one of them can take over. Give eligible
-  nodes `--advertise` URLs, so a returning old primary can be reached and told to step down.
+- **Who can be promoted:** a node joined with `--eligible` using a join token. The primary
+  shares the cluster's signing key with eligible nodes once they connect, so one of them can
+  take over. A node that joined with the Helm chart's bootstrap secret (a resolver pod) is
+  always an ephemeral member: it can't be eligible or a witness, whatever its settings say.
+  Give eligible nodes `--advertise` URLs, so a returning old primary can be reached and told
+  to step down.
 - **How:** use **Promote this node…** on the Cluster page (admin, live), or stop the node, run
   `telltale cluster promote`, and start it. It's refused while the primary is up.
 - **What happens:**
