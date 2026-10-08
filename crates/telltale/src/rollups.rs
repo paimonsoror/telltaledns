@@ -69,6 +69,10 @@ pub(crate) fn spawn(
         // The hour that closed before this process started was saved by the one before it:
         // the startup replay (T6.16) refills it in memory, but never rewrites it on disk.
         let mut extras_for: Option<u64> = Some((started_minute / 3600).saturating_sub(1) * 3600);
+        // REQ: OBS-004 (review 04-11) — unless the predecessor stopped before it got to it
+        // (it writes an hour's lists a minute after the hour closes): then that hour is
+        // written once the replay is over, if nothing is stored for it.
+        let mut backfill_for = extras_for;
         let mut purged_at = 0u64;
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -77,7 +81,7 @@ pub(crate) fn spawn(
             let t = now();
             let done_to = t - t % 60; // minutes before this one are complete
             let from = flushed_to.saturating_sub(REFLUSH_S).max(started_minute);
-            let (rows, extras) = {
+            let (rows, extras, backfill) = {
                 let agg = pipeline.telemetry.aggregates();
                 let mut rows = agg.series(Resolution::Minute, from, done_to);
                 // REQ: OBS-004 (T6.16) — groups by name, so stored minutes keep their meaning
@@ -98,12 +102,27 @@ pub(crate) fn spawn(
                     .previous_hour_start()
                     .filter(|h| extras_for != Some(*h))
                     .map(|h| (h, hour_extras(&agg, &pipeline, privacy)));
-                (rows, extras)
+                let replayed = crate::replay::done();
+                let backfill = backfill_for
+                    .filter(|h| replayed && agg.previous_hour_start() == Some(*h))
+                    .map(|h| (h, hour_extras(&agg, &pipeline, privacy)));
+                if replayed {
+                    backfill_for = None;
+                }
+                (rows, extras, backfill)
             };
             let d = Arc::clone(&db);
             let purge = t.saturating_sub(purged_at) >= 3600;
             let result = tokio::task::spawn_blocking(move || {
                 d.put_minutes(&rows)?;
+                if let Some((h, (tops, lat))) = &backfill
+                    && d.latency(*h)?.is_empty()
+                    && d.top(*h, "domains", 1)?.is_empty()
+                {
+                    let tops: Vec<(&str, Vec<TopRow>)> =
+                        tops.iter().map(|(k, v)| (*k, v.clone())).collect();
+                    d.put_hour_extras(*h, &tops, lat)?;
+                }
                 if let Some((h, (tops, lat))) = &extras {
                     let tops: Vec<(&str, Vec<TopRow>)> =
                         tops.iter().map(|(k, v)| (*k, v.clone())).collect();

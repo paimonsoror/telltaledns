@@ -23,13 +23,29 @@ const PAGE: usize = 2_000;
 /// Stop after this many rows (a very busy node keeps the newest part of the two hours).
 const MAX_ROWS: usize = 2_000_000;
 
+/// Set once the startup replay is over (or wasn't needed): the in-memory hours are then as
+/// complete as they'll get, and the rollup writer may store the previous hour's top lists
+/// (review 04-11).
+static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the startup replay is over (see [`DONE`]).
+pub(crate) fn done() -> bool {
+    DONE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn finished() {
+    DONE.store(true, std::sync::atomic::Ordering::Release);
+}
+
 pub(crate) fn spawn(cfg: &Config, pipeline: &Arc<Pipeline>) {
     let q = &cfg.telemetry.qlog;
     if !q.enabled || q.privacy_level != 0 || cfg.telemetry.mode == TelemetryMode::Ship {
+        finished();
         return;
     }
     let dir = std::path::Path::new(cfg.node.data_dir.as_str()).join("qlog");
     if !dir.is_dir() {
+        finished();
         return;
     }
     let started_us = now_us();
@@ -56,9 +72,11 @@ pub(crate) fn spawn(cfg: &Config, pipeline: &Arc<Pipeline>) {
                     warn!("analytics: couldn't restore the top lists from the query log: {e}");
                 }
             }
+            finished();
         });
     if let Err(e) = spawned {
         warn!("analytics: no replay thread ({e})");
+        finished();
     }
 }
 
