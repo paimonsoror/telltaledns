@@ -107,6 +107,15 @@ enum Read {
     },
 }
 
+/// The reads that change the answering node: operational actions a user asked for on the
+/// entry node (T7.1 pauses, T6.13 flushes).
+fn changes_state(r: &Read) -> bool {
+    matches!(
+        r,
+        Read::BlockingPause { .. } | Read::BlockingResume { .. } | Read::CacheFlush { .. }
+    )
+}
+
 /// Answers a peer's read from this node's own data.
 fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
     let text = |p: Problem| p.detail;
@@ -173,6 +182,17 @@ pub(crate) fn rpc_handler(
     Arc::new(move |peer, kind, body| {
         let (src, local, cluster) = (Arc::clone(&src), Arc::clone(&local), Arc::clone(&cluster));
         Box::pin(async move {
+            // REQ: CLU-002, CLU-009 (ADR-054, ADR-058) — an ephemeral member serves no UI, so
+            // nothing a user did arrives through it: it never forwards a write, and never
+            // pauses blocking or flushes caches on other nodes.
+            let ephemeral = cluster
+                .identity
+                .registry()
+                .iter()
+                .any(|n| n.node_id == peer && n.ephemeral);
+            if ephemeral && kind == crate::forward::KIND {
+                return Err("an ephemeral member can't forward configuration writes".into());
+            }
             if kind == telltale_cluster::failover::KIND {
                 // REQ: CLU-005 — a vote request (ADR-056); the ballot is written to disk first.
                 return tokio::task::spawn_blocking(move || {
@@ -222,6 +242,9 @@ pub(crate) fn rpc_handler(
                 return Err(format!("unknown call `{kind}`"));
             }
             let read: Read = serde_json::from_slice(&body).map_err(|e| format!("bad read: {e}"))?;
+            if ephemeral && changes_state(&read) {
+                return Err("an ephemeral member can't change this node's state".into());
+            }
             tokio::task::spawn_blocking(move || answer(local.as_ref(), read))
                 .await
                 .map_err(|e| format!("read worker failed: {e}"))?
@@ -1329,5 +1352,33 @@ impl Backend for Federated {
             WriteRoute::Here => self.local.write_client(w),
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
+    }
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use super::*;
+
+    /// REQ: CLU-009 (ADR-058) — the reads an ephemeral member may not send: the ones that
+    /// change the answering node; plain reads and tails stay allowed.
+    #[test]
+    fn clu_009_ephemeral_members_cannot_change_other_nodes() {
+        assert!(changes_state(&Read::BlockingPause {
+            group: None,
+            minutes: 5
+        }));
+        assert!(changes_state(&Read::BlockingResume { group: None }));
+        assert!(changes_state(&Read::CacheFlush {
+            name: None,
+            subtree: false
+        }));
+        assert!(!changes_state(&Read::CacheStats));
+        assert!(!changes_state(&Read::BlockingState));
+        assert!(!changes_state(&Read::ConfigVersion));
+        assert!(!changes_state(&Read::Timeseries {
+            step: Step::Minute,
+            from_s: 0,
+            to_s: 1
+        }));
     }
 }
