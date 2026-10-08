@@ -916,10 +916,12 @@ pub(crate) async fn setup(
 /// Username and password, plus `totp` (or `recoveryCode`) when two-factor sign-in is on:
 /// without it the answer is 401 `totp_required`. Sets an `HttpOnly; SameSite=Strict` session
 /// cookie and returns the CSRF token to send as `X-CSRF-Token` on changes. Repeated failures
-/// lock the username and the address out for a while (429).
+/// lock the username and the address out for a while (429). At most four password checks run
+/// at once; beyond that the answer is 503 with Retry-After, which isn't a failed sign-in.
 #[utoipa::path(post, path = "/api/v1/auth/login", tag = "auth", request_body = LoginRequest,
     responses((status = 200, body = LoginResponse, description = "The result."), (status = 401, body = Problem, description = "Not signed in, or the credentials are wrong."),
-        (status = 429, body = Problem, description = "Too many requests: wait for Retry-After seconds.")))]
+        (status = 429, body = Problem, description = "Too many requests: wait for Retry-After seconds."),
+        (status = 503, body = Problem, description = "Busy checking other sign-ins: retry after Retry-After seconds (not counted as a failure).")))]
 pub(crate) async fn login(
     State(auth): State<AuthState>,
     headers: HeaderMap,

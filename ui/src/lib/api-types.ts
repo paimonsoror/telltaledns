@@ -242,7 +242,8 @@ export interface paths {
          * @description Username and password, plus `totp` (or `recoveryCode`) when two-factor sign-in is on:
          *     without it the answer is 401 `totp_required`. Sets an `HttpOnly; SameSite=Strict` session
          *     cookie and returns the CSRF token to send as `X-CSRF-Token` on changes. Repeated failures
-         *     lock the username and the address out for a while (429).
+         *     lock the username and the address out for a while (429). At most four password checks run
+         *     at once; beyond that the answer is 503 with Retry-After, which isn't a failed sign-in.
          */
         post: operations["login"];
         delete?: never;
@@ -4752,6 +4753,15 @@ export interface operations {
             };
             /** @description Too many requests: wait for Retry-After seconds. */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Busy checking other sign-ins: retry after Retry-After seconds (not counted as a failure). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

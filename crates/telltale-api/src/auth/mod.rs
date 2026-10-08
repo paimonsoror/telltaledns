@@ -218,6 +218,9 @@ impl Default for Settings {
 const FREE_ATTEMPTS: u32 = 5;
 const MAX_LOCK_SECS: u64 = 900;
 const BASIC_CACHE_SECS: u64 = 60;
+/// REQ: API-003, `02 §8` — password checks run at most this many at a time: each Argon2id
+/// verification takes 19 MiB, and the blocking pool would otherwise let hundreds run at once.
+const MAX_PASSWORD_CHECKS: u32 = 4;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct Failures {
@@ -246,6 +249,18 @@ pub struct Auth {
     /// REQ: CLU-003 (T9.1, ADR-045) — set on a replica: users and tokens come from this
     /// primary (its UI address), so changing them here is refused.
     identity_primary: Mutex<Option<String>>,
+    /// Password checks in flight (at most [`MAX_PASSWORD_CHECKS`]).
+    password_checks: std::sync::atomic::AtomicU32,
+}
+
+/// A slot for one password check; given back when dropped.
+#[derive(Debug)]
+struct PasswordCheck<'a>(&'a std::sync::atomic::AtomicU32);
+
+impl Drop for PasswordCheck<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)] // used as `map_err(db)`
@@ -316,6 +331,7 @@ impl Auth {
             agents: agent::Policy::default(),
             plans: crate::plans::Plans::default(),
             identity_primary: Mutex::new(None),
+            password_checks: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -529,6 +545,21 @@ impl Auth {
         Ok(user)
     }
 
+    /// REQ: API-003, `02 §8` — a slot for one password check, or "busy" (503 with
+    /// Retry-After) when [`MAX_PASSWORD_CHECKS`] are running: a burst of sign-in attempts
+    /// costs a bounded amount of memory instead of taking the node (and DNS) with it.
+    fn password_check(&self) -> Result<PasswordCheck<'_>, Problem> {
+        use std::sync::atomic::Ordering;
+        if self.password_checks.fetch_add(1, Ordering::AcqRel) >= MAX_PASSWORD_CHECKS {
+            self.password_checks.fetch_sub(1, Ordering::AcqRel);
+            return Err(Problem::unavailable(
+                "the server is busy checking other sign-ins; try again in a moment",
+            )
+            .retry_after(1));
+        }
+        Ok(PasswordCheck(&self.password_checks))
+    }
+
     /// Seconds until `key` may try again, if it's locked.
     fn locked(&self, key: &str, now: u64) -> Option<u64> {
         let f = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
@@ -602,11 +633,14 @@ impl Auth {
             ));
         }
         let user = self.state.user_by_name(username).map_err(db)?;
-        let ok = match &user {
-            Some(u) if !u.disabled => crypto::verify_password(password, &u.password_hash),
-            _ => {
-                crypto::dummy_verify(password);
-                false
+        let ok = {
+            let _slot = self.password_check()?;
+            match &user {
+                Some(u) if !u.disabled => crypto::verify_password(password, &u.password_hash),
+                _ => {
+                    crypto::dummy_verify(password);
+                    false
+                }
             }
         };
         let Some(user) = user.filter(|_| ok) else {
@@ -857,11 +891,14 @@ impl Auth {
                 ));
             }
             let u = self.state.user_by_name(username).map_err(db)?;
-            let ok = match &u {
-                Some(u) if !u.disabled => crypto::verify_password(password, &u.password_hash),
-                _ => {
-                    crypto::dummy_verify(password);
-                    false
+            let ok = {
+                let _slot = self.password_check()?;
+                match &u {
+                    Some(u) if !u.disabled => crypto::verify_password(password, &u.password_hash),
+                    _ => {
+                        crypto::dummy_verify(password);
+                        false
+                    }
                 }
             };
             let Some(u) = u.filter(|_| ok) else {

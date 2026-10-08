@@ -615,7 +615,7 @@
           "auth"
         ],
         "summary": "Sign in.",
-        "description": "Username and password, plus `totp` (or `recoveryCode`) when two-factor sign-in is on:\nwithout it the answer is 401 `totp_required`. Sets an `HttpOnly; SameSite=Strict` session\ncookie and returns the CSRF token to send as `X-CSRF-Token` on changes. Repeated failures\nlock the username and the address out for a while (429).",
+        "description": "Username and password, plus `totp` (or `recoveryCode`) when two-factor sign-in is on:\nwithout it the answer is 401 `totp_required`. Sets an `HttpOnly; SameSite=Strict` session\ncookie and returns the CSRF token to send as `X-CSRF-Token` on changes. Repeated failures\nlock the username and the address out for a while (429). At most four password checks run\nat once; beyond that the answer is 503 with Retry-After, which isn't a failed sign-in.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -650,6 +650,16 @@
           },
           "429": {
             "description": "Too many requests: wait for Retry-After seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Busy checking other sign-ins: retry after Retry-After seconds (not counted as a failure).",
             "content": {
               "application/json": {
                 "schema": {

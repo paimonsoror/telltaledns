@@ -338,3 +338,41 @@ fn api_003_bootstrap_admin_from_a_secret_runs_only_on_first_start() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// REQ: API-003 (`02 §8`) — password checks are bounded: with every slot taken, a sign-in is
+// told to retry (503) instead of starting one more 19 MiB Argon2 verification, and the
+// refusal isn't a failed sign-in.
+#[test]
+fn api_003_password_checks_are_bounded() {
+    let a = auth(Settings::default());
+    a.create_user("ana", "correct horse battery", Role::Viewer, true, T0)
+        .unwrap();
+    let slots: Vec<_> = (0..MAX_PASSWORD_CHECKS)
+        .map(|_| a.password_check().unwrap())
+        .collect();
+    assert_eq!(a.password_check().unwrap_err().code, Code::Unavailable);
+    let e = a
+        .login("ana", "correct horse battery", None, None, IP, T0)
+        .unwrap_err();
+    assert_eq!((e.code, e.retry_after), (Code::Unavailable, Some(1)));
+    let basic = Presented {
+        basic: Some(("ana".to_owned(), "correct horse battery".to_owned())),
+        https: true,
+        ..Presented::default()
+    };
+    assert_eq!(
+        a.authenticate(&basic, T0).unwrap_err().code,
+        Code::Unavailable
+    );
+    drop(slots);
+    assert!(
+        a.login("ana", "correct horse battery", None, None, IP, T0 + 1)
+            .is_ok(),
+        "nothing was locked by the refusals"
+    );
+    assert!(a.authenticate(&basic, T0 + 1).unwrap().is_some());
+    assert_eq!(
+        a.password_checks.load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+}
