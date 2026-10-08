@@ -811,7 +811,10 @@ pub fn regex_builder() -> regex_automata::meta::Builder {
     b
 }
 
-/// Drops regexes the engine won't build (e.g. size limits), reporting each one.
+/// Drops regexes the engine won't build (e.g. size limits), reporting each one. The kept
+/// rules are guaranteed to build *as one set*, which is how the matcher uses them: the size
+/// limit applies to the combined automaton, so patterns that each fit can still exceed it
+/// together, and a snapshot whose regex set doesn't build can't be activated at all.
 fn check_regexes(
     rules: Vec<RegexRule>,
     inputs: &[ListMeta],
@@ -822,15 +825,38 @@ fn check_regexes(
     }
     let mut kept = Vec::new();
     let mut errors = Vec::new();
+    let mut memory = Vec::new();
     for r in rules {
         match regex_builder().build(&r.pattern) {
-            Ok(_) => kept.push(r),
+            Ok(re) => {
+                memory.push(re.memory_usage());
+                kept.push(r);
+            }
             Err(e) => errors.push((
                 inputs[usize::from(r.list)].name.clone(),
                 r.line,
                 e.to_string(),
             )),
         }
+    }
+    // Until the set builds, drop the pattern that costs the most on its own.
+    loop {
+        let patterns: Vec<&str> = kept.iter().map(|r| r.pattern.as_str()).collect();
+        if patterns.is_empty() || regex_builder().build_many(&patterns).is_ok() {
+            break;
+        }
+        let Some(i) = (0..memory.len()).max_by_key(|&i| memory[i]) else {
+            break;
+        };
+        let r = kept.remove(i);
+        memory.remove(i);
+        errors.push((
+            inputs[usize::from(r.list)].name.clone(),
+            r.line,
+            "too large together with the other regexes (the set exceeds the engine's size \
+             limit)"
+                .to_owned(),
+        ));
     }
     (kept, errors)
 }

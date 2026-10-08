@@ -261,3 +261,33 @@ fn reversed_keys() {
     assert_eq!(reversed_key("ads.example.com"), b"com.example.ads.");
     assert_eq!(reversed_key("com"), b"com.");
 }
+
+/// REQ: FLT-003 — regexes that each fit the engine's size limit but not together are
+/// dropped at compile time (and reported), so the snapshot's regex set always builds and
+/// the snapshot can be activated.
+#[test]
+fn flt_003_regex_set_that_only_fails_as_a_whole_is_trimmed() {
+    let mut text = String::new();
+    for _ in 0..16 {
+        let _ = writeln!(text, "(?:[a-z]{{200}}){{200}}");
+    }
+    text.push_str("^ads[0-9]+\\.\n");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("v1");
+    let report = compile(
+        vec![input("rx", ListKind::Block, &text)],
+        &out,
+        &CompileOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        !report.regex_errors.is_empty(),
+        "some patterns must be dropped"
+    );
+    assert!(report.manifest.stats.regexes >= 1, "the small one stays");
+    let snap = std::sync::Arc::new(Snapshot::open(&out).unwrap());
+    assert!(
+        crate::matcher::Matcher::new(Some(snap), crate::matcher::Overlay::default()).is_ok(),
+        "the snapshot must activate"
+    );
+}
