@@ -1148,6 +1148,9 @@ TelltaleDNS is never an open resolver by default. If you widen `allowed_networks
 
 `[ratelimit]` applies on reload, with no restart. The default of 1,000 queries a minute per address suits homes where each device has its own address. A router or proxy that forwards for a whole network shows up as one address, and would be refused above about 17 queries a second: add it to `exempt`, or raise `queries`.
 
+- **Adjust it in the UI:** **Settings → System → Rate limit** shows the limit in effect (from the config file, or changed here) and edits it: queries per window, the window, what a limited client gets (`refused` or `drop`), the addresses never limited, and in the Advanced view how clients are grouped (`ipv4_prefix`, `ipv6_prefix`). **Check** shows what the change does first. **Revert to the file** goes back to `[ratelimit]` in the configuration. A change replaces the whole section, so fields left out take the defaults, not the file's values, and the list of exempt addresses is replaced too (keep `127.0.0.0/8` and `::1/128`).
+- **Through the API:** `PUT /api/v1/ratelimit/default` with the same fields as `[ratelimit]` (add `?dryRun=true` to preview), and `DELETE` to revert; `GET /api/v1/config/entries?kind=ratelimit` shows the limit in effect and its source. Agents need `config:write:ratelimit`, and AI agents can plan a change with the MCP tool `plan_set_ratelimit`. On a node whose configuration comes from Git, the response says what to add to the repository.
+
 ### The advertised UDP size
 ```toml
 [dns]
@@ -1949,7 +1952,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `analytics:read` | statistics, top lists, latency, anomalies, explain, cluster status |
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
-| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams |
+| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
 | `ops:pause`, `ops:cache` | pause blocking; flush the cache |
 | `cluster:admin` | promote a node to primary |
 
@@ -2061,6 +2064,7 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 | `plan_add_list` | add a filter list (URL or inline rules) | `config:write:lists` |
 | `plan_update_group` | change a group's networks, lists, blocked answer, priority, or schedules | `config:write:groups` (+ `config:read`) |
 | `plan_set_schedule` | make or change a weekly schedule (a bedtime, extra lists, blocked services) | `config:write:groups` |
+| `plan_set_ratelimit` | change the per-client rate limit (queries per window, the action, exempt addresses, how clients are grouped) | `config:write:ratelimit` (+ `config:read`) |
 | `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
 | `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |
 

@@ -7,6 +7,7 @@
   import { ago, dateTime, duration } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
 
   const tabs = $derived(
     [
@@ -16,6 +17,21 @@
       { id: 'system', label: 'System' },
     ],
   );
+  // REQ: DNS-014 (review 01 q1) — the fields of `[ratelimit]`.
+  const rateLimitFields: Field[] = [
+    { key: 'enabled', label: 'Limit queries per client', type: 'bool', initial: true },
+    { key: 'queries', label: 'Queries allowed per window', type: 'number', placeholder: '1000',
+      help: 'Per client; short bursts up to this are fine. A client over it gets the action below until its allowance refills.' },
+    { key: 'window_secs', label: 'Window (seconds)', type: 'number', placeholder: '60' },
+    { key: 'action', label: 'When over the limit', type: 'select', options: ['refused', 'drop'],
+      help: 'refused answers REFUSED; drop answers nothing.' },
+    { key: 'exempt', label: 'Never limited', type: 'lines', placeholder: '127.0.0.0/8\n192.168.1.1/32',
+      help: 'Addresses or networks, one per line (a router that forwards for the whole network, say). Replaces the list from the config file, so keep 127.0.0.0/8 and ::1/128.' },
+    { key: 'ipv4_prefix', label: 'IPv4: count clients per /N', type: 'number', advanced: true, placeholder: '32',
+      help: '32 counts each address on its own.' },
+    { key: 'ipv6_prefix', label: 'IPv6: count clients per /N', type: 'number', advanced: true, placeholder: '64',
+      help: '64 groups a device\'s rotating privacy addresses.' },
+  ];
   const tab = $derived.by(() => {
     const t = route.params.get('tab');
     return tabs.some((x) => x.id === t) ? (t as string) : 'account';
@@ -579,6 +595,13 @@
       <h2>Cache</h2>
       <p class="small">Hit rates, what's cached, settings, lookups, and flushing are on the <a href="#/cache">Cache page</a>.</p>
     </section>
+    <!-- REQ: DNS-014 (review 01 q1) — the per-client rate limit, adjustable here and in the config file. -->
+    <ConfigEditor kind="ratelimit" path="ratelimit" singleton title="Rate limit" noun="rate limit" fields={rateLimitFields}
+      summary={(d) => (d.enabled === false ? 'off' : `${String(d.queries)} queries per ${String(d.window_secs)} s per client, then ${String(d.action)}`)} />
+    <p class="muted small">
+      One client is one address (IPv6: one /64). A router or proxy that forwards for a whole network looks like one client:
+      add it to "Never limited", or raise the number. A change applies at once and every client's count starts over.
+    </p>
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->
       <section class="card">

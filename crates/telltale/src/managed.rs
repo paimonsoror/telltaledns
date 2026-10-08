@@ -35,6 +35,8 @@ pub(crate) const ALERT_DESTINATION: &str = "alert_destination";
 pub(crate) const ALERT_RULE: &str = "alert_rule";
 /// REQ: FLT-010 (T9.7) — schedules.
 pub(crate) const SCHEDULE: &str = "schedule";
+/// REQ: DNS-014 (review 01 q1) — the rate limit: one entry, `default`, replacing `[ratelimit]`.
+pub(crate) const RATELIMIT: &str = "ratelimit";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -119,6 +121,8 @@ pub(crate) struct Entries {
     pub(crate) alert_destinations: Vec<(String, Ovr<telltale_config::AlertDestination>)>,
     pub(crate) alert_rules: Vec<(String, Ovr<telltale_config::AlertRule>)>,
     pub(crate) schedules: Vec<(String, Ovr<telltale_config::ScheduleConfig>)>,
+    /// The `[ratelimit]` the API or UI set, replacing the files' section as a whole.
+    pub(crate) ratelimit: Option<telltale_config::RateLimitConfig>,
 }
 
 /// Where the state database lives.
@@ -195,6 +199,10 @@ pub(crate) fn entries(state: &State) -> Entries {
         alert_destinations: decode_ovr(state, ALERT_DESTINATION),
         alert_rules: decode_ovr(state, ALERT_RULE),
         schedules: decode_ovr(state, SCHEDULE),
+        ratelimit: decode::<telltale_config::RateLimitConfig>(state, RATELIMIT)
+            .into_iter()
+            .next()
+            .map(|(_, r)| r),
     }
 }
 
@@ -229,6 +237,9 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     apply_ovr(&mut cfg.schedule, &e.schedules);
+    if let Some(r) = &e.ratelimit {
+        cfg.ratelimit = r.clone();
+    }
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());

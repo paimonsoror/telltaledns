@@ -834,6 +834,70 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Plans a change (nothing changes until apply_plan). Changes the per-client rate limit: how many queries one client may send per window before it is refused (or dropped), the clients that are never limited, and how clients are grouped (IPv4 per address, IPv6 per /64 by default). A router or proxy that forwards for a whole network looks like one client: exempt it or raise `queries`. Fields left out keep their current values. Applies at once; every client's count starts over. Needs config:write:ratelimit (and config:read to read the current limit).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "What a limited query gets: REFUSED, or nothing.",
+          "enum": [
+            "refused",
+            "drop"
+          ],
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Turn rate limiting on or off.",
+          "type": "boolean"
+        },
+        "exempt": {
+          "description": "CIDRs never limited (replaces the current list; include 127.0.0.0/8 and ::1/128 to keep loopback exempt).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ipv4Prefix": {
+          "description": "Count IPv4 clients per /N (32 = per address).",
+          "maximum": 32,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ipv6Prefix": {
+          "description": "Count IPv6 clients per /N (64 groups a device's rotating addresses).",
+          "maximum": 128,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "queries": {
+          "description": "Queries allowed per client per window (bursts up to this).",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "windowSecs": {
+          "description": "The window, in seconds (default 60).",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_ratelimit"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
     "inputSchema": {
       "additionalProperties": false,
