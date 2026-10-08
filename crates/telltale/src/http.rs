@@ -626,6 +626,22 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
             *dropped,
         );
     }
+    // REQ: OBS-001 — clock steps the event clock followed (NTP's first sync on a Pi).
+    let (steps, latest_step_us) = hub.clock_steps();
+    w.family(
+        "telltale_clock_steps_total",
+        "counter",
+        "Times the event clock was moved to follow a step of the system clock (NTP's first sync after start, a resume from suspend).",
+    )
+    .sample("telltale_clock_steps_total", &[], steps);
+    #[allow(clippy::cast_precision_loss)] // seconds for display
+    let latest_step_seconds = latest_step_us as f64 / 1e6;
+    w.family(
+        "telltale_clock_last_step_seconds",
+        "gauge",
+        "The latest clock step the event clock followed, in seconds (0 if none).",
+    )
+    .sample("telltale_clock_last_step_seconds", &[], latest_step_seconds);
 }
 
 /// REQ: OBS-003 — query-log writer health.

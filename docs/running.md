@@ -1680,6 +1680,7 @@ Besides counters, every query also produces a detailed **event**: the time, the 
 |---|---|
 | `telltale_telemetry_events_total{ring}` | events written, per thread |
 | `telltale_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
+| `telltale_clock_steps_total`, `telltale_clock_last_step_seconds` | times the event clock followed a step of the system clock (a Pi setting its clock from NTP after TelltaleDNS started, a resume from suspend), and the latest step. Events, the query log, and the rollups stay on the wall clock across a step. |
 
 ### Query log
 Every query event is also written to the **query log** on disk, in `<data_dir>/qlog/YYYY/MM/DD/HH-<node>-<part>.seg`: one file per hour, compressed by column, about 14 bytes per query (50 million queries take about 690 MB).

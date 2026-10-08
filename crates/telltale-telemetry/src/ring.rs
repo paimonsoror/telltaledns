@@ -6,7 +6,7 @@
 //! event and counts it; counters and histograms in [`crate::Metrics`] never drop.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -38,13 +38,29 @@ pub struct Hub {
     /// Every ring's name and counters, for `/metrics`.
     stats: Mutex<Vec<(String, Arc<RingStats>)>>,
     /// Wall clock = `epoch_us` + (instant − `epoch_at`): one clock read per query, not two.
+    /// `epoch_us` moves when the system clock steps (see [`Hub::resync_clock`]).
     epoch_at: Instant,
-    epoch_us: u64,
+    epoch_us: AtomicU64,
+    /// Clock steps followed so far, and the latest one (microseconds, signed).
+    clock_steps: AtomicU64,
+    clock_step_us: AtomicI64,
     /// What the aggregator thread has folded in so far.
     aggregates: Mutex<Aggregates>,
 }
 
 static NEXT_HUB: AtomicU64 = AtomicU64::new(1);
+
+/// A difference between the wall clock and the epoch-derived time at least this large is a
+/// step the epoch follows. NTP slewing adjusts `Instant`'s clock too, so only a step
+/// (`settimeofday`: the first sync on a Pi without an RTC, a resumed VM) ever gets here.
+pub const CLOCK_STEP_US: u64 = 1_000_000;
+
+/// Microseconds since the Unix epoch, now.
+fn wall_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
+}
 
 /// This thread's producer for one hub.
 struct Local {
@@ -61,25 +77,65 @@ thread_local! {
 impl Hub {
     /// `ring_bytes` per producing thread (rounded up to the largest record).
     pub fn new(ring_bytes: usize) -> Arc<Self> {
-        let epoch_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
         Arc::new(Self {
             id: NEXT_HUB.fetch_add(1, Ordering::Relaxed),
             ring_bytes: ring_bytes.max(MAX_RECORD * 4),
             pending: Mutex::new(Vec::new()),
             stats: Mutex::new(Vec::new()),
             epoch_at: Instant::now(),
-            epoch_us,
+            epoch_us: AtomicU64::new(wall_us()),
+            clock_steps: AtomicU64::new(0),
+            clock_step_us: AtomicI64::new(0),
             aggregates: Mutex::new(Aggregates::new()),
         })
     }
 
     /// Wall-clock microseconds for an `Instant` taken during this process.
     pub fn ts_us(&self, at: Instant) -> u64 {
-        let since = at.saturating_duration_since(self.epoch_at);
         self.epoch_us
-            .saturating_add(u64::try_from(since.as_micros()).unwrap_or(u64::MAX))
+            .load(Ordering::Relaxed)
+            .saturating_add(self.since_epoch(at))
+    }
+
+    fn since_epoch(&self, at: Instant) -> u64 {
+        let since = at.saturating_duration_since(self.epoch_at);
+        u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
+    }
+
+    /// REQ: OBS-001, OBS-004 — keeps event time on the wall clock. `Instant` doesn't follow
+    /// a clock step, and a Pi has no RTC: it starts on the clock it shut down with and sets
+    /// it from NTP only once DNS answers, so with a fixed epoch every later event, query-log
+    /// row, and rollup minute would carry the old offset until a restart. The aggregator
+    /// thread calls this every drain (one clock read); the query path still reads one
+    /// atomic. Returns the step followed, if any.
+    pub fn resync_clock(&self) -> Option<i64> {
+        self.resync_to(wall_us(), Instant::now())
+    }
+
+    /// [`Self::resync_clock`] for a reading `wall_us` of the wall clock taken at `at`.
+    pub fn resync_to(&self, wall_us: u64, at: Instant) -> Option<i64> {
+        let expected = self.ts_us(at);
+        let step = i64::try_from(wall_us)
+            .unwrap_or(i64::MAX)
+            .saturating_sub(i64::try_from(expected).unwrap_or(i64::MAX));
+        if step.unsigned_abs() < CLOCK_STEP_US {
+            return None;
+        }
+        self.epoch_us.store(
+            wall_us.saturating_sub(self.since_epoch(at)),
+            Ordering::Relaxed,
+        );
+        self.clock_steps.fetch_add(1, Ordering::Relaxed);
+        self.clock_step_us.store(step, Ordering::Relaxed);
+        Some(step)
+    }
+
+    /// Clock steps followed so far and the latest one (microseconds), for `/metrics`.
+    pub fn clock_steps(&self) -> (u64, i64) {
+        (
+            self.clock_steps.load(Ordering::Relaxed),
+            self.clock_step_us.load(Ordering::Relaxed),
+        )
     }
 
     /// Records a client transaction. Wait-free; drops (and counts) if this thread's ring is
@@ -185,6 +241,7 @@ impl Hub {
                 loop {
                     let done = flag.load(Ordering::Acquire);
                     let t = Instant::now();
+                    hub.resync_clock();
                     {
                         let mut agg = hub.aggregates();
                         drainer.drain(|r| {

@@ -379,3 +379,23 @@ fn obs_002_no_drops_at_100k_events_per_second() {
         .sum();
     assert_eq!(u64::from(total), 4 * per_thread);
 }
+
+/// REQ: OBS-001, OBS-004 — event time follows a step of the system clock (NTP's first sync
+/// on a Pi without an RTC, a resumed VM): the epoch moves, later timestamps are on the new
+/// clock, and a difference under a second (slewing, scheduling) moves nothing.
+#[test]
+fn obs_001_event_time_follows_a_clock_step() {
+    let hub = Hub::new(1 << 16);
+    let at = Instant::now();
+    let before = hub.ts_us(at);
+    assert_eq!(hub.resync_to(before + 500_000, at), None, "under a second");
+    assert_eq!(hub.ts_us(at), before);
+    assert_eq!(
+        hub.resync_to(before + 7_200_000_000, at),
+        Some(7_200_000_000)
+    );
+    assert_eq!(hub.ts_us(at), before + 7_200_000_000, "two hours ahead now");
+    assert_eq!(hub.resync_to(before, at), Some(-7_200_000_000));
+    assert_eq!(hub.ts_us(at), before, "and back");
+    assert_eq!(hub.clock_steps(), (2, -7_200_000_000));
+}
