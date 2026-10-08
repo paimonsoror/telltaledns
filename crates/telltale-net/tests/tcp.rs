@@ -180,6 +180,18 @@ async fn dns_001_tcp_slow_reader_is_closed() {
     server.shutdown().await;
 }
 
+/// REQ: DNS-001 — a length prefix beyond any real query closes the connection instead of
+/// buffering up to 64 KiB per connection on the client's say-so.
+#[tokio::test]
+async fn dns_001_tcp_oversized_query_closes_connection() {
+    let server = TcpServer::bind(cfg(), Arc::new(echo)).unwrap();
+    let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
+    s.write_all(&[0x20, 0x00, 1, 2, 3]).await.unwrap(); // claims 8192 bytes
+    let r = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut s)).await;
+    assert!(matches!(r, Ok(Err(_))), "{r:?}");
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn dns_001_tcp_runt_length_closes_connection() {
     let server = TcpServer::bind(cfg(), Arc::new(echo)).unwrap();

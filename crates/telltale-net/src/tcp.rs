@@ -94,6 +94,10 @@ pub struct TcpServer {
 
 /// Largest DNS message (2-byte length prefix).
 const MAX_MSG: usize = u16::MAX as usize;
+/// Largest query accepted: the same bound as the UDP receive buffer. Queries are small; a
+/// length prefix beyond this is junk, and reading it would buffer up to 64 KiB per
+/// connection on the client's say-so.
+const MAX_QUERY: usize = 4096;
 
 thread_local! {
     /// Response scratch space, one per runtime thread rather than per connection, so idle
@@ -311,8 +315,8 @@ async fn serve_conn<S, H>(
             }
         }
         let n = usize::from(u16::from_be_bytes(len));
-        if n < 12 {
-            break; // shorter than a DNS header: the stream is out of sync
+        if !(12..=MAX_QUERY).contains(&n) {
+            break; // shorter than a DNS header, or far longer than any query: out of sync
         }
         req.resize(n, 0);
         if !matches!(
