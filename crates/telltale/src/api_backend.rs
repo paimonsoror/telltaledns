@@ -1196,23 +1196,138 @@ impl Backend for ApiBackend {
         let Some(a) = &self.src.anomalies else {
             return Vec::new();
         };
-        a.findings()
+        let mut items: Vec<telltale_api::model::AnomalyFinding> = a
+            .findings()
             .into_iter()
             .filter(|f| f.window_start_s >= since_s)
-            .map(|f| telltale_api::model::AnomalyFinding {
-                kind: f.kind.label().to_owned(),
-                client: telltale_telemetry::agg::client_text(f.client),
-                client_name: device_name(&self.src, f.client),
-                domain: f.domain,
-                window_start: format_us(f.window_start_s.saturating_mul(1_000_000)),
-                window_seconds: f.window_s,
-                observed: f.observed,
-                baseline: f.baseline,
-                spread: f.spread,
-                threshold: f.threshold,
-                detail: f.detail,
+            .map(|f| {
+                let client = telltale_telemetry::agg::client_text(f.client);
+                let kind = f.kind.label();
+                telltale_api::model::AnomalyFinding {
+                    // REQ: OBS-014 — the same ID on every node that finds it.
+                    id: telltale_api::model::anomaly_id(
+                        kind,
+                        &client,
+                        f.domain.as_deref(),
+                        f.window_start_s,
+                        f.window_s,
+                    ),
+                    kind: kind.to_owned(),
+                    client,
+                    client_name: device_name(&self.src, f.client),
+                    domain: f.domain,
+                    window_start: format_us(f.window_start_s.saturating_mul(1_000_000)),
+                    window_seconds: f.window_s,
+                    observed: f.observed,
+                    baseline: f.baseline,
+                    spread: f.spread,
+                    threshold: f.threshold,
+                    detail: f.detail,
+                    nodes: Vec::new(),
+                    acknowledged: None,
+                }
             })
-            .collect()
+            .collect();
+        self.annotate_acks(&mut items);
+        items
+    }
+
+    // REQ: OBS-014 — this node's acknowledgements (the primary's, on a replica).
+    fn annotate_acks(&self, items: &mut [telltale_api::model::AnomalyFinding]) {
+        let Some(auth) = self.src.auth.get() else {
+            return;
+        };
+        let Ok(acks) = auth.state().anomaly_acks() else {
+            return;
+        };
+        let by_id: std::collections::HashMap<&str, &telltale_store::state::AnomalyAck> =
+            acks.iter().map(|a| (a.id.as_str(), a)).collect();
+        for f in items {
+            f.acknowledged =
+                by_id
+                    .get(f.id.as_str())
+                    .map(|a| telltale_api::model::AnomalyAckInfo {
+                        by: a.by.clone(),
+                        at: format_us(a.at.saturating_mul(1_000_000)),
+                        note: a.note.clone(),
+                    });
+        }
+    }
+
+    // REQ: OBS-014 (ADR-103) — recorded here; a primary publishes the set with its next version.
+    fn anomaly_ack(
+        &self,
+        w: telltale_api::AnomalyAckWrite,
+    ) -> BoxFuture<Result<telltale_api::model::AnomalyAckResult, Problem>> {
+        let auth = self.src.auth.get().cloned();
+        Box::pin(async move {
+            let Some(auth) = auth else {
+                return Err(Problem::unavailable(
+                    "this node's state database isn't open yet",
+                ));
+            };
+            tokio::task::spawn_blocking(move || {
+                let state = auth.state();
+                let now = crate::pipeline::unix_now();
+                let changed = if w.ack {
+                    let acks: Vec<telltale_store::state::AnomalyAck> = w
+                        .ids
+                        .iter()
+                        .filter_map(|id| {
+                            Some(telltale_store::state::AnomalyAck {
+                                id: id.clone(),
+                                by: w.by.clone(),
+                                at: now,
+                                note: w.note.clone(),
+                                window_start: telltale_api::model::anomaly_id_window(id)?,
+                            })
+                        })
+                        .collect();
+                    state.ack_anomalies(&acks, now)
+                } else {
+                    state.unack_anomalies(&w.ids)
+                };
+                changed
+                    .map(|changed| telltale_api::model::AnomalyAckResult {
+                        changed,
+                        unknown: Vec::new(),
+                    })
+                    .map_err(|e| Problem::internal(format!("acknowledgements not saved: {e}")))
+            })
+            .await
+            .map_err(|e| Problem::internal(format!("acknowledge worker failed: {e}")))?
+        })
+    }
+
+    // REQ: OBS-015 (ADR-104) — this node's own conditions.
+    fn health(&self) -> telltale_api::model::Health {
+        let now = crate::pipeline::unix_now();
+        let recent = self.timeseries(Step::Minute, now.saturating_sub(300), now);
+        let upstreams = self.upstreams();
+        let lists = self.src.lists.load().is_some().then(|| self.lists());
+        let disk_used_percent =
+            self.src
+                .host
+                .latest()
+                .and_then(|s| match (s.disk_total, s.disk_free) {
+                    #[allow(clippy::cast_precision_loss)] // byte counts as a share
+                    (Some(t), Some(f)) if t > 0 => {
+                        Some(t.saturating_sub(f) as f64 * 100.0 / t as f64)
+                    }
+                    _ => None,
+                });
+        let reasons = crate::health::local_reasons(&crate::health::Local {
+            serving: self.src.ready.load(std::sync::atomic::Ordering::Acquire),
+            upstreams: &upstreams,
+            recent: &recent,
+            lists: lists.as_deref(),
+            disk_used_percent,
+        });
+        crate::health::summarize(
+            reasons,
+            Vec::new(),
+            format_us(now.saturating_mul(1_000_000)),
+        )
     }
 
     // REQ: OPS-008 (T7.19) — this node's DHCP leases.

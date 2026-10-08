@@ -334,7 +334,7 @@
           "stats"
         ],
         "summary": "Device anomalies: rate spikes, heavy volume to one domain, drift, beaconing (OBS-013).",
-        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.\nNewest first.",
+        "description": "Each finding compares a device with its own learned baseline (after a learning period,\n7 days by default) and carries the evidence: observed value, usual value ± spread, the\nthreshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.\nNewest first. In a cluster every node's findings are included (each node learns from the\nqueries it answers), with `nodes` saying which found each. Each has a stable `id` for\nacknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`\nreturns only the ones nobody has.",
         "operationId": "anomalies",
         "parameters": [
           {
@@ -344,6 +344,15 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "acknowledged",
+            "in": "query",
+            "description": "REQ: OBS-014 — `false`: only findings nobody acknowledged; `true`: only acknowledged\nones. Default: both.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -360,6 +369,110 @@
           },
           "400": {
             "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/analytics/anomalies/acknowledge": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Acknowledge device anomalies.",
+        "description": "Marks findings as seen, by their `id` from `GET /analytics/anomalies`: the sidebar badge and\n`acknowledged=false` stop counting them, and each shows who acknowledged it and when. In a\ncluster the primary records it (any node forwards) and every node shows it within seconds,\nincluding nodes that were down, when they reconnect. Acknowledging changes no configuration,\nso it works in a GitOps-managed cluster too. Findings keep being reported as before.\nNeeds the operator role (agents: the `ops:anomalies` scope); audit-logged as `anomaly.ack`.",
+        "operationId": "acknowledge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnomalyAckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many were newly acknowledged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyAckResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No IDs, too many, a malformed one, or a long note.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A replica that can't reach the primary.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/analytics/anomalies/unacknowledge": {
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Take back acknowledgements of device anomalies.",
+        "description": "The findings count in the badge again. Same rules as acknowledging; audit-logged as\n`anomaly.unack`.",
+        "operationId": "unacknowledge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnomalyAckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many acknowledgements were taken back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnomalyAckResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No IDs, too many, or a malformed one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A replica that can't reach the primary.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3731,6 +3844,28 @@
         }
       }
     },
+    "/api/v1/system/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "How TelltaleDNS is doing: healthy, degraded, or severe, and why.",
+        "description": "`severe`: DNS is failing for some devices (every upstream of a group down, no node serving,\nSERVFAIL for 25% or more of the last 5 minutes' queries). `degraded`: DNS answers, but\nsomething needs a look (one upstream down, a cluster node unreachable or behind, a list\nfailing to download, devices rate-limited in the last 5 minutes, SERVFAIL for 5% or more, a\ndata disk over 90% full). Each reason names its node and where to look in the web UI. In a\ncluster every node is asked; one that doesn't answer is listed in `missingNodes`. Each\ncondition is judged over its own window (the circuit breaker, the last 5 minutes, the\ncluster heartbeat), so a brief blip doesn't change the level. Device anomalies don't count.",
+        "operationId": "system_health",
+        "responses": {
+          "200": {
+            "description": "The level and its reasons.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/info": {
       "get": {
         "tags": [
@@ -4579,10 +4714,82 @@
           }
         }
       },
+      "AnomalyAckInfo": {
+        "type": "object",
+        "description": "REQ: OBS-014 — an acknowledgement: someone looked at the finding.",
+        "required": [
+          "by",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "by": {
+            "type": "string",
+            "example": "alice"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AnomalyAckRequest": {
+        "type": "object",
+        "description": "REQ: OBS-014 — `POST /analytics/anomalies/acknowledge` and `/unacknowledge`.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Finding IDs (`id` in `GET /analytics/anomalies`), 1 to 1,000."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why (acknowledging only; at most 200 characters), shown with the finding.",
+            "example": "the TV's monthly update"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnomalyAckResult": {
+        "type": "object",
+        "description": "REQ: OBS-014 — what an acknowledge or unacknowledge changed.",
+        "required": [
+          "changed"
+        ],
+        "properties": {
+          "changed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Findings whose state changed (one already acknowledged doesn't count again).",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The IDs asked about that aren't current findings on any node that answered (still\nrecorded when acknowledging, in case a node that found them was unreachable)."
+          }
+        }
+      },
       "AnomalyFinding": {
         "type": "object",
         "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
         "required": [
+          "id",
           "kind",
           "client",
           "windowStart",
@@ -4594,6 +4801,17 @@
           "detail"
         ],
         "properties": {
+          "acknowledged": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AnomalyAckInfo",
+                "description": "REQ: OBS-014 — who acknowledged it and when; absent while nobody has."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "baseline": {
             "type": "number",
             "format": "double"
@@ -4621,10 +4839,22 @@
             "description": "The registrable domain, for domain findings.",
             "example": "vendor.example"
           },
+          "id": {
+            "type": "string",
+            "description": "REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding\nhas the same ID on every node and after restarts. Acknowledge findings by it.",
+            "example": "6ab0f180a1b2c3d4"
+          },
           "kind": {
             "type": "string",
             "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
             "example": "domain_volume"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it\nanswers). Empty on a standalone node."
           },
           "observed": {
             "type": "number",
@@ -6562,7 +6792,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,\n`config:write:clients`, `config:write:records`, `config:write:forwards`\n(`config:write:*` for all three), `ops:pause`, `ops:cache`, `cluster:admin`.\nDefault: `analytics:read` and `config:read` (read-only, no query log). Each needs a\nrole you have."
+            "description": "Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,\n`config:write:clients`, `config:write:records`, `config:write:forwards`\n(`config:write:*` for all three), `ops:pause`, `ops:cache`, `ops:anomalies`,\n`cluster:admin`.\nDefault: `analytics:read` and `config:read` (read-only, no query log). Each needs a\nrole you have."
           }
         }
       },
@@ -7169,6 +7399,80 @@
           }
         }
       },
+      "Health": {
+        "type": "object",
+        "description": "REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons.",
+        "required": [
+          "level",
+          "reasons",
+          "checkedAt"
+        ],
+        "properties": {
+          "checkedAt": {
+            "type": "string",
+            "description": "When it was worked out (RFC 3339)."
+          },
+          "level": {
+            "type": "string",
+            "description": "`healthy`, `degraded` (something needs a look, DNS answers), or `severe` (DNS is failing\nor about to).",
+            "example": "degraded"
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that didn't answer (their own conditions aren't included)."
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HealthReason"
+            },
+            "description": "Every condition found, the most serious first. Empty when healthy."
+          }
+        }
+      },
+      "HealthReason": {
+        "type": "object",
+        "description": "REQ: OBS-015 — one condition behind [`Health`].",
+        "required": [
+          "level",
+          "code",
+          "summary"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`.",
+            "example": "upstream_down"
+          },
+          "level": {
+            "type": "string",
+            "description": "`degraded` or `severe`."
+          },
+          "link": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where to look in the web UI (a `#/…` path).",
+            "example": "#/upstreams"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node it's about (cluster nodes only)."
+          },
+          "summary": {
+            "type": "string",
+            "description": "In words, with the numbers.",
+            "example": "upstream quad9 isn't answering (its circuit breaker is open)"
+          }
+        }
+      },
       "HostInfo": {
         "type": "object",
         "description": "One host sample, with sizes in bytes and shares in percent.",
@@ -7536,6 +7840,7 @@
               "type": "object",
               "description": "A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.",
               "required": [
+                "id",
                 "kind",
                 "client",
                 "windowStart",
@@ -7547,6 +7852,17 @@
                 "detail"
               ],
               "properties": {
+                "acknowledged": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AnomalyAckInfo",
+                      "description": "REQ: OBS-014 — who acknowledged it and when; absent while nobody has."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "baseline": {
                   "type": "number",
                   "format": "double"
@@ -7574,10 +7890,22 @@
                   "description": "The registrable domain, for domain findings.",
                   "example": "vendor.example"
                 },
+                "id": {
+                  "type": "string",
+                  "description": "REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding\nhas the same ID on every node and after restarts. Acknowledge findings by it.",
+                  "example": "6ab0f180a1b2c3d4"
+                },
                 "kind": {
                   "type": "string",
                   "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
                   "example": "domain_volume"
+                },
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it\nanswers). Empty on a standalone node."
                 },
                 "observed": {
                   "type": "number",

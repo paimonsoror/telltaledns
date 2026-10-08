@@ -25,9 +25,9 @@
 | Blocking | `POST /blocking/pause`, `POST /blocking/resume` (global) |
 | Settings | `GET/PATCH /config` (whole document, JSON-Patch), `GET /config/schema`, `POST /config/validate` |
 | Cluster | `GET /cluster` (members, roles, versions, lag, epochs), `POST /cluster/tokens`, `POST /cluster/promote`, `DELETE /cluster/nodes/{id}`, `GET /cluster/conflicts`, `POST /cluster/conflicts/{id}/reapply` |
-| Analytics | `/analytics/new-domains`, `/analytics/suspicious`, `/analytics/anomalies`, `/analytics/lists/effectiveness`, `/analytics/cache` |
+| Analytics | `/analytics/new-domains`, `/analytics/suspicious`, `/analytics/anomalies` (every node's, `acknowledged=false`), `POST /analytics/anomalies/acknowledge` and `/unacknowledge` (`{ids, note?}`, OBS-014), `/analytics/lists/effectiveness`, `/analytics/cache` |
 | Alerts | `/alerts/rules`, `/alerts/destinations`, `/alerts/history` |
-| Ops | `/backup`, `/restore`, `/import/pihole`, `/import/technitium`, `/audit`, `/system/info`, `/healthz`, `/readyz`, `/livez`, `/metrics` |
+| Ops | `/backup`, `/restore`, `/import/pihole`, `/import/technitium`, `/audit`, `/system/info`, `/system/health` (healthy, degraded, or severe, and why; OBS-015), `/healthz`, `/readyz`, `/livez`, `/metrics` |
 
 ## 3. UI scope (API-005)
 Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framework (design tokens + CSS variables), embedded in the binary. Budget: ≤ 400 KiB gzipped total and first paint < 1 s on a Pi-served LAN. Responsive down to 360 px (phone use is common for "pause blocking").

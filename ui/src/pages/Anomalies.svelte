@@ -1,13 +1,24 @@
 <script lang="ts">
   // REQ: OBS-013 — device anomalies with their evidence: what was seen, the device's usual value
   // (± spread), and the bar it crossed. Alert-only: nothing here blocks anything.
+  // REQ: OBS-014 — acknowledging: mark findings as seen, on every node; they stop counting in
+  // the badge and hide here unless "Show acknowledged" is on.
   import { api, type S } from '../lib/api';
   import { href } from '../lib/router.svelte';
+  import { can } from '../lib/session.svelte';
   import { dateTime, num } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
 
-  let items = $state<S['AnomalyFinding'][]>([]);
+  let all = $state<S['AnomalyFinding'][]>([]);
+  let showAcked = $state(false);
+  const items = $derived(showAcked ? all : all.filter((f) => !f.acknowledged));
+  const ackedCount = $derived(all.filter((f) => f.acknowledged).length);
+  const open = $derived(all.filter((f) => !f.acknowledged));
+  const writable = $derived(can('operator'));
+  let busy = $state(false);
+  let actionError = $state<unknown>(null);
+  let reloadTick = $state(0);
   // REQ: OBS-009 (T7.14) — first-seen domains, with how machine-generated each name looks.
   let fresh = $state<S['NewDomain'][]>([]);
   let suspiciousOnly = $state(false);
@@ -28,12 +39,29 @@
   const absolute = new Set(['nxdomain_storm', 'dga']);
   const windowText = (s: number) => (s >= 86400 ? `${s / 86400} day` : s >= 3600 ? `${s / 3600} h` : `${s / 60} min`);
 
+  async function change(ids: string[], ack: boolean) {
+    if (ids.length === 0) return;
+    busy = true;
+    actionError = null;
+    try {
+      await (ack ? api.acknowledgeAnomalies(ids) : api.unacknowledgeAnomalies(ids));
+      reloadTick++;
+      // The sidebar badge counts unacknowledged findings: let it refresh now.
+      window.dispatchEvent(new Event('telltale:anomalies-changed'));
+    } catch (e) {
+      actionError = e;
+    } finally {
+      busy = false;
+    }
+  }
+
   $effect(() => {
     void range;
+    void reloadTick;
     api
       .anomalies(range)
       .then((r) => {
-        items = r.items;
+        all = r.items;
         loaded = true;
       })
       .catch((e) => (error = e));
@@ -57,15 +85,30 @@
     </label>
   </div>
   <ErrorNote {error} />
+  <ErrorNote error={actionError} />
   <p class="muted small">
     Each device is compared with its own usual behavior, learned over its first week. Findings only inform you; to act,
-    open the device's queries or move it to a stricter group.
+    open the device's queries or move it to a stricter group. Acknowledge a finding once you've looked at it: it stops
+    counting as new, on every node.
   </p>
+  <div class="row toolbar">
+    <label class="small"><input type="checkbox" bind:checked={showAcked} data-testid="show-acknowledged" /> Show acknowledged ({ackedCount})</label>
+    <span class="spacer"></span>
+    {#if writable && open.length > 1}
+      <button class="small" disabled={busy} onclick={() => change(open.map((f) => f.id), true)} data-testid="ack-all"
+        >Acknowledge all {open.length}</button
+      >
+    {/if}
+  </div>
   {#if loaded && items.length === 0}
-    <section class="card"><p class="empty">Nothing unusual. New devices are quiet here for their first 7 days while TelltaleDNS learns them.</p></section>
+    <section class="card">
+      <p class="empty">
+        {#if ackedCount > 0}Nothing new: every finding in this period is acknowledged.{:else}Nothing unusual. New devices are quiet here for their first 7 days while TelltaleDNS learns them.{/if}
+      </p>
+    </section>
   {/if}
-  {#each items as f, i (i)}
-    <section class="card finding" data-testid="anomaly">
+  {#each items as f (f.id)}
+    <section class="card finding" class:acked={!!f.acknowledged} data-testid="anomaly">
       <div class="row">
         <span class="badge {f.kind === 'beacon' || f.kind === 'drift' ? 'warn' : 'bad'}">{titles[f.kind] ?? f.kind}</span>
         <strong>{f.clientName ?? f.client}</strong>
@@ -74,6 +117,12 @@
         <span class="muted small">{dateTime(Date.parse(f.windowStart) / 1000)}</span>
       </div>
       <p>{f.detail}</p>
+      {#if f.acknowledged}
+        <p class="small ack-line" data-testid="acknowledged">
+          <span class="badge ok">Acknowledged</span>
+          by {f.acknowledged.by}, {dateTime(Date.parse(f.acknowledged.at) / 1000)}{#if f.acknowledged.note}: “{f.acknowledged.note}”{/if}
+        </p>
+      {/if}
       <dl class="evidence small">
         <dt>Observed</dt><dd>{num(Math.round(f.observed * 10) / 10)}</dd>
         {#if f.kind === 'nxdomain_storm'}
@@ -84,7 +133,18 @@
         <dt>Threshold</dt><dd>{num(Math.round(f.threshold * 10) / 10)}</dd>
         <dt>Window</dt><dd>{windowText(f.windowSeconds)}</dd>
       </dl>
-      <a class="small" href={href('/queries', { client: f.client, name: f.domain ?? undefined, match: f.domain ? 'suffix' : undefined })}>Show these queries</a>
+      <div class="row actions">
+        <a class="small" href={href('/queries', { client: f.client, name: f.domain ?? undefined, match: f.domain ? 'suffix' : undefined })}>Show these queries</a>
+        {#if f.nodes && f.nodes.length > 0}<span class="muted small">Found by {f.nodes.join(', ')}</span>{/if}
+        <span class="spacer"></span>
+        {#if writable}
+          {#if f.acknowledged}
+            <button class="link small" disabled={busy} onclick={() => change([f.id], false)}>Undo acknowledge</button>
+          {:else}
+            <button class="small" disabled={busy} onclick={() => change([f.id], true)} data-testid="ack">Acknowledge</button>
+          {/if}
+        {/if}
+      </div>
     </section>
   {/each}
 
@@ -121,6 +181,20 @@
   .finding .row {
     gap: 10px;
     flex-wrap: wrap;
+  }
+  .finding.acked {
+    opacity: 0.75;
+  }
+  .ack-line {
+    margin: 4px 0;
+  }
+  .actions {
+    align-items: center;
+  }
+  .toolbar {
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 8px;
   }
   .evidence {
     display: grid;

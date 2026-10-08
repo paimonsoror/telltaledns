@@ -148,6 +148,7 @@
       <h3>Ask (read-only)</h3>
       <div class="table-wrap"><table class="std">
         <tbody>
+          <tr><th scope="row"><code>health</code></th><td>healthy, degraded, or severe, and every reason with its node</td></tr>
           <tr><th scope="row"><code>get_overview</code></th><td>queries, blocked %, cache hits, clients, latency for a window</td></tr>
           <tr><th scope="row"><code>top_items</code></th><td>top domains, blocked names, NXDOMAIN, clients</td></tr>
           <tr><th scope="row"><code>search_queries</code></th><td>the query log, filtered and paged</td></tr>
@@ -156,7 +157,7 @@
           <tr><th scope="row"><code>latency_breakdown</code></th><td>percentiles by stage, upstream, client, or type</td></tr>
           <tr><th scope="row"><code>upstream_health</code></th><td>health, circuit breakers, latency per upstream</td></tr>
           <tr><th scope="row"><code>list_effectiveness</code></th><td>list hits, unique names, overlap</td></tr>
-          <tr><th scope="row"><code>find_anomalies</code></th><td>rate spikes, beaconing, NXDOMAIN storms, DGA-like names</td></tr>
+          <tr><th scope="row"><code>find_anomalies</code></th><td>rate spikes, beaconing, NXDOMAIN storms, DGA-like names, from every node, optionally only the unacknowledged ones</td></tr>
           <tr><th scope="row"><code>new_domains</code></th><td>first-seen domains per device</td></tr>
           <tr><th scope="row"><code>vqlog</code></th><td>any count, top list, percentile, or time series (below)</td></tr>
           <tr><th scope="row"><code>cluster_status</code></th><td>members, roles, sync, versions, health</td></tr>
@@ -180,7 +181,7 @@
         </tbody>
       </table></div>
       <h3>Act at once (low risk, audited)</h3>
-      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>. And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
+      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>, <code>acknowledge_anomalies</code> (marks findings as seen on every node, or takes it back). And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
       <h3>Resources and prompts</h3>
       <p class="muted">Resources an assistant can attach: <code>telltale://cluster/status</code>, <code>telltale://config</code> (no secrets), <code>telltale://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
     </div>
@@ -205,7 +206,7 @@ from -180d | where status = blocked | bucket 1d | stats count</code></pre>
   <p class="eyebrow">Safe by design</p>
   <h2>Guardrails that are always on</h2>
   <div class="grid">
-    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>. A token can also be limited to one group of devices.</p></div>
+    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>, <code>ops:anomalies</code>. A token can also be limited to one group of devices.</p></div>
     <div class="card"><h3>Preview before change</h3><p>Every change is a plan with before and after, how many recent questions it would affect, and warnings. A plan made against an older configuration goes stale instead of overwriting newer work.</p></div>
     <div class="card"><h3>A person in the loop</h3><p>Turn on <code>[agents] require_approval</code>, and plans wait in the UI's <b>Agent changes</b> inbox. Agents can't approve anything, their own plans included.</p></div>
     <div class="card"><h3>Full audit</h3><p>Changes are recorded as <code>agent:&lt;token&gt; (owner: &lt;you&gt;)</code>, with the MCP client and the reason the agent gave. Every write needs a reason.</p></div>

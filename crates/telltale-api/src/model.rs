@@ -1473,12 +1473,19 @@ pub struct NewDomain {
 pub struct AnomalyParams {
     /// Only findings whose window started after this (RFC 3339 or relative, default `-7d`).
     pub since: Option<String>,
+    /// REQ: OBS-014 — `false`: only findings nobody acknowledged; `true`: only acknowledged
+    /// ones. Default: both.
+    pub acknowledged: Option<bool>,
 }
 
 /// A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AnomalyFinding {
+    /// REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding
+    /// has the same ID on every node and after restarts. Acknowledge findings by it.
+    #[schema(example = "6ab0f180a1b2c3d4")]
+    pub id: String,
     /// `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
     #[schema(example = "domain_volume")]
     pub kind: String,
@@ -1501,6 +1508,120 @@ pub struct AnomalyFinding {
     /// The finding in words, with the numbers.
     #[schema(example = "4100 queries in an hour; usually 119 ± 30")]
     pub detail: String,
+    /// REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it
+    /// answers). Empty on a standalone node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
+    /// REQ: OBS-014 — who acknowledged it and when; absent while nobody has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged: Option<AnomalyAckInfo>,
+}
+
+/// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex
+/// digits) then an FNV-1a hash of its kind, device, domain, and window length (8 hex digits).
+/// Every node that sees the same finding gives it the same ID, and the ID alone says how old the
+/// finding is.
+#[must_use]
+pub fn anomaly_id(
+    kind: &str,
+    client: &str,
+    domain: Option<&str>,
+    window_start_s: u64,
+    window_s: u32,
+) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    let key = format!("{kind}|{client}|{}|{window_s}", domain.unwrap_or(""));
+    for b in key.bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{:08x}{h:08x}", window_start_s & 0xffff_ffff)
+}
+
+/// The window start an [`anomaly_id`] carries; `None` when `id` isn't one.
+#[must_use]
+pub fn anomaly_id_window(id: &str) -> Option<u64> {
+    (id.len() == 16
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then(|| u64::from_str_radix(&id[..8], 16).ok())
+    .flatten()
+}
+
+/// REQ: OBS-014 — an acknowledgement: someone looked at the finding.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AnomalyAckInfo {
+    #[schema(example = "alice")]
+    pub by: String,
+    /// RFC 3339.
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// REQ: OBS-014 — `POST /analytics/anomalies/acknowledge` and `/unacknowledge`.
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnomalyAckRequest {
+    /// Finding IDs (`id` in `GET /analytics/anomalies`), 1 to 1,000.
+    pub ids: Vec<String>,
+    /// Why (acknowledging only; at most 200 characters), shown with the finding.
+    #[serde(default)]
+    #[schema(example = "the TV's monthly update")]
+    pub note: Option<String>,
+}
+
+/// REQ: OBS-014 — what an acknowledge or unacknowledge changed.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AnomalyAckResult {
+    /// Findings whose state changed (one already acknowledged doesn't count again).
+    pub changed: u64,
+    /// The IDs asked about that aren't current findings on any node that answered (still
+    /// recorded when acknowledging, in case a node that found them was unreachable).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown: Vec<String>,
+}
+
+/// REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Health {
+    /// `healthy`, `degraded` (something needs a look, DNS answers), or `severe` (DNS is failing
+    /// or about to).
+    #[schema(example = "degraded")]
+    pub level: String,
+    /// Every condition found, the most serious first. Empty when healthy.
+    pub reasons: Vec<HealthReason>,
+    /// When it was worked out (RFC 3339).
+    pub checked_at: String,
+    /// Cluster nodes that didn't answer (their own conditions aren't included).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: OBS-015 — one condition behind [`Health`].
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthReason {
+    /// `degraded` or `severe`.
+    pub level: String,
+    /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
+    /// `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`.
+    #[schema(example = "upstream_down")]
+    pub code: String,
+    /// In words, with the numbers.
+    #[schema(example = "upstream quad9 isn't answering (its circuit breaker is open)")]
+    pub summary: String,
+    /// The node it's about (cluster nodes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// Where to look in the web UI (a `#/…` path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "#/upstreams")]
+    pub link: Option<String>,
 }
 
 /// The cluster as this node sees it (REQ: CLU-008): every node with its health, sync, and

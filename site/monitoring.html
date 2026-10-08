@@ -36,13 +36,14 @@
     <div class="card"><h3>Latency, honestly</h3><p>Percentiles per answer path, query type, upstream, and device. In a cluster they're computed from every node's merged histograms, so a slow node shows up in the p99 instead of being averaged away.</p></div>
     <div class="card"><h3>Analytics in one line</h3><p><code>from -7d | where group = kids and status = blocked | top 10 domain</code>: <a href="agents.html#vqlog">vqlog</a> answers questions no dashboard has a tile for, with its cost shown up front.</p></div>
     <div class="card"><h3>The machine too</h3><p>Memory, CPU, disk, and temperature for every node, with the last hour of history and warnings, on the Cluster page and in metrics.</p></div>
+    <div class="card"><h3>Health at a glance</h3><p>One icon in the menu for the whole cluster: healthy, degraded (an upstream or node down, a device rate-limited, a list failing), or severe (no upstream in a group answering, DNS not served). Click it for the reasons and where to look; the same answer is in the API and for AI agents.</p></div>
   </div>
 </section>
 
 <section>
   <p class="eyebrow">Notice</p>
   <h2>Device anomalies</h2>
-  <p class="muted">Each device is compared with its own usual behavior, learned over its first week. Findings come with their evidence (what was seen, the usual value, the bar it crossed) and never block anything on their own.</p>
+  <p class="muted">Each device is compared with its own usual behavior, learned over its first week. Findings come with their evidence (what was seen, the usual value, the bar it crossed) and never block anything on their own. In a cluster you see every node's findings in one list; acknowledge one once you've looked, and it stops counting as new on every node.</p>
   <div class="grid">
     <div class="card"><h3>Rate spikes and drift</h3><p>Many more questions than usual for this hour, or many new domains in a day.</p></div>
     <div class="card"><h3>Beaconing</h3><p>Regular call-home patterns: the same domain at a steady interval, the signature of telemetry and malware alike.</p></div>

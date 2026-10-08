@@ -10,6 +10,7 @@
 // REQ: NFR-003 — no unsafe outside telltale-net.
 #![forbid(unsafe_code)]
 
+pub mod anomaly_api;
 pub mod auth;
 pub mod blocking_api;
 pub mod cache_api;
@@ -211,6 +212,34 @@ pub trait Backend: Send + Sync + 'static {
         let _ = since_s;
         Vec::new()
     }
+    /// REQ: OBS-014 — sets each finding's `acknowledged` from this node's acknowledgements.
+    fn annotate_acks(&self, items: &mut [AnomalyFinding]) {
+        let _ = items;
+    }
+    /// REQ: OBS-014 (ADR-103) — acknowledges findings, or takes acknowledgements back. In a
+    /// cluster the primary records them (a replica forwards) and every node takes the set with
+    /// the next configuration version.
+    fn anomaly_ack(
+        &self,
+        w: AnomalyAckWrite,
+    ) -> BoxFuture<Result<model::AnomalyAckResult, Problem>> {
+        let _ = w;
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "acknowledging anomalies isn't available on this node",
+            ))
+        })
+    }
+    /// REQ: OBS-015 (ADR-104) — healthy, degraded, or severe, with the reasons (every node, in
+    /// a cluster).
+    fn health(&self) -> model::Health {
+        model::Health {
+            level: "healthy".into(),
+            reasons: Vec::new(),
+            checked_at: String::new(),
+            missing_nodes: Vec::new(),
+        }
+    }
     /// REQ: API-010 (T8.2, T8.3) — devices named by the routers' DHCP and by mDNS.
     fn dhcp_leases(&self) -> Vec<DhcpLease> {
         Vec::new()
@@ -399,6 +428,17 @@ pub struct ManagedWrite {
     pub by: String,
 }
 
+/// REQ: OBS-014 — an acknowledge (`ack`) or unacknowledge of findings by ID.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AnomalyAckWrite {
+    /// Valid finding IDs ([`model::anomaly_id`]).
+    pub ids: Vec<String>,
+    pub note: Option<String>,
+    pub ack: bool,
+    /// Who (stored with each acknowledgement).
+    pub by: String,
+}
+
 /// A device write (`PUT`/`DELETE /api/v1/clients/{name}`).
 #[derive(Debug, Clone)]
 pub struct ClientWrite {
@@ -467,6 +507,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     use axum::middleware::{from_fn, from_fn_with_state};
     let data = Router::new()
         .route("/api/v1/system/info", get(system_info))
+        .route("/api/v1/system/health", get(system_health))
         .route("/api/v1/cluster", get(cluster))
         .route("/api/v1/stats/summary", get(stats_summary))
         .route("/api/v1/stats/timeseries", get(stats_timeseries))
@@ -510,6 +551,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         // REQ: AGT-007 (T7.1) — operators approve or reject agents' plans.
         .merge(
             plans::decide_routes(Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: OBS-014 — acknowledging anomalies needs operator (agents: ops:anomalies).
+        .merge(
+            anomaly_api::routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
         // REQ: FLT-009 (T7.1) — pausing blocking needs operator (agents: ops:pause).
@@ -577,7 +623,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, system_health, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -588,14 +634,14 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, forwards, rules, anomalies, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -729,6 +775,25 @@ async fn blocking<T: Send + 'static>(
     responses((status = 200, body = SystemInfo, description = "The result.")))]
 async fn system_info(State(b): State<Shared>) -> Json<SystemInfo> {
     Json(b.system_info())
+}
+
+/// How TelltaleDNS is doing: healthy, degraded, or severe, and why.
+///
+/// `severe`: DNS is failing for some devices (every upstream of a group down, no node serving,
+/// SERVFAIL for 25% or more of the last 5 minutes' queries). `degraded`: DNS answers, but
+/// something needs a look (one upstream down, a cluster node unreachable or behind, a list
+/// failing to download, devices rate-limited in the last 5 minutes, SERVFAIL for 5% or more, a
+/// data disk over 90% full). Each reason names its node and where to look in the web UI. In a
+/// cluster every node is asked; one that doesn't answer is listed in `missingNodes`. Each
+/// condition is judged over its own window (the circuit breaker, the last 5 minutes, the
+/// cluster heartbeat), so a brief blip doesn't change the level. Device anomalies don't count.
+#[utoipa::path(get, path = "/api/v1/system/health", tag = "system",
+    responses((status = 200, body = model::Health, description = "The level and its reasons.")))]
+async fn system_health(State(b): State<Shared>) -> Result<Json<model::Health>, Problem> {
+    tokio::task::spawn_blocking(move || b.health())
+        .await
+        .map(Json)
+        .map_err(|e| Problem::internal(format!("health: {e}")))
 }
 
 /// Check for updates now.
@@ -1094,7 +1159,10 @@ async fn clients(State(b): State<Shared>, ext: axum::http::Extensions) -> impl I
 /// Each finding compares a device with its own learned baseline (after a learning period,
 /// 7 days by default) and carries the evidence: observed value, usual value ± spread, the
 /// threshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.
-/// Newest first.
+/// Newest first. In a cluster every node's findings are included (each node learns from the
+/// queries it answers), with `nodes` saying which found each. Each has a stable `id` for
+/// acknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`
+/// returns only the ones nobody has.
 #[utoipa::path(get, path = "/api/v1/analytics/anomalies", tag = "stats",
     params(AnomalyParams),
     responses((status = 200, body = Items<AnomalyFinding>, description = "The result."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
@@ -1109,9 +1177,19 @@ async fn anomalies(
         now,
         "since",
     )?;
+    let want = p.acknowledged;
+    let (mut items, missing_nodes) = tokio::task::spawn_blocking(move || {
+        let items = b.anomalies(since);
+        (items, b.missing_nodes())
+    })
+    .await
+    .map_err(|e| Problem::internal(format!("anomalies: {e}")))?;
+    if let Some(w) = want {
+        items.retain(|f| f.acknowledged.is_some() == w);
+    }
     Ok(Json(Items {
-        missing_nodes: Vec::new(),
-        items: b.anomalies(since),
+        items,
+        missing_nodes,
     }))
 }
 

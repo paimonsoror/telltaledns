@@ -137,7 +137,14 @@ export const api = {
   // REQ: FLT-012 (T7.9) — the blockable services.
   services: () => get<S['Items_ServiceInfo']>('/services'),
   clients: () => get<S['Items_ClientInfo']>('/clients'),
-  anomalies: (since = '-7d') => get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since }),
+  anomalies: (since = '-7d', acknowledged?: boolean) =>
+    get<S['Items_AnomalyFinding']>('/analytics/anomalies', { since, acknowledged: acknowledged === undefined ? undefined : String(acknowledged) }),
+  // REQ: OBS-014 — acknowledge findings (or take it back), on every node.
+  acknowledgeAnomalies: (ids: string[], note?: string) =>
+    post<S['AnomalyAckResult']>('/analytics/anomalies/acknowledge', { ids, ...(note ? { note } : {}) }),
+  unacknowledgeAnomalies: (ids: string[]) => post<S['AnomalyAckResult']>('/analytics/anomalies/unacknowledge', { ids }),
+  // REQ: OBS-015 — healthy, degraded, or severe, and why.
+  health: () => get<S['Health']>('/system/health'),
   // REQ: OBS-009 (T7.14)
   newDomains: (since = '-24h', limit = 200) =>
     get<S['Items_NewDomain']>('/analytics/new-domains', { since, limit: String(limit) }),

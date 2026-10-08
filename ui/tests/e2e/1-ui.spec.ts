@@ -140,6 +140,96 @@ test('the menu links to the project on GitHub and its site', async () => {
   );
 });
 
+// REQ: OBS-015 — the health icon sits left of the project links; its shape and the panel follow
+// the level; on phones a dot on the menu button says something's wrong.
+test('obs_015 health icon, its reasons, and the phone dot', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  const icon = page.getByTestId('health-icon');
+  await expect(icon).toBeVisible();
+  await expect(icon).toHaveAttribute('data-level', /^(healthy|degraded|severe)$/);
+  const [h, gh] = [await icon.boundingBox(), await page.getByRole('link', { name: 'TelltaleDNS on GitHub' }).boundingBox()];
+  expect(h!.x).toBeLessThan(gh!.x);
+  await page.route('**/api/v1/system/health', (route) =>
+    route.fulfill({
+      json: {
+        level: 'severe',
+        checkedAt: '2026-10-08T12:00:00.000Z',
+        reasons: [
+          { level: 'severe', code: 'upstream_group_down', summary: 'no upstream in group default is answering (quad9, cloudflare)', node: 'home-pi', link: '#/upstreams' },
+          { level: 'degraded', code: 'rate_limited', summary: '12 queries were rate-limited in the last 5 minutes', link: '#/queries?status=rate_limited' },
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  await expect(icon).toHaveAttribute('data-level', 'severe');
+  await icon.click();
+  const panel = page.getByTestId('health-panel');
+  await expect(panel).toContainText('Severe');
+  await expect(panel).toContainText('home-pi');
+  await expect(panel).toContainText('rate-limited');
+  await panel.getByRole('link', { name: 'Look' }).first().click();
+  await expect(page).toHaveURL(/#\/upstreams/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTestId('menu-health-dot')).toBeVisible();
+  await page.unroute('**/api/v1/system/health');
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
+
+// REQ: OBS-014 — acknowledging a finding hides it (and drops it from the badge) until "Show
+// acknowledged"; the acknowledge itself goes to the real server. A fresh server has no
+// findings yet (devices learn for a week), so the list is stubbed.
+test('obs_014 acknowledge an anomaly', async () => {
+  const id = '6a2c0e00a1b2c3d4';
+  const acked = new Set<string>();
+  const finding = {
+    id,
+    kind: 'rate_spike',
+    client: '192.168.1.20',
+    clientName: 'tablet',
+    windowStart: '2026-10-08T10:00:00.000Z',
+    windowSeconds: 3600,
+    observed: 4100,
+    baseline: 119,
+    spread: 30,
+    threshold: 400,
+    detail: '4100 queries in an hour; usually 119 ± 30',
+    nodes: ['home-pi', 'k8s'],
+  };
+  await page.route('**/api/v1/analytics/anomalies?*', (route) => {
+    const unackedOnly = new URL(route.request().url()).searchParams.get('acknowledged') === 'false';
+    const f = acked.has(id) ? { ...finding, acknowledged: { by: 'admin', at: '2026-10-08T12:00:00.000Z' } } : finding;
+    return route.fulfill({ json: { items: unackedOnly && acked.has(id) ? [] : [f] } });
+  });
+  await page.route('**/api/v1/analytics/anomalies/*acknowledge', async (route) => {
+    const res = await route.fetch();
+    const body = route.request().postDataJSON() as { ids: string[] };
+    if (res.ok()) {
+      for (const i of body.ids) {
+        if (route.request().url().endsWith('/unacknowledge')) acked.delete(i);
+        else acked.add(i);
+      }
+    }
+    await route.fulfill({ response: res });
+  });
+  await page.goto('/#/anomalies');
+  await page.reload(); // the sidebar badge loads at start
+  const badge = page.locator('a.nav[href="#/anomalies"] .count');
+  await expect(badge).toHaveText('1');
+  await expect(page.getByTestId('anomaly')).toContainText('Found by home-pi, k8s');
+  await page.getByTestId('ack').click();
+  await expect(page.getByTestId('anomaly')).toHaveCount(0);
+  await expect(page.getByText('every finding in this period is acknowledged')).toBeVisible();
+  await expect(badge).toHaveCount(0);
+  await page.getByTestId('show-acknowledged').check();
+  await expect(page.getByTestId('acknowledged')).toContainText('by admin');
+  await page.getByRole('button', { name: 'Undo acknowledge' }).click();
+  await expect(page.getByTestId('ack')).toBeVisible();
+  await page.unroute('**/api/v1/analytics/anomalies?*');
+  await page.unroute('**/api/v1/analytics/anomalies/*acknowledge');
+});
+
 // The header's icon buttons match: the pause button (its own component) is the same round,
 // borderless button as the theme toggle, on the same line (owner report 2026-10-06).
 test('header icon buttons are the same size and aligned', async () => {

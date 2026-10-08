@@ -442,6 +442,13 @@ async fn apply(
     if let Some(b) = &m.identities {
         import_identities(sources, store, b, &primary_label(&m)).await?;
     }
+    // REQ: OBS-014 (ADR-103) — the primary's acknowledged anomalies. Best effort: a failure
+    // costs only the badge's accuracy, never the version.
+    if let Some(b) = &m.anomaly_acks
+        && let Err(e) = import_acks(sources, store, b).await
+    {
+        warn!("cluster: acknowledged anomalies not taken in: {e}");
+    }
     let json = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
     write_atomic(&cdir.join(APPLIED), &json).map_err(|e| e.to_string())?;
     // The normal reload path: validate, swap, audit-free (the primary audited the change).
@@ -472,6 +479,63 @@ async fn export_identities(sources: &Arc<Sources>) -> Option<Vec<u8>> {
     .await
     .ok()
     .flatten()
+}
+
+/// The acknowledged anomalies as last exported: the set's change counter, the document, and its
+/// hash.
+type AcksCache = Option<(u64, Vec<u8>, String)>;
+
+/// REQ: OBS-014 (ADR-103) — refreshes `cache` with the acknowledged anomalies to publish and
+/// returns their hash, or `None` before the API opened `state.db`. Read again only when the set
+/// changed (the loop runs twice a second). An empty set is published too, so taking the last one
+/// back reaches every node.
+async fn export_acks(sources: &Arc<Sources>, cache: &mut AcksCache) -> Option<String> {
+    let auth = Arc::clone(sources.auth.get()?);
+    let known = cache.as_ref().map(|(v, _, _)| *v);
+    let fresh = tokio::task::spawn_blocking(move || {
+        let state = auth.state();
+        let version = state.anomaly_acks_version().ok()?;
+        if known == Some(version) {
+            return Some(None);
+        }
+        state
+            .anomaly_acks()
+            .map_err(|e| warn!("cluster: can't read acknowledged anomalies to publish: {e}"))
+            .ok()
+            .and_then(|d| serde_json::to_vec(&d).ok())
+            .map(|bytes| Some((version, bytes)))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    if let Some((version, bytes)) = fresh {
+        let h = hash(&bytes);
+        *cache = Some((version, bytes, h));
+    }
+    cache.as_ref().map(|(_, _, h)| h.clone())
+}
+
+/// REQ: OBS-014 (ADR-103) — a replica takes the primary's acknowledged anomalies.
+async fn import_acks(sources: &Sources, store: &BlobStore, b: &BlobRef) -> Result<(), String> {
+    let Some(auth) = sources.auth.get().cloned() else {
+        return Ok(()); // the API isn't up yet: the next version brings them again
+    };
+    let bytes = store.read(b)?;
+    let acks: Vec<telltale_store::state::AnomalyAck> =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let state = Arc::clone(auth.state());
+    let n = acks.len();
+    let changed = tokio::task::spawn_blocking(move || state.replace_anomaly_acks(&acks))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if changed {
+        info!(
+            acknowledged = n,
+            "cluster: acknowledged anomalies synced from the primary"
+        );
+    }
+    Ok(())
 }
 
 /// How the refusal on a replica names the primary: its site, else its node ID.
@@ -651,6 +715,9 @@ struct Published {
     /// REQ: CLU-003 (T9.1) — hash of the published identities.
     #[serde(default)]
     identities: String,
+    /// REQ: OBS-014 — hash of the published acknowledged anomalies.
+    #[serde(default)]
+    acks: String,
 }
 
 /// The newest filter snapshot as replicated blobs (its own manifest included).
@@ -713,6 +780,8 @@ async fn publish_loop(
     };
     let store = BlobStore::open(data_dir(&cfg)).ok();
     let mut first = true;
+    // REQ: OBS-014 — the acknowledged anomalies, re-read only when they change.
+    let mut acks_cache: AcksCache = None;
     loop {
         // REQ: CLU-005 — in automatic failover, publish only while the lease holds (ADR-056).
         // ADR-049 — with a Git source, nothing is published before the first good commit.
@@ -826,12 +895,30 @@ async fn publish_loop(
             export_identities(&sources).await
         };
         let identities_hash = identities.as_deref().map(hash).unwrap_or_default();
+        // REQ: OBS-014 (ADR-103) — acknowledged anomalies travel the same way.
+        // An emergency primary passes on the set it inherited.
+        let inherited_acks: Option<Vec<u8>> = if emergency {
+            inherited
+                .as_ref()
+                .and_then(|m| m.anomaly_acks.as_ref())
+                .and_then(|b| store.as_ref().and_then(|s| s.read(b).ok()))
+        } else {
+            None
+        };
+        let acks_hash = if emergency {
+            inherited_acks.as_deref().map(hash).unwrap_or_default()
+        } else {
+            export_acks(&sources, &mut acks_cache)
+                .await
+                .unwrap_or_default()
+        };
         let new_epoch = epoch > last.epoch;
         let changed = new_epoch
             || config_hash != last.config
             || filter_version != last.filter
             || meta_hash != last.meta
-            || identities_hash != last.identities;
+            || identities_hash != last.identities
+            || acks_hash != last.acks;
         if changed || first {
             let base = inherited
                 .as_ref()
@@ -852,6 +939,19 @@ async fn publish_loop(
             blobs.insert(config.hash.clone(), BlobSource::Bytes(Bytes::from(shared)));
             let identities_ref = identities.map(|bytes| {
                 let r = blob_ref("identities.json", &bytes);
+                if let Some(s) = &store {
+                    let _ = s.put(&r, &bytes);
+                }
+                blobs.insert(r.hash.clone(), BlobSource::Bytes(Bytes::from(bytes)));
+                r
+            });
+            let acks = if emergency {
+                inherited_acks
+            } else {
+                acks_cache.as_ref().map(|(_, b, _)| b.clone())
+            };
+            let acks_ref = acks.map(|bytes| {
+                let r = blob_ref("anomaly-acks.json", &bytes);
                 if let Some(s) = &store {
                     let _ = s.put(&r, &bytes);
                 }
@@ -882,6 +982,7 @@ async fn publish_loop(
                 ca_bundle,
                 identities: identities_ref,
                 privacy_key,
+                anomaly_acks: acks_ref,
             };
             // The signing key changes when a CA rotation switches (T5.4c).
             let key = id_now.ca_key_pem().unwrap_or_else(|_| key.clone());
@@ -937,6 +1038,7 @@ async fn publish_loop(
                         meta: meta_hash,
                         base: epoch_base,
                         identities: identities_hash,
+                        acks: acks_hash,
                     };
                     if let Ok(b) = serde_json::to_vec(&last)
                         && let Err(e) = write_atomic(&state_path, &b)

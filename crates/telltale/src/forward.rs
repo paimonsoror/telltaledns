@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use telltale_api::auth::Actor;
 use telltale_api::model::{ClientChange, ClientInput, ConfigChange};
 use telltale_api::problem::{Code, Problem};
-use telltale_api::{ClientWrite, ManagedKind, ManagedWrite, Shared};
+use telltale_api::{AnomalyAckWrite, ClientWrite, ManagedKind, ManagedWrite, Shared};
 use telltale_cluster::net::Cluster;
 
 use crate::http::Sources;
@@ -43,6 +43,8 @@ pub(crate) enum Write {
         expect: Option<u64>,
         by: String,
     },
+    /// REQ: OBS-014 (ADR-103) — acknowledging anomalies (not configuration, so a Git-managed cluster takes it too).
+    AnomalyAck(AnomalyAckWrite),
 }
 
 impl From<ManagedWrite> for Write {
@@ -191,6 +193,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
             (verb("client", deleting), (name, by), r)
         }
+        Write::AnomalyAck(w) => return apply_ack(src, local, peer, &via, w).await,
     };
     match result {
         Ok(c) => {
@@ -213,6 +216,48 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             }
             Answer::Ok(c)
         }
+        Err(p) => Answer::Err(p.into()),
+    }
+}
+
+/// REQ: OBS-014 — a forwarded acknowledge or unacknowledge, recorded here (the primary) and
+/// audited with the user and the entry node.
+async fn apply_ack(
+    src: &Sources,
+    local: &Shared,
+    peer: &str,
+    via: &str,
+    mut w: AnomalyAckWrite,
+) -> Answer {
+    let action = if w.ack {
+        "anomaly.ack"
+    } else {
+        "anomaly.unack"
+    };
+    let by = w.by.clone();
+    let ids = w.ids.clone();
+    w.by = format!("{by} via {via}");
+    let r = local.anomaly_ack(w).await;
+    if let (Ok(res), Some(auth)) = (&r, src.auth.get()) {
+        let actor = Actor {
+            name: format!("{by} via {via}"),
+            kind: "cluster",
+            remote: Some(format!("node {peer}")),
+            reason: None,
+        };
+        let target = match ids.as_slice() {
+            [one] => one.clone(),
+            _ => format!("{} findings", ids.len()),
+        };
+        auth.record(
+            &actor,
+            action,
+            &target,
+            &serde_json::json!({ "ids": ids, "changed": res.changed }),
+        );
+    }
+    match r {
+        Ok(res) => Answer::Ok(serde_json::to_value(res).unwrap_or_default()),
         Err(p) => Answer::Err(p.into()),
     }
 }
@@ -260,6 +305,15 @@ pub(crate) async fn managed(
     send(&cluster, primary, w.into()).await
 }
 
+/// REQ: OBS-014 — forwards an acknowledge or unacknowledge.
+pub(crate) async fn anomaly_ack(
+    cluster: Arc<Cluster>,
+    primary: Option<String>,
+    w: AnomalyAckWrite,
+) -> Result<telltale_api::model::AnomalyAckResult, Problem> {
+    send(&cluster, primary, Write::AnomalyAck(w)).await
+}
+
 /// Forwards a device write.
 pub(crate) async fn client(
     cluster: Arc<Cluster>,
@@ -285,6 +339,22 @@ mod tests {
         let p: Problem = w.into();
         assert_eq!(p.code, Code::Conflict);
         assert_eq!(p.hint.as_deref(), Some("re-read"));
+    }
+
+    // REQ: OBS-014 — an acknowledgement crosses the channel intact.
+    #[test]
+    fn obs_014_acks_round_trip() {
+        let w = Write::AnomalyAck(AnomalyAckWrite {
+            ids: vec!["6ab0f180a1b2c3d4".into()],
+            note: Some("seen".into()),
+            ack: true,
+            by: "alice".into(),
+        });
+        let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
+        let Write::AnomalyAck(a) = back else {
+            panic!("expected an acknowledgement")
+        };
+        assert_eq!((a.ids.len(), a.ack, a.by.as_str()), (1, true, "alice"));
     }
 
     #[test]

@@ -105,6 +105,12 @@ enum Read {
         name: Option<String>,
         subtree: bool,
     },
+    /// REQ: OBS-014, CLU-002 — the peer's own anomaly findings (older peers don't know it).
+    Anomalies {
+        since_s: u64,
+    },
+    /// REQ: OBS-015 — the peer's own health conditions.
+    Health,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -168,6 +174,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             &b.cache_flush(name.as_deref(), subtree, None)
                 .map_err(text)?,
         ),
+        Read::Anomalies { since_s } => serde_json::to_vec(&b.anomalies(since_s)),
+        Read::Health => serde_json::to_vec(&b.health()),
     }
     .map_err(|e| e.to_string())
 }
@@ -250,6 +258,41 @@ pub(crate) fn rpc_handler(
                 .map_err(|e| format!("read worker failed: {e}"))?
         })
     })
+}
+
+/// REQ: OBS-014 — every node's findings as one list, newest first: one entry per ID (nodes
+/// behind one load balancer can each find the same device's spike), listing who found it.
+fn merge_findings(parts: Vec<(String, Vec<AnomalyFinding>)>) -> Vec<AnomalyFinding> {
+    let mut by_id: std::collections::HashMap<String, AnomalyFinding> =
+        std::collections::HashMap::new();
+    for (label, items) in parts {
+        for mut f in items {
+            if let Some(seen) = by_id.get_mut(&f.id) {
+                if !seen.nodes.contains(&label) {
+                    seen.nodes.push(label.clone());
+                }
+                // The node that saw the most of it tells the story.
+                if f.observed > seen.observed {
+                    let nodes = std::mem::take(&mut seen.nodes);
+                    *seen = f;
+                    seen.nodes = nodes;
+                }
+            } else {
+                f.nodes = vec![label.clone()];
+                by_id.insert(f.id.clone(), f);
+            }
+        }
+    }
+    let mut out: Vec<AnomalyFinding> = by_id.into_values().collect();
+    for f in &mut out {
+        f.nodes.sort();
+    }
+    out.sort_by(|a, b| {
+        b.window_start
+            .cmp(&a.window_start)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out
 }
 
 fn no_lease() -> Problem {
@@ -1041,8 +1084,70 @@ impl Backend for Federated {
     fn upstreams(&self) -> Vec<UpstreamInfo> {
         self.local.upstreams()
     }
+    // REQ: OBS-014, CLU-002 — every node's findings (each learns from the queries it answers):
+    // one entry per finding ID, with the nodes that found it, acknowledged by this node's set
+    // (the primary's).
     fn anomalies(&self, since_s: u64) -> Vec<AnomalyFinding> {
-        self.local.anomalies(since_s)
+        let mut parts: Vec<(String, Vec<AnomalyFinding>)> = Vec::new();
+        if self.with_me() {
+            parts.push((self.own_label(), self.local.anomalies(since_s)));
+        }
+        parts.extend(self.everyone_labelled::<Vec<AnomalyFinding>>(|| Read::Anomalies { since_s }));
+        let mut items = merge_findings(parts);
+        self.local.annotate_acks(&mut items);
+        items
+    }
+    fn annotate_acks(&self, items: &mut [AnomalyFinding]) {
+        self.local.annotate_acks(items);
+    }
+    // REQ: OBS-014 (ADR-103) — the primary records acknowledgements; a replica forwards them
+    // (also in a GitOps cluster: they aren't configuration) and records them at once itself,
+    // so its own pages show them before the primary's next version arrives.
+    fn anomaly_ack(
+        &self,
+        w: telltale_api::AnomalyAckWrite,
+    ) -> BoxFuture<Result<telltale_api::model::AnomalyAckResult, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.anomaly_ack(w);
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        let local = Arc::clone(&self.local);
+        Box::pin(async move {
+            let r = crate::forward::anomaly_ack(cluster, primary, w.clone()).await?;
+            let _ = local.anomaly_ack(w).await;
+            Ok(r)
+        })
+    }
+    // REQ: OBS-015 (ADR-104) — every node's own conditions, plus the cluster's (peers
+    // unreachable or behind) as this node sees them.
+    fn health(&self) -> telltale_api::model::Health {
+        let now = self.local.now_unix_seconds();
+        let mut reasons = Vec::new();
+        let mut reporting = 0;
+        if self.with_me() {
+            let mut own = self.local.health().reasons;
+            for r in &mut own {
+                r.node = Some(self.own_label());
+            }
+            reasons.extend(own);
+            reporting += 1;
+        }
+        for (label, h) in self.everyone_labelled::<telltale_api::model::Health>(|| Read::Health) {
+            reporting += 1;
+            reasons.extend(h.reasons.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        let missing = self.missing_nodes();
+        crate::health::soften_not_serving(&mut reasons, reporting);
+        reasons.extend(crate::health::cluster_reasons(&self.local.cluster()));
+        crate::health::summarize(
+            reasons,
+            missing,
+            telltale_api::time::format_us(now.saturating_mul(1_000_000)),
+        )
     }
     // REQ: OBS-010 (T9.6) — alerts are evaluated here (the primary) or nowhere: this node's.
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {
@@ -1352,6 +1457,61 @@ impl Backend for Federated {
             WriteRoute::Here => self.local.write_client(w),
             WriteRoute::NoLease => Box::pin(async { Err(no_lease()) }),
         }
+    }
+}
+
+#[cfg(test)]
+mod anomaly_tests {
+    use super::*;
+
+    fn finding(client: &str, observed: f64) -> AnomalyFinding {
+        AnomalyFinding {
+            id: telltale_api::model::anomaly_id("rate_spike", client, None, 1_790_000_000, 3600),
+            kind: "rate_spike".into(),
+            client: client.into(),
+            client_name: None,
+            domain: None,
+            window_start: "2026-09-21T13:46:40.000Z".into(),
+            window_seconds: 3600,
+            observed,
+            baseline: 100.0,
+            spread: 10.0,
+            threshold: 200.0,
+            detail: format!("{observed} queries"),
+            nodes: Vec::new(),
+            acknowledged: None,
+        }
+    }
+
+    // REQ: OBS-014, CLU-002 — two pods behind one load balancer find the same device's spike:
+    // one entry, both nodes listed, the larger observation shown.
+    #[test]
+    fn obs_014_the_same_finding_on_two_nodes_is_one_entry() {
+        let merged = merge_findings(vec![
+            (
+                "pod-a".into(),
+                vec![finding("10.0.0.5", 300.0), finding("10.0.0.6", 250.0)],
+            ),
+            ("pod-b".into(), vec![finding("10.0.0.5", 420.0)]),
+        ]);
+        assert_eq!(merged.len(), 2);
+        let five = merged.iter().find(|f| f.client == "10.0.0.5").unwrap();
+        assert_eq!(five.nodes, ["pod-a", "pod-b"]);
+        assert!((five.observed - 420.0).abs() < f64::EPSILON);
+        let six = merged.iter().find(|f| f.client == "10.0.0.6").unwrap();
+        assert_eq!(six.nodes, ["pod-a"]);
+    }
+
+    // REQ: OBS-014 — a peer that doesn't know the anomaly read is skipped, not fatal: the
+    // read is new, and its answer decodes as a list.
+    #[test]
+    fn obs_014_anomaly_and_health_reads_round_trip() {
+        let r: Read =
+            serde_json::from_slice(&serde_json::to_vec(&Read::Anomalies { since_s: 5 }).unwrap())
+                .unwrap();
+        assert!(matches!(r, Read::Anomalies { since_s: 5 }));
+        assert!(!changes_state(&Read::Anomalies { since_s: 5 }));
+        assert!(!changes_state(&Read::Health));
     }
 }
 

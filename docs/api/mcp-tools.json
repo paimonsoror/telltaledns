@@ -284,10 +284,14 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains. Alert-only; nothing is blocked automatically.",
+    "description": "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. Alert-only; nothing is blocked automatically.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "acknowledged": {
+          "description": "false: only findings nobody acknowledged yet; true: only acknowledged ones. Default: both.",
+          "type": "boolean"
+        },
         "since": {
           "description": "Findings since (relative like -7d, or RFC 3339). Default -7d.",
           "type": "string"
@@ -296,6 +300,21 @@
       "type": "object"
     },
     "name": "find_anomalies"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Is TelltaleDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "health"
   },
   {
     "annotations": {
@@ -1138,6 +1157,48 @@
       "type": "object"
     },
     "name": "check_list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan). Marks device anomalies as seen, by their id from find_anomalies, so they stop counting as new; on every cluster node. With undo, takes the acknowledgement back. Nothing is blocked or unblocked either way. Needs the ops:anomalies scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ids": {
+          "description": "Finding ids from find_anomalies.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "type": "array"
+        },
+        "note": {
+          "description": "Why they're fine (shown with each finding; not with undo).",
+          "maxLength": 200,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "undo": {
+          "description": "Take the acknowledgements back instead.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ids",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "acknowledge_anomalies"
   },
   {
     "annotations": {

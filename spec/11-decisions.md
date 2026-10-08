@@ -1291,6 +1291,32 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-104 — One health level: healthy, degraded, severe (Proposed)
+**Context:** the owner asked (2026-10-08) for a health icon next to the navigation's project links, with three states: healthy, degraded (e.g. a cluster node down, clients rate-limited), and severe (an upstream not answering, the system not working). The signals exist (circuit breakers, the cluster view, the query counters, list state, host samples), but nothing combined them, and some (upstream health, readiness) were only ever read on the node answering the API.
+
+**Decision (owner's answers, 2026-10-08):**
+- `GET /api/v1/system/health` (and the MCP tool `health`) returns `level` and `reasons` (`level`, stable `code`, `summary`, `node`, a UI `link`). In a cluster every node is asked for its own conditions (a federated read, like the dashboard); the answering node adds the cluster's (peers unreachable or behind). A peer that doesn't answer is listed in `missingNodes`.
+- **Severe:** every upstream of a group not answering (open or half-open breaker); no node serving DNS; SERVFAIL for 25% or more of the last 5 minutes' queries (at least 50).
+- **Degraded:** one upstream down while its group still answers (the owner's call: one upstream down is degraded); a node unreachable, not serving while others serve, or behind on configuration for a minute; a list failing to download; any query rate-limited in the last 5 minutes (a device asking faster than `[ratelimit]` allows); SERVFAIL 5% or more; a data disk over 90% full.
+- Device anomalies don't count (the owner's call: otherwise findings would have to be acknowledged to get the icon green).
+- No extra hysteresis: every condition already has a window (the breaker's, 5 minutes, the 15 s heartbeat), so a single failed lookup doesn't change the level.
+- The UI polls every 30 s. The icon changes shape as well as color (circle ✓, triangle !, octagon ×), so it reads without color; on phones, where the sidebar is hidden, a dot on the menu button shows when the level isn't healthy.
+
+**Consequences:** a health read costs one federated round (bounded by the 2 s deadline) and a few local reads; nothing touches the query path. Thresholds are fixed for now; making them configurable is a follow-up if the defaults don't fit.
+
+## ADR-103 — Acknowledged anomalies travel with the configuration (Proposed)
+**Context:** the owner asked (2026-10-08) for a way to acknowledge anomaly findings and have the whole cluster honor it. Findings were per node (each node learns from the queries it answers), the Anomalies page and badge showed only the node answering the API, and the anomaly alert rule, evaluated on the primary, saw only the primary's findings. Ephemeral resolver pods serve no UI, so their findings were never visible at all.
+
+**Decision:**
+- Findings are federated: `GET /analytics/anomalies` gathers every node's, merges the same finding seen by several nodes (one entry, `nodes` lists them), and the alert rule therefore sees them all.
+- Each finding has a stable ID: its window start (8 hex digits) and an FNV-1a hash of kind, device, domain, and window length (8 hex digits). Every node computes the same ID, and the ID says how old the finding is, so acknowledgements can be pruned without looking findings up.
+- Acknowledgements live in `state.db` (`anomaly_acks`: ID, who, when, note, window start). The primary records them; a replica forwards the write over the cluster channel (as configuration writes are, ADR-054) and records it locally at once so its own pages show it. The primary publishes the whole set as a blob in every manifest (`anomaly_acks`, ignored by older builds), next to users and tokens (ADR-045); replicas replace their copy with it, so a node that was down catches up when it reconnects. An emergency primary passes on the set it inherited.
+- Acknowledging isn't a configuration change: it's allowed in a GitOps-managed cluster, like pausing blocking. It needs the operator role (agents: `ops:anomalies`, an immediate op without a plan) and is audited as `anomaly.ack` / `anomaly.unack`.
+- Kept 60 days from the finding's window, at most 10,000, so the published document stays small.
+- Acknowledged findings stay in the list (hidden unless "Show acknowledged") and keep their evidence; the badge counts only unacknowledged ones, and anomaly alerts skip them.
+
+**Consequences:** an acknowledgement is a new configuration version (seq), like a user change: replicas apply it with a reload, and the Cluster page's timeline shows the version. Acknowledging while the primary is unreachable fails with 503 on a replica, like other writes.
+
 ## ADR-102 — Privacy levels cover everything kept or shown (Proposed)
 **Context:** review 04-04 and 04-05. `spec/06` §4 defines privacy levels 0–3 ("Pi-hole parity"), and §7.1 says anomaly findings honour them. The levels were applied to the query log, the live tail, and event sinks, but not to `rollups.db`'s hourly top lists, the in-memory analytics the API serves (top lists, a device's page, first-seen domains, anomaly findings), or the anomaly engine. Level 1's hash is unsalted, so anyone holding a log can confirm a guessed name.
 

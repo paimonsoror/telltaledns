@@ -1387,6 +1387,9 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
     a pointer to the primary.
   - Sessions stay per node: signing in to a second node is a second sign-in (with SSO, a silent
     redirect).
+- **Acknowledged anomalies are the primary's, everywhere** too ([Acknowledging findings](#acknowledging-findings)):
+  any node takes an acknowledgement and passes it to the primary, and every node gets the set
+  with the next version.
   - Users that exist only on a replica (an admin made before it joined) keep working there. If
     the primary has a user of the same name, the primary's account (and password) takes over on
     every node.
@@ -1820,6 +1823,12 @@ nxdomain_percent = 50          # ...that are at least this share of the device's
 ```
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level` is 1 or above (names and devices are hidden). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
+### Acknowledging findings
+Once you've looked at a finding, acknowledge it: **Acknowledge** on its card (or **Acknowledge all**), `POST /api/v1/analytics/anomalies/acknowledge` with its `id`, or the MCP tool `acknowledge_anomalies`. It stops counting as new: the sidebar badge and anomaly alerts skip it, and the page hides it unless **Show acknowledged** is on, where it shows who acknowledged it, when, and the note. **Undo acknowledge** takes it back. Acknowledging blocks nothing and changes no configuration.
+- It needs the operator role (agents: `ops:anomalies`) and is recorded in the audit log as `anomaly.ack` or `anomaly.unack`.
+- **In a cluster** every node learns from the queries it answers, and the Anomalies page shows every node's findings (**Found by** names them; the same finding on two nodes is one entry). An acknowledgement made on any node is recorded by the primary and reaches every node within seconds, with the next configuration version; a node that was down gets it when it reconnects. It works in a GitOps-managed cluster too. On a replica that can't reach the primary, acknowledging fails with 503, like other changes.
+- Acknowledgements are kept for 60 days from the finding's window.
+
 ## Alerts
 TelltaleDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.
 ```toml
@@ -1897,7 +1906,18 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
 
-The menu ends with links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
+The menu ends with the health icon ([Health](#health)), links to the project on GitHub and its site (plain links: the UI fetches nothing from the internet), then this node's name and version.
+
+### Health
+The icon at the bottom of the menu says how TelltaleDNS is doing, for every node of a cluster, and changes shape as well as color:
+
+| Icon | Level | When |
+|---|---|---|
+| circle with a check (quiet) | healthy | nothing below |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download; a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full |
+| octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS, or SERVFAIL for 25% or more |
+
+Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.
 
 The UI is part of the binary (about 100 KiB compressed). The page is served with a strict Content Security Policy and can't be framed.
 
@@ -1933,6 +1953,8 @@ listen = "0.0.0.0:8053"
 | Endpoint | What it returns |
 |---|---|
 | `GET /api/v1/system/info` | version, node, uptime, listeners, query log on/off, active filter snapshot |
+| `GET /api/v1/system/health` | `healthy`, `degraded`, or `severe`, with every reason, its node, and where to look ([Health](#health)) |
+| `GET /api/v1/analytics/anomalies?acknowledged=false` | device anomalies from every node, each with its `id` and who acknowledged it; `POST /api/v1/analytics/anomalies/acknowledge` (or `/unacknowledge`) with `{"ids": [...], "note": "..."}` marks them seen ([Acknowledging](#acknowledging-findings)) |
 | `GET /api/v1/stats/summary?from=-24h` | queries, blocked %, cache hit %, NXDOMAIN/SERVFAIL, active clients, latency by path |
 | `GET /api/v1/stats/timeseries?step=minute&from=-1h` | counts per second or minute by status, type, and response code |
 | `GET /api/v1/stats/top?kind=blocked&limit=10` | top `domains`, `blocked`, `nxdomain`, or `clients` (add `client=IP` for one device's domains) |
@@ -1984,7 +2006,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
 | `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
-| `ops:pause`, `ops:cache` | pause blocking; flush the cache |
+| `ops:pause`, `ops:cache`, `ops:anomalies` | pause blocking; flush the cache; acknowledge device anomalies |
 | `cluster:admin` | promote a node to primary |
 
 The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows.
@@ -2019,9 +2041,11 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `explain_decision` | why a name was blocked or routed for a client |
 | `get_client_profile` | a device: identity, groups, recent and slow queries |
 | `latency_breakdown` | percentiles by stage, upstream, client, or query type |
+| `health` | healthy, degraded, or severe, and why (start here when something seems wrong) |
 | `upstream_health` | upstream health, breakers, latency |
 | `list_effectiveness` | list sizes, updates, errors, hits, unique names, and overlap |
-| `find_anomalies` | device anomalies with evidence (including NXDOMAIN storms and DGA-like names) |
+| `find_anomalies` | device anomalies from every node with evidence (including NXDOMAIN storms and DGA-like names), optionally only the unacknowledged ones |
+| `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |
 | `new_domains` | domains devices contacted for the first time, with DGA scores |
 | `vqlog` | any count, top list, percentile, or time series over the query log, in one query (needs `querylog:read`; below) |
 | `cluster_status` | members, roles, sync, versions, checks |

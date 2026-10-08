@@ -112,14 +112,25 @@ const MIGRATIONS: &[&str] = &[
         hash BLOB NOT NULL,
         ts INTEGER NOT NULL
     );",
+    // 8: acknowledged device anomalies (OBS-014, ADR-103): the primary's set travels to every
+    // node with the configuration.
+    "CREATE TABLE anomaly_acks (
+        id TEXT PRIMARY KEY,
+        by TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        note TEXT,
+        window_start INTEGER NOT NULL
+    );",
 ];
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
 
+pub mod acks;
 pub mod audit;
 pub mod identity;
 pub mod managed;
+pub use acks::AnomalyAck;
 pub use audit::{AuditEntry, NewAudit, Verify};
 pub use identity::{IdRecovery, IdToken, IdUser, Identities, ImportReport};
 pub use managed::{Managed, ManagedError, Replay};

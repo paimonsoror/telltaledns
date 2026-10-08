@@ -11,6 +11,13 @@ use super::*;
 #[derive(Default)]
 struct Fake {
     seen: Mutex<Vec<String>>,
+    /// REQ: OBS-014 — acknowledged finding IDs.
+    acks: Mutex<Vec<String>>,
+}
+
+/// The one finding the fake reports.
+fn fake_finding_id() -> String {
+    crate::model::anomaly_id("rate_spike", "192.168.1.20", None, NOW - 3600, 3600)
 }
 
 const NOW: u64 = 1_791_072_000;
@@ -188,6 +195,59 @@ impl Backend for Fake {
     fn upstreams(&self) -> Vec<UpstreamInfo> {
         Vec::new()
     }
+    fn anomalies(&self, _: u64) -> Vec<AnomalyFinding> {
+        let mut v = vec![AnomalyFinding {
+            id: fake_finding_id(),
+            kind: "rate_spike".into(),
+            client: "192.168.1.20".into(),
+            client_name: Some("tablet".into()),
+            domain: None,
+            window_start: "2026-10-04T11:00:00.000Z".into(),
+            window_seconds: 3600,
+            observed: 4100.0,
+            baseline: 119.0,
+            spread: 30.0,
+            threshold: 400.0,
+            detail: "4100 queries in an hour; usually 119 ± 30".into(),
+            nodes: Vec::new(),
+            acknowledged: None,
+        }];
+        self.annotate_acks(&mut v);
+        v
+    }
+    fn annotate_acks(&self, items: &mut [AnomalyFinding]) {
+        let acks = self.acks.lock().unwrap();
+        for f in items {
+            f.acknowledged = acks.contains(&f.id).then(|| crate::model::AnomalyAckInfo {
+                by: "root".into(),
+                at: "2026-10-04T12:00:00.000Z".into(),
+                note: None,
+            });
+        }
+    }
+    fn anomaly_ack(
+        &self,
+        w: AnomalyAckWrite,
+    ) -> BoxFuture<Result<crate::model::AnomalyAckResult, Problem>> {
+        let mut acks = self.acks.lock().unwrap();
+        let mut changed = 0;
+        for id in w.ids {
+            let had = acks.contains(&id);
+            if w.ack && !had {
+                acks.push(id);
+                changed += 1;
+            } else if !w.ack && had {
+                acks.retain(|a| *a != id);
+                changed += 1;
+            }
+        }
+        Box::pin(async move {
+            Ok(crate::model::AnomalyAckResult {
+                changed,
+                unknown: Vec::new(),
+            })
+        })
+    }
     fn promote(&self, _: PromoteRequest, _: String) -> Result<ClusterView, Problem> {
         panic!("a dry run must not promote")
     }
@@ -292,6 +352,110 @@ fn app() -> (TestApp, Arc<Fake>) {
         fake,
     )
 }
+// REQ: OBS-014, OBS-015 — acknowledging anomalies over HTTP: an operator's change, audited,
+// reflected in the list and its filter; a viewer can't; health is a plain read.
+#[tokio::test]
+async fn obs_014_acknowledging_anomalies_over_http() {
+    let (app, fake) = app();
+    let id = fake_finding_id();
+    let post = |uri: &str, bearer: &str, body: serde_json::Value| {
+        Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let other = crate::model::anomaly_id("beacon", "10.0.0.9", Some("x.example"), NOW, 3600);
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/analytics/anomalies/acknowledge",
+            &app.bearer,
+            serde_json::json!({"ids": [id, other], "note": "the tablet's update"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["changed"], 2);
+    assert_eq!(
+        v["unknown"],
+        serde_json::json!([other]),
+        "not a current finding"
+    );
+    assert_eq!(fake.acks.lock().unwrap().len(), 2);
+
+    let (_, _, v) = get(&app, "/api/v1/analytics/anomalies").await;
+    assert_eq!(v["items"][0]["id"], id);
+    assert_eq!(v["items"][0]["acknowledged"]["by"], "root");
+    let (_, _, v) = get(&app, "/api/v1/analytics/anomalies?acknowledged=false").await;
+    assert_eq!(v["items"].as_array().unwrap().len(), 0);
+
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("anomaly.ack"), None)
+        .unwrap();
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0].target, "2 findings");
+
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/analytics/anomalies/acknowledge",
+            &app.bearer,
+            serde_json::json!({"ids": ["not-an-id"]}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+
+    // A viewer reads, but can't acknowledge.
+    let vic = app
+        .auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (tid, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
+    app.auth
+        .state()
+        .create_token(
+            &tid,
+            vic.id,
+            "ro",
+            &auth::crypto::secret_hash(&secret),
+            "read",
+            None,
+            NOW,
+        )
+        .unwrap();
+    let viewer = format!("tt_{tid}_{secret}");
+    let (s, _, _) = send(
+        &app,
+        post(
+            "/api/v1/analytics/anomalies/unacknowledge",
+            &viewer,
+            serde_json::json!({"ids": [id]}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    let (s, _, v) = send(
+        &app,
+        post(
+            "/api/v1/analytics/anomalies/unacknowledge",
+            &app.bearer,
+            serde_json::json!({"ids": [id]}),
+        ),
+    )
+    .await;
+    assert_eq!((s, v["changed"].as_u64()), (StatusCode::OK, Some(1)));
+    let (_, _, v) = get(&app, "/api/v1/analytics/anomalies?acknowledged=false").await;
+    assert_eq!(v["items"][0]["id"], id, "counts again");
+
+    let (s, _, v) = get(&app, "/api/v1/system/health").await;
+    assert_eq!((s, v["level"].as_str()), (StatusCode::OK, Some("healthy")));
+}
+
 // REQ: AGT-004, AGT-005, AGT-009 — an agent token over HTTP: its scopes and nothing else,
 // a reason on every change, the kill switch, and `agent:` attribution.
 #[tokio::test]
@@ -798,7 +962,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 72);
+    assert_eq!(paths.len(), 75);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

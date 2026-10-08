@@ -79,6 +79,10 @@ pub struct ClusterManifest {
     /// every node's logs group the same way. Absent from older primaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub privacy_key: Option<String>,
+    /// REQ: OBS-014 (ADR-103) — the acknowledged device anomalies, as one JSON document.
+    /// Absent from older primaries (a replica then keeps its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anomaly_acks: Option<BlobRef>,
 }
 
 /// A Git commit as a configuration's provenance (ADR-049). `repo`, `git_ref` and `path` also
@@ -109,6 +113,7 @@ impl ClusterManifest {
             v.extend(f.blobs.iter());
         }
         v.extend(self.identities.iter());
+        v.extend(self.anomaly_acks.iter());
         v
     }
 
@@ -281,6 +286,24 @@ mod tests {
             public_of(&ca.key_pem).unwrap(),
             ca_public_key(&ca.cert_pem).unwrap()
         );
+    }
+
+    // REQ: OBS-014 (ADR-103) — the acknowledgements blob is fetched with the rest; a manifest
+    // from an older primary (without it) still reads, and an older replica ignores the field
+    // (the signature covers the bytes as sent).
+    #[test]
+    fn obs_014_acks_travel_in_the_manifest() {
+        let mut m = manifest();
+        assert!(m.blobs().iter().all(|b| b.name != "anomaly-acks.json"));
+        m.anomaly_acks = Some(blob_ref("anomaly-acks.json", b"[]"));
+        assert!(m.blobs().iter().any(|b| b.name == "anomaly-acks.json"));
+        let ca = pki::new_ca("home").unwrap();
+        let signed = Signed::sign(&m, &ca.key_pem).unwrap();
+        assert_eq!(signed.verify(&ca.cert_pem).unwrap(), m);
+        let mut old = serde_json::to_value(manifest()).unwrap();
+        old.as_object_mut().unwrap().remove("anomaly_acks");
+        let back: ClusterManifest = serde_json::from_value(old).unwrap();
+        assert!(back.anomaly_acks.is_none());
     }
 
     #[test]

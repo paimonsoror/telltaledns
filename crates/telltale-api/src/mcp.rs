@@ -274,18 +274,28 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "find_anomalies",
-            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains. Alert-only; nothing is blocked automatically.",
+            description: "Read-only. Device anomalies with their evidence: rate spikes, heavy volume to one domain, behavior drift, beaconing (regular call-home patterns), NXDOMAIN storms, and machine-generated-looking (DGA) new domains, from every cluster node. Each has an id (for acknowledge_anomalies) and, once someone looked at it, who acknowledged it. Alert-only; nothing is blocked automatically.",
             input_schema: || {
                 json!({"type": "object", "properties": {
-                "since": {"type": "string", "description": "Findings since (relative like -7d, or RFC 3339). Default -7d."}
+                "since": {"type": "string", "description": "Findings since (relative like -7d, or RFC 3339). Default -7d."},
+                "acknowledged": {"type": "boolean", "description": "false: only findings nobody acknowledged yet; true: only acknowledged ones. Default: both."}
             }, "additionalProperties": false})
             },
             calls: |a| {
-                Ok(vec![(
-                    "anomalies".into(),
-                    query("/api/v1/analytics/anomalies", a, &[("since", "since")]),
-                )])
+                let mut path = query("/api/v1/analytics/anomalies", a, &[("since", "since")]);
+                if let Some(v) = a.get("acknowledged").and_then(Value::as_bool) {
+                    let sep = if path.contains('?') { '&' } else { '?' };
+                    path = format!("{path}{sep}acknowledged={v}");
+                }
+                Ok(vec![("anomalies".into(), path)])
             },
+        },
+        // REQ: OBS-015 (ADR-104)
+        Tool {
+            name: "health",
+            description: "Read-only. Is TelltaleDNS OK? One word for the whole cluster (healthy, degraded, or severe) and every reason, each with its node and where to look: upstreams down (severe when a whole upstream group is), nodes unreachable or not serving, replicas behind, lists failing, devices rate-limited, SERVFAIL rate, full disks. Start here when someone asks whether something is wrong.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
         Tool {
             name: "new_domains",
@@ -1010,6 +1020,44 @@ pub fn write_tools() -> Vec<WriteTool> {
                     path: "/api/v1/checks/list".into(),
                     summary: format!("Check the list {what}"),
                     body: Some(l),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: OBS-014 (ADR-103)
+        WriteTool {
+            name: "acknowledge_anomalies",
+            description: "Changes at once (audited, no plan). Marks device anomalies as seen, by their id from find_anomalies, so they stop counting as new; on every cluster node. With undo, takes the acknowledgement back. Nothing is blocked or unblocked either way. Needs the ops:anomalies scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 1000, "description": "Finding ids from find_anomalies."},
+                "note": {"type": "string", "maxLength": 200, "description": "Why they're fine (shown with each finding; not with undo)."},
+                "undo": {"type": "boolean", "description": "Take the acknowledgements back instead."},
+                "reason": reason_schema()
+            }, "required": ["ids", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let n = a.get("ids").and_then(Value::as_array).map_or(0, Vec::len);
+                if n == 0 {
+                    return Err("`ids` is required: finding ids from find_anomalies".into());
+                }
+                let undo = a.get("undo").and_then(Value::as_bool).unwrap_or(false);
+                let body = pick(a, &[("ids", "ids"), ("note", "note")]);
+                Ok(Write {
+                    method: "POST",
+                    path: if undo {
+                        "/api/v1/analytics/anomalies/unacknowledge".into()
+                    } else {
+                        "/api/v1/analytics/anomalies/acknowledge".into()
+                    },
+                    summary: format!(
+                        "{} {n} anomal{}",
+                        if undo { "Unacknowledge" } else { "Acknowledge" },
+                        if n == 1 { "y" } else { "ies" }
+                    ),
+                    body: Some(Value::Object(body)),
                     merge: None,
                 })
             },

@@ -309,9 +309,12 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
                 (l.name, s)
             })
             .collect(),
+        // REQ: OBS-013, OBS-014 — every node's findings (federated), except ones someone
+        // already acknowledged.
         AlertWhen::Anomaly => b
             .anomalies(now.saturating_sub(3600))
             .into_iter()
+            .filter(|f| f.acknowledged.is_none())
             .map(|f| {
                 let who = f.client_name.clone().unwrap_or_else(|| f.client.clone());
                 let key = format!(

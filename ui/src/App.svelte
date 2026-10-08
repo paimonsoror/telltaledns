@@ -10,6 +10,8 @@
   import Icon from './lib/components/Icon.svelte';
   import PauseControl from './lib/components/PauseControl.svelte';
   import AgentInbox from './lib/components/AgentInbox.svelte';
+  import HealthIcon from './lib/components/HealthIcon.svelte';
+  import { health, watchHealth } from './lib/health.svelte';
   import AgentChanges from './pages/AgentChanges.svelte';
   import { navigate } from './lib/router.svelte';
   import { currentMode, loadMode, setMode } from './lib/mode.svelte';
@@ -111,20 +113,35 @@
     }
   });
 
-  // T6.8 — count badges in the sidebar: anomalies found in the last day, lists that fail to
-  // download. Best effort: a failed call just hides the badge.
+  // T6.8 — count badges in the sidebar: anomalies found in the last day that nobody has
+  // acknowledged yet (OBS-014), lists that fail to download. Best effort: a failed call just
+  // hides the badge.
   let badges = $state<Record<string, number>>({});
+  async function loadBadges() {
+    const [a, l] = await Promise.all([api.anomalies('-24h', false).catch(() => null), api.lists().catch(() => null)]);
+    badges = {
+      '/anomalies': a?.items.length ?? 0,
+      '/lists': l?.items.filter((x) => x.state === 'failed').length ?? 0,
+    };
+  }
   $effect(() => {
     if (session.user) {
-      return poll(async () => {
-        const [a, l] = await Promise.all([api.anomalies('-24h').catch(() => null), api.lists().catch(() => null)]);
-        badges = {
-          '/anomalies': a?.items.length ?? 0,
-          '/lists': l?.items.filter((x) => x.state === 'failed').length ?? 0,
-        };
-      }, 60_000);
+      const stop = poll(loadBadges, 60_000);
+      // The Anomalies page says when someone acknowledged a finding.
+      const changed = () => void loadBadges();
+      window.addEventListener('telltale:anomalies-changed', changed);
+      return () => {
+        stop();
+        window.removeEventListener('telltale:anomalies-changed', changed);
+      };
     }
   });
+
+  // REQ: OBS-015 — health for the sidebar icon and the phone menu's dot.
+  $effect(() => {
+    if (session.user) return watchHealth();
+  });
+  const unwell = $derived(health.value && health.value.level !== 'healthy' ? health.value.level : null);
 
   $effect(() => {
     void route.path;
@@ -153,7 +170,7 @@
           <a class="nav" href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined}>
             <Icon name={p.icon} /> <span>{p.label}</span>
             {#if badges[p.path]}
-              <b class="count" class:alert={p.path === '/lists'} title={p.path === '/lists' ? 'lists failing to download' : 'anomalies in the last 24 hours'}>{badges[p.path]}</b>
+              <b class="count" class:alert={p.path === '/lists'} title={p.path === '/lists' ? 'lists failing to download' : 'new anomalies in the last 24 hours (not acknowledged)'}>{badges[p.path]}</b>
             {/if}
           </a>
         {/each}
@@ -166,6 +183,9 @@
       <span class="spacer"></span>
       <!-- The project: plain links, nothing is fetched (works on an offline network). -->
       <div class="project-links">
+        <!-- REQ: OBS-015 — health first: status, set apart from the links out. -->
+        <HealthIcon />
+        <span class="links-gap" aria-hidden="true"></span>
         <a href="https://github.com/paimonsoror/telltaledns" target="_blank" rel="noreferrer" aria-label="TelltaleDNS on GitHub" title="TelltaleDNS on GitHub">
           <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
         </a>
@@ -183,7 +203,9 @@
       {/if}
     </nav>
     <header class="top">
-      <button class="icon-btn menu" aria-label="Menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}><Icon name="menu" /></button>
+      <button class="icon-btn menu" aria-label={unwell ? `Menu (health: ${unwell})` : 'Menu'} aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}
+        ><Icon name="menu" />{#if unwell}<span class="menu-dot {unwell}" data-testid="menu-health-dot"></span>{/if}</button
+      >
       <form class="search" role="search" onsubmit={doSearch}>
         <Icon name="search" size={16} />
         <input aria-label="Search names or clients" placeholder="Search a name or client…" bind:value={search} />
@@ -320,6 +342,28 @@
   .project-links a:focus-visible {
     background: var(--side-hover);
     color: var(--side-text);
+  }
+  .links-gap {
+    width: 1px;
+    margin: 7px 4px;
+    background: var(--side-hover);
+  }
+  .menu {
+    position: relative;
+  }
+  /* REQ: OBS-015 — on phones the sidebar is hidden: a dot on the menu button when not healthy. */
+  .menu-dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--warn);
+    border: 2px solid var(--surface);
+  }
+  .menu-dot.severe {
+    background: var(--bad);
   }
   .project-links + .build {
     margin-top: 6px;
@@ -463,6 +507,16 @@
     .brand {
       justify-content: center;
       padding: 4px 0 14px;
+    }
+    /* Health and the project links stack in the narrow sidebar. */
+    .project-links {
+      flex-direction: column;
+      align-items: center;
+    }
+    .links-gap {
+      width: 20px;
+      height: 1px;
+      margin: 4px 0;
     }
   }
   @media (max-width: 760px) {

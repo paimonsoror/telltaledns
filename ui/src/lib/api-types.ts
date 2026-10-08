@@ -118,11 +118,60 @@ export interface paths {
          * @description Each finding compares a device with its own learned baseline (after a learning period,
          *     7 days by default) and carries the evidence: observed value, usual value ± spread, the
          *     threshold, and the window. Findings are alert-only; TelltaleDNS never blocks on them.
-         *     Newest first.
+         *     Newest first. In a cluster every node's findings are included (each node learns from the
+         *     queries it answers), with `nodes` saying which found each. Each has a stable `id` for
+         *     acknowledging it (OBS-014); `acknowledged` says who did and when, and `acknowledged=false`
+         *     returns only the ones nobody has.
          */
         get: operations["anomalies"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/anomalies/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Acknowledge device anomalies.
+         * @description Marks findings as seen, by their `id` from `GET /analytics/anomalies`: the sidebar badge and
+         *     `acknowledged=false` stop counting them, and each shows who acknowledged it and when. In a
+         *     cluster the primary records it (any node forwards) and every node shows it within seconds,
+         *     including nodes that were down, when they reconnect. Acknowledging changes no configuration,
+         *     so it works in a GitOps-managed cluster too. Findings keep being reported as before.
+         *     Needs the operator role (agents: the `ops:anomalies` scope); audit-logged as `anomaly.ack`.
+         */
+        post: operations["acknowledge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/anomalies/unacknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take back acknowledgements of device anomalies.
+         * @description The findings count in the badge again. Same rules as acknowledging; audit-logged as
+         *     `anomaly.unack`.
+         */
+        post: operations["unacknowledge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1439,6 +1488,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How TelltaleDNS is doing: healthy, degraded, or severe, and why.
+         * @description `severe`: DNS is failing for some devices (every upstream of a group down, no node serving,
+         *     SERVFAIL for 25% or more of the last 5 minutes' queries). `degraded`: DNS answers, but
+         *     something needs a look (one upstream down, a cluster node unreachable or behind, a list
+         *     failing to download, devices rate-limited in the last 5 minutes, SERVFAIL for 5% or more, a
+         *     data disk over 90% full). Each reason names its node and where to look in the web UI. In a
+         *     cluster every node is asked; one that doesn't answer is listed in `missingNodes`. Each
+         *     condition is judged over its own window (the circuit breaker, the last 5 minutes, the
+         *     cluster heartbeat), so a brief blip doesn't change the level. Device anomalies don't count.
+         */
+        get: operations["system_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/info": {
         parameters: {
             query?: never;
@@ -1752,8 +1828,40 @@ export interface components {
             evaluating: boolean;
             firing: components["schemas"]["FiringAlert"][];
         };
+        /** @description REQ: OBS-014 — an acknowledgement: someone looked at the finding. */
+        AnomalyAckInfo: {
+            /** @description RFC 3339. */
+            at: string;
+            /** @example alice */
+            by: string;
+            note?: string | null;
+        };
+        /** @description REQ: OBS-014 — `POST /analytics/anomalies/acknowledge` and `/unacknowledge`. */
+        AnomalyAckRequest: {
+            /** @description Finding IDs (`id` in `GET /analytics/anomalies`), 1 to 1,000. */
+            ids: string[];
+            /**
+             * @description Why (acknowledging only; at most 200 characters), shown with the finding.
+             * @example the TV's monthly update
+             */
+            note?: string | null;
+        };
+        /** @description REQ: OBS-014 — what an acknowledge or unacknowledge changed. */
+        AnomalyAckResult: {
+            /**
+             * Format: int64
+             * @description Findings whose state changed (one already acknowledged doesn't count again).
+             */
+            changed: number;
+            /**
+             * @description The IDs asked about that aren't current findings on any node that answered (still
+             *     recorded when acknowledging, in case a node that found them was unreachable).
+             */
+            unknown?: string[];
+        };
         /** @description A device anomaly and its evidence (OBS-013). Alert-only: TelltaleDNS never acts on it. */
         AnomalyFinding: {
+            acknowledged?: components["schemas"]["AnomalyAckInfo"] | null;
             /** Format: double */
             baseline: number;
             /** @description The device's address, and its name when known. */
@@ -1770,10 +1878,21 @@ export interface components {
              */
             domain?: string | null;
             /**
+             * @description REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding
+             *     has the same ID on every node and after restarts. Acknowledge findings by it.
+             * @example 6ab0f180a1b2c3d4
+             */
+            id: string;
+            /**
              * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
              * @example domain_volume
              */
             kind: string;
+            /**
+             * @description REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it
+             *     answers). Empty on a standalone node.
+             */
+            nodes?: string[];
             /**
              * Format: double
              * @description What was seen, the device's usual value (± spread), and the bar it crossed.
@@ -2578,7 +2697,8 @@ export interface components {
             /**
              * @description Agent tokens: any of `analytics:read`, `querylog:read`, `config:read`,
              *     `config:write:clients`, `config:write:records`, `config:write:forwards`
-             *     (`config:write:*` for all three), `ops:pause`, `ops:cache`, `cluster:admin`.
+             *     (`config:write:*` for all three), `ops:pause`, `ops:cache`, `ops:anomalies`,
+             *     `cluster:admin`.
              *     Default: `analytics:read` and `config:read` (read-only, no query log). Each needs a
              *     role you have.
              */
@@ -2809,6 +2929,44 @@ export interface components {
             upstreams?: string | null;
             youtubeRestrict?: string | null;
         };
+        /** @description REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons. */
+        Health: {
+            /** @description When it was worked out (RFC 3339). */
+            checkedAt: string;
+            /**
+             * @description `healthy`, `degraded` (something needs a look, DNS answers), or `severe` (DNS is failing
+             *     or about to).
+             * @example degraded
+             */
+            level: string;
+            /** @description Cluster nodes that didn't answer (their own conditions aren't included). */
+            missingNodes?: string[];
+            /** @description Every condition found, the most serious first. Empty when healthy. */
+            reasons: components["schemas"]["HealthReason"][];
+        };
+        /** @description REQ: OBS-015 — one condition behind [`Health`]. */
+        HealthReason: {
+            /**
+             * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
+             *     `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`.
+             * @example upstream_down
+             */
+            code: string;
+            /** @description `degraded` or `severe`. */
+            level: string;
+            /**
+             * @description Where to look in the web UI (a `#/…` path).
+             * @example #/upstreams
+             */
+            link?: string | null;
+            /** @description The node it's about (cluster nodes only). */
+            node?: string | null;
+            /**
+             * @description In words, with the numbers.
+             * @example upstream quad9 isn't answering (its circuit breaker is open)
+             */
+            summary: string;
+        };
         /** @description One host sample, with sizes in bytes and shares in percent. */
         HostInfo: {
             arch: string;
@@ -2947,6 +3105,7 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_AnomalyFinding: {
             items: {
+                acknowledged?: components["schemas"]["AnomalyAckInfo"] | null;
                 /** Format: double */
                 baseline: number;
                 /** @description The device's address, and its name when known. */
@@ -2963,10 +3122,21 @@ export interface components {
                  */
                 domain?: string | null;
                 /**
+                 * @description REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding
+                 *     has the same ID on every node and after restarts. Acknowledge findings by it.
+                 * @example 6ab0f180a1b2c3d4
+                 */
+                id: string;
+                /**
                  * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
                  * @example domain_volume
                  */
                 kind: string;
+                /**
+                 * @description REQ: OBS-014, CLU-002 — the cluster nodes that found it (each learns from the queries it
+                 *     answers). Empty on a standalone node.
+                 */
+                nodes?: string[];
                 /**
                  * Format: double
                  * @description What was seen, the device's usual value (± spread), and the bar it crossed.
@@ -4587,6 +4757,11 @@ export interface operations {
             query?: {
                 /** @description Only findings whose window started after this (RFC 3339 or relative, default `-7d`). */
                 since?: string;
+                /**
+                 * @description REQ: OBS-014 — `false`: only findings nobody acknowledged; `true`: only acknowledged
+                 *     ones. Default: both.
+                 */
+                acknowledged?: boolean;
             };
             header?: never;
             path?: never;
@@ -4605,6 +4780,90 @@ export interface operations {
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    acknowledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnomalyAckRequest"];
+            };
+        };
+        responses: {
+            /** @description How many were newly acknowledged. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyAckResult"];
+                };
+            };
+            /** @description No IDs, too many, a malformed one, or a long note. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A replica that can't reach the primary. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    unacknowledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnomalyAckRequest"];
+            };
+        };
+        responses: {
+            /** @description How many acknowledgements were taken back. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnomalyAckResult"];
+                };
+            };
+            /** @description No IDs, too many, or a malformed one. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A replica that can't reach the primary. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6999,6 +7258,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    system_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The level and its reasons. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Health"];
                 };
             };
         };

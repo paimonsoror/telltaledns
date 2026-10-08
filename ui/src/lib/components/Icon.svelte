@@ -26,6 +26,10 @@
     analyze: 'M4 20V11M10 20V5M16 20v-6M2 20h20',
     bell: 'M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0',
     inbox: 'M4 13h4l2 3h4l2-3h4M4 13l2.5-8h11l2.5 8v6H4z',
+    // REQ: OBS-015 — health: one shape per level (circle ✓, triangle !, octagon ×).
+    'health-healthy': 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 12.5l2.7 2.7L16 9.5',
+    'health-degraded': 'M10.3 4.2L2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0zM12 9v4.5M12 17.5h.01',
+    'health-severe': 'M8.2 2.5h7.6l5.7 5.7v7.6l-5.7 5.7H8.2l-5.7-5.7V8.2zM9 9l6 6M15 9l-6 6',
   };
 </script>
 

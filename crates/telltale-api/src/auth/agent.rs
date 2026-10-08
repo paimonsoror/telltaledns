@@ -60,6 +60,10 @@ pub const SCOPES: &[(&str, &str)] = &[
     ),
     ("ops:pause", "pause and resume blocking"),
     ("ops:cache", "flush the cache"),
+    (
+        "ops:anomalies",
+        "acknowledge device anomalies (and take it back)",
+    ),
     ("cluster:admin", "promote a node to primary"),
 ];
 
@@ -137,6 +141,7 @@ pub fn required(method: &Method, path: &str) -> Need {
                 return Need::Any;
             }
             "/api/v1/system/info"
+            | "/api/v1/system/health"
             | "/api/v1/cluster"
             | "/api/v1/explain"
             | "/api/v1/cache/stats"
@@ -202,35 +207,35 @@ pub fn required(method: &Method, path: &str) -> Need {
         }
     }
     if *method == Method::POST
-        && p.starts_with("/api/v1/alerts/destinations/")
-        && p.ends_with("/test")
+        && let Some(need) = post_need(p)
     {
-        return Need::Scope("config:write:alerts");
-    }
-    // REQ: API-002 (T9.12) — checks need the scope that saves the entry.
-    if *method == Method::POST && p == "/api/v1/checks/upstream" {
-        return Need::Scope("config:write:upstreams");
-    }
-    if *method == Method::POST && p == "/api/v1/checks/list" {
-        return Need::Scope("config:write:lists");
-    }
-    // MCP: each tool's REST calls are checked on their own (ADR-065).
-    if *method == Method::POST && p == "/mcp" {
-        return Need::Any;
-    }
-    // REQ: AGT-004 (T6.13) — flushing the cache is an immediate low-risk op (spec/13 §3).
-    if *method == Method::POST && p == "/api/v1/cache/flush" {
-        return Need::Scope("ops:cache");
-    }
-    // REQ: AGT-004 (T7.1) — pausing blocking is the other immediate op (at most 60 minutes).
-    if *method == Method::POST && (p == "/api/v1/blocking/pause" || p == "/api/v1/blocking/resume")
-    {
-        return Need::Scope("ops:pause");
-    }
-    if *method == Method::POST && p == "/api/v1/cluster/promote" {
-        return Need::Scope("cluster:admin");
+        return need;
     }
     Need::Forbidden
+}
+
+/// What a `POST` to `p` needs: tests, MCP, and the immediate operations.
+fn post_need(p: &str) -> Option<Need> {
+    Some(match p {
+        _ if p.starts_with("/api/v1/alerts/destinations/") && p.ends_with("/test") => {
+            Need::Scope("config:write:alerts")
+        }
+        // REQ: API-002 (T9.12) — checks need the scope that saves the entry.
+        "/api/v1/checks/upstream" => Need::Scope("config:write:upstreams"),
+        "/api/v1/checks/list" => Need::Scope("config:write:lists"),
+        // MCP: each tool's REST calls are checked on their own (ADR-065).
+        "/mcp" => Need::Any,
+        // REQ: AGT-004 (T6.13) — flushing the cache is an immediate low-risk op (spec/13 §3).
+        "/api/v1/cache/flush" => Need::Scope("ops:cache"),
+        // REQ: AGT-004 (T7.1) — pausing blocking is another (at most 60 minutes).
+        "/api/v1/blocking/pause" | "/api/v1/blocking/resume" => Need::Scope("ops:pause"),
+        // REQ: OBS-014 — acknowledging anomalies is an immediate, reversible op.
+        "/api/v1/analytics/anomalies/acknowledge" | "/api/v1/analytics/anomalies/unacknowledge" => {
+            Need::Scope("ops:anomalies")
+        }
+        "/api/v1/cluster/promote" => Need::Scope("cluster:admin"),
+        _ => return None,
+    })
 }
 
 /// Routes a group-restricted agent may use; each of them narrows to the group (ADR-064).
@@ -497,6 +502,35 @@ mod tests {
         assert_eq!(
             required(&Method::GET, "/api/v1/cache/entries"),
             Scope("analytics:read")
+        );
+    }
+
+    /// REQ: OBS-014, OBS-015, AGT-004 — acknowledging anomalies needs `ops:anomalies`;
+    /// reading health and anomalies is analytics.
+    #[test]
+    fn obs_014_anomaly_and_health_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for p in [
+            "/api/v1/analytics/anomalies/acknowledge",
+            "/api/v1/analytics/anomalies/unacknowledge",
+        ] {
+            assert_eq!(required(&Method::POST, p), Scope("ops:anomalies"), "{p}");
+        }
+        assert_eq!(
+            required(&Method::GET, "/api/v1/analytics/anomalies"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::GET, "/api/v1/system/health"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/analytics/anomalies"),
+            Forbidden
+        );
+        assert_eq!(
+            implied_role(&parse_scopes(&["ops:anomalies".into()]).unwrap()),
+            Role::Operator
         );
     }
 
