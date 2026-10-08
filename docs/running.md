@@ -1477,6 +1477,9 @@ telltale cluster set-failover auto
   while the lease it granted runs. A primary that loses its majority (for example, cut off by a
   network split) stops taking changes before anyone else can be elected. Proven by a simulator
   that runs 10,000 random partition, crash, and clock-drift schedules on every CI run.
+- **Clock changes don't matter.** Leases are timed on a clock that never jumps, so a Pi (no
+  battery-backed clock) setting its time from NTP after boot, or a machine resuming from sleep,
+  can't cut a lease short. A voter that restarts keeps any lease it granted for a full 15 s.
 - **DNS never waits for any of this.** Every node keeps answering from its last configuration;
   only configuration changes pause (503) until a primary with a lease exists.
 - **Seeing it:** the Cluster page's **Failover** line (voters reachable, the lease, the latest

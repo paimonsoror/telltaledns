@@ -2,7 +2,8 @@
 //!
 //! Each schedule builds a cluster (2 eligible nodes + a witness, 3 eligible, or 4 eligible +
 //! a witness), then runs it with links that randomly break and heal, lost and delayed
-//! messages, crashing and restarting nodes, and clocks that drift up to ±1 %. Primaries write
+//! messages, crashing and restarting nodes (each restart on a new, unrelated clock, as a new
+//! process's election clock is), and clocks that drift up to ±1 %. Primaries write
 //! whole-version histories (as the change log does), and replicas adopt newer epochs'
 //! histories. Checked:
 //! - **one primary per epoch;**
@@ -53,6 +54,8 @@ struct Node {
     el: Elector,
     /// Clock: `offset + real * rate`.
     offset: u64,
+    /// Which process's clock (a restart is a new one, at a new offset).
+    clock: u64,
     rate: f64,
     up: bool,
     /// Persisted: the applied history and the epoch it came from.
@@ -106,6 +109,7 @@ impl Sim {
                 Node {
                     el: Elector::new(&ids[i], ids.clone(), i < eligible, Ballot::default()),
                     offset: 1_700_000_000_000 + rng.below(10_000_000),
+                    clock: 0,
                     rate,
                     up: true,
                     history: Vec::new(),
@@ -234,14 +238,21 @@ impl Sim {
                     }
                 }
             }
-            // Crashes and restarts (ballots and histories survive; roles don't).
+            // Crashes and restarts (ballots and histories survive; roles don't). A restarted
+            // process times leases on a new clock, unrelated to the old one (review 05-05):
+            // anywhere from far behind to far ahead. Its ballot is adopted as the server does.
             for i in 0..n {
                 let flip = if self.nodes[i].up { 0.002 } else { 0.05 };
                 if self.rng.chance(flip) {
+                    let offset = self.rng.below(4_000_000_000_000);
                     let node = &mut self.nodes[i];
                     node.up = !node.up;
                     if node.up {
-                        let ballot = node.el.ballot.clone();
+                        node.clock += 1;
+                        node.offset = offset;
+                        node.next_write_ms = 0;
+                        let mut ballot = node.el.ballot.clone();
+                        ballot.adopt(node.clock, node.now(real));
                         let applied = node.el.applied;
                         let eligible = node.el.eligible;
                         node.el = Elector::new(&self.ids[i], self.ids.clone(), eligible, ballot);

@@ -864,6 +864,11 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Deferred:** CA rotation, the other part of T5.4b's title, is now T5.4c. Clocks are assumed not to jump by more than the margin; NTP slews rather than steps in normal operation.
 
+**Amended 2026-10-08 (review 05-05; amendment Proposed):** the clock assumption above didn't hold for the hosts this runs on. A Raspberry Pi has no RTC: it starts on the time it shut down with, and NTP *steps* it, by minutes or hours, once DNS works. With leases as wall-clock times, a forward step made every lease a voter had granted look expired at once. So:
+- Leases are timed on the **election clock** (`telltale_cluster::clock`): `CLOCK_BOOTTIME` on Linux (read through `rustix`, no `unsafe`), which never steps and counts time spent suspended; `Instant` elsewhere. Nothing on the wire changes: `Ask` and `Reply` carry no times.
+- A ballot records which process's clock its lease is on (`clock`). A ballot from another process (a restart) or from an older build (wall clock, `clock = 0`) is taken as granting a full lease from now (`Ballot::adopt`), and stored that way at once so later reads don't extend it again. That is never shorter than promised, and costs at most 15 s of extra waiting after a voter restarts.
+- The simulator restarts nodes on a new, unrelated clock (anywhere from far behind to far ahead) and adopts their ballots the same way. Mutation-checked: forgetting the lease on adoption is caught ("two writers") within 2,000 schedules.
+
 **Consequences:** the owner's Pi + homelab cluster stays `manual` until a witness exists. A witness on any third device (for example the NAS) makes failover automatic, with the Pi as an emergency primary while the configuration authority is GitOps.
 
 ## ADR-057 — Node certificate renewal over the cluster channel, same key (Accepted)

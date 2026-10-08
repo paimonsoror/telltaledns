@@ -3454,6 +3454,7 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "ring",
+ "rustix",
  "rustls",
  "rustls-pki-types",
  "serde",

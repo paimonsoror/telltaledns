@@ -19,7 +19,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
-use crate::election::{Ask, Elector, LEASE_MS, Out, Reply};
+use crate::election::{Ask, Ballot, Elector, LEASE_MS, Out, Reply};
 use crate::net::Cluster;
 use crate::node::{Identity, Role};
 
@@ -52,10 +52,23 @@ pub fn active(id: &Identity) -> bool {
     id.meta.failover == "auto" && v.len() >= 3 && v.contains(&id.meta.node_id)
 }
 
+/// REQ: CLU-005 (review 05-05) — leases are timed on the election clock, which never steps:
+/// on the wall clock, NTP setting a Pi's time after boot made every lease it granted look
+/// expired at once.
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    crate::clock::now_ms()
+}
+
+/// This node's ballot on this process's election clock ([`Ballot::adopt`]). A ballot moved
+/// from another clock is stored at once, so later reads don't extend its lease again.
+fn load_ballot(cluster: &Cluster, now: u64) -> Ballot {
+    let mut b = cluster.identity.ballot();
+    if b.adopt(crate::clock::id(), now)
+        && let Err(e) = cluster.identity.save_ballot(&b)
+    {
+        warn!("cluster: can't store this node's ballot: {e}");
+    }
+    b
 }
 
 /// Answers `peer`'s vote request. Without a running election (a witness, or a node in manual
@@ -75,7 +88,7 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
         let changed = outs.contains(&Out::Persist);
         (reply, changed.then(|| el.ballot.clone()))
     } else {
-        let mut b = cluster.identity.ballot();
+        let mut b = load_ballot(cluster, now);
         let before = b.clone();
         let reply = b.decide(&ask, now, (0, 0));
         (reply, (b != before).then_some(b))
@@ -136,7 +149,7 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
             &id.meta.node_id,
             voters,
             can_lead,
-            cluster.identity.ballot(),
+            load_ballot(cluster, now),
         );
         // A primary that restarts resumes its epoch if its own ballot is for it.
         let (role, epoch) = cluster.role();

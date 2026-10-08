@@ -2,7 +2,7 @@
 //!
 //! This module is the protocol only: no I/O and no clocks of its own (every call takes
 //! `now_ms` on the caller's clock), so the partition simulator (`tests/sim.rs`) drives exactly
-//! the code the server runs.
+//! the code the server runs. The server's clock is [`crate::clock`], which never steps.
 //!
 //! - **Voters** are the eligible nodes plus any witness. A voter keeps one [`Ballot`] on disk:
 //!   the highest epoch it voted in, for whom, and until when it promised not to vote for
@@ -62,11 +62,32 @@ pub struct Ballot {
     pub epoch: u64,
     /// Who got that vote.
     pub candidate: String,
-    /// Until when (voter's clock, Unix ms) no one else gets a newer epoch.
+    /// Until when no one else gets a newer epoch, on the voter's election clock
+    /// ([`crate::clock`]).
     pub lease_until_ms: u64,
+    /// The process whose election clock `lease_until_ms` is on ([`crate::clock::id`]); 0 for
+    /// a ballot written by a build that timed leases on the wall clock.
+    #[serde(default)]
+    pub clock: u64,
 }
 
 impl Ballot {
+    /// REQ: CLU-005 (ADR-056, review 05-05) — moves a ballot onto `clock`, whose time is now
+    /// `now_ms`. A lease on another clock (another process, or the wall clock of an older
+    /// build) can't be compared with this one, so a lease it granted is taken to run a full
+    /// [`LEASE_MS`] from now: never shorter than what was promised. Returns whether the
+    /// ballot changed (and must be stored before it's read again).
+    pub fn adopt(&mut self, clock: u64, now_ms: u64) -> bool {
+        if self.clock == clock {
+            return false;
+        }
+        if self.lease_until_ms > 0 {
+            self.lease_until_ms = now_ms + LEASE_MS;
+        }
+        self.clock = clock;
+        true
+    }
+
     /// Whether the lease granted to someone other than `who` is still running.
     pub fn lease_held_by_other(&self, who: &str, now_ms: u64) -> bool {
         now_ms < self.lease_until_ms && self.candidate != who
@@ -467,6 +488,35 @@ mod tests {
             !b.decide(&behind, 60_000, (2, 1)).granted,
             "candidates behind lose"
         );
+    }
+
+    // REQ: CLU-005 (review 05-05) — a ballot from another process, or from a build that
+    // timed leases on the wall clock, keeps the lease it granted for a full term on the new
+    // clock, whatever the two clocks read.
+    #[test]
+    fn clu_005_a_ballot_from_another_clock_keeps_its_lease() {
+        let mut b = Ballot::default();
+        // Granted on the wall clock by an older build (clock 0).
+        assert!(
+            b.decide(&ask(1, "a", false), 1_700_000_000_000, (0, 0))
+                .granted
+        );
+        // A new process whose clock reads 5 s: the lease runs 15 s from now, not forever.
+        assert!(b.adopt(7, 5_000));
+        assert_eq!((b.clock, b.lease_until_ms), (7, 5_000 + LEASE_MS));
+        assert!(!b.adopt(7, 9_000), "same clock: nothing to do");
+        assert!(
+            !b.decide(&ask(2, "b", false), 19_000, (0, 0)).granted,
+            "still a's"
+        );
+        assert!(b.decide(&ask(2, "b", false), 20_001, (0, 0)).granted);
+        // Another restart whose clock reads far ahead: the lease is not taken as over.
+        assert!(b.adopt(9, 90_000_000));
+        assert!(!b.decide(&ask(3, "c", false), 90_000_001, (0, 0)).granted);
+        // A ballot that never granted a lease stays without one.
+        let mut fresh = Ballot::default();
+        assert!(fresh.adopt(7, 5_000));
+        assert_eq!(fresh.lease_until_ms, 0);
     }
 
     // Two eligible nodes and a witness: the primary renews; when it dies, the other wins

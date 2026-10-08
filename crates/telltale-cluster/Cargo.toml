@@ -35,6 +35,11 @@ bytes = "1.12.1"
 tokio = { version = "1.53.1", features = ["net", "time", "rt", "macros", "io-util", "sync", "fs"] }
 tracing = "0.1.44"
 
+# REQ: CLU-005 (review 05-05) — leases are timed on CLOCK_BOOTTIME, which never steps and counts
+# suspend; rustix reads it without unsafe code (already in the tree via tempfile).
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.5", features = ["time"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
