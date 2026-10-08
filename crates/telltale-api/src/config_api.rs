@@ -798,7 +798,7 @@ pub(crate) async fn check_upstream(
     let p = principal(&ext)?;
     let input = body(b)?;
     let url = input.get("url").cloned().unwrap_or_default();
-    let r = backend.check_upstream(input).await?;
+    let mut r = backend.check_upstream(input).await?;
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     auth.record(
         &actor,
@@ -806,6 +806,12 @@ pub(crate) async fn check_upstream(
         url.as_str().unwrap_or(""),
         &serde_json::json!({ "ok": r.ok, "error": r.error }),
     );
+    // REQ: AGT-009 (review 06 q5) — why a probe failed (refused, timed out, reset) tells open
+    // from closed ports: an agent learns only that it didn't answer. The audit log keeps it.
+    if p.agent.is_some() && !r.ok && r.detail != "not built" {
+        r.error = Some("unreachable (an operator can see why in the UI)".into());
+        "no answer".clone_into(&mut r.detail);
+    }
     Ok(Json(r))
 }
 
@@ -855,6 +861,10 @@ pub(crate) async fn check_list(
         url.as_str().unwrap_or("(rules)"),
         &serde_json::json!({ "ok": r.ok, "rules": r.rules, "error": r.error }),
     );
+    // REQ: AGT-009 (review 06 q5) — likewise for a download that failed.
+    if p.agent.is_some() && r.detail == "not downloaded" {
+        r.error = Some("unreachable (an operator can see why in the UI)".into());
+    }
     Ok(Json(r))
 }
 

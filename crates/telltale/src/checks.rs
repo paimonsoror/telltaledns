@@ -107,7 +107,8 @@ pub(crate) async fn list(cfg: &Config, body: serde_json::Value) -> Result<CheckR
             std::sync::Arc::new(telltale_filter::fetch::SystemResolver),
             &[],
         )
-        .map_err(|e| Problem::internal(format!("the download client: {e}")))?;
+        .map_err(|e| Problem::internal(format!("the download client: {e}")))?
+        .allow_link_local(cfg.filter.allow_link_local_urls);
         let max = l.max_bytes.unwrap_or(cfg.filter.max_list_bytes).bytes();
         let timeout = Duration::from_secs(u64::from(cfg.filter.fetch_timeout_secs.max(1)));
         let got = tokio::time::timeout(

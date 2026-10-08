@@ -66,7 +66,9 @@ fn build_fetcher(cfg: &Config) -> Result<Arc<Fetcher>, String> {
     let data_dir = Path::new(cfg.node.data_dir.as_str());
     let store = Store::open(data_dir).map_err(|e| format!("{}/lists: {e}", data_dir.display()))?;
     let listen: Vec<SocketAddr> = cfg.listen.iter().map(|l| l.addr).collect();
-    let client = Client::new(Arc::new(ListResolver::new(&listen)), &[])?;
+    // REQ: API-002 (review 06 q5) — link-local list URLs only when the operator allows them.
+    let client = Client::new(Arc::new(ListResolver::new(&listen)), &[])?
+        .allow_link_local(cfg.filter.allow_link_local_urls);
     Ok(Arc::new(Fetcher::new(
         store,
         client,

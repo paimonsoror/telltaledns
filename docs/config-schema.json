@@ -162,6 +162,7 @@
       "description": "List download and compile settings.",
       "$ref": "#/$defs/FilterConfig",
       "default": {
+        "allow_link_local_urls": false,
         "compile_memory": "128MiB",
         "compile_threads": 0,
         "fetch_concurrency": 4,
@@ -1283,6 +1284,11 @@
       "description": "List download settings (`spec/05` §3.4, FLT-004).",
       "type": "object",
       "properties": {
+        "allow_link_local_urls": {
+          "description": "Allow list URLs on link-local addresses (169.254.0.0/16, `fe80::/10`). Off: they're\nrefused, like cloud-metadata addresses, so a list URL (from the UI, the API, or an\nagent's pre-save check) can't read what a cloud instance serves there.",
+          "type": "boolean",
+          "default": false
+        },
         "compile_memory": {
           "description": "Memory for sorting list entries before spilling to disk (`spec/05` §3.4).",
           "default": "128MiB",

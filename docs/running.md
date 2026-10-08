@@ -626,7 +626,9 @@ compile_threads = 0                     # 0 = auto (first compile: half the core
 compile_memory = "128MiB"               # sort budget before spilling to disk
 fsync = true                            # sync a compiled snapshot to disk before publishing it
 max_regexes = 1000                      # regex rules kept per snapshot (0 = no limit); the rest are reported
+allow_link_local_urls = false           # true: allow list URLs on 169.254.0.0/16 or fe80::/10
 ```
+- **Link-local and cloud-metadata addresses are refused** (169.254.0.0/16, fe80::/10, AWS's fd00:ec2::254), whatever name or redirect leads there, so a list URL can't read what a cloud instance serves there. Private LAN addresses are fine. When an agent's pre-save check can't reach a list or an upstream, it's told only that it was unreachable; the UI and the audit log show why.
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
 - **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
 - Lists are stored compressed in `<data_dir>/lists/` (`<name>.src.zst` plus `<name>.meta.json`). Removing a list from the config deletes its files; `enabled = false` keeps them.

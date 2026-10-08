@@ -106,6 +106,22 @@ pub struct Client {
     tls: TlsConnector,
     resolver: Arc<dyn Resolve>,
     user_agent: String,
+    /// Whether link-local and cloud-metadata addresses may be fetched ([`Client::allow_link_local`]).
+    link_local: bool,
+}
+
+/// REQ: API-002, AGT-009 (review 06 q5) — addresses no list or integration needs and a
+/// fetcher that takes URLs from an API mustn't reach: link-local (169.254.0.0/16, `fe80::/10`,
+/// where cloud instances serve their metadata and credentials) and AWS's IPv6 metadata address.
+pub(super) fn link_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            v6.to_ipv4_mapped().is_some_and(|v4| v4.is_link_local())
+                || v6.segments()[0] & 0xffc0 == 0xfe80
+                || v6 == std::net::Ipv6Addr::new(0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254)
+        }
+    }
 }
 
 impl Client {
@@ -134,7 +150,16 @@ impl Client {
                 "TelltaleDNS/{} (+https://github.com/paimonsoror/telltaledns)",
                 env!("CARGO_PKG_VERSION")
             ),
+            link_local: false,
         })
+    }
+
+    /// Allows fetching from link-local addresses (refused by default: see [`link_local`]),
+    /// for a list hosted on such an address (`[filter] allow_link_local_urls`).
+    #[must_use]
+    pub fn allow_link_local(mut self, allow: bool) -> Self {
+        self.link_local = allow;
+        self
     }
 
     /// A client that also trusts the certificates in the PEM file at `path` (a self-signed
@@ -167,6 +192,7 @@ impl Client {
                 "TelltaleDNS/{} (+https://github.com/paimonsoror/telltaledns)",
                 env!("CARGO_PKG_VERSION")
             ),
+            link_local: false,
         })
     }
 
@@ -373,7 +399,7 @@ impl Client {
     }
 
     async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, HttpError> {
-        let ips = match host.parse::<IpAddr>() {
+        let mut ips = match host.parse::<IpAddr>() {
             Ok(ip) => vec![ip],
             Err(_) => self
                 .resolver
@@ -383,6 +409,16 @@ impl Client {
         };
         if ips.is_empty() {
             return Err(HttpError::retry(format!("{host} has no addresses")));
+        }
+        // REQ: API-002, AGT-009 (review 06 q5) — checked on the resolved address, at every
+        // redirect hop, so neither a name nor a redirect gets around it.
+        if !self.link_local {
+            ips.retain(|ip| !link_local(*ip));
+            if ips.is_empty() {
+                return Err(HttpError::fatal(format!(
+                    "{host} is a link-local or cloud-metadata address: refused (set [filter] allow_link_local_urls = true for a list hosted there)"
+                )));
+            }
         }
         let mut last = String::new();
         for ip in ips {
@@ -466,6 +502,45 @@ fn resolve_location(base: &Uri, location: &str) -> Result<Uri, HttpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resolver that sends every name to the cloud metadata address.
+    struct Metadata;
+
+    impl Resolve for Metadata {
+        fn resolve<'a>(
+            &'a self,
+            _host: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<IpAddr>, String>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(vec![IpAddr::from([169, 254, 169, 254])]) })
+        }
+    }
+
+    // REQ: API-002, AGT-009 (review 06 q5) — link-local and metadata addresses are refused by
+    // address, whatever name leads there, unless allowed.
+    #[tokio::test]
+    async fn api_002_link_local_addresses_are_refused() {
+        assert!(link_local(IpAddr::from([169, 254, 169, 254])));
+        assert!(link_local("fe80::1".parse().unwrap()));
+        assert!(link_local("fd00:ec2::254".parse().unwrap()));
+        assert!(link_local("::ffff:169.254.1.1".parse().unwrap()));
+        assert!(
+            !link_local(IpAddr::from([192, 168, 1, 5])),
+            "a LAN list is fine"
+        );
+        assert!(!link_local("fd00::5".parse().unwrap()));
+        let client = Client::new(Arc::new(Metadata), &[]).unwrap();
+        let e = client
+            .get(
+                "http://metadata.example/latest",
+                &Conditional::default(),
+                1024,
+            )
+            .await
+            .unwrap_err();
+        assert!(format!("{e:?}").contains("link-local"), "{e:?}");
+    }
 
     #[test]
     fn redirect_locations() {

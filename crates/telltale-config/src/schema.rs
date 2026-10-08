@@ -1177,6 +1177,10 @@ pub struct FilterConfig {
     /// and 41 MiB, while 2,000 grew past 5 GiB in a minute. The rules past the limit, in list
     /// order, are left out and reported on the Lists page (and by `telltale lists compile`).
     pub max_regexes: u32,
+    /// Allow list URLs on link-local addresses (169.254.0.0/16, `fe80::/10`). Off: they're
+    /// refused, like cloud-metadata addresses, so a list URL (from the UI, the API, or an
+    /// agent's pre-save check) can't read what a cloud instance serves there.
+    pub allow_link_local_urls: bool,
     /// Threads for compiling lists (at low CPU priority). 0 = auto: half the cores, between
     /// 1 and 4 (2 on a Pi 4, which compiles 2M names in about 6 s).
     pub compile_threads: u8,
@@ -1198,6 +1202,7 @@ impl Default for FilterConfig {
             max_list_bytes: ByteSize::mib(64),
             max_invalid_percent: 50,
             max_regexes: 1000,
+            allow_link_local_urls: false,
             compile_threads: 0,
             compile_memory: ByteSize::mib(128),
             fsync: true,
