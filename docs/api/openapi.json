@@ -1651,7 +1651,7 @@
           "system"
         ],
         "summary": "Promote this node to primary.",
-        "description": "Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,\npublishes the cluster's configuration from the last version it applied, and every node\nfollows it. An old primary that comes back steps down, and anything it changed meanwhile\nshows under `conflicts`.\n\nRefused when:\n- the current primary is up;\n- the node isn't eligible or lacks the cluster key;\n- without `emergency`, the cluster takes its configuration from Git and this node isn't\n  managed from Git.\n\nWith `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`\n(the epoch, whether it would be an emergency primary, and a sentence on what would happen).\n\nAdmin only; audited as `cluster.promote`.",
+        "description": "Manual failover (ADR-051): use when the primary is gone. The node takes a new epoch,\npublishes the cluster's configuration from the last version it applied, and every node\nfollows it. An old primary that comes back steps down, and anything it changed meanwhile\nshows under `conflicts`.\n\nRefused when:\n- the current primary is up;\n- the node isn't eligible or lacks the cluster key;\n- without `emergency`, the cluster takes its configuration from Git and this node isn't\n  managed from Git.\n\nWith `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`\n(the epoch, whether it would be an emergency primary, and a sentence on what would happen).\n\nAdmin only; audited as `cluster.promote`. From a signed-in session it needs `password`\n(and `totp` with two-factor sign-in on); API tokens don't.",
         "operationId": "cluster_promote",
         "parameters": [
           {
@@ -1685,8 +1685,48 @@
               }
             }
           },
+          "400": {
+            "description": "A signed-in session didn't send `password`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or two-factor sign-in is on and `totp` is missing (`totp_required`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The password or code is wrong, or not an admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Not allowed now (the primary is up, or this node can't be primary).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong passwords: wait for Retry-After seconds.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9730,6 +9770,20 @@
           "emergency": {
             "type": "boolean",
             "description": "Promote even though this node can't publish configuration under the cluster's\nauthority (configuration from Git, and no Git-managed node reachable): it coordinates the\ncluster and keeps the last version, and publishes nothing new (ADR-048)."
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From a signed-in session: your password, to confirm (`spec/12` §5). Not needed with\nan API token or for `dryRun`."
+          },
+          "totp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "From a signed-in session with two-factor sign-in on: the current code."
           }
         },
         "additionalProperties": false

@@ -1683,6 +1683,13 @@ pub struct PromoteRequest {
     /// cluster and keeps the last version, and publishes nothing new (ADR-048).
     #[serde(default)]
     pub emergency: bool,
+    /// From a signed-in session: your password, to confirm (`spec/12` §5). Not needed with
+    /// an API token or for `dryRun`.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// From a signed-in session with two-factor sign-in on: the current code.
+    #[serde(default)]
+    pub totp: Option<String>,
 }
 
 /// What promoting this node would do (`POST /cluster/promote?dryRun=true`, AGT-002).

@@ -714,6 +714,56 @@ impl Auth {
         }
     }
 
+    /// REQ: CLU-005, API-003 (`spec/12` §5, review 05-09) — a second confirmation for an
+    /// action that changes who publishes the cluster's configuration. A signed-in session
+    /// gives its password again, and its TOTP code when the account uses two-factor sign-in;
+    /// API tokens are deliberate credentials and pass. A wrong password counts as a failed
+    /// sign-in, so a stolen session can't be used to guess it. Answers 403 rather than 401
+    /// for a wrong password: the session itself is fine. Blocking (Argon2).
+    pub fn confirm(
+        &self,
+        p: &Principal,
+        password: Option<&str>,
+        totp: Option<&str>,
+        now: u64,
+    ) -> Result<(), Problem> {
+        if !matches!(p.via, Via::Session { .. }) {
+            return Ok(());
+        }
+        let user = self.active_user(p.user_id)?;
+        let ukey = format!("u:{}", user.username.to_lowercase());
+        if let Some(wait) = self.locked(&ukey, now) {
+            return Err(Problem::new(
+                Code::RateLimited,
+                format!("too many failed sign-ins; try again in {wait} s"),
+            )
+            .retry_after(wait));
+        }
+        let Some(password) = password.filter(|s| !s.is_empty()) else {
+            return Err(Problem::invalid("confirm this with your password")
+                .hint("Send `password` (and `totp` if you use two-factor sign-in)."));
+        };
+        let ok = {
+            let _slot = self.password_check()?;
+            crypto::verify_password(password, &user.password_hash)
+        };
+        if !ok {
+            self.fail(&ukey, now);
+            return Err(Problem::new(Code::Forbidden, "the password is wrong"));
+        }
+        if user.totp_enabled {
+            self.second_factor(&user, totp, None, now).map_err(|e| {
+                if e.code == Code::TotpRequired {
+                    return e;
+                }
+                self.fail(&ukey, now);
+                Problem::new(Code::Forbidden, e.detail)
+            })?;
+        }
+        self.succeed(&ukey);
+        Ok(())
+    }
+
     /// Starts a UI session for `user`. Blocking.
     pub fn start_session(
         &self,

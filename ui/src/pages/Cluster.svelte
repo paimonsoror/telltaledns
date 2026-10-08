@@ -3,7 +3,7 @@
   // configuration version and lag, and DNS serving numbers; pass/fail checks with fixes; and a
   // timeline of joins, disconnects, published and applied versions. Refreshes every 5 s.
   import { api, type S } from '../lib/api';
-  import { can } from '../lib/session.svelte';
+  import { can, session } from '../lib/session.svelte';
   import { poll } from '../lib/poll';
   import { duration, ms, num, pct, logTime, logDate } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -98,12 +98,17 @@
   let emergency = $state(false);
   let promoting = $state(false);
   let promoteError = $state<unknown>(null);
+  // REQ: CLU-005 (`spec/12` §5) — promotion is confirmed with the password (and the code).
+  let password = $state('');
+  let totp = $state('');
   async function promote() {
     promoting = true;
     promoteError = null;
     try {
-      view = await api.promoteCluster(emergency);
+      view = await api.promoteCluster(emergency, password, totp);
       confirming = false;
+      password = '';
+      totp = '';
     } catch (e) {
       promoteError = e;
     } finally {
@@ -219,9 +224,17 @@ telltale cluster join tt_join_…</pre>
                   node isn't managed from Git, so it can't publish changes)</label
                 >
               {/if}
+              <label class="field"
+                >Your password <input type="password" autocomplete="current-password" bind:value={password} /></label
+              >
+              {#if session.user?.totpEnabled}
+                <label class="field"
+                  >Code from your authenticator app <input inputmode="numeric" autocomplete="one-time-code" bind:value={totp} /></label
+                >
+              {/if}
               <ErrorNote error={promoteError} />
               <div class="row">
-                <button class="primary" onclick={promote} disabled={promoting}>{promoting ? 'Promoting…' : 'Promote'}</button>
+                <button class="primary" onclick={promote} disabled={promoting || !password}>{promoting ? 'Promoting…' : 'Promote'}</button>
                 <button onclick={() => (confirming = false)}>Cancel</button>
               </div>
             </div>
@@ -447,6 +460,13 @@ telltale cluster join tt_join_…</pre>
     gap: 8px;
     flex-wrap: wrap;
     align-items: baseline;
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0;
+    max-width: 320px;
   }
   .promote {
     margin-top: 12px;

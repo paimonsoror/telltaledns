@@ -442,13 +442,18 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
 /// With `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`
 /// (the epoch, whether it would be an emergency primary, and a sentence on what would happen).
 ///
-/// Admin only; audited as `cluster.promote`.
+/// Admin only; audited as `cluster.promote`. From a signed-in session it needs `password`
+/// (and `totp` with two-factor sign-in on); API tokens don't.
 #[utoipa::path(post, path = "/api/v1/cluster/promote", tag = "system",
     params(DryRun),
     request_body = crate::model::PromoteRequest,
     responses(
         (status = 200, body = crate::model::ClusterView, description = "Promoted; the cluster as it is now. With `dryRun=true`: a `PromotePlan` instead, and nothing changed."),
+        (status = 400, body = Problem, description = "A signed-in session didn't send `password`."),
+        (status = 401, body = Problem, description = "Not signed in, or two-factor sign-in is on and `totp` is missing (`totp_required`)."),
+        (status = 403, body = Problem, description = "The password or code is wrong, or not an admin."),
         (status = 409, body = Problem, description = "Not allowed now (the primary is up, or this node can't be primary)."),
+        (status = 429, body = Problem, description = "Too many wrong passwords: wait for Retry-After seconds."),
     ))]
 pub(crate) async fn cluster_promote(
     State((backend, auth)): State<Ctx>,
@@ -474,6 +479,20 @@ pub(crate) async fn cluster_promote(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
+    // REQ: CLU-005, API-003 (`spec/12` §5, review 05-09) — the password (and code) again.
+    let (a2, p2) = (Arc::clone(&auth), p.clone());
+    let (password, totp) = (req.password.clone(), req.totp.clone());
+    let confirmed = tokio::task::spawn_blocking(move || {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        a2.confirm(&p2, password.as_deref(), totp.as_deref(), now)
+    })
+    .await
+    .unwrap_or_else(|e| Err(Problem::internal(format!("request worker failed: {e}"))));
+    if let Err(e) = confirmed {
+        return e.into_response();
+    }
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     let emergency = req.emergency;
     let (b2, by) = (Arc::clone(&backend), actor.name.clone());

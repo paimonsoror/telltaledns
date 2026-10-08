@@ -148,7 +148,8 @@ export const api = {
   checkUpstream: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/upstream', body),
   checkList: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/list', body),
   cluster: () => get<S['ClusterView']>('/cluster'),
-  promoteCluster: (emergency = false) => post<S['ClusterView']>('/cluster/promote', { emergency }),
+  promoteCluster: (emergency = false, password = '', totp = '') =>
+    post<S['ClusterView']>('/cluster/promote', { emergency, password, ...(totp ? { totp } : {}) }),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   rules: () => get<S['Items_RuleInfo']>('/rules'),

@@ -1411,8 +1411,10 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   always an ephemeral member: it can't be eligible or a witness, whatever its settings say.
   Give eligible nodes `--advertise` URLs, so a returning old primary can be reached and told
   to step down.
-- **How:** use **Promote this node…** on the Cluster page (admin, live), or stop the node, run
-  `telltale cluster promote`, and start it. It's refused while the primary is up, except
+- **How:** use **Promote this node…** on the Cluster page (admin, live; it asks for your
+  password again, and your authenticator code if you use two-factor sign-in), or stop the node,
+  run `telltale cluster promote`, and start it. Through the API, a signed-in session sends
+  `password` (and `totp`); an API token with admin scope doesn't need them. It's refused while the primary is up, except
   over an emergency primary: a node that can publish (a Git-managed node, under the `gitops`
   authority) may take over from it while it runs.
 - **What happens:**

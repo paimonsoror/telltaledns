@@ -9,6 +9,54 @@ fn auth(settings: Settings) -> Auth {
     Auth::new(Arc::new(State::in_memory().unwrap()), settings)
 }
 
+// REQ: CLU-005, API-003 (`spec/12` §5, review 05-09) — promotion from a session needs the
+// password again (wrong ones count toward the lockout); API tokens pass.
+#[test]
+fn api_003_promotion_is_confirmed_with_the_password() {
+    let a = auth(Settings::default());
+    let u = a
+        .create_user("root", "correct horse battery", Role::Admin, false, T0)
+        .unwrap();
+    let session = Principal {
+        user_id: u.id,
+        username: "root".into(),
+        role: Role::Admin,
+        via: Via::Session {
+            id_hash: Vec::new(),
+            csrf: String::new(),
+        },
+        agent: None,
+    };
+    assert_eq!(
+        a.confirm(&session, None, None, T0).unwrap_err().code,
+        Code::InvalidParameter
+    );
+    let wrong = a.confirm(&session, Some("nope"), None, T0).unwrap_err();
+    assert_eq!(wrong.code, Code::Forbidden, "not 401: the session is fine");
+    assert!(
+        a.confirm(&session, Some("correct horse battery"), None, T0)
+            .is_ok()
+    );
+    let token = Principal {
+        via: Via::Token { id: "t1".into() },
+        ..session.clone()
+    };
+    assert!(
+        a.confirm(&token, None, None, T0).is_ok(),
+        "tokens are deliberate"
+    );
+    for i in 0..=FREE_ATTEMPTS {
+        let _ = a.confirm(&session, Some("nope"), None, T0 + u64::from(i));
+    }
+    assert_eq!(
+        a.confirm(&session, Some("correct horse battery"), None, T0 + 10)
+            .unwrap_err()
+            .code,
+        Code::RateLimited,
+        "wrong passwords lock like sign-ins"
+    );
+}
+
 #[test]
 fn api_003_first_run_setup_token_creates_one_admin() {
     let a = auth(Settings::default());

@@ -796,7 +796,8 @@ export interface paths {
          *     With `?dryRun=true`, nothing changes: the checks run and the answer is a `PromotePlan`
          *     (the epoch, whether it would be an emergency primary, and a sentence on what would happen).
          *
-         *     Admin only; audited as `cluster.promote`.
+         *     Admin only; audited as `cluster.promote`. From a signed-in session it needs `password`
+         *     (and `totp` with two-factor sign-in on); API tokens don't.
          */
         post: operations["cluster_promote"];
         delete?: never;
@@ -3781,6 +3782,13 @@ export interface components {
              *     cluster and keeps the last version, and publishes nothing new (ADR-048).
              */
             emergency?: boolean;
+            /**
+             * @description From a signed-in session: your password, to confirm (`spec/12` §5). Not needed with
+             *     an API token or for `dryRun`.
+             */
+            password?: string | null;
+            /** @description From a signed-in session with two-factor sign-in on: the current code. */
+            totp?: string | null;
         };
         /** @description A page of query-log rows, newest first. */
         QueryPage: {
@@ -5555,8 +5563,44 @@ export interface operations {
                     "application/json": components["schemas"]["ClusterView"];
                 };
             };
+            /** @description A signed-in session didn't send `password`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not signed in, or two-factor sign-in is on and `totp` is missing (`totp_required`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The password or code is wrong, or not an admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Not allowed now (the primary is up, or this node can't be primary). */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many wrong passwords: wait for Retry-After seconds. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
