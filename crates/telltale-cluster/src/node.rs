@@ -90,6 +90,12 @@ struct TokenRecord {
     exp: u64,
 }
 
+/// A join token's ID: the first 12 hex characters of its secret's hash. It names the token
+/// in `telltale cluster token list` and `revoke` without revealing it.
+pub fn token_id(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
+}
+
 /// What a joining node sends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinRequest {
@@ -537,6 +543,50 @@ impl Identity {
         )
         .map_err(e)?;
         Self::load(data_dir)?.ok_or_else(|| "cluster state vanished".to_owned())
+    }
+
+    fn token_records(&self) -> Vec<TokenRecord> {
+        std::fs::read(self.dir.join("tokens.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    /// REQ: CLU-001 (review 05-07) — the join tokens still valid: each one's ID (the start
+    /// of its secret's hash, [`token_id`]) and when it expires (Unix seconds), soonest first.
+    pub fn tokens(&self) -> Vec<(String, u64)> {
+        let t = now();
+        let mut v: Vec<(String, u64)> = self
+            .token_records()
+            .into_iter()
+            .filter(|r| r.exp > t)
+            .map(|r| (token_id(&r.hash).to_owned(), r.exp))
+            .collect();
+        v.sort_by_key(|(_, exp)| *exp);
+        v
+    }
+
+    /// REQ: CLU-001 (review 05-07) — revokes the join tokens whose secret hash starts with
+    /// `id` (a token's ID from [`Self::tokens`], at least 8 characters, or a whole hash);
+    /// returns how many. Nodes that already joined keep their membership.
+    pub fn revoke_token(&self, id: &str) -> Result<usize, String> {
+        let id = id.trim().to_ascii_lowercase();
+        if id.len() < 8 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("give a token's ID (at least 8 hex characters; `telltale cluster token list` shows them)".into());
+        }
+        let mut recs = self.token_records();
+        let before = recs.len();
+        recs.retain(|r| !r.hash.starts_with(&id));
+        let removed = before - recs.len();
+        if removed > 0 {
+            write(
+                &self.dir.join("tokens.json"),
+                serde_json::to_string(&recs).unwrap_or_default().as_bytes(),
+                true,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(removed)
     }
 
     /// A join token valid for `ttl_s`, listing `urls` (default: this node's advertise URLs).

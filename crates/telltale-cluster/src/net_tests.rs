@@ -916,3 +916,48 @@ fn clu_005_only_voters_can_fence_the_primary() {
         .unwrap();
     assert_eq!(primary.role(), (Role::Replica, 2));
 }
+
+// REQ: CLU-001 (review 05-07) — join tokens are listed by ID (never the secret) and can be
+// revoked before they expire; a revoked token no longer joins.
+#[test]
+fn clu_001_join_tokens_can_be_listed_and_revoked() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let a = id.create_token(600, None).unwrap();
+    let b = id.create_token(60, None).unwrap();
+    let id_of = |t: &crate::token::Token| {
+        crate::node::token_id(&crate::token::Token::secret_hash(&t.secret)).to_owned()
+    };
+    let listed: Vec<String> = id.tokens().into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        listed,
+        vec![id_of(&b), id_of(&a)],
+        "soonest to expire first"
+    );
+    assert!(listed.iter().all(|t| !a.secret.contains(t.as_str())));
+    assert!(id.revoke_token("abc").is_err(), "too short to be safe");
+    assert_eq!(id.revoke_token(&id_of(&a)).unwrap(), 1);
+    assert_eq!(id.revoke_token(&id_of(&a)).unwrap(), 0, "already gone");
+    assert_eq!(id.tokens().len(), 1);
+    let join = |secret: String| JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret,
+        csr_pem: pki::new_node_key().unwrap().csr_pem,
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: false,
+        version: "0.1.0".into(),
+    };
+    assert!(
+        id.accept_join(&join(a.secret.clone()), None).is_err(),
+        "revoked"
+    );
+    assert!(id.accept_join(&join(b.secret.clone()), None).is_ok());
+}

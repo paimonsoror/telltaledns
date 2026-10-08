@@ -844,8 +844,65 @@ pub(crate) fn token_create(
             // The token is the only output on stdout, so it can be piped into a Secret.
             let _ = writeln!(out, "{}", t.encode());
             eprintln!(
-                "Valid for {} and usable by any number of nodes until then. Treat it like a password.",
-                human(ttl_s)
+                "Valid for {} and usable by any number of nodes until then. Treat it like a password.\n\
+                 Its ID is {}: `telltale cluster token revoke {}` stops it early.",
+                human(ttl_s),
+                telltale_cluster::node::token_id(&telltale_cluster::token::Token::secret_hash(
+                    &t.secret
+                )),
+                telltale_cluster::node::token_id(&telltale_cluster::token::Token::secret_hash(
+                    &t.secret
+                )),
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+/// REQ: CLU-001 (review 05-07) — `telltale cluster token list`.
+pub(crate) fn token_list(cfg: &telltale_config::Config, out: &mut impl Write) -> ExitCode {
+    let id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) => id,
+        Ok(None) => return fail("this node isn't in a cluster: run `telltale cluster init` first"),
+        Err(e) => return fail(&e),
+    };
+    let tokens = id.tokens();
+    if tokens.is_empty() {
+        let _ = writeln!(out, "No join tokens are valid now.");
+    }
+    let now = now_ms() / 1000;
+    for (token, exp) in tokens {
+        let _ = writeln!(
+            out,
+            "{token}  expires in {}",
+            human(exp.saturating_sub(now))
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// REQ: CLU-001 (review 05-07) — `telltale cluster token revoke`: by ID, or the token itself.
+pub(crate) fn token_revoke(
+    cfg: &telltale_config::Config,
+    out: &mut impl Write,
+    which: &str,
+) -> ExitCode {
+    let id = match Identity::load(data_dir(cfg)) {
+        Ok(Some(id)) => id,
+        Ok(None) => return fail("this node isn't in a cluster: run `telltale cluster init` first"),
+        Err(e) => return fail(&e),
+    };
+    let hash = match telltale_cluster::token::Token::decode(which.trim()) {
+        Ok(t) => telltale_cluster::token::Token::secret_hash(&t.secret),
+        Err(_) => which.to_owned(),
+    };
+    match id.revoke_token(&hash) {
+        Ok(0) => fail("no valid join token has that ID (`telltale cluster token list` shows them)"),
+        Ok(n) => {
+            let _ = writeln!(
+                out,
+                "Revoked {n} join token(s). Nodes that already joined stay members."
             );
             ExitCode::SUCCESS
         }

@@ -316,6 +316,13 @@ enum ClusterTokenCommand {
         #[arg(long = "url")]
         urls: Vec<String>,
     },
+    /// List the join tokens that are still valid: their IDs and expiry (never the secrets).
+    List,
+    /// Revoke a join token before it expires. Nodes that already joined stay members.
+    Revoke {
+        /// The token's ID from `token list` (or `token create`), or the token itself.
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -707,6 +714,12 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
         ClusterCommand::Token {
             command: ClusterTokenCommand::Create { ttl, urls },
         } => cluster::token_create(&cfg, &mut io::stdout().lock(), ttl, urls),
+        ClusterCommand::Token {
+            command: ClusterTokenCommand::List,
+        } => cluster::token_list(&cfg, &mut io::stdout().lock()),
+        ClusterCommand::Token {
+            command: ClusterTokenCommand::Revoke { id },
+        } => cluster::token_revoke(&cfg, &mut io::stdout().lock(), &id),
         ClusterCommand::Join {
             token,
             advertise,

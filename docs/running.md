@@ -1554,6 +1554,8 @@ telltale cluster init --name home --advertise https://192.168.3.2:8443 --site ho
 
 # Still on the first node: a join token (reusable until it expires; treat it like a password).
 telltale cluster token create --ttl 1h
+telltale cluster token list              # the tokens still valid: their IDs and expiry
+telltale cluster token revoke 3f9c2a1b7d0e   # stop one early (nodes that joined stay members)
 
 # On the joining node: join, then restart it.
 telltale cluster join tt_join_... --site k8s
