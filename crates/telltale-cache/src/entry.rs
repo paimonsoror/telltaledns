@@ -248,7 +248,7 @@ fn finish(
         if r.is_opt() {
             seen_opt = true;
             end = r.name_off;
-            arcount -= 1;
+            arcount = arcount.saturating_sub(1);
             continue;
         }
         offsets.push(u16::try_from(r.ttl_off).map_err(|_| Uncacheable::Malformed)?);

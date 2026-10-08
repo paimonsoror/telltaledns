@@ -358,3 +358,22 @@ fn flt_007_cname_targets_readable_from_hickory_response() {
     telltale_proto::read_name(&bytes, cname.rdata_off, &mut target).unwrap();
     assert_eq!(target.display().to_string(), "tracker.ads.example.net");
 }
+
+/// RFC 6891 §6.1.1 — an OPT anywhere but the additional section is a malformed response:
+/// the cache strips the OPT as additional data, so counting it elsewhere would leave the
+/// stored answer claiming records it doesn't have.
+#[test]
+fn dns_005_opt_outside_additional_is_malformed() {
+    let msg = query("example.com", rtype::A, false);
+    let q = parse_query(&msg).unwrap();
+    let mut out = [0u8; 512];
+    let b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+    let len = b.finish(Some(EdnsOut::new(1232))).unwrap();
+    assert!(summarize(&out[..len]).is_ok());
+    out[7] = 1; // ANCOUNT = 1: the only record (the OPT) counted as an answer
+    out[11] = 0; // ARCOUNT = 0
+    assert_eq!(
+        summarize(&out[..len]),
+        Err(telltale_proto::ParseError::BadOpt)
+    );
+}

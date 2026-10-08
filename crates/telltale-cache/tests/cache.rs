@@ -692,3 +692,25 @@ fn dns_015_ecs_scoped_keys() {
         Lookup::Miss
     ));
 }
+
+/// An upstream answer whose only record is an OPT counted as an answer is unusable: neither
+/// rendered (it used to come out with ANCOUNT 1, no records, and ARCOUNT underflowed) nor
+/// cached.
+#[test]
+fn dns_006_opt_counted_as_an_answer_is_unusable() {
+    let req = query_bytes("opt.example", rtype::A, None, 7);
+    let q = parse_query(&req).unwrap();
+    let mut resp = [0u8; 512];
+    let b = ResponseBuilder::new(&q, &mut resp, rcode::NOERROR).unwrap();
+    let len = b.finish(Some(EdnsOut::new(1232))).unwrap();
+    resp[7] = 1; // ANCOUNT
+    resp[11] = 0; // ARCOUNT
+    let client = Client::from_query(&q, None);
+    let mut out = [0u8; 512];
+    assert!(Cache::render(&q, &resp[..len], &client, &mut out).is_none());
+    let cache = Cache::new(CachePolicy::default());
+    assert_eq!(
+        cache.insert(&key(&q), &q, &resp[..len], Instant::now()),
+        Err(Uncacheable::Malformed)
+    );
+}
