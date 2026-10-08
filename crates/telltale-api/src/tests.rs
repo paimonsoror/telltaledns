@@ -199,6 +199,24 @@ impl Backend for Fake {
             impact: "would promote".into(),
         })
     }
+    fn check_list(
+        &self,
+        _: serde_json::Value,
+    ) -> BoxFuture<Result<crate::model::CheckResult, Problem>> {
+        // What a page that isn't a list looks like to the parser.
+        Box::pin(async {
+            Ok(crate::model::CheckResult {
+                ok: false,
+                detail: "0 rules from 2 lines (2 invalid, 0 unsupported)".into(),
+                rules: Some(0),
+                warnings: vec![
+                    "line 1: <title>internal dashboard</title> (not a rule)".into(),
+                    "line 2: token=hunter2 (not a rule)".into(),
+                ],
+                ..crate::model::CheckResult::default()
+            })
+        })
+    }
 }
 
 /// A router plus an admin token for authenticated requests.
@@ -1401,4 +1419,42 @@ async fn api_003_trusted_proxy_forwards_the_client_address() {
         .audit_page(None, 10, Some("auth.login"), None)
         .unwrap();
     assert_eq!(login[0].remote.as_deref(), Some("192.168.1.20"));
+}
+
+// REQ: AGT-009 — a pre-save list check shows the fetched sample lines to operators; an
+// agent learns how many lines were unusable and why, not what they said.
+#[tokio::test]
+async fn agt_009_list_check_samples_are_for_operators() {
+    let (app, _) = app();
+    let call = |bearer: &str| {
+        Request::post("/api/v1/checks/list")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "checking a list")
+            .body(Body::from(r#"{"url":"http://127.0.0.1:9/x"}"#))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, call(&app.bearer)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(
+        v["warnings"][1].as_str().unwrap().contains("hunter2"),
+        "{v}"
+    );
+    let req = Request::post("/api/v1/tokens")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"lists","kind":"agent","scopes":["config:write:lists"]}"#,
+        ))
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, call(&agent)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let text = v["warnings"].to_string();
+    assert!(
+        !text.contains("hunter2") && text.contains("2 line(s)") && text.contains("not a rule"),
+        "{v}"
+    );
 }

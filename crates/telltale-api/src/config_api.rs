@@ -812,7 +812,23 @@ pub(crate) async fn check_list(
     let p = principal(&ext)?;
     let input = body(b)?;
     let url = input.get("url").cloned().unwrap_or_default();
-    let r = backend.check_list(input).await?;
+    let mut r = backend.check_list(input).await?;
+    // REQ: AGT-009 — the sample lines are the fetched content: operators see them in the UI;
+    // an agent gets how many and why (the node would otherwise read any URL it can reach on
+    // the agent's behalf). The shape `line N: <text> (<reason>)` is `checks::list`'s.
+    if p.agent.is_some() && !r.warnings.is_empty() {
+        let reasons: std::collections::BTreeSet<&str> = r
+            .warnings
+            .iter()
+            .filter_map(|w| w.rsplit_once(" ("))
+            .map(|(_, reason)| reason.trim_end_matches(')'))
+            .collect();
+        r.warnings = vec![format!(
+            "{} line(s) couldn't be used ({}); an operator can see them in the UI",
+            r.warnings.len(),
+            reasons.into_iter().collect::<Vec<_>>().join(", ")
+        )];
+    }
     let actor = auth.actor(&p, remote(&auth, &ext, &headers), reason(&headers));
     auth.record(
         &actor,
