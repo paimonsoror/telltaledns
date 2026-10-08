@@ -1667,3 +1667,42 @@ async fn agt_007_viewers_see_only_their_own_plans() {
         "a viewer doesn't: {v}"
     );
 }
+
+// REQ: API-003 (ADR-029, review 06-05) — `X-Forwarded-Proto: https` counts only from a trusted
+// proxy or loopback: a client on plain HTTP can't claim HTTPS to use HTTP Basic.
+#[tokio::test]
+async fn api_003_forwarded_proto_counts_only_from_trusted_peers() {
+    let (app, _) = app();
+    app.auth
+        .create_user(
+            "prom",
+            "correct horse battery",
+            auth::Role::Viewer,
+            true,
+            NOW,
+        )
+        .unwrap();
+    let from = |peer: [u8; 4]| {
+        let mut req = Request::get("/api/v1/stats/summary")
+            .header(
+                "authorization",
+                "Basic cHJvbTpjb3JyZWN0IGhvcnNlIGJhdHRlcnk=",
+            )
+            .header("x-forwarded-proto", "https")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                peer, 40_000,
+            ))));
+        req
+    };
+    let (s, _, v) = send(&app, from([192, 168, 1, 50])).await;
+    assert_ne!(
+        s,
+        StatusCode::OK,
+        "a LAN client's own header doesn't count: {v}"
+    );
+    let (s, _, v) = send(&app, from([127, 0, 0, 1])).await;
+    assert_eq!(s, StatusCode::OK, "a TLS terminator on this host: {v}");
+}

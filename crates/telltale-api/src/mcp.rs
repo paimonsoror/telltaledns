@@ -1271,6 +1271,9 @@ pub struct Mcp {
     /// REQ: AGT-005 — the client address of the request being served (`post` sets it), put
     /// on every in-process REST call so lockouts and the audit log see the agent's address.
     pub on_behalf_of: Option<std::net::IpAddr>,
+    /// REQ: API-003 (review 06-05) — the request being served came over HTTPS by the rules of
+    /// `is_https`; its in-process REST calls say so (and only then).
+    pub forwarded_https: bool,
 }
 
 /// Who called: their plans key and how the audit log names them.
@@ -1415,13 +1418,7 @@ impl Mcp {
         extra: &[(&str, String)],
     ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(path);
-        for h in [
-            "authorization",
-            "cookie",
-            "x-csrf-token",
-            "x-forwarded-for",
-            "x-forwarded-proto",
-        ] {
+        for h in ["authorization", "cookie", "x-csrf-token", "x-forwarded-for"] {
             if let Some(v) = auth.get(h) {
                 req = req.header(h, v);
             }
@@ -1435,6 +1432,9 @@ impl Mcp {
             }
         }
         // REQ: AGT-005 — the in-process request has no peer; it acts for the agent's.
+        if self.forwarded_https {
+            req = req.header("x-forwarded-proto", "https");
+        }
         if let Some(ip) = self.on_behalf_of {
             req = req.extension(crate::auth::routes::OnBehalfOf(ip));
         }
@@ -1954,6 +1954,7 @@ pub async fn post(
     let ip = crate::auth::routes::remote(&mcp.auth, &ext, &headers);
     let mcp = Mcp {
         on_behalf_of: Some(ip),
+        forwarded_https: crate::auth::routes::is_https(&mcp.auth, &ext, &headers),
         ..mcp
     };
     // The caller, for plans (AGT-007): the session or token, and its audit name.

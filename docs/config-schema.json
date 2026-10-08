@@ -746,7 +746,7 @@
           "default": "0.0.0.0:8053"
         },
         "trusted_proxies": {
-          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log). Default:\nnone (the connection's address is the client).",
+          "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here. Default: none (the connection's\naddress is the client).",
           "type": "array",
           "default": [],
           "items": {

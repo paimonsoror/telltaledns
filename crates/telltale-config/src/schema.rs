@@ -1791,8 +1791,11 @@ pub struct ApiConfig {
     pub listen: SocketAddr,
     /// Reverse proxies or ingress controllers in front of the API (e.g. the pod network,
     /// `10.0.0.0/8`). For requests from them, the client address comes from
-    /// `X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log). Default:
-    /// none (the connection's address is the client).
+    /// `X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and
+    /// `X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from
+    /// anyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so
+    /// a TLS terminator on the same host needs nothing here. Default: none (the connection's
+    /// address is the client).
     pub trusted_proxies: Vec<Cidr>,
 }
 

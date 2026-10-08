@@ -2190,6 +2190,7 @@ At the provider, create a confidential client with the redirect URI `<public_url
 [api]
 trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingress runs in
 ```
+The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets HTTP Basic work and marks the session cookie `Secure` behind a TLS-terminating proxy. From anyone else the header is ignored, so a client on plain HTTP can't claim HTTPS. A proxy on the same host (Caddy or nginx on `127.0.0.1`) always counts.
 
 **Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 

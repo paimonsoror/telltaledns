@@ -106,13 +106,28 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v)
 }
 
-/// HTTPS directly or via a proxy that says so. Only gates HTTP Basic and the cookie's
-/// `Secure` flag; a spoofed header can only expose the spoofer's own credentials.
-fn is_https(headers: &HeaderMap) -> bool {
-    headers
+/// REQ: API-003 (ADR-029, review 06-05) — the request came over HTTPS: a proxy in front said
+/// so with `X-Forwarded-Proto: https`. Like `X-Forwarded-For`, the header is believed only
+/// from `[api] trusted_proxies` or loopback (a TLS terminator on the same host), so a client
+/// talking plain HTTP can't claim HTTPS to send HTTP Basic credentials in the clear. The
+/// MCP server's in-process requests carry it only when their outer request qualified.
+pub(crate) fn is_https(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> bool {
+    let says = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("https"))
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
+    if !says || req_ext.get::<OnBehalfOf>().is_some() {
+        return says;
+    }
+    req_ext.get::<ConnectInfo<SocketAddr>>().is_some_and(|c| {
+        let ip = c.0.ip();
+        ip.is_loopback()
+            || auth
+                .settings()
+                .trusted_proxies
+                .iter()
+                .any(|(n, l)| super::in_network(ip, *n, *l))
+    })
 }
 
 fn presented(headers: &HeaderMap) -> (Option<String>, Option<String>, Option<(String, String)>) {
@@ -141,7 +156,7 @@ pub async fn authenticate(
     next: Next,
 ) -> Response {
     let headers = req.headers().clone();
-    let https = is_https(&headers);
+    let https = is_https(&auth, req.extensions(), &headers);
     let ip = remote(&auth, req.extensions(), &headers);
     let (session, bearer, basic) = presented(&headers);
     // REQ: AGT-008 (T7.4) — an OAuth access token from the MCP sign-in provider (a JWT, not a
@@ -846,7 +861,7 @@ pub(crate) async fn status(
     req_ext: axum::http::Extensions,
 ) -> Result<Json<AuthStatus>, Problem> {
     let (session, bearer, basic) = presented(&headers);
-    let https = is_https(&headers);
+    let https = is_https(&auth, &req_ext, &headers);
     let ip = remote(&auth, &req_ext, &headers);
     blocking(move || {
         let setup_required = auth.setup_required()?;
@@ -903,7 +918,7 @@ pub(crate) async fn setup(
 ) -> Result<Response, Problem> {
     let r = body(b)?;
     let ip = remote(&auth, &req_ext, &headers);
-    let https = is_https(&headers);
+    let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let (user, sess, info) = blocking(move || {
         let user = auth.setup(&r.setup_token, &r.username, &r.password, now())?;
@@ -944,7 +959,7 @@ pub(crate) async fn login(
 ) -> Result<Response, Problem> {
     let r = body(b)?;
     let ip = remote(&auth, &req_ext, &headers);
-    let https = is_https(&headers);
+    let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let (sess, info) = blocking(move || {
         let user = auth.login(
@@ -1060,6 +1075,7 @@ fn login_error(message: &str) -> Response {
 pub(crate) async fn oidc_start(
     State(auth): State<AuthState>,
     headers: HeaderMap,
+    req_ext: axum::http::Extensions,
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<OidcStart>,
 ) -> Response {
@@ -1072,7 +1088,7 @@ pub(crate) async fn oidc_start(
             let mut r = to_ui(&s.redirect);
             r.headers_mut().insert(
                 header::SET_COOKIE,
-                flow_cookie(&s.browser, 600, is_https(&headers)),
+                flow_cookie(&s.browser, 600, is_https(&auth, &req_ext, &headers)),
             );
             r
         }
@@ -1112,7 +1128,7 @@ pub(crate) async fn oidc_callback(
         Err(p) => return login_error(&p.detail),
     };
     let ip = remote(&auth, &req_ext, &headers);
-    let https = is_https(&headers);
+    let https = is_https(&auth, &req_ext, &headers);
     let ttl = auth.settings().session_ttl_secs;
     let pid = id.clone();
     let signed_in = blocking(move || {

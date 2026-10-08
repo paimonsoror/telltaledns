@@ -426,6 +426,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         sessions: Arc::new(mcp::Sessions::default()),
         auth: Arc::clone(&auth),
         on_behalf_of: None,
+        forwarded_https: false,
     };
     // REQ: AGT-008 (T7.4) — RFC 9728 protected-resource metadata (public), for OAuth sign-in
     // from MCP clients.
