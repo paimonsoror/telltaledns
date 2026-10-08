@@ -2130,7 +2130,7 @@ session_idle_hours = 24
 allow_insecure_basic = false
 ```
 
-**Lockout:** after 5 failed sign-ins for a username or from an address, each further attempt waits 30 s, doubling up to 15 minutes (HTTP 429).
+**Lockout:** after 5 failed sign-ins for a username or from an address, through the sign-in form or HTTP Basic alike, each further attempt waits 30 s, doubling up to 15 minutes (HTTP 429). A successful sign-in clears the count.
 
 **Busy:** checking a password takes about 19 MiB of memory, so at most four checks run at once. Beyond that a sign-in (or an uncached HTTP Basic request) is answered 503 with `Retry-After: 1`, which doesn't count as a failed sign-in. A burst of sign-in attempts can't run the node out of memory, so DNS keeps answering.
 

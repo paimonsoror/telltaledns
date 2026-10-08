@@ -314,7 +314,7 @@ pub struct Presented<'a> {
     pub basic: Option<(String, String)>,
     /// The request arrived over HTTPS (directly or via a proxy that said so).
     pub https: bool,
-    /// The client's address (break-glass checks for HTTP Basic).
+    /// The client's address (break-glass checks and lockouts for HTTP Basic).
     pub remote: Option<IpAddr>,
 }
 
@@ -760,7 +760,7 @@ impl Auth {
             {
                 return Err(Self::local_login_refused());
             }
-            let who = self.by_basic(user, pass, p.https, now)?;
+            let who = self.by_basic(user, pass, p.https, p.remote, now)?;
             if self.settings.disable_local_login && who.role != Role::Admin {
                 return Err(Self::local_login_refused());
             }
@@ -859,6 +859,7 @@ impl Auth {
         username: &str,
         password: &str,
         https: bool,
+        remote: Option<IpAddr>,
         now: u64,
     ) -> Result<Principal, Problem> {
         if !https && !self.settings.allow_insecure_basic {
@@ -883,8 +884,13 @@ impl Auth {
         let user = if let Some(id) = cached {
             self.active_user(id)?
         } else {
+            // REQ: API-003 (ADR-029) — as for the sign-in form: the username and the address.
             let ukey = format!("u:{}", username.to_lowercase());
-            if let Some(wait) = self.locked(&ukey, now) {
+            let akey = remote.map(|ip| format!("a:{ip}"));
+            let locked = self
+                .locked(&ukey, now)
+                .max(akey.as_deref().and_then(|k| self.locked(k, now)));
+            if let Some(wait) = locked {
                 return Err(Problem::new(
                     Code::RateLimited,
                     format!("too many failed sign-ins; try again in {wait} s"),
@@ -903,11 +909,18 @@ impl Auth {
             };
             let Some(u) = u.filter(|_| ok) else {
                 self.fail(&ukey, now);
+                if let Some(k) = &akey {
+                    self.fail(k, now);
+                }
                 return Err(Problem::new(
                     Code::Unauthorized,
                     "wrong username or password",
                 ));
             };
+            self.succeed(&ukey);
+            if let Some(k) = &akey {
+                self.succeed(k);
+            }
             let mut c = self
                 .basic_cache
                 .lock()

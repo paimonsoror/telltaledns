@@ -376,3 +376,47 @@ fn api_003_password_checks_are_bounded() {
         0
     );
 }
+
+// REQ: API-003 (ADR-029) — HTTP Basic failures count against the address as well as the
+// username, so spraying usernames from one address locks it like the sign-in form would.
+#[test]
+fn api_003_http_basic_lockout_counts_the_address() {
+    let a = auth(Settings {
+        allow_insecure_basic: true,
+        ..Settings::default()
+    });
+    a.create_user("prom", "correct horse battery", Role::Viewer, true, T0)
+        .unwrap();
+    let basic = |user: &str, pw: &str| Presented {
+        basic: Some((user.to_owned(), pw.to_owned())),
+        remote: Some(IP),
+        ..Presented::default()
+    };
+    for i in 0..=FREE_ATTEMPTS {
+        let e = a
+            .authenticate(
+                &basic(&format!("user{i}"), "wrong password!"),
+                T0 + u64::from(i),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, Code::Unauthorized);
+    }
+    let e = a
+        .authenticate(&basic("prom", "correct horse battery"), T0 + 10)
+        .unwrap_err();
+    assert_eq!(e.code, Code::RateLimited, "the address is locked");
+    let elsewhere = Presented {
+        remote: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9))),
+        ..basic("prom", "correct horse battery")
+    };
+    assert!(
+        a.authenticate(&elsewhere, T0 + 10).unwrap().is_some(),
+        "another address isn't"
+    );
+    // A success clears the username's count (as a sign-in does).
+    assert!(
+        a.authenticate(&basic("prom", "correct horse battery"), T0 + 60)
+            .unwrap()
+            .is_some()
+    );
+}
