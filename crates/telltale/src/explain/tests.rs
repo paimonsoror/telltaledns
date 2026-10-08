@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use telltale_cache::{Cache, CachePolicy};
 use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-use telltale_filter::matcher::{Lookup, Matcher, Overlay};
+use telltale_filter::matcher::{Lookup, Matcher};
 use telltale_filter::parse::ListOptions;
 use telltale_filter::snapshot::Snapshot;
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
@@ -110,7 +110,7 @@ fn setup_with(extra: &str) -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
     let out = tmp.path().join("snap");
     compile(inputs, &out, &CompileOptions::default()).unwrap();
     let snap = Arc::new(Snapshot::open(&out).unwrap());
-    let m = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+    let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
     p.set_filter(Some(Arc::new(m)));
     (p, sources)
 }
@@ -347,4 +347,186 @@ groups = ["kids"]
         ask(&p, &sources, "www.example.org", "10.0.0.9").outcome,
         Outcome::Resolved
     );
+}
+
+/// REQ: FLT-010, FLT-013 — a block-everything schedule that's on shows up in the
+/// explanation, as the pipeline applies it.
+#[test]
+fn flt_013_schedules_are_explained() {
+    let extra = r#"
+[[group]]
+name = "night"
+networks = ["10.0.3.0/24"]
+schedules = ["always"]
+
+[[schedule]]
+name = "always"
+action = "block_all"
+tz = "UTC"
+window = [{ days = ["daily"], start = "00:00", end = "23:59" }]
+"#;
+    let (p, sources) = setup_with(extra);
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t.toml", format!("{CONFIG}{extra}"))
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    let compiled = telltale_config::schedule::compile(&cfg);
+    let clients = telltale_policy::ClientTable::from_config(&cfg);
+    p.schedules
+        .store(Arc::new(crate::pipeline::ScheduleNow::compute(
+            &cfg,
+            &compiled,
+            clients.groups(),
+            1_791_237_600, // Monday 2026-10-05 22:00 UTC: inside the window
+        )));
+    p.set_filter(None);
+    let answer = served(&p, "www.example.org", "10.0.3.5").expect("the pipeline blocks it");
+    assert!(contains(&answer, b"blocked by schedule always"));
+    let e = ask(&p, &sources, "www.example.org", "10.0.3.5");
+    assert_eq!(e.outcome, Outcome::Blocked, "{}", e.summary);
+    assert!(e.summary.contains("schedule always"), "{}", e.summary);
+    // Other groups are unaffected, in both.
+    assert!(served(&p, "www.example.org", "10.0.0.9").is_none());
+    assert_eq!(
+        ask(&p, &sources, "www.example.org", "10.0.0.9").outcome,
+        Outcome::Resolved
+    );
+}
+
+/// REQ: DNS-018, FLT-013 — a name in an authoritative zone is local data in the
+/// explanation too, for the groups that see the zone.
+#[test]
+fn flt_013_zones_are_explained() {
+    let extra = r#"
+[[group]]
+name = "office"
+networks = ["10.0.4.0/24"]
+
+[[zone]]
+name = "corp.example"
+groups = ["office"]
+[[zone.record]]
+name = "intranet.corp.example"
+type = "A"
+value = "10.10.0.5"
+"#;
+    let cfg = telltale_config::Loader::new()
+        .toml_str("t.toml", format!("{CONFIG}{extra}"))
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    let (local, _) = LocalData::from_config(&cfg);
+    let mut policy = Policy::from_config(&cfg, local);
+    policy.zones = Arc::new(crate::server::load_zones(&cfg).unwrap());
+    let p = Pipeline::new(
+        Settings::default(),
+        Arc::new(Cache::new(CachePolicy::default())),
+        Arc::new(Router::from_config(&cfg).unwrap()),
+        policy,
+    );
+    let sources = HashMap::new();
+    let answer = served(&p, "intranet.corp.example", "10.0.4.5").expect("answered locally");
+    assert!(contains(&answer, &[10, 10, 0, 5]));
+    let e = ask(&p, &sources, "intranet.corp.example", "10.0.4.5");
+    assert_eq!(e.outcome, Outcome::Local, "{}", e.summary);
+    // Outside the office the zone isn't visible.
+    assert_eq!(
+        ask(&p, &sources, "intranet.corp.example", "10.0.0.9").outcome,
+        Outcome::Resolved
+    );
+}
+
+/// REQ: FLT-013, FLT-014, FLT-011 — list `$dnsrewrite` rules (which win over blocking), the
+/// group's own rewrites, and safe search are in the explanation, and each outcome agrees with
+/// what the pipeline does with the same query: answered locally, or sent on with a CNAME.
+#[test]
+fn flt_013_rewrites_and_safe_search_are_explained() {
+    let extra = r#"
+[[list]]
+name = "rw"
+rules = [
+  "||rw.example^$dnsrewrite=192.0.2.55",
+  "||both.example^",
+  "||both.example^$dnsrewrite=NOERROR;A;192.0.2.66",
+  "||nx.example^$dnsrewrite=NXDOMAIN",
+  "||cn.example^$dnsrewrite=target.example",
+]
+
+[[group]]
+name = "home"
+networks = ["10.0.6.0/24"]
+lists = ["rw"]
+safe_search = true
+[[group.rewrite]]
+domain = "nas.lan.example"
+answer = "192.168.1.10"
+[[group.rewrite]]
+domain = "tv.example"
+answer = "cdn.example"
+"#;
+    let (p, sources) = setup_with(extra);
+    let home = "10.0.6.5";
+    // (name, outcome, text in the summary, bytes in the pipeline's local answer or None when
+    // the query goes on to an upstream with a CNAME)
+    let cases: [(&str, Outcome, &str, Option<&[u8]>); 7] = [
+        (
+            "www.rw.example",
+            Outcome::Local,
+            "192.0.2.55",
+            Some(&[192, 0, 2, 55]),
+        ),
+        (
+            "both.example",
+            Outcome::Local,
+            "192.0.2.66",
+            Some(&[192, 0, 2, 66]),
+        ),
+        ("nx.example", Outcome::Local, "NXDOMAIN", Some(&[])),
+        (
+            "cn.example",
+            Outcome::Resolved,
+            "CNAME target.example",
+            None,
+        ),
+        (
+            "nas.lan.example",
+            Outcome::Local,
+            "192.168.1.10",
+            Some(&[192, 168, 1, 10]),
+        ),
+        ("tv.example", Outcome::Resolved, "CNAME cdn.example", None),
+        (
+            "www.google.com",
+            Outcome::Resolved,
+            "forcesafesearch.google.com",
+            None,
+        ),
+    ];
+    for (name, outcome, text, local) in cases {
+        let e = ask(&p, &sources, name, home);
+        assert_eq!(e.outcome, outcome, "{name}: {}", e.summary);
+        assert!(e.summary.contains(text), "{name}: {}", e.summary);
+        let answer = served(&p, name, home);
+        match (local, answer) {
+            (Some(bytes), Some(a)) => assert!(
+                bytes.is_empty() || contains(&a, bytes),
+                "{name}: the pipeline's answer"
+            ),
+            (None, None) => {}
+            (l, a) => panic!(
+                "{name}: explain says {outcome:?} but the pipeline gave {a:?} (expected local: {l:?})"
+            ),
+        }
+    }
+    // The rcode answer really is NXDOMAIN in the pipeline.
+    assert_eq!(served(&p, "nx.example", home).unwrap()[3] & 0x0F, 3);
+    // A group without these lists, rewrites, or safe search sees none of it, in both.
+    for name in ["www.rw.example", "nas.lan.example", "www.google.com"] {
+        let e = ask(&p, &sources, name, "10.0.0.9");
+        assert_eq!(e.outcome, Outcome::Resolved, "{name}: {}", e.summary);
+        assert!(served(&p, name, "10.0.0.9").is_none(), "{name}");
+    }
 }

@@ -185,6 +185,7 @@ fn settings() -> FetchSettings {
         retries: 2,
         backoff: Duration::from_millis(10),
         settle: Duration::from_secs(10),
+        max_invalid_percent: 50,
     }
 }
 
@@ -203,6 +204,7 @@ fn spec(name: &str, url: String) -> ListSpec {
         source: ListSource::Url(url),
         refresh: Duration::from_hours(24),
         max_bytes: 1024,
+        enabled: true,
     }
 }
 
@@ -730,4 +732,108 @@ async fn flt_004_system_resolver() {
         .await
         .unwrap();
     assert!(ips.iter().any(IpAddr::is_loopback), "{ips:?}");
+}
+
+/// REQ: FLT-004 — a 200 that isn't a list (a JSON error, a compressed body, an HTML page
+/// without the doctype prefix) never replaces the good copy.
+#[tokio::test]
+async fn flt_004_non_list_bodies_keep_the_last_good_copy() {
+    let srv = serve(
+        handler(|req, _| match req.path.as_str() {
+            "/good" => ok("a.com\nb.com\n"),
+            "/json" => ok("{\"error\": \"rate limited\", \"retry\": 30}"),
+            "/head" => ok("<head><title>Sign in</title></head><body>portal</body>"),
+            _ => Reply {
+                status: 200,
+                body: vec![0x1f, 0x8b, 0x08, 0x00, 0x61, 0x2e, 0x63, 0x6f, 0x6d, 0x0a],
+                ..Reply::default()
+            }
+            .header("Content-Encoding", "gzip"),
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    assert_eq!(
+        f.refresh_one(&spec("l", srv.url("http", "h", "/good")))
+            .await,
+        Outcome::Updated
+    );
+    for path in ["/json", "/head", "/gzip"] {
+        let outcome = f.refresh_one(&spec("l", srv.url("http", "h", path))).await;
+        assert!(matches!(outcome, Outcome::Failed(_)), "{path}: {outcome:?}");
+        assert_eq!(
+            f.store().read_source("l").unwrap(),
+            b"a.com\nb.com\n",
+            "{path}: last good kept"
+        );
+    }
+}
+
+/// REQ: FLT-004 — `[filter] max_invalid_percent` moves the line between "a few bad lines in a
+/// real list" and "not a list": 40 % invalid passes at 50 and is refused at 30, and 100 turns
+/// the check off.
+#[tokio::test]
+async fn flt_004_invalid_line_threshold_is_configurable() {
+    let body = "a.com\nb.com\nc.com\n{\"x\": 1}\n{\"y\": 2}\n";
+    let srv = serve(handler(move |_, _| ok(body)), None).await;
+    let url = srv.url("http", "h", "/list");
+    for (percent, accepted) in [(50u8, true), (30, false), (0, false), (100, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = fetcher(
+            tmp.path(),
+            FetchSettings {
+                max_invalid_percent: percent,
+                ..settings()
+            },
+            &[],
+        );
+        let outcome = f.refresh_one(&spec("l", url.clone())).await;
+        assert_eq!(
+            matches!(outcome, Outcome::Updated),
+            accepted,
+            "{percent} %: {outcome:?}"
+        );
+    }
+    // A body that is nothing but invalid lines is refused at every setting below 100.
+    let junk = serve(handler(|_, _| ok("{\"error\": 1}\n{\"retry\": 2}\n")), None).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(
+        tmp.path(),
+        FetchSettings {
+            max_invalid_percent: 99,
+            ..settings()
+        },
+        &[],
+    );
+    let outcome = f
+        .refresh_one(&spec("l", junk.url("http", "h", "/list")))
+        .await;
+    assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+}
+
+/// REQ: FLT-004 — a disabled list is never fetched, not even by a manual refresh, and its
+/// stored copy survives a prune; enabling it again needs no download.
+#[tokio::test]
+async fn flt_004_disabled_list_is_not_fetched_but_keeps_its_copy() {
+    let srv = serve(handler(|_, _| ok("a.com\nb.com\n")), None).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let mut on = spec("on", srv.url("http", "h", "/on"));
+    let mut off = spec("off", srv.url("http", "h", "/off"));
+    let both = [on.clone(), off.clone()];
+    let names: Vec<String> = f.refresh(&both).await.into_iter().map(|r| r.0).collect();
+    assert_eq!(names, ["off", "on"]);
+    // Disable `off`: it stays in the specs, marked, and the round skips it.
+    off.enabled = false;
+    on.refresh = Duration::from_secs(0);
+    let names: Vec<String> = f
+        .refresh(&[on, off])
+        .await
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(names, ["on"], "only the enabled list is fetched");
+    assert_eq!(f.store().read_source("off").unwrap(), b"a.com\nb.com\n");
 }

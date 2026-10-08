@@ -49,8 +49,6 @@ pub struct ExplainedRule {
     pub enabled: bool,
     /// This rule decides the query (the first enabled rule in precedence order).
     pub winner: bool,
-    /// A manual rule (overlay), not from a compiled list.
-    pub manual: bool,
     /// Where the rule is (several if the list repeats it). Empty if the source isn't stored.
     pub lines: Vec<RuleLine>,
 }
@@ -86,12 +84,9 @@ pub fn explain(
     let mut wanted = Wanted::default();
     for (i, x) in matches.iter().enumerate() {
         let a = x.attribution;
-        let list = if a.overlay {
-            "manual".to_owned()
-        } else {
-            snap.and_then(|s| s.list_name(a.list))
-                .map_or_else(|| format!("#{}", a.list), str::to_owned)
-        };
+        let list = snap
+            .and_then(|s| s.list_name(a.list))
+            .map_or_else(|| format!("#{}", a.list), str::to_owned);
         let mut rule = ExplainedRule {
             list,
             list_id: a.list,
@@ -101,28 +96,22 @@ pub fn explain(
             name: None,
             enabled: x.enabled,
             winner: winner == Some(i),
-            manual: a.overlay,
             lines: Vec::new(),
         };
         match a.rule {
             RuleRef::Domain { scope, labels: n } => {
                 let name = suffix(&labels, usize::from(n));
                 rule.scope = Some(scope);
-                if !a.overlay {
-                    wanted.domains.entry(a.list).or_default().push((
-                        i,
-                        name.clone(),
-                        scope,
-                        a.tier,
-                    ));
-                }
+                wanted
+                    .domains
+                    .entry(a.list)
+                    .or_default()
+                    .push((i, name.clone(), scope, a.tier));
                 rule.name = Some(name);
             }
             RuleRef::ModRule { index } => {
                 rule.kind = RuleKind::Modifier;
-                if !a.overlay
-                    && let Some(r) = snap.and_then(|s| s.modrules.get(index as usize))
-                {
+                if let Some(r) = snap.and_then(|s| s.modrules.get(index as usize)) {
                     rule.scope = Some(match r.scope {
                         ScopeTag::Subtree => Scope::Subtree,
                         ScopeTag::Exact => Scope::Exact,
@@ -133,9 +122,7 @@ pub fn explain(
             }
             RuleRef::Regex { index } => {
                 rule.kind = RuleKind::Regex;
-                if !a.overlay
-                    && let Some(r) = snap.and_then(|s| s.regexes.get(index as usize))
-                {
+                if let Some(r) = snap.and_then(|s| s.regexes.get(index as usize)) {
                     wanted.known.entry(a.list).or_default().push((i, r.line));
                 }
             }

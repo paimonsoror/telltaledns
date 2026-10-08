@@ -1042,6 +1042,37 @@ test('flt_010 schedules are edited from the UI', async () => {
   await expect(row).toHaveCount(0);
 });
 
+// REQ: DNS-014 (review 01 q1) — the per-client rate limit is adjusted from Settings → System
+// (checked first, then applied) and reverted to the config file's.
+test('dns_014 the rate limit is adjusted from the UI and reverted', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  const editor = page.getByTestId('editor-ratelimit');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('config file');
+  await expect(row).toContainText('1000 queries per 60 s');
+  await expect(editor.getByRole('button', { name: 'Add rate limit' })).toHaveCount(0);
+  await expect(row.getByRole('button', { name: 'Remove' })).toHaveCount(0);
+
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const queries = page.getByRole('spinbutton', { name: 'Queries allowed per window' });
+  await queries.fill('0');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('queries');
+  // The refusal above is expected: not a page problem.
+  for (let i = problems.length - 1; i >= 0; i--) if (problems[i].includes('status of 422')) problems.splice(i, 1);
+  await queries.fill('5000');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toContainText('count starts over');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('5000 queries per 60 s');
+  await expect(row).toContainText('overrides the file');
+
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('config file');
+  await expect(row).toContainText('1000 queries per 60 s');
+});
+
 // REQ: UPS-007 (T9.25) — a group's upstream servers are chosen in the Groups editor.
 test('ups_007 a group picks its upstream group from the UI', async () => {
   await page.goto('/#/groups');

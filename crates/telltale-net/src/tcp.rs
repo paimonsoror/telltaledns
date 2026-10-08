@@ -43,6 +43,9 @@ pub struct TcpConfig {
     pub max_inflight: usize,
     /// Max concurrent connections; extra connections are closed immediately.
     pub max_connections: usize,
+    /// Max concurrent connections from one client address (an IPv6 /64), after the PROXY
+    /// header if there is one; 0 = no limit (review 01 q2).
+    pub max_connections_per_address: usize,
     /// `Tcp`, or `Dot` with `tls` set.
     pub transport: Transport,
     /// The certificate for DoT.
@@ -58,6 +61,7 @@ impl TcpConfig {
             idle_timeout: Duration::from_secs(10),
             max_inflight: 64,
             max_connections: 1024,
+            max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
             transport: Transport::Tcp,
             tls: None,
             proxy_protocol: false,
@@ -71,6 +75,8 @@ pub struct TcpStats {
     pub accepted: AtomicU64,
     /// Connections refused because `max_connections` was reached.
     pub rejected: AtomicU64,
+    /// Connections refused because their client address already held the per-address maximum.
+    pub rejected_per_address: AtomicU64,
     pub queries: AtomicU64,
     pub replies: AtomicU64,
     pub idle_closed: AtomicU64,
@@ -78,6 +84,9 @@ pub struct TcpStats {
     pub tls_failed: AtomicU64,
     /// Connections closed for a missing or malformed PROXY header.
     pub proxy_rejected: AtomicU64,
+    /// Connections closed because the client stopped reading its answers (a write stalled
+    /// for the idle timeout).
+    pub stalled_closed: AtomicU64,
 }
 
 /// A running TCP DNS listener.
@@ -91,6 +100,10 @@ pub struct TcpServer {
 
 /// Largest DNS message (2-byte length prefix).
 const MAX_MSG: usize = u16::MAX as usize;
+/// Largest query accepted: the same bound as the UDP receive buffer. Queries are small; a
+/// length prefix beyond this is junk, and reading it would buffer up to 64 KiB per
+/// connection on the client's say-so.
+const MAX_QUERY: usize = 4096;
 
 thread_local! {
     /// Response scratch space, one per runtime thread rather than per connection, so idle
@@ -181,6 +194,7 @@ async fn accept_loop<H: QueryHandler>(
         },
         None => None,
     };
+    let per_address = crate::peer_limit::PeerLimit::new(cfg.max_connections_per_address);
     let cfg = Arc::new(cfg);
     let mut conns = tokio::task::JoinSet::new();
     loop {
@@ -207,8 +221,14 @@ async fn accept_loop<H: QueryHandler>(
             Arc::clone(&stats),
         );
         let acceptor = acceptor.clone();
+        let per_address = Arc::clone(&per_address);
         conns.spawn(async move {
-            open(stream, peer, acceptor, &*handler, &cfg, stop, &stats).await;
+            let ctx = Open {
+                cfg: &cfg,
+                per_address: &per_address,
+                stats: &stats,
+            };
+            open(stream, peer, acceptor, &*handler, &ctx, stop).await;
             drop(permit);
         });
         // Reap finished connections so the set doesn't grow without bound.
@@ -218,16 +238,28 @@ async fn accept_loop<H: QueryHandler>(
     while conns.join_next().await.is_some() {}
 }
 
-/// Reads the PROXY header (if configured), completes the TLS handshake (if any), then serves.
+/// What `open` needs besides the connection itself.
+struct Open<'a> {
+    cfg: &'a TcpConfig,
+    per_address: &'a Arc<crate::peer_limit::PeerLimit>,
+    stats: &'a Arc<TcpStats>,
+}
+
+/// Reads the PROXY header (if configured), takes the client address's place in the
+/// per-address count, completes the TLS handshake (if any), then serves.
 async fn open<H: QueryHandler + ?Sized>(
     mut stream: TcpStream,
     mut peer: SocketAddr,
     acceptor: Option<tokio_rustls::TlsAcceptor>,
     handler: &H,
-    cfg: &TcpConfig,
+    ctx: &Open<'_>,
     stop: watch::Receiver<bool>,
-    stats: &Arc<TcpStats>,
 ) {
+    let Open {
+        cfg,
+        per_address,
+        stats,
+    } = *ctx;
     if cfg.proxy_protocol {
         match timeout(cfg.idle_timeout, crate::proxy::read_header(&mut stream)).await {
             Ok(Ok(Some(src))) => peer = src,
@@ -238,6 +270,12 @@ async fn open<H: QueryHandler + ?Sized>(
             }
         }
     }
+    // REQ: DNS-001 (review 01 q2) — one client address can't hold every slot. The address is
+    // the client's: after the PROXY header, so a balancer's isn't counted for everyone.
+    let Some(_place) = per_address.acquire(peer.ip()) else {
+        stats.rejected_per_address.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
     let Some(acceptor) = acceptor else {
         serve_conn(stream, peer, None, handler, cfg, stop, stats).await;
         return;
@@ -277,17 +315,19 @@ async fn serve_conn<S, H>(
         transport: cfg.transport,
         client_id,
     };
+    // REQ: DNS-001 (RFC 7766 §6.2.3) — a client that stops reading its answers must not hold
+    // the connection (and its slot) forever: a write that stalls for the idle timeout closes
+    // it. Dropping `rx` then fails the reader's next send, so it stops too.
+    let (write_timeout, wstats) = (cfg.idle_timeout, Arc::clone(stats));
     let writer = tokio::spawn(async move {
         while let Some(buf) = rx.recv().await {
-            if wr.write_all(&buf).await.is_err() {
-                break;
-            }
             // TLS buffers records; push them out once nothing else is queued.
-            if rx.is_empty() && wr.flush().await.is_err() {
+            let flush = rx.is_empty();
+            if !written(&mut wr, &buf, flush, write_timeout, &wstats).await {
                 break;
             }
         }
-        let _ = wr.shutdown().await;
+        let _ = timeout(write_timeout, wr.shutdown()).await;
     });
 
     let mut req = Vec::with_capacity(512);
@@ -306,8 +346,8 @@ async fn serve_conn<S, H>(
             }
         }
         let n = usize::from(u16::from_be_bytes(len));
-        if n < 12 {
-            break; // shorter than a DNS header: the stream is out of sync
+        if !(12..=MAX_QUERY).contains(&n) {
+            break; // shorter than a DNS header, or far longer than any query: out of sync
         }
         req.resize(n, 0);
         if !matches!(
@@ -363,4 +403,30 @@ async fn serve_conn<S, H>(
 enum Outcome {
     Now(Option<Vec<u8>>),
     Later(crate::handler::Deferred),
+}
+
+/// Writes `buf` (and flushes, if `flush`) within `limit`; false on an error. A stall for the
+/// whole limit means the client stopped reading, and is counted (REQ: DNS-001).
+async fn written<W: AsyncWrite + Unpin>(
+    wr: &mut W,
+    buf: &[u8],
+    flush: bool,
+    limit: Duration,
+    stats: &TcpStats,
+) -> bool {
+    let io = async {
+        wr.write_all(buf).await?;
+        if flush {
+            wr.flush().await?;
+        }
+        Ok::<(), io::Error>(())
+    };
+    match timeout(limit, io).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            stats.stalled_closed.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
 }

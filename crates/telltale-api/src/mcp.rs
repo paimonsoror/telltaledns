@@ -744,6 +744,64 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: DNS-014, AGT-007 (review 01 q1) — the per-client rate limit, as a plan.
+        WriteTool {
+            name: "plan_set_ratelimit",
+            description: "Plans a change (nothing changes until apply_plan). Changes the per-client rate limit: how many queries one client may send per window before it is refused (or dropped), the clients that are never limited, and how clients are grouped (IPv4 per address, IPv6 per /64 by default). A router or proxy that forwards for a whole network looks like one client: exempt it or raise `queries`. Fields left out keep their current values. Applies at once; every client's count starts over. Needs config:write:ratelimit (and config:read to read the current limit).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn rate limiting on or off."},
+                "queries": {"type": "integer", "minimum": 1, "description": "Queries allowed per client per window (bursts up to this)."},
+                "windowSecs": {"type": "integer", "minimum": 1, "description": "The window, in seconds (default 60)."},
+                "action": {"type": "string", "enum": ["refused", "drop"], "description": "What a limited query gets: REFUSED, or nothing."},
+                "exempt": {"type": "array", "items": {"type": "string"}, "description": "CIDRs never limited (replaces the current list; include 127.0.0.0/8 and ::1/128 to keep loopback exempt)."},
+                "ipv4Prefix": {"type": "integer", "minimum": 1, "maximum": 32, "description": "Count IPv4 clients per /N (32 = per address)."},
+                "ipv6Prefix": {"type": "integer", "minimum": 1, "maximum": 128, "description": "Count IPv6 clients per /N (64 groups a device's rotating addresses)."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("queries", "queries"),
+                        ("windowSecs", "window_secs"),
+                        ("action", "action"),
+                        ("exempt", "exempt"),
+                        ("ipv4Prefix", "ipv4_prefix"),
+                        ("ipv6Prefix", "ipv6_prefix"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let mut what: Vec<String> = Vec::new();
+                for (k, label) in [
+                    ("enabled", "enabled"),
+                    ("queries", "queries"),
+                    ("window_secs", "window"),
+                ] {
+                    if let Some(v) = body.get(k) {
+                        what.push(format!("{label} {v}"));
+                    }
+                }
+                let summary = if what.is_empty() {
+                    "Change the rate limit".to_owned()
+                } else {
+                    format!("Set the rate limit ({})", what.join(", "))
+                };
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/ratelimit/default".to_owned(),
+                    summary,
+                    body: Some(Value::Object(body)),
+                    merge: Some(("ratelimit", "default".to_owned())),
+                })
+            },
+        },
         WriteTool {
             name: "plan_update_group",
             description: "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",

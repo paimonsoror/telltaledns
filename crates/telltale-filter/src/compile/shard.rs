@@ -39,6 +39,8 @@ pub(crate) struct Worker {
 pub(crate) struct FstSink {
     shards: usize,
     mode: Mode,
+    /// `sync_all` each FST when it is finished (`[filter] fsync`).
+    sync: bool,
 }
 
 enum Mode {
@@ -48,8 +50,8 @@ enum Mode {
 
 impl FstSink {
     /// Creates every FST file in `dir`, with `shards` shards per scope (one per worker when
-    /// `shards > 1`).
-    pub(crate) fn new(dir: &Path, shards: usize) -> Result<Self, CompileError> {
+    /// `shards > 1`). With `sync`, every FST is synced to disk when finished.
+    pub(crate) fn new(dir: &Path, shards: usize, sync: bool) -> Result<Self, CompileError> {
         let shards = shards.max(1);
         let mut writers = Vec::with_capacity(SCOPE_NAMES.len() * shards);
         for scope in 0..SCOPE_NAMES.len() {
@@ -62,6 +64,7 @@ impl FstSink {
             return Ok(Self {
                 shards,
                 mode: Mode::Direct(writers),
+                sync,
             });
         }
         let total = writers.len();
@@ -88,7 +91,11 @@ impl FstSink {
                         }
                     }
                     for w in slots.into_iter().flatten() {
-                        w.into_inner()?.flush()?;
+                        let mut f = w.into_inner()?;
+                        f.flush()?;
+                        if sync {
+                            f.get_ref().sync_all()?;
+                        }
                     }
                     Ok(())
                 })?;
@@ -101,6 +108,7 @@ impl FstSink {
         Ok(Self {
             shards,
             mode: Mode::Threaded(workers),
+            sync,
         })
     }
 
@@ -134,12 +142,17 @@ impl FstSink {
         Ok(())
     }
 
-    /// Flushes every FST to disk.
+    /// Flushes every FST to disk, durably: a crash after the snapshot is renamed into place
+    /// must not leave a torn FST next to a manifest that vouches for it.
     pub(crate) fn finish(self) -> Result<(), CompileError> {
         match self.mode {
             Mode::Direct(writers) => {
                 for w in writers {
-                    w.into_inner()?.flush()?;
+                    let mut f = w.into_inner()?;
+                    f.flush()?;
+                    if self.sync {
+                        f.get_ref().sync_all()?;
+                    }
                 }
                 Ok(())
             }

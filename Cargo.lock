@@ -3366,6 +3366,7 @@ dependencies = [
 name = "telltale"
 version = "0.3.0"
 dependencies = [
+ "allocation-counter",
  "arc-swap",
  "axum",
  "base64 0.22.1",

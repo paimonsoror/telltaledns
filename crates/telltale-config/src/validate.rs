@@ -855,6 +855,23 @@ fn listeners(cfg: &Config, r: &mut Report<'_>) {
                 "only valid for tcp, dot, and doh listeners",
             );
         }
+        if l.proto == crate::ListenProto::Udp {
+            if l.max_connections.is_some() {
+                r.err(
+                    format!("{p}.max_connections"),
+                    "not valid for udp listeners",
+                );
+            }
+            if l.max_connections_per_address.is_some() {
+                r.err(
+                    format!("{p}.max_connections_per_address"),
+                    "not valid for udp listeners",
+                );
+            }
+        }
+        if l.max_connections == Some(0) {
+            r.err(format!("{p}.max_connections"), "must be at least 1");
+        }
     }
 }
 
@@ -1144,6 +1161,15 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
     if !(1024..=1 << 30).contains(&f.max_list_bytes.bytes()) {
         r.err("filter.max_list_bytes", "must be between 1KiB and 1GiB");
     }
+    if f.max_invalid_percent > 100 {
+        r.err("filter.max_invalid_percent", "must be between 0 and 100");
+    }
+    if f.max_regexes > 100_000 {
+        r.err(
+            "filter.max_regexes",
+            "must be at most 100000 (0 = no limit)",
+        );
+    }
     if f.compile_threads > 64 {
         r.err("filter.compile_threads", "must be at most 64 (0 = auto)");
     }
@@ -1329,6 +1355,12 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     }
     if rl.ipv6_prefix == 0 || rl.ipv6_prefix > 128 {
         r.err("ratelimit.ipv6_prefix", "must be between 1 and 128");
+    }
+    if !(512..=4096).contains(&cfg.dns.edns_payload) {
+        r.err(
+            "dns.edns_payload",
+            "must be between 512 and 4096 (the UDP workers' send buffer is 4096 bytes)",
+        );
     }
     if cfg.access.allowed_networks.is_empty() {
         r.err(

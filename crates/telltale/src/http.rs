@@ -24,7 +24,7 @@ use telltale_net::{DohStats, TcpStats, WorkerStats};
 use telltale_telemetry::Metrics;
 use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
 use telltale_upstream::Router;
-use telltale_upstream::health::Breaker;
+use telltale_upstream::health::{Breaker, Outcome};
 
 /// Everything `/metrics` reads.
 #[derive(Debug)]
@@ -456,6 +456,7 @@ pub(crate) fn render(src: &Sources) -> String {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
     }
+    render_lookup_mode(&mut w, src);
     // REQ: FLT-009 — active pauses (group="*" = everyone).
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -852,6 +853,23 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
     }
 }
 
+/// REQ: FLT-003, OBS-011 (review 02-09) — which domain lookup the active filter uses: the hash
+/// index, or the slower FST walk (before the index is ready, or when the snapshot has more list
+/// combinations than the index holds).
+fn render_lookup_mode(w: &mut PromWriter, src: &Sources) {
+    let filter = src.pipeline.filter.load();
+    let Some(f) = filter.as_ref() else { return };
+    let indexed = f.matcher.lookup() == telltale_filter::matcher::Lookup::Indexed;
+    let name = "telltale_filter_lookup_mode";
+    w.family(
+        name,
+        "gauge",
+        "The active filter's domain lookup: 1 for the mode in use (indexed: hash index; walk: FST walk, slower, with its pages resident).",
+    );
+    w.sample(name, &[("mode", "indexed")], u64::from(indexed));
+    w.sample(name, &[("mode", "walk")], u64::from(!indexed));
+}
+
 /// REQ: FLT-003, OBS-005 (`spec/06` metric names): the current filter snapshot.
 fn render_filter(w: &mut PromWriter, lists: &ListsShared) {
     let compiled = lists
@@ -899,6 +917,20 @@ fn render_filter(w: &mut PromWriter, lists: &ListsShared) {
             );
         }
     }
+    w.family(
+        "telltale_list_regex_skipped",
+        "gauge",
+        "Regex rules each list ships that the snapshot leaves out (over [filter] max_regexes, too large, or invalid).",
+    );
+    for (i, l) in st.per_list.iter().enumerate() {
+        if let Some(m) = c.manifest.lists.get(i) {
+            w.sample(
+                "telltale_list_regex_skipped",
+                &[("list", m.name.as_str())],
+                l.regex_skipped,
+            );
+        }
+    }
 }
 
 /// REQ: OBS-011 (core): per-upstream health.
@@ -925,6 +957,21 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
             &[("upstream", name), ("outcome", "failure")],
             s.failures,
         );
+    }
+    // REQ: UPS-006, OBS-011 — the failures by kind, so a failure rate can be read.
+    w.family(
+        "telltale_upstream_failures_total",
+        "counter",
+        "Failed upstream attempts by kind: timeout, network, bad_response, unresolved, servfail, refused, other_rcode.",
+    );
+    for (name, s) in &snaps {
+        for (kind, n) in Outcome::FAILURES.iter().zip(s.failures_by_kind) {
+            w.sample(
+                "telltale_upstream_failures_total",
+                &[("upstream", name), ("kind", kind.label())],
+                n,
+            );
+        }
     }
     w.family(
         "telltale_upstream_breaker_state",
@@ -1103,6 +1150,16 @@ fn write_doq_metrics(w: &mut PromWriter, src: &Sources) {
             qsum(|s| s.connections.load(Relaxed)),
         ),
         (
+            "telltale_doq_rejected_total",
+            "DoQ connections refused at the connection cap.",
+            qsum(|s| s.rejected.load(Relaxed)),
+        ),
+        (
+            "telltale_doq_rejected_per_address_total",
+            "DoQ connections closed because their client address held the per-address maximum.",
+            qsum(|s| s.rejected_per_address.load(Relaxed)),
+        ),
+        (
             "telltale_doq_queries_total",
             "DoQ queries received (one per stream).",
             qsum(|s| s.queries.load(Relaxed)),
@@ -1150,6 +1207,14 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
+    write_tcp_metrics(w, src);
+    write_doq_metrics(w, src);
+    write_doh_metrics(w, src);
+}
+
+/// REQ: DNS-001, DNS-002 — TCP and DoT listener counters (also DoH's TLS and PROXY failures).
+fn write_tcp_metrics(w: &mut PromWriter, src: &Sources) {
+    use std::sync::atomic::Ordering::Relaxed;
     let tcp = src.tcp.load();
     let tsum = |f: fn(&TcpStats) -> u64| tcp.iter().map(|s| f(s)).sum::<u64>();
     for (name, help, v) in [
@@ -1164,9 +1229,19 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
             tsum(|s| s.rejected.load(Relaxed)),
         ),
         (
+            "telltale_tcp_rejected_per_address_total",
+            "TCP and DoT connections refused because their client address held the per-address maximum.",
+            tsum(|s| s.rejected_per_address.load(Relaxed)),
+        ),
+        (
             "telltale_tcp_idle_closed_total",
             "TCP connections closed for idleness.",
             tsum(|s| s.idle_closed.load(Relaxed)),
+        ),
+        (
+            "telltale_tcp_stalled_closed_total",
+            "TCP connections closed because the client stopped reading answers.",
+            tsum(|s| s.stalled_closed.load(Relaxed)),
         ),
         (
             "telltale_tls_handshake_failures_total",
@@ -1193,7 +1268,10 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
-    write_doq_metrics(w, src);
+}
+
+fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
+    use std::sync::atomic::Ordering::Relaxed;
     // REQ: DNS-003 — DoH requests (queries are also in telltale_queries_total{proto="doh"}).
     let doh = src.doh.load();
     let dsum = |f: fn(&DohStats) -> u64| doh.iter().map(|s| f(s)).sum::<u64>();
@@ -1202,6 +1280,16 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
             "telltale_doh_connections_total",
             "DoH connections accepted.",
             dsum(|s| s.accepted.load(Relaxed)),
+        ),
+        (
+            "telltale_doh_rejected_total",
+            "DoH connections (HTTP/2 and HTTP/3) refused at the connection cap.",
+            dsum(|s| s.rejected.load(Relaxed)),
+        ),
+        (
+            "telltale_doh_rejected_per_address_total",
+            "DoH connections (HTTP/2 and HTTP/3) refused because their client address held the per-address maximum.",
+            dsum(|s| s.rejected_per_address.load(Relaxed)),
         ),
         (
             "telltale_doh_requests_total",
@@ -1285,8 +1373,10 @@ mod tests {
             "telltale_query_duration_seconds",
             "telltale_cache_hits_total",
             "telltale_upstream_requests_total",
+            "telltale_upstream_failures_total",
             "telltale_udp_received_total",
             "telltale_tcp_connections_total",
+            "telltale_tcp_stalled_closed_total",
         ] {
             assert!(
                 text.contains(&format!("# TYPE {family} ")),
@@ -1295,6 +1385,23 @@ mod tests {
         }
         assert!(text.contains("telltale_queries_total{proto=\"udp\",status=\"cached\"} 1"));
         assert!(text.contains("telltale_local_records 0"));
+    }
+
+    /// REQ: FLT-003, OBS-011 (review 02-09) — the active filter's lookup mode is a gauge: none
+    /// without a filter, `walk` for a matcher without the index (as before the index is built, or
+    /// when the snapshot has too many list combinations for it).
+    #[test]
+    fn obs_011_lookup_mode_is_exported() {
+        let src = sources();
+        assert!(!render(&src).contains("telltale_filter_lookup_mode"));
+        let matcher = telltale_filter::matcher::Matcher::new(None).unwrap();
+        src.pipeline.set_filter(Some(Arc::new(matcher)));
+        let text = render(&src);
+        assert!(
+            text.contains("telltale_filter_lookup_mode{mode=\"walk\"} 1"),
+            "{text}"
+        );
+        assert!(text.contains("telltale_filter_lookup_mode{mode=\"indexed\"} 0"));
     }
 
     #[test]

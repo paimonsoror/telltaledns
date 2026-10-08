@@ -61,6 +61,8 @@ pub struct Config {
     pub access: AccessConfig,
     /// Per-client query rate limits (DNS-014).
     pub ratelimit: RateLimitConfig,
+    /// REQ: DNS-005 — settings of the DNS answers themselves.
+    pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
     pub special: SpecialConfig,
     /// Response cache.
@@ -112,6 +114,7 @@ impl Default for Config {
             filter: FilterConfig::default(),
             access: AccessConfig::default(),
             ratelimit: RateLimitConfig::default(),
+            dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
@@ -328,6 +331,16 @@ pub struct Listener {
     /// Accept PROXY protocol v2 (TCP-based listeners only).
     #[serde(default)]
     pub proxy_protocol: bool,
+    /// Connections open at once on this listener (default 1,024); more are refused. Not for
+    /// `udp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u32>,
+    /// Connections open at once from one client address, an IPv6 /64 counting as one (default
+    /// 32; 0 = no limit), so one host can't take every slot. The address is the client's:
+    /// from the PROXY header when `proxy_protocol` is on. Behind a load balancer that hides
+    /// client addresses (no PROXY protocol, source NAT), raise it or set 0. Not for `udp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections_per_address: Option<u32>,
 }
 
 impl Listener {
@@ -338,6 +351,8 @@ impl Listener {
             path: None,
             tls: None,
             proxy_protocol: false,
+            max_connections: None,
+            max_connections_per_address: None,
         }
     }
 }
@@ -1149,11 +1164,28 @@ pub struct FilterConfig {
     pub fetch_retries: u8,
     /// Downloads larger than this fail and the previous copy is kept.
     pub max_list_bytes: ByteSize,
+    /// A download is refused, and the previous copy kept, when more than this percentage of its
+    /// rule-bearing lines is invalid (a JSON error page, a compressed body, or a mirror that
+    /// changed format parses mostly to invalid lines). Cosmetic and unsupported rules don't
+    /// count as invalid. 50 = refuse when invalid lines outnumber rules; 0 = refuse any list
+    /// with an invalid line; 100 = accept anything that isn't empty or HTML.
+    pub max_invalid_percent: u8,
+    /// Most regex rules a compiled snapshot keeps (default 1,000; 0 = no limit). Every query
+    /// that no exact or suffix rule settles is tried against all of them, about a microsecond
+    /// per thousand, and a few thousand that share a prefix can overwhelm the matcher's
+    /// automaton: in a synthetic test of patterns sharing a prefix, 1,500 cost 1.6 µs per query
+    /// and 41 MiB, while 2,000 grew past 5 GiB in a minute. The rules past the limit, in list
+    /// order, are left out and reported on the Lists page (and by `telltale lists compile`).
+    pub max_regexes: u32,
     /// Threads for compiling lists (at low CPU priority). 0 = auto: half the cores, between
     /// 1 and 4 (2 on a Pi 4, which compiles 2M names in about 6 s).
     pub compile_threads: u8,
     /// Memory for sorting list entries before spilling to disk (`spec/05` §3.4).
     pub compile_memory: ByteSize,
+    /// Sync a compiled snapshot's files and directory to disk before it counts as published, so
+    /// a power cut can't leave a snapshot whose files are short. Costs a few hundred
+    /// milliseconds per large compile on an SD card, off the query path.
+    pub fsync: bool,
 }
 
 impl Default for FilterConfig {
@@ -1164,8 +1196,11 @@ impl Default for FilterConfig {
             fetch_timeout_secs: 120,
             fetch_retries: 3,
             max_list_bytes: ByteSize::mib(64),
+            max_invalid_percent: 50,
+            max_regexes: 1000,
             compile_threads: 0,
             compile_memory: ByteSize::mib(128),
+            fsync: true,
         }
     }
 }
@@ -1195,6 +1230,23 @@ impl Default for AccessConfig {
         Self {
             allowed_networks: nets.iter().filter_map(|n| Cidr::parse(n).ok()).collect(),
         }
+    }
+}
+
+/// REQ: DNS-005 (review 01-12) — what TelltaleDNS advertises in its answers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct DnsConfig {
+    /// The UDP payload size advertised in EDNS(0) (RFC 6891), and the largest UDP answer sent
+    /// to a client that advertises at least as much; 512 to 4096 (the UDP workers' send buffer).
+    /// 1232 (the DNS Flag Day 2020 value) avoids IP fragmentation on almost every path; raise
+    /// it on a network known to carry larger datagrams. Needs a restart.
+    pub edns_payload: u16,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self { edns_payload: 1232 }
     }
 }
 

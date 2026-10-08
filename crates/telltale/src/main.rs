@@ -59,14 +59,16 @@ use tracing::{error, info, warn};
 
 // REQ: OPS-001, 02 §3 — mimalloc everywhere. The static musl image would otherwise use musl's
 // allocator, which roughly halved cache-hit throughput in the bench harness.
-#[cfg(not(feature = "dhat-heap"))]
+// Not under `cfg(test)`: the allocation test in `pipeline.rs` (NFR-002) counts through its
+// own global allocator.
+#[cfg(all(not(test), not(feature = "dhat-heap")))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // REQ: NFR-002 (T10.2) — heap profiling for development only (`--features dhat-heap`, never
 // in a release): every allocation site with its bytes at the heap's peak and at exit, written
 // to `dhat-heap.json` in the working directory on a clean shutdown. `bench/heapprof.py` runs it.
-#[cfg(feature = "dhat-heap")]
+#[cfg(all(not(test), feature = "dhat-heap"))]
 #[global_allocator]
 static GLOBAL: dhat::Alloc = dhat::Alloc;
 

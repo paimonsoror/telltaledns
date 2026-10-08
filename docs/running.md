@@ -363,7 +363,17 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
 - **DoH** speaks HTTP/2 and HTTP/1.1, `GET ?dns=` and `POST application/dns-message`, and answers with `Cache-Control: max-age` set to the answer's smallest TTL. DoT uses ALPN `dot` with RFC 7766 pipelining, like plain TCP. With a `doh3` listener, DoH also speaks HTTP/3 (ALPN `h3`, the same paths and client IDs), and HTTP/2 answers carry `Alt-Svc: h3=":443"` so browsers and apps that support it switch. DoQ uses ALPN `doq`: each query has its own QUIC stream, so a slow answer never holds up the others, and an idle connection closes after 30 s. 0-RTT is off (an early query could be replayed).
 - **Devices identify themselves:** with a wildcard certificate (`dns.example.com` and `*.dns.example.com`), a device configured with `kids-tablet.dns.example.com` (Android Private DNS, DoT, DoH, or DoQ) or the URL `https://dns.example.com/dns-query/kids-tablet` gets the client ID `kids-tablet`, which `[[client]] match = ["id:kids-tablet"]` recognizes wherever the device is, even on mobile data. The path wins over the name.
 - **Behind a load balancer:** `proxy_protocol = true` on a `tcp`, `dot`, or `doh` listener makes it read the client's address from a PROXY protocol v2 header (HAProxy, Traefik, AWS NLB, ...). Every connection must then start with one, so only enable it when the balancer sends it, and don't let clients reach the listener directly. `LOCAL` connections (the balancer's health checks) keep the socket address.
-- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
+- **Slow and silent clients:** on `tcp` and `dot` listeners a connection that sends nothing for the idle timeout (10 s) is closed, and so is one whose client stops reading answers, so a stalled client can't hold one of the 1,024 connection slots. A query longer than 4,096 bytes (the UDP receive buffer's size; real queries are a few dozen bytes) closes the connection. Closures are counted in `telltale_tcp_idle_closed_total` and `telltale_tcp_stalled_closed_total`.
+- **Connection limits, per listener** (`tcp`, `dot`, `doh`, `doh3`, `doq`): `max_connections` (default 1,024) is how many connections it holds open at once, and `max_connections_per_address` (default 32, `0` = no limit) is how many one client address may hold, so a single host can't take every slot. An IPv6 client counts per /64, and with `proxy_protocol = true` the client's address is the one in the PROXY header. Connections over a limit are refused (counted in `telltale_tcp_rejected_per_address_total`, `telltale_doh_rejected_per_address_total`, `telltale_doq_rejected_per_address_total`, next to the `*_rejected_total` counters for the overall limit). **Behind a load balancer that hides client addresses** (no PROXY protocol, source NAT, or Kubernetes `externalTrafficPolicy: Cluster`), every client looks like the balancer, so raise `max_connections_per_address` or set it to `0`. Changing a limit restarts that listener (open connections finish first).
+  ```toml
+  [[listen]]
+  proto = "dot"
+  addr = "0.0.0.0:853"
+  tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+  max_connections = 2048
+  max_connections_per_address = 64
+  ```
+- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_rejected_total` and `telltale_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` now enforce like `tcp`, `dot`, and `doh`), `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
 - In Kubernetes, enable `encrypted.dot` / `encrypted.doh` (plus `encrypted.doh.http3`) / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
 
 ## Recursive resolution (no forwarder)
@@ -384,7 +394,7 @@ members = ["recursive"]
 # ipv6 = false                 # also ask servers over IPv6 (needs an IPv6 route)
 ```
 - **Private by default:** with QNAME minimization the root servers see only `com`, the `com` servers only `example.com`, and only `example.com`'s own servers see `www.example.com`. If a server mishandles the shortened question, the full one is sent (relaxed mode).
-- **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization`, servers that don't echo the letter case are remembered and asked without it.
+- **Safe:** a random port and ID per query; records are only accepted from servers responsible for them, and server addresses ("glue") only from the zone that delegates to them. With `case_randomization` (off by default), each query asks for a random mix of upper and lower case, and only an answer that echoes it exactly is accepted: it adds about one bit of entropy per letter to the 32 bits of ID and port an off-path spoofer must guess, so it is worth turning on for a recursive resolver. An answer with the case changed is ignored like any other stray packet while the real one is awaited; only a server that never echoes the case is remembered (after one timeout) and asked without it.
 - **Fast after the first time:** zone cuts and server addresses are remembered (bounded, by their TTLs), answers go to the normal cache, and servers are picked by measured response time. A first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.
 - **Hedged:** when a server is slower than usual (1.5 times its usual response time, at least 150 ms), the next server is asked too, and the first good answer wins, so one sluggish server doesn't hold up a lookup.
 - **Root priming** (RFC 8109): on first use, the built-in root server addresses are only used to ask for the root's current list, which is then remembered for a day. A root server that changes address doesn't need a new TelltaleDNS.
@@ -529,7 +539,7 @@ flowchart LR
   U -- all failed --> SF[SERVFAIL + EDE 22]
 ```
 - **Cache:** answers are cached for their TTL (clamped by `[cache] min_ttl`/`max_ttl`). Negative answers are cached when the upstream includes an SOA. SERVFAIL is cached for 5 seconds. Hot entries are refreshed in the background just before they expire.
-- **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. Identical concurrent questions share one upstream request.
+- **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. A SERVFAIL or REFUSED answer counts toward "more than half the time" but not toward "3 in a row", so a client retrying one broken domain can't bench a healthy upstream. Identical concurrent questions share one upstream request.
 - **Serve-stale:** if upstreams don't answer within 1.8 s (`[cache] stale_answer_client_timeout_ms`) and an expired answer is still in the cache (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer"), while the refresh continues in the background.
 - **Privacy:** queries to upstreams carry a fresh random ID and source port, and none of the client's EDNS options (no client subnet, cookies, or MAC addresses are forwarded).
 - **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever.
@@ -610,11 +620,14 @@ fetch_concurrency = 4
 fetch_timeout_secs = 120                # per attempt, including the download
 fetch_retries = 3                       # network errors, HTTP 5xx, and 429 are retried with backoff
 max_list_bytes = "64MiB"                # per-list `max_bytes` overrides
+max_invalid_percent = 50                # refuse a download if more than this % of its rule lines are invalid
 compile_threads = 0                     # 0 = auto (first compile: half the cores, 1-4; recompiles: 1)
 compile_memory = "128MiB"               # sort budget before spilling to disk
+fsync = true                            # sync a compiled snapshot to disk before publishing it
+max_regexes = 1000                      # regex rules kept per snapshot (0 = no limit); the rest are reported
 ```
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
-- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected, such as an empty body or an HTML page from a captive portal.
+- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
 - Lists are stored compressed in `<data_dir>/lists/` (`<name>.src.zst` plus `<name>.meta.json`). Removing a list from the config deletes its files; `enabled = false` keeps them.
 - List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.
@@ -670,6 +683,8 @@ Whenever a list's content changes, a list is added or removed, or a list's `kind
 
 - Compiling runs in the background at the lowest CPU priority (`SCHED_IDLE` on Linux), and never pauses or locks query handling. The new snapshot replaces the old one atomically: queries in flight finish with the old one, and the old one is freed on a background thread.
 - Thread count, `[filter] compile_threads`: the default, `0`, uses half the cores (between 1 and 4, so 2 on a Pi 4) when nothing is filtering yet, so blocking starts quickly on a first start. Once a filter is serving, a recompile (list refresh, reload) uses **one** thread: it takes longer, but nobody waits for it, and more threads compete with queries for cores and memory bandwidth even at the lowest priority. Set a number to use it for every compile.
+- **Regex rules are capped.** `[filter] max_regexes` (default 1,000) is the most regex rules a snapshot keeps; the ones past it, in list order, are left out, counted per list on the Lists page ("N regex rules left out"), and named in the log (the first 20) and by `telltale lists compile`. Every query that no exact or suffix rule settles is tried against all the regexes, about a microsecond per thousand (200 cost 0.4 µs at the median, 1,000 cost 1.1 µs). The matcher's automaton does not scale past a few thousand patterns that share a prefix: in a synthetic test, 1,500 cost 1.6 µs per query and 41 MiB, but 2,000 grew past 5 GiB of memory within two minutes. Raise the limit only after measuring your own lists (`matcher_bench`), and prefer plain domain rules where a list offers both.
+- **Power cuts.** A snapshot's files and its directory are synced to disk (`fsync`) before it counts as published, so a power cut can't leave a snapshot whose files are short; on an SD card that adds a few hundred milliseconds to a large compile, off the query path. `[filter] fsync = false` skips it. If the newest snapshot can't be opened at a start anyway (a snapshot made with `fsync = false` before a crash, say), it is renamed `<version>.broken`, the next newest is used, and the `.broken` directory is deleted after the next successful compile. Without an older snapshot, the resolver starts unfiltered until lists compile.
 - Memory stays bounded. List entries are sorted within `[filter] compile_memory` (default `"128MiB"`), and anything beyond that spills to temporary files in the snapshot directory. Each list's text is read only while it's being parsed.
 - **Sizing memory limits.** Steady state, the filter costs about 20 bytes per blocked name on top of a ~17 MiB base: 30–35 MiB with HaGeZi Pro + OISD big + StevenBlack (430k names), about 70 MiB with 2.7M names. Compiling needs much more for a few seconds: about 110 MiB peak for those three lists, and about 300 MiB for 2.7M names. If you set a container memory limit, leave room for that peak (at least 256 MiB for list sets over ~1M names), or the process can be killed mid-compile. Limiting compile memory automatically is planned (ADR-025).
 - Size and speed: about 9 bytes per blocked name. On a Raspberry Pi 4, 2 million names compile in about 6.4 s on 2 threads (the default first compile), 11.6 s on 1 (the default recompile), and 4.7 s on 3. A laptop does 2.7M names in about 2.7 s.
@@ -1096,6 +1111,8 @@ curl https://dns.example.com/api/v1/rules -H "authorization: Bearer $TOKEN"   # 
 - which rule decides;
 - where the query would be forwarded.
 
+It follows the same steps as the server, in the same order: access checks, local records and authoritative zones, quick rules, a schedule that blocks everything for the group, list `$dnsrewrite` rules (which win over blocking), the lists, then the group's `[[group.rewrite]]` entries and safe search. When one of the later steps answers the query instead of a list, the outcome and summary say which.
+
 ```sh
 telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
 # ad.doubleclick.net A from 192.168.1.50
@@ -1128,6 +1145,18 @@ exempt = ["127.0.0.0/8", "::1/128"]
 ipv6_prefix = 64        # a device's rotating IPv6 privacy addresses share one budget
 ```
 TelltaleDNS is never an open resolver by default. If you widen `allowed_networks` to everything, a warning is logged at startup.
+
+`[ratelimit]` applies on reload, with no restart. The default of 1,000 queries a minute per address suits homes where each device has its own address. A router or proxy that forwards for a whole network shows up as one address, and would be refused above about 17 queries a second: add it to `exempt`, or raise `queries`.
+
+- **Adjust it in the UI:** **Settings → System → Rate limit** shows the limit in effect (from the config file, or changed here) and edits it: queries per window, the window, what a limited client gets (`refused` or `drop`), the addresses never limited, and in the Advanced view how clients are grouped (`ipv4_prefix`, `ipv6_prefix`). **Check** shows what the change does first. **Revert to the file** goes back to `[ratelimit]` in the configuration. A change replaces the whole section, so fields left out take the defaults, not the file's values, and the list of exempt addresses is replaced too (keep `127.0.0.0/8` and `::1/128`).
+- **Through the API:** `PUT /api/v1/ratelimit/default` with the same fields as `[ratelimit]` (add `?dryRun=true` to preview), and `DELETE` to revert; `GET /api/v1/config/entries?kind=ratelimit` shows the limit in effect and its source. Agents need `config:write:ratelimit`, and AI agents can plan a change with the MCP tool `plan_set_ratelimit`. On a node whose configuration comes from Git, the response says what to add to the repository.
+
+### The advertised UDP size
+```toml
+[dns]
+edns_payload = 1232     # 512 to 4096; needs a restart
+```
+This is the UDP payload size announced in EDNS(0) answers (RFC 6891), and the largest UDP answer sent to a client that announces at least as much; bigger answers are cut and flagged truncated, and the client retries over TCP. 1232 is the DNS Flag Day 2020 value and avoids IP fragmentation on almost every path. Raise it only on a network known to carry larger datagrams (jumbo frames, an IPv6-only network that doesn't fragment). The ceiling is 4096, the size of the UDP workers' send buffer.
 
 ## Special names
 Handled before anything else (each can be turned off under `[special]`):
@@ -1243,9 +1272,14 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
 - **Indeterminate** (validation couldn't finish, such as the validator's depth limit): the
   answer is fetched again without validation and served without AD, in both modes.
 - **Unsigned zones:** before refusing an answer, TelltaleDNS proves whether its zone is
-  simply unsigned (the parent's signed denial of the zone's DS), and if so serves it as
+  simply unsigned (the parent's signed denial of the zone's DS, which must also show that
+  the name is a delegation: NS present, SOA and DS absent), and if so serves it as
   insecure. This corrects the validation library's verdict on CNAME chains in unsigned zones
   (`www.netflix.com`, `www.amazon.com`); proven zones are remembered for 15 minutes (ADR-098).
+  The whole validation, proof included, ends within twice the query budget (4 s by default),
+  at most 8 proofs run at once, and a name that couldn't be proven isn't tried again for a
+  minute: when it can't be proven, the answer stays bogus (or, with no answer at all, stale
+  or SERVFAIL as for any upstream failure).
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only
   names that are really broken (like `dnssec-failed.org`) should show up.
 - **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.
@@ -1580,11 +1614,12 @@ Main metrics:
 | `telltale_responses_total{rcode}`, `telltale_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
 | `telltale_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
 | `telltale_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
+| `telltale_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
 | `telltale_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
 | `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
 | `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list |
 | `telltale_client_queries_total{client}` | queries per client: off by default; turn on with `[telemetry.metrics] per_client = true` (at most `per_client_cap` clients, default 100; the rest are `client="other"`) |
-| `telltale_list_entries{list}`, `telltale_filter_*` | list sizes, snapshot version, rule count, compile time |
+| `telltale_list_entries{list}`, `telltale_list_regex_skipped{list}`, `telltale_filter_*` | list sizes, regex rules a list ships that the snapshot leaves out (over `max_regexes`), snapshot version, rule count, compile time, and `telltale_filter_lookup_mode{mode="indexed"|"walk"}` (1 for the lookup in use; `walk` is the slower fallback when a snapshot has more distinct list combinations than the index holds, 65,536, which is also logged as a warning) |
 | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
 | `telltale_udp_*`, `telltale_tcp_*` | listener counters |
 | `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
@@ -1828,7 +1863,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 | Dashboard | queries, blocked %, cache hits, upstream latency, active clients; queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients (click through to the query log); upstream share and health |
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
-| Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, and latency |
+| Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
 | Settings | your password and two-factor sign-in, API tokens, users and the audit log (admins), system information, and the cache ([Cache tools](#cache-tools)) |
 
 Every chart has a **Table** view. The UI follows the system's light or dark theme (or pick one in the header) and works on phones. Upstreams, lists, and groups can be added and changed on their pages ([Changing the configuration in the UI](#changing-the-configuration-in-the-ui)).
@@ -1877,7 +1912,7 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/audit?action=user.`, `GET /api/v1/audit/verify` | the audit log, newest first, and a check of its hash chain (admins) |
 | `GET /api/v1/queries/stream?status=blocked` | live queries as Server-Sent Events (`event: query` with a query-log row, `event: dropped` with how many matching queries were skipped). Filters: `name` + `match` (not regex), `client`, `group`, `status`, `qtype`, `upstream`, `minLatencyMs`; `rate` caps events per second (default 500, at most 2000). At most 16 streams per node; follows the query-log privacy level (level 3: off) |
 | `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20` | why a name is or isn't blocked for a device ([explain](#why-was-it-blocked-explain)) |
-| `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health |
+| `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health (each upstream's `failuresByKind` says whether its failures were timeouts, connection errors, bad replies, unresolved names, SERVFAIL, REFUSED, or other errors) |
 
 ```sh
 curl -sN -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries/stream?status=blocked'   # watch blocks live
@@ -1917,7 +1952,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `analytics:read` | statistics, top lists, latency, anomalies, explain, cluster status |
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
-| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams |
+| `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
 | `ops:pause`, `ops:cache` | pause blocking; flush the cache |
 | `cluster:admin` | promote a node to primary |
 
@@ -2029,6 +2064,7 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 | `plan_add_list` | add a filter list (URL or inline rules) | `config:write:lists` |
 | `plan_update_group` | change a group's networks, lists, blocked answer, priority, or schedules | `config:write:groups` (+ `config:read`) |
 | `plan_set_schedule` | make or change a weekly schedule (a bedtime, extra lists, blocked services) | `config:write:groups` |
+| `plan_set_ratelimit` | change the per-client rate limit (queries per window, the action, exempt addresses, how clients are grouped) | `config:write:ratelimit` (+ `config:read`) |
 | `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
 | `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |
 

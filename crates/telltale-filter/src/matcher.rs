@@ -4,13 +4,12 @@
 //! index built from the snapshot's FSTs when the matcher is created: one probe per (scope,
 //! reversed suffix) of the query name, which are independent memory reads, instead of a
 //! byte-by-byte FST walk (~30 ns per byte of dependent node decoding). Modifier rules (an FST
-//! walk, only when the snapshot has any) and the overlay of manual rules are checked in the
-//! same pass, collecting every matching rule. Regexes run only if an enabled list has any. The winner
+//! walk, only when the snapshot has any) are checked in the same pass, collecting every
+//! matching rule. Regexes run only if an enabled list has any. The winner
 //! follows the four tiers (important allow > important block > allow > block); within a tier,
 //! attribution prefers an exact rule, then the most specific suffix, then a regex, then the
 //! lowest list ID. Steady-state lookups allocate nothing (scratch buffers live in [`Scratch`]).
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +20,7 @@ use regex_automata::{Input, PatternID, PatternSet};
 use telltale_config::Cidr;
 
 use crate::compile::{regex_builder, reversed_key};
-use crate::parse::{ListOptions, ParseStats, Pattern, Scope, parse_list};
+use crate::parse::Scope;
 use crate::snapshot::{Class, ModRule, NegValue, RegexRule, ScopeTag, Snapshot, shard_of};
 
 /// Most labels a name can have (255-byte wire limit).
@@ -72,15 +71,6 @@ impl ListMask {
     fn intersects(&self, other: &Self) -> bool {
         self.words.iter().zip(&other.words).any(|(a, b)| a & b != 0)
     }
-
-    fn union_with(&mut self, other: &Self) {
-        if self.words.len() < other.words.len() {
-            self.words.resize(other.words.len(), 0);
-        }
-        for (a, b) in self.words.iter_mut().zip(&other.words) {
-            *a |= b;
-        }
-    }
 }
 
 /// Who is asking, for `$client` rules (which name an IP, a CIDR, a device, or a client ID).
@@ -125,9 +115,9 @@ impl Tier {
 pub enum RuleRef {
     /// A plain domain rule; `labels` = labels of the matching name (`example.com` = 2).
     Domain { scope: Scope, labels: u8 },
-    /// Index into the snapshot's modifier rules (or the overlay's, if `overlay`).
+    /// Index into the snapshot's modifier rules.
     ModRule { index: u32 },
-    /// Index into the snapshot's regex rules (or the overlay's).
+    /// Index into the snapshot's regex rules.
     Regex { index: u32 },
 }
 
@@ -136,8 +126,6 @@ pub struct Attribution {
     pub list: u16,
     pub tier: Tier,
     pub rule: RuleRef,
-    /// The rule came from the manual-rules overlay, not the snapshot.
-    pub overlay: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +185,6 @@ impl Sink for Best {
                     list,
                     tier,
                     rule: RuleRef::Domain { scope, labels },
-                    overlay: false,
                 },
             );
         }
@@ -237,7 +224,6 @@ impl Sink for Collect<'_> {
                     list,
                     tier,
                     rule: RuleRef::Domain { scope, labels },
-                    overlay: false,
                 };
                 self.rule(domain_rank(scope, labels, list), a);
             }
@@ -452,103 +438,6 @@ impl RegexSets {
     }
 }
 
-/// Manual rules applied without recompiling (ADR-003): consulted together with the snapshot,
-/// at the same precedence, and folded into the next compile by the caller.
-#[derive(Debug, Default)]
-pub struct Overlay {
-    domains: HashMap<Vec<u8>, Vec<(Scope, Class, u16)>>,
-    mods: HashMap<Vec<u8>, Vec<CompiledMod>>,
-    regexes: Option<RegexSets>,
-    lists: ListMask,
-}
-
-impl Overlay {
-    /// Parses each `(list ID, options, rules text)` into an overlay.
-    pub fn build(lists: &[(u16, ListOptions, &str)]) -> Result<(Self, Vec<ParseStats>), String> {
-        let mut o = Self::default();
-        let mut regexes = Vec::new();
-        let mut stats = Vec::new();
-        for &(list, options, text) in lists {
-            o.lists.set(list);
-            stats.push(parse_list(text.as_bytes(), options, |line, rule| {
-                if rule.modifiers.badfilter {
-                    return; // `$badfilter` needs the compiler's view of every list.
-                }
-                let m = &rule.modifiers;
-                let plain = m.client.is_empty()
-                    && m.dnstype.is_empty()
-                    && m.denyallow.is_empty()
-                    && m.dnsrewrite.is_none();
-                let allow = rule.action == crate::parse::Action::Allow;
-                match &rule.pattern {
-                    Pattern::Domain { name, scope } if plain => {
-                        o.domains.entry(reversed_key(name)).or_default().push((
-                            *scope,
-                            Class::new(allow, m.important),
-                            list,
-                        ));
-                    }
-                    Pattern::Domain { name, scope } => {
-                        let mr = ModRule {
-                            list,
-                            line,
-                            scope: (*scope).into(),
-                            allow,
-                            important: m.important,
-                            client: m
-                                .client
-                                .iter()
-                                .map(|c| NegValue {
-                                    value: c.value.clone(),
-                                    negated: c.negated,
-                                })
-                                .collect(),
-                            dnstype: m
-                                .dnstype
-                                .iter()
-                                .map(|t| NegValue {
-                                    value: t.value,
-                                    negated: t.negated,
-                                })
-                                .collect(),
-                            denyallow: m.denyallow.clone(),
-                            dnsrewrite: m.dnsrewrite.clone(),
-                        };
-                        o.mods
-                            .entry(reversed_key(name))
-                            .or_default()
-                            .push(CompiledMod::new(&mr));
-                    }
-                    Pattern::Regex { pattern, invert } => regexes.push(RegexRule {
-                        pattern: pattern.clone(),
-                        list,
-                        line,
-                        allow,
-                        important: m.important,
-                        invert: *invert,
-                        dnstype: m
-                            .dnstype
-                            .iter()
-                            .map(|t| NegValue {
-                                value: t.value,
-                                negated: t.negated,
-                            })
-                            .collect(),
-                    }),
-                }
-            }));
-        }
-        if !regexes.is_empty() {
-            o.regexes = Some(RegexSets::new(regexes)?);
-        }
-        Ok((o, stats))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.domains.is_empty() && self.mods.is_empty() && self.regexes.is_none()
-    }
-}
-
 /// Query-time index of one scope's domain FSTs (ADR-020): a bucketed hash table where each
 /// 64-byte bucket holds 8 entries of `fingerprint (48 bits) | list-set ID (16 bits)`, so a
 /// probe, hit or miss, almost always touches one cache line. The fingerprint comes from a
@@ -566,7 +455,7 @@ struct ScopeIndex {
 struct Bucket([u64; 8]);
 
 /// Most list-set IDs the 16-bit entry field can hold; larger snapshots use the FST walk.
-const MAX_INDEXED_LISTSETS: u64 = 1 << 16;
+pub const MAX_INDEXED_LISTSETS: u64 = 1 << 16;
 
 impl ScopeIndex {
     fn build(maps: &[fst::Map<crate::snapshot::FstData>], seed: u64) -> Result<Self, String> {
@@ -672,8 +561,8 @@ const SCOPES: [Scope; 3] = [Scope::Subtree, Scope::Exact, Scope::Subdomains];
 /// Distinguishes matchers so a [`Scratch`] rebuilds its regex caches after a swap.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// An immutable snapshot + overlay, ready for lookups. Share it behind an `Arc` and swap the
-/// `Arc` (`ArcSwap`) to publish a new one.
+/// An immutable snapshot, ready for lookups. Share it behind an `Arc` and swap the `Arc`
+/// (`ArcSwap`) to publish a new one.
 #[derive(Debug)]
 pub struct Matcher {
     id: u64,
@@ -681,7 +570,6 @@ pub struct Matcher {
     index: Option<DomainIndex>,
     mods: Vec<CompiledMod>,
     regexes: RegexSets,
-    overlay: Overlay,
     /// REQ: FLT-014 (T9.20) — any `$dnsrewrite` rule at all (else [`Matcher::rewrites`] is
     /// one bool check).
     has_rewrites: bool,
@@ -793,19 +681,14 @@ fn walk<D: AsRef<[u8]>>(
 }
 
 impl Matcher {
-    /// A matcher over `snapshot` (or no snapshot) plus `overlay`, using the FST walk. Builds
-    /// the regex sets.
-    pub fn new(snapshot: Option<Arc<Snapshot>>, overlay: Overlay) -> Result<Self, String> {
-        Self::with_lookup(snapshot, overlay, Lookup::Walk)
+    /// A matcher over `snapshot` (or no snapshot), using the FST walk. Builds the regex sets.
+    pub fn new(snapshot: Option<Arc<Snapshot>>) -> Result<Self, String> {
+        Self::with_lookup(snapshot, Lookup::Walk)
     }
 
     /// Like [`Matcher::new`], choosing the domain lookup. `Indexed` takes ~0.4 s per million
     /// names to build: publish a `Walk` matcher first and swap in the indexed one when ready.
-    pub fn with_lookup(
-        snapshot: Option<Arc<Snapshot>>,
-        overlay: Overlay,
-        lookup: Lookup,
-    ) -> Result<Self, String> {
+    pub fn with_lookup(snapshot: Option<Arc<Snapshot>>, lookup: Lookup) -> Result<Self, String> {
         let (mods, regexes, index) = match &snapshot {
             Some(s) => (
                 s.modrules.iter().map(CompiledMod::new).collect(),
@@ -818,15 +701,13 @@ impl Matcher {
             ),
             None => (Vec::new(), RegexSets::new(Vec::new())?, None),
         };
-        let has_rewrites = mods.iter().any(|m: &CompiledMod| m.rewrite)
-            || overlay.mods.values().flatten().any(|m| m.rewrite);
+        let has_rewrites = mods.iter().any(|m: &CompiledMod| m.rewrite);
         Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             snapshot,
             index,
             mods,
             regexes,
-            overlay,
             has_rewrites,
         })
     }
@@ -838,10 +719,6 @@ impl Matcher {
 
     pub fn snapshot(&self) -> Option<&Arc<Snapshot>> {
         self.snapshot.as_ref()
-    }
-
-    pub fn overlay(&self) -> &Overlay {
-        &self.overlay
     }
 
     /// Heap bytes of the query-time domain index (0 in `Walk` mode).
@@ -919,11 +796,6 @@ impl Matcher {
             );
             hits.extend(found.into_iter().filter_map(|i| mods.get(i)));
         }
-        for labels in 1..=name.labels {
-            if let Some(mods) = self.overlay.mods.get(name.prefix(labels)) {
-                hits.extend(mods.iter().filter(|m| take(m, labels)));
-            }
-        }
         // An exception (`@@…$dnsrewrite`) turns rewrites off.
         if hits.is_empty() || hits.iter().any(|m| m.allow) {
             return None;
@@ -938,7 +810,7 @@ impl Matcher {
         Some((crate::rewrite::combine(&actions, qtype), hits[0].list))
     }
 
-    /// Every rule in every list (and the overlay) that matches `qname` for this client and
+    /// Every rule in every list that matches `qname` for this client and
     /// qtype, in precedence order (tier, then exact > deeper suffix > regex > list ID), each
     /// marked `enabled` if `mask` uses its list. The first enabled match is what [`decide`]
     /// returns. Allocates: for explain (FLT-013), never the query path.
@@ -955,8 +827,7 @@ impl Matcher {
             return Vec::new();
         };
         // Look through every list; `Collect` marks which ones the client uses.
-        let mut every = ListMask::all(self.snapshot.as_ref().map_or(0, |s| s.manifest.lists.len()));
-        every.union_with(&self.overlay.lists);
+        let every = ListMask::all(self.snapshot.as_ref().map_or(0, |s| s.manifest.lists.len()));
         let mut sink = Collect {
             mask,
             out: Vec::new(),
@@ -967,8 +838,7 @@ impl Matcher {
         sink.out.into_iter().map(|(_, _, m)| m).collect()
     }
 
-    /// The lookup passes, reporting to `sink`: snapshot domains, modifier rules, overlay,
-    /// regexes.
+    /// The lookup passes, reporting to `sink`: snapshot domains, modifier rules, regexes.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn run(
@@ -995,16 +865,7 @@ impl Matcher {
                 );
             }
         }
-        if !self.overlay.is_empty() && self.overlay.lists.intersects(mask) {
-            self.overlay_domains(name, qtype, client, mask, sink);
-        }
-        let need_regex = (!self.regexes.is_empty() && self.regexes.lists.intersects(mask))
-            || self
-                .overlay
-                .regexes
-                .as_ref()
-                .is_some_and(|r| r.lists.intersects(mask));
-        if need_regex {
+        if !self.regexes.is_empty() && self.regexes.lists.intersects(mask) {
             self.regex_pass(qname, qtype, mask, scratch, sink);
         }
     }
@@ -1086,60 +947,8 @@ impl Matcher {
                         rule: RuleRef::ModRule {
                             index: u32::try_from(i).unwrap_or(u32::MAX),
                         },
-                        overlay: false,
                     },
                 );
-            }
-        }
-    }
-
-    fn overlay_domains(
-        &self,
-        name: &Name,
-        qtype: u16,
-        client: &ClientCtx<'_>,
-        mask: &ListMask,
-        sink: &mut impl Sink,
-    ) {
-        let o = &self.overlay;
-        for labels in 1..=name.labels {
-            let prefix = name.prefix(labels);
-            let l8 = u8::try_from(labels).unwrap_or(u8::MAX);
-            if let Some(entries) = o.domains.get(prefix) {
-                for &(scope, class, list) in entries {
-                    if mask.contains(list) && scope_applies(scope, labels, name.labels) {
-                        let tier = Tier::from_class(class);
-                        sink.rule(
-                            domain_rank(scope, l8, list),
-                            Attribution {
-                                list,
-                                tier,
-                                rule: RuleRef::Domain { scope, labels: l8 },
-                                overlay: true,
-                            },
-                        );
-                    }
-                }
-            }
-            if let Some(mods) = o.mods.get(prefix) {
-                for (i, m) in mods.iter().enumerate() {
-                    if mask.contains(m.list)
-                        && scope_applies(m.scope, labels, name.labels)
-                        && m.applies(name.key(), qtype, client)
-                    {
-                        sink.rule(
-                            domain_rank(m.scope, l8, m.list),
-                            Attribution {
-                                list: m.list,
-                                tier: m.tier,
-                                rule: RuleRef::ModRule {
-                                    index: u32::try_from(i).unwrap_or(u32::MAX),
-                                },
-                                overlay: true,
-                            },
-                        );
-                    }
-                }
             }
         }
     }
@@ -1152,22 +961,12 @@ impl Matcher {
         scratch: &mut Scratch,
         sink: &mut impl Sink,
     ) {
-        // Slots: snapshot normal, snapshot invert, overlay normal, overlay invert.
-        let sets: [(Option<&RegexSets>, bool); 2] = [
-            (Some(&self.regexes), false),
-            (self.overlay.regexes.as_ref(), true),
-        ];
+        // Slots: normal, invert.
+        let set = &self.regexes;
         if scratch.matcher != self.id {
             scratch.matcher = self.id;
-            scratch.caches = sets
-                .iter()
-                .flat_map(|(set, _)| {
-                    let set = *set;
-                    [
-                        set.and_then(|s| s.normal.as_ref()),
-                        set.and_then(|s| s.invert.as_ref()),
-                    ]
-                })
+            scratch.caches = [set.normal.as_ref(), set.invert.as_ref()]
+                .into_iter()
                 .map(|re| re.map(|r| (r.create_cache(), PatternSet::new(r.pattern_len()))))
                 .collect();
         }
@@ -1188,47 +987,38 @@ impl Matcher {
             pos += 1 + len;
         }
         let input = Input::new(&scratch.name);
-        for (set_idx, (set, overlay)) in sets.iter().enumerate() {
-            let Some(set) = set else { continue };
-            if set.is_empty() || !set.lists.intersects(mask) {
+        for (kind, (re, ids)) in [
+            (&set.normal, &set.normal_ids),
+            (&set.invert, &set.invert_ids),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (Some(re), Some(Some((cache, pats)))) = (re, scratch.caches.get_mut(kind)) else {
                 continue;
-            }
-            for (kind, (re, ids)) in [
-                (&set.normal, &set.normal_ids),
-                (&set.invert, &set.invert_ids),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let (Some(re), Some(Some((cache, pats)))) =
-                    (re, scratch.caches.get_mut(set_idx * 2 + kind))
-                else {
+            };
+            pats.clear();
+            re.which_overlapping_matches_with(cache, &input, pats);
+            let invert = kind == 1;
+            for (pid, &rule_idx) in ids.iter().enumerate() {
+                let matched = PatternID::new(pid).is_ok_and(|id| pats.contains(id));
+                // A normal rule applies when it matches; an `;invert` rule when it doesn't.
+                if matched == invert {
                     continue;
-                };
-                pats.clear();
-                re.which_overlapping_matches_with(cache, &input, pats);
-                let invert = kind == 1;
-                for (pid, &rule_idx) in ids.iter().enumerate() {
-                    let matched = PatternID::new(pid).is_ok_and(|id| pats.contains(id));
-                    // A normal rule applies when it matches; an `;invert` rule when it doesn't.
-                    if matched == invert {
-                        continue;
-                    }
-                    let r = &set.rules[rule_idx as usize];
-                    if !mask.contains(r.list) || !dnstype_ok(&r.dnstype, qtype) {
-                        continue;
-                    }
-                    let tier = Tier::of(r.allow, r.important);
-                    sink.rule(
-                        Rank(2, 0, r.list),
-                        Attribution {
-                            list: r.list,
-                            tier,
-                            rule: RuleRef::Regex { index: rule_idx },
-                            overlay: *overlay,
-                        },
-                    );
                 }
+                let r = &set.rules[rule_idx as usize];
+                if !mask.contains(r.list) || !dnstype_ok(&r.dnstype, qtype) {
+                    continue;
+                }
+                let tier = Tier::of(r.allow, r.important);
+                sink.rule(
+                    Rank(2, 0, r.list),
+                    Attribution {
+                        list: r.list,
+                        tier,
+                        rule: RuleRef::Regex { index: rule_idx },
+                    },
+                );
             }
         }
     }

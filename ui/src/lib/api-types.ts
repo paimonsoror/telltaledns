@@ -1160,6 +1160,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/ratelimit/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the per-client rate limit (DNS-014).
+         * @description The body has the same fields as `[ratelimit]` in `telltale.toml`: `enabled`, `queries` (allowed
+         *     per window, per client; bursts up to this), `window_secs`, `action` (`refused` or `drop`),
+         *     `exempt` (CIDRs never limited), `ipv4_prefix`, and `ipv6_prefix` (how clients are grouped: 32
+         *     is one address, 64 groups a device's rotating IPv6 addresses). It replaces the whole section
+         *     (fields left out take the defaults, not the config file's values) until it's deleted again.
+         *     A router or proxy that forwards for a whole network shows up as one client: add it to
+         *     `exempt`, or raise `queries`. Applies on the next query, with no restart; every client's count
+         *     starts over.
+         */
+        put: operations["put_ratelimit"];
+        post?: never;
+        /**
+         * Go back to the config file's rate limit (DNS-014).
+         * @description Removes what the API or UI stored, so `[ratelimit]` in the config files (or the defaults)
+         *     applies again. 404 when nothing was stored.
+         */
+        delete: operations["delete_ratelimit"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/records": {
         parameters: {
             query?: never;
@@ -2604,6 +2636,41 @@ export interface components {
             /** @description One sentence for people. */
             summary: string;
         };
+        /** @description Failed attempts by kind (their sum is `failures`). */
+        FailureKinds: {
+            /**
+             * Format: int64
+             * @description An answer that didn't match the query or didn't parse.
+             */
+            badResponse: number;
+            /**
+             * Format: int64
+             * @description A connection, TLS, or socket error.
+             */
+            network: number;
+            /**
+             * Format: int64
+             * @description Any other error RCODE (FORMERR, NOTIMP, ...).
+             */
+            otherRcode: number;
+            /** Format: int64 */
+            refused: number;
+            /**
+             * Format: int64
+             * @description The upstream answered SERVFAIL (often the domain's fault, not the upstream's).
+             */
+            servfail: number;
+            /**
+             * Format: int64
+             * @description No answer within the attempt's timeout.
+             */
+            timeout: number;
+            /**
+             * Format: int64
+             * @description The upstream's hostname couldn't be resolved.
+             */
+            unresolved: number;
+        };
         /** @description REQ: OBS-010 (T9.6) — an alert that is firing now. */
         FiringAlert: {
             rule: string;
@@ -3137,6 +3204,12 @@ export interface components {
                 name: string;
                 /** @description Lists it shares names with, most shared first. */
                 overlap: components["schemas"]["ListShare"][];
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
+                 *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
+                 */
+                regexSkipped: number;
                 /** @description URL, file path, or `inline`. */
                 source: string;
                 /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
@@ -3339,6 +3412,11 @@ export interface components {
                 endpoint: string;
                 /** Format: int64 */
                 failures: number;
+                /**
+                 * @description `failures` by kind, which say what to fix: timeouts point at the path or the upstream's
+                 *     load, network errors at the connection, SERVFAIL at the domain asked about.
+                 */
+                failuresByKind: components["schemas"]["FailureKinds"];
                 /** @description Groups it belongs to. */
                 groups: string[];
                 /**
@@ -3433,6 +3511,12 @@ export interface components {
             name: string;
             /** @description Lists it shares names with, most shared first. */
             overlap: components["schemas"]["ListShare"][];
+            /**
+             * Format: int64
+             * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
+             *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
+             */
+            regexSkipped: number;
             /** @description URL, file path, or `inline`. */
             source: string;
             /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
@@ -4104,6 +4188,11 @@ export interface components {
             endpoint: string;
             /** Format: int64 */
             failures: number;
+            /**
+             * @description `failures` by kind, which say what to fix: timeouts point at the path or the upstream's
+             *     load, network errors at the connection, SERVFAIL at the domain asked about.
+             */
+            failuresByKind: components["schemas"]["FailureKinds"];
             /** @description Groups it belongs to. */
             groups: string[];
             /**
@@ -6185,6 +6274,83 @@ export interface operations {
             };
             /** @description Not available on this node right now. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_ratelimit: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A field is wrong (a prefix, a CIDR, zero queries while enabled), or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_ratelimit: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's rate limit is in effect already. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

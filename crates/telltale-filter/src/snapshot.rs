@@ -152,6 +152,10 @@ pub struct ListCompileStats {
     pub unique: u64,
     pub invalid: u64,
     pub unsupported: u64,
+    /// Regex rules of this list left out of the snapshot: over `[filter] max_regexes`, too
+    /// large for the engine, or not valid regexes.
+    #[serde(default)]
+    pub regex_skipped: u64,
 }
 
 /// A rule kept outside the domain FSTs because of its modifiers (§3.3).

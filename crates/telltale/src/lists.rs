@@ -18,7 +18,7 @@ use telltale_filter::compile::{CompileOptions, CompileReport, ListData, ListInpu
 use telltale_filter::fetch::{
     Client, FetchSettings, Fetcher, ListSpec, Outcome, Resolve, Store, SystemResolver,
 };
-use telltale_filter::matcher::{Lookup, Matcher, Overlay};
+use telltale_filter::matcher::{Lookup, Matcher};
 use telltale_filter::parse::{ListOptions, parse_list};
 use telltale_filter::snapshot::{MANIFEST, Manifest, Snapshot};
 use telltale_upstream::Bootstrap;
@@ -135,7 +135,7 @@ impl Lists {
         };
         let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
         info!(
-            lists = specs.len(),
+            lists = specs.iter().filter(|s| s.enabled).count(),
             dir = %fetcher.store().dir().display(),
             "list fetcher started"
         );
@@ -210,7 +210,14 @@ struct CompileSettings {
     /// the result, but every query competes with it for cores and memory bandwidth (T2.7).
     live_threads: usize,
     memory: usize,
+    /// `[filter] fsync`.
+    sync: bool,
+    /// `[filter] max_regexes`.
+    max_regexes: usize,
 }
+
+/// Rejected regex rules named one by one in the log and in `telltale lists compile`.
+const MAX_REGEX_LOGGED: usize = 20;
 
 /// Snapshots kept on disk (`spec/02` §6).
 const KEEP_SNAPSHOTS: usize = 3;
@@ -224,6 +231,8 @@ impl CompileSettings {
             threads: compile_threads(cfg.filter.compile_threads),
             live_threads: live_compile_threads(cfg.filter.compile_threads),
             memory: usize::try_from(cfg.filter.compile_memory.bytes()).unwrap_or(usize::MAX),
+            sync: cfg.filter.fsync,
+            max_regexes: usize::try_from(cfg.filter.max_regexes).unwrap_or(usize::MAX),
         }
     }
 }
@@ -329,14 +338,30 @@ fn compile_if_changed(
             threads: settings.threads,
             memory_budget: settings.memory,
             version,
+            sync: settings.sync,
+            max_regexes: settings.max_regexes,
         },
     )
     .map_err(|e| e.to_string())?;
-    // Keep the newest few; older ones are only useful for rollback.
+    // Keep the newest few; older ones are only useful for rollback. Snapshots set aside as
+    // unusable (`.broken`) have served their purpose once a new one compiled.
     let versions = snapshot_versions(&settings.snapshots);
     for (_, dir) in versions.iter().rev().skip(KEEP_SNAPSHOTS) {
         if let Err(e) = std::fs::remove_dir_all(dir) {
             warn!("cannot remove old snapshot {}: {e}", dir.display());
+        }
+    }
+    for entry in std::fs::read_dir(&settings.snapshots)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.ends_with(".broken"))
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
         }
     }
     Ok(Some((report, out)))
@@ -372,12 +397,37 @@ impl Publisher {
         }
     }
 
+    /// REQ: FLT-004 — at a cold start (nothing is serving yet), a newest snapshot that can't
+    /// be used (a torn write after a crash, a regex set the engine refuses) is set aside as
+    /// `<version>.broken` and the next older one is tried, so the resolver doesn't run
+    /// unfiltered until the next list change. While a snapshot is serving, the current
+    /// filter simply stays, as before.
+    fn fall_back(&self, dir: &Path, generation: u64) {
+        if generation != 1 {
+            return;
+        }
+        let mut broken = dir.as_os_str().to_owned();
+        broken.push(".broken");
+        if let Err(e) = std::fs::rename(dir, &broken) {
+            warn!(dir = %dir.display(), "cannot set the unusable snapshot aside: {e}");
+            return;
+        }
+        warn!(dir = %dir.display(), "unusable filter snapshot set aside as .broken");
+        if let Some(parent) = dir.parent()
+            && let Some((_, older)) = snapshot_versions(parent).last()
+        {
+            info!(dir = %older.display(), "trying the previous filter snapshot");
+            self.load(older, generation);
+        }
+    }
+
     fn load(&self, dir: &Path, generation: u64) {
         let t = std::time::Instant::now();
         let snap = match Snapshot::open(dir) {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 error!(dir = %dir.display(), "cannot load filter snapshot; keeping the current filter: {e}");
+                self.fall_back(dir, generation);
                 return;
             }
         };
@@ -390,17 +440,17 @@ impl Publisher {
                 false
             }
         };
-        let walk =
-            match Matcher::with_lookup(Some(Arc::clone(&snap)), Overlay::default(), Lookup::Walk) {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(
-                        version,
-                        "cannot activate filter snapshot; keeping the current filter: {e}"
-                    );
-                    return;
-                }
-            };
+        let walk = match Matcher::with_lookup(Some(Arc::clone(&snap)), Lookup::Walk) {
+            Ok(m) => m,
+            Err(e) => {
+                error!(
+                    version,
+                    "cannot activate filter snapshot; keeping the current filter: {e}"
+                );
+                self.fall_back(dir, generation);
+                return;
+            }
+        };
         if !store(walk) {
             return; // a newer snapshot was published meanwhile
         }
@@ -412,9 +462,7 @@ impl Publisher {
         // The index build is background work like compiling: never at the cost of queries.
         telltale_net::background_thread();
         let t = std::time::Instant::now();
-        if let Ok(m) =
-            Matcher::with_lookup(Some(Arc::clone(&snap)), Overlay::default(), Lookup::Indexed)
-        {
+        if let Ok(m) = Matcher::with_lookup(Some(Arc::clone(&snap)), Lookup::Indexed) {
             #[allow(clippy::cast_precision_loss)] // MiB for a log line
             let mib = m.index_bytes() as f64 / f64::from(1u32 << 20);
             let lookup = m.lookup();
@@ -430,6 +478,15 @@ impl Publisher {
                     seconds = t.elapsed().as_secs_f64(),
                     "filter lookup index ready"
                 );
+                // REQ: FLT-003, OBS-011 (review 02-09) — the fallback must be visible.
+                if lookup == Lookup::Walk {
+                    warn!(
+                        version,
+                        list_sets = snap.manifest.stats.listsets,
+                        limit = telltale_filter::matcher::MAX_INDEXED_LISTSETS,
+                        "filter lookup index not built: the snapshot has more distinct list combinations than the index holds, so lookups use the slower FST walk and its pages stay in memory (see telltale_filter_lookup_mode)"
+                    );
+                }
             }
         }
     }
@@ -495,8 +552,16 @@ async fn compile_loop(
                     dir = %dir.display(),
                     "filter snapshot compiled"
                 );
-                for (list, line, why) in &report.regex_errors {
+                // The first few by name; a list shipping thousands over the limit would
+                // otherwise flood the log with one line each.
+                for (list, line, why) in report.regex_errors.iter().take(MAX_REGEX_LOGGED) {
                     warn!(list = %list, line, "regex rejected: {why}");
+                }
+                if report.regex_errors.len() > MAX_REGEX_LOGGED {
+                    warn!(
+                        "{} more regex rules rejected (see the Lists page, or `telltale lists compile`)",
+                        report.regex_errors.len() - MAX_REGEX_LOGGED
+                    );
                 }
                 *shared
                     .compiled
@@ -575,8 +640,16 @@ pub(crate) fn compile_now(
         )
         .map_err(io)?;
     }
-    for (list, line, why) in &report.regex_errors {
+    for (list, line, why) in report.regex_errors.iter().take(MAX_REGEX_LOGGED) {
         writeln!(out, "  regex rejected: {list} line {line}: {why}").map_err(io)?;
+    }
+    if report.regex_errors.len() > MAX_REGEX_LOGGED {
+        writeln!(
+            out,
+            "  ... and {} more regex rules rejected",
+            report.regex_errors.len() - MAX_REGEX_LOGGED
+        )
+        .map_err(io)?;
     }
     Ok(report.regex_errors.is_empty())
 }
@@ -589,7 +662,7 @@ pub(crate) fn newest_matcher(cfg: &Config) -> Result<Option<Matcher>, String> {
         return Ok(None);
     };
     let snap = Snapshot::open(&newest).map_err(|e| format!("{}: {e}", newest.display()))?;
-    Matcher::with_lookup(Some(Arc::new(snap)), Overlay::default(), Lookup::Walk).map(Some)
+    Matcher::with_lookup(Some(Arc::new(snap)), Lookup::Walk).map(Some)
 }
 
 /// Reads stored list sources (for explain's line lookups).
@@ -601,7 +674,10 @@ pub(crate) fn source_reader(cfg: &Config) -> impl Fn(&str) -> Option<Vec<u8>> + 
 /// `telltale lists fetch`: refresh every enabled list once and print the result.
 pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool, String> {
     let fetcher = build_fetcher(cfg)?;
-    let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
+    let specs: Vec<ListSpec> = ListSpec::from_config(&telltale_config::services::expand(cfg))
+        .into_iter()
+        .filter(|s| s.enabled)
+        .collect();
     if specs.is_empty() {
         writeln!(out, "no enabled lists in the configuration").map_err(|e| e.to_string())?;
         return Ok(true);
@@ -709,6 +785,54 @@ pub(crate) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: FLT-004 — at a cold start, a newest snapshot that can't be loaded (here: a torn
+    /// FST file, as after a crash mid-write) is set aside and the previous one serves.
+    #[test]
+    fn flt_004_cold_start_falls_back_to_the_previous_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshots = tmp.path().join("snapshots");
+        for v in 1..=2u64 {
+            let text = "||ads.example.com^\n";
+            compile(
+                vec![ListInput {
+                    name: "ads".into(),
+                    options: ListOptions::default(),
+                    data: ListData::Bytes(text.as_bytes().to_vec()),
+                    source_hash: telltale_filter::fetch::content_hash(text.as_bytes()),
+                    size: text.len() as u64,
+                }],
+                &snapshots.join(v.to_string()),
+                &CompileOptions {
+                    version: v,
+                    ..CompileOptions::default()
+                },
+            )
+            .unwrap();
+        }
+        // Version 2's FST is torn: the manifest vouches for bytes that aren't there.
+        let fst = snapshots.join("2").join("subtree-0.fst");
+        let bytes = std::fs::read(&fst).unwrap();
+        std::fs::write(&fst, &bytes[..bytes.len() / 2]).unwrap();
+        let pipeline = Pipeline::new(
+            crate::pipeline::Settings::default(),
+            Arc::new(telltale_cache::Cache::new(
+                telltale_cache::CachePolicy::default(),
+            )),
+            Arc::new(telltale_upstream::Router::default()),
+            crate::pipeline::Policy::open(),
+        );
+        let publisher = Publisher::new(Arc::clone(&pipeline));
+        let generation = publisher.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        publisher.load(&snapshots.join("2"), generation);
+        let active = pipeline.filter.load();
+        let version = active
+            .as_ref()
+            .and_then(|f| f.matcher.snapshot().map(|s| s.manifest.version));
+        assert_eq!(version, Some(1), "the previous snapshot serves");
+        assert!(snapshots.join("2.broken").is_dir());
+        assert!(!snapshots.join("2").exists());
+    }
 
     #[test]
     fn flt_004_recompile_under_a_serving_snapshot_uses_one_thread_by_default() {

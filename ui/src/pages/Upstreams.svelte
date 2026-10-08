@@ -32,6 +32,23 @@
   const advanced = $derived(currentMode() === 'advanced');
   const totalRequests = $derived(upstreams.reduce((a, u) => a + u.requests, 0));
 
+  // REQ: UPS-006, OBS-011 — what the failures were, which says what to fix: timeouts point at
+  // the path, network errors at the connection, SERVFAIL at the domain asked about.
+  const failureKinds: [keyof S['FailureKinds'], string][] = [
+    ['timeout', 'timeouts'],
+    ['network', 'connection errors'],
+    ['badResponse', 'bad replies'],
+    ['unresolved', 'name not resolved'],
+    ['servfail', 'SERVFAIL'],
+    ['refused', 'REFUSED'],
+    ['otherRcode', 'other errors'],
+  ];
+  const breakdown = (u: S['UpstreamInfo']) =>
+    failureKinds
+      .filter(([k]) => u.failuresByKind[k] > 0)
+      .map(([k, label]) => `${num(u.failuresByKind[k])} ${label}`)
+      .join(' · ');
+
   // REQ: API-002 (T7.5) — add and change upstreams and upstream groups here.
   const upstreamFields: Field[] = [
     { key: 'url', label: 'Address', type: 'text', placeholder: 'tls://9.9.9.9 or https://dns.quad9.net/dns-query',
@@ -81,7 +98,8 @@
               <td>{u.groups.join(', ')}</td>
               <td><StatusBadge value={u.breaker} /></td>
               <td class="num">{num(u.requests)}<ShareBar value={totalRequests ? (u.requests / totalRequests) * 100 : 0} color="--s-forwarded" label="share of all upstream requests" /></td>
-              <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" /></td>
+              <td class="num">{num(u.failures)} <span class="muted small">({pct(u.requests ? (u.failures / u.requests) * 100 : 0)})</span><ShareBar value={u.requests ? (u.failures / u.requests) * 100 : 0} color="--s-blocked" label="failure rate" />
+                {#if u.failures > 0}<div class="muted small">{breakdown(u)}</div>{/if}</td>
               {#if advanced}<td class="num">{ms(u.latencyEwmaMs)}</td>{/if}
               <td class="num">{ms(l?.p50Ms)}</td>
               {#if advanced}<td class="num">{ms(l?.p99Ms)}</td>{/if}

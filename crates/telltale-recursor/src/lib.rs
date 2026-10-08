@@ -623,7 +623,8 @@ impl Recursor {
         let t0 = Instant::now();
         let mut res = net::ask(addr, qn, qt, dnssec_ok, mix, timeout).await;
         if res == Err(NetError::CaseMismatch) {
-            // REQ: DNS-012 — 0x20: this server changes the case; ask it plainly.
+            // REQ: DNS-012 — 0x20: nothing with the case intact came in time, only replies
+            // with it changed: this server doesn't echo the case; ask it plainly.
             self.caches.no_case(ip);
             res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
         }

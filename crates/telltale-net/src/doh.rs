@@ -43,6 +43,9 @@ pub struct DohConfig {
     /// Time allowed for the PROXY header and the TLS handshake, and idle keep-alive.
     pub handshake_timeout: Duration,
     pub max_connections: usize,
+    /// Max concurrent connections from one client address (an IPv6 /64), after the PROXY
+    /// header if there is one; 0 = no limit (review 01 q2).
+    pub max_connections_per_address: usize,
     /// REQ: DNS-004 (T7.8) — `Alt-Svc` to send (`h3=":443"`) when an HTTP/3 DoH listener serves the
     /// same name.
     pub alt_svc: Option<String>,
@@ -57,6 +60,7 @@ impl DohConfig {
             proxy_protocol: false,
             handshake_timeout: Duration::from_secs(10),
             max_connections: 1024,
+            max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
             alt_svc: None,
         }
     }
@@ -68,6 +72,8 @@ pub struct DohStats {
     pub accepted: AtomicU64,
     /// Connections refused because `max_connections` was reached.
     pub rejected: AtomicU64,
+    /// Connections refused because their client address already held the per-address maximum.
+    pub rejected_per_address: AtomicU64,
     pub requests: AtomicU64,
     pub replies: AtomicU64,
     /// Requests refused with a 4xx status (bad path, method, media type, or message).
@@ -133,6 +139,7 @@ async fn accept_loop<H: QueryHandler>(
     stats: Arc<DohStats>,
 ) {
     let slots = Arc::new(Semaphore::new(cfg.max_connections));
+    let per_address = crate::peer_limit::PeerLimit::new(cfg.max_connections_per_address);
     let mut conns = tokio::task::JoinSet::new();
     loop {
         let accepted = tokio::select! {
@@ -156,8 +163,18 @@ async fn accept_loop<H: QueryHandler>(
             stop.clone(),
             Arc::clone(&stats),
         );
+        let per_address = Arc::clone(&per_address);
         conns.spawn(async move {
-            serve_conn(stream, peer, acceptor, cfg, handler, stop, stats).await;
+            serve_conn(
+                stream,
+                peer,
+                acceptor,
+                cfg,
+                handler,
+                (stop, stats),
+                &per_address,
+            )
+            .await;
             drop(permit);
         });
         while conns.try_join_next().is_some() {}
@@ -171,8 +188,8 @@ async fn serve_conn<H: QueryHandler>(
     acceptor: tokio_rustls::TlsAcceptor,
     cfg: Arc<DohConfig>,
     handler: Arc<H>,
-    mut stop: watch::Receiver<bool>,
-    stats: Arc<DohStats>,
+    (mut stop, stats): (watch::Receiver<bool>, Arc<DohStats>),
+    per_address: &Arc<crate::peer_limit::PeerLimit>,
 ) {
     if cfg.proxy_protocol {
         match timeout(
@@ -189,6 +206,12 @@ async fn serve_conn<H: QueryHandler>(
             }
         }
     }
+    // REQ: DNS-003 (review 01 q2) — one client address can't hold every slot; the address is
+    // the client's, after the PROXY header.
+    let Some(_place) = per_address.acquire(peer.ip()) else {
+        stats.rejected_per_address.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
     let Ok(Ok(tls)) = timeout(cfg.handshake_timeout, acceptor.accept(stream)).await else {
         stats.tls_failed.fetch_add(1, Ordering::Relaxed);
         return;

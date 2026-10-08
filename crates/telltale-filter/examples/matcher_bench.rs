@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
 use telltale_filter::fetch::content_hash;
-use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Lookup, Matcher, Overlay, Scratch};
+use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Lookup, Matcher, Scratch};
 use telltale_filter::parse::{ListOptions, Pattern, parse_list};
 use telltale_filter::snapshot::Snapshot;
 use telltale_proto::{NameBuf, rtype};
@@ -102,12 +102,7 @@ fn main() {
     } else {
         Lookup::Indexed
     };
-    let m = Matcher::with_lookup(
-        Some(Arc::new(Snapshot::open(&out).unwrap())),
-        Overlay::default(),
-        lookup,
-    )
-    .unwrap();
+    let m = Matcher::with_lookup(Some(Arc::new(Snapshot::open(&out).unwrap())), lookup).unwrap();
     println!(
         "load + index + regex build: {:.2?}, index {:.1} MiB",
         t.elapsed(),

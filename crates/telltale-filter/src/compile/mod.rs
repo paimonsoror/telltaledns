@@ -67,6 +67,12 @@ pub struct CompileOptions {
     pub memory_budget: usize,
     /// Snapshot version recorded in the manifest.
     pub version: u64,
+    /// Sync every blob and the snapshot's parent directory to disk before the snapshot counts
+    /// as published (`[filter] fsync`). Off, a crash can leave a published snapshot whose
+    /// files are short; the cold-start fallback then skips it.
+    pub sync: bool,
+    /// Most regex rules a snapshot keeps (`[filter] max_regexes`); 0 = no limit.
+    pub max_regexes: usize,
 }
 
 impl Default for CompileOptions {
@@ -75,7 +81,28 @@ impl Default for CompileOptions {
             threads: 1,
             memory_budget: 128 << 20,
             version: 1,
+            sync: true,
+            max_regexes: 1000,
         }
+    }
+}
+
+/// A snapshot directory being written: whether its files are synced to disk (`sync_all`), and
+/// how many regex rules it may hold.
+#[derive(Clone, Copy)]
+struct OutDir<'a> {
+    path: &'a Path,
+    sync: bool,
+    max_regexes: usize,
+}
+
+impl OutDir<'_> {
+    fn join(&self, name: impl AsRef<Path>) -> PathBuf {
+        self.path.join(name)
+    }
+
+    fn sync(&self, f: &File) -> io::Result<()> {
+        if self.sync { f.sync_all() } else { Ok(()) }
     }
 }
 
@@ -425,6 +452,12 @@ pub fn compile(
     match result {
         Ok(report) => {
             fs::rename(&tmp, out)?;
+            // The rename must reach the disk too (the blobs were synced as they were written).
+            if opts.sync
+                && let Some(parent) = out.parent()
+            {
+                File::open(parent)?.sync_all()?;
+            }
             Ok(report)
         }
         Err(e) => {
@@ -466,10 +499,15 @@ fn build(
             ..ListCompileStats::default()
         })
         .collect();
+    let out = OutDir {
+        path: dir,
+        sync: opts.sync,
+        max_regexes: opts.max_regexes,
+    };
     let names = merge_domains(
         parsed.sources,
         &parsed.bad_domains,
-        dir,
+        out,
         count,
         fst_shards(opts.threads),
         &mut per_list,
@@ -483,7 +521,7 @@ fn build(
         parsed.mods,
         parsed.regexes,
         &parsed.bad_rules,
-        dir,
+        out,
         &meta,
         &mut per_list,
         &mut stats,
@@ -582,7 +620,7 @@ fn parse_all(
 fn merge_domains(
     sources: Vec<sort::Source>,
     bad_domains: &HashMap<Vec<u8>, u8>,
-    dir: &Path,
+    dir: OutDir<'_>,
     lists: usize,
     shards: usize,
     per_list: &mut [ListCompileStats],
@@ -590,7 +628,7 @@ fn merge_domains(
 ) -> Result<[u64; 3], CompileError> {
     let mut sets = ListSetBuilder::new(lists);
     let mut names = [0u64; 3];
-    let mut builders = shard::FstSink::new(dir, shards)?;
+    let mut builders = shard::FstSink::new(dir.path, shards, dir.sync)?;
     // REQ: OBS-009 (T7.14) — pairwise overlap, from names on more than one list.
     let mut pairs: HashMap<(u16, u16), u64> = HashMap::new();
     let mut members: Vec<u16> = Vec::with_capacity(lists);
@@ -671,6 +709,7 @@ fn merge_domains(
     let mut w = BufWriter::new(File::create(dir.join(snapshot::LISTSETS))?);
     sets.finish().write(&mut w)?;
     w.flush()?;
+    dir.sync(w.get_ref())?;
     Ok(names)
 }
 
@@ -679,7 +718,7 @@ fn write_tables(
     mut mods: Vec<(Vec<u8>, ModRule, Rule)>,
     mut regexes: Vec<(RegexRule, Rule)>,
     bad_rules: &HashSet<Rule>,
-    dir: &Path,
+    dir: OutDir<'_>,
     inputs: &[ListMeta],
     per_list: &mut [ListCompileStats],
     stats: &mut CompileStats,
@@ -706,7 +745,9 @@ fn write_tables(
         idx.insert(&mods[i].0, ((i as u64) << 32) | (j - i) as u64)?;
         i = j;
     }
-    idx.into_inner()?.flush()?;
+    let mut idx = idx.into_inner()?;
+    idx.flush()?;
+    dir.sync(idx.get_ref())?;
     for (_, m, _) in &mods {
         per_list[usize::from(m.list)].entries += 1;
     }
@@ -716,9 +757,18 @@ fn write_tables(
     stats.modrules = modrules.rules.len() as u64;
     write_json(&dir.join(snapshot::MODRULES), &modrules)?;
 
-    let (kept, regex_errors) = check_regexes(regexes.into_iter().map(|(r, _)| r).collect(), inputs);
+    let (kept, regex_errors) = check_regexes(
+        regexes.into_iter().map(|(r, _)| r).collect(),
+        inputs,
+        dir.max_regexes,
+    );
     for r in &kept {
         per_list[usize::from(r.list)].entries += 1;
+    }
+    for (list, _, _) in &regex_errors {
+        if let Some(i) = inputs.iter().position(|m| m.name == *list) {
+            per_list[i].regex_skipped += 1;
+        }
     }
     stats.regexes = kept.len() as u64;
     stats.regex_rejected = regex_errors.len() as u64;
@@ -811,26 +861,72 @@ pub fn regex_builder() -> regex_automata::meta::Builder {
     b
 }
 
-/// Drops regexes the engine won't build (e.g. size limits), reporting each one.
+/// Drops regexes the engine won't build (e.g. size limits), reporting each one. The kept
+/// rules are guaranteed to build *as one set*, which is how the matcher uses them: the size
+/// limit applies to the combined automaton, so patterns that each fit can still exceed it
+/// together, and a snapshot whose regex set doesn't build can't be activated at all.
+///
+/// REQ: FLT-003 (review 02-08) — no more than `max` regexes are kept (0 = no limit): every
+/// query that misses the exact and suffix tables pays for them, about a microsecond per
+/// thousand, and a set of a few thousand patterns that share a prefix overwhelms the lazy DFA.
+/// The ones past the limit, in list order, are reported like any other rejected regex.
 fn check_regexes(
-    rules: Vec<RegexRule>,
+    mut rules: Vec<RegexRule>,
     inputs: &[ListMeta],
+    max: usize,
 ) -> (Vec<RegexRule>, Vec<(String, u32, String)>) {
+    let mut errors = Vec::new();
+    // List order, then line order: which rules fall past the limit must not depend on how the
+    // lists happened to be parsed.
+    rules.sort_by_key(|r| (r.list, r.line));
+    if max > 0 && rules.len() > max {
+        for r in rules.drain(max..) {
+            errors.push((
+                inputs[usize::from(r.list)].name.clone(),
+                r.line,
+                format!(
+                    "over the limit of {max} regex rules in a snapshot (`[filter] max_regexes`)"
+                ),
+            ));
+        }
+    }
     let patterns: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
     if patterns.is_empty() || regex_builder().build_many(&patterns).is_ok() {
-        return (rules, Vec::new());
+        return (rules, errors);
     }
     let mut kept = Vec::new();
-    let mut errors = Vec::new();
+    let mut memory = Vec::new();
     for r in rules {
         match regex_builder().build(&r.pattern) {
-            Ok(_) => kept.push(r),
+            Ok(re) => {
+                memory.push(re.memory_usage());
+                kept.push(r);
+            }
             Err(e) => errors.push((
                 inputs[usize::from(r.list)].name.clone(),
                 r.line,
                 e.to_string(),
             )),
         }
+    }
+    // Until the set builds, drop the pattern that costs the most on its own.
+    loop {
+        let patterns: Vec<&str> = kept.iter().map(|r| r.pattern.as_str()).collect();
+        if patterns.is_empty() || regex_builder().build_many(&patterns).is_ok() {
+            break;
+        }
+        let Some(i) = (0..memory.len()).max_by_key(|&i| memory[i]) else {
+            break;
+        };
+        let r = kept.remove(i);
+        memory.remove(i);
+        errors.push((
+            inputs[usize::from(r.list)].name.clone(),
+            r.line,
+            "too large together with the other regexes (the set exceeds the engine's size \
+             limit)"
+                .to_owned(),
+        ));
     }
     (kept, errors)
 }

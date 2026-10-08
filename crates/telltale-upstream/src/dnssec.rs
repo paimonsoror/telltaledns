@@ -28,11 +28,12 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use futures_util::stream::{self, Stream};
 use hickory_net::dnssec::DnssecDnsHandle;
+use hickory_net::proto::dnssec::rdata::DNSSECRData;
 use hickory_net::proto::dnssec::{Proof, TrustAnchors};
 use hickory_net::proto::op::{
     DnsRequest, DnsRequestOptions, DnsResponse, Edns, Message, OpCode, Query, ResponseCode,
 };
-use hickory_net::proto::rr::{Name, RecordType};
+use hickory_net::proto::rr::{Name, RData, Record, RecordType, RecordTypeSet};
 use hickory_net::runtime::TokioRuntimeProvider;
 use hickory_net::{DnsHandle, NetError};
 use parking_lot::Mutex;
@@ -130,7 +131,7 @@ impl DnsHandle for GroupHandle {
             let a = group
                 .resolve(question, budget)
                 .await
-                .map_err(|e| NetError::from(format!("upstream: {e}")))?;
+                .map_err(upstream_failure)?;
             *last.lock() = (a.upstream_id, a.attempts);
             DnsResponse::from_buffer(a.bytes).map_err(|e| NetError::from(e.to_string()))
         }))
@@ -154,6 +155,8 @@ pub struct Validator {
     /// REQ: DNS-011 (T10.9, ADR-098) — zones proven unsigned (a validated denial of their DS
     /// at the parent), lowercase without the trailing dot, until when the proof is trusted.
     insecure: Mutex<HashMap<String, std::time::Instant>>,
+    /// REQ: DNS-011, NFR-004 (review 03-05) — bounds on the unsigned-zone proof.
+    proofs: ProofGate,
     pub stats: Arc<Stats>,
 }
 
@@ -179,6 +182,7 @@ impl Validator {
             nsec: Mutex::new(HashMap::new()),
             aggressive: true,
             insecure: Mutex::new(HashMap::new()),
+            proofs: ProofGate::default(),
             stats,
         }
     }
@@ -266,6 +270,11 @@ impl Validator {
         client_do: bool,
         client_ad: bool,
     ) -> Result<Validated, ResolveError> {
+        // REQ: DNS-011, NFR-004 (review 03-05) — the whole validation (the lookup and any proof
+        // that the zone is unsigned) ends within two query budgets: it holds one of the
+        // pipeline's in-flight permits, and a name that can't be validated must not hold it
+        // for tens of seconds.
+        let deadline = std::time::Instant::now() + budget * VALIDATION_BUDGETS;
         let (handle, last) = self.handle(group, budget);
         // Fully qualified: the validator compares the question with the records' owner names.
         let mut text = q.name.display().to_string();
@@ -291,8 +300,10 @@ impl Validator {
         let request = DnsRequest::from_query(query, opts);
         let mut stream = handle.send(request);
         // A cold chain (root, TLD, zone keys) takes several sequential lookups: allow more than
-        // one query budget. If the client gives up first, the result still lands in the cache.
-        let result = tokio::time::timeout(budget * 3, stream.next()).await;
+        // one query budget, but leave the rest of the deadline to the proof that rescues a
+        // lookup that loops. If the client gives up first, the result still lands in the cache.
+        let result =
+            tokio::time::timeout(budget * LOOKUP_SHARE.0 / LOOKUP_SHARE.1, stream.next()).await;
         let (upstream_id, attempts) = *last.lock();
         let response = match result {
             Ok(Some(Ok(r))) => r,
@@ -301,7 +312,10 @@ impl Validator {
             Ok(Some(Err(e))) => {
                 let mut verdict = error_verdict(&e);
                 tracing::debug!(name = %q.name.display().to_string(), ?verdict, "DNSSEC: {e}");
-                if self.proven_insecure(group, &handle, &qkey, budget).await {
+                if self
+                    .proven_insecure(group, &handle, &qkey, budget, deadline)
+                    .await
+                {
                     verdict = Verdict::Insecure;
                 }
                 self.stats.count(verdict);
@@ -314,7 +328,11 @@ impl Validator {
                 });
             }
             // Validation took too long (hickory can loop): unsigned after all?
-            Err(_) if self.proven_insecure(group, &handle, &qkey, budget).await => {
+            Err(_)
+                if self
+                    .proven_insecure(group, &handle, &qkey, budget, deadline)
+                    .await =>
+            {
                 self.stats.count(Verdict::Insecure);
                 return Ok(insecure_unfetched());
             }
@@ -323,7 +341,7 @@ impl Validator {
         let mut verdict = verdict(&response);
         if verdict == Verdict::Bogus
             && self
-                .all_unsigned(group, &handle, &response, &qkey, budget)
+                .all_unsigned(group, &handle, &response, &qkey, budget, deadline)
                 .await
         {
             tracing::debug!(name = %qkey, "DNSSEC: bogus verdict corrected: the zone is unsigned");
@@ -422,6 +440,68 @@ const INSECURE_FOR: Duration = Duration::from_mins(15);
 /// Zones remembered as unsigned (the map is cleared beyond this).
 const MAX_INSECURE_ZONES: usize = 4096;
 
+/// The whole validation (lookup and proof) may take this many query budgets.
+const VALIDATION_BUDGETS: u32 = 2;
+/// The share of that the lookup itself may use (3/4): a lookup that loops (hickory repeating
+/// NS and DS queries) is cut off in time for the proof to rescue it.
+const LOOKUP_SHARE: (u32, u32) = (3 * VALIDATION_BUDGETS, 4);
+/// Unsigned-zone proofs running at once; a burst of names that can't be validated must not
+/// take every in-flight permit (`spec/02` §8.4). A proof that finds no slot is "not proven".
+const MAX_PROOFS: usize = 8;
+/// How long a name whose zone couldn't be proven unsigned isn't walked again.
+const UNPROVEN_FOR: Duration = Duration::from_mins(1);
+/// Names remembered as unproven (the map is cleared beyond this).
+const MAX_UNPROVEN: usize = 4096;
+
+/// Limits for the unsigned-zone proof: how many run at once, and which names recently failed
+/// to be proven (the failure cost is per name: names that can't be proven aren't cached as
+/// zones). Both only ever make the answer more conservative (bogus stays bogus).
+#[derive(Debug)]
+struct ProofGate {
+    slots: tokio::sync::Semaphore,
+    unproven: Mutex<HashMap<String, std::time::Instant>>,
+}
+
+impl Default for ProofGate {
+    fn default() -> Self {
+        Self {
+            slots: tokio::sync::Semaphore::new(MAX_PROOFS),
+            unproven: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl ProofGate {
+    /// A slot to run a proof for `name`, or `None` when it failed within the last minute or
+    /// every slot is busy.
+    fn enter(&self, name: &str) -> Option<tokio::sync::SemaphorePermit<'_>> {
+        let now = std::time::Instant::now();
+        if self
+            .unproven
+            .lock()
+            .get(name)
+            .is_some_and(|until| *until > now)
+        {
+            return None;
+        }
+        self.slots.try_acquire().ok()
+    }
+
+    /// `name` couldn't be proven unsigned.
+    fn failed(&self, name: &str) {
+        let mut m = self.unproven.lock();
+        if m.len() >= MAX_UNPROVEN {
+            m.clear();
+        }
+        m.insert(name.to_owned(), std::time::Instant::now() + UNPROVEN_FOR);
+    }
+}
+
+/// What is left of `deadline`.
+fn left(deadline: std::time::Instant) -> Duration {
+    deadline.saturating_duration_since(std::time::Instant::now())
+}
+
 /// `name` lowercase, without the trailing dot.
 fn zone_key(name: &Name) -> String {
     name.to_ascii().trim_end_matches('.').to_ascii_lowercase()
@@ -483,6 +563,7 @@ impl Validator {
         response: &Message,
         qkey: &str,
         budget: Duration,
+        deadline: std::time::Instant,
     ) -> bool {
         let mut owners: Vec<String> = response
             .answers
@@ -494,7 +575,10 @@ impl Validator {
         owners.sort();
         owners.dedup();
         for o in &owners {
-            if !self.proven_insecure(group, handle, o, budget).await {
+            if !self
+                .proven_insecure(group, handle, o, budget, deadline)
+                .await
+            {
                 return false;
             }
         }
@@ -516,16 +600,47 @@ impl Validator {
     /// and so is everything below it. Whether a name is an apex (it has its own SOA) comes from
     /// an ordinary query; that's safe because the DS denial is what's trusted, and a signed
     /// zone's DS can't be denied validly. Anything that can't be proven: `false`.
+    ///
+    /// REQ: NFR-004 (review 03-05) — bounded by `deadline` (what is left of the validation's
+    /// two query budgets, not a fresh budget per step), by a handful of concurrent proofs,
+    /// and by a minute's memory of names that couldn't be proven.
     async fn proven_insecure(
         &self,
         group: &Arc<Group>,
         handle: &DnssecDnsHandle<GroupHandle>,
         name: &str,
         budget: Duration,
+        deadline: std::time::Instant,
     ) -> bool {
         if self.known_insecure(name) {
             return true;
         }
+        let Some(_slot) = self.proofs.enter(name) else {
+            tracing::debug!(%name, "DNSSEC: unsigned-zone proof skipped: recently failed, or too many running");
+            return false;
+        };
+        let proven = tokio::time::timeout(
+            left(deadline),
+            self.walk_zones(group, handle, name, budget, deadline),
+        )
+        .await
+        .unwrap_or(false);
+        if !proven {
+            self.proofs.failed(name);
+        }
+        proven
+    }
+
+    /// The proof itself: the zone candidates from the top, each step limited to what the
+    /// deadline leaves.
+    async fn walk_zones(
+        &self,
+        group: &Arc<Group>,
+        handle: &DnssecDnsHandle<GroupHandle>,
+        name: &str,
+        budget: Duration,
+        deadline: std::time::Instant,
+    ) -> bool {
         let plain = GroupHandle {
             group: Arc::clone(group),
             budget,
@@ -535,11 +650,15 @@ impl Validator {
             let Ok(apex) = Name::from_ascii(format!("{zone}.")) else {
                 return false;
             };
-            if !is_apex(&plain, &apex, budget).await {
+            let step = budget.min(left(deadline));
+            if step.is_zero() {
+                return false;
+            }
+            if !is_apex(&plain, &apex, step).await {
                 tracing::debug!(%zone, "DNSSEC: unsigned-zone proof: not an apex");
                 continue;
             }
-            let ds = ds_signed(handle, &apex, budget).await;
+            let ds = ds_signed(handle, &apex, budget.min(left(deadline))).await;
             tracing::debug!(%zone, ?ds, "DNSSEC: unsigned-zone proof: DS");
             match ds {
                 Some(true) => {}
@@ -615,11 +734,62 @@ async fn ds_signed(
         .answers
         .iter()
         .any(|a| !matches!(a.record_type(), RecordType::DS | RecordType::RRSIG));
+    // REQ: DNS-011 (ADR-098) — a secure denial of DS proves an unsigned delegation only when
+    // the record that denies it also shows a zone cut: NS present, SOA and DS absent (RFC 4035
+    // §5.2, RFC 5155 §8.9; what hickory's own insecure-delegation check asks for). Every name
+    // inside a signed zone has a secure DS denial too, and whether `apex` has an SOA came from
+    // an unvalidated answer, so the denial alone let a spoofed answer pass as insecure.
+    let cut = r
+        .authorities
+        .iter()
+        .any(|a| a.proof == Proof::Secure && denies_ds_at_cut(a, apex));
     match (has_ds, other, verdict(&r)) {
         (true, _, Verdict::Secure) => Some(true),
-        (false, false, Verdict::Secure | Verdict::Insecure) => Some(false),
+        (false, false, Verdict::Secure) if cut => Some(false),
+        (false, false, Verdict::Insecure) => Some(false),
         _ => None,
     }
+}
+
+/// REQ: DNS-011 (ADR-098) — `rec` is an NSEC or NSEC3 that denies a DS at `apex` and shows it
+/// as a zone cut (NS, no SOA, no DS). An NSEC3 is matched by hashing `apex` the way its owner
+/// was hashed.
+fn denies_ds_at_cut(rec: &Record, apex: &Name) -> bool {
+    let cut = |types: &RecordTypeSet| {
+        types.contains(RecordType::NS)
+            && !types.contains(RecordType::SOA)
+            && !types.contains(RecordType::DS)
+    };
+    match &rec.data {
+        RData::DNSSEC(DNSSECRData::NSEC(n)) => rec.name == *apex && cut(n.type_set()),
+        RData::DNSSEC(DNSSECRData::NSEC3(n)) => {
+            cut(n.type_set())
+                && n.hash_algorithm()
+                    .hash(n.salt(), apex, n.iterations())
+                    .is_ok_and(|h| {
+                        rec.name.iter().next().is_some_and(|label| {
+                            label.eq_ignore_ascii_case(base32hex(h.as_ref()).as_bytes())
+                        })
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// Base32 with the extended hex alphabet, no padding (RFC 4648 §7): NSEC3 owner labels.
+fn base32hex(data: &[u8]) -> String {
+    const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+    let mut out = String::with_capacity(data.len().div_ceil(5) * 8);
+    for chunk in data.chunks(5) {
+        let mut block = [0u8; 8];
+        block[3..3 + chunk.len()].copy_from_slice(chunk);
+        let v = u64::from_be_bytes(block);
+        for i in 0..(chunk.len() * 8).div_ceil(5) {
+            let idx = usize::try_from((v >> (35 - 5 * i)) & 31).unwrap_or(0);
+            out.push(char::from(T[idx]));
+        }
+    }
+    out
 }
 
 /// REQ: DNS-011 (ADR-098) — what a validation error says about the answer. Hitting the
@@ -635,9 +805,33 @@ pub(crate) fn error_verdict(e: &NetError) -> Verdict {
     }
 }
 
+/// REQ: DNS-011, DNS-013 (review 03-06) — the upstream group gave no answer (as opposed to
+/// something the validator found wrong with the answers it got). Carried inside an I/O error so
+/// the validator's `NetError` can be told apart by type, not by what its message happens to
+/// start with.
+#[derive(Debug)]
+struct UpstreamFailure(String);
+
+impl std::fmt::Display for UpstreamFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upstream: {}", self.0)
+    }
+}
+
+impl std::error::Error for UpstreamFailure {}
+
+fn upstream_failure(e: impl std::fmt::Display) -> NetError {
+    NetError::Io(Arc::new(std::io::Error::other(UpstreamFailure(
+        e.to_string(),
+    ))))
+}
+
 fn is_transport(e: &NetError) -> bool {
-    let s = e.to_string();
-    s.starts_with("upstream:") || matches!(e, NetError::Timeout)
+    match e {
+        NetError::Timeout => true,
+        NetError::Io(io) => matches!(io.get_ref(), Some(inner) if inner.is::<UpstreamFailure>()),
+        _ => false,
+    }
 }
 
 /// The weakest proof among the records that answer the question.
@@ -730,6 +924,26 @@ pub fn unvalidated(a: Answer) -> Validated {
 mod depth_tests {
     use super::*;
 
+    /// REQ: DNS-011, DNS-013 (review 03-06) — an error is an upstream failure by its type: the
+    /// marker the handle puts on it (also through a clone), a timeout; not a validation error
+    /// whose message begins `upstream:`, and not some other I/O error.
+    #[test]
+    fn dns_011_transport_errors_are_told_apart_by_type() {
+        let marked = upstream_failure("all upstreams failed");
+        assert!(is_transport(&marked));
+        assert!(is_transport(&marked.clone()), "clones keep the marker");
+        assert!(is_transport(&NetError::Timeout));
+        assert!(
+            marked
+                .to_string()
+                .contains("upstream: all upstreams failed")
+        );
+        let lookalike = NetError::from("upstream: but this is a validation message".to_owned());
+        assert!(!is_transport(&lookalike), "a message is not a marker");
+        let other_io = NetError::Io(Arc::new(std::io::Error::other("connection reset")));
+        assert!(!is_transport(&other_io));
+    }
+
     /// REQ: DNS-011 (T10.9) — the zones an unsigned-zone proof walks, top down.
     #[test]
     fn dns_011_zone_candidates() {
@@ -739,6 +953,110 @@ mod depth_tests {
         );
         assert_eq!(zone_candidates("com"), Vec::<String>::new());
         assert_eq!(zone_candidates("a.b.c.d"), vec!["c.d", "b.c.d", "a.b.c.d"]);
+    }
+
+    /// REQ: DNS-011, NFR-004 (review 03-05) — only `MAX_PROOFS` unsigned-zone proofs run at
+    /// once (the next finds no slot), and a name that failed isn't walked again for a minute
+    /// (other names are).
+    #[test]
+    fn dns_011_proofs_are_limited_and_failures_remembered() {
+        let gate = ProofGate::default();
+        let slots: Vec<_> = (0..MAX_PROOFS)
+            .map(|i| gate.enter(&format!("n{i}.example")).expect("a free slot"))
+            .collect();
+        assert!(gate.enter("late.example").is_none(), "every slot is busy");
+        drop(slots);
+        assert!(gate.enter("late.example").is_some(), "slots come back");
+        gate.failed("broken.example");
+        assert!(gate.enter("broken.example").is_none(), "remembered");
+        assert!(gate.enter("fine.example").is_some(), "other names are not");
+        // Past its minute it may be tried again.
+        gate.unproven
+            .lock()
+            .insert("broken.example".into(), std::time::Instant::now());
+        assert!(gate.enter("broken.example").is_some());
+    }
+
+    /// REQ: DNS-011 (ADR-098) — base32hex (RFC 4648 §10 vectors, lowercase, unpadded).
+    #[test]
+    fn dns_011_base32hex() {
+        assert_eq!(base32hex(b""), "");
+        assert_eq!(base32hex(b"f"), "co");
+        assert_eq!(base32hex(b"fo"), "cpng");
+        assert_eq!(base32hex(b"foo"), "cpnmu");
+        assert_eq!(base32hex(b"foob"), "cpnmuog");
+        assert_eq!(base32hex(b"fooba"), "cpnmuoj1");
+        assert_eq!(base32hex(b"foobar"), "cpnmuoj1e8");
+    }
+
+    /// REQ: DNS-011 (ADR-098) — only a delegation's NSEC or NSEC3 (NS without SOA or DS)
+    /// proves a zone unsigned: not the NSEC of an ordinary name inside a signed zone, nor
+    /// another name's.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn dns_011_ds_denial_must_show_a_cut() {
+        use RecordType::{A, DS, NS, NSEC as T_NSEC, NSEC3 as T_NSEC3, RRSIG, SOA};
+        use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
+        use hickory_net::proto::dnssec::rdata::{NSEC, NSEC3};
+        let apex = Name::from_ascii("child.example.").unwrap();
+        let nsec = |owner: &str, types: &[RecordType]| {
+            let next = Name::from_ascii("z.example.").unwrap();
+            let data = RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(next, types.iter().copied())));
+            let mut r = Record::from_rdata(Name::from_ascii(owner).unwrap(), 300, data);
+            r.proof = Proof::Secure;
+            r
+        };
+        assert!(denies_ds_at_cut(
+            &nsec("child.example.", &[NS, RRSIG, T_NSEC]),
+            &apex
+        ));
+        assert!(
+            !denies_ds_at_cut(&nsec("child.example.", &[A, RRSIG, T_NSEC]), &apex),
+            "a name inside the zone, not a cut"
+        );
+        assert!(
+            !denies_ds_at_cut(&nsec("child.example.", &[NS, SOA, T_NSEC]), &apex),
+            "the child's own NSEC"
+        );
+        assert!(
+            !denies_ds_at_cut(&nsec("child.example.", &[NS, DS, T_NSEC]), &apex),
+            "a signed delegation"
+        );
+        assert!(
+            !denies_ds_at_cut(&nsec("other.example.", &[NS, T_NSEC]), &apex),
+            "another owner"
+        );
+        // NSEC3: the owner is the hash of the apex.
+        let salt = b"\xab\xcd";
+        let hash = Nsec3HashAlgorithm::SHA1.hash(salt, &apex, 5).unwrap();
+        let owner = Name::from_ascii(format!("{}.example.", base32hex(hash.as_ref()))).unwrap();
+        let nsec3 = |owner: &Name, types: &[RecordType]| {
+            let n = NSEC3::new(
+                Nsec3HashAlgorithm::SHA1,
+                false,
+                5,
+                salt.to_vec(),
+                vec![0; 20],
+                types.iter().copied(),
+            );
+            let mut r =
+                Record::from_rdata(owner.clone(), 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
+            r.proof = Proof::Secure;
+            r
+        };
+        assert!(denies_ds_at_cut(
+            &nsec3(&owner, &[NS, RRSIG, T_NSEC3]),
+            &apex
+        ));
+        assert!(!denies_ds_at_cut(
+            &nsec3(&owner, &[A, RRSIG, T_NSEC3]),
+            &apex
+        ));
+        let wrong = Name::from_ascii("0123456789abcdefghijklmnopqrstuv.example.").unwrap();
+        assert!(
+            !denies_ds_at_cut(&nsec3(&wrong, &[NS, T_NSEC3]), &apex),
+            "another name's hash"
+        );
     }
 
     /// REQ: DNS-011 (ADR-098) — the depth limit is indeterminate; other errors stay bogus.

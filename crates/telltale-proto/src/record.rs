@@ -153,7 +153,9 @@ pub fn summarize(msg: &[u8]) -> Result<ResponseSummary, ParseError> {
     for r in records(msg)? {
         let r = r?;
         if r.is_opt() {
-            if s.opt_off.is_some() {
+            // RFC 6891 §6.1.1: one OPT, in the additional section. Anywhere else it would be
+            // stripped as if it were additional data, leaving ANCOUNT or NSCOUNT wrong.
+            if s.opt_off.is_some() || r.section != Section::Additional {
                 return Err(ParseError::BadOpt);
             }
             let e = Edns::from_parts(r.rclass, r.ttl, r.rdata(msg))?;

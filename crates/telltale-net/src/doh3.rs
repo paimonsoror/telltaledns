@@ -32,6 +32,11 @@ pub struct Doh3Config {
     /// URL path (default `/dns-query`); `<path>/<client-id>` also matches.
     pub path: String,
     pub idle_timeout: Duration,
+    /// Max concurrent connections; beyond it, new ones are refused.
+    pub max_connections: usize,
+    /// Max concurrent connections from one client address (an IPv6 /64), once its handshake
+    /// proved the address; 0 = no limit (review 01 q2).
+    pub max_connections_per_address: usize,
 }
 
 impl Doh3Config {
@@ -41,6 +46,8 @@ impl Doh3Config {
             tls,
             path: "/dns-query".to_owned(),
             idle_timeout: Duration::from_secs(30),
+            max_connections: 1024,
+            max_connections_per_address: crate::peer_limit::DEFAULT_PER_ADDRESS,
         }
     }
 }
@@ -113,13 +120,23 @@ async fn accept_loop<H: QueryHandler>(
     stats: Arc<DohStats>,
     mut stop: watch::Receiver<bool>,
 ) {
+    // REQ: DNS-004 — the same cap as the HTTP/2 listener: refused beyond it, not accepted
+    // without bound.
+    let slots = Arc::new(tokio::sync::Semaphore::new(cfg.max_connections.max(1)));
+    let per_address = crate::peer_limit::PeerLimit::new(cfg.max_connections_per_address);
     loop {
         let incoming = tokio::select! {
             _ = stop.changed() => return,
             i = endpoint.accept() => i,
         };
         let Some(incoming) = incoming else { return };
+        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+            stats.rejected.fetch_add(1, Ordering::Relaxed);
+            incoming.refuse();
+            continue;
+        };
         let (cfg, handler, stats) = (Arc::clone(&cfg), Arc::clone(&handler), Arc::clone(&stats));
+        let per_address = Arc::clone(&per_address);
         tokio::spawn(async move {
             let peer = incoming.remote_address();
             let conn = match incoming.await {
@@ -129,6 +146,12 @@ async fn accept_loop<H: QueryHandler>(
                     debug!(%peer, error = %e, "doh3 handshake failed");
                     return;
                 }
+            };
+            // The handshake proved the address (it can't be spoofed any more).
+            let Some(_place) = per_address.acquire(conn.remote_address().ip()) else {
+                stats.rejected_per_address.fetch_add(1, Ordering::Relaxed);
+                conn.close(quinn::VarInt::from_u32(0x100), b"too many connections");
+                return;
             };
             stats.accepted.fetch_add(1, Ordering::Relaxed);
             let sni_id = conn
@@ -152,6 +175,7 @@ async fn accept_loop<H: QueryHandler>(
                     serve(req, stream, &cfg, peer, sni_id, handler.as_ref(), &stats).await;
                 });
             }
+            drop(permit);
         });
     }
 }

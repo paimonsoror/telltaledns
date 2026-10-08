@@ -107,6 +107,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/schedules/{name}",
             put(put_schedule).delete(delete_schedule),
         )
+        // REQ: DNS-014 (review 01 q1)
+        .route(
+            "/api/v1/ratelimit/default",
+            put(put_ratelimit).delete(delete_ratelimit),
+        )
         .with_state((backend, auth))
 }
 
@@ -891,6 +896,78 @@ pub(crate) async fn delete_schedule(
     .await
 }
 
+/// Set the per-client rate limit (DNS-014).
+///
+/// The body has the same fields as `[ratelimit]` in `telltale.toml`: `enabled`, `queries` (allowed
+/// per window, per client; bursts up to this), `window_secs`, `action` (`refused` or `drop`),
+/// `exempt` (CIDRs never limited), `ipv4_prefix`, and `ipv6_prefix` (how clients are grouped: 32
+/// is one address, 64 groups a device's rotating IPv6 addresses). It replaces the whole section
+/// (fields left out take the defaults, not the config file's values) until it's deleted again.
+/// A router or proxy that forwards for a whole network shows up as one client: add it to
+/// `exempt`, or raise `queries`. Applies on the next query, with no restart; every client's count
+/// starts over.
+#[utoipa::path(put, path = "/api/v1/ratelimit/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A field is wrong (a prefix, a CIDR, zero queries while enabled), or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_ratelimit(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /ratelimit/default {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::RateLimit, Some(input)),
+    )
+    .await
+}
+
+/// Go back to the config file's rate limit (DNS-014).
+///
+/// Removes what the API or UI stored, so `[ratelimit]` in the config files (or the defaults)
+/// applies again. 404 when nothing was stored.
+#[utoipa::path(delete, path = "/api/v1/ratelimit/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's rate limit is in effect already."),
+    ))]
+pub(crate) async fn delete_ratelimit(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        "DELETE /ratelimit/default".to_owned(),
+        "default".to_owned(),
+        Op::Managed(ManagedKind::RateLimit, None),
+    )
+    .await
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -911,6 +988,7 @@ impl Op {
             Self::Managed(ManagedKind::AlertDestination, _) => "alert_destination",
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
+            Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
         }
     }
     fn deleting(&self) -> bool {

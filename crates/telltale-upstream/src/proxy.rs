@@ -216,7 +216,12 @@ impl UdpRelay {
             let Some(payload) = b.get(start..) else {
                 continue;
             };
-            if payload.len() >= 2 && u16::from_be_bytes([payload[0], payload[1]]) == id {
+            // REQ: UPS-010 (review 03-08) — the reply must answer this query, as on the plain UDP
+            // path (ID, QR, and question), not merely carry its ID: a proxy that mixes up or
+            // replays datagrams is waited out, not believed.
+            if crate::upstream::matches_query(payload, query, id)
+                && telltale_proto::summarize(payload).is_ok()
+            {
                 return Ok(payload.to_vec());
             }
         }
@@ -439,15 +444,26 @@ mod tests {
                                 assert_eq!(&d[..4], &[0, 0, 0, 1]);
                                 let dest = SocketAddr::new(IpAddr::from([d[4], d[5], d[6], d[7]]), u16::from_be_bytes([d[8], d[9]]));
                                 upstream.send_to(&d[10..], dest).await.unwrap();
-                                let mut rb = [0u8; 1024];
-                                let (m, from) = upstream.recv_from(&mut rb).await.unwrap();
-                                let mut out = vec![0, 0, 0, 1];
-                                if let IpAddr::V4(v4) = from.ip() {
-                                    out.extend_from_slice(&v4.octets());
+                                // Everything the server sends back for a moment: a stray reply
+                                // can arrive before the real one.
+                                loop {
+                                    let mut rb = [0u8; 1024];
+                                    let Ok(Ok((m, from))) = tokio::time::timeout(
+                                        std::time::Duration::from_millis(100),
+                                        upstream.recv_from(&mut rb),
+                                    )
+                                    .await
+                                    else {
+                                        break;
+                                    };
+                                    let mut out = vec![0, 0, 0, 1];
+                                    if let IpAddr::V4(v4) = from.ip() {
+                                        out.extend_from_slice(&v4.octets());
+                                    }
+                                    out.extend_from_slice(&from.port().to_be_bytes());
+                                    out.extend_from_slice(&rb[..m]);
+                                    relay.send_to(&out, client).await.unwrap();
                                 }
-                                out.extend_from_slice(&from.port().to_be_bytes());
-                                out.extend_from_slice(&rb[..m]);
-                                relay.send_to(&out, client).await.unwrap();
                             }
                             r = c.read_u8() => { if r.is_err() { return; } }
                         }
@@ -460,18 +476,24 @@ mod tests {
 
     /// REQ: UPS-010 (T9.9) — UDP through a SOCKS5 UDP ASSOCIATE relay: the datagram carries
     /// the destination in its header, the reply comes back through the relay, and the relay is
-    /// reused while its control connection stays open.
+    /// reused while its control connection stays open. A stray reply with the right ID but
+    /// another question, sent first, is not taken for the answer (review 03-08).
     #[tokio::test]
     #[allow(clippy::many_single_char_names)] // protocol byte buffers
     async fn ups_010_socks5_udp_associate() {
-        // The "DNS server": answers with the query's ID and a marker byte.
+        // The "DNS server": first a stray reply (the query's ID, QR set, another name), then
+        // the real answer (the query with QR set).
         let dns = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let dns_addr = dns.local_addr().unwrap();
         tokio::spawn(async move {
             let mut b = [0u8; 512];
             while let Ok((n, from)) = dns.recv_from(&mut b).await {
+                let mut stray = b[..n].to_vec();
+                stray[2] |= 0x80;
+                stray[13] = b'z';
+                let _ = dns.send_to(&stray, from).await;
                 let mut r = b[..n].to_vec();
-                r.push(0xAB);
+                r[2] |= 0x80;
                 let _ = dns.send_to(&r, from).await;
             }
         });
@@ -479,10 +501,23 @@ mod tests {
         let p = Proxy::Socks5 { addr, auth: None };
         let relay = p.udp_associate().await.unwrap();
         for id in [0x1234u16, 0x5678] {
-            let q = [id.to_be_bytes().to_vec(), vec![1, 0, 0, 1]].concat();
-            let r = relay.exchange(dns_addr, &q, id).await.unwrap();
+            let name = telltale_proto::NameBuf::from_presentation("www.example.com").unwrap();
+            let mut buf = [0u8; 512];
+            let len = telltale_proto::build_query(
+                &mut buf,
+                id,
+                &name,
+                telltale_proto::rtype::A,
+                1,
+                true,
+                None,
+            )
+            .unwrap();
+            let q = &buf[..len];
+            let r = relay.exchange(dns_addr, q, id).await.unwrap();
             assert_eq!(&r[..2], &id.to_be_bytes());
-            assert_eq!(r.last(), Some(&0xAB));
+            assert_eq!(r[13], b'w', "the real answer, not the stray one");
+            assert!(crate::upstream::matches_query(&r, q, id));
         }
         assert_eq!(
             associations.load(std::sync::atomic::Ordering::Relaxed),

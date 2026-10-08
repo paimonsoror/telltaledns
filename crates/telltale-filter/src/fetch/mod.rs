@@ -53,15 +53,18 @@ pub struct ListSpec {
     pub source: ListSource,
     pub refresh: Duration,
     pub max_bytes: u64,
+    /// Disabled in the configuration: its stored files are kept (so re-enabling it needs no
+    /// download, ADR-016), but it is never refreshed.
+    pub enabled: bool,
 }
 
 impl ListSpec {
-    /// The enabled lists in `cfg`, with `[filter]` defaults applied.
+    /// The configured lists, disabled ones included (marked), with `[filter]` defaults
+    /// applied.
     pub fn from_config(cfg: &Config) -> Vec<Self> {
         let f = &cfg.filter;
         cfg.list
             .iter()
-            .filter(|l| l.enabled)
             .filter_map(|l| {
                 let source = if let Some(u) = &l.url {
                     ListSource::Url(u.to_string())
@@ -79,6 +82,7 @@ impl ListSpec {
                         l.refresh_secs.unwrap_or(f.refresh_secs),
                     )),
                     max_bytes: l.max_bytes.unwrap_or(f.max_list_bytes).bytes(),
+                    enabled: l.enabled,
                 })
             })
             .collect()
@@ -99,11 +103,14 @@ pub struct FetchSettings {
     /// is told: lists that arrive together compile once, and a slow or dead source delays
     /// the others by at most this much (ADR-061).
     pub settle: Duration,
+    /// `[filter] max_invalid_percent`: a body with a larger share of invalid lines is refused.
+    pub max_invalid_percent: u8,
 }
 
 impl FetchSettings {
     pub fn from_config(cfg: &Config) -> Self {
         Self {
+            max_invalid_percent: cfg.filter.max_invalid_percent,
             concurrency: usize::from(cfg.filter.fetch_concurrency.max(1)),
             timeout: Duration::from_secs(u64::from(cfg.filter.fetch_timeout_secs)),
             retries: cfg.filter.fetch_retries,
@@ -195,7 +202,8 @@ impl Fetcher {
     fn spawn_refreshes(self: &Arc<Self>, specs: &[ListSpec]) -> JoinSet<(String, Outcome)> {
         let sem = Arc::new(Semaphore::new(self.settings.concurrency.max(1)));
         let mut set = JoinSet::new();
-        for spec in specs.iter().cloned() {
+        // A disabled list is kept in the specs (its files stay) but never fetched.
+        for spec in specs.iter().filter(|s| s.enabled).cloned() {
             let (this, sem) = (Arc::clone(self), Arc::clone(&sem));
             set.spawn(async move {
                 let _permit = sem.acquire_owned().await;
@@ -303,8 +311,10 @@ impl Fetcher {
                 // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
                 // never on a runtime worker, which also carries upstream answers (T2.7).
                 let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
+                let max_invalid = self.settings.max_invalid_percent;
                 let processed = tokio::task::spawn_blocking(move || {
-                    let r = accept_body(&store, &name, &mut m, same_source, &data, now);
+                    let r =
+                        accept_body(&store, &name, &mut m, same_source, &data, now, max_invalid);
                     (r, m)
                 })
                 .await;
@@ -402,6 +412,9 @@ impl Fetcher {
         let mut due = Vec::new();
         let mut next: Option<u64> = None;
         for spec in specs {
+            if !spec.enabled {
+                continue;
+            }
             let meta = self.meta(&spec.name);
             let at = next_attempt(spec, &meta);
             if at <= now {
@@ -470,8 +483,10 @@ fn accept_body(
     same_source: bool,
     data: &[u8],
     now: u64,
+    max_invalid_percent: u8,
 ) -> Result<Outcome, String> {
     sanity_check(data)?;
+    usable_check(data, max_invalid_percent)?;
     let hash = content_hash(data);
     if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Outcome::Unchanged);
@@ -532,6 +547,30 @@ fn sanity_check(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Rejects a body in which more than `max_invalid_percent` of the rule-bearing lines (rules
+/// plus invalid lines) are invalid, which includes one that parses to no rules at all: a JSON
+/// error, a compressed blob, or an HTML page without the doctype prefix passes
+/// [`sanity_check`] and would otherwise replace a good list with nothing. At the default (50)
+/// that means more invalid lines than rules. REQ: FLT-004 — a list that fails keeps its last
+/// good version.
+fn usable_check(data: &[u8], max_invalid_percent: u8) -> Result<(), String> {
+    use crate::parse::{ListOptions, parse_list};
+    let s = parse_list(data, ListOptions::default(), |_, _| {});
+    let (rules, invalid) = (s.rules, s.invalid);
+    if invalid > 0 && invalid * 100 > (rules + invalid) * u64::from(max_invalid_percent) {
+        let first = s
+            .samples
+            .iter()
+            .find(|x| !x.unsupported)
+            .map_or("", |x| x.reason.as_str());
+        return Err(format!(
+            "not a usable list: {} rules, {} invalid lines (first: {first})",
+            s.rules, s.invalid
+        ));
+    }
+    Ok(())
+}
+
 async fn read_file(path: &std::path::Path, max_bytes: u64) -> Result<Response, String> {
     let meta = tokio::fs::metadata(path)
         .await
@@ -568,7 +607,39 @@ mod tests {
             source,
             refresh: Duration::from_hours(24),
             max_bytes: 1 << 20,
+            enabled: true,
         }
+    }
+
+    /// REQ: FLT-004 (ADR-016) — a disabled list keeps its stored files (re-enabling it
+    /// needs no download), so it stays in the spec set, marked, and is never due.
+    #[test]
+    fn flt_004_disabled_lists_stay_known_but_never_due() {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[list]]\nname = \"on\"\nurl = \"https://example.com/on.txt\"\n\
+                 [[list]]\nname = \"off\"\nurl = \"https://example.com/off.txt\"\nenabled = false\n",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let specs = ListSpec::from_config(&cfg);
+        let flags: Vec<(&str, bool)> = specs.iter().map(|s| (s.name.as_str(), s.enabled)).collect();
+        assert_eq!(flags, [("on", true), ("off", false)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let f = Fetcher::new(
+            Store::open(tmp.path()).unwrap(),
+            Client::new(Arc::new(SystemResolver), &[]).unwrap(),
+            FetchSettings::from_config(&cfg),
+        );
+        let (due, _) = f.due(&specs, unix_now());
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].name, "on"); // The prune keep-set is the whole spec set: `off`'s files survive.
+        f.store().save_source("off", b"x.com\n").unwrap();
+        assert!(!f.prune(&specs));
+        assert!(f.store().read_source("off").is_ok());
     }
 
     #[test]

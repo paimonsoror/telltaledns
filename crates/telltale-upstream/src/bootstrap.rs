@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use telltale_proto::{NameBuf, Section, records, rtype};
+use telltale_proto::{NameBuf, Section, records, rtype, summarize};
 use tokio::net::UdpSocket;
 
 use crate::upstream::{ExchangeError, Question, encode_query, matches_query};
@@ -129,7 +129,9 @@ async fn udp_query(server: SocketAddr, query: &[u8], id: u16) -> std::io::Result
     let mut buf = vec![0u8; 4096];
     loop {
         let n = sock.recv(&mut buf).await?;
-        if matches_query(&buf[..n], query, id) {
+        // REQ: UPS-009 (review 03-07) — as on the upstream UDP path: a datagram that matches the
+        // query but doesn't parse is a stray, not "no addresses".
+        if matches_query(&buf[..n], query, id) && summarize(&buf[..n]).is_ok() {
             buf.truncate(n);
             return Ok(buf);
         }
@@ -169,5 +171,33 @@ mod tests {
                 "[fe80::1]:53".parse().unwrap()
             ]
         );
+    }
+
+    /// REQ: UPS-009 (review 03-07) — a datagram with the query's ID and question that doesn't
+    /// parse (here: it announces an answer that isn't there) is a stray: the wait goes on for
+    /// the real reply instead of ending as "no addresses".
+    #[tokio::test]
+    async fn ups_009_bootstrap_ignores_a_reply_that_does_not_parse() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            if let Ok((n, from)) = server.recv_from(&mut b).await {
+                let mut torn = b[..n].to_vec();
+                torn[2] |= 0x80; // QR
+                torn[7] = 5; // ANCOUNT 5, with nothing after the question
+                let _ = server.send_to(&torn, from).await;
+                let mut real = b[..n].to_vec();
+                real[2] |= 0x80;
+                let _ = server.send_to(&real, from).await;
+            }
+        });
+        let name = NameBuf::from_presentation("www.example.com").unwrap();
+        let mut buf = [0u8; 512];
+        let len =
+            telltale_proto::build_query(&mut buf, 0x4242, &name, rtype::A, 1, true, None).unwrap();
+        let resp = udp_query(addr, &buf[..len], 0x4242).await.unwrap();
+        assert!(summarize(&resp).is_ok(), "the reply that parses");
+        assert_eq!(resp[7], 0, "not the torn one");
     }
 }

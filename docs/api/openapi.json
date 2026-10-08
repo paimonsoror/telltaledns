@@ -2794,6 +2794,110 @@
         }
       }
     },
+    "/api/v1/ratelimit/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Set the per-client rate limit (DNS-014).",
+        "description": "The body has the same fields as `[ratelimit]` in `telltale.toml`: `enabled`, `queries` (allowed\nper window, per client; bursts up to this), `window_secs`, `action` (`refused` or `drop`),\n`exempt` (CIDRs never limited), `ipv4_prefix`, and `ipv6_prefix` (how clients are grouped: 32\nis one address, 64 groups a device's rotating IPv6 addresses). It replaces the whole section\n(fields left out take the defaults, not the config file's values) until it's deleted again.\nA router or proxy that forwards for a whole network shows up as one client: add it to\n`exempt`, or raise `queries`. Applies on the next query, with no restart; every client's count\nstarts over.",
+        "operationId": "put_ratelimit",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field is wrong (a prefix, a CIDR, zero queries while enabled), or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's rate limit (DNS-014).",
+        "description": "Removes what the API or UI stored, so `[ratelimit]` in the config files (or the defaults)\napplies again. 404 when nothing was stored.",
+        "operationId": "delete_ratelimit",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's rate limit is in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/records": {
       "get": {
         "tags": [
@@ -6629,6 +6733,62 @@
           }
         }
       },
+      "FailureKinds": {
+        "type": "object",
+        "description": "Failed attempts by kind (their sum is `failures`).",
+        "required": [
+          "timeout",
+          "network",
+          "badResponse",
+          "unresolved",
+          "servfail",
+          "refused",
+          "otherRcode"
+        ],
+        "properties": {
+          "badResponse": {
+            "type": "integer",
+            "format": "int64",
+            "description": "An answer that didn't match the query or didn't parse.",
+            "minimum": 0
+          },
+          "network": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A connection, TLS, or socket error.",
+            "minimum": 0
+          },
+          "otherRcode": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Any other error RCODE (FORMERR, NOTIMP, ...).",
+            "minimum": 0
+          },
+          "refused": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "servfail": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The upstream answered SERVFAIL (often the domain's fault, not the upstream's).",
+            "minimum": 0
+          },
+          "timeout": {
+            "type": "integer",
+            "format": "int64",
+            "description": "No answer within the attempt's timeout.",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The upstream's hostname couldn't be resolved.",
+            "minimum": 0
+          }
+        }
+      },
       "FiringAlert": {
         "type": "object",
         "description": "REQ: OBS-010 (T9.6) — an alert that is firing now.",
@@ -7995,6 +8155,7 @@
                 "lines",
                 "entries",
                 "unique",
+                "regexSkipped",
                 "hits",
                 "overlap"
               ],
@@ -8059,6 +8220,12 @@
                     "$ref": "#/components/schemas/ListShare"
                   },
                   "description": "Lists it shares names with, most shared first."
+                },
+                "regexSkipped": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot\nleaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.",
+                  "minimum": 0
                 },
                 "source": {
                   "type": "string",
@@ -8637,6 +8804,7 @@
                 "breaker",
                 "requests",
                 "failures",
+                "failuresByKind",
                 "latencyEwmaMs"
               ],
               "properties": {
@@ -8652,6 +8820,10 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "failuresByKind": {
+                  "$ref": "#/components/schemas/FailureKinds",
+                  "description": "`failures` by kind, which say what to fix: timeouts point at the path or the upstream's\nload, network errors at the connection, SERVFAIL at the domain asked about."
                 },
                 "groups": {
                   "type": "array",
@@ -8820,6 +8992,7 @@
           "lines",
           "entries",
           "unique",
+          "regexSkipped",
           "hits",
           "overlap"
         ],
@@ -8884,6 +9057,12 @@
               "$ref": "#/components/schemas/ListShare"
             },
             "description": "Lists it shares names with, most shared first."
+          },
+          "regexSkipped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot\nleaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.",
+            "minimum": 0
           },
           "source": {
             "type": "string",
@@ -10589,6 +10768,7 @@
           "breaker",
           "requests",
           "failures",
+          "failuresByKind",
           "latencyEwmaMs"
         ],
         "properties": {
@@ -10604,6 +10784,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "failuresByKind": {
+            "$ref": "#/components/schemas/FailureKinds",
+            "description": "`failures` by kind, which say what to fix: timeouts point at the path or the upstream's\nload, network errors at the connection, SERVFAIL at the domain asked about."
           },
           "groups": {
             "type": "array",

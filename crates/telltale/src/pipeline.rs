@@ -343,6 +343,35 @@ impl FilterState {
             .and_then(|g| self.group_masks.get(usize::from(g)))
             .unwrap_or(&self.default_mask)
     }
+
+    /// REQ: FLT-014 (T9.20), FLT-013 — the `$dnsrewrite` answer for this client, if a list it
+    /// uses has one for the name and blocking isn't paused for its group. One shared function
+    /// for the pipeline and `explain`, so they can't disagree. `identify` runs only when some
+    /// list has rewrites (the common case costs one bool check): it gets the table the masks
+    /// were built for.
+    pub(crate) fn list_rewrite(
+        &self,
+        q: &Query<'_>,
+        identify: impl FnOnce(&ClientTable) -> Identity,
+        ip: IpAddr,
+        client_id: Option<&str>,
+        pause: &Pause,
+    ) -> Option<(telltale_filter::rewrite::ListRewrite, u16)> {
+        if !self.matcher.has_rewrites() {
+            return None;
+        }
+        let ident = identify(&self.clients);
+        if pause.is_paused(&self.clients.primary_group(ident).name, unix_now) {
+            return None;
+        }
+        let client = ClientCtx {
+            ip,
+            name: self.clients.client(ident).map(|c| &*c.name),
+            client_id,
+        };
+        self.matcher
+            .rewrites(q.qname.as_wire(), q.qtype, &client, self.mask(ident))
+    }
 }
 
 thread_local! {
@@ -511,11 +540,13 @@ impl Pipeline {
     ) -> Result<crate::explain::Explanation, String> {
         let dynamic = self.state.load();
         let filter = self.filter.load();
+        let schedules = self.schedules.load();
         let st = crate::explain::State {
             dynamic: &dynamic,
             filter: filter.as_deref(),
             neighbors: &self.neighbors,
             pause: &self.pause,
+            schedules: &schedules,
         };
         crate::explain::explain(&st, req, source)
     }
@@ -1000,28 +1031,14 @@ impl Pipeline {
     ) -> Option<(telltale_filter::rewrite::ListRewrite, u16)> {
         let guard = self.filter.load();
         let f = guard.as_ref()?;
-        if !f.matcher.has_rewrites() {
-            return None;
-        }
-        let ident = f.clients.identify(
+        let client_id = who.client_id.as_ref().map(telltale_net::ClientId::as_str);
+        f.list_rewrite(
+            q,
+            |clients| clients.identify(who.peer, client_id, who.mac, &self.neighbors),
             who.peer,
-            who.client_id.as_ref().map(telltale_net::ClientId::as_str),
-            who.mac,
-            &self.neighbors,
-        );
-        if self
-            .pause
-            .is_paused(&f.clients.primary_group(ident).name, unix_now)
-        {
-            return None;
-        }
-        let client = ClientCtx {
-            ip: who.peer,
-            name: f.clients.client(ident).map(|c| &*c.name),
-            client_id: who.client_id.as_ref().map(telltale_net::ClientId::as_str),
-        };
-        f.matcher
-            .rewrites(q.qname.as_wire(), q.qtype, &client, f.mask(ident))
+            client_id,
+            &self.pause,
+        )
     }
 
     /// REQ: FLT-014 (T9.20) — answers with a list rewrite: addresses of the asked family (60 s),
@@ -1104,12 +1121,30 @@ impl Pipeline {
     }
 
     /// REQ: FLT-011 (T7.11) — the safe-search name for this query, when the group has safe
-    /// search and the name is an engine's. Nothing to do (no allocation) for other groups.
-    fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
+    /// search and the name is an engine's. Never allocates: the name is rebuilt in presentation
+    /// form on the stack (the engine tables only hold letters, digits, and hyphens, so a label
+    /// with anything else can't match), which is what the groups that use this feature (the
+    /// kids' devices, typically) pay per query (review 02-06). Shared with `explain` (FLT-013).
+    pub(crate) fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
         let youtube = group.safe_search?;
-        let mut name = q.qname.display().to_string();
-        name.make_ascii_lowercase();
-        let target = telltale_config::safesearch::target(name.trim_end_matches('.'), youtube)?;
+        // A wire name is at most 255 bytes, its presentation form at most 253.
+        let mut buf = [0u8; 255];
+        let mut n = 0;
+        for (i, label) in q.qname.labels().enumerate() {
+            if i > 0 {
+                *buf.get_mut(n)? = b'.';
+                n += 1;
+            }
+            for &b in label {
+                if !(b.is_ascii_alphanumeric() || b == b'-') {
+                    return None;
+                }
+                *buf.get_mut(n)? = b.to_ascii_lowercase();
+                n += 1;
+            }
+        }
+        let name = std::str::from_utf8(buf.get(..n)?).ok()?;
+        let target = telltale_config::safesearch::target(name, youtube)?;
         NameBuf::from_presentation(target).ok()
     }
 
@@ -2151,7 +2186,9 @@ enum Internal {
 /// A NOERROR answer with no AAAA record (CNAMEs only, or none) outside the exclusion set
 /// (T9.10): DNS64 applies.
 fn needs_dns64(resp: &[u8], exclude: &[Cidr]) -> bool {
-    if response_rcode(resp) != rcode::NOERROR {
+    // A truncated answer (too big for the buffer) has no records to judge; the client
+    // retries over TCP.
+    if response_rcode(resp) != rcode::NOERROR || telltale_proto::header::flags(resp).tc() {
         return false;
     }
     records(resp).is_ok_and(|mut it| {
@@ -2340,7 +2377,6 @@ mod tests {
     /// Compiles `rules` into a snapshot and installs it as the pipeline's filter.
     fn install_filter(p: &Pipeline, rules: &str, lookup: telltale_filter::matcher::Lookup) {
         use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-        use telltale_filter::matcher::Overlay;
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("snap");
         let input = ListInput {
@@ -2352,14 +2388,14 @@ mod tests {
         };
         compile(vec![input], &out, &CompileOptions::default()).unwrap();
         let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
-        let m = Matcher::with_lookup(Some(snap), Overlay::default(), lookup).unwrap();
+        let m = Matcher::with_lookup(Some(snap), lookup).unwrap();
         p.set_filter(Some(Arc::new(m)));
     }
 
     /// Compiles several named lists into one snapshot and installs it.
     fn install_lists(p: &Pipeline, lists: &[(&str, &str)]) {
         use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-        use telltale_filter::matcher::{Lookup, Overlay};
+        use telltale_filter::matcher::Lookup;
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("snap");
         let inputs = lists
@@ -2374,7 +2410,7 @@ mod tests {
             .collect();
         compile(inputs, &out, &CompileOptions::default()).unwrap();
         let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
-        let m = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+        let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
         p.set_filter(Some(Arc::new(m)));
     }
 
@@ -3524,6 +3560,52 @@ groups = ["kids"]
         }
         drop(p);
         rt.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    /// REQ: NFR-002 — the whole synchronous pipeline, as a UDP worker runs it, allocates
+    /// nothing in the steady state: a cache hit (with a filter installed, so CNAME
+    /// inspection runs), and a blocked answer, both for a configured client. The cache
+    /// crate's own test covers only parse → key → lookup; this one includes identification,
+    /// access and special-name checks, local data, quick rules, the filter, routing, the
+    /// metrics counters, and the event ring.
+    #[test]
+    fn nfr_002_pipeline_hot_paths_do_not_allocate() {
+        // A group with safe search on, as the kids' devices have (review 02-06): every query
+        // from it is checked against the engines' names.
+        let cfg = format!(
+            "{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||ads.example^\"]\n\
+             [[group]]\nname = \"default\"\nsafe_search = true\n\
+             [[client]]\nname = \"tablet\"\nmatch = [\"10.0.0.5\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example^\n");
+        cache_a(&p, "hit.example.com", Ipv4Addr::new(192, 0, 2, 1));
+        let meta = RequestMeta {
+            peer: "10.0.0.5:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let hit = query("hit.example.com", rtype::A, true);
+        let blocked = query("ads.example", rtype::A, true);
+        let h = Handler(Arc::clone(&p));
+        let mut out = [0u8; 4096];
+        // Warm up: the thread's event-ring producer and filter scratch are made on first use.
+        for req in [&hit, &blocked] {
+            assert!(matches!(h.handle(req, &meta, &mut out), Response::Ready(_)));
+        }
+        let info = allocation_counter::measure(|| {
+            for _ in 0..1000 {
+                assert!(matches!(
+                    h.handle(&hit, &meta, &mut out),
+                    Response::Ready(_)
+                ));
+                assert!(matches!(
+                    h.handle(&blocked, &meta, &mut out),
+                    Response::Ready(_)
+                ));
+            }
+        });
+        assert_eq!(info.count_total, 0, "hot paths allocated: {info:?}");
     }
 
     /// Every answered query leaves an event with its client, status, rule, and name.

@@ -48,6 +48,7 @@ async fn flt_001_real_lists_parse_cleanly() {
         retries: 2,
         backoff: Duration::from_secs(2),
         settle: Duration::from_secs(10),
+        max_invalid_percent: 50,
     };
     let fetcher = Arc::new(Fetcher::new(
         Store::open(tmp.path()).unwrap(),
@@ -61,6 +62,7 @@ async fn flt_001_real_lists_parse_cleanly() {
             source: ListSource::Url((*url).to_owned()),
             refresh: Duration::from_hours(24),
             max_bytes: 256 << 20,
+            enabled: true,
         })
         .collect();
     let mut failures = Vec::new();

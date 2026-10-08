@@ -9,9 +9,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use telltale_api::model::{
     ClientChange, ClientInfo, ConfigChange, ExplainBlock, ExplainClient, ExplainFilter,
-    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo, GroupInfo,
-    Hour, LatencyBy, LatencyRow, ListInfo, LocalName, NameMatch, QueryPage, QueryParams, QueryRow,
-    RecordInput, ScanStats, Step, SystemInfo, TimeBucket, TopItem, TopKind, UpstreamInfo,
+    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, FailureKinds, ForwardInfo,
+    GroupInfo, Hour, LatencyBy, LatencyRow, ListInfo, LocalName, NameMatch, QueryPage, QueryParams,
+    QueryRow, RecordInput, ScanStats, Step, SystemInfo, TimeBucket, TopItem, TopKind, UpstreamInfo,
 };
 use telltale_api::problem::{Code, Problem};
 use telltale_api::time::format_us;
@@ -1014,6 +1014,7 @@ impl Backend for ApiBackend {
                     .and_then(|(m, i)| m.stats.per_list.get(i));
                 let entries = per.map_or(0, |s| s.entries);
                 let unique = per.map_or(0, |s| s.unique);
+                let regex_skipped = per.map_or(0, |s| s.regex_skipped);
                 let list_hits = id
                     .and_then(|i| u16::try_from(i).ok())
                     .and_then(|i| hits.get(&i).copied())
@@ -1065,6 +1066,7 @@ impl Backend for ApiBackend {
                     lines: meta.map_or(0, |m| m.lines),
                     entries,
                     unique,
+                    regex_skipped,
                     hits: list_hits,
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
@@ -1612,6 +1614,21 @@ impl Backend for ApiBackend {
                 &mut out,
             );
         }
+        // REQ: DNS-014 (review 01 q1) — the one rate limit in effect, and whether the API or UI
+        // replaced the files'.
+        if want("ratelimit") {
+            out.push(telltale_api::model::ConfigEntry {
+                kind: "ratelimit".to_owned(),
+                name: "default".to_owned(),
+                source: if e.ratelimit.is_some() {
+                    "override"
+                } else {
+                    "file"
+                }
+                .to_owned(),
+                definition: serde_json::to_value(&cfg.ratelimit).ok(),
+            });
+        }
         // REQ: FLT-010 (T9.7)
         if want("schedule") {
             rows(
@@ -1998,6 +2015,7 @@ impl Backend for ApiBackend {
                     .to_owned(),
                     requests: h.requests,
                     failures: h.failures,
+                    failures_by_kind: failure_kinds(h.failures_by_kind),
                     latency_ewma_ms: h.ewma.map_or(0.0, |d| {
                         ms(u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
                     }),
@@ -2005,6 +2023,26 @@ impl Backend for ApiBackend {
             })
             .collect()
     }
+}
+
+/// REQ: UPS-006, OBS-011 — the health tracker's per-kind counts (in `Outcome::FAILURES` order)
+/// as the API's named fields.
+fn failure_kinds(counts: [u64; telltale_upstream::health::FAILURE_KINDS]) -> FailureKinds {
+    use telltale_upstream::health::Outcome;
+    let mut k = FailureKinds::default();
+    for (kind, n) in Outcome::FAILURES.iter().zip(counts) {
+        match kind {
+            Outcome::Timeout => k.timeout = n,
+            Outcome::Network => k.network = n,
+            Outcome::BadResponse => k.bad_response = n,
+            Outcome::Unresolved => k.unresolved = n,
+            Outcome::ServFail => k.servfail = n,
+            Outcome::Refused => k.refused = n,
+            Outcome::OtherRcode => k.other_rcode = n,
+            Outcome::Ok => {}
+        }
+    }
+    k
 }
 
 /// Names of the devices stored through the API.
@@ -2237,6 +2275,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::AlertDestination => crate::managed::ALERT_DESTINATION,
         ManagedKind::AlertRule => crate::managed::ALERT_RULE,
         ManagedKind::Schedule => crate::managed::SCHEDULE,
+        ManagedKind::RateLimit => crate::managed::RATELIMIT,
     }
 }
 
@@ -2535,6 +2574,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::AlertDestination | ManagedKind::AlertRule, _) => {
             "Applies at the next alert check; firing alerts of a changed rule start over.".into()
         }
+        (ManagedKind::RateLimit, true) => {
+            "Applies on the next query, with no restart; every client's count starts over.".into()
+        }
+        (ManagedKind::RateLimit, false) => {
+            "The config file's rate limit (or the default) applies again from the next query; every client's count starts over.".into()
+        }
     };
     (recent_queries, impact)
 }
@@ -2547,6 +2592,9 @@ fn plan_managed(
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
+    if w.kind == ManagedKind::RateLimit {
+        return plan_ratelimit(src, state, w);
+    }
     if matches!(
         w.kind,
         ManagedKind::Upstream
@@ -2677,6 +2725,79 @@ fn plan_managed(
         before,
         after,
         body,
+        recent_queries,
+        impact,
+        warnings,
+        also: Vec::new(),
+    })
+}
+
+/// What a rate-limit write does: the section before and after, what to store (`None` deletes),
+/// and the merged configuration.
+#[derive(Debug)]
+struct RateLimitChange {
+    before: serde_json::Value,
+    after: serde_json::Value,
+    body: Option<String>,
+    merged: telltale_config::Config,
+}
+
+/// REQ: DNS-014 (review 01 q1) — a change to the rate limit: `PUT` (`body` set) stores a whole
+/// `[ratelimit]` section (fields left out take the defaults), `DELETE` removes it so the files'
+/// applies again. The merged configuration must validate.
+fn ratelimit_change(
+    file: &telltale_config::Config,
+    entries: &mut crate::managed::Entries,
+    body: Option<&serde_json::Value>,
+) -> Result<RateLimitChange, Problem> {
+    let before_cfg = crate::managed::merge(file, entries).unwrap_or_else(|_| file.clone());
+    let before = serde_json::to_value(&before_cfg.ratelimit).unwrap_or_default();
+    let stored = if let Some(v) = body {
+        let r: telltale_config::RateLimitConfig = serde_json::from_value(v.clone())
+            .map_err(|e| Problem::new(Code::InvalidConfig, format!("{e}")))?;
+        let text = serde_json::to_string(&r).unwrap_or_default();
+        entries.ratelimit = Some(r);
+        Some(text)
+    } else {
+        if entries.ratelimit.take().is_none() {
+            return Err(Problem::not_found(
+                "the rate limit wasn't changed through the API or UI: the config file's is in effect",
+            ));
+        }
+        None
+    };
+    let merged = crate::managed::merge(file, entries)
+        .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
+    let after = serde_json::to_value(&merged.ratelimit).unwrap_or_default();
+    Ok(RateLimitChange {
+        before,
+        after,
+        body: stored,
+        merged,
+    })
+}
+
+/// REQ: DNS-014 (review 01 q1) — plans a write to the rate limit (see [`ratelimit_change`]).
+fn plan_ratelimit(
+    src: &Sources,
+    state: &telltale_store::state::State,
+    w: &ManagedWrite,
+) -> Result<ManagedPlan, Problem> {
+    if w.name.trim() != "default" {
+        return Err(Problem::not_found(
+            "there is one rate limit, named `default`",
+        ));
+    }
+    let file = src.file_config.load_full();
+    let mut entries = crate::managed::entries(state);
+    let change = ratelimit_change(&file, &mut entries, w.body.as_ref())?;
+    let warnings = telltale_config::validate_config(&change.merged).unwrap_or_default();
+    let (recent_queries, impact) = managed_impact(src, w.kind, "default", change.body.is_some());
+    Ok(ManagedPlan {
+        name: "default".to_owned(),
+        before: Some(change.before),
+        after: Some(change.after),
+        body: change.body,
         recent_queries,
         impact,
         warnings,
@@ -3267,6 +3388,23 @@ impl ApiBackend {
 
 /// REQ: API-002 (T7.5, ADR-069) — the configuration TOML that makes an API change permanent in
 /// Git: the section(s) to add (from what the request set), or which block to remove.
+/// REQ: DNS-014 — `[ratelimit]` is one table, not an array of them, and there is nothing to
+/// remove: a revert just makes the configuration's own apply again.
+fn ratelimit_in_git(head: &str, set: bool, after: Option<&serde_json::Value>) -> String {
+    match after {
+        Some(a) if set => {
+            let mut root = toml::Table::new();
+            if let Ok(toml::Value::Table(t)) = toml::Value::try_from(a) {
+                root.insert("ratelimit".to_owned(), toml::Value::Table(t));
+            }
+            format!("{head}{}", toml::to_string(&root).unwrap_or_default())
+        }
+        _ => "# Nothing to change in Git: the configuration's own [ratelimit] applies again.\n"
+            .to_owned(),
+    }
+}
+
+#[allow(clippy::too_many_lines)] // one branch per kind of entry
 fn keep_in_git(
     kind: ManagedKind,
     name: &str,
@@ -3284,8 +3422,12 @@ fn keep_in_git(
         ManagedKind::AlertDestination => "alerts.destination",
         ManagedKind::AlertRule => "alerts.rule",
         ManagedKind::Schedule => "schedule",
+        ManagedKind::RateLimit => "ratelimit",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
+    if kind == ManagedKind::RateLimit {
+        return ratelimit_in_git(head, body.is_some(), after);
+    }
     let Some(body) = body else {
         return if after.is_some() {
             format!(
@@ -3569,5 +3711,100 @@ upstreams = "family"
             .upstream_groups
             .push(("family".into(), crate::managed::Ovr::Set(g.clone())));
         assert!(upstream_group_in_use("family", &c, &overridden, &c).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod ratelimit_tests {
+    use super::*;
+
+    fn file(extra: &str) -> telltale_config::Config {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", extra)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .map_err(|e| format!("{e:?}"))
+            .unwrap()
+            .config
+    }
+
+    /// REQ: DNS-014 (review 01 q1) — a write replaces the files' `[ratelimit]` as a whole (fields
+    /// left out take the defaults), reports before and after, and a DELETE brings the files'
+    /// back; there is nothing to delete until something was stored.
+    #[test]
+    fn dns_014_rate_limit_override_and_revert() {
+        let f = file("[ratelimit]\nqueries = 100\nwindow_secs = 30\n");
+        let mut entries = crate::managed::Entries::default();
+
+        let err = ratelimit_change(&f, &mut entries, None).unwrap_err();
+        assert_eq!(err.status, 404, "nothing stored yet");
+
+        let put = ratelimit_change(
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "queries": 5000, "action": "drop" })),
+        )
+        .unwrap();
+        assert_eq!(put.before["queries"], 100, "the file's value");
+        assert_eq!(put.after["queries"], 5000);
+        assert_eq!(
+            put.after["window_secs"], 60,
+            "left out: the default, not the file's 30"
+        );
+        assert_eq!(put.merged.ratelimit.queries, 5000);
+        let stored: telltale_config::RateLimitConfig =
+            serde_json::from_str(&put.body.unwrap()).unwrap();
+        assert_eq!(stored.queries, 5000);
+        assert!(entries.ratelimit.is_some());
+
+        let back = ratelimit_change(&f, &mut entries, None).unwrap();
+        assert!(back.body.is_none(), "deleting stores nothing");
+        assert_eq!(back.before["queries"], 5000);
+        assert_eq!(
+            back.after["queries"], 100,
+            "the file's section applies again"
+        );
+        assert!(entries.ratelimit.is_none());
+    }
+
+    /// REQ: DNS-014 — a section that wouldn't be valid is refused with the reason, and so is a
+    /// field that doesn't exist.
+    #[test]
+    fn dns_014_rate_limit_is_validated() {
+        let f = file("");
+        let mut entries = crate::managed::Entries::default();
+        let bad = ratelimit_change(
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "ipv4_prefix": 33 })),
+        )
+        .unwrap_err();
+        assert!(bad.detail.contains("ipv4_prefix"), "{}", bad.detail);
+        let zero = ratelimit_change(
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "enabled": true, "queries": 0 })),
+        )
+        .unwrap_err();
+        assert!(zero.detail.contains("queries"), "{}", zero.detail);
+        let typo = ratelimit_change(&f, &mut entries, Some(&serde_json::json!({ "querys": 5 })))
+            .unwrap_err();
+        assert!(typo.detail.contains("querys"), "{}", typo.detail);
+    }
+
+    /// REQ: DNS-014 — what to keep in Git is one `[ratelimit]` table.
+    #[test]
+    fn dns_014_rate_limit_keep_in_git() {
+        let after = serde_json::json!({ "enabled": true, "queries": 5000, "window_secs": 60 });
+        let toml = keep_in_git(
+            ManagedKind::RateLimit,
+            "default",
+            Some(&serde_json::json!({ "queries": 5000 })),
+            Some(&after),
+        );
+        let parsed: toml::Table = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed["ratelimit"]["queries"].as_integer(), Some(5000));
+        let gone = keep_in_git(ManagedKind::RateLimit, "default", None, Some(&after));
+        assert!(gone.contains("Nothing to change in Git"), "{gone}");
     }
 }

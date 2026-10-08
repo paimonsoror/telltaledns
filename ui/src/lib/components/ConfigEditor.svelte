@@ -40,9 +40,10 @@
     help,
     rowAction,
     formAction,
+    singleton = false,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit';
     title: string;
     noun: string;
     fields: Field[];
@@ -53,6 +54,8 @@
     rowAction?: { label: string; run: (name: string) => Promise<{ ok: boolean; text: string }> };
     /** A button in the form that tries the draft before saving (T9.12: "Test it"). */
     formAction?: { label: string; run: (body: Record<string, unknown>) => Promise<{ ok: boolean; text: string }> };
+    /** One entry that always exists (the rate limit): no Add, and no Remove, only Revert to the file. */
+    singleton?: boolean;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -182,7 +185,7 @@
 <section class="card" data-testid={`editor-${kind}`}>
   <div class="head">
     <h2>{title}{#if help}<HelpButton id={help} />{:else}<HelpButton id="config-sources" />{/if}</h2>
-    {#if writable}<button onclick={() => open()}>Add {noun}</button>{/if}
+    {#if writable && !singleton}<button onclick={() => open()}>Add {noun}</button>{/if}
   </div>
   <ErrorNote {error} />
   {#if entries.length === 0}
@@ -204,7 +207,7 @@
                   {#if e.source !== 'hidden'}<button class="link small" onclick={() => open(e)}>Edit</button>{/if}
                   {#if e.source === 'override' || e.source === 'hidden'}
                     <button class="link small" disabled={busy} onclick={() => remove(e)}>Revert to the file</button>
-                  {:else}
+                  {:else if !singleton}
                     <button class="link small danger" disabled={busy} onclick={() => remove(e)}>Remove</button>
                   {/if}
                 </td>

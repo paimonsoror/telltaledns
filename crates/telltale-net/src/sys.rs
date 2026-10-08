@@ -454,8 +454,11 @@ fn pktinfo_from_cmsgs(msg: &libc::msghdr) -> Option<LocalAddr> {
             // unaligned, so read_unaligned.
             let info: libc::in_pktinfo =
                 unsafe { ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast()) };
+            // `ipi_spec_dst` is the local address to answer from: the interface's own
+            // address when the query came to a broadcast (or multicast) address, which
+            // `ipi_addr` reports and the kernel refuses as a source (EINVAL).
             return Some(LocalAddr {
-                ip: IpAddr::V4(Ipv4Addr::from(u32::from_be(info.ipi_addr.s_addr))),
+                ip: IpAddr::V4(Ipv4Addr::from(u32::from_be(info.ipi_spec_dst.s_addr))),
                 ifindex: u32::try_from(info.ipi_ifindex).unwrap_or(0),
             });
         }
@@ -656,13 +659,9 @@ mod tests {
             let mut msg: libc::msghdr = unsafe { mem::zeroed() };
             msg.msg_control = buf.as_mut_ptr().cast();
             msg.msg_controllen = len as _;
-            // The send path writes ipi_spec_dst; the receive path reads ipi_addr, so for v4
-            // only check that a header of the right type is present.
+            // Both directions use ipi_spec_dst for v4 (the address to answer from).
             let got = pktinfo_from_cmsgs(&msg);
-            assert!(got.is_some());
-            if ip.is_ipv6() {
-                assert_eq!(got.unwrap().ip, ip);
-            }
+            assert_eq!(got.map(|l| l.ip), Some(ip));
         }
     }
 }

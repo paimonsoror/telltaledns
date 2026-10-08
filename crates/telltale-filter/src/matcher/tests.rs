@@ -6,6 +6,7 @@ use telltale_proto::{NameBuf, rtype};
 
 use super::*;
 use crate::compile::{CompileOptions, ListData, ListInput, compile};
+use crate::parse::ListOptions;
 
 fn input(name: &str, kind: ListKind, text: &str) -> ListInput {
     ListInput {
@@ -21,7 +22,7 @@ fn input(name: &str, kind: ListKind, text: &str) -> ListInput {
 }
 
 /// Compiles `lists` (IDs in order) with `threads` and returns a matcher.
-fn matcher_with(lists: Vec<ListInput>, threads: usize, overlay: Overlay) -> Matcher {
+fn matcher_with(lists: Vec<ListInput>, threads: usize) -> Matcher {
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join("snap");
     compile(
@@ -39,7 +40,7 @@ fn matcher_with(lists: Vec<ListInput>, threads: usize, overlay: Overlay) -> Matc
     } else {
         Lookup::Indexed
     };
-    Matcher::with_lookup(Some(snap), overlay, lookup).unwrap()
+    Matcher::with_lookup(Some(snap), lookup).unwrap()
 }
 
 fn wire(name: &str) -> Vec<u8> {
@@ -72,8 +73,7 @@ fn describe(m: &Matcher, a: &Attribution) -> String {
         RuleRef::ModRule { .. } => "mod".into(),
         RuleRef::Regex { .. } => "regex".into(),
     };
-    let ov = if a.overlay { " overlay" } else { "" };
-    format!("{list} {rule}{ov}")
+    format!("{list} {rule}")
 }
 
 fn decide(m: &Matcher, name: &str) -> String {
@@ -103,7 +103,6 @@ fn flt_003_precedence_table() {
             ),
         ],
         1,
-        Overlay::default(),
     );
     let cases = [
         // (name, expected decision with attribution)
@@ -148,7 +147,6 @@ fn flt_005_mask_selects_lists() {
             input("b", ListKind::Allow, "ads.example.com\n"),
         ],
         1,
-        Overlay::default(),
     );
     let mut only_a = ListMask::default();
     only_a.set(0);
@@ -185,7 +183,6 @@ fn flt_001_modifier_rules() {
              ||rewrite.example.com^$dnsrewrite=NOERROR;A;192.0.2.1\n",
         )],
         1,
-        Overlay::default(),
     );
     let all = ListMask::all(1);
     let d = |name: &str, qtype: u16, names: &[&str]| decide_full(&m, name, qtype, names, &all);
@@ -248,7 +245,6 @@ fn flt_003_regex_rules() {
             input("allow", ListKind::Allow, "/^ad7\\./\n"),
         ],
         1,
-        Overlay::default(),
     );
     let all = ListMask::all(2);
     let d = |name: &str, qtype: u16| decide_full(&m, name, qtype, &[], &all);
@@ -273,39 +269,6 @@ fn flt_003_regex_rules() {
 }
 
 #[test]
-fn flt_003_overlay_applies_without_recompiling() {
-    let (overlay, stats) = Overlay::build(&[(
-        2,
-        ListOptions::default(),
-        "||new.example.com^\n@@||ads.example.com^\n/^rx[0-9]+\\./\n||mod.example.com^$dnstype=AAAA\n",
-    )])
-    .unwrap();
-    assert_eq!(stats[0].rules, 4);
-    let m = matcher_with(
-        vec![
-            input("block", ListKind::Block, "||ads.example.com^\n"),
-            input("other", ListKind::Block, "||unrelated.example.net^\n"),
-        ],
-        1,
-        overlay,
-    );
-    assert_eq!(decide(&m, "new.example.com"), "block #2 Subtree/3 overlay");
-    assert_eq!(decide(&m, "ads.example.com"), "allow #2 Subtree/3 overlay");
-    assert_eq!(decide(&m, "rx5.example.org"), "block #2 regex overlay");
-    assert_eq!(
-        decide_full(&m, "mod.example.com", rtype::AAAA, &[], &ListMask::all(3)),
-        "block #2 mod overlay"
-    );
-    // Overlay rules obey the mask like any list.
-    let mut no_overlay = ListMask::all(2);
-    no_overlay.words.truncate(1);
-    assert_eq!(
-        decide_full(&m, "ads.example.com", rtype::A, &[], &no_overlay),
-        "block block Subtree/3"
-    );
-}
-
-#[test]
 fn flt_003_sharded_snapshots_decide_identically() {
     let mut text = String::new();
     for i in 0..3000 {
@@ -314,16 +277,8 @@ fn flt_003_sharded_snapshots_decide_identically() {
     text.push_str(
         "||com^$important\n@@||safe.zone1.example1.com^$important\n|exact.zone2.example2.com^\n",
     );
-    let one = matcher_with(
-        vec![input("l", ListKind::Block, &text)],
-        1,
-        Overlay::default(),
-    );
-    let three = matcher_with(
-        vec![input("l", ListKind::Block, &text)],
-        3,
-        Overlay::default(),
-    );
+    let one = matcher_with(vec![input("l", ListKind::Block, &text)], 1);
+    let three = matcher_with(vec![input("l", ListKind::Block, &text)], 3);
     assert_eq!(three.snapshot().unwrap().manifest.fst_shards, 3);
     for q in [
         "a.n5.zone5.example5.com",
@@ -342,7 +297,7 @@ fn flt_003_sharded_snapshots_decide_identically() {
 
 #[test]
 fn flt_003_no_snapshot_means_no_decision() {
-    let m = Matcher::new(None, Overlay::default()).unwrap();
+    let m = Matcher::new(None).unwrap();
     assert_eq!(decide(&m, "ads.example.com"), "none");
 }
 
@@ -366,9 +321,8 @@ fn flt_003_walk_and_index_agree() {
         )
         .unwrap();
         let snap = Arc::new(Snapshot::open(&out).unwrap());
-        let walk =
-            Matcher::with_lookup(Some(snap.clone()), Overlay::default(), Lookup::Walk).unwrap();
-        let idx = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+        let walk = Matcher::with_lookup(Some(snap.clone()), Lookup::Walk).unwrap();
+        let idx = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
         assert_eq!(walk.lookup(), Lookup::Walk);
         assert!(idx.index_bytes() > 0);
         for i in 0..4000 {
@@ -408,7 +362,6 @@ fn flt_013_matches_lists_every_rule_in_precedence_order() {
             input("d", ListKind::Block, "||ads.example.com^$dnstype=AAAA\n"),
         ],
         1,
-        Overlay::default(),
     );
     let client = ClientCtx {
         ip: CLIENT_IP,

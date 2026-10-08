@@ -10,6 +10,7 @@ pub mod doh3;
 pub mod doq;
 pub mod handler;
 pub mod neigh;
+pub mod peer_limit;
 pub mod proxy;
 #[cfg(target_os = "linux")]
 mod sys;

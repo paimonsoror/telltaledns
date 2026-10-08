@@ -380,6 +380,9 @@ pub enum ManagedKind {
     AlertRule,
     /// REQ: FLT-010 (T9.7) — a schedule (`/schedules/{name}`).
     Schedule,
+    /// REQ: DNS-014 (review 01 q1) — the per-client rate limit, `[ratelimit]` (`/ratelimit/default`):
+    /// one entry, named `default`, that replaces the files' section until it's reverted.
+    RateLimit,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -582,7 +585,7 @@ async fn fallback(
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, forwards, rules, anomalies, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
