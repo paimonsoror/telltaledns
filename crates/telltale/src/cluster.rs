@@ -95,6 +95,13 @@ pub(crate) fn start(
             }
         }
     });
+    // REQ: CLU-005 (ADR-048, review 05 q2) — a Git-managed node takes over from an emergency
+    // primary by itself once it's back.
+    tokio::spawn(takeover(
+        Arc::clone(&cluster),
+        crate::replication::gitops_capable(cfg),
+        stop.clone(),
+    ));
     // REQ: CLU-009 — ephemeral members that went away leave the registry.
     let ttl = Duration::from_secs(u64::from(cfg.cluster.ephemeral_ttl_secs));
     // Sweep at a quarter of the TTL (5-60 s), so a gone member leaves within ~1.25 × TTL.
@@ -764,6 +771,69 @@ pub(crate) fn promote_plan(
         .fold(c.role().1, u64::max)
         + 1;
     Ok((epoch, role == Role::Emergency))
+}
+
+/// How long the conditions for an automatic takeover must hold before it happens: a node that
+/// has just come back first settles (connections, the latest version).
+const TAKEOVER_AFTER: Duration = Duration::from_secs(60);
+
+/// REQ: CLU-005 (ADR-048, review 05 q2) — the emergency primary this node should take over
+/// from now, if any: this node is Git-managed and not the primary, the version it applied is
+/// an emergency primary's, that very node is up, and [`promote_plan`] agrees. Never any other
+/// primary: with the primary simply gone, promotion stays a person's decision (ADR-051).
+fn takeover_due(c: &Cluster, gitops_source: bool) -> Option<String> {
+    if !gitops_source || c.is_primary() {
+        return None;
+    }
+    let applied = applied_manifest(c).filter(|m| m.emergency)?;
+    let now = now_ms();
+    let up = c
+        .members()
+        .iter()
+        .find(|m| m.primary && m.up(now))
+        .map(|m| m.node_id.clone())?;
+    (up == applied.primary && promote_plan(c, true, false).is_ok()).then_some(up)
+}
+
+/// Takes over from an emergency primary once [`takeover_due`] has held for
+/// [`TAKEOVER_AFTER`]. Checks every 10 s, off the DNS path (CLU-004).
+async fn takeover(c: Arc<Cluster>, gitops_source: bool, mut stop: watch::Receiver<bool>) {
+    if !gitops_source {
+        return;
+    }
+    let mut since: Option<std::time::Instant> = None;
+    loop {
+        tokio::select! {
+            _ = stop.changed() => return,
+            () = tokio::time::sleep(Duration::from_secs(10)) => {}
+        }
+        let c2 = Arc::clone(&c);
+        let due = tokio::task::spawn_blocking(move || takeover_due(&c2, true))
+            .await
+            .ok()
+            .flatten();
+        let Some(from) = due else {
+            since = None;
+            continue;
+        };
+        if since.get_or_insert_with(std::time::Instant::now).elapsed() < TAKEOVER_AFTER {
+            continue;
+        }
+        since = None;
+        let c2 = Arc::clone(&c);
+        match tokio::task::spawn_blocking(move || promote(&c2, true, false)).await {
+            Ok(Ok(epoch)) => {
+                warn!(epoch, from = %from, "cluster: took over from the emergency primary (ADR-048)");
+                c.event(
+                    "takeover",
+                    &c.identity.meta.node_id,
+                    format!("took over from the emergency primary {from} in epoch {epoch}"),
+                );
+            }
+            Ok(Err(e)) => warn!("cluster: couldn't take over from the emergency primary: {e}"),
+            Err(e) => warn!("cluster: the takeover check failed: {e}"),
+        }
+    }
 }
 
 /// The manifest this node last applied (what it would take over from).
@@ -1502,6 +1572,25 @@ mod tests {
             "a real primary stays"
         );
         assert!(!takeover_allowed(None, "pi", true));
+    }
+
+    /// REQ: CLU-005 (ADR-048, review 05 q2) — the automatic takeover never fires for a node
+    /// that isn't Git-managed, for the primary itself, or without an applied emergency version
+    /// (a primary that's simply gone stays a person's call).
+    #[test]
+    fn clu_005_automatic_takeover_only_from_an_emergency_primary() {
+        let a = tempfile::tempdir().unwrap();
+        let primary = Identity::init(
+            a.path(),
+            "home",
+            vec!["https://192.168.3.2:8443".into()],
+            "k8s",
+        )
+        .unwrap();
+        let p = Cluster::new(primary, "0.1.0");
+        assert_eq!(takeover_due(&p, true), None, "the primary itself");
+        assert_eq!(takeover_due(&p, false), None, "not Git-managed");
+        assert!(applied_manifest(&p).is_none());
     }
 
     #[test]

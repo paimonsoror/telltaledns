@@ -1549,8 +1549,9 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
     `gitops_managed`);
   - another node can only be promoted as an *emergency* primary, which keeps the cluster
     coordinated on the last version and publishes nothing new until a Git-managed node is back.
-    When one is back, promote it (its Cluster page, or `telltale cluster promote`): it takes
-    over from the emergency primary, which steps down by itself.
+    When one is back, it takes over by itself after a minute (an eligible, Git-managed node
+    that sees the emergency primary up), and the emergency primary steps down. You can also
+    promote it right away from its Cluster page or with `telltale cluster promote`.
 
   The default is `api`: the primary's own file and UI.
 
