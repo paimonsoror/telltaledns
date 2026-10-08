@@ -823,3 +823,96 @@ fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
     assert!(record(&resp2.node_id).eligible && !record(&resp2.node_id).ephemeral);
     assert!(primary.key_share_for(&resp2.node_id).is_some());
 }
+
+// REQ: CLU-005 (ADR-051) — a newer epoch in a Hello or heartbeat fences the primary only when
+// it comes from a voter: an ephemeral member's frames (unsigned, from a resolver pod that
+// could be compromised) never demote it.
+#[test]
+fn clu_005_only_voters_can_fence_the_primary() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let primary = Cluster::new(id, "0.1.0");
+    let join = |eligible: bool, ephemeral: bool, site: &str| {
+        let key = pki::new_node_key().unwrap();
+        let token = primary.identity.create_token(60, None).unwrap();
+        primary
+            .identity
+            .accept_join(
+                &JoinRequest {
+                    witness: false,
+                    ephemeral,
+                    secret: token.secret,
+                    csr_pem: key.csr_pem,
+                    advertise: vec![],
+                    site: site.into(),
+                    eligible,
+                    version: "0.1.0".into(),
+                },
+                None,
+            )
+            .unwrap()
+            .node_id
+    };
+    let pod = join(false, true, "k8s");
+    let pi = join(true, false, "pi");
+    let hello = |node_id: &str, epoch: u64, eligible: bool| Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: primary.identity.meta.cluster_id.clone(),
+            node_id: node_id.to_owned(),
+            version: "0.1.0".into(),
+            site: "x".into(),
+            eligible,
+            advertise: vec![],
+            epoch,
+            applied_seq: 0,
+            primary: true,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    let heartbeat = |epoch: u64| Frame {
+        body: Some(Body::Heartbeat(Heartbeat {
+            ts_ms: 1,
+            epoch,
+            ..Heartbeat::default()
+        })),
+    };
+    assert_eq!(primary.role(), (Role::Primary, 1));
+    let echo = EchoSlot::default();
+    // The pod claims to be the primary of epoch 99: ignored.
+    let mut peer = Some(pod.clone());
+    primary
+        .on_frame(&mut peer, hello(&pod, 99, false), "inbound", &echo)
+        .unwrap();
+    primary
+        .on_frame(&mut peer, heartbeat(100), "inbound", &echo)
+        .unwrap();
+    assert_eq!(
+        primary.role(),
+        (Role::Primary, 1),
+        "a pod can't fence the primary"
+    );
+    // Claiming eligibility in the same Hello doesn't make it a voter first (review 05-01).
+    primary
+        .on_frame(&mut peer, hello(&pod, 101, true), "inbound", &echo)
+        .unwrap();
+    assert_eq!(
+        primary.role(),
+        (Role::Primary, 1),
+        "nor by claiming to be eligible"
+    );
+    assert!(primary.is_primary());
+    // An eligible node announcing epoch 2 (it was promoted): fenced.
+    let mut peer = Some(pi.clone());
+    primary
+        .on_frame(&mut peer, hello(&pi, 2, false), "inbound", &echo)
+        .unwrap();
+    assert_eq!(primary.role(), (Role::Replica, 2));
+}

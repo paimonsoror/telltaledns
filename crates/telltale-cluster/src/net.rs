@@ -1000,9 +1000,29 @@ impl Cluster {
             .clone()
     }
 
+    /// Whether `node` may announce an epoch (ADR-051): a voter, that is an eligible node or a
+    /// witness, in the registry. A member the registry doesn't know is taken at its word (a
+    /// cluster from before registries existed); a known member that can't vote is not.
+    pub fn may_announce_epoch(&self, node: &str) -> bool {
+        self.identity
+            .registry()
+            .iter()
+            .find(|n| n.node_id == node)
+            .is_none_or(crate::node::NodeRecord::voter)
+    }
+
     /// Fencing (ADR-051): a primary that hears of a higher epoch steps down at once.
     fn observe_epoch(&self, epoch: u64, from: &str) {
         let (role, mine) = self.role();
+        if epoch > mine && !self.may_announce_epoch(from) {
+            // Hellos and heartbeats aren't signed: a member that can't vote (a resolver pod)
+            // could otherwise fence the primary and freeze the cluster with one frame.
+            debug!(
+                epoch,
+                from, "ignoring a newer epoch from a member that can't vote"
+            );
+            return;
+        }
         if epoch > mine {
             if role == Role::Primary {
                 warn!(epoch, mine, from, "a newer primary exists: stepping down");

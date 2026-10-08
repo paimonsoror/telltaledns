@@ -154,9 +154,11 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
     };
     let local = cluster.local_state();
     el.applied = (local.epoch, local.applied_seq);
+    // ADR-051 — only voters' epochs count (see `Cluster::may_announce_epoch`).
     let seen = cluster
         .members()
         .iter()
+        .filter(|m| cluster.may_announce_epoch(&m.node_id))
         .map(|m| m.epoch)
         .fold(cluster.role().1, u64::max);
     let mut outs = el.observe(seen);
