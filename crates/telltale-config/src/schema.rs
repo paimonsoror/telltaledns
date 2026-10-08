@@ -1825,6 +1825,10 @@ pub struct AuthConfig {
     pub allow_insecure_basic: bool,
     /// Roles that must use two-factor sign-in (TOTP), e.g. `["admin"]`.
     pub totp_required_roles: Vec<UserRole>,
+    /// Days the audit log keeps entries (default 365; 0 keeps them forever). Older entries
+    /// are removed hourly; the rest still verifies from a checkpoint, and each trim is
+    /// itself recorded (`audit.trim`).
+    pub audit_retention_days: u32,
     /// Sign-in through `OpenID Connect` providers (Keycloak, Authentik, ...; API-004).
     pub oidc: OidcConfig,
 }
@@ -1836,6 +1840,7 @@ impl Default for AuthConfig {
             session_idle_hours: 24,
             allow_insecure_basic: false,
             totp_required_roles: Vec::new(),
+            audit_retention_days: 365,
             oidc: OidcConfig::default(),
         }
     }

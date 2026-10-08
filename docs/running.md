@@ -2195,7 +2195,9 @@ The same list decides whose `X-Forwarded-Proto: https` counts: it is what lets H
 
 **Audit log.** Every change to users, passwords, two-factor sign-in, and API tokens, every sign-in, each account or address lockout, and every configuration reload that changed something is recorded: who (for API tokens, the token and its owner: `token:grafana (owner: ana)`), when, from which address, what changed (`role: viewer → operator`; reloads list the changed settings, never their values), and why, if the caller sent an `X-Telltale-Reason` header. Admins see it under **Settings → Audit log** or `GET /api/v1/audit`.
 
-Entries can't be edited or deleted, and each is chained to the previous one with a BLAKE3 hash, so tampering with the database is detectable:
+If the audit log can't be written (a full disk, a broken database), the change that failed to be recorded is logged as an error, and the next change first writes an `audit.gap` entry saying how many went unrecorded and why. Until that works, changes through the API and UI are refused with 503; DNS keeps answering.
+
+Entries are kept for `[auth] audit_retention_days` (365 by default; 0 keeps them forever). Older ones are removed hourly, and each removal is itself recorded as `audit.trim` with a checkpoint hash. Otherwise entries can't be edited or deleted, and each is chained to the previous one with a BLAKE3 hash, so tampering with the database is detectable (after a trim, the chain is checked from the checkpoint):
 ```sh
 telltale audit list -n 20                  # newest first; --action user. or config.reload
 telltale audit verify                      # "ok: 42 entries, head 9f3c…" or "BROKEN at entry 17" (exit 1)

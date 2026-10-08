@@ -148,6 +148,42 @@ fn presented(headers: &HeaderMap) -> (Option<String>, Option<String>, Option<(St
     (session, bearer, basic)
 }
 
+/// REQ: API-006 (review 06 q2) — no change goes through while the audit log can't record it:
+/// `Some` refusal for a change while [`Auth::audit_ready`] says no. MCP's own POST is a read;
+/// its tools' writes come back through the middleware as their own requests.
+async fn audit_gate(auth: &AuthState, method: &Method, path: &str) -> Option<Response> {
+    let changes =
+        !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) && path != "/mcp";
+    if !changes {
+        return None;
+    }
+    let a = Arc::clone(auth);
+    match tokio::task::spawn_blocking(move || a.audit_ready()).await {
+        Ok(Err(p)) => Some(p.into_response()),
+        _ => None,
+    }
+}
+
+/// Session-authenticated changes need the session's CSRF token in `X-CSRF-Token`: the
+/// refusal, if this one doesn't have it.
+fn csrf_rejected(principal: &Principal, method: &Method, headers: &HeaderMap) -> Option<Response> {
+    let Via::Session { csrf, .. } = &principal.via else {
+        return None;
+    };
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return None;
+    }
+    let sent = headers
+        .get("x-csrf-token")
+        .map(HeaderValue::as_bytes)
+        .unwrap_or_default();
+    (!crypto::ct_eq(sent, csrf.as_bytes())).then(|| {
+        Problem::new(Code::CsrfRejected, "missing or wrong X-CSRF-Token header")
+            .hint("Send the csrfToken from sign-in (or GET /api/v1/auth/status) as X-CSRF-Token.")
+            .into_response()
+    })
+}
+
 /// Authenticates every request to the routes it wraps; puts the [`Principal`] in the
 /// request extensions. Session-authenticated changes need the `X-CSRF-Token` header.
 pub async fn authenticate(
@@ -200,20 +236,12 @@ pub async fn authenticate(
         }
         Err(p) => return challenge(&auth, &path, presented_token, p.into_response()),
     };
-    if let Via::Session { csrf, .. } = &principal.via
-        && !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
-    {
-        let sent = headers
-            .get("x-csrf-token")
-            .map(HeaderValue::as_bytes)
-            .unwrap_or_default();
-        if !crypto::ct_eq(sent, csrf.as_bytes()) {
-            return Problem::new(Code::CsrfRejected, "missing or wrong X-CSRF-Token header")
-                .hint(
-                    "Send the csrfToken from sign-in (or GET /api/v1/auth/status) as X-CSRF-Token.",
-                )
-                .into_response();
-        }
+    let method = req.method().clone();
+    if let Some(refused) = csrf_rejected(&principal, &method, &headers) {
+        return refused;
+    }
+    if let Some(refused) = audit_gate(&auth, &method, &path).await {
+        return refused;
     }
     // REQ: AGT-004, AGT-005, AGT-009 — agent tokens: scopes, group, rate, reason, kill switch.
     let mut principal = principal;

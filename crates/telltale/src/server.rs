@@ -714,7 +714,8 @@ async fn start_http(
                 return Ok(());
             }
         };
-        let _purge = crate::auth_setup::spawn_purge(Arc::clone(&auth));
+        let _purge =
+            crate::auth_setup::spawn_purge(Arc::clone(&auth), cfg.auth.audit_retention_days);
         let addr = cfg.api.listen;
         auth.agents()
             .set(cfg.agents.enabled, cfg.agents.rate_per_minute);

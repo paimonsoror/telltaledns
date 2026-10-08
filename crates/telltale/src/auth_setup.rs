@@ -212,8 +212,28 @@ fn bootstrap_from_env(auth: &Auth) {
     }
 }
 
+/// Removes audit entries older than `days`, and records the trim with its checkpoint.
+fn trim_audit(auth: &Auth, days: u32) {
+    let before = now().saturating_sub(u64::from(days) * 86_400);
+    match auth.state().audit_trim(before) {
+        Ok((0, _)) => {}
+        Ok((removed, checkpoint)) => {
+            let (seq, hash) = checkpoint.unwrap_or_default();
+            let hex = crypto::hex(&hash);
+            auth.record(
+                &telltale_api::auth::Actor::system("audit retention"),
+                "audit.trim",
+                "audit",
+                &serde_json::json!({ "removed": removed, "days": days, "checkpointSeq": seq, "checkpointHash": hex }),
+            );
+            info!(removed, days, "audit log: removed entries past retention");
+        }
+        Err(e) => warn!("audit log retention: {e}"),
+    }
+}
+
 /// Ends expired and idle sessions every hour.
-pub(crate) fn spawn_purge(auth: Arc<Auth>) -> tokio::task::JoinHandle<()> {
+pub(crate) fn spawn_purge(auth: Arc<Auth>, audit_days: u32) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(3600));
         loop {
@@ -221,6 +241,11 @@ pub(crate) fn spawn_purge(auth: Arc<Auth>) -> tokio::task::JoinHandle<()> {
             let a = Arc::clone(&auth);
             if let Ok(Err(p)) = tokio::task::spawn_blocking(move || a.purge_sessions(now())).await {
                 warn!("purging sessions: {}", p.detail);
+            }
+            // REQ: API-006 (review 06 q2) — audit retention.
+            if audit_days > 0 {
+                let a = Arc::clone(&auth);
+                let _ = tokio::task::spawn_blocking(move || trim_audit(&a, audit_days)).await;
             }
         }
     })

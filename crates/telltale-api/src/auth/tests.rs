@@ -57,6 +57,26 @@ fn api_003_promotion_is_confirmed_with_the_password() {
     );
 }
 
+// REQ: API-006 (review 06 q2) — after an audit write failed, the next change first records
+// the gap (what went unrecorded and why); once that's on record, changes proceed.
+#[test]
+fn api_006_a_missed_audit_entry_is_recorded_before_the_next_change() {
+    let a = auth(Settings::default());
+    assert!(a.audit_ready().is_ok(), "nothing missed");
+    *a.audit_gap.lock().unwrap() = Some((1, "disk full".into()));
+    assert!(a.audit_ready().is_ok(), "the gap could be recorded");
+    assert!(a.audit_gap.lock().unwrap().is_none());
+    let gap = a
+        .state()
+        .audit_page(None, 5, Some("audit.gap"), None)
+        .unwrap();
+    assert_eq!(gap.len(), 1);
+    assert!(
+        gap[0].detail.contains("disk full") && gap[0].detail.contains("\"unrecorded\":1"),
+        "{gap:?}"
+    );
+}
+
 #[test]
 fn api_003_first_run_setup_token_creates_one_admin() {
     let a = auth(Settings::default());

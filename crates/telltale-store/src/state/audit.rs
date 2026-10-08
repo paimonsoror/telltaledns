@@ -45,6 +45,9 @@ pub struct AuditEntry {
     pub hash: Vec<u8>,
 }
 
+/// Where a trimmed chain continues from: the last removed entry's sequence number and hash.
+pub type Checkpoint = (u64, Vec<u8>);
+
 /// Result of checking the whole chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verify {
@@ -171,17 +174,64 @@ impl State {
         })
     }
 
-    /// Recomputes every hash and link, oldest first.
+    /// REQ: API-006 (review 06 q2) — removes entries older than `before_ts` and keeps the
+    /// last removed entry's sequence number and hash as the checkpoint the chain continues
+    /// from, so what's left still verifies. Returns how many were removed. The trim itself
+    /// is recorded by the caller (`audit.trim`), checkpoint hash included.
+    pub fn audit_trim(&self, before_ts: u64) -> Result<(u64, Option<Checkpoint>)> {
+        self.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let last: Option<(i64, Vec<u8>, i64)> = tx
+                .query_row(
+                    "SELECT seq, hash, ts FROM audit WHERE ts < ?1 ORDER BY seq DESC LIMIT 1",
+                    [i(before_ts)],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((seq, hash, ts)) = last else {
+                return Ok((0, None));
+            };
+            // The append-only trigger stays the rule; only a trim lifts it, inside this
+            // transaction, and only for entries at or before the checkpoint.
+            tx.execute_batch("DROP TRIGGER audit_no_delete;")?;
+            let removed = tx.execute("DELETE FROM audit WHERE seq <= ?1", [seq])?;
+            tx.execute_batch(
+                "CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit
+                     BEGIN SELECT RAISE(ABORT, 'the audit log is append-only'); END;",
+            )?;
+            tx.execute(
+                "INSERT INTO audit_checkpoint (id, seq, hash, ts) VALUES (1, ?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET seq = ?1, hash = ?2, ts = ?3",
+                params![seq, hash, ts],
+            )?;
+            tx.commit()?;
+            Ok((
+                u64::try_from(removed).unwrap_or(u64::MAX),
+                Some((u(seq), hash)),
+            ))
+        })
+    }
+
+    /// Recomputes every hash and link, oldest first, from the trim checkpoint if any.
     pub fn audit_verify(&self) -> Result<Verify> {
         self.with(|c| {
+            let checkpoint: Option<(i64, Vec<u8>)> = c
+                .query_row(
+                    "SELECT seq, hash FROM audit_checkpoint WHERE id = 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
             let mut q = c.prepare(&format!("SELECT {COLUMNS} FROM audit ORDER BY seq"))?;
             let mut rows = q.query([])?;
+            let (start_seq, start_hash) =
+                checkpoint.map_or((0, GENESIS.to_vec()), |(s, h)| (u(s), h));
             let mut v = Verify {
                 entries: 0,
                 first_bad: None,
-                head: GENESIS.to_vec(),
+                head: start_hash,
             };
-            let mut expect_seq = 1u64;
+            let mut expect_seq = start_seq + 1;
             while let Some(r) = rows.next()? {
                 let e = row(r)?;
                 v.entries += 1;
@@ -291,5 +341,35 @@ mod tests {
             head,
             "truncation changes the head"
         );
+    }
+
+    // REQ: API-006 (review 06 q2) — retention removes old entries and the rest still
+    // verifies from the checkpoint; the table stays append-only afterwards.
+    #[test]
+    fn api_006_trimmed_log_still_verifies() {
+        let s = State::in_memory().unwrap();
+        for n in 1..=5 {
+            add(&s, n * 100, "user.update", "root");
+        }
+        let head = s.audit_verify().unwrap().head;
+        let (removed, checkpoint) = s.audit_trim(1_791_072_000 + 250).unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(checkpoint.map(|(seq, _)| seq), Some(2));
+        let v = s.audit_verify().unwrap();
+        assert_eq!((v.entries, v.first_bad), (3, None));
+        assert_eq!(v.head, head, "the newest entries are untouched");
+        assert_eq!(
+            s.audit_trim(1_791_072_000 + 250).unwrap().0,
+            0,
+            "nothing more"
+        );
+        add(&s, 600, "user.update", "root");
+        assert_eq!(
+            s.audit_verify().unwrap().first_bad,
+            None,
+            "appends continue the chain"
+        );
+        let err = s.with(|c| c.execute("DELETE FROM audit WHERE seq = 6", []));
+        assert!(err.is_err(), "still append-only");
     }
 }

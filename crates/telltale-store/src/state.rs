@@ -104,6 +104,14 @@ const MIGRATIONS: &[&str] = &[
     // (made on this node) or `cluster` (the primary's, replicated).
     "ALTER TABLE users ADD COLUMN origin TEXT NOT NULL DEFAULT 'local';
     ALTER TABLE tokens ADD COLUMN origin TEXT NOT NULL DEFAULT 'local';",
+    // 7: audit retention (review 06 q2): the last entry removed by a trim, so the chain
+    // still verifies from there.
+    "CREATE TABLE audit_checkpoint (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        seq INTEGER NOT NULL,
+        hash BLOB NOT NULL,
+        ts INTEGER NOT NULL
+    );",
 ];
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).

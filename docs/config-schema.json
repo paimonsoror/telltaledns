@@ -53,6 +53,7 @@
       "$ref": "#/$defs/AuthConfig",
       "default": {
         "allow_insecure_basic": false,
+        "audit_retention_days": 365,
         "oidc": {
           "allowed_admin_networks": [
             "10.0.0.0/8",
@@ -765,6 +766,13 @@
           "description": "Accept HTTP Basic over plain HTTP. Off: Basic only behind HTTPS (a proxy that sends\n`X-Forwarded-Proto: https`).",
           "type": "boolean",
           "default": false
+        },
+        "audit_retention_days": {
+          "description": "Days the audit log keeps entries (default 365; 0 keeps them forever). Older entries\nare removed hourly; the rest still verifies from a checkpoint, and each trim is\nitself recorded (`audit.trim`).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 365,
+          "minimum": 0
         },
         "oidc": {
           "description": "Sign-in through `OpenID Connect` providers (Keycloak, Authentik, ...; API-004).",

@@ -249,6 +249,9 @@ pub struct Auth {
     /// REQ: CLU-003 (T9.1, ADR-045) — set on a replica: users and tokens come from this
     /// primary (its UI address), so changing them here is refused.
     identity_primary: Mutex<Option<String>>,
+    /// REQ: API-006 (review 06 q2) — audit writes that failed since the last good one: how
+    /// many, and the latest error ([`Auth::audit_ready`]).
+    audit_gap: Mutex<Option<(u64, String)>>,
     /// Password checks in flight (at most [`MAX_PASSWORD_CHECKS`]).
     password_checks: std::sync::atomic::AtomicU32,
 }
@@ -332,6 +335,7 @@ impl Auth {
             plans: crate::plans::Plans::default(),
             identity_primary: Mutex::new(None),
             password_checks: std::sync::atomic::AtomicU32::new(0),
+            audit_gap: Mutex::new(None),
         }
     }
 
@@ -1038,8 +1042,52 @@ impl Auth {
         }
     }
 
+    /// REQ: API-006 (review 06 q2) — whether changes may proceed: yes, unless an audit write
+    /// failed since the last good one. Then this first records the gap (`audit.gap`, with
+    /// the error and how many changes went unrecorded); if even that can't be written, the
+    /// change is refused (503) until the log can be written again. At most one change
+    /// goes unrecorded, and the log says so. Blocking.
+    pub fn audit_ready(&self) -> Result<(), Problem> {
+        let pending = self
+            .audit_gap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some((missed, error)) = pending else {
+            return Ok(());
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let detail = serde_json::json!({ "unrecorded": missed, "error": error }).to_string();
+        let gap = NewAudit {
+            ts: now,
+            actor: "system",
+            actor_kind: "system",
+            remote: None,
+            action: "audit.gap",
+            target: "audit",
+            detail: &detail,
+            reason: None,
+        };
+        match self.state.audit_append(&gap) {
+            Ok(_) => {
+                *self
+                    .audit_gap
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
+                Ok(())
+            }
+            Err(e) => Err(Problem::unavailable(format!(
+                "the audit log can't be written ({e}): changes are refused until it can"
+            ))
+            .hint("Check the data directory's disk space and permissions; DNS keeps answering.")),
+        }
+    }
+
     /// Appends to the audit log (REQ: API-006). The change has already happened, so a
-    /// failure here is logged rather than undoing it. Blocking.
+    /// failure here is logged, and the next change is held until the gap is on record
+    /// ([`Self::audit_ready`]). Blocking.
     pub fn record(&self, who: &Actor, action: &str, target: &str, detail: &serde_json::Value) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1057,6 +1105,12 @@ impl Auth {
         };
         if let Err(e) = self.state.audit_append(&entry) {
             tracing::error!(action, target, "audit log write failed: {e}");
+            let mut gap = self
+                .audit_gap
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let missed = gap.as_ref().map_or(0, |(n, _)| *n) + 1;
+            *gap = Some((missed, e.to_string()));
         }
     }
 
