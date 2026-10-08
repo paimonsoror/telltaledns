@@ -181,6 +181,7 @@ fn flt_004_spilling_and_threads_produce_identical_snapshots() {
             memory_budget: 0, // clamped to 1 MiB per sorter → spills
             version: 1,
             sync: false, // the unsynced path must build the same snapshot
+            max_regexes: 1000,
         },
     )
     .unwrap();
@@ -291,4 +292,55 @@ fn flt_003_regex_set_that_only_fails_as_a_whole_is_trimmed() {
         crate::matcher::Matcher::new(Some(snap)).is_ok(),
         "the snapshot must activate"
     );
+}
+
+/// REQ: FLT-003 (review 02-08) — a snapshot keeps at most `max_regexes` regex rules (0 = no
+/// limit): the ones past it, in list order, are reported with their list and line, counted
+/// per list, and left out of the snapshot.
+#[test]
+fn flt_003_regex_rules_are_capped_and_reported() {
+    let lists = || {
+        vec![
+            input("a", ListKind::Block, "/^a1\\./\n/^a2\\./\n/^a3\\./\n"),
+            input("b", ListKind::Block, "||b.example^\n/^b1\\./\n/^b2\\./\n"),
+        ]
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let report = compile(
+        lists(),
+        &tmp.path().join("capped"),
+        &CompileOptions {
+            max_regexes: 4,
+            ..CompileOptions::default()
+        },
+    )
+    .unwrap();
+    let stats = &report.manifest.stats;
+    assert_eq!((stats.regexes, stats.regex_rejected), (4, 1));
+    assert_eq!(report.regex_errors.len(), 1);
+    let (list, line, why) = &report.regex_errors[0];
+    assert_eq!(
+        (list.as_str(), *line),
+        ("b", 3),
+        "the last one, in list order"
+    );
+    assert!(why.contains("max_regexes"), "{why}");
+    assert_eq!(stats.per_list[0].regex_skipped, 0);
+    assert_eq!(stats.per_list[1].regex_skipped, 1);
+    // The kept ones are the first four.
+    let snap = Snapshot::open(&tmp.path().join("capped")).unwrap();
+    let kept: Vec<&str> = snap.regexes.iter().map(|r| r.pattern.as_str()).collect();
+    assert_eq!(kept, ["^a1\\.", "^a2\\.", "^a3\\.", "^b1\\."]);
+
+    let all = compile(
+        lists(),
+        &tmp.path().join("unlimited"),
+        &CompileOptions {
+            max_regexes: 0,
+            ..CompileOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(all.manifest.stats.regexes, 5);
+    assert_eq!(all.manifest.stats.regex_rejected, 0);
 }

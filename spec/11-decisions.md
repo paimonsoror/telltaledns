@@ -1266,6 +1266,13 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-101 — A snapshot keeps at most `[filter] max_regexes` regex rules, 1,000 by default (Proposed)
+**Context:** Code review of v0.2.0, finding 02-08 (owner's answer, 2026-10-07: a cap, with the overflow reported). Regex rules are tried on every query that no exact or suffix rule settles, and nothing bounded their number. Measured with `matcher_bench` on synthetic patterns sharing a prefix: 200 cost 0.4 µs per query at the median, 1,000 cost 1.1 µs, 1,500 cost 1.6 µs (41 MiB), and 2,000 grew past 5.9 GiB of memory within two minutes. The cause inside the regex engine's automaton wasn't pinned down.
+
+**Decision:** The compiler keeps the first `max_regexes` rules, in list order then line order (default 1,000, `0` = no limit, at most 100,000), and reports the rest as rejected regexes: per list in the manifest (`regex_skipped`), on the Lists page and `GET /api/v1/lists`, as `telltale_list_regex_skipped{list}`, and in the log and `telltale lists compile`. The default sits below the measured cliff with room for lists whose patterns are heavier than the synthetic ones.
+
+**Consequences:** A list shipping more regexes than the limit loses its tail silently to DNS but loudly to operators; raising the limit is the operator's call, with the measurements in `docs/running.md`. If the engine's behaviour is later understood or fixed, the default can rise. `bench-smoke` doesn't yet include the 1,000- and 2,000-pattern points the review asked for.
+
 ## ADR-100 — The advertised EDNS payload size is `[dns] edns_payload` (Proposed)
 **Context:** Code review of v0.2.0, finding 01-12 (owner's answer, 2026-10-07: a configuration key). DNS-005 says "a configurable advertised UDP payload size (default 1232)", but the value was a constant in the pipeline's settings and no key reached it. The config has no section for answer behaviour, and the spec doesn't name one.
 

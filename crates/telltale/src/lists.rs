@@ -212,7 +212,12 @@ struct CompileSettings {
     memory: usize,
     /// `[filter] fsync`.
     sync: bool,
+    /// `[filter] max_regexes`.
+    max_regexes: usize,
 }
+
+/// Rejected regex rules named one by one in the log and in `telltale lists compile`.
+const MAX_REGEX_LOGGED: usize = 20;
 
 /// Snapshots kept on disk (`spec/02` §6).
 const KEEP_SNAPSHOTS: usize = 3;
@@ -227,6 +232,7 @@ impl CompileSettings {
             live_threads: live_compile_threads(cfg.filter.compile_threads),
             memory: usize::try_from(cfg.filter.compile_memory.bytes()).unwrap_or(usize::MAX),
             sync: cfg.filter.fsync,
+            max_regexes: usize::try_from(cfg.filter.max_regexes).unwrap_or(usize::MAX),
         }
     }
 }
@@ -333,6 +339,7 @@ fn compile_if_changed(
             memory_budget: settings.memory,
             version,
             sync: settings.sync,
+            max_regexes: settings.max_regexes,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -536,8 +543,16 @@ async fn compile_loop(
                     dir = %dir.display(),
                     "filter snapshot compiled"
                 );
-                for (list, line, why) in &report.regex_errors {
+                // The first few by name; a list shipping thousands over the limit would
+                // otherwise flood the log with one line each.
+                for (list, line, why) in report.regex_errors.iter().take(MAX_REGEX_LOGGED) {
                     warn!(list = %list, line, "regex rejected: {why}");
+                }
+                if report.regex_errors.len() > MAX_REGEX_LOGGED {
+                    warn!(
+                        "{} more regex rules rejected (see the Lists page, or `telltale lists compile`)",
+                        report.regex_errors.len() - MAX_REGEX_LOGGED
+                    );
                 }
                 *shared
                     .compiled
@@ -616,8 +631,16 @@ pub(crate) fn compile_now(
         )
         .map_err(io)?;
     }
-    for (list, line, why) in &report.regex_errors {
+    for (list, line, why) in report.regex_errors.iter().take(MAX_REGEX_LOGGED) {
         writeln!(out, "  regex rejected: {list} line {line}: {why}").map_err(io)?;
+    }
+    if report.regex_errors.len() > MAX_REGEX_LOGGED {
+        writeln!(
+            out,
+            "  ... and {} more regex rules rejected",
+            report.regex_errors.len() - MAX_REGEX_LOGGED
+        )
+        .map_err(io)?;
     }
     Ok(report.regex_errors.is_empty())
 }

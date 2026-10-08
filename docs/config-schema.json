@@ -169,6 +169,7 @@
         "fsync": true,
         "max_invalid_percent": 50,
         "max_list_bytes": "64MiB",
+        "max_regexes": 1000,
         "refresh_secs": 86400
       }
     },
@@ -1345,6 +1346,13 @@
               "pattern": "^\\s*[0-9]+\\s*(B|K|k|KiB|M|MiB|G|GiB|T|TiB|KB|kB|MB|GB|TB)?\\s*$"
             }
           ]
+        },
+        "max_regexes": {
+          "description": "Most regex rules a compiled snapshot keeps (default 1,000; 0 = no limit). Every query\nthat no exact or suffix rule settles is tried against all of them, about a microsecond\nper thousand, and a few thousand that share a prefix can overwhelm the matcher's\nautomaton: in a synthetic test of patterns sharing a prefix, 1,500 cost 1.6 µs per query\nand 41 MiB, while 2,000 grew past 5 GiB in a minute. The rules past the limit, in list\norder, are left out and reported on the Lists page (and by `telltale lists compile`).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1000,
+          "minimum": 0
         },
         "refresh_secs": {
           "description": "How often URL and file lists are refreshed (default 24 h, minimum 15 min).",

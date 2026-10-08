@@ -78,6 +78,8 @@
                   <strong>{l.name}</strong>{#if !l.enabled} <span class="badge">off</span>{/if}
                   {#if advanced}<div class="muted small src">{l.source}</div>{/if}
                   {#if l.error}<div class="small err">{l.error}</div>{/if}
+                  <!-- REQ: FLT-003 (review 02-08) — regex rules the snapshot leaves out. -->
+                  {#if l.regexSkipped > 0}<div class="small warn-text" data-testid="list-regex-skipped">{num(l.regexSkipped)} regex {l.regexSkipped === 1 ? 'rule' : 'rules'} left out (over the limit of <code>max_regexes</code>, or too large to compile)</div>{/if}
                 </td>
                 <td><span class="badge {l.kind === 'allow' ? 'ok' : 'bad'}">{l.kind}</span></td>
                 <td><StatusBadge value={l.state} /></td>

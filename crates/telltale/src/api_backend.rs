@@ -1014,6 +1014,7 @@ impl Backend for ApiBackend {
                     .and_then(|(m, i)| m.stats.per_list.get(i));
                 let entries = per.map_or(0, |s| s.entries);
                 let unique = per.map_or(0, |s| s.unique);
+                let regex_skipped = per.map_or(0, |s| s.regex_skipped);
                 let list_hits = id
                     .and_then(|i| u16::try_from(i).ok())
                     .and_then(|i| hits.get(&i).copied())
@@ -1065,6 +1066,7 @@ impl Backend for ApiBackend {
                     lines: meta.map_or(0, |m| m.lines),
                     entries,
                     unique,
+                    regex_skipped,
                     hits: list_hits,
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),

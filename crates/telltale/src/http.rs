@@ -899,6 +899,20 @@ fn render_filter(w: &mut PromWriter, lists: &ListsShared) {
             );
         }
     }
+    w.family(
+        "telltale_list_regex_skipped",
+        "gauge",
+        "Regex rules each list ships that the snapshot leaves out (over [filter] max_regexes, too large, or invalid).",
+    );
+    for (i, l) in st.per_list.iter().enumerate() {
+        if let Some(m) = c.manifest.lists.get(i) {
+            w.sample(
+                "telltale_list_regex_skipped",
+                &[("list", m.name.as_str())],
+                l.regex_skipped,
+            );
+        }
+    }
 }
 
 /// REQ: OBS-011 (core): per-upstream health.

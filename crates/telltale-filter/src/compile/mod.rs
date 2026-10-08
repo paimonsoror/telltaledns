@@ -71,6 +71,8 @@ pub struct CompileOptions {
     /// as published (`[filter] fsync`). Off, a crash can leave a published snapshot whose
     /// files are short; the cold-start fallback then skips it.
     pub sync: bool,
+    /// Most regex rules a snapshot keeps (`[filter] max_regexes`); 0 = no limit.
+    pub max_regexes: usize,
 }
 
 impl Default for CompileOptions {
@@ -80,15 +82,18 @@ impl Default for CompileOptions {
             memory_budget: 128 << 20,
             version: 1,
             sync: true,
+            max_regexes: 1000,
         }
     }
 }
 
-/// A snapshot directory being written, and whether its files are synced to disk (`sync_all`).
+/// A snapshot directory being written: whether its files are synced to disk (`sync_all`), and
+/// how many regex rules it may hold.
 #[derive(Clone, Copy)]
 struct OutDir<'a> {
     path: &'a Path,
     sync: bool,
+    max_regexes: usize,
 }
 
 impl OutDir<'_> {
@@ -497,6 +502,7 @@ fn build(
     let out = OutDir {
         path: dir,
         sync: opts.sync,
+        max_regexes: opts.max_regexes,
     };
     let names = merge_domains(
         parsed.sources,
@@ -751,9 +757,18 @@ fn write_tables(
     stats.modrules = modrules.rules.len() as u64;
     write_json(&dir.join(snapshot::MODRULES), &modrules)?;
 
-    let (kept, regex_errors) = check_regexes(regexes.into_iter().map(|(r, _)| r).collect(), inputs);
+    let (kept, regex_errors) = check_regexes(
+        regexes.into_iter().map(|(r, _)| r).collect(),
+        inputs,
+        dir.max_regexes,
+    );
     for r in &kept {
         per_list[usize::from(r.list)].entries += 1;
+    }
+    for (list, _, _) in &regex_errors {
+        if let Some(i) = inputs.iter().position(|m| m.name == *list) {
+            per_list[i].regex_skipped += 1;
+        }
     }
     stats.regexes = kept.len() as u64;
     stats.regex_rejected = regex_errors.len() as u64;
@@ -850,16 +865,36 @@ pub fn regex_builder() -> regex_automata::meta::Builder {
 /// rules are guaranteed to build *as one set*, which is how the matcher uses them: the size
 /// limit applies to the combined automaton, so patterns that each fit can still exceed it
 /// together, and a snapshot whose regex set doesn't build can't be activated at all.
+///
+/// REQ: FLT-003 (review 02-08) — no more than `max` regexes are kept (0 = no limit): every
+/// query that misses the exact and suffix tables pays for them, about a microsecond per
+/// thousand, and a set of a few thousand patterns that share a prefix overwhelms the lazy DFA.
+/// The ones past the limit, in list order, are reported like any other rejected regex.
 fn check_regexes(
-    rules: Vec<RegexRule>,
+    mut rules: Vec<RegexRule>,
     inputs: &[ListMeta],
+    max: usize,
 ) -> (Vec<RegexRule>, Vec<(String, u32, String)>) {
+    let mut errors = Vec::new();
+    // List order, then line order: which rules fall past the limit must not depend on how the
+    // lists happened to be parsed.
+    rules.sort_by_key(|r| (r.list, r.line));
+    if max > 0 && rules.len() > max {
+        for r in rules.drain(max..) {
+            errors.push((
+                inputs[usize::from(r.list)].name.clone(),
+                r.line,
+                format!(
+                    "over the limit of {max} regex rules in a snapshot (`[filter] max_regexes`)"
+                ),
+            ));
+        }
+    }
     let patterns: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
     if patterns.is_empty() || regex_builder().build_many(&patterns).is_ok() {
-        return (rules, Vec::new());
+        return (rules, errors);
     }
     let mut kept = Vec::new();
-    let mut errors = Vec::new();
     let mut memory = Vec::new();
     for r in rules {
         match regex_builder().build(&r.pattern) {

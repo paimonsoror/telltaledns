@@ -1164,6 +1164,12 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
     if f.max_invalid_percent > 100 {
         r.err("filter.max_invalid_percent", "must be between 0 and 100");
     }
+    if f.max_regexes > 100_000 {
+        r.err(
+            "filter.max_regexes",
+            "must be at most 100000 (0 = no limit)",
+        );
+    }
     if f.compile_threads > 64 {
         r.err("filter.compile_threads", "must be at most 64 (0 = auto)");
     }

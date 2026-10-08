@@ -1170,6 +1170,13 @@ pub struct FilterConfig {
     /// count as invalid. 50 = refuse when invalid lines outnumber rules; 0 = refuse any list
     /// with an invalid line; 100 = accept anything that isn't empty or HTML.
     pub max_invalid_percent: u8,
+    /// Most regex rules a compiled snapshot keeps (default 1,000; 0 = no limit). Every query
+    /// that no exact or suffix rule settles is tried against all of them, about a microsecond
+    /// per thousand, and a few thousand that share a prefix can overwhelm the matcher's
+    /// automaton: in a synthetic test of patterns sharing a prefix, 1,500 cost 1.6 µs per query
+    /// and 41 MiB, while 2,000 grew past 5 GiB in a minute. The rules past the limit, in list
+    /// order, are left out and reported on the Lists page (and by `telltale lists compile`).
+    pub max_regexes: u32,
     /// Threads for compiling lists (at low CPU priority). 0 = auto: half the cores, between
     /// 1 and 4 (2 on a Pi 4, which compiles 2M names in about 6 s).
     pub compile_threads: u8,
@@ -1190,6 +1197,7 @@ impl Default for FilterConfig {
             fetch_retries: 3,
             max_list_bytes: ByteSize::mib(64),
             max_invalid_percent: 50,
+            max_regexes: 1000,
             compile_threads: 0,
             compile_memory: ByteSize::mib(128),
             fsync: true,

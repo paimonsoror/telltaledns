@@ -3172,6 +3172,12 @@ export interface components {
                 name: string;
                 /** @description Lists it shares names with, most shared first. */
                 overlap: components["schemas"]["ListShare"][];
+                /**
+                 * Format: int64
+                 * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
+                 *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
+                 */
+                regexSkipped: number;
                 /** @description URL, file path, or `inline`. */
                 source: string;
                 /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
@@ -3473,6 +3479,12 @@ export interface components {
             name: string;
             /** @description Lists it shares names with, most shared first. */
             overlap: components["schemas"]["ListShare"][];
+            /**
+             * Format: int64
+             * @description REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot
+             *     leaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.
+             */
+            regexSkipped: number;
             /** @description URL, file path, or `inline`. */
             source: string;
             /** @description `ok`, `failed`, or `pending` (not downloaded yet). */

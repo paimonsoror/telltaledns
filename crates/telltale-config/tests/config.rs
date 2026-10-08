@@ -753,3 +753,14 @@ fn dns_001_listener_connection_caps() {
     );
     assert!(p.contains(&"listen[1].max_connections"), "{p:?}");
 }
+
+/// REQ: FLT-003 (review 02-08) — `[filter] max_regexes` defaults to 1,000, 0 means no limit,
+/// and an absurd value is refused.
+#[test]
+fn flt_003_max_regexes_setting() {
+    assert_eq!(Config::default().filter.max_regexes, 1000);
+    let c = load_str("[filter]\nmax_regexes = 0\n").unwrap().config;
+    assert_eq!(c.filter.max_regexes, 0);
+    let errs = load_str("[filter]\nmax_regexes = 100001\n").unwrap_err();
+    assert!(paths(&errs).contains(&"filter.max_regexes"));
+}

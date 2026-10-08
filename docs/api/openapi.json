@@ -8051,6 +8051,7 @@
                 "lines",
                 "entries",
                 "unique",
+                "regexSkipped",
                 "hits",
                 "overlap"
               ],
@@ -8115,6 +8116,12 @@
                     "$ref": "#/components/schemas/ListShare"
                   },
                   "description": "Lists it shares names with, most shared first."
+                },
+                "regexSkipped": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot\nleaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.",
+                  "minimum": 0
                 },
                 "source": {
                   "type": "string",
@@ -8881,6 +8888,7 @@
           "lines",
           "entries",
           "unique",
+          "regexSkipped",
           "hits",
           "overlap"
         ],
@@ -8945,6 +8953,12 @@
               "$ref": "#/components/schemas/ListShare"
             },
             "description": "Lists it shares names with, most shared first."
+          },
+          "regexSkipped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: FLT-003 (review 02-08) — regex rules this list ships that the active snapshot\nleaves out: over `[filter] max_regexes`, too large for the matcher, or not valid.",
+            "minimum": 0
           },
           "source": {
             "type": "string",
