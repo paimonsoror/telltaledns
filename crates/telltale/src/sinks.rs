@@ -165,9 +165,11 @@ impl EventSinks {
                 policy.clients.client(id).map(|c| c.name.to_string())
             })
             .flatten();
-        let schedules = self.pipeline.schedules.load().names.clone();
+        // REQ: OBS-010 (review 04-09) — borrowed, not cloned per event: this runs on the
+        // aggregator thread for every event while a sink is configured.
+        let schedules = self.pipeline.schedules.load();
         let (list, rule) =
-            crate::api_backend::rule_labels(ev.rule, &self.lists, &policy.quick, &schedules);
+            crate::api_backend::rule_labels(ev.rule, &self.lists, &policy.quick, &schedules.names);
         QueryRow {
             time: telltale_api::time::format_us(ev.ts_us),
             ts_unix_micros: ev.ts_us,
