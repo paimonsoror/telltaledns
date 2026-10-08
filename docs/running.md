@@ -1681,7 +1681,7 @@ Besides counters, every query also produces a detailed **event**: the time, the 
 
 | Metric | What it tells you |
 |---|---|
-| `telltale_telemetry_events_total{ring}` | events written, per thread |
+| `telltale_telemetry_events_total{ring}` | events written, per thread name (`udp-<port>-<n>` for the UDP workers; Tokio's workers share `telltale-rt` and are summed) |
 | `telltale_telemetry_dropped_total{ring}` | events dropped because a buffer was full (should stay 0) |
 | `telltale_clock_steps_total`, `telltale_clock_last_step_seconds` | times the event clock followed a step of the system clock (a Pi setting its clock from NTP after TelltaleDNS started, a resume from suspend), and the latest step. Events, the query log, and the rollups stay on the wall clock across a step. |
 

@@ -601,13 +601,22 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
 
 /// REQ: OBS-002 — event rings: emitted and dropped per producing thread.
 fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
-    let rings = hub.ring_stats();
+    // Tokio's workers all carry the runtime's thread name: one series per name, summed. A
+    // label set repeated within a scrape is a duplicate sample, and Prometheus keeps only
+    // the first (so the other workers' drops were invisible).
+    let mut rings: std::collections::BTreeMap<String, (u64, u64)> =
+        std::collections::BTreeMap::new();
+    for (ring, emitted, dropped) in hub.ring_stats() {
+        let e = rings.entry(ring).or_default();
+        e.0 += emitted;
+        e.1 += dropped;
+    }
     w.family(
         "telltale_telemetry_events_total",
         "counter",
         "Query and upstream events written to the event rings.",
     );
-    for (ring, emitted, _) in &rings {
+    for (ring, (emitted, _)) in &rings {
         w.sample(
             "telltale_telemetry_events_total",
             &[("ring", ring.as_str())],
@@ -619,7 +628,7 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
         "counter",
         "Events dropped because a ring was full (counters and histograms never drop).",
     );
-    for (ring, _, dropped) in &rings {
+    for (ring, (_, dropped)) in &rings {
         w.sample(
             "telltale_telemetry_dropped_total",
             &[("ring", ring.as_str())],
@@ -1462,5 +1471,56 @@ mod tests {
         let m = src.masked_clients().unwrap();
         assert_eq!((m.share_percent, m.queries), (100, 141));
         assert_eq!(m.sources, ["127.0.0.1", "127.0.0.2"]);
+    }
+
+    /// REQ: OBS-002, OBS-005 — rings of threads that share a name (Tokio's workers) are one
+    /// series each, summed: a label set never repeats within a scrape (Prometheus would keep
+    /// only the first sample).
+    #[test]
+    fn obs_005_ring_series_are_unique_per_thread_name() {
+        let hub = telltale_telemetry::Hub::new(1 << 16);
+        let ev = telltale_telemetry::QueryEvent {
+            ts_us: 1,
+            client_ip: [0; 16],
+            client_ref: 0,
+            group: 0,
+            qtype: 1,
+            qclass: 1,
+            rcode: Some(0),
+            status: Status::Cached,
+            proto: Proto::Udp,
+            flags: 0x8180,
+            rule: None,
+            upstream: 0,
+            attempts: 0,
+            t_total_us: 10,
+            t_upstream_us: 0,
+            resp_size: 60,
+            answers: 1,
+        };
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                let hub = Arc::clone(&hub);
+                std::thread::Builder::new()
+                    .name("twin".into())
+                    .spawn(move || hub.emit_query(&ev, b"\x01a\x00"))
+                    .unwrap()
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        let mut w = PromWriter::new();
+        render_telemetry(&mut w, &hub);
+        let text = w.finish();
+        assert!(
+            text.contains("telltale_telemetry_events_total{ring=\"twin\"} 3"),
+            "{text}"
+        );
+        assert!(
+            text.contains("telltale_telemetry_dropped_total{ring=\"twin\"} 0"),
+            "{text}"
+        );
+        assert_eq!(text.matches("ring=\"twin\"").count(), 2, "{text}");
     }
 }
