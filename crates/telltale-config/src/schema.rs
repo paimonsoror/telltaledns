@@ -1149,6 +1149,12 @@ pub struct FilterConfig {
     pub fetch_retries: u8,
     /// Downloads larger than this fail and the previous copy is kept.
     pub max_list_bytes: ByteSize,
+    /// A download is refused, and the previous copy kept, when more than this percentage of its
+    /// rule-bearing lines is invalid (a JSON error page, a compressed body, or a mirror that
+    /// changed format parses mostly to invalid lines). Cosmetic and unsupported rules don't
+    /// count as invalid. 50 = refuse when invalid lines outnumber rules; 0 = refuse any list
+    /// with an invalid line; 100 = accept anything that isn't empty or HTML.
+    pub max_invalid_percent: u8,
     /// Threads for compiling lists (at low CPU priority). 0 = auto: half the cores, between
     /// 1 and 4 (2 on a Pi 4, which compiles 2M names in about 6 s).
     pub compile_threads: u8,
@@ -1164,6 +1170,7 @@ impl Default for FilterConfig {
             fetch_timeout_secs: 120,
             fetch_retries: 3,
             max_list_bytes: ByteSize::mib(64),
+            max_invalid_percent: 50,
             compile_threads: 0,
             compile_memory: ByteSize::mib(128),
         }

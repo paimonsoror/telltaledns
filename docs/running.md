@@ -611,11 +611,12 @@ fetch_concurrency = 4
 fetch_timeout_secs = 120                # per attempt, including the download
 fetch_retries = 3                       # network errors, HTTP 5xx, and 429 are retried with backoff
 max_list_bytes = "64MiB"                # per-list `max_bytes` overrides
+max_invalid_percent = 50                # refuse a download if more than this % of its rule lines are invalid
 compile_threads = 0                     # 0 = auto (first compile: half the cores, 1-4; recompiles: 1)
 compile_memory = "128MiB"               # sort budget before spilling to disk
 ```
 - **Downloads are polite:** after the first download, a refresh sends `If-None-Match`/`If-Modified-Since`, so an unchanged list costs one small request. Redirects are followed, except from `https` to `http`.
-- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected, such as an empty body or an HTML page from a captive portal.
+- **A failed refresh never loses a list.** The last good copy stays in use. A failing list is retried after 5 minutes, then 10, 20, and so on up to hourly, instead of waiting a whole day. Responses that can't be a list are rejected: an empty body, an HTML page from a captive portal, a compressed body (`Content-Encoding` other than `identity`), or text that is mostly not rules (a JSON error from a CDN, a mirror that changed format). "Mostly" is `[filter] max_invalid_percent` (default 50: more invalid lines than rules); cosmetic and unsupported rules don't count as invalid, and `100` turns the check off.
 - Lists are stored compressed in `<data_dir>/lists/` (`<name>.src.zst` plus `<name>.meta.json`). Removing a list from the config deletes its files; `enabled = false` keeps them.
 - List hostnames are looked up through the system resolvers (minus TelltaleDNS's own listeners). If the system resolver *is* TelltaleDNS, the lookup goes through it, which is safe because DNS is answering before downloads start.
 - Downloads run in the background. DNS starts and answers without waiting for them, and a failing download never affects answers.

@@ -278,6 +278,7 @@ impl Client {
                 retryable,
             });
         }
+        refuse_compressed(header(http::header::CONTENT_ENCODING))?;
         let (etag, last_modified) = (header(ETAG), header(LAST_MODIFIED));
         if let Some(len) = resp
             .headers()
@@ -422,6 +423,18 @@ where
         .send_request(req)
         .await
         .map_err(|e| HttpError::retry(format!("request: {e}")))
+}
+
+/// REQ: FLT-004 — a server that ignores `Accept-Encoding: identity` and compresses anyway
+/// would hand the parser a binary blob (and make the size cap meaningless): refused, so the
+/// last good copy stays.
+fn refuse_compressed(encoding: Option<String>) -> Result<(), HttpError> {
+    match encoding {
+        Some(enc) if !enc.trim().eq_ignore_ascii_case("identity") => Err(HttpError::fatal(
+            format!("compressed response (Content-Encoding: {enc}); lists must be sent as is"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn too_big(max: u64) -> String {

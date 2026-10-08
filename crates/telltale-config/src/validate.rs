@@ -1144,6 +1144,9 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
     if !(1024..=1 << 30).contains(&f.max_list_bytes.bytes()) {
         r.err("filter.max_list_bytes", "must be between 1KiB and 1GiB");
     }
+    if f.max_invalid_percent > 100 {
+        r.err("filter.max_invalid_percent", "must be between 0 and 100");
+    }
     if f.compile_threads > 64 {
         r.err("filter.compile_threads", "must be at most 64 (0 = auto)");
     }

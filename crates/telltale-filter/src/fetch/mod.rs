@@ -99,11 +99,14 @@ pub struct FetchSettings {
     /// is told: lists that arrive together compile once, and a slow or dead source delays
     /// the others by at most this much (ADR-061).
     pub settle: Duration,
+    /// `[filter] max_invalid_percent`: a body with a larger share of invalid lines is refused.
+    pub max_invalid_percent: u8,
 }
 
 impl FetchSettings {
     pub fn from_config(cfg: &Config) -> Self {
         Self {
+            max_invalid_percent: cfg.filter.max_invalid_percent,
             concurrency: usize::from(cfg.filter.fetch_concurrency.max(1)),
             timeout: Duration::from_secs(u64::from(cfg.filter.fetch_timeout_secs)),
             retries: cfg.filter.fetch_retries,
@@ -303,8 +306,10 @@ impl Fetcher {
                 // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
                 // never on a runtime worker, which also carries upstream answers (T2.7).
                 let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
+                let max_invalid = self.settings.max_invalid_percent;
                 let processed = tokio::task::spawn_blocking(move || {
-                    let r = accept_body(&store, &name, &mut m, same_source, &data, now);
+                    let r =
+                        accept_body(&store, &name, &mut m, same_source, &data, now, max_invalid);
                     (r, m)
                 })
                 .await;
@@ -470,8 +475,10 @@ fn accept_body(
     same_source: bool,
     data: &[u8],
     now: u64,
+    max_invalid_percent: u8,
 ) -> Result<Outcome, String> {
     sanity_check(data)?;
+    usable_check(data, max_invalid_percent)?;
     let hash = content_hash(data);
     if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Outcome::Unchanged);
@@ -528,6 +535,30 @@ fn sanity_check(data: &[u8]) -> Result<(), String> {
     let head: Vec<u8> = start.iter().take(15).map(u8::to_ascii_lowercase).collect();
     if head.starts_with(b"<!doctype html") || head.starts_with(b"<html") {
         return Err("got an HTML page, not a list".to_owned());
+    }
+    Ok(())
+}
+
+/// Rejects a body in which more than `max_invalid_percent` of the rule-bearing lines (rules
+/// plus invalid lines) are invalid, which includes one that parses to no rules at all: a JSON
+/// error, a compressed blob, or an HTML page without the doctype prefix passes
+/// [`sanity_check`] and would otherwise replace a good list with nothing. At the default (50)
+/// that means more invalid lines than rules. REQ: FLT-004 — a list that fails keeps its last
+/// good version.
+fn usable_check(data: &[u8], max_invalid_percent: u8) -> Result<(), String> {
+    use crate::parse::{ListOptions, parse_list};
+    let s = parse_list(data, ListOptions::default(), |_, _| {});
+    let (rules, invalid) = (s.rules, s.invalid);
+    if invalid > 0 && invalid * 100 > (rules + invalid) * u64::from(max_invalid_percent) {
+        let first = s
+            .samples
+            .iter()
+            .find(|x| !x.unsupported)
+            .map_or("", |x| x.reason.as_str());
+        return Err(format!(
+            "not a usable list: {} rules, {} invalid lines (first: {first})",
+            s.rules, s.invalid
+        ));
     }
     Ok(())
 }
