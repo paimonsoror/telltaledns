@@ -75,6 +75,10 @@ pub struct ClusterManifest {
     /// (hashes only), as one JSON document. Absent from older primaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identities: Option<BlobRef>,
+    /// REQ: OBS-003 (review 04-05) — the key privacy level 1 hashes names with (hex), so
+    /// every node's logs group the same way. Absent from older primaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privacy_key: Option<String>,
 }
 
 /// A Git commit as a configuration's provenance (ADR-049). `repo`, `git_ref` and `path` also

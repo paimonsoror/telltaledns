@@ -1299,7 +1299,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - The anomaly engine is off at 1 and above, as it was at 3: its findings name domains and devices, and the DGA score would read hashed names as random. New-device alerts come from it, so they stop too. The masked-client detector is off at 2 and above, where every query looks like one client.
 - Counts, graphs, and latency percentiles work at every level.
 
-**Open:** a per-installation or per-cluster key for level 1's hash (review 04-05).
+- Level 1's hash is keyed (review 04-05, owner's choice of a per-cluster key): each node creates a random key in `<data_dir>/privacy.key`; a primary publishes its key in every manifest (`privacy_key`, ignored by older builds) and the other nodes, resolver pods included, adopt it, so names hash the same everywhere and shipped logs group with the primary's. An emergency primary passes on the key it inherited. Logs written before the change keep their unkeyed hashes.
 
 ## ADR-101 — A snapshot keeps at most `[filter] max_regexes` regex rules, 1,000 by default (Proposed)
 **Context:** Code review of v0.2.0, finding 02-08 (owner's answer, 2026-10-07: a cap, with the overflow reported). Regex rules are tried on every query that no exact or suffix rule settles, and nothing bounded their number. Measured with `matcher_bench` on synthetic patterns sharing a prefix: 200 cost 0.4 µs per query at the median, 1,000 cost 1.1 µs, 1,500 cost 1.6 µs (41 MiB), and 2,000 grew past 5.9 GiB of memory within two minutes. The cause inside the regex engine's automaton wasn't pinned down.

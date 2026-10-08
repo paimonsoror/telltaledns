@@ -400,6 +400,19 @@ fn obs_001_event_time_follows_a_clock_step() {
     assert_eq!(hub.clock_steps(), (2, -7_200_000_000));
 }
 
+/// REQ: OBS-003 (review 04-05) — level 1's hash is keyed: two clusters hash the same name
+/// differently, and neither matches the unkeyed hash anyone could compute.
+#[test]
+fn obs_003_hidden_names_are_keyed() {
+    let name = wire("bank.example.com");
+    let (a, b) = ([1u8; 32], [2u8; 32]);
+    let with = |k: Option<&[u8; 32]>| event::hidden_name_with(k, &name);
+    assert_eq!(with(Some(&a)), with(Some(&a)), "stable: still groups");
+    assert_ne!(with(Some(&a)), with(Some(&b)));
+    assert_ne!(with(Some(&a)), with(None));
+    assert_eq!(with(Some(&a)).len(), 19, "one label: h + 16 hex digits");
+}
+
 /// REQ: OBS-009 (`spec/06` §4, review 04-04) — the in-memory analytics follow the privacy
 /// level: names hashed as the query log stores them at 1, and no client address at 2.
 #[test]

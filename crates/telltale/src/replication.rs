@@ -408,6 +408,10 @@ async fn apply(
         }
         None => None,
     };
+    // REQ: OBS-003 (review 04-05) — hash level-1 names as the primary does.
+    if let Some(k) = &m.privacy_key {
+        crate::privacy::adopt(data_dir(&file), k);
+    }
     let cdir = node::dir_of(data_dir(&file));
     // ADR-051 — versions this node published as primary after the new primary's base are
     // orphaned: keep them for the Conflicts list, never apply them.
@@ -793,9 +797,23 @@ async fn publish_loop(
         // step is a new version.
         let id_now = cluster.identity.reload();
         let ca_bundle = id_now.ca_pem.clone();
+        // REQ: OBS-003 (review 04-05) — the cluster's level-1 hash key (an emergency primary
+        // passes on the one it inherited).
+        let privacy_key = if emergency {
+            inherited.as_ref().and_then(|m| m.privacy_key.clone())
+        } else {
+            crate::privacy::current_hex(data_dir(&cfg))
+        };
         let meta_hash = hash(
-            &serde_json::to_vec(&(&nodes, &authority, &failover, &source, &ca_bundle))
-                .unwrap_or_default(),
+            &serde_json::to_vec(&(
+                &nodes,
+                &authority,
+                &failover,
+                &source,
+                &ca_bundle,
+                &privacy_key,
+            ))
+            .unwrap_or_default(),
         );
         // REQ: CLU-003 (T9.1, ADR-045) — users and tokens travel too (an emergency primary
         // keeps the last authoritative ones).
@@ -863,6 +881,7 @@ async fn publish_loop(
                 source: source.clone(),
                 ca_bundle,
                 identities: identities_ref,
+                privacy_key,
             };
             // The signing key changes when a CA rotation switches (T5.4c).
             let key = id_now.ca_key_pem().unwrap_or_else(|_| key.clone());

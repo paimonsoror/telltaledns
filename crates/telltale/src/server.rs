@@ -772,6 +772,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let tail = crate::tail::Tail::new(cfg.telemetry.qlog.privacy_level);
     // REQ: OBS-013 — the anomaly engine rides the same aggregator pass (off the query path).
     let anomalies = crate::anomaly::Anomalies::start(&cfg);
+    // REQ: OBS-003 (review 04-05) — level 1's names are hashed with this node's (or, once a
+    // primary's version arrives, the cluster's) key.
+    crate::privacy::init(std::path::Path::new(cfg.node.data_dir.as_str()));
     // REQ: OBS-009 (review 04-04) — the in-memory analytics follow the privacy level.
     pipeline
         .telemetry

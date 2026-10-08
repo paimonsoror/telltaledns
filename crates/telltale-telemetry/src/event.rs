@@ -167,10 +167,30 @@ impl Name {
 }
 
 /// Presentation form of a wire name (no escaping: names are stored as received, lowercased).
+/// REQ: OBS-003 (review 04-05) — the key level 1's names are hashed with: one per cluster
+/// (the primary's, replicated), so a guessed name can't be checked against a log without it.
+static PRIVACY_KEY: std::sync::RwLock<Option<[u8; 32]>> = std::sync::RwLock::new(None);
+
+/// Sets the key [`hidden_name`] uses from now on.
+pub fn set_privacy_key(key: [u8; 32]) {
+    *PRIVACY_KEY
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
+}
+
 /// Privacy level 1+: the name is replaced by a one-label hash, so the same name still groups
-/// together but can't be read (`spec/06` §4 privacy levels).
+/// together but can't be read (`spec/06` §4 privacy levels). Keyed with the cluster's key
+/// once it's set ([`set_privacy_key`]).
 pub fn hidden_name(name: &[u8]) -> Box<[u8]> {
-    let h = blake3::hash(name);
+    let key = *PRIVACY_KEY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    hidden_name_with(key.as_ref(), name)
+}
+
+/// [`hidden_name`] with an explicit key (`None`: the unkeyed hash of older builds).
+pub fn hidden_name_with(key: Option<&[u8; 32]>, name: &[u8]) -> Box<[u8]> {
+    let h = key.map_or_else(|| blake3::hash(name), |k| blake3::keyed_hash(k, name));
     let mut label = String::from("h");
     for b in &h.as_bytes()[..8] {
         let _ = write!(label, "{b:02x}");

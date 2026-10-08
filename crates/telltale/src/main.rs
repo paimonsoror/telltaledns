@@ -32,6 +32,7 @@ mod mdns;
 mod otlp;
 mod pihole;
 mod pipeline;
+mod privacy;
 mod qlog_cli;
 mod replay;
 mod replication;
