@@ -61,6 +61,8 @@ pub struct Config {
     pub access: AccessConfig,
     /// Per-client query rate limits (DNS-014).
     pub ratelimit: RateLimitConfig,
+    /// REQ: DNS-005 — settings of the DNS answers themselves.
+    pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
     pub special: SpecialConfig,
     /// Response cache.
@@ -112,6 +114,7 @@ impl Default for Config {
             filter: FilterConfig::default(),
             access: AccessConfig::default(),
             ratelimit: RateLimitConfig::default(),
+            dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
             dnssec: DnssecConfig::default(),
@@ -1219,6 +1222,23 @@ impl Default for AccessConfig {
         Self {
             allowed_networks: nets.iter().filter_map(|n| Cidr::parse(n).ok()).collect(),
         }
+    }
+}
+
+/// REQ: DNS-005 (review 01-12) — what TelltaleDNS advertises in its answers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct DnsConfig {
+    /// The UDP payload size advertised in EDNS(0) (RFC 6891), and the largest UDP answer sent
+    /// to a client that advertises at least as much; 512 to 4096 (the UDP workers' send buffer).
+    /// 1232 (the DNS Flag Day 2020 value) avoids IP fragmentation on almost every path; raise
+    /// it on a network known to carry larger datagrams. Needs a restart.
+    pub edns_payload: u16,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self { edns_payload: 1232 }
     }
 }
 

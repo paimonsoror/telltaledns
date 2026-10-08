@@ -1265,6 +1265,13 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-100 — The advertised EDNS payload size is `[dns] edns_payload` (Proposed)
+**Context:** Code review of v0.2.0, finding 01-12 (owner's answer, 2026-10-07: a configuration key). DNS-005 says "a configurable advertised UDP payload size (default 1232)", but the value was a constant in the pipeline's settings and no key reached it. The config has no section for answer behaviour, and the spec doesn't name one.
+
+**Decision:** A new `[dns]` section with one key for now, `edns_payload` (default 1232, 512 to 4096: the UDP workers' send buffer is 4,096 bytes, `crates/telltale-net/src/sys.rs`). It needs a restart (listed with the other restart-only sections); other answer-shaping settings can join the section later.
+
+**Consequences:** Operators on a jumbo-frame or fragmentation-safe network can raise the size; the default and the DNS Flag Day reasoning are unchanged. Upstream-facing payload sizes (`edns_payload` per upstream, `spec/04`) are separate and untouched.
+
 ## ADR-099 — Connection limits per listener, and per client address (Proposed)
 **Context:** Code review of v0.2.0, pass 01 (owner's answer to question 2, 2026-10-07: a per-address cap of 32, configurable). Every stream listener capped connections globally at 1,024 and nothing per client, so one host could take every slot (TCP, DoT, DoH) until a restart; the QUIC listeners had no cap at all (01-02). The spec doesn't say how a client is told apart, or what a balancer does to the count.
 

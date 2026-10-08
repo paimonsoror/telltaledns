@@ -1350,6 +1350,12 @@ fn cache_and_telemetry(cfg: &Config, r: &mut Report<'_>) {
     if rl.ipv6_prefix == 0 || rl.ipv6_prefix > 128 {
         r.err("ratelimit.ipv6_prefix", "must be between 1 and 128");
     }
+    if !(512..=4096).contains(&cfg.dns.edns_payload) {
+        r.err(
+            "dns.edns_payload",
+            "must be between 512 and 4096 (the UDP workers' send buffer is 4096 bytes)",
+        );
+    }
     if cfg.access.allowed_networks.is_empty() {
         r.err(
             "access.allowed_networks",

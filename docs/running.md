@@ -1144,6 +1144,15 @@ ipv6_prefix = 64        # a device's rotating IPv6 privacy addresses share one b
 ```
 TelltaleDNS is never an open resolver by default. If you widen `allowed_networks` to everything, a warning is logged at startup.
 
+`[ratelimit]` applies on reload, with no restart. The default of 1,000 queries a minute per address suits homes where each device has its own address. A router or proxy that forwards for a whole network shows up as one address, and would be refused above about 17 queries a second: add it to `exempt`, or raise `queries`.
+
+### The advertised UDP size
+```toml
+[dns]
+edns_payload = 1232     # 512 to 4096; needs a restart
+```
+This is the UDP payload size announced in EDNS(0) answers (RFC 6891), and the largest UDP answer sent to a client that announces at least as much; bigger answers are cut and flagged truncated, and the client retries over TCP. 1232 is the DNS Flag Day 2020 value and avoids IP fragmentation on almost every path. Raise it only on a network known to carry larger datagrams (jumbo frames, an IPv6-only network that doesn't fragment). The ceiling is 4096, the size of the UDP workers' send buffer.
+
 ## Special names
 Handled before anything else (each can be turned off under `[special]`):
 

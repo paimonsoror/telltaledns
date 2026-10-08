@@ -591,6 +591,9 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.filter != new.filter {
         v.push("[filter]");
     }
+    if old.dns != new.dns {
+        v.push("[dns]");
+    }
     if old.clients.neighbor_table != new.clients.neighbor_table
         || old.clients.neighbor_refresh_secs != new.clients.neighbor_refresh_secs
     {
@@ -655,6 +658,7 @@ fn build_pipeline(
     policy: Policy,
 ) -> Arc<Pipeline> {
     let settings = Settings {
+        edns_payload: cfg.dns.edns_payload,
         stale_answer_timeout: Duration::from_millis(u64::from(
             cfg.cache.stale_answer_client_timeout_ms,
         )),
@@ -1278,5 +1282,73 @@ pub(crate) fn changed_paths(
         }
         _ if old != new => out.push(if at.is_empty() { "(root)".into() } else { at }),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
+    use telltale_proto::{EdnsOut, NameBuf, build_query, records, rtype};
+
+    use super::*;
+    use crate::pipeline::{Handler, Policy};
+
+    /// The OPT record's UDP payload size in the answer to a `localhost A` query that carries EDNS.
+    fn advertised(cfg: &Config) -> u16 {
+        let p = build_pipeline(
+            cfg,
+            Arc::new(Cache::new(telltale_cache::CachePolicy::default())),
+            Arc::new(Router::default()),
+            Policy::open(),
+        );
+        let name = NameBuf::from_presentation("localhost").unwrap();
+        let mut q = [0u8; 512];
+        let len = build_query(
+            &mut q,
+            7,
+            &name,
+            rtype::A,
+            1,
+            true,
+            Some(EdnsOut::new(4096)),
+        )
+        .unwrap();
+        let meta = RequestMeta {
+            peer: "127.0.0.1:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let Response::Ready(n) = Handler(p).handle(&q[..len], &meta, &mut out) else {
+            panic!("localhost is answered at once");
+        };
+        records(&out[..n])
+            .unwrap()
+            .map(Result::unwrap)
+            .find(telltale_proto::Record::is_opt)
+            .expect("an OPT record")
+            .rclass
+    }
+
+    /// REQ: DNS-005 (review 01-12) — `[dns] edns_payload` is the size advertised in answers
+    /// (default 1232), and it is bounded to what the UDP workers can send.
+    #[test]
+    fn dns_005_advertised_payload_size_is_configurable() {
+        assert_eq!(advertised(&Config::default()), 1232);
+        let mut cfg = Config::default();
+        cfg.dns.edns_payload = 2048;
+        assert_eq!(advertised(&cfg), 2048);
+        for bad in [511, 4097] {
+            let errs = telltale_config::Loader::new()
+                .toml_str("t.toml", format!("[dns]\nedns_payload = {bad}\n"))
+                .env(Vec::<(String, String)>::new())
+                .load()
+                .unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.path == "dns.edns_payload"),
+                "{bad}: {errs:?}"
+            );
+        }
     }
 }

@@ -141,6 +141,13 @@
       "default": 1,
       "minimum": 0
     },
+    "dns": {
+      "description": "REQ: DNS-005 — settings of the DNS answers themselves.",
+      "$ref": "#/$defs/DnsConfig",
+      "default": {
+        "edns_payload": 1232
+      }
+    },
     "dnssec": {
       "description": "DNSSEC validation of forwarded answers (DNS-011).",
       "$ref": "#/$defs/DnssecConfig",
@@ -1136,6 +1143,21 @@
       "required": [
         "advertise"
       ]
+    },
+    "DnsConfig": {
+      "description": "REQ: DNS-005 (review 01-12) — what TelltaleDNS advertises in its answers.",
+      "type": "object",
+      "properties": {
+        "edns_payload": {
+          "description": "The UDP payload size advertised in EDNS(0) (RFC 6891), and the largest UDP answer sent\nto a client that advertises at least as much; 512 to 4096 (the UDP workers' send buffer).\n1232 (the DNS Flag Day 2020 value) avoids IP fragmentation on almost every path; raise\nit on a network known to carry larger datagrams. Needs a restart.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 1232,
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "DnssecConfig": {
       "description": "`[dnssec]`.",
