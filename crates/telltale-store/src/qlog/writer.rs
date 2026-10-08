@@ -315,6 +315,8 @@ pub fn hidden_name(name: &[u8]) -> Box<[u8]> {
 /// The open segment file on the writer thread.
 struct Open {
     key: PartKey,
+    /// The part number on disk (`HH-<node>-<part>.seg`).
+    part: u32,
     path: PathBuf,
     file: File,
     len: u64,
@@ -383,8 +385,15 @@ fn write_block(
     b: &RawBlock,
 ) -> io::Result<()> {
     if open.as_ref().is_none_or(|o| o.key != b.key) {
+        // REQ: OBS-003 (review 04-06) — the next part of the same hour starts after the one
+        // just closed: under a unique-name flood an hour has hundreds of parts, and probing
+        // every number from 0 for each new one is quadratic in `stat` calls.
+        let from = open
+            .as_ref()
+            .filter(|o| o.key.hour == b.key.hour)
+            .map_or(0, |o| o.part + 1);
         finish(open, s.fsync)?;
-        *open = Some(create(s, b.key)?);
+        *open = Some(create(s, b.key, from)?);
     }
     let Some(o) = open.as_mut() else {
         return Ok(());
@@ -411,9 +420,10 @@ fn write_block(
     Ok(())
 }
 
-/// Creates the file for a new part: the first part number not on disk for this hour.
-fn create(s: &Settings, key: PartKey) -> io::Result<Open> {
-    let mut part = 0u32;
+/// Creates the file for a new part: the first part number from `from` on that isn't on disk
+/// for this hour.
+fn create(s: &Settings, key: PartKey, from: u32) -> io::Result<Open> {
+    let mut part = from;
     let path = loop {
         let p = segment_path(&s.dir, key.hour, s.node, part);
         if !p.exists() {
@@ -438,6 +448,7 @@ fn create(s: &Settings, key: PartKey) -> io::Result<Open> {
     file.write_all(&head)?;
     Ok(Open {
         key,
+        part,
         path,
         file,
         len: HEADER_LEN as u64,
