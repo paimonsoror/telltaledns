@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::event::{QueryEvent, UpstreamEvent};
+use crate::event::{QueryEvent, Rule, RuleKind, UpstreamEvent};
 use crate::{BUCKETS_US, Status};
 
 const N_BUCKET: usize = BUCKETS_US.len() + 1;
@@ -15,6 +15,38 @@ const N_BUCKET: usize = BUCKETS_US.len() + 1;
 const MAX_UPSTREAMS: usize = 256;
 /// (group, list) pairs tracked for `telltale_blocked_total`; beyond this, the rest share one.
 const MAX_BLOCK_PAIRS: usize = 4096;
+
+/// `telltale_blocked_total{list}` keys that aren't list IDs. `Rule::list` names a filter list
+/// only for list rules: a quick rule carries its 16-bit reference, a schedule its reference,
+/// and an answer-address block 0, which would all read as some list's name (FLT-013).
+pub const LIST_NONE: u16 = u16::MAX;
+pub const LIST_QUICK: u16 = u16::MAX - 1;
+pub const LIST_SCHEDULE: u16 = u16::MAX - 2;
+pub const LIST_ANSWER_IP: u16 = u16::MAX - 3;
+
+/// What blocked a query, as the `list` key: a list ID, or one of the `LIST_*` keys.
+pub fn blocked_by(rule: Option<Rule>) -> u16 {
+    match rule {
+        None => LIST_NONE,
+        Some(r) => match r.kind {
+            RuleKind::Quick => LIST_QUICK,
+            RuleKind::Schedule => LIST_SCHEDULE,
+            RuleKind::AnswerIp => LIST_ANSWER_IP,
+            RuleKind::Domain | RuleKind::Modifier | RuleKind::Regex | RuleKind::Cname => r.list,
+        },
+    }
+}
+
+/// The `list` label for a [`blocked_by`] key (`lists` by ID).
+pub fn blocked_label(key: u16, lists: &[String]) -> &str {
+    match key {
+        LIST_NONE => "none",
+        LIST_QUICK => "quick",
+        LIST_SCHEDULE => "schedule",
+        LIST_ANSWER_IP => "answer_ip",
+        id => lists.get(usize::from(id)).map_or("unknown", String::as_str),
+    }
+}
 
 /// A classic Prometheus histogram: per-bucket counts (non-cumulative; the last is +Inf).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,8 +119,7 @@ impl Exported {
             self.stage_upstream.record(u64::from(e.t_upstream_us));
         }
         if e.status == Status::Blocked {
-            let list = e.rule.map_or(u16::MAX, |r| r.list);
-            let key = (e.group, list);
+            let key = (e.group, blocked_by(e.rule));
             if let Some(n) = self.blocked.get_mut(&key) {
                 *n += 1;
             } else if self.blocked.len() < MAX_BLOCK_PAIRS {
@@ -189,5 +220,40 @@ mod tests {
         );
         let off = Exported::default();
         assert_eq!(off.client_cap, 0, "per-client series are opt-in");
+    }
+
+    /// REQ: OBS-005, FLT-013 — blocks by a quick rule, a schedule, or an answer address are
+    /// keyed by what decided, never by a list that happens to share the number.
+    #[test]
+    fn obs_005_blocks_are_keyed_by_what_decided() {
+        let mut x = Exported::default();
+        let mut q = query(1, Status::Blocked, Some(3), 0);
+        x.add_query(&q);
+        for kind in [RuleKind::Quick, RuleKind::Schedule, RuleKind::AnswerIp] {
+            q.rule = Some(Rule {
+                list: 3,
+                kind,
+                allow: false,
+            });
+            x.add_query(&q);
+        }
+        q.rule = None;
+        x.add_query(&q);
+        assert_eq!(
+            x.blocked.get(&(1, 3)),
+            Some(&1),
+            "only the list rule is list 3's"
+        );
+        assert_eq!(x.blocked.get(&(1, LIST_QUICK)), Some(&1));
+        assert_eq!(x.blocked.get(&(1, LIST_SCHEDULE)), Some(&1));
+        assert_eq!(x.blocked.get(&(1, LIST_ANSWER_IP)), Some(&1));
+        assert_eq!(x.blocked.get(&(1, LIST_NONE)), Some(&1));
+        let lists = vec!["ads".to_owned()];
+        assert_eq!(blocked_label(0, &lists), "ads");
+        assert_eq!(blocked_label(LIST_QUICK, &lists), "quick");
+        assert_eq!(blocked_label(LIST_SCHEDULE, &lists), "schedule");
+        assert_eq!(blocked_label(LIST_ANSWER_IP, &lists), "answer_ip");
+        assert_eq!(blocked_label(LIST_NONE, &lists), "none");
+        assert_eq!(blocked_label(7, &lists), "unknown");
     }
 }

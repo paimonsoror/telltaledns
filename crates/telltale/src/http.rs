@@ -1101,7 +1101,7 @@ fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::D
     w.family(
         "telltale_blocked_total",
         "counter",
-        "Blocked queries by the client's primary group and the deciding list.",
+        "Blocked queries by the client's primary group and the deciding list (quick, schedule, answer_ip: no list decided).",
     );
     let mut blocked: Vec<_> = ex.blocked.iter().collect();
     blocked.sort();
@@ -1109,7 +1109,7 @@ fn render_exported(w: &mut PromWriter, src: &Sources, state: &crate::pipeline::D
         let group = groups
             .get(usize::from(*g))
             .map_or_else(|| "unknown".to_owned(), |g| g.name.to_string());
-        let list = lists.get(usize::from(*l)).map_or("unknown", String::as_str);
+        let list = telltale_telemetry::export::blocked_label(*l, &lists);
         w.sample(
             "telltale_blocked_total",
             &[("group", group.as_str()), ("list", list)],
