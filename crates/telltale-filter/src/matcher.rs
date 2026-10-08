@@ -455,7 +455,7 @@ struct ScopeIndex {
 struct Bucket([u64; 8]);
 
 /// Most list-set IDs the 16-bit entry field can hold; larger snapshots use the FST walk.
-const MAX_INDEXED_LISTSETS: u64 = 1 << 16;
+pub const MAX_INDEXED_LISTSETS: u64 = 1 << 16;
 
 impl ScopeIndex {
     fn build(maps: &[fst::Map<crate::snapshot::FstData>], seed: u64) -> Result<Self, String> {

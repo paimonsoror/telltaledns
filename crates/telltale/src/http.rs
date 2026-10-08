@@ -456,6 +456,7 @@ pub(crate) fn render(src: &Sources) -> String {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
     }
+    render_lookup_mode(&mut w, src);
     // REQ: FLT-009 — active pauses (group="*" = everyone).
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -850,6 +851,23 @@ fn render_lists(w: &mut PromWriter, fetcher: &Fetcher) {
             }
         }
     }
+}
+
+/// REQ: FLT-003, OBS-011 (review 02-09) — which domain lookup the active filter uses: the hash
+/// index, or the slower FST walk (before the index is ready, or when the snapshot has more list
+/// combinations than the index holds).
+fn render_lookup_mode(w: &mut PromWriter, src: &Sources) {
+    let filter = src.pipeline.filter.load();
+    let Some(f) = filter.as_ref() else { return };
+    let indexed = f.matcher.lookup() == telltale_filter::matcher::Lookup::Indexed;
+    let name = "telltale_filter_lookup_mode";
+    w.family(
+        name,
+        "gauge",
+        "The active filter's domain lookup: 1 for the mode in use (indexed: hash index; walk: FST walk, slower, with its pages resident).",
+    );
+    w.sample(name, &[("mode", "indexed")], u64::from(indexed));
+    w.sample(name, &[("mode", "walk")], u64::from(!indexed));
 }
 
 /// REQ: FLT-003, OBS-005 (`spec/06` metric names): the current filter snapshot.
@@ -1367,6 +1385,23 @@ mod tests {
         }
         assert!(text.contains("telltale_queries_total{proto=\"udp\",status=\"cached\"} 1"));
         assert!(text.contains("telltale_local_records 0"));
+    }
+
+    /// REQ: FLT-003, OBS-011 (review 02-09) — the active filter's lookup mode is a gauge: none
+    /// without a filter, `walk` for a matcher without the index (as before the index is built, or
+    /// when the snapshot has too many list combinations for it).
+    #[test]
+    fn obs_011_lookup_mode_is_exported() {
+        let src = sources();
+        assert!(!render(&src).contains("telltale_filter_lookup_mode"));
+        let matcher = telltale_filter::matcher::Matcher::new(None).unwrap();
+        src.pipeline.set_filter(Some(Arc::new(matcher)));
+        let text = render(&src);
+        assert!(
+            text.contains("telltale_filter_lookup_mode{mode=\"walk\"} 1"),
+            "{text}"
+        );
+        assert!(text.contains("telltale_filter_lookup_mode{mode=\"indexed\"} 0"));
     }
 
     #[test]

@@ -1616,7 +1616,7 @@ Main metrics:
 | `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
 | `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list |
 | `telltale_client_queries_total{client}` | queries per client: off by default; turn on with `[telemetry.metrics] per_client = true` (at most `per_client_cap` clients, default 100; the rest are `client="other"`) |
-| `telltale_list_entries{list}`, `telltale_list_regex_skipped{list}`, `telltale_filter_*` | list sizes, regex rules a list ships that the snapshot leaves out (over `max_regexes`), snapshot version, rule count, compile time |
+| `telltale_list_entries{list}`, `telltale_list_regex_skipped{list}`, `telltale_filter_*` | list sizes, regex rules a list ships that the snapshot leaves out (over `max_regexes`), snapshot version, rule count, compile time, and `telltale_filter_lookup_mode{mode="indexed"|"walk"}` (1 for the lookup in use; `walk` is the slower fallback when a snapshot has more distinct list combinations than the index holds, 65,536, which is also logged as a warning) |
 | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
 | `telltale_udp_*`, `telltale_tcp_*` | listener counters |
 | `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |

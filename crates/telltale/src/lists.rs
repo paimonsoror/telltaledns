@@ -478,6 +478,15 @@ impl Publisher {
                     seconds = t.elapsed().as_secs_f64(),
                     "filter lookup index ready"
                 );
+                // REQ: FLT-003, OBS-011 (review 02-09) — the fallback must be visible.
+                if lookup == Lookup::Walk {
+                    warn!(
+                        version,
+                        list_sets = snap.manifest.stats.listsets,
+                        limit = telltale_filter::matcher::MAX_INDEXED_LISTSETS,
+                        "filter lookup index not built: the snapshot has more distinct list combinations than the index holds, so lookups use the slower FST walk and its pages stay in memory (see telltale_filter_lookup_mode)"
+                    );
+                }
             }
         }
     }
