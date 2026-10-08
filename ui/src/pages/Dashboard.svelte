@@ -63,27 +63,66 @@
   let groups = $state<S['GroupInfo'][]>([]);
   // ADR-050 — the top lists for one kind of device ('' = everyone).
   let group = $state('');
+  const groupColor = (n: string) => groups.find((g) => g.name === n)?.color ?? 'var(--muted)';
+  // REQ: CLU-002 — the whole cluster ('' ), one node (`node:<id>`), or one site's nodes
+  // (`site:<name>`). Remembered in this browser only.
+  let nodes = $state<S['ClusterView']['nodes']>([]);
+  let scope = $state(remembered());
+  function remembered(): string {
+    try {
+      return localStorage.getItem('dashboard.scope') ?? '';
+    } catch {
+      return '';
+    }
+  }
+  $effect(() => {
+    try {
+      localStorage.setItem('dashboard.scope', scope);
+    } catch {
+      // Private windows and blocked storage: the choice just isn't remembered.
+    }
+  });
+  const nodeLabel = (n: S['ClusterView']['nodes'][number]) =>
+    (n.ephemeral ? `${n.site} pod ${n.pod ?? n.nodeId.slice(0, 8)}` : n.site) +
+    (n.role.includes('primary') ? ' (primary)' : '') +
+    (n.thisNode ? ' · this node' : '');
+  // Sites with resolver pods get a choice of their own: the pods come and go.
+  const podSites = $derived([...new Set(nodes.filter((n) => n.ephemeral).map((n) => n.site))]);
+  const scopeLabel = $derived(
+    scope.startsWith('node:')
+      ? (nodes.find((n) => `node:${n.nodeId}` === scope)?.site ?? 'one node')
+      : scope.startsWith('site:')
+        ? `site ${scope.slice(5)}`
+        : 'every node',
+  );
+  // Upstream health is each node's own: say whose when another node is shown.
+  const otherNode = $derived(
+    scope !== '' && !(scope.startsWith('node:') && nodes.find((n) => `node:${n.nodeId}` === scope)?.thisNode),
+  );
   let error = $state<unknown>(null);
 
   async function load() {
     const r = range;
     try {
       const g = group || undefined;
-      const [s, ts, d, b, c, u, st, lp, gs] = await Promise.all([
-        api.summary(r.summary),
-        api.timeseries({ from: r.from, step: r.step }),
-        api.top('domains', 10, undefined, g),
-        api.top('blocked', 10, undefined, g),
-        api.top('clients', 10, undefined, g),
+      const sc = scope || undefined;
+      const [s, ts, d, b, c, u, st, lp, gs, cl] = await Promise.all([
+        api.summary(r.summary, undefined, sc),
+        api.timeseries({ from: r.from, step: r.step, scope: sc }),
+        api.top('domains', 10, undefined, g, sc),
+        api.top('blocked', 10, undefined, g, sc),
+        api.top('clients', 10, undefined, g, sc),
         api.upstreams(),
-        api.latency('stage'),
-        api.latency('path'),
+        api.latency('stage', sc),
+        api.latency('path', sc),
         api.groups(),
+        api.cluster().catch(() => null),
       ]);
       groups = gs.items;
+      nodes = cl?.enabled ? cl.nodes : [];
       summary = s;
       const mins = Math.round(r.secs / 60);
-      previous = await api.summary(`-${2 * mins}m`, `-${mins}m`).catch(() => null);
+      previous = await api.summary(`-${2 * mins}m`, `-${mins}m`, sc).catch(() => null);
       buckets = dense(ts.items, { second: 1, minute: 60, hour: 3600, day: 86400 }[r.step], r.secs);
       topDomains = d.items;
       topBlocked = b.items;
@@ -125,6 +164,7 @@
   $effect(() => {
     void range;
     void group;
+    void scope;
     return poll(load, range.step === 'second' ? 5000 : 15000);
   });
 
@@ -202,6 +242,17 @@
 <div class="page">
   <div class="page-head">
     <h1>Dashboard<HelpButton id="how-it-works" /></h1>
+    {#if nodes.length > 1}
+      <!-- REQ: CLU-002 — every node together, or one node (or site) at a time. -->
+      <label class="small">
+        Showing
+        <select bind:value={scope} aria-label="Nodes">
+          <option value="">every node</option>
+          {#each nodes as n (n.nodeId)}<option value={`node:${n.nodeId}`}>{nodeLabel(n)}</option>{/each}
+          {#each podSites as s (s)}<option value={`site:${s}`}>site {s} (all its nodes)</option>{/each}
+        </select>
+      </label>
+    {/if}
     {#if groups.length > 1}
       <label class="small">
         Top lists for
@@ -228,7 +279,7 @@
 
   <div class="kpis">
     <!-- More blocking or more queries isn't good or bad, so those changes stay neutral. -->
-    <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}`} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
+    <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}${scope ? ` · ${scopeLabel}` : ''}`} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
     <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" ring={summary?.blockedPercent} />
     <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={`${short(summary?.cached)} answers`} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
     <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
@@ -279,7 +330,7 @@
     </section>
 
     <section class="card">
-      <div class="card-head"><h2>Upstreams</h2><a href={href('/upstreams')} class="small">Details</a></div>
+      <div class="card-head"><h2>Upstreams{#if otherNode} <span class="muted small">(as this node sees them)</span>{/if}</h2><a href={href('/upstreams')} class="small">Details</a></div>
       {#if upstreams.length === 0}
         <p class="empty">No upstreams configured.</p>
       {:else}
@@ -319,6 +370,8 @@
                 <div class="row">
                   {#if t.title === 'Top clients'}
                     <span class="name"><ClientChip ip={i.key} name={i.name} onchanged={() => void load()} /></span>
+                    <!-- ADR-050 — the groups whose settings apply to the device. -->
+                    {#each i.groups ?? [] as g (g)}<span class="group-chip small" style:--gc={groupColor(g)}>{g}</span>{/each}
                   {:else}
                     <a class="name" href={t.link(i.key)}>{i.key}</a>
                   {/if}

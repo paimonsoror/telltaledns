@@ -1889,7 +1889,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 
 | Page | What it shows |
 |---|---|
-| Dashboard | queries, blocked %, cache hits, upstream latency, active clients; queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients (click through to the query log); upstream share and health |
+| Dashboard | queries, blocked %, cache hits, upstream latency, active clients; queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients with their groups (click through to the query log); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |

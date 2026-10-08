@@ -122,11 +122,14 @@ export const api = {
   rejectPlan: (id: string) => post<S['Plan']>(`/plans/${encodeURIComponent(id)}/reject`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
-  summary: (from = '-24h', to?: string) => get<S['Summary']>('/stats/summary', { from, to }),
-  timeseries: (q: { from?: string; step?: S['Step'] }) => get<S['Items_TimeBucket']>('/stats/timeseries', q),
-  top: (kind: S['TopKind'], limit = 10, client?: string, group?: string) =>
-    get<S['Items_TopItem']>('/stats/top', { kind, limit, client, group }),
-  latency: (by: S['LatencyBy']) => get<S['Items_LatencyRow']>('/stats/latency', { by }),
+  // `scope`: `cluster` (default, every node), `node:<id>`, or `site:<name>` (CLU-002).
+  summary: (from = '-24h', to?: string, scope?: string) =>
+    get<S['Summary']>('/stats/summary', { from, to, scope }),
+  timeseries: (q: { from?: string; step?: S['Step']; scope?: string }) =>
+    get<S['Items_TimeBucket']>('/stats/timeseries', q),
+  top: (kind: S['TopKind'], limit = 10, client?: string, group?: string, scope?: string) =>
+    get<S['Items_TopItem']>('/stats/top', { kind, limit, client, group, scope }),
+  latency: (by: S['LatencyBy'], scope?: string) => get<S['Items_LatencyRow']>('/stats/latency', { by, scope }),
   queries: (q: Query) => get<S['QueryPage']>('/queries', q),
   explain: (q: { name: string; client?: string; qtype?: string }) => get<S['Explanation']>('/explain', q),
   lists: () => get<S['Items_ListInfo']>('/lists'),
