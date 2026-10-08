@@ -159,6 +159,7 @@
         "fetch_concurrency": 4,
         "fetch_retries": 3,
         "fetch_timeout_secs": 120,
+        "fsync": true,
         "max_invalid_percent": 50,
         "max_list_bytes": "64MiB",
         "refresh_secs": 86400
@@ -1295,6 +1296,11 @@
           "format": "uint32",
           "default": 120,
           "minimum": 0
+        },
+        "fsync": {
+          "description": "Sync a compiled snapshot's files and directory to disk before it counts as published, so\na power cut can't leave a snapshot whose files are short. Costs a few hundred\nmilliseconds per large compile on an SD card, off the query path.",
+          "type": "boolean",
+          "default": true
         },
         "max_invalid_percent": {
           "description": "A download is refused, and the previous copy kept, when more than this percentage of its\nrule-bearing lines is invalid (a JSON error page, a compressed body, or a mirror that\nchanged format parses mostly to invalid lines). Cosmetic and unsupported rules don't\ncount as invalid. 50 = refuse when invalid lines outnumber rules; 0 = refuse any list\nwith an invalid line; 100 = accept anything that isn't empty or HTML.",

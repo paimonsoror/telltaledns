@@ -180,6 +180,7 @@ fn flt_004_spilling_and_threads_produce_identical_snapshots() {
             threads: 2,
             memory_budget: 0, // clamped to 1 MiB per sorter → spills
             version: 1,
+            sync: false, // the unsynced path must build the same snapshot
         },
     )
     .unwrap();

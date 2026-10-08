@@ -67,6 +67,10 @@ pub struct CompileOptions {
     pub memory_budget: usize,
     /// Snapshot version recorded in the manifest.
     pub version: u64,
+    /// Sync every blob and the snapshot's parent directory to disk before the snapshot counts
+    /// as published (`[filter] fsync`). Off, a crash can leave a published snapshot whose
+    /// files are short; the cold-start fallback then skips it.
+    pub sync: bool,
 }
 
 impl Default for CompileOptions {
@@ -75,7 +79,25 @@ impl Default for CompileOptions {
             threads: 1,
             memory_budget: 128 << 20,
             version: 1,
+            sync: true,
         }
+    }
+}
+
+/// A snapshot directory being written, and whether its files are synced to disk (`sync_all`).
+#[derive(Clone, Copy)]
+struct OutDir<'a> {
+    path: &'a Path,
+    sync: bool,
+}
+
+impl OutDir<'_> {
+    fn join(&self, name: impl AsRef<Path>) -> PathBuf {
+        self.path.join(name)
+    }
+
+    fn sync(&self, f: &File) -> io::Result<()> {
+        if self.sync { f.sync_all() } else { Ok(()) }
     }
 }
 
@@ -425,6 +447,12 @@ pub fn compile(
     match result {
         Ok(report) => {
             fs::rename(&tmp, out)?;
+            // The rename must reach the disk too (the blobs were synced as they were written).
+            if opts.sync
+                && let Some(parent) = out.parent()
+            {
+                File::open(parent)?.sync_all()?;
+            }
             Ok(report)
         }
         Err(e) => {
@@ -466,10 +494,14 @@ fn build(
             ..ListCompileStats::default()
         })
         .collect();
+    let out = OutDir {
+        path: dir,
+        sync: opts.sync,
+    };
     let names = merge_domains(
         parsed.sources,
         &parsed.bad_domains,
-        dir,
+        out,
         count,
         fst_shards(opts.threads),
         &mut per_list,
@@ -483,7 +515,7 @@ fn build(
         parsed.mods,
         parsed.regexes,
         &parsed.bad_rules,
-        dir,
+        out,
         &meta,
         &mut per_list,
         &mut stats,
@@ -582,7 +614,7 @@ fn parse_all(
 fn merge_domains(
     sources: Vec<sort::Source>,
     bad_domains: &HashMap<Vec<u8>, u8>,
-    dir: &Path,
+    dir: OutDir<'_>,
     lists: usize,
     shards: usize,
     per_list: &mut [ListCompileStats],
@@ -590,7 +622,7 @@ fn merge_domains(
 ) -> Result<[u64; 3], CompileError> {
     let mut sets = ListSetBuilder::new(lists);
     let mut names = [0u64; 3];
-    let mut builders = shard::FstSink::new(dir, shards)?;
+    let mut builders = shard::FstSink::new(dir.path, shards, dir.sync)?;
     // REQ: OBS-009 (T7.14) — pairwise overlap, from names on more than one list.
     let mut pairs: HashMap<(u16, u16), u64> = HashMap::new();
     let mut members: Vec<u16> = Vec::with_capacity(lists);
@@ -671,6 +703,7 @@ fn merge_domains(
     let mut w = BufWriter::new(File::create(dir.join(snapshot::LISTSETS))?);
     sets.finish().write(&mut w)?;
     w.flush()?;
+    dir.sync(w.get_ref())?;
     Ok(names)
 }
 
@@ -679,7 +712,7 @@ fn write_tables(
     mut mods: Vec<(Vec<u8>, ModRule, Rule)>,
     mut regexes: Vec<(RegexRule, Rule)>,
     bad_rules: &HashSet<Rule>,
-    dir: &Path,
+    dir: OutDir<'_>,
     inputs: &[ListMeta],
     per_list: &mut [ListCompileStats],
     stats: &mut CompileStats,
@@ -706,7 +739,9 @@ fn write_tables(
         idx.insert(&mods[i].0, ((i as u64) << 32) | (j - i) as u64)?;
         i = j;
     }
-    idx.into_inner()?.flush()?;
+    let mut idx = idx.into_inner()?;
+    idx.flush()?;
+    dir.sync(idx.get_ref())?;
     for (_, m, _) in &mods {
         per_list[usize::from(m.list)].entries += 1;
     }

@@ -1160,6 +1160,10 @@ pub struct FilterConfig {
     pub compile_threads: u8,
     /// Memory for sorting list entries before spilling to disk (`spec/05` §3.4).
     pub compile_memory: ByteSize,
+    /// Sync a compiled snapshot's files and directory to disk before it counts as published, so
+    /// a power cut can't leave a snapshot whose files are short. Costs a few hundred
+    /// milliseconds per large compile on an SD card, off the query path.
+    pub fsync: bool,
 }
 
 impl Default for FilterConfig {
@@ -1173,6 +1177,7 @@ impl Default for FilterConfig {
             max_invalid_percent: 50,
             compile_threads: 0,
             compile_memory: ByteSize::mib(128),
+            fsync: true,
         }
     }
 }
