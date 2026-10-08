@@ -32,6 +32,8 @@ pub struct Doh3Config {
     /// URL path (default `/dns-query`); `<path>/<client-id>` also matches.
     pub path: String,
     pub idle_timeout: Duration,
+    /// Max concurrent connections; beyond it, new ones are refused.
+    pub max_connections: usize,
 }
 
 impl Doh3Config {
@@ -41,6 +43,7 @@ impl Doh3Config {
             tls,
             path: "/dns-query".to_owned(),
             idle_timeout: Duration::from_secs(30),
+            max_connections: 1024,
         }
     }
 }
@@ -113,12 +116,20 @@ async fn accept_loop<H: QueryHandler>(
     stats: Arc<DohStats>,
     mut stop: watch::Receiver<bool>,
 ) {
+    // REQ: DNS-004 — the same cap as the HTTP/2 listener: refused beyond it, not accepted
+    // without bound.
+    let slots = Arc::new(tokio::sync::Semaphore::new(cfg.max_connections.max(1)));
     loop {
         let incoming = tokio::select! {
             _ = stop.changed() => return,
             i = endpoint.accept() => i,
         };
         let Some(incoming) = incoming else { return };
+        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+            stats.rejected.fetch_add(1, Ordering::Relaxed);
+            incoming.refuse();
+            continue;
+        };
         let (cfg, handler, stats) = (Arc::clone(&cfg), Arc::clone(&handler), Arc::clone(&stats));
         tokio::spawn(async move {
             let peer = incoming.remote_address();
@@ -152,6 +163,7 @@ async fn accept_loop<H: QueryHandler>(
                     serve(req, stream, &cfg, peer, sni_id, handler.as_ref(), &stats).await;
                 });
             }
+            drop(permit);
         });
     }
 }

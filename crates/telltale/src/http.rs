@@ -1103,6 +1103,11 @@ fn write_doq_metrics(w: &mut PromWriter, src: &Sources) {
             qsum(|s| s.connections.load(Relaxed)),
         ),
         (
+            "telltale_doq_rejected_total",
+            "DoQ connections refused at the connection cap.",
+            qsum(|s| s.rejected.load(Relaxed)),
+        ),
+        (
             "telltale_doq_queries_total",
             "DoQ queries received (one per stream).",
             qsum(|s| s.queries.load(Relaxed)),
@@ -1218,6 +1223,11 @@ fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
             "telltale_doh_connections_total",
             "DoH connections accepted.",
             dsum(|s| s.accepted.load(Relaxed)),
+        ),
+        (
+            "telltale_doh_rejected_total",
+            "DoH connections (HTTP/2 and HTTP/3) refused at the connection cap.",
+            dsum(|s| s.rejected.load(Relaxed)),
         ),
         (
             "telltale_doh_requests_total",

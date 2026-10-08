@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use quinn::crypto::rustls::QuicServerConfig;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -36,6 +36,8 @@ pub struct DoqConfig {
     pub idle_timeout: Duration,
     /// Streams (queries) one connection may have open at once.
     pub max_streams: u32,
+    /// Max concurrent connections; beyond it, new ones are refused.
+    pub max_connections: usize,
 }
 
 impl DoqConfig {
@@ -45,6 +47,7 @@ impl DoqConfig {
             tls,
             idle_timeout: Duration::from_secs(30),
             max_streams: 100,
+            max_connections: 1024,
         }
     }
 }
@@ -53,6 +56,8 @@ impl DoqConfig {
 #[derive(Debug, Default)]
 pub struct DoqStats {
     pub connections: AtomicU64,
+    /// Connections refused because `max_connections` was reached.
+    pub rejected: AtomicU64,
     pub queries: AtomicU64,
     /// Streams that broke RFC 9250 (bad length, a non-zero message ID): the connection closes.
     pub protocol_errors: AtomicU64,
@@ -96,6 +101,8 @@ impl DoqServer {
             handler,
             Arc::clone(&stats),
             rx,
+            cfg.max_connections,
+            cfg.idle_timeout,
         ));
         Ok(Self {
             endpoint,
@@ -131,13 +138,23 @@ async fn accept_loop<H: QueryHandler>(
     handler: Arc<H>,
     stats: Arc<DoqStats>,
     mut stop: watch::Receiver<bool>,
+    max_connections: usize,
+    read_timeout: Duration,
 ) {
+    // REQ: DNS-004 — the same cap as TCP (`spec/03` §1): a connection beyond it is refused
+    // (QUIC CONNECTION_REFUSED) instead of accepted without bound.
+    let slots = Arc::new(Semaphore::new(max_connections.max(1)));
     loop {
         let incoming = tokio::select! {
             _ = stop.changed() => return,
             i = endpoint.accept() => i,
         };
         let Some(incoming) = incoming else { return };
+        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+            stats.rejected.fetch_add(1, Ordering::Relaxed);
+            incoming.refuse();
+            continue;
+        };
         let (certs, handler, stats) =
             (Arc::clone(&certs), Arc::clone(&handler), Arc::clone(&stats));
         tokio::spawn(async move {
@@ -155,7 +172,8 @@ async fn accept_loop<H: QueryHandler>(
                 .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
                 .and_then(|d| d.server_name.clone())
                 .and_then(|sni| certs.client_id(&sni));
-            serve_conn(conn, peer, client_id, handler, stats).await;
+            serve_conn(conn, peer, client_id, handler, stats, read_timeout).await;
+            drop(permit);
         });
     }
 }
@@ -166,6 +184,7 @@ async fn serve_conn<H: QueryHandler>(
     client_id: Option<ClientId>,
     handler: Arc<H>,
     stats: Arc<DoqStats>,
+    read_timeout: Duration,
 ) {
     let meta = RequestMeta {
         peer,
@@ -176,7 +195,7 @@ async fn serve_conn<H: QueryHandler>(
     while let Ok((send, recv)) = conn.accept_bi().await {
         let (conn, handler, stats) = (conn.clone(), Arc::clone(&handler), Arc::clone(&stats));
         tokio::spawn(async move {
-            if serve_stream(send, recv, &meta, handler.as_ref(), &stats)
+            if serve_stream(send, recv, &meta, handler.as_ref(), &stats, read_timeout)
                 .await
                 .is_err()
             {
@@ -197,8 +216,12 @@ async fn serve_stream<H: QueryHandler + ?Sized>(
     meta: &RequestMeta,
     handler: &H,
     stats: &DoqStats,
+    read_timeout: Duration,
 ) -> Result<(), ()> {
-    let Ok(data) = recv.read_to_end(MAX_STREAM).await else {
+    // REQ: DNS-004 — a stream the client opens and never finishes is bounded like a TCP read
+    // (any traffic on the connection resets quinn's idle timeout, so that alone won't do).
+    let Ok(Ok(data)) = tokio::time::timeout(read_timeout, recv.read_to_end(MAX_STREAM)).await
+    else {
         return Err(());
     };
     // RFC 9250 §4.2: a 2-byte length, the message, nothing more; the ID must be 0.

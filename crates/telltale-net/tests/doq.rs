@@ -88,6 +88,64 @@ fn server() -> (DoqServer, Seen, SocketAddr) {
     (s, seen, addr)
 }
 
+/// REQ: DNS-004 — connections beyond `max_connections` are refused, not accepted without
+/// bound.
+#[tokio::test]
+async fn dns_004_doq_connection_cap() {
+    let seen: Seen = Arc::default();
+    let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+    let mut cfg = DoqConfig::new("127.0.0.1:0".parse().unwrap(), store);
+    cfg.max_connections = 1;
+    let s = DoqServer::bind(&cfg, Arc::new(handler(Arc::clone(&seen)))).unwrap();
+    let addr = s.local_addr();
+    let ep = client();
+    let first = ep.connect(addr, "kids.dns.test").unwrap().await.unwrap();
+    assert!(ask(&first, 0).await.is_ok());
+    let second = ep.connect(addr, "kids.dns.test").unwrap().await;
+    assert!(second.is_err(), "the second connection should be refused");
+    assert_eq!(
+        s.stats_handle()
+            .rejected
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    drop(first);
+    s.shutdown().await;
+}
+
+/// REQ: DNS-004 — a stream that is opened and trickled but never finished is cut off after the
+/// idle timeout, even though the traffic keeps the QUIC connection itself alive.
+#[tokio::test]
+async fn dns_004_doq_unfinished_stream_is_closed() {
+    let seen: Seen = Arc::default();
+    let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
+    let mut cfg = DoqConfig::new("127.0.0.1:0".parse().unwrap(), store);
+    cfg.idle_timeout = std::time::Duration::from_millis(600);
+    let s = DoqServer::bind(&cfg, Arc::new(handler(Arc::clone(&seen)))).unwrap();
+    let ep = client();
+    let conn = ep
+        .connect(s.local_addr(), "kids.dns.test")
+        .unwrap()
+        .await
+        .unwrap();
+    let (mut send, _recv) = conn.open_bi().await.unwrap();
+    for _ in 0..12 {
+        // A byte every 100 ms: connection traffic, but never a whole query.
+        if send.write_all(&[0]).await.is_err() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        s.stats_handle()
+            .protocol_errors
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the unfinished stream should have been cut off"
+    );
+    s.shutdown().await;
+}
+
 /// REQ: DNS-004 — answers on their own streams, concurrently, with the SNI client ID.
 #[tokio::test]
 async fn dns_004_doq_answers_streams_and_client_ids() {
