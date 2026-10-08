@@ -321,6 +321,8 @@ impl Policy {
 }
 
 /// Checks an agent's request (REQ: AGT-004, AGT-009); `Ok` lets it through.
+/// `charge_at_ms`: take one request from the token's rate-limit bucket at that time; `None`
+/// for the REST calls the MCP server makes for a tool (the `/mcp` request paid).
 pub fn check(
     policy: &Policy,
     grant: &super::AgentGrant,
@@ -328,7 +330,7 @@ pub fn check(
     method: &Method,
     path: &str,
     reason: Option<&str>,
-    now_ms: u64,
+    charge_at_ms: Option<u64>,
 ) -> Result<(), Problem> {
     if !policy.enabled() {
         return Err(
@@ -336,7 +338,9 @@ pub fn check(
                 .hint("An admin turned them off with [agents] enabled = false."),
         );
     }
-    if let Err(wait) = policy.take(token_id, grant.rate_per_minute, now_ms) {
+    if let Some(now_ms) = charge_at_ms
+        && let Err(wait) = policy.take(token_id, grant.rate_per_minute, now_ms)
+    {
         return Err(Problem::new(
             Code::RateLimited,
             format!("this agent token is over its request rate; try again in {wait} s"),
@@ -520,11 +524,20 @@ mod tests {
     fn agt_009_guardrails() {
         let p = Policy::default();
         let g = grant(&["analytics:read", "config:write:clients"], None);
-        let get = |path: &str| check(&p, &g, "t1", &Method::GET, path, None, 0);
+        let get = |path: &str| check(&p, &g, "t1", &Method::GET, path, None, Some(0));
         assert!(get("/api/v1/stats/summary").is_ok());
         assert!(get("/api/v1/queries").is_err(), "no querylog:read");
         assert!(
-            check(&p, &g, "t1", &Method::PUT, "/api/v1/clients/tv", None, 0).is_err(),
+            check(
+                &p,
+                &g,
+                "t1",
+                &Method::PUT,
+                "/api/v1/clients/tv",
+                None,
+                Some(0)
+            )
+            .is_err(),
             "no reason"
         );
         assert!(
@@ -535,7 +548,7 @@ mod tests {
                 &Method::PUT,
                 "/api/v1/clients/tv",
                 Some("rename the TV"),
-                0
+                Some(0)
             )
             .is_ok()
         );
@@ -543,7 +556,7 @@ mod tests {
         assert!(get("/api/v1/stats/summary").is_err(), "switched off");
         p.set(true, 2);
         let fresh = grant(&["analytics:read"], None);
-        let r = |ms| {
+        let charged = |at: Option<u64>| {
             check(
                 &p,
                 &fresh,
@@ -551,11 +564,14 @@ mod tests {
                 &Method::GET,
                 "/api/v1/stats/summary",
                 None,
-                ms,
+                at,
             )
         };
+        let r = |ms| charged(Some(ms));
         assert!(r(0).is_ok() && r(0).is_ok());
         assert!(r(0).is_err(), "over 2 per minute");
+        // The REST calls behind an MCP tool call don't take from the bucket (review 06-04).
+        assert!(charged(None).is_ok(), "in-process calls aren't charged");
         assert!(r(30_000).is_ok(), "refilled after 30 s");
         let restricted = grant(&["querylog:read", "analytics:read"], Some("kids"));
         let rr = |path: &str| {
@@ -566,7 +582,7 @@ mod tests {
                 &Method::GET,
                 path,
                 None,
-                0,
+                Some(0),
             )
         };
         assert!(rr("/api/v1/queries").is_ok());

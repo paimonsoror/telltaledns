@@ -36,6 +36,12 @@ const ISSUER: &str = "TelltaleDNS";
 
 type AuthState = Arc<Auth>;
 
+/// REQ: AGT-005 — the client address of the request an in-process call is made for. The
+/// MCP server puts it on the REST requests it builds (they have no peer address of their
+/// own), so lockouts and the audit log see the agent's address, not `0.0.0.0`.
+#[derive(Debug, Clone, Copy)]
+pub struct OnBehalfOf(pub IpAddr);
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -61,6 +67,9 @@ pub(crate) fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
 /// proxy; entries further left are client-supplied and can be forged. Used for lockouts,
 /// break-glass networks, and audit entries.
 pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> IpAddr {
+    if let Some(o) = req_ext.get::<OnBehalfOf>() {
+        return o.0;
+    }
     let peer = req_ext
         .get::<ConnectInfo<SocketAddr>>()
         .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
@@ -208,6 +217,10 @@ pub async fn authenticate(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let why = reason(&headers);
+        // REQ: AGT-009 (review 06-04) — a REST call the MCP server makes in-process for a
+        // tool (only those carry `OnBehalfOf`) is part of a `/mcp` request that already took
+        // from the bucket: an agent's rate counts tool calls, not the reads behind them.
+        let in_process = req.extensions().get::<OnBehalfOf>().is_some();
         if let Err(p) = super::agent::check(
             auth.agents(),
             grant,
@@ -215,7 +228,7 @@ pub async fn authenticate(
             req.method(),
             req.uri().path(),
             why.as_deref(),
-            now_ms,
+            (!in_process).then_some(now_ms),
         ) {
             return p.into_response();
         }

@@ -2084,7 +2084,7 @@ Three low-risk operations act at once, without a plan, and are audited like any 
 **How the tools behave:**
 - **Cluster-wide by default.** `get_overview`, `top_items`, `search_queries`, `latency_breakdown`, and `get_client_profile` take `scope` (`cluster`, `site:<name>`, `node:<name>`, `node:local`), and every result has `missingNodes`: the nodes in scope that didn't answer within 2 seconds, so a partial answer is never mistaken for a whole one. Upstream health and anomalies are the connected node's own.
 - **Side effects are stated.** Each tool's description starts with what it does ("Read-only.", "Plans a change", "Changes at once"), and its MCP annotations agree (`readOnlyHint`, `destructiveHint`).
-- **Same checks as REST.** Every tool calls the REST API with the agent's own token, so its scopes, group restriction, rate limit, privacy level, and the kill switch all apply. A tool the token can't use answers with an error.
+- **Same checks as REST.** Every tool calls the REST API with the agent's own token, so its scopes, group restriction, rate limit, privacy level, and the kill switch all apply. A tool the token can't use answers with an error. The rate limit counts tool calls (requests to `/mcp`), not the REST reads a tool makes, and the audit log records the agent's own address for changes made through a tool.
 - **Capped results.** Results stop at 200 rows / 32 KiB, with a note to narrow or page.
 - **Stable catalog.** It's committed as `docs/api/mcp-tools.json`, and CI checks it with the official MCP SDK (`deploy/mcp-e2e.sh`).
 

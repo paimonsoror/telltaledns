@@ -1266,6 +1266,9 @@ pub struct Mcp {
     pub sessions: Arc<Sessions>,
     /// Plans and the approval policy (AGT-007).
     pub auth: Arc<crate::auth::Auth>,
+    /// REQ: AGT-005 — the client address of the request being served (`post` sets it), put
+    /// on every in-process REST call so lockouts and the audit log see the agent's address.
+    pub on_behalf_of: Option<std::net::IpAddr>,
 }
 
 /// Who called: their plans key and how the audit log names them.
@@ -1400,6 +1403,10 @@ impl Mcp {
             if let Ok(v) = HeaderValue::from_str(v) {
                 req = req.header(*k, v);
             }
+        }
+        // REQ: AGT-005 — the in-process request has no peer; it acts for the agent's.
+        if let Some(ip) = self.on_behalf_of {
+            req = req.extension(crate::auth::routes::OnBehalfOf(ip));
         }
         let req = match body {
             Some(b) => req
@@ -1910,17 +1917,16 @@ pub async fn post(
     ext: axum::http::Extensions,
     body: axum::body::Bytes,
 ) -> Response {
+    // REQ: AGT-005 — every REST call made for this request carries its client address.
+    let ip = crate::auth::routes::remote(&mcp.auth, &ext, &headers);
+    let mcp = Mcp {
+        on_behalf_of: Some(ip),
+        ..mcp
+    };
     // The caller, for plans (AGT-007): the session or token, and its audit name.
     let caller = crate::auth::routes::principal(&ext).ok().map(|p| Caller {
         owner: crate::plans::owner_key(&p),
-        name: mcp
-            .auth
-            .actor(
-                &p,
-                crate::auth::routes::remote(&mcp.auth, &ext, &headers),
-                None,
-            )
-            .name,
+        name: mcp.auth.actor(&p, ip, None).name,
     });
     let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
         let e = rpc_error(&Value::Null, -32700, "parse error: the body isn't JSON");

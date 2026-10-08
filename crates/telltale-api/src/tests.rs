@@ -1458,3 +1458,79 @@ async fn agt_009_list_check_samples_are_for_operators() {
         "{v}"
     );
 }
+
+// REQ: AGT-005 — a change made through MCP is audited with the agent's address: the REST
+// call behind the tool runs in-process and has no peer address of its own.
+#[tokio::test]
+async fn agt_005_mcp_changes_keep_the_client_address() {
+    let (app, _) = app();
+    let mut req = Request::post("/mcp")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "flush_cache", "arguments": {"reason": "stale answers"}}})
+            .to_string(),
+        ))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [192, 168, 1, 77],
+            40_000,
+        ))));
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    let flush = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("cache.flush"), None)
+        .unwrap();
+    assert_eq!(flush.len(), 1, "{flush:?}");
+    assert_eq!(flush[0].remote.as_deref(), Some("192.168.1.77"));
+    assert_eq!(flush[0].reason.as_deref(), Some("stale answers"));
+}
+
+// REQ: AGT-009 (review 06-04) — an agent's rate limit counts tool calls: the REST read behind
+// `get_overview` doesn't take a second request from the bucket.
+#[tokio::test]
+async fn agt_009_a_tool_call_costs_one_request() {
+    let (app, _) = app();
+    let (s, _, v) = send(
+        &app,
+        Request::post("/api/v1/tokens")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": "slow", "kind": "agent",
+                    "scopes": ["analytics:read"], "ratePerMinute": 2})
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let overview = || {
+        Request::post("/mcp")
+            .header("authorization", format!("Bearer {agent}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "get_overview", "arguments": {}}})
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    for n in 1..=2 {
+        let (s, _, v) = send(&app, overview()).await;
+        assert_eq!(s, StatusCode::OK, "call {n}: {v}");
+        assert_eq!(v["result"]["isError"], false, "call {n}: {v}");
+    }
+    let (s, _, v) = send(&app, overview()).await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the third in a minute: {v}"
+    );
+}
