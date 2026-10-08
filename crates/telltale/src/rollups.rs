@@ -48,13 +48,19 @@ pub(crate) fn start(
     pipeline: &Arc<Pipeline>,
 ) -> (Option<Arc<Rollups>>, Option<tokio::task::JoinHandle<()>>) {
     let db = open(cfg);
+    let privacy = cfg.telemetry.qlog.privacy_level;
     let writer = db
         .as_ref()
-        .map(|d| spawn(Arc::clone(d), Arc::clone(pipeline)));
+        .map(|d| spawn(Arc::clone(d), Arc::clone(pipeline), privacy));
     (db, writer)
 }
-/// Starts the once-a-minute writer.
-pub(crate) fn spawn(db: Arc<Rollups>, pipeline: Arc<Pipeline>) -> tokio::task::JoinHandle<()> {
+/// Starts the once-a-minute writer. `privacy` is the query log's privacy level, which the
+/// stored top lists follow ([`hour_tops`]).
+pub(crate) fn spawn(
+    db: Arc<Rollups>,
+    pipeline: Arc<Pipeline>,
+    privacy: u8,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Minutes before this process started are already on disk (or lost); never replace
         // them with this process's partial view.
@@ -91,7 +97,7 @@ pub(crate) fn spawn(db: Arc<Rollups>, pipeline: Arc<Pipeline>) -> tokio::task::J
                 let extras = agg
                     .previous_hour_start()
                     .filter(|h| extras_for != Some(*h))
-                    .map(|h| (h, hour_extras(&agg, &pipeline)));
+                    .map(|h| (h, hour_extras(&agg, &pipeline, privacy)));
                 (rows, extras)
             };
             let d = Arc::clone(&db);
@@ -127,20 +133,31 @@ pub(crate) fn spawn(db: Arc<Rollups>, pipeline: Arc<Pipeline>) -> tokio::task::J
     })
 }
 
-type Extras = (Vec<(&'static str, Vec<TopRow>)>, Vec<LatencyRow>);
+type Tops = Vec<(&'static str, Vec<TopRow>)>;
+type Extras = (Tops, Vec<LatencyRow>);
 
-/// The last complete hour's top-K lists and latency summaries.
-fn hour_extras(agg: &telltale_telemetry::Aggregates, pipeline: &Pipeline) -> Extras {
-    let tops = [
+/// REQ: OBS-003, OBS-004 (`spec/06` §4; review 04-04) — the last complete hour's top-K lists,
+/// as the query log's privacy level lets them be kept for 400 days: at 1 and above names are
+/// stored hashed exactly as the query log stores them, and at 2 and above there is no list of
+/// clients.
+fn hour_tops(agg: &telltale_telemetry::Aggregates, privacy: u8) -> Tops {
+    let hidden =
+        |wire: &[u8]| telltale_telemetry::event::dotted(&telltale_store::qlog::hidden_name(wire));
+    [
         ("domains", TopKind::Domains),
         ("blocked", TopKind::Blocked),
         ("nxdomain", TopKind::Nxdomain),
         ("clients", TopKind::Clients),
     ]
     .into_iter()
+    .filter(|(_, kind)| privacy < 2 || *kind != TopKind::Clients)
     .map(|(name, kind)| {
-        let rows = agg
-            .top_names(kind, HourSel::Previous, TOP_KEPT)
+        let tops = if privacy >= 1 {
+            agg.top_names_shown(kind, HourSel::Previous, TOP_KEPT, hidden)
+        } else {
+            agg.top_names(kind, HourSel::Previous, TOP_KEPT)
+        };
+        let rows = tops
             .into_iter()
             .map(|t| TopRow {
                 key: t.key,
@@ -150,7 +167,12 @@ fn hour_extras(agg: &telltale_telemetry::Aggregates, pipeline: &Pipeline) -> Ext
             .collect();
         (name, rows)
     })
-    .collect();
+    .collect()
+}
+
+/// The last complete hour's top-K lists and latency summaries.
+fn hour_extras(agg: &telltale_telemetry::Aggregates, pipeline: &Pipeline, privacy: u8) -> Extras {
+    let tops = hour_tops(agg, privacy);
 
     let row = |key: String, p: Percentiles| LatencyRow {
         key,
@@ -183,4 +205,84 @@ fn hour_extras(agg: &telltale_telemetry::Aggregates, pipeline: &Pipeline) -> Ext
         }
     }
     (tops, lat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use telltale_telemetry::event::{Name, Record};
+    use telltale_telemetry::{Aggregates, Proto, QueryEvent, Status};
+
+    const ADS: &[u8] = b"\x03ads\x07example\x00";
+
+    fn query(ts_us: u64, status: Status) -> QueryEvent {
+        let mut client_ip = [0u8; 16];
+        client_ip[10..].copy_from_slice(&[0xff, 0xff, 192, 168, 1, 5]);
+        QueryEvent {
+            ts_us,
+            client_ip,
+            client_ref: 0,
+            group: 0,
+            qtype: 1,
+            qclass: 1,
+            rcode: Some(0),
+            status,
+            proto: Proto::Udp,
+            flags: 0x8180,
+            rule: None,
+            upstream: 0,
+            attempts: 0,
+            t_total_us: 100,
+            t_upstream_us: 0,
+            resp_size: 64,
+            answers: 1,
+        }
+    }
+
+    /// An hour with one blocked query for `ads.example` from 192.168.1.5, then the next hour.
+    fn closed_hour() -> Aggregates {
+        let mut agg = Aggregates::new();
+        let hour = 1_700_000_000 / 3600 * 3600 * 1_000_000;
+        agg.record(&Record::Query(
+            query(hour + 5, Status::Blocked),
+            Name::from_wire(ADS),
+        ));
+        agg.record(&Record::Query(
+            query(hour + 3_600_000_000, Status::Cached),
+            Name::from_wire(b"\x03new\x07example\x00"),
+        ));
+        agg
+    }
+
+    fn keys<'a>(tops: &'a Tops, kind: &str) -> Option<Vec<&'a str>> {
+        tops.iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, rows)| rows.iter().map(|r| r.key.as_str()).collect())
+    }
+
+    /// REQ: OBS-003, OBS-004 (review 04-04) — the hourly top lists kept in rollups.db follow
+    /// the query log's privacy level: names hashed the way the log stores them at 1, and no
+    /// client list at 2 and above.
+    #[test]
+    fn obs_003_stored_top_lists_follow_the_privacy_level() {
+        let agg = closed_hour();
+        let hashed = telltale_telemetry::event::dotted(&telltale_store::qlog::hidden_name(ADS));
+        let plain = telltale_telemetry::event::dotted(ADS);
+        assert_ne!(hashed, plain);
+
+        let full = hour_tops(&agg, 0);
+        assert_eq!(keys(&full, "blocked"), Some(vec![plain.as_str()]));
+        assert_eq!(keys(&full, "clients"), Some(vec!["192.168.1.5"]));
+
+        let level1 = hour_tops(&agg, 1);
+        assert_eq!(keys(&level1, "domains"), Some(vec![hashed.as_str()]));
+        assert_eq!(keys(&level1, "blocked"), Some(vec![hashed.as_str()]));
+        assert_eq!(keys(&level1, "clients"), Some(vec!["192.168.1.5"]));
+
+        for level in [2, 3] {
+            let hidden = hour_tops(&agg, level);
+            assert_eq!(keys(&hidden, "blocked"), Some(vec![hashed.as_str()]));
+            assert_eq!(keys(&hidden, "clients"), None, "level {level}");
+        }
+    }
 }

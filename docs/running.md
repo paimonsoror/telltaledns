@@ -1702,7 +1702,9 @@ flush_interval_secs = 10     # write at least this often (a crash loses at most 
 fsync = false                # true: sync every write (slower on SD cards)
 ```
 - Writes are sequential and batched, about one every 10 seconds on a quiet network, so it's gentle on SD cards. A slow or full disk never slows DNS: if the writer falls behind, rows are dropped and counted (`telltale_qlog_rows_dropped_total`).
-- `privacy_level = 1` stores each name as a hash, so identical names still group together but can't be read; `2` also drops client addresses; `3` keeps no per-query log at all (counters, top lists, and graphs still work).
+- `privacy_level = 1` stores each name as a hash, so identical names still group together but can't be read back; `2` also drops client addresses; `3` keeps no per-query log at all (counters, top lists, and graphs still work).
+- What the levels cover: the query log, the live tail, [event sinks](#event-sinks), and each hour's top lists kept in `rollups.db` (names hashed at 1 and above, no list of clients at 2 and above). The live analytics are not affected at levels 1 and 2: the dashboard's top lists for the last two hours, a device's page, first-seen domains, and anomaly findings still show full names and devices to signed-in users and agents, and the anomaly engine keeps its per-device baselines in `anomaly.json`.
+- What level 1 protects against: someone reading the log can't see a name nobody guesses. The hash is the same on every installation, though, so anyone holding the log can check whether a name they suspect was queried, and when. Use level 3 if that matters.
 - Search it from the command line (the API comes later):
   ```sh
   telltale qlog search doubleclick -c telltale.toml                  # names containing "doubleclick"
