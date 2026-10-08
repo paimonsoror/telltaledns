@@ -204,6 +204,7 @@ fn spec(name: &str, url: String) -> ListSpec {
         source: ListSource::Url(url),
         refresh: Duration::from_hours(24),
         max_bytes: 1024,
+        enabled: true,
     }
 }
 
@@ -810,4 +811,29 @@ async fn flt_004_invalid_line_threshold_is_configurable() {
         .refresh_one(&spec("l", junk.url("http", "h", "/list")))
         .await;
     assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+}
+
+/// REQ: FLT-004 — a disabled list is never fetched, not even by a manual refresh, and its
+/// stored copy survives a prune; enabling it again needs no download.
+#[tokio::test]
+async fn flt_004_disabled_list_is_not_fetched_but_keeps_its_copy() {
+    let srv = serve(handler(|_, _| ok("a.com\nb.com\n")), None).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let mut on = spec("on", srv.url("http", "h", "/on"));
+    let mut off = spec("off", srv.url("http", "h", "/off"));
+    let both = [on.clone(), off.clone()];
+    let names: Vec<String> = f.refresh(&both).await.into_iter().map(|r| r.0).collect();
+    assert_eq!(names, ["off", "on"]);
+    // Disable `off`: it stays in the specs, marked, and the round skips it.
+    off.enabled = false;
+    on.refresh = Duration::from_secs(0);
+    let names: Vec<String> = f
+        .refresh(&[on, off])
+        .await
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(names, ["on"], "only the enabled list is fetched");
+    assert_eq!(f.store().read_source("off").unwrap(), b"a.com\nb.com\n");
 }

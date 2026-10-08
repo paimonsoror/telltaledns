@@ -53,15 +53,18 @@ pub struct ListSpec {
     pub source: ListSource,
     pub refresh: Duration,
     pub max_bytes: u64,
+    /// Disabled in the configuration: its stored files are kept (so re-enabling it needs no
+    /// download, ADR-016), but it is never refreshed.
+    pub enabled: bool,
 }
 
 impl ListSpec {
-    /// The enabled lists in `cfg`, with `[filter]` defaults applied.
+    /// The configured lists, disabled ones included (marked), with `[filter]` defaults
+    /// applied.
     pub fn from_config(cfg: &Config) -> Vec<Self> {
         let f = &cfg.filter;
         cfg.list
             .iter()
-            .filter(|l| l.enabled)
             .filter_map(|l| {
                 let source = if let Some(u) = &l.url {
                     ListSource::Url(u.to_string())
@@ -79,6 +82,7 @@ impl ListSpec {
                         l.refresh_secs.unwrap_or(f.refresh_secs),
                     )),
                     max_bytes: l.max_bytes.unwrap_or(f.max_list_bytes).bytes(),
+                    enabled: l.enabled,
                 })
             })
             .collect()
@@ -198,7 +202,8 @@ impl Fetcher {
     fn spawn_refreshes(self: &Arc<Self>, specs: &[ListSpec]) -> JoinSet<(String, Outcome)> {
         let sem = Arc::new(Semaphore::new(self.settings.concurrency.max(1)));
         let mut set = JoinSet::new();
-        for spec in specs.iter().cloned() {
+        // A disabled list is kept in the specs (its files stay) but never fetched.
+        for spec in specs.iter().filter(|s| s.enabled).cloned() {
             let (this, sem) = (Arc::clone(self), Arc::clone(&sem));
             set.spawn(async move {
                 let _permit = sem.acquire_owned().await;
@@ -407,6 +412,9 @@ impl Fetcher {
         let mut due = Vec::new();
         let mut next: Option<u64> = None;
         for spec in specs {
+            if !spec.enabled {
+                continue;
+            }
             let meta = self.meta(&spec.name);
             let at = next_attempt(spec, &meta);
             if at <= now {
@@ -599,7 +607,39 @@ mod tests {
             source,
             refresh: Duration::from_hours(24),
             max_bytes: 1 << 20,
+            enabled: true,
         }
+    }
+
+    /// REQ: FLT-004 (ADR-016) — a disabled list keeps its stored files (re-enabling it
+    /// needs no download), so it stays in the spec set, marked, and is never due.
+    #[test]
+    fn flt_004_disabled_lists_stay_known_but_never_due() {
+        let cfg: Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                "[[list]]\nname = \"on\"\nurl = \"https://example.com/on.txt\"\n\
+                 [[list]]\nname = \"off\"\nurl = \"https://example.com/off.txt\"\nenabled = false\n",
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let specs = ListSpec::from_config(&cfg);
+        let flags: Vec<(&str, bool)> = specs.iter().map(|s| (s.name.as_str(), s.enabled)).collect();
+        assert_eq!(flags, [("on", true), ("off", false)]);
+        let tmp = tempfile::tempdir().unwrap();
+        let f = Fetcher::new(
+            Store::open(tmp.path()).unwrap(),
+            Client::new(Arc::new(SystemResolver), &[]).unwrap(),
+            FetchSettings::from_config(&cfg),
+        );
+        let (due, _) = f.due(&specs, unix_now());
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].name, "on"); // The prune keep-set is the whole spec set: `off`'s files survive.
+        f.store().save_source("off", b"x.com\n").unwrap();
+        assert!(!f.prune(&specs));
+        assert!(f.store().read_source("off").is_ok());
     }
 
     #[test]

@@ -135,7 +135,7 @@ impl Lists {
         };
         let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
         info!(
-            lists = specs.len(),
+            lists = specs.iter().filter(|s| s.enabled).count(),
             dir = %fetcher.store().dir().display(),
             "list fetcher started"
         );
@@ -645,7 +645,10 @@ pub(crate) fn source_reader(cfg: &Config) -> impl Fn(&str) -> Option<Vec<u8>> + 
 /// `telltale lists fetch`: refresh every enabled list once and print the result.
 pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool, String> {
     let fetcher = build_fetcher(cfg)?;
-    let specs = ListSpec::from_config(&telltale_config::services::expand(cfg));
+    let specs: Vec<ListSpec> = ListSpec::from_config(&telltale_config::services::expand(cfg))
+        .into_iter()
+        .filter(|s| s.enabled)
+        .collect();
     if specs.is_empty() {
         writeln!(out, "no enabled lists in the configuration").map_err(|e| e.to_string())?;
         return Ok(true);

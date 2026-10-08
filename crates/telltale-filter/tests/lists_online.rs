@@ -62,6 +62,7 @@ async fn flt_001_real_lists_parse_cleanly() {
             source: ListSource::Url((*url).to_owned()),
             refresh: Duration::from_hours(24),
             max_bytes: 256 << 20,
+            enabled: true,
         })
         .collect();
     let mut failures = Vec::new();
