@@ -848,13 +848,14 @@ pub(crate) fn token_create(
     out: &mut impl Write,
     ttl_s: u64,
     urls: Vec<String>,
+    grants: telltale_cluster::node::TokenGrants,
 ) -> ExitCode {
     let id = match Identity::load(data_dir(cfg)) {
         Ok(Some(id)) => id,
         Ok(None) => return fail("this node isn't in a cluster: run `telltale cluster init` first"),
         Err(e) => return fail(&e),
     };
-    match id.create_token(ttl_s, (!urls.is_empty()).then_some(urls)) {
+    match id.create_token_for(ttl_s, (!urls.is_empty()).then_some(urls), grants) {
         Ok(t) => {
             // The token is the only output on stdout, so it can be piped into a Secret.
             let _ = writeln!(out, "{}", t.encode());
@@ -887,10 +888,16 @@ pub(crate) fn token_list(cfg: &telltale_config::Config, out: &mut impl Write) ->
         let _ = writeln!(out, "No join tokens are valid now.");
     }
     let now = now_ms() / 1000;
-    for (token, exp) in tokens {
+    for (token, exp, grants) in tokens {
+        let may = match (grants.eligible, grants.witness) {
+            (true, true) => "a member, an eligible node, or a witness",
+            (true, false) => "a member or an eligible node",
+            (false, true) => "a member or a witness",
+            (false, false) => "a member",
+        };
         let _ = writeln!(
             out,
-            "{token}  expires in {}",
+            "{token}  expires in {}  brings {may}",
             human(exp.saturating_sub(now))
         );
     }
@@ -1427,7 +1434,11 @@ mod tests {
                 .contains("already the primary")
         );
         // An eligible replica, joined without the network.
-        let token = primary.create_token(60, None).unwrap();
+        let grants = telltale_cluster::node::TokenGrants {
+            eligible: true,
+            witness: false,
+        };
+        let token = primary.create_token_for(60, None, grants).unwrap();
         let key = pki::new_node_key().unwrap();
         let resp = primary
             .accept_join(
@@ -1533,7 +1544,13 @@ mod tests {
             "{text}"
         );
         assert_eq!(
-            token_create(&cfg, &mut out, 3600, Vec::new()),
+            token_create(
+                &cfg,
+                &mut out,
+                3600,
+                Vec::new(),
+                telltale_cluster::node::TokenGrants::default()
+            ),
             ExitCode::SUCCESS
         );
         // A second init on the same node is refused.

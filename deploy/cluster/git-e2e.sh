@@ -126,7 +126,7 @@ shared 10.0.0.1; c1=$(push first)
 "$B" cluster init --name git --advertise https://127.0.0.1:28741 -c "$E/p.toml" >/dev/null
 "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 wait_answer 25701 10.0.0.1 15 || fail "the primary never served the commit"
-T=$("$B" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
+T=$("$B" cluster token create --ttl 10m --eligible -c "$E/p.toml" 2>/dev/null)
 "$B" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28742 -c "$E/r.toml" >/dev/null
 "$B" run -c "$E/r.toml" > "$E/r.log" 2>&1 & R_PID=$!
 wait_answer 25702 10.0.0.1 15 || fail "the replica never served the commit"

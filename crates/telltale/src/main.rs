@@ -315,6 +315,13 @@ enum ClusterTokenCommand {
         /// Cluster URLs to put in the token (default: this node's advertise URLs).
         #[arg(long = "url")]
         urls: Vec<String>,
+        /// The token may bring an eligible node (one that can be promoted, and so gets the
+        /// cluster key). Without it, a token brings a plain member.
+        #[arg(long)]
+        eligible: bool,
+        /// The token may bring a witness (a vote-only node for automatic failover).
+        #[arg(long)]
+        witness: bool,
     },
     /// List the join tokens that are still valid: their IDs and expiry (never the secrets).
     List,
@@ -712,8 +719,20 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
             cluster::rotate_ca(&cfg, &mut io::stdout().lock(), status)
         }
         ClusterCommand::Token {
-            command: ClusterTokenCommand::Create { ttl, urls },
-        } => cluster::token_create(&cfg, &mut io::stdout().lock(), ttl, urls),
+            command:
+                ClusterTokenCommand::Create {
+                    ttl,
+                    urls,
+                    eligible,
+                    witness,
+                },
+        } => cluster::token_create(
+            &cfg,
+            &mut io::stdout().lock(),
+            ttl,
+            urls,
+            telltale_cluster::node::TokenGrants { eligible, witness },
+        ),
         ClusterCommand::Token {
             command: ClusterTokenCommand::List,
         } => cluster::token_list(&cfg, &mut io::stdout().lock()),

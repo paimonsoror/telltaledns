@@ -127,7 +127,7 @@ q() { python3 "$E/q.py" one "$@"; }
 "$B" cluster init --name e2e --advertise https://127.0.0.1:28441 -c "$E/p.toml" >/dev/null
 "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
-T=$("$B" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
+T=$("$B" cluster token create --ttl 10m --eligible -c "$E/p.toml" 2>/dev/null)
 "$B" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28442 -c "$E/r.toml" >/dev/null
 "$B" run -c "$E/r.toml" > "$E/r.log" 2>&1 & R_PID=$!
 

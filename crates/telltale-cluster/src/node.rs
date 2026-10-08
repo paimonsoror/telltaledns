@@ -88,6 +88,20 @@ impl NodeRecord {
 struct TokenRecord {
     hash: String,
     exp: u64,
+    /// What a node joining with it may be (tokens from before this field: neither).
+    #[serde(default)]
+    eligible: bool,
+    #[serde(default)]
+    witness: bool,
+}
+
+/// REQ: CLU-001 (review 05 q1, ADR-051) — what a join token may bring besides a plain
+/// member: an eligible node (which gets the cluster key) or a witness (which votes). A
+/// leaked plain token then buys membership, not the key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenGrants {
+    pub eligible: bool,
+    pub witness: bool,
 }
 
 /// A join token's ID: the first 12 hex characters of its secret's hash. It names the token
@@ -554,15 +568,21 @@ impl Identity {
 
     /// REQ: CLU-001 (review 05-07) — the join tokens still valid: each one's ID (the start
     /// of its secret's hash, [`token_id`]) and when it expires (Unix seconds), soonest first.
-    pub fn tokens(&self) -> Vec<(String, u64)> {
+    pub fn tokens(&self) -> Vec<(String, u64, TokenGrants)> {
         let t = now();
-        let mut v: Vec<(String, u64)> = self
+        let mut v: Vec<(String, u64, TokenGrants)> = self
             .token_records()
             .into_iter()
             .filter(|r| r.exp > t)
-            .map(|r| (token_id(&r.hash).to_owned(), r.exp))
+            .map(|r| {
+                let grants = TokenGrants {
+                    eligible: r.eligible,
+                    witness: r.witness,
+                };
+                (token_id(&r.hash).to_owned(), r.exp, grants)
+            })
             .collect();
-        v.sort_by_key(|(_, exp)| *exp);
+        v.sort_by_key(|(_, exp, _)| *exp);
         v
     }
 
@@ -589,8 +609,19 @@ impl Identity {
         Ok(removed)
     }
 
-    /// A join token valid for `ttl_s`, listing `urls` (default: this node's advertise URLs).
+    /// A join token valid for `ttl_s` for a plain member, listing `urls` (default: this
+    /// node's advertise URLs).
     pub fn create_token(&self, ttl_s: u64, urls: Option<Vec<String>>) -> Result<Token, String> {
+        self.create_token_for(ttl_s, urls, TokenGrants::default())
+    }
+
+    /// A join token that may also bring what `grants` allows (an eligible node, a witness).
+    pub fn create_token_for(
+        &self,
+        ttl_s: u64,
+        urls: Option<Vec<String>>,
+        grants: TokenGrants,
+    ) -> Result<Token, String> {
         let _ = self.ca()?;
         let urls = urls.unwrap_or_else(|| self.meta.advertise.clone());
         if urls.is_empty() {
@@ -610,6 +641,8 @@ impl Identity {
         recs.push(TokenRecord {
             hash: Token::secret_hash(&secret),
             exp,
+            eligible: grants.eligible,
+            witness: grants.witness,
         });
         write(
             &path,
@@ -642,9 +675,10 @@ impl Identity {
             .unwrap_or_default();
         let h = Token::secret_hash(&req.secret);
         let t = now();
-        let by_token = recs
+        let token = recs
             .iter()
-            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()));
+            .find(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()));
+        let by_token = token.is_some();
         // REQ: CLU-009 — the shared bootstrap secret works like a token that never expires.
         let by_bootstrap = !by_token
             && bootstrap
@@ -657,6 +691,16 @@ impl Identity {
         // member whatever it asks for: eligibility (and with it the cluster key) and a
         // witness's vote come only with a join token.
         let ephemeral = req.ephemeral || by_bootstrap;
+        // REQ: CLU-001 (review 05 q1) — and the token says whether it may bring an eligible
+        // node or a witness; a plain token brings a plain member.
+        if let Some(r) = token.filter(|_| !ephemeral) {
+            if req.eligible && !req.witness && !r.eligible {
+                return Err("this join token can't bring an eligible node: create one with `telltale cluster token create --eligible`".into());
+            }
+            if req.witness && !r.witness {
+                return Err("this join token can't bring a witness: create one with `telltale cluster token create --witness`".into());
+            }
+        }
         let (node_id, cert_pem) =
             pki::issue(&ca, &req.csr_pem, &hosts(&req.advertise)).map_err(|e| e.to_string())?;
         let mut nodes = self.registry();
@@ -756,7 +800,16 @@ mod tests {
             Identity::init(a.path(), "home", vec![], "x").is_err(),
             "only once"
         );
-        let t = p.create_token(3600, None).unwrap();
+        let t = p
+            .create_token_for(
+                3600,
+                None,
+                TokenGrants {
+                    eligible: true,
+                    witness: false,
+                },
+            )
+            .unwrap();
         assert_eq!(t.urls, ["https://192.168.3.2:8443"]);
         let key = pki::new_node_key().unwrap();
         let mut req = JoinRequest {

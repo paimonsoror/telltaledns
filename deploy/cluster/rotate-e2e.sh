@@ -115,7 +115,7 @@ pki() { python3 "$E/pki.py" "$@"; }
 q() { python3 "$E/q.py" one "$@"; }
 
 "$B" cluster init --name rot --advertise https://127.0.0.1:28551 -c "$E/p.toml" >/dev/null
-T=$("$B" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
+T=$("$B" cluster token create --ttl 10m --eligible --witness -c "$E/p.toml" 2>/dev/null)
 "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25411 a.rot.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 join() {

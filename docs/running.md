@@ -1404,7 +1404,8 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   Cluster page's **node_settings** check fails until they're removed.
 
 **When the primary is gone: promote another node (manual failover).**
-- **Who can be promoted:** a node joined with `--eligible` using a join token. The primary
+- **Who can be promoted:** a node joined with `--eligible` using a token made with
+  `telltale cluster token create --eligible` (a plain token brings a plain member). The primary
   shares the cluster's signing key with eligible nodes once they connect, so one of them can
   take over. A node that joined with the Helm chart's bootstrap secret (a resolver pod) is
   always an ephemeral member: it can't be eligible or a witness, whatever its settings say.
@@ -1469,6 +1470,7 @@ vote: another eligible node, or a **witness**, a tiny vote-only process that can
 router, or small VM.
 ```sh
 # On the witness host (a config with [node] data_dir and [cluster] listen is enough):
+# The token from `telltale cluster token create --witness` on the primary.
 telltale cluster join <token> --witness --advertise https://witness.lan:8443 -c witness.toml
 telltale cluster witness -c witness.toml      # run it as a service
 # On the primary, then restart it:
@@ -1558,7 +1560,8 @@ Run these as the user telltale runs as (`sudo -u telltale` for native installs,
 telltale cluster init --name home --advertise https://192.168.3.2:8443 --site home-pi
 
 # Still on the first node: a join token (reusable until it expires; treat it like a password).
-telltale cluster token create --ttl 1h
+telltale cluster token create --ttl 1h              # brings a plain member (follows, can't be promoted)
+telltale cluster token create --ttl 1h --eligible   # may bring a node that can be promoted
 telltale cluster token list              # the tokens still valid: their IDs and expiry
 telltale cluster token revoke 3f9c2a1b7d0e   # stop one early (nodes that joined stay members)
 

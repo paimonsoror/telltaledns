@@ -102,7 +102,16 @@ async fn clu_001_join_then_mutual_stream_registers_both_peers() {
     let url = format!("https://{addr}");
 
     let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
-    let token = primary.create_token(600, Some(vec![url.clone()])).unwrap();
+    let token = primary
+        .create_token_for(
+            600,
+            Some(vec![url.clone()]),
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
     let primary = Cluster::new(primary, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
@@ -425,7 +434,16 @@ async fn clu_003_replicas_fetch_only_changed_blobs_and_converge_fast_over_a_wan(
     let wan = delay_proxy(addr, Duration::from_millis(25)).await;
     let url = format!("https://{wan}");
     let primary_id = Identity::init(pdir.path(), "home", vec![url.clone()], "home-pi").unwrap();
-    let token = primary_id.create_token(600, None).unwrap();
+    let token = primary_id
+        .create_token_for(
+            600,
+            None,
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
     let primary = Cluster::new(primary_id, "0.1.0");
     let (stop_tx, stop) = watch::channel(false);
     tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
@@ -806,8 +824,18 @@ fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
         "a Hello can't raise eligibility"
     );
     assert!(primary.key_share_for(&resp.node_id).is_none());
-    // A token join may be eligible, and then the key share is due.
-    let token = primary.identity.create_token(60, None).unwrap();
+    // An eligible token may bring an eligible node, and then the key share is due.
+    let token = primary
+        .identity
+        .create_token_for(
+            60,
+            None,
+            crate::node::TokenGrants {
+                eligible: true,
+                witness: false,
+            },
+        )
+        .unwrap();
     let key2 = pki::new_node_key().unwrap();
     let req2 = JoinRequest {
         witness: false,
@@ -840,7 +868,11 @@ fn clu_005_only_voters_can_fence_the_primary() {
     let primary = Cluster::new(id, "0.1.0");
     let join = |eligible: bool, ephemeral: bool, site: &str| {
         let key = pki::new_node_key().unwrap();
-        let token = primary.identity.create_token(60, None).unwrap();
+        let grants = crate::node::TokenGrants {
+            eligible,
+            witness: false,
+        };
+        let token = primary.identity.create_token_for(60, None, grants).unwrap();
         primary
             .identity
             .accept_join(
@@ -934,7 +966,7 @@ fn clu_001_join_tokens_can_be_listed_and_revoked() {
     let id_of = |t: &crate::token::Token| {
         crate::node::token_id(&crate::token::Token::secret_hash(&t.secret)).to_owned()
     };
-    let listed: Vec<String> = id.tokens().into_iter().map(|(t, _)| t).collect();
+    let listed: Vec<String> = id.tokens().into_iter().map(|(t, _, _)| t).collect();
     assert_eq!(
         listed,
         vec![id_of(&b), id_of(&a)],
@@ -960,4 +992,47 @@ fn clu_001_join_tokens_can_be_listed_and_revoked() {
         "revoked"
     );
     assert!(id.accept_join(&join(b.secret.clone()), None).is_ok());
+}
+
+// REQ: CLU-001 (review 05 q1, ADR-051) — a join token says what it may bring: a plain one
+// brings a plain member, never an eligible node (which would get the cluster key) or a witness.
+#[test]
+fn clu_001_a_plain_join_token_brings_a_plain_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let primary = Cluster::new(id, "0.1.0");
+    let plain = primary.identity.create_token(60, None).unwrap();
+    let asks_eligible = |secret: String| JoinRequest {
+        witness: false,
+        ephemeral: false,
+        secret,
+        csr_pem: pki::new_node_key().unwrap().csr_pem,
+        advertise: vec![],
+        site: "pi".into(),
+        eligible: true,
+        version: "0.1.0".into(),
+    };
+    let e = primary
+        .identity
+        .accept_join(&asks_eligible(plain.secret.clone()), Some("s3cret"))
+        .unwrap_err();
+    assert!(e.contains("--eligible"), "{e}");
+    let mut as_witness = asks_eligible(plain.secret);
+    as_witness.witness = true;
+    assert!(
+        primary
+            .identity
+            .accept_join(&as_witness, None)
+            .unwrap_err()
+            .contains("--witness")
+    );
+    let mut plain_member = asks_eligible(primary.identity.create_token(60, None).unwrap().secret);
+    plain_member.eligible = false;
+    assert!(primary.identity.accept_join(&plain_member, None).is_ok());
 }
