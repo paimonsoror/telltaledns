@@ -9,9 +9,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use telltale_api::model::{
     ClientChange, ClientInfo, ConfigChange, ExplainBlock, ExplainClient, ExplainFilter,
-    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, ForwardInfo, GroupInfo,
-    Hour, LatencyBy, LatencyRow, ListInfo, LocalName, NameMatch, QueryPage, QueryParams, QueryRow,
-    RecordInput, ScanStats, Step, SystemInfo, TimeBucket, TopItem, TopKind, UpstreamInfo,
+    ExplainLine, ExplainParams, ExplainRoute, ExplainRule, Explanation, FailureKinds, ForwardInfo,
+    GroupInfo, Hour, LatencyBy, LatencyRow, ListInfo, LocalName, NameMatch, QueryPage, QueryParams,
+    QueryRow, RecordInput, ScanStats, Step, SystemInfo, TimeBucket, TopItem, TopKind, UpstreamInfo,
 };
 use telltale_api::problem::{Code, Problem};
 use telltale_api::time::format_us;
@@ -1998,6 +1998,7 @@ impl Backend for ApiBackend {
                     .to_owned(),
                     requests: h.requests,
                     failures: h.failures,
+                    failures_by_kind: failure_kinds(h.failures_by_kind),
                     latency_ewma_ms: h.ewma.map_or(0.0, |d| {
                         ms(u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
                     }),
@@ -2005,6 +2006,26 @@ impl Backend for ApiBackend {
             })
             .collect()
     }
+}
+
+/// REQ: UPS-006, OBS-011 — the health tracker's per-kind counts (in `Outcome::FAILURES` order)
+/// as the API's named fields.
+fn failure_kinds(counts: [u64; telltale_upstream::health::FAILURE_KINDS]) -> FailureKinds {
+    use telltale_upstream::health::Outcome;
+    let mut k = FailureKinds::default();
+    for (kind, n) in Outcome::FAILURES.iter().zip(counts) {
+        match kind {
+            Outcome::Timeout => k.timeout = n,
+            Outcome::Network => k.network = n,
+            Outcome::BadResponse => k.bad_response = n,
+            Outcome::Unresolved => k.unresolved = n,
+            Outcome::ServFail => k.servfail = n,
+            Outcome::Refused => k.refused = n,
+            Outcome::OtherRcode => k.other_rcode = n,
+            Outcome::Ok => {}
+        }
+    }
+    k
 }
 
 /// Names of the devices stored through the API.

@@ -794,8 +794,30 @@ pub struct UpstreamInfo {
     pub breaker: String,
     pub requests: u64,
     pub failures: u64,
+    /// `failures` by kind, which say what to fix: timeouts point at the path or the upstream's
+    /// load, network errors at the connection, SERVFAIL at the domain asked about.
+    pub failures_by_kind: FailureKinds,
     /// Smoothed answer time.
     pub latency_ewma_ms: f64,
+}
+
+/// Failed attempts by kind (their sum is `failures`).
+#[derive(Debug, Clone, Copy, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureKinds {
+    /// No answer within the attempt's timeout.
+    pub timeout: u64,
+    /// A connection, TLS, or socket error.
+    pub network: u64,
+    /// An answer that didn't match the query or didn't parse.
+    pub bad_response: u64,
+    /// The upstream's hostname couldn't be resolved.
+    pub unresolved: u64,
+    /// The upstream answered SERVFAIL (often the domain's fault, not the upstream's).
+    pub servfail: u64,
+    pub refused: u64,
+    /// Any other error RCODE (FORMERR, NOTIMP, ...).
+    pub other_rcode: u64,
 }
 
 /// A list wrapper used by every collection endpoint.

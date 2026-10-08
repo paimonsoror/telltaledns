@@ -6629,6 +6629,62 @@
           }
         }
       },
+      "FailureKinds": {
+        "type": "object",
+        "description": "Failed attempts by kind (their sum is `failures`).",
+        "required": [
+          "timeout",
+          "network",
+          "badResponse",
+          "unresolved",
+          "servfail",
+          "refused",
+          "otherRcode"
+        ],
+        "properties": {
+          "badResponse": {
+            "type": "integer",
+            "format": "int64",
+            "description": "An answer that didn't match the query or didn't parse.",
+            "minimum": 0
+          },
+          "network": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A connection, TLS, or socket error.",
+            "minimum": 0
+          },
+          "otherRcode": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Any other error RCODE (FORMERR, NOTIMP, ...).",
+            "minimum": 0
+          },
+          "refused": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "servfail": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The upstream answered SERVFAIL (often the domain's fault, not the upstream's).",
+            "minimum": 0
+          },
+          "timeout": {
+            "type": "integer",
+            "format": "int64",
+            "description": "No answer within the attempt's timeout.",
+            "minimum": 0
+          },
+          "unresolved": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The upstream's hostname couldn't be resolved.",
+            "minimum": 0
+          }
+        }
+      },
       "FiringAlert": {
         "type": "object",
         "description": "REQ: OBS-010 (T9.6) — an alert that is firing now.",
@@ -8637,6 +8693,7 @@
                 "breaker",
                 "requests",
                 "failures",
+                "failuresByKind",
                 "latencyEwmaMs"
               ],
               "properties": {
@@ -8652,6 +8709,10 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "failuresByKind": {
+                  "$ref": "#/components/schemas/FailureKinds",
+                  "description": "`failures` by kind, which say what to fix: timeouts point at the path or the upstream's\nload, network errors at the connection, SERVFAIL at the domain asked about."
                 },
                 "groups": {
                   "type": "array",
@@ -10589,6 +10650,7 @@
           "breaker",
           "requests",
           "failures",
+          "failuresByKind",
           "latencyEwmaMs"
         ],
         "properties": {
@@ -10604,6 +10666,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "failuresByKind": {
+            "$ref": "#/components/schemas/FailureKinds",
+            "description": "`failures` by kind, which say what to fix: timeouts point at the path or the upstream's\nload, network errors at the connection, SERVFAIL at the domain asked about."
           },
           "groups": {
             "type": "array",

@@ -27,6 +27,59 @@ pub enum Breaker {
     HalfOpen,
 }
 
+/// REQ: UPS-006, OBS-011 — what an attempt came to. NOERROR and NXDOMAIN are successes;
+/// everything else is a failure, counted by kind so that a failure rate can be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Ok,
+    /// No answer within the attempt's timeout.
+    Timeout,
+    /// A connection, TLS, or socket error.
+    Network,
+    /// An answer that didn't match the query or didn't parse.
+    BadResponse,
+    /// The upstream's hostname couldn't be resolved.
+    Unresolved,
+    ServFail,
+    Refused,
+    /// Any other RCODE (FORMERR, NOTIMP, ...).
+    OtherRcode,
+}
+
+/// How many failure kinds [`Outcome`] has.
+pub const FAILURE_KINDS: usize = 7;
+
+impl Outcome {
+    /// The failure kinds, in the order of [`HealthSnapshot::failures_by_kind`].
+    pub const FAILURES: [Self; FAILURE_KINDS] = [
+        Self::Timeout,
+        Self::Network,
+        Self::BadResponse,
+        Self::Unresolved,
+        Self::ServFail,
+        Self::Refused,
+        Self::OtherRcode,
+    ];
+
+    /// The metrics label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Timeout => "timeout",
+            Self::Network => "network",
+            Self::BadResponse => "bad_response",
+            Self::Unresolved => "unresolved",
+            Self::ServFail => "servfail",
+            Self::Refused => "refused",
+            Self::OtherRcode => "other_rcode",
+        }
+    }
+
+    fn index(self) -> Option<usize> {
+        Self::FAILURES.iter().position(|k| *k == self)
+    }
+}
+
 /// A point-in-time view for metrics and the API (OBS-011).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HealthSnapshot {
@@ -36,6 +89,8 @@ pub struct HealthSnapshot {
     pub error_rate: f64,
     pub requests: u64,
     pub failures: u64,
+    /// `failures` by kind, in the order of [`Outcome::FAILURES`].
+    pub failures_by_kind: [u64; FAILURE_KINDS],
 }
 
 #[derive(Debug)]
@@ -54,6 +109,7 @@ struct Inner {
     last_used: Option<Instant>,
     requests: u64,
     failures: u64,
+    by_kind: [u64; FAILURE_KINDS],
 }
 
 /// Thread-safe health tracker for one upstream.
@@ -77,6 +133,7 @@ impl Default for Health {
             last_used: None,
             requests: 0,
             failures: 0,
+            by_kind: [0; FAILURE_KINDS],
         }))
     }
 }
@@ -108,6 +165,15 @@ impl Health {
             }
             Breaker::Open | Breaker::HalfOpen => Admission::No,
         }
+    }
+
+    /// REQ: UPS-006, OBS-011 — records an attempt with what went wrong, so that failures can
+    /// be told apart (`telltale_upstream_failures_total{kind}`); then as [`Self::record`].
+    pub fn record_outcome(&self, outcome: Outcome, latency: Duration, now: Instant) {
+        if let Some(i) = outcome.index() {
+            self.0.lock().by_kind[i] += 1;
+        }
+        self.record(outcome == Outcome::Ok, latency, now);
     }
 
     /// Records an attempt's outcome. Failures count as `latency` toward the EWMA too, so a
@@ -197,6 +263,7 @@ impl Health {
             },
             requests: h.requests,
             failures: h.failures,
+            failures_by_kind: h.by_kind,
         }
     }
 }
@@ -272,6 +339,26 @@ mod tests {
             h.record(i % 3 == 0, MS, t); // 2 of 3 fail, never 3 in a row
         }
         assert_eq!(h.snapshot().breaker, Breaker::Open);
+    }
+
+    /// REQ: UPS-006, OBS-011 — failures are counted by kind, and the total still matches.
+    #[test]
+    fn ups_006_failures_are_counted_by_kind() {
+        let h = Health::default();
+        let t = Instant::now();
+        h.record_outcome(Outcome::Ok, MS, t);
+        h.record_outcome(Outcome::ServFail, MS, t);
+        h.record_outcome(Outcome::ServFail, MS, t);
+        h.record_outcome(Outcome::Timeout, 400 * MS, t);
+        let s = h.snapshot();
+        assert_eq!((s.requests, s.failures), (4, 3));
+        let by: Vec<(&str, u64)> = Outcome::FAILURES
+            .iter()
+            .zip(s.failures_by_kind)
+            .filter(|(_, n)| *n > 0)
+            .map(|(k, n)| (k.label(), n))
+            .collect();
+        assert_eq!(by, vec![("timeout", 1), ("servfail", 2)]);
     }
 
     #[test]

@@ -24,7 +24,7 @@ use telltale_net::{DohStats, TcpStats, WorkerStats};
 use telltale_telemetry::Metrics;
 use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
 use telltale_upstream::Router;
-use telltale_upstream::health::Breaker;
+use telltale_upstream::health::{Breaker, Outcome};
 
 /// Everything `/metrics` reads.
 #[derive(Debug)]
@@ -926,6 +926,21 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
             s.failures,
         );
     }
+    // REQ: UPS-006, OBS-011 — the failures by kind, so a failure rate can be read.
+    w.family(
+        "telltale_upstream_failures_total",
+        "counter",
+        "Failed upstream attempts by kind: timeout, network, bad_response, unresolved, servfail, refused, other_rcode.",
+    );
+    for (name, s) in &snaps {
+        for (kind, n) in Outcome::FAILURES.iter().zip(s.failures_by_kind) {
+            w.sample(
+                "telltale_upstream_failures_total",
+                &[("upstream", name), ("kind", kind.label())],
+                n,
+            );
+        }
+    }
     w.family(
         "telltale_upstream_breaker_state",
         "gauge",
@@ -1311,6 +1326,7 @@ mod tests {
             "telltale_query_duration_seconds",
             "telltale_cache_hits_total",
             "telltale_upstream_requests_total",
+            "telltale_upstream_failures_total",
             "telltale_udp_received_total",
             "telltale_tcp_connections_total",
             "telltale_tcp_stalled_closed_total",

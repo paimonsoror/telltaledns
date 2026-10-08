@@ -2604,6 +2604,41 @@ export interface components {
             /** @description One sentence for people. */
             summary: string;
         };
+        /** @description Failed attempts by kind (their sum is `failures`). */
+        FailureKinds: {
+            /**
+             * Format: int64
+             * @description An answer that didn't match the query or didn't parse.
+             */
+            badResponse: number;
+            /**
+             * Format: int64
+             * @description A connection, TLS, or socket error.
+             */
+            network: number;
+            /**
+             * Format: int64
+             * @description Any other error RCODE (FORMERR, NOTIMP, ...).
+             */
+            otherRcode: number;
+            /** Format: int64 */
+            refused: number;
+            /**
+             * Format: int64
+             * @description The upstream answered SERVFAIL (often the domain's fault, not the upstream's).
+             */
+            servfail: number;
+            /**
+             * Format: int64
+             * @description No answer within the attempt's timeout.
+             */
+            timeout: number;
+            /**
+             * Format: int64
+             * @description The upstream's hostname couldn't be resolved.
+             */
+            unresolved: number;
+        };
         /** @description REQ: OBS-010 (T9.6) — an alert that is firing now. */
         FiringAlert: {
             rule: string;
@@ -3339,6 +3374,11 @@ export interface components {
                 endpoint: string;
                 /** Format: int64 */
                 failures: number;
+                /**
+                 * @description `failures` by kind, which say what to fix: timeouts point at the path or the upstream's
+                 *     load, network errors at the connection, SERVFAIL at the domain asked about.
+                 */
+                failuresByKind: components["schemas"]["FailureKinds"];
                 /** @description Groups it belongs to. */
                 groups: string[];
                 /**
@@ -4104,6 +4144,11 @@ export interface components {
             endpoint: string;
             /** Format: int64 */
             failures: number;
+            /**
+             * @description `failures` by kind, which say what to fix: timeouts point at the path or the upstream's
+             *     load, network errors at the connection, SERVFAIL at the domain asked about.
+             */
+            failuresByKind: components["schemas"]["FailureKinds"];
             /** @description Groups it belongs to. */
             groups: string[];
             /**

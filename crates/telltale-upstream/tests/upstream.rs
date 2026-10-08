@@ -393,6 +393,40 @@ async fn ups_006_chaos_one_upstream_blackholed() {
     }
 }
 
+/// REQ: UPS-006, OBS-011 — what went wrong is counted by kind, not only as "failure".
+#[tokio::test]
+async fn ups_006_failure_kinds_are_counted() {
+    use telltale_upstream::health::Outcome;
+    let kind = |u: &Upstream, k: Outcome| {
+        let s = u.health.snapshot();
+        Outcome::FAILURES
+            .iter()
+            .zip(s.failures_by_kind)
+            .find(|(x, _)| **x == k)
+            .map_or(0, |(_, n)| n)
+    };
+    let bad = upstream(1, fake(Fake::ServFail).await, 1);
+    let _ = bad
+        .exchange(&question("x.example"), Duration::from_millis(400))
+        .await;
+    let dead = upstream(2, fake(Fake::Blackhole).await, 1);
+    let _ = dead
+        .exchange(&question("x.example"), Duration::from_millis(100))
+        .await;
+    assert_eq!(
+        (kind(&bad, Outcome::ServFail), kind(&bad, Outcome::Timeout)),
+        (1, 0)
+    );
+    assert_eq!(
+        (
+            kind(&dead, Outcome::Timeout),
+            kind(&dead, Outcome::ServFail)
+        ),
+        (1, 0)
+    );
+    assert_eq!(dead.health.snapshot().failures, 1);
+}
+
 /// REQ: DNS-015 (T9.9) — `ecs = "client"`: the query carries the client's /24, and a
 /// question without a subnet (a private client) carries none.
 #[tokio::test]

@@ -20,7 +20,7 @@ use crate::doh::Doh;
 use crate::doh3::Doh3;
 use crate::doq::Doq;
 use crate::endpoint::{Endpoint, Host, Protocol};
-use crate::health::Health;
+use crate::health::{Health, Outcome};
 use crate::tls::{TlsOptions, client_config, server_name};
 
 /// The question being forwarded, detached from the client's packet so it can move into
@@ -731,19 +731,26 @@ impl Upstream {
     ) -> Result<Vec<u8>, ExchangeError> {
         let start = Instant::now();
         let result = self.exchange_inner(q, timeout).await;
-        let ok = match &result {
-            Ok(resp) => {
-                let rc = summarize(resp).map_or(rcode::SERVFAIL, |s| s.rcode);
-                rc == rcode::NOERROR || rc == rcode::NXDOMAIN
-            }
-            Err(_) => false,
+        // REQ: UPS-006, OBS-011 — what went wrong, not only that something did.
+        let outcome = match &result {
+            Ok(resp) => match summarize(resp).map_or(rcode::SERVFAIL, |s| s.rcode) {
+                rcode::NOERROR | rcode::NXDOMAIN => Outcome::Ok,
+                rcode::SERVFAIL => Outcome::ServFail,
+                rcode::REFUSED => Outcome::Refused,
+                _ => Outcome::OtherRcode,
+            },
+            Err(ExchangeError::Timeout) => Outcome::Timeout,
+            Err(ExchangeError::Io(_)) => Outcome::Network,
+            Err(ExchangeError::BadResponse) => Outcome::BadResponse,
+            Err(ExchangeError::Unresolved) => Outcome::Unresolved,
         };
+        let ok = outcome == Outcome::Ok;
         let latency = if ok {
             start.elapsed()
         } else {
             start.elapsed().max(timeout)
         };
-        self.health.record(ok, latency, Instant::now());
+        self.health.record_outcome(outcome, latency, Instant::now());
         result
     }
 
