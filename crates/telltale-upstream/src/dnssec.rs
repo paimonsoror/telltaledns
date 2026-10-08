@@ -155,6 +155,8 @@ pub struct Validator {
     /// REQ: DNS-011 (T10.9, ADR-098) — zones proven unsigned (a validated denial of their DS
     /// at the parent), lowercase without the trailing dot, until when the proof is trusted.
     insecure: Mutex<HashMap<String, std::time::Instant>>,
+    /// REQ: DNS-011, NFR-004 (review 03-05) — bounds on the unsigned-zone proof.
+    proofs: ProofGate,
     pub stats: Arc<Stats>,
 }
 
@@ -180,6 +182,7 @@ impl Validator {
             nsec: Mutex::new(HashMap::new()),
             aggressive: true,
             insecure: Mutex::new(HashMap::new()),
+            proofs: ProofGate::default(),
             stats,
         }
     }
@@ -267,6 +270,11 @@ impl Validator {
         client_do: bool,
         client_ad: bool,
     ) -> Result<Validated, ResolveError> {
+        // REQ: DNS-011, NFR-004 (review 03-05) — the whole validation (the lookup and any proof
+        // that the zone is unsigned) ends within two query budgets: it holds one of the
+        // pipeline's in-flight permits, and a name that can't be validated must not hold it
+        // for tens of seconds.
+        let deadline = std::time::Instant::now() + budget * VALIDATION_BUDGETS;
         let (handle, last) = self.handle(group, budget);
         // Fully qualified: the validator compares the question with the records' owner names.
         let mut text = q.name.display().to_string();
@@ -292,8 +300,10 @@ impl Validator {
         let request = DnsRequest::from_query(query, opts);
         let mut stream = handle.send(request);
         // A cold chain (root, TLD, zone keys) takes several sequential lookups: allow more than
-        // one query budget. If the client gives up first, the result still lands in the cache.
-        let result = tokio::time::timeout(budget * 3, stream.next()).await;
+        // one query budget, but leave the rest of the deadline to the proof that rescues a
+        // lookup that loops. If the client gives up first, the result still lands in the cache.
+        let result =
+            tokio::time::timeout(budget * LOOKUP_SHARE.0 / LOOKUP_SHARE.1, stream.next()).await;
         let (upstream_id, attempts) = *last.lock();
         let response = match result {
             Ok(Some(Ok(r))) => r,
@@ -302,7 +312,10 @@ impl Validator {
             Ok(Some(Err(e))) => {
                 let mut verdict = error_verdict(&e);
                 tracing::debug!(name = %q.name.display().to_string(), ?verdict, "DNSSEC: {e}");
-                if self.proven_insecure(group, &handle, &qkey, budget).await {
+                if self
+                    .proven_insecure(group, &handle, &qkey, budget, deadline)
+                    .await
+                {
                     verdict = Verdict::Insecure;
                 }
                 self.stats.count(verdict);
@@ -315,7 +328,11 @@ impl Validator {
                 });
             }
             // Validation took too long (hickory can loop): unsigned after all?
-            Err(_) if self.proven_insecure(group, &handle, &qkey, budget).await => {
+            Err(_)
+                if self
+                    .proven_insecure(group, &handle, &qkey, budget, deadline)
+                    .await =>
+            {
                 self.stats.count(Verdict::Insecure);
                 return Ok(insecure_unfetched());
             }
@@ -324,7 +341,7 @@ impl Validator {
         let mut verdict = verdict(&response);
         if verdict == Verdict::Bogus
             && self
-                .all_unsigned(group, &handle, &response, &qkey, budget)
+                .all_unsigned(group, &handle, &response, &qkey, budget, deadline)
                 .await
         {
             tracing::debug!(name = %qkey, "DNSSEC: bogus verdict corrected: the zone is unsigned");
@@ -423,6 +440,68 @@ const INSECURE_FOR: Duration = Duration::from_mins(15);
 /// Zones remembered as unsigned (the map is cleared beyond this).
 const MAX_INSECURE_ZONES: usize = 4096;
 
+/// The whole validation (lookup and proof) may take this many query budgets.
+const VALIDATION_BUDGETS: u32 = 2;
+/// The share of that the lookup itself may use (3/4): a lookup that loops (hickory repeating
+/// NS and DS queries) is cut off in time for the proof to rescue it.
+const LOOKUP_SHARE: (u32, u32) = (3 * VALIDATION_BUDGETS, 4);
+/// Unsigned-zone proofs running at once; a burst of names that can't be validated must not
+/// take every in-flight permit (`spec/02` §8.4). A proof that finds no slot is "not proven".
+const MAX_PROOFS: usize = 8;
+/// How long a name whose zone couldn't be proven unsigned isn't walked again.
+const UNPROVEN_FOR: Duration = Duration::from_mins(1);
+/// Names remembered as unproven (the map is cleared beyond this).
+const MAX_UNPROVEN: usize = 4096;
+
+/// Limits for the unsigned-zone proof: how many run at once, and which names recently failed
+/// to be proven (the failure cost is per name: names that can't be proven aren't cached as
+/// zones). Both only ever make the answer more conservative (bogus stays bogus).
+#[derive(Debug)]
+struct ProofGate {
+    slots: tokio::sync::Semaphore,
+    unproven: Mutex<HashMap<String, std::time::Instant>>,
+}
+
+impl Default for ProofGate {
+    fn default() -> Self {
+        Self {
+            slots: tokio::sync::Semaphore::new(MAX_PROOFS),
+            unproven: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl ProofGate {
+    /// A slot to run a proof for `name`, or `None` when it failed within the last minute or
+    /// every slot is busy.
+    fn enter(&self, name: &str) -> Option<tokio::sync::SemaphorePermit<'_>> {
+        let now = std::time::Instant::now();
+        if self
+            .unproven
+            .lock()
+            .get(name)
+            .is_some_and(|until| *until > now)
+        {
+            return None;
+        }
+        self.slots.try_acquire().ok()
+    }
+
+    /// `name` couldn't be proven unsigned.
+    fn failed(&self, name: &str) {
+        let mut m = self.unproven.lock();
+        if m.len() >= MAX_UNPROVEN {
+            m.clear();
+        }
+        m.insert(name.to_owned(), std::time::Instant::now() + UNPROVEN_FOR);
+    }
+}
+
+/// What is left of `deadline`.
+fn left(deadline: std::time::Instant) -> Duration {
+    deadline.saturating_duration_since(std::time::Instant::now())
+}
+
 /// `name` lowercase, without the trailing dot.
 fn zone_key(name: &Name) -> String {
     name.to_ascii().trim_end_matches('.').to_ascii_lowercase()
@@ -484,6 +563,7 @@ impl Validator {
         response: &Message,
         qkey: &str,
         budget: Duration,
+        deadline: std::time::Instant,
     ) -> bool {
         let mut owners: Vec<String> = response
             .answers
@@ -495,7 +575,10 @@ impl Validator {
         owners.sort();
         owners.dedup();
         for o in &owners {
-            if !self.proven_insecure(group, handle, o, budget).await {
+            if !self
+                .proven_insecure(group, handle, o, budget, deadline)
+                .await
+            {
                 return false;
             }
         }
@@ -517,16 +600,47 @@ impl Validator {
     /// and so is everything below it. Whether a name is an apex (it has its own SOA) comes from
     /// an ordinary query; that's safe because the DS denial is what's trusted, and a signed
     /// zone's DS can't be denied validly. Anything that can't be proven: `false`.
+    ///
+    /// REQ: NFR-004 (review 03-05) — bounded by `deadline` (what is left of the validation's
+    /// two query budgets, not a fresh budget per step), by a handful of concurrent proofs,
+    /// and by a minute's memory of names that couldn't be proven.
     async fn proven_insecure(
         &self,
         group: &Arc<Group>,
         handle: &DnssecDnsHandle<GroupHandle>,
         name: &str,
         budget: Duration,
+        deadline: std::time::Instant,
     ) -> bool {
         if self.known_insecure(name) {
             return true;
         }
+        let Some(_slot) = self.proofs.enter(name) else {
+            tracing::debug!(%name, "DNSSEC: unsigned-zone proof skipped: recently failed, or too many running");
+            return false;
+        };
+        let proven = tokio::time::timeout(
+            left(deadline),
+            self.walk_zones(group, handle, name, budget, deadline),
+        )
+        .await
+        .unwrap_or(false);
+        if !proven {
+            self.proofs.failed(name);
+        }
+        proven
+    }
+
+    /// The proof itself: the zone candidates from the top, each step limited to what the
+    /// deadline leaves.
+    async fn walk_zones(
+        &self,
+        group: &Arc<Group>,
+        handle: &DnssecDnsHandle<GroupHandle>,
+        name: &str,
+        budget: Duration,
+        deadline: std::time::Instant,
+    ) -> bool {
         let plain = GroupHandle {
             group: Arc::clone(group),
             budget,
@@ -536,11 +650,15 @@ impl Validator {
             let Ok(apex) = Name::from_ascii(format!("{zone}.")) else {
                 return false;
             };
-            if !is_apex(&plain, &apex, budget).await {
+            let step = budget.min(left(deadline));
+            if step.is_zero() {
+                return false;
+            }
+            if !is_apex(&plain, &apex, step).await {
                 tracing::debug!(%zone, "DNSSEC: unsigned-zone proof: not an apex");
                 continue;
             }
-            let ds = ds_signed(handle, &apex, budget).await;
+            let ds = ds_signed(handle, &apex, budget.min(left(deadline))).await;
             tracing::debug!(%zone, ?ds, "DNSSEC: unsigned-zone proof: DS");
             match ds {
                 Some(true) => {}
@@ -791,6 +909,28 @@ mod depth_tests {
         );
         assert_eq!(zone_candidates("com"), Vec::<String>::new());
         assert_eq!(zone_candidates("a.b.c.d"), vec!["c.d", "b.c.d", "a.b.c.d"]);
+    }
+
+    /// REQ: DNS-011, NFR-004 (review 03-05) — only `MAX_PROOFS` unsigned-zone proofs run at
+    /// once (the next finds no slot), and a name that failed isn't walked again for a minute
+    /// (other names are).
+    #[test]
+    fn dns_011_proofs_are_limited_and_failures_remembered() {
+        let gate = ProofGate::default();
+        let slots: Vec<_> = (0..MAX_PROOFS)
+            .map(|i| gate.enter(&format!("n{i}.example")).expect("a free slot"))
+            .collect();
+        assert!(gate.enter("late.example").is_none(), "every slot is busy");
+        drop(slots);
+        assert!(gate.enter("late.example").is_some(), "slots come back");
+        gate.failed("broken.example");
+        assert!(gate.enter("broken.example").is_none(), "remembered");
+        assert!(gate.enter("fine.example").is_some(), "other names are not");
+        // Past its minute it may be tried again.
+        gate.unproven
+            .lock()
+            .insert("broken.example".into(), std::time::Instant::now());
+        assert!(gate.enter("broken.example").is_some());
     }
 
     /// REQ: DNS-011 (ADR-098) — base32hex (RFC 4648 §10 vectors, lowercase, unpadded).

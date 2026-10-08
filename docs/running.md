@@ -1253,6 +1253,10 @@ negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed
   the name is a delegation: NS present, SOA and DS absent), and if so serves it as
   insecure. This corrects the validation library's verdict on CNAME chains in unsigned zones
   (`www.netflix.com`, `www.amazon.com`); proven zones are remembered for 15 minutes (ADR-098).
+  The whole validation, proof included, ends within twice the query budget (4 s by default),
+  at most 8 proofs run at once, and a name that couldn't be proven isn't tried again for a
+  minute: when it can't be proven, the answer stays bogus (or, with no answer at all, stale
+  or SERVFAIL as for any upstream failure).
 - **Before switching to `validate`:** run `permissive` for a while and read the log; only
   names that are really broken (like `dnssec-failed.org`) should show up.
 - **Non-existent names answered locally** (RFC 8198, `aggressive_nsec`, on by default): a validated "no such name" from a zone signed with NSEC proves a whole range of names absent. A later question inside a proven range is answered from it: NXDOMAIN (or NODATA for a missing type), signed, with AD, and without asking upstream. A typical win is a home network's stray queries for made-up top-level names (`printer.lan`, `wpad.home`), which the root zone's NSEC records cover. Only proofs that validated as secure are used, only for as long as their TTL and the zone's negative TTL allow, and never below a delegation. Zones signed with NSEC3 (hashed names) still ask upstream. Counted in `telltale_dnssec_synthesized_total`; `[dnssec] aggressive_nsec = false` turns it off.

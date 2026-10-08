@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
@@ -39,6 +39,8 @@ struct Zone {
     /// ADR-098 — spoof `b.a.`: answer its A and SOA unsigned (an attacker's forgery for a
     /// name inside the signed root, with a made-up SOA so that it looks like a zone apex).
     forge: AtomicBool,
+    /// NFR-004 — milliseconds every answer is held back (a slow upstream).
+    lag_ms: AtomicU64,
 }
 
 fn b64(data: &[u8]) -> String {
@@ -181,6 +183,7 @@ fn zone() -> Zone {
         plain,
         key: key_rdata,
         forge: AtomicBool::new(false),
+        lag_ms: AtomicU64::new(0),
     }
 }
 
@@ -231,6 +234,10 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
                 continue;
             };
             asked.fetch_add(1, Ordering::Relaxed);
+            let lag = z.lag_ms.load(Ordering::Relaxed);
+            if lag > 0 {
+                tokio::time::sleep(Duration::from_millis(lag)).await;
+            }
             let (qn, qt) = (question.name().clone(), question.query_type());
             let mut m = Message::response(q.metadata.id, OpCode::Query);
             m.metadata.recursion_desired = true;
@@ -545,4 +552,40 @@ async fn dns_011_offline_forged_apex_inside_signed_zone_stays_bogus() {
         0,
         "never judged insecure"
     );
+}
+
+/// REQ: DNS-011, NFR-004 (ADR-098, review 03-05) — a validation that can't finish ends within
+/// two query budgets whatever the upstream does (it holds an in-flight permit meanwhile): with
+/// every answer taking two thirds of a budget, the lookup is cut off and the proof that would have
+/// rescued it gets only what the deadline leaves. The verdict is the conservative one (no
+/// answer: stale or SERVFAIL), and a name that couldn't be proven isn't walked again at once.
+#[tokio::test]
+async fn nfr_004_offline_slow_upstream_ends_within_two_budgets() {
+    let z = Arc::new(zone());
+    z.forge.store(true, Ordering::Relaxed);
+    // Each answer takes two thirds of a budget: every attempt succeeds, but the chain of
+    // lookups (the answer, the keys, the proof's SOA and DS) adds up to far more than two.
+    z.lag_ms.store(200, Ordering::Relaxed);
+    let (v, g, _, stats, _dir) = setup_zone(true, Arc::clone(&z)).await;
+    let budget = Duration::from_millis(300);
+    let started = std::time::Instant::now();
+    let r = v
+        .resolve(&g, question("b.a", rtype::A), budget, true, false)
+        .await;
+    let took = started.elapsed();
+    assert!(r.is_err(), "no verdict from an upstream this slow: {r:?}");
+    assert!(
+        took < budget * 2 + Duration::from_millis(250),
+        "ended after {took:?}, more than two budgets of {budget:?}"
+    );
+    assert_eq!(stats.insecure.load(Ordering::Relaxed), 0);
+    // Asking again once the upstream is quick: the forged answer is still bogus, and the name
+    // that couldn't be proven is not walked again (the proof is skipped for a minute).
+    z.lag_ms.store(0, Ordering::Relaxed);
+    let r = v
+        .resolve(&g, question("b.a", rtype::A), budget, true, false)
+        .await
+        .unwrap();
+    assert_eq!(r.verdict, Verdict::Bogus, "the forged answer, still bogus");
+    assert_eq!(stats.insecure.load(Ordering::Relaxed), 0);
 }
