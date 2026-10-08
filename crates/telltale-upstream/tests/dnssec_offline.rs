@@ -247,7 +247,15 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
                 let data = if qt == RecordType::A {
                     RData::A(A::new(192, 0, 2, 66))
                 } else {
-                    RData::SOA(SOA::new(n("ns.b.a."), n("x.b.a."), 1, 1800, 900, 604_800, 300))
+                    RData::SOA(SOA::new(
+                        n("ns.b.a."),
+                        n("x.b.a."),
+                        1,
+                        1800,
+                        900,
+                        604_800,
+                        300,
+                    ))
                 };
                 m.add_answers(vec![Record::from_rdata(qn.clone(), 300, data)]);
             } else if in_plain(&qn, qt) {

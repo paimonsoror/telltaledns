@@ -646,8 +646,7 @@ fn denies_ds_at_cut(rec: &Record, apex: &Name) -> bool {
         RData::DNSSEC(DNSSECRData::NSEC(n)) => rec.name == *apex && cut(n.type_set()),
         RData::DNSSEC(DNSSECRData::NSEC3(n)) => {
             cut(n.type_set())
-                && n
-                    .hash_algorithm()
+                && n.hash_algorithm()
                     .hash(n.salt(), apex, n.iterations())
                     .is_ok_and(|h| {
                         rec.name.iter().next().is_some_and(|label| {
@@ -812,9 +811,9 @@ mod depth_tests {
     #[test]
     #[allow(clippy::unwrap_used)]
     fn dns_011_ds_denial_must_show_a_cut() {
+        use RecordType::{A, DS, NS, NSEC as T_NSEC, NSEC3 as T_NSEC3, RRSIG, SOA};
         use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
         use hickory_net::proto::dnssec::rdata::{NSEC, NSEC3};
-        use RecordType::{A, DS, NS, NSEC as T_NSEC, NSEC3 as T_NSEC3, RRSIG, SOA};
         let apex = Name::from_ascii("child.example.").unwrap();
         let nsec = |owner: &str, types: &[RecordType]| {
             let next = Name::from_ascii("z.example.").unwrap();
@@ -823,7 +822,10 @@ mod depth_tests {
             r.proof = Proof::Secure;
             r
         };
-        assert!(denies_ds_at_cut(&nsec("child.example.", &[NS, RRSIG, T_NSEC]), &apex));
+        assert!(denies_ds_at_cut(
+            &nsec("child.example.", &[NS, RRSIG, T_NSEC]),
+            &apex
+        ));
         assert!(
             !denies_ds_at_cut(&nsec("child.example.", &[A, RRSIG, T_NSEC]), &apex),
             "a name inside the zone, not a cut"
@@ -853,12 +855,19 @@ mod depth_tests {
                 vec![0; 20],
                 types.iter().copied(),
             );
-            let mut r = Record::from_rdata(owner.clone(), 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
+            let mut r =
+                Record::from_rdata(owner.clone(), 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
             r.proof = Proof::Secure;
             r
         };
-        assert!(denies_ds_at_cut(&nsec3(&owner, &[NS, RRSIG, T_NSEC3]), &apex));
-        assert!(!denies_ds_at_cut(&nsec3(&owner, &[A, RRSIG, T_NSEC3]), &apex));
+        assert!(denies_ds_at_cut(
+            &nsec3(&owner, &[NS, RRSIG, T_NSEC3]),
+            &apex
+        ));
+        assert!(!denies_ds_at_cut(
+            &nsec3(&owner, &[A, RRSIG, T_NSEC3]),
+            &apex
+        ));
         let wrong = Name::from_ascii("0123456789abcdefghijklmnopqrstuv.example.").unwrap();
         assert!(
             !denies_ds_at_cut(&nsec3(&wrong, &[NS, T_NSEC3]), &apex),
