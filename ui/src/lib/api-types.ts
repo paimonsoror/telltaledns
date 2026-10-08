@@ -1058,8 +1058,9 @@ export interface paths {
          * @description Changes AI agents planned through MCP (`plan_*` tools), newest first: what each does (the
          *     dry run's before and after, impact, and warnings), why, who asked, and its state. With
          *     `[agents] require_approval = true` a plan starts `pending` until an operator approves or
-         *     rejects it. An agent token sees only its own plans. Plans expire ten minutes after they're
-         *     made and stay listed for a day.
+         *     rejects it. An agent token, or a viewer, sees only its own plans; operators and admins,
+         *     who approve them, see all. Plans expire ten minutes after they're made and stay listed for
+         *     a day.
          */
         get: operations["list"];
         put?: never;

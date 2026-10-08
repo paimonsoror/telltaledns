@@ -206,8 +206,9 @@ pub(crate) fn decide_routes(auth: Arc<Auth>) -> Router {
 /// Changes AI agents planned through MCP (`plan_*` tools), newest first: what each does (the
 /// dry run's before and after, impact, and warnings), why, who asked, and its state. With
 /// `[agents] require_approval = true` a plan starts `pending` until an operator approves or
-/// rejects it. An agent token sees only its own plans. Plans expire ten minutes after they're
-/// made and stay listed for a day.
+/// rejects it. An agent token, or a viewer, sees only its own plans; operators and admins,
+/// who approve them, see all. Plans expire ten minutes after they're made and stay listed for
+/// a day.
 #[utoipa::path(get, path = "/api/v1/plans", tag = "agents",
     responses((status = 200, body = Items<Plan>, description = "The plans, newest first.")))]
 pub(crate) async fn list(State(auth): State<Arc<Auth>>, ext: axum::http::Extensions) -> Response {
@@ -216,7 +217,9 @@ pub(crate) async fn list(State(auth): State<Arc<Auth>>, ext: axum::http::Extensi
         Err(e) => return e.into_response(),
     };
     let key = owner_key(&p);
-    let own = p.agent.is_some().then_some(key.as_str());
+    // REQ: AGT-007 (review 06-09) — a plan holds the write, its preview, and its reason: for
+    // the people who decide on plans, not for viewers.
+    let own = (p.agent.is_some() || p.role < crate::auth::Role::Operator).then_some(key.as_str());
     Json(Items {
         items: auth.plans().list(own),
         missing_nodes: Vec::new(),

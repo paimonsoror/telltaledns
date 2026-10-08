@@ -2367,7 +2367,7 @@
           "agents"
         ],
         "summary": "Agent change plans.",
-        "description": "Changes AI agents planned through MCP (`plan_*` tools), newest first: what each does (the\ndry run's before and after, impact, and warnings), why, who asked, and its state. With\n`[agents] require_approval = true` a plan starts `pending` until an operator approves or\nrejects it. An agent token sees only its own plans. Plans expire ten minutes after they're\nmade and stay listed for a day.",
+        "description": "Changes AI agents planned through MCP (`plan_*` tools), newest first: what each does (the\ndry run's before and after, impact, and warnings), why, who asked, and its state. With\n`[agents] require_approval = true` a plan starts `pending` until an operator approves or\nrejects it. An agent token, or a viewer, sees only its own plans; operators and admins,\nwho approve them, see all. Plans expire ten minutes after they're made and stay listed for\na day.",
         "operationId": "list",
         "responses": {
           "200": {

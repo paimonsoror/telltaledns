@@ -1596,3 +1596,74 @@ async fn agt_009_a_batch_counts_each_message() {
     let (s, _, v) = send(&app, batch(&four, 4)).await;
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "four don't: {v}");
 }
+
+// REQ: AGT-007 (review 06-09) — a plan holds the write and its reason: the operators who decide
+// on plans see every one, a viewer only their own.
+#[tokio::test]
+async fn agt_007_viewers_see_only_their_own_plans() {
+    let (app, _) = app();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    app.auth.plans().add(crate::plans::Plan {
+        id: "p1".into(),
+        tool: "plan_block_domain".into(),
+        summary: "block ads.example".into(),
+        method: "PUT".into(),
+        path: "/api/v1/rules/x".into(),
+        body: None,
+        preview: serde_json::json!({}),
+        config_version: 1,
+        reason: "too many ads".into(),
+        requested_by: "agent:helper (owner: admin)".into(),
+        owner: "token:someone-else".into(),
+        created_unix_seconds: now,
+        expires_unix_seconds: now + 600,
+        state: "pending".into(),
+        needs_approval: true,
+        decided_by: None,
+        result: None,
+    });
+    let (s, _, v) = get(&app, "/api/v1/plans").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["items"].as_array().map(Vec::len),
+        Some(1),
+        "an admin sees it"
+    );
+    app.auth
+        .create_user("vic", "a viewer password", auth::Role::Viewer, false, NOW)
+        .unwrap();
+    let (_, h, _) = send(
+        &app,
+        Request::post("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"username": "vic", "password": "a viewer password"}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    let cookie = h["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (s, _, v) = send(
+        &app,
+        Request::get("/api/v1/plans")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["items"].as_array().map(Vec::len),
+        Some(0),
+        "a viewer doesn't: {v}"
+    );
+}
