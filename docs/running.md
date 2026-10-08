@@ -1411,7 +1411,9 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   Give eligible nodes `--advertise` URLs, so a returning old primary can be reached and told
   to step down.
 - **How:** use **Promote this node…** on the Cluster page (admin, live), or stop the node, run
-  `telltale cluster promote`, and start it. It's refused while the primary is up.
+  `telltale cluster promote`, and start it. It's refused while the primary is up, except
+  over an emergency primary: a node that can publish (a Git-managed node, under the `gitops`
+  authority) may take over from it while it runs.
 - **What happens:**
   - the node takes a new *epoch* and continues from the last version it applied;
   - every node follows it;
@@ -1535,6 +1537,8 @@ path = "telltale/shared.toml"             # the shared settings, in TelltaleDNS'
     `gitops_managed`);
   - another node can only be promoted as an *emergency* primary, which keeps the cluster
     coordinated on the last version and publishes nothing new until a Git-managed node is back.
+    When one is back, promote it (its Cluster page, or `telltale cluster promote`): it takes
+    over from the emergency primary, which steps down by itself.
 
   The default is `api`: the primary's own file and UI.
 

@@ -720,14 +720,20 @@ pub(crate) fn promote_plan(
     if !id.holds_ca() {
         return Err("this node doesn't have the cluster key yet: the primary shares it with eligible nodes once they connect".into());
     }
+    let gitops = id.meta.config_authority == "gitops";
     let now = now_ms();
     if let Some(p) = c.members().iter().find(|m| m.primary && m.up(now)) {
-        return Err(format!(
-            "the primary ({}, site {}) is up: promote a node only when the primary is gone",
-            p.node_id, p.site
-        ));
+        // ADR-048 — an emergency primary only holds the cluster until a node that can publish
+        // is back: that node takes over without anyone stopping the emergency primary (its
+        // newer epoch fences it).
+        let would_publish = !emergency && (!gitops || gitops_source);
+        if !takeover_allowed(applied_manifest(c).as_ref(), &p.node_id, would_publish) {
+            return Err(format!(
+                "the primary ({}, site {}) is up: promote a node only when the primary is gone",
+                p.node_id, p.site
+            ));
+        }
     }
-    let gitops = id.meta.config_authority == "gitops";
     if gitops && !gitops_source && !emergency {
         return Err("this cluster's configuration comes from Git and this node isn't GitOps-managed: promote with emergency to keep the cluster coordinated on the last version".into());
     }
@@ -743,6 +749,23 @@ pub(crate) fn promote_plan(
         .fold(c.role().1, u64::max)
         + 1;
     Ok((epoch, role == Role::Emergency))
+}
+
+/// The manifest this node last applied (what it would take over from).
+fn applied_manifest(c: &Cluster) -> Option<telltale_cluster::sync::ClusterManifest> {
+    let bytes = std::fs::read(c.identity.dir.join("applied.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// ADR-048 — whether a node may be promoted while `primary_up` is up: only when that node is
+/// the emergency primary of the version this node applied, and this node would publish
+/// (it isn't asking to be an emergency primary itself).
+fn takeover_allowed(
+    applied: Option<&telltale_cluster::sync::ClusterManifest>,
+    primary_up: &str,
+    would_publish: bool,
+) -> bool {
+    would_publish && applied.is_some_and(|m| m.emergency && m.primary == primary_up)
 }
 
 /// Promotes this node to primary (ADR-051) after the checks in [`promote_plan`].
@@ -1366,6 +1389,36 @@ mod tests {
         assert_eq!(r.role(), (Role::Emergency, 2));
         assert_eq!(replica.reload().meta.role, Some(Role::Emergency));
         assert_eq!(replica.reload().meta.config_authority, "gitops");
+    }
+
+    /// REQ: CLU-005 (ADR-048) — a node that can publish takes over from an emergency primary
+    /// while it's up; nothing else is promoted over a running primary.
+    #[test]
+    fn clu_005_takeover_from_an_emergency_primary() {
+        use telltale_cluster::sync::ClusterManifest;
+        let held = ClusterManifest {
+            primary: "pi".into(),
+            emergency: true,
+            ..ClusterManifest::default()
+        };
+        assert!(takeover_allowed(Some(&held), "pi", true));
+        assert!(
+            !takeover_allowed(Some(&held), "pi", false),
+            "not for another emergency"
+        );
+        assert!(
+            !takeover_allowed(Some(&held), "other", true),
+            "a different primary is up"
+        );
+        let real = ClusterManifest {
+            primary: "pi".into(),
+            ..ClusterManifest::default()
+        };
+        assert!(
+            !takeover_allowed(Some(&real), "pi", true),
+            "a real primary stays"
+        );
+        assert!(!takeover_allowed(None, "pi", true));
     }
 
     #[test]

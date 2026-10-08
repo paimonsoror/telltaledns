@@ -83,7 +83,15 @@
   let openSites = $state<string[]>([]);
   const toggleSite = (s: string) =>
     (openSites = openSites.includes(s) ? openSites.filter((x) => x !== s) : [...openSites, s]);
-  const primaryUp = $derived(view?.nodes.some((n) => n.role.includes('primary') && n.up && !n.thisNode) ?? false);
+  const upPrimaries = $derived(view?.nodes.filter((n) => n.role.includes('primary') && n.up && !n.thisNode) ?? []);
+  // REQ: CLU-005 (ADR-048) — a Git-managed node may take over from an emergency primary while it runs.
+  const takeover = $derived(
+    upPrimaries.length > 0 &&
+      upPrimaries.every((n) => n.role === 'emergency primary') &&
+      view?.authority === 'gitops' &&
+      me?.configSource === 'gitops'
+  );
+  const primaryUp = $derived(upPrimaries.length > 0 && !takeover);
 
   // REQ: CLU-005 — manual failover (ADR-051): only when the primary is gone.
   let confirming = $state(false);
@@ -187,15 +195,24 @@ telltale cluster join tt_join_…</pre>
       {#if me && me.role === 'replica' && can('admin') && !view.failover?.active}
         <div class="promote">
           {#if !confirming}
-            <button onclick={() => (confirming = true)} disabled={primaryUp} title={primaryUp ? 'The primary is up' : ''}>Promote this node…</button>
+            <button onclick={() => (confirming = true)} disabled={primaryUp} title={primaryUp ? 'The primary is up' : ''}
+              >{takeover ? 'Take over from the emergency primary…' : 'Promote this node…'}</button
+            >
             {#if primaryUp}<span class="muted small">Available when the primary is gone.</span>{/if}
           {:else}
             <div class="notice" role="alertdialog" aria-label="Promote this node">
-              <p>
-                <strong>Make {me.site} the primary?</strong> Use this only when the primary is gone. This node continues from
-                version {num(me.configSeq)}; if the old primary comes back, it steps down, and anything it changed in the
-                meantime is listed under Conflicts.
-              </p>
+              {#if takeover}
+                <p>
+                  <strong>Make {me.site} the primary again?</strong> The emergency primary ({upPrimaries.map((n) => n.site).join(', ')})
+                  steps down by itself, and this node publishes from Git again, continuing from version {num(me.configSeq)}.
+                </p>
+              {:else}
+                <p>
+                  <strong>Make {me.site} the primary?</strong> Use this only when the primary is gone. This node continues from
+                  version {num(me.configSeq)}; if the old primary comes back, it steps down, and anything it changed in the
+                  meantime is listed under Conflicts.
+                </p>
+              {/if}
               {#if view.authority === 'gitops' && me.configSource !== 'gitops'}
                 <label class="check"
                   ><input type="checkbox" bind:checked={emergency} /> Emergency: keep the configuration at version {num(me.configSeq)} (this
