@@ -11,11 +11,11 @@ use serde::Serialize;
 use telltale_config::BlockMode;
 use telltale_filter::explain::{Explained, explain as explain_rules};
 use telltale_filter::matcher::{ClientCtx, Tier};
-use telltale_policy::{ClientTable, IdSource, Neighbors, Pause, Special};
-use telltale_proto::{NameBuf, build_query, class, parse_query};
+use telltale_policy::{ClientTable, IdSource, Neighbors, Pause, RewriteTarget, Special};
+use telltale_proto::{NameBuf, Query, build_query, class, parse_query, rcode};
 use telltale_upstream::Question;
 
-use crate::pipeline::{Dynamic, FilterState, unix_now};
+use crate::pipeline::{Dynamic, FilterState, Pipeline, ScheduleNow, unix_now};
 
 /// What to explain.
 #[derive(Debug, Clone)]
@@ -120,6 +120,8 @@ pub(crate) struct State<'a> {
     pub(crate) filter: Option<&'a FilterState>,
     pub(crate) neighbors: &'a Neighbors,
     pub(crate) pause: &'a Pause,
+    /// REQ: FLT-010 — which schedules are on right now.
+    pub(crate) schedules: &'a ScheduleNow,
 }
 
 /// Explains `req` against `st`, reading list sources through `source(list name)`.
@@ -174,7 +176,7 @@ pub(crate) fn explain(
         notes: Vec::new(),
     };
 
-    let special = match answered_early(policy, &q, req.client) {
+    let special = match answered_early(policy, &q, req.client, clients.group_names(ident)) {
         Ok(special) => special,
         Err((outcome, summary)) => {
             e.outcome = outcome;
@@ -240,7 +242,14 @@ pub(crate) fn explain(
             e.notes
                 .push("quick rules decide before lists: the list matches below don't apply".into());
         }
-    } else if decide(&mut e, winner, group, st.pause) {
+    } else if schedule_block(&mut e, st, clients, ident, group)
+        || list_rewrite_step(&mut e, st, &q, ident, req)
+        || decide(&mut e, winner, group, st.pause)
+    {
+        return Ok(e);
+    }
+    // The group's rewrites and safe search come after the filter (blocks above win).
+    if rewrite_step(&mut e, &q, group) {
         return Ok(e);
     }
 
@@ -303,13 +312,142 @@ fn quick_decision(
     Some((m.allow, desc))
 }
 
-/// `spec/03` §3 steps 2–5 (access, ANY, special names, local records): the outcome if one
-/// of them answers, else the special-name class to continue with. Rate limiting depends on
-/// the moment, not the name, so it isn't explained.
+/// REQ: FLT-010 — a block-everything schedule that's on for the client's group decides
+/// before the lists (the pipeline's `schedule_block`), unless blocking is paused. True if
+/// the query is blocked by it.
+fn schedule_block(
+    e: &mut Explanation,
+    st: &State<'_>,
+    clients: &ClientTable,
+    ident: telltale_policy::Identity,
+    group: &telltale_policy::Group,
+) -> bool {
+    let Some(&g) = clients.group_ids(ident).first() else {
+        return false;
+    };
+    let Some(Some((reason, _))) = st.schedules.block_all.get(usize::from(g)) else {
+        return false;
+    };
+    if st.pause.is_paused(&group.name, unix_now) {
+        return false;
+    }
+    e.outcome = Outcome::Blocked;
+    e.summary = format!(
+        "{reason} for group {}: answered {}",
+        group.name,
+        block_answer_text(group.block.mode)
+    );
+    e.block = Some(BlockInfo {
+        list: reason.clone(),
+        mode: group.block.mode,
+        ttl: group.block.ttl,
+        ede_code: group.block.ede_code,
+    });
+    if e.filter.is_some() {
+        e.notes
+            .push("a schedule decides before lists: the list matches below don't apply".into());
+    }
+    true
+}
+
+/// REQ: FLT-014 (T9.20), FLT-013 — a list's `$dnsrewrite` answer for this client wins over
+/// blocking (the pipeline's `list_rewrite`: one function, `FilterState::list_rewrite`). True
+/// if the query is answered by it.
+fn list_rewrite_step(
+    e: &mut Explanation,
+    st: &State<'_>,
+    q: &Query<'_>,
+    ident: telltale_policy::Identity,
+    req: &Request<'_>,
+) -> bool {
+    use telltale_filter::rewrite::ListRewrite;
+    let Some(f) = st.filter else { return false };
+    let Some((rewrite, list)) = f.list_rewrite(q, |_| ident, req.client, req.client_id, st.pause)
+    else {
+        return false;
+    };
+    let list = f
+        .matcher
+        .snapshot()
+        .and_then(|s| s.list_name(list))
+        .unwrap_or("?");
+    let by = format!("by a $dnsrewrite rule in list {list}, before blocking");
+    match rewrite {
+        ListRewrite::Rcode(rc) => {
+            e.outcome = Outcome::Local;
+            e.summary = format!("answered {} {by}", rcode_text(rc));
+        }
+        ListRewrite::Cname(target) => {
+            e.outcome = Outcome::Resolved;
+            e.summary =
+                format!("rewritten to CNAME {target} {by}; the target is resolved like any name");
+        }
+        ListRewrite::Addrs(ips) => {
+            let ips: Vec<String> = ips.iter().map(ToString::to_string).collect();
+            e.outcome = Outcome::Local;
+            e.summary = format!("answered {} {by}", ips.join(", "));
+        }
+    }
+    e.notes.push(
+        "a list rewrite decides before blocking: the other list matches above don't apply".into(),
+    );
+    true
+}
+
+/// REQ: FLT-014 (T7.20), FLT-011 (T7.11), FLT-013 — the group's rewrite for the name, else
+/// its safe-search target: the pipeline's own functions (`Group::rewrite_for`,
+/// `Pipeline::safe_search_target`). True if the query is answered by one of them.
+fn rewrite_step(e: &mut Explanation, q: &Query<'_>, group: &telltale_policy::Group) -> bool {
+    match group.rewrite_for(&q.qname) {
+        Some(RewriteTarget::Addr(ip)) => {
+            e.outcome = Outcome::Local;
+            e.summary = format!(
+                "rewritten to {ip} for group {} ([[rewrite]]): answered locally (no data for other record types)",
+                group.name
+            );
+            return true;
+        }
+        Some(RewriteTarget::Name(target)) => {
+            e.outcome = Outcome::Resolved;
+            e.summary = format!(
+                "rewritten to CNAME {} for group {} ([[rewrite]]); the target is resolved like any name",
+                target.display(),
+                group.name
+            );
+            return true;
+        }
+        None => {}
+    }
+    if let Some(target) = Pipeline::safe_search_target(q, group) {
+        e.outcome = Outcome::Resolved;
+        e.summary = format!(
+            "safe search for group {}: answered as CNAME {}, which is resolved like any name (HTTPS and SVCB get no data)",
+            group.name,
+            target.display()
+        );
+        return true;
+    }
+    false
+}
+
+fn rcode_text(rc: u16) -> String {
+    match rc {
+        rcode::NOERROR => "NOERROR with no records".to_owned(),
+        rcode::NXDOMAIN => "NXDOMAIN".to_owned(),
+        rcode::SERVFAIL => "SERVFAIL".to_owned(),
+        rcode::REFUSED => "REFUSED".to_owned(),
+        other => format!("rcode {other}"),
+    }
+}
+
+/// `spec/03` §3 steps 2–5 (access, ANY, special names, local records and zones): the outcome
+/// if one of them answers, else the special-name class to continue with. Rate limiting
+/// depends on the moment, not the name, so it isn't explained.
 fn answered_early(
     policy: &crate::pipeline::Policy,
     q: &telltale_proto::Query<'_>,
     client: IpAddr,
+    groups: &[Box<str>],
 ) -> Result<Option<Special>, (Outcome, String)> {
     if !telltale_policy::is_allowed(&policy.allowed, client) {
         return Err((
@@ -333,6 +471,20 @@ fn answered_early(
             let mut out = [0u8; 4096];
             if policy.local.answer(q, &mut out, None).is_some() {
                 return Err((Outcome::Local, "answered from local records".into()));
+            }
+            // REQ: DNS-018 — an authoritative zone this client's groups see answers before
+            // any filtering (the pipeline's `zone_answer`).
+            if let Some(z) = policy.zones.iter().find(|z| {
+                q.qname.is_subdomain_of(&z.apex)
+                    && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
+            }) {
+                return Err((
+                    Outcome::Local,
+                    format!(
+                        "answered from the authoritative zone {} (local data, never filtered)",
+                        z.apex.display()
+                    ),
+                ));
             }
             return Ok(special);
         }

@@ -1100,6 +1100,8 @@ curl https://dns.example.com/api/v1/rules -H "authorization: Bearer $TOKEN"   # 
 - which rule decides;
 - where the query would be forwarded.
 
+It follows the same steps as the server, in the same order: access checks, local records and authoritative zones, quick rules, a schedule that blocks everything for the group, list `$dnsrewrite` rules (which win over blocking), the lists, then the group's `[[group.rewrite]]` entries and safe search. When one of the later steps answers the query instead of a list, the outcome and summary say which.
+
 ```sh
 telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
 # ad.doubleclick.net A from 192.168.1.50

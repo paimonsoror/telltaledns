@@ -343,6 +343,35 @@ impl FilterState {
             .and_then(|g| self.group_masks.get(usize::from(g)))
             .unwrap_or(&self.default_mask)
     }
+
+    /// REQ: FLT-014 (T9.20), FLT-013 — the `$dnsrewrite` answer for this client, if a list it
+    /// uses has one for the name and blocking isn't paused for its group. One shared function
+    /// for the pipeline and `explain`, so they can't disagree. `identify` runs only when some
+    /// list has rewrites (the common case costs one bool check): it gets the table the masks
+    /// were built for.
+    pub(crate) fn list_rewrite(
+        &self,
+        q: &Query<'_>,
+        identify: impl FnOnce(&ClientTable) -> Identity,
+        ip: IpAddr,
+        client_id: Option<&str>,
+        pause: &Pause,
+    ) -> Option<(telltale_filter::rewrite::ListRewrite, u16)> {
+        if !self.matcher.has_rewrites() {
+            return None;
+        }
+        let ident = identify(&self.clients);
+        if pause.is_paused(&self.clients.primary_group(ident).name, unix_now) {
+            return None;
+        }
+        let client = ClientCtx {
+            ip,
+            name: self.clients.client(ident).map(|c| &*c.name),
+            client_id,
+        };
+        self.matcher
+            .rewrites(q.qname.as_wire(), q.qtype, &client, self.mask(ident))
+    }
 }
 
 thread_local! {
@@ -511,11 +540,13 @@ impl Pipeline {
     ) -> Result<crate::explain::Explanation, String> {
         let dynamic = self.state.load();
         let filter = self.filter.load();
+        let schedules = self.schedules.load();
         let st = crate::explain::State {
             dynamic: &dynamic,
             filter: filter.as_deref(),
             neighbors: &self.neighbors,
             pause: &self.pause,
+            schedules: &schedules,
         };
         crate::explain::explain(&st, req, source)
     }
@@ -1000,28 +1031,14 @@ impl Pipeline {
     ) -> Option<(telltale_filter::rewrite::ListRewrite, u16)> {
         let guard = self.filter.load();
         let f = guard.as_ref()?;
-        if !f.matcher.has_rewrites() {
-            return None;
-        }
-        let ident = f.clients.identify(
+        let client_id = who.client_id.as_ref().map(telltale_net::ClientId::as_str);
+        f.list_rewrite(
+            q,
+            |clients| clients.identify(who.peer, client_id, who.mac, &self.neighbors),
             who.peer,
-            who.client_id.as_ref().map(telltale_net::ClientId::as_str),
-            who.mac,
-            &self.neighbors,
-        );
-        if self
-            .pause
-            .is_paused(&f.clients.primary_group(ident).name, unix_now)
-        {
-            return None;
-        }
-        let client = ClientCtx {
-            ip: who.peer,
-            name: f.clients.client(ident).map(|c| &*c.name),
-            client_id: who.client_id.as_ref().map(telltale_net::ClientId::as_str),
-        };
-        f.matcher
-            .rewrites(q.qname.as_wire(), q.qtype, &client, f.mask(ident))
+            client_id,
+            &self.pause,
+        )
     }
 
     /// REQ: FLT-014 (T9.20) — answers with a list rewrite: addresses of the asked family (60 s),
@@ -1105,7 +1122,8 @@ impl Pipeline {
 
     /// REQ: FLT-011 (T7.11) — the safe-search name for this query, when the group has safe
     /// search and the name is an engine's. Nothing to do (no allocation) for other groups.
-    fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
+    /// Shared with `explain` (FLT-013).
+    pub(crate) fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
         let youtube = group.safe_search?;
         let mut name = q.qname.display().to_string();
         name.make_ascii_lowercase();
