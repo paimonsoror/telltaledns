@@ -1940,7 +1940,7 @@ listen = "0.0.0.0:8053"
 | `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20` | why a name is or isn't blocked for a device ([explain](#why-was-it-blocked-explain)) |
 | `GET /api/v1/lists`, `/groups`, `/clients`, `/upstreams` | the running configuration with list download state and upstream health (each upstream's `failuresByKind` says whether its failures were timeouts, connection errors, bad replies, unresolved names, SERVFAIL, REFUSED, or other errors) |
 
-The `upstream` filter (on `/queries`, the live tail, and in vqlog) matches nothing yet: query events don't record which upstream answered, because one answer can be shared by several clients' queries. Per-upstream numbers come from each exchange with an upstream instead: the Upstreams page, `/api/v1/upstreams`, and `/api/v1/stats/latency?by=upstream`.
+The `upstream` filter (on `/queries`, the live tail, and in vqlog) takes an upstream's ID from `/api/v1/upstreams` and finds the forwarded queries it answered. When several devices ask the same name at once, one upstream answer serves them all, and each of their queries names that upstream. Queries logged by earlier builds carry none.
 
 ```sh
 curl -sN -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries/stream?status=blocked'   # watch blocks live

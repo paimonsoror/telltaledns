@@ -6220,8 +6220,8 @@ export interface operations {
                 /** @description Response codes, comma-separated (`NXDOMAIN,SERVFAIL`). */
                 rcode?: string;
                 /**
-                 * @description Upstream ID. Not recorded on queries yet (ADR-026): a value other than 0 matches
-                 *     nothing. Per-upstream numbers are in `/upstreams` and `/stats/latency?by=upstream`.
+                 * @description Upstream ID (from `/upstreams`): the forwarded queries it answered. Coalesced queries
+                 *     name the upstream that answered for all of them.
                  */
                 upstream?: number;
                 /** @description Only queries from devices in this group (a group name, ADR-050). */

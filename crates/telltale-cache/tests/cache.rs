@@ -643,8 +643,9 @@ async fn dns_006_singleflight_coalesces_identical_misses() {
         panic!("second follows")
     };
     let waiter = tokio::spawn(Flight::wait(rx));
-    guard.complete(Arc::from(&b"answer"[..]));
-    assert_eq!(waiter.await.unwrap().as_deref(), Some(&b"answer"[..]));
+    guard.complete(Arc::from(&b"answer"[..]), 3);
+    let (answer, upstream) = waiter.await.unwrap().unwrap();
+    assert_eq!((&answer[..], upstream), (&b"answer"[..], 3));
     assert!(sf.is_empty());
 
     // A leader that gives up releases followers with None.

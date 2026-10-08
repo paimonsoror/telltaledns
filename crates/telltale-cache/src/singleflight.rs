@@ -11,7 +11,9 @@ use tokio::sync::watch;
 
 use crate::CacheKey;
 
-type Answer = Option<Arc<[u8]>>;
+/// The shared answer and the upstream that gave it (REQ: OBS-001: coalesced clients are
+/// attributed to the leader's upstream).
+type Answer = Option<(Arc<[u8]>, u16)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FlightKey {
@@ -96,9 +98,9 @@ pub struct FlightGuard {
 }
 
 impl FlightGuard {
-    /// Publishes the answer to all followers.
-    pub fn complete(self, answer: Arc<[u8]>) {
-        let _ = self.tx.send(Some(answer));
+    /// Publishes the answer, and the upstream that gave it, to all followers.
+    pub fn complete(self, answer: Arc<[u8]>, upstream: u16) {
+        let _ = self.tx.send(Some((answer, upstream)));
     }
 }
 

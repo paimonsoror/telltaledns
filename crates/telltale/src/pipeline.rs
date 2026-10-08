@@ -822,7 +822,7 @@ impl Pipeline {
             Internal::Miss(key, view) => (key, view),
         };
         let permit = Arc::clone(&self.inflight).try_acquire_owned().ok()?;
-        let a = Arc::clone(self)
+        let (a, _) = Arc::clone(self)
             .resolve_shared(req, key, view, permit)
             .await?;
         Some(a.to_vec())
@@ -1764,7 +1764,9 @@ impl Pipeline {
             let mut answer = Arc::clone(&this)
                 .resolve_for_client(req.clone(), key, view, stale_ok, transport)
                 .await
-                .map(|(bytes, status)| {
+                .map(|(bytes, status, upstream)| {
+                    // REQ: OBS-001 (review 04-07) — the upstream that answered.
+                    oc.upstream = upstream;
                     this.deferred_cname_block(&req, who, transport, bytes, status)
                 });
             // REQ: DNS-016 (T7.21) — no AAAA: made from the name's A records.
@@ -1808,7 +1810,7 @@ impl Pipeline {
         view: u16,
         stale_ok: bool,
         transport: Transport,
-    ) -> Option<(Vec<u8>, Status)> {
+    ) -> Option<(Vec<u8>, Status, u16)> {
         let q = parse_query(&req).ok()?;
         // REQ: NFR-002 (T10.2) — the client's response buffer is allocated once the answer is
         // in, sized to it. Allocated here, a 64 KiB buffer per query waiting upstream added up
@@ -1818,15 +1820,17 @@ impl Pipeline {
 
         let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
             // Overloaded (02 §8.4): stale if we have it, else SERVFAIL + EDE 23.
-            return self.fallback(
-                &q,
-                key,
-                stale_ok,
-                ede::NETWORK_ERROR,
-                "resolver overloaded",
-                &mut full(),
-                transport,
-            );
+            return self
+                .fallback(
+                    &q,
+                    key,
+                    stale_ok,
+                    ede::NETWORK_ERROR,
+                    "resolver overloaded",
+                    &mut full(),
+                    transport,
+                )
+                .map(|(b, s)| (b, s, 0));
         };
         // Run the resolution as its own task so that, if we give up waiting and serve stale,
         // it still completes and refreshes the cache (RFC 8767 §5).
@@ -1840,12 +1844,13 @@ impl Pipeline {
             Ok(Ok(Some(a))) => Some(a),
             _ => None,
         };
+        let fallen = |r: Option<(Vec<u8>, Status)>| r.map(|(b, s)| (b, s, 0));
         match answer {
             // REQ: DNS-011 — validation failed: SERVFAIL with EDE 6 (or why: T9.8), never a
             // stale answer.
-            Some(resp) if resp.is_empty() || bogus_code(&resp).is_some() => {
+            Some((resp, _)) if resp.is_empty() || bogus_code(&resp).is_some() => {
                 let code = bogus_code(&resp).unwrap_or(ede::DNSSEC_BOGUS);
-                self.fallback(
+                fallen(self.fallback(
                     &q,
                     key,
                     false,
@@ -1853,9 +1858,9 @@ impl Pipeline {
                     bogus_text(code),
                     &mut full(),
                     transport,
-                )
+                ))
             }
-            Some(resp) => {
+            Some((resp, upstream)) => {
                 let client =
                     Client::from_query(&q, response_edns(&q, self.settings.edns_payload, None));
                 // The answer plus our OPT (with room for an EDE and its text).
@@ -1864,9 +1869,9 @@ impl Pipeline {
                     Some(len) => {
                         let len = self.finish(&q, &mut out, len, transport);
                         out.truncate(len);
-                        Some((out, Status::Forwarded))
+                        Some((out, Status::Forwarded, upstream))
                     }
-                    None => self.fallback(
+                    None => fallen(self.fallback(
                         &q,
                         key,
                         stale_ok,
@@ -1874,10 +1879,10 @@ impl Pipeline {
                         "unusable upstream answer",
                         &mut full(),
                         transport,
-                    ),
+                    )),
                 }
             }
-            None => self.fallback(
+            None => fallen(self.fallback(
                 &q,
                 key,
                 stale_ok,
@@ -1885,7 +1890,7 @@ impl Pipeline {
                 "no upstream answered",
                 &mut full(),
                 transport,
-            ),
+            )),
         }
     }
 
@@ -1896,7 +1901,7 @@ impl Pipeline {
         key: CacheKey,
         view: u16,
         _permit: tokio::sync::OwnedSemaphorePermit,
-    ) -> Option<Arc<[u8]>> {
+    ) -> Option<(Arc<[u8]>, u16)> {
         let q = parse_query(&req).ok()?;
         let guard = match self.flights.join(key, q.qname.as_wire()) {
             Flight::Leader(g) => g,
@@ -1908,12 +1913,18 @@ impl Pipeline {
                 return self.resolve_upstream(&q, key, view).await;
             }
         };
-        let answer = self.resolve_upstream(&q, key, view).await?;
-        guard.complete(Arc::clone(&answer));
-        Some(answer)
+        let (answer, upstream) = self.resolve_upstream(&q, key, view).await?;
+        guard.complete(Arc::clone(&answer), upstream);
+        Some((answer, upstream))
     }
 
-    async fn resolve_upstream(&self, q: &Query<'_>, key: CacheKey, view: u16) -> Option<Arc<[u8]>> {
+    /// The answer and the ID of the upstream that gave it (REQ: OBS-001, review 04-07).
+    async fn resolve_upstream(
+        &self,
+        q: &Query<'_>,
+        key: CacheKey,
+        view: u16,
+    ) -> Option<(Arc<[u8]>, u16)> {
         // A full Arc (not a borrowed guard): it's held across the upstream round trip.
         let st = self.state.load_full();
         let mut question = Question::from_query(q);
@@ -1947,7 +1958,7 @@ impl Pipeline {
         });
         let answer = result.ok()?;
         let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
-        Some(answer.bytes.into())
+        Some((answer.bytes.into(), upstream))
     }
 
     /// One upstream answer, DNSSEC-validated (DNS-011). Bogus answers come back as an empty
@@ -1960,7 +1971,7 @@ impl Pipeline {
         question: &Question,
         d: &Dnssec,
         started: Instant,
-    ) -> Option<Arc<[u8]>> {
+    ) -> Option<(Arc<[u8]>, u16)> {
         use telltale_upstream::dnssec::Verdict;
         let client_do = q.edns.is_some_and(|e| e.dnssec_ok);
         let result = d
@@ -1994,17 +2005,17 @@ impl Pipeline {
             );
         }
         if v.verdict == Verdict::Bogus && !d.permissive {
-            return Some(bogus_marker(v.ede));
+            return Some((bogus_marker(v.ede), upstream));
         }
         if v.bytes.is_empty() && v.verdict != Verdict::Secure {
             // Nothing validated to serve (permissive, validation couldn't finish, or a zone
             // proven unsigned, T10.9): fetch it unvalidated.
             let a = group.resolve(*question, self.settings.budget).await.ok()?;
             let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
-            return Some(a.bytes.into());
+            return Some((a.bytes.into(), a.upstream_id));
         }
         let _ = self.cache.insert(&key, q, &v.bytes, Instant::now());
-        Some(v.bytes.into())
+        Some((v.bytes.into(), upstream))
     }
 
     /// Stale answer with EDE 3 if allowed and available; otherwise SERVFAIL with `code`.
@@ -2079,6 +2090,8 @@ pub(crate) struct Outcome {
     pub(crate) group: u16,
     /// The block or allow rule that decided (FLT-013).
     pub(crate) rule: Option<Rule>,
+    /// REQ: OBS-001 (review 04-07) — the upstream that answered a forwarded query (0: none).
+    pub(crate) upstream: u16,
 }
 
 fn rule_of(a: &telltale_filter::matcher::Attribution, allow: bool) -> Rule {
@@ -2152,7 +2165,7 @@ impl Pipeline {
             proto: proto(transport),
             flags: u16::from_be_bytes([hdr(2), hdr(3)]),
             rule: oc.rule,
-            upstream: 0,
+            upstream: oc.upstream,
             attempts: 0,
             t_total_us: micros(start.elapsed()),
             t_upstream_us: micros(t_upstream),
@@ -2283,6 +2296,7 @@ impl QueryHandler for Handler {
             client_ref: 0,
             group: 0,
             rule: None,
+            upstream: 0,
         };
         let resp = self.0.handle_sync(req, meta, out, start, &mut oc);
         // REQ: OBS-002 — counters on the hot path: lock-free, allocation-free. Deferred answers
@@ -3676,6 +3690,66 @@ groups = ["kids"]
         assert!(hit.resp_size > 0 && hit.flags & 0x8000 != 0, "QR set");
     }
 
+    /// REQ: OBS-001 (review 04-07) — a forwarded query's event names the upstream that answered,
+    /// so the query log's `upstream` filter finds it.
+    #[tokio::test]
+    async fn obs_001_forwarded_queries_record_their_upstream() {
+        use telltale_telemetry::event::Record;
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = s.recv_from(&mut b).await {
+                let q = parse_query(&b[..n]).unwrap();
+                let mut out = [0u8; 512];
+                let mut r = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+                r.answer_a(60, std::net::Ipv4Addr::new(192, 0, 2, 7))
+                    .unwrap();
+                let len = r.finish(None).unwrap();
+                let _ = s.send_to(&out[..len], from).await;
+            }
+        });
+        let cfg = format!(
+            "[[upstream]]\nname = \"u\"\nurl = \"udp://{addr}\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n"
+        );
+        let p = pipeline_with(&cfg, "");
+        let id = p
+            .current()
+            .router
+            .upstreams()
+            .iter()
+            .next()
+            .map(|u| u.id)
+            .unwrap();
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let req = query("www.example.org", rtype::A, true);
+        let Response::Deferred(answer) = Handler(Arc::clone(&p)).handle(&req, &meta, &mut out)
+        else {
+            panic!("a miss goes upstream");
+        };
+        assert!(answer.await.is_some());
+        let mut events = Vec::new();
+        p.telemetry.drainer().drain(|r| events.push(r));
+        let forwarded: Vec<_> = events
+            .iter()
+            .filter_map(|r| match r {
+                Record::Query(e, _) => Some(*e),
+                Record::Upstream(_) => None,
+            })
+            .collect();
+        assert_eq!(forwarded.len(), 1, "{forwarded:?}");
+        assert_eq!(forwarded[0].status, Status::Forwarded);
+        assert_ne!(id, 0);
+        assert_eq!(forwarded[0].upstream, id, "the upstream that answered");
+    }
+
     #[test]
     fn flt_009_pause_global_and_per_group() {
         let cfg = format!("{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||x^\"]\n");
@@ -3983,6 +4057,7 @@ value = "192.168.5.100"
                 client_ref: 0,
                 group: 0,
                 rule: None,
+                upstream: 0,
             };
             let req = raw.unwrap_or(&buf[..len]);
             let _ = p.handle_sync(req, &meta, &mut out, Instant::now(), &mut oc);
