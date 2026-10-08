@@ -177,7 +177,7 @@ cd telltaledns
 cargo build --release
 sudo ./target/release/telltale run -c telltale.toml   # a config from step 2
 dig @127.0.0.1 example.com</code></pre>
-      <p class="muted">Needs a recent Rust toolchain (the repository pins it). The first start prints a one-time setup token; open the web UI on port 8053 and use it to create your admin.</p>
+      <p class="muted">Needs a recent Rust toolchain (the repository pins it). The first start creates a one-time setup token; <code>telltale auth setup-token</code> prints it. Open the web UI on port 8053 and use it to create your admin.</p>
     </div>
   </div>
 </section>

@@ -32,8 +32,8 @@
 
 <AuthShell title="Welcome to TelltaleDNS">
   <p class="muted">
-    Create the first admin. The setup token is in the server log, and
-    <code>telltale auth setup-token</code> prints it.
+    Create the first admin. <code>telltale auth setup-token</code> prints the setup token (the server
+    log says which file holds it).
   </p>
   <form class="stack" onsubmit={submit}>
     <label class="field">Setup token

@@ -2110,9 +2110,9 @@ A `plan_*` tool asks the node what the change would do (the same dry run as `?dr
 - Plans live in the memory of the node that made them: a restart drops open plans (the agent just plans again). In a cluster, point agents at the node whose UI you use (normally the primary).
 
 ## Users and sign-in
-There is no default password. On first start the server logs a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only):
+There is no default password. On first start the server creates a one-time **setup token** and saves it in `<data_dir>/setup-token` (readable by its owner only). The log says where it is, never the token itself, because logs often end up in shared collectors. Cluster members other than the primary have no setup token: their users come from the primary.
 ```sh
-telltale auth setup-token          # prints it again
+telltale auth setup-token          # prints it
 curl -s -c jar -H 'content-type: application/json' \
   -d '{"setupToken":"<token>","username":"admin","password":"a long passphrase"}' \
   http://dns.lan:8053/api/v1/auth/setup

@@ -369,8 +369,9 @@ export interface paths {
         put?: never;
         /**
          * Create the first admin.
-         * @description Only while no user exists. `setupToken` is printed in the server log at startup and saved
-         *     in `<data_dir>/setup-token`. Signs the new admin in (sets the session cookie).
+         * @description Only while no user exists. `setupToken` is saved in `<data_dir>/setup-token` at startup
+         *     (`telltale auth setup-token` prints it; the log names the file, not the token). Signs the
+         *     new admin in (sets the session cookie).
          */
         post: operations["setup"];
         delete?: never;

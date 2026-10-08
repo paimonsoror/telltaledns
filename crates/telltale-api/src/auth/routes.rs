@@ -889,8 +889,9 @@ pub(crate) async fn status(
 
 /// Create the first admin.
 ///
-/// Only while no user exists. `setupToken` is printed in the server log at startup and saved
-/// in `<data_dir>/setup-token`. Signs the new admin in (sets the session cookie).
+/// Only while no user exists. `setupToken` is saved in `<data_dir>/setup-token` at startup
+/// (`telltale auth setup-token` prints it; the log names the file, not the token). Signs the
+/// new admin in (sets the session cookie).
 #[utoipa::path(post, path = "/api/v1/auth/setup", tag = "auth", request_body = SetupRequest,
     responses((status = 201, body = LoginResponse, description = "Created."), (status = 401, body = Problem, description = "Not signed in, or the credentials are wrong."),
         (status = 409, body = Problem, description = "Setup is already done.")))]

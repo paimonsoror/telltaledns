@@ -165,7 +165,16 @@ pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     let setup = auth
         .setup_required()
         .map_err(|p| io::Error::other(p.detail))?;
-    if setup {
+    // REQ: API-003, CLU-003 (review 06 q1) — a cluster member that isn't the primary takes its
+    // users from the primary (T9.1) and refuses identity changes, so it has no setup to do
+    // (resolver pods used to log a working setup token each).
+    let member_not_primary = telltale_cluster::node::Identity::load(&data_dir(cfg))
+        .ok()
+        .flatten()
+        .is_some_and(|id| !id.is_primary());
+    if setup && member_not_primary {
+        info!("no users yet: they come from the cluster's primary once this node syncs");
+    } else if setup {
         // Reuse a token from an earlier start so the one already copied keeps working.
         let file = data_dir(cfg).join(SETUP_TOKEN_FILE);
         let token = std::fs::read_to_string(&file)
@@ -177,9 +186,11 @@ pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
             warn!(file = %file.display(), "could not save the setup token: {e}");
         }
         auth.set_setup_token(token.clone());
+        // REQ: API-003 (review 06 q1) — the token itself stays out of the log: on Kubernetes
+        // logs go wherever the cluster's collector sends them.
         warn!(
-            setup_token = %token,
-            "no users yet: open the web UI (or POST /api/v1/auth/setup) with this setup token to create the first admin; `telltale auth setup-token` prints it again"
+            file = %file.display(),
+            "no users yet: create the first admin in the web UI with the setup token; `telltale auth setup-token` prints it (or read the file)"
         );
     }
     Ok(auth)
