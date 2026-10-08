@@ -1739,7 +1739,7 @@ sample_every = 1                # 1 = every query; 10 = one in ten
 buffer = 10000                  # copies held while the reader is slow
 ```
 - Each sampled query becomes a `CLIENT_QUERY` and a `CLIENT_RESPONSE` message with the client's address, the transport (UDP, TCP, DoT, DoH, DoQ), the times, and the full query and response messages.
-- Frame Streams with the usual handshake; if the reader isn't there, TelltaleDNS keeps retrying (every few seconds) and drops copies meanwhile. DNS never waits for it: copies go through a bounded queue (`buffer`), and with dnstap off the query path does nothing extra.
+- Frame Streams with the usual handshake; if the reader isn't there, TelltaleDNS keeps retrying (every few seconds) and drops copies meanwhile. A reader that accepts the connection but stops reading is given up on after 5 seconds and reconnected, with a warning in the log. DNS never waits for it: copies go through a bounded queue (`buffer`), and with dnstap off the query path does nothing extra. Dropped copies are counted in `telltale_dnstap_dropped_total`.
 - **Upstream traffic too** (`forwarder = true` under `[telemetry.dnstap]`): each query TelltaleDNS sends to an upstream and its answer become `FORWARDER_QUERY` and `FORWARDER_RESPONSE` messages with the upstream's address, port, and protocol (UDP, TCP, DoT, DoH, DoQ, DNSCrypt), sampled like client messages. The built-in recursive resolver's own queries aren't included.
 - Read at startup: restart after changing it.
 

@@ -63,7 +63,9 @@ pub(crate) struct Tap {
     /// REQ: OBS-007 (T9.19) — upstream exchanges seen (sampled on their own count).
     seen_forwarder: AtomicU64,
     tx: SyncSender<Copy>,
-    pub(crate) dropped: AtomicU64,
+    /// Copies dropped: the queue was full, the reader couldn't be reached, or a write to it
+    /// failed (`telltale_dnstap_dropped_total`).
+    pub(crate) dropped: std::sync::Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for Tap {
@@ -159,9 +161,11 @@ pub(crate) fn start(cfg: &telltale_config::Config) -> Option<std::sync::Arc<Tap>
     };
     let (tx, rx) = sync_channel::<Copy>(usize::try_from(d.buffer).unwrap_or(10_000));
     let identity = crate::http::node_name(cfg);
+    let dropped = std::sync::Arc::new(AtomicU64::new(0));
+    let writer_dropped = std::sync::Arc::clone(&dropped);
     let spawned = std::thread::Builder::new()
         .name("dnstap".into())
-        .spawn(move || writer(&target, &rx, identity.as_bytes()));
+        .spawn(move || writer(&target, &rx, identity.as_bytes(), &writer_dropped));
     if let Err(e) = spawned {
         warn!("dnstap disabled: cannot start its thread: {e}");
         return None;
@@ -172,7 +176,7 @@ pub(crate) fn start(cfg: &telltale_config::Config) -> Option<std::sync::Arc<Tap>
         seen: AtomicU64::new(0),
         seen_forwarder: AtomicU64::new(0),
         tx,
-        dropped: AtomicU64::new(0),
+        dropped,
     });
     // REQ: OBS-007 (T9.19) — upstream exchanges too.
     if d.forwarder {
@@ -191,16 +195,28 @@ enum Target {
 trait Stream: Read + Write + Send {}
 impl<T: Read + Write + Send> Stream for T {}
 
+/// Longest wait for the reader: connecting, its handshake reply, and each write. Without a
+/// write timeout a reader that stops reading (its socket buffer full) parks this thread for
+/// good, and the queue's drops are the only sign.
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn connect(t: &Target) -> std::io::Result<Box<dyn Stream>> {
     let mut s: Box<dyn Stream> = match t {
         Target::Unix(p) => {
             let s = std::os::unix::net::UnixStream::connect(p)?;
-            s.set_read_timeout(Some(Duration::from_secs(5)))?;
+            s.set_read_timeout(Some(IO_TIMEOUT))?;
+            s.set_write_timeout(Some(IO_TIMEOUT))?;
             Box::new(s)
         }
         Target::Tcp(a) => {
-            let s = TcpStream::connect(a)?;
-            s.set_read_timeout(Some(Duration::from_secs(5)))?;
+            use std::net::ToSocketAddrs as _;
+            let addr = a
+                .to_socket_addrs()?
+                .next()
+                .ok_or_else(|| std::io::Error::other(format!("{a}: no address")))?;
+            let s = TcpStream::connect_timeout(&addr, IO_TIMEOUT)?;
+            s.set_read_timeout(Some(IO_TIMEOUT))?;
+            s.set_write_timeout(Some(IO_TIMEOUT))?;
             s.set_nodelay(true)?;
             Box::new(s)
         }
@@ -248,12 +264,13 @@ fn read_control(s: &mut dyn Stream) -> std::io::Result<u32> {
     Ok(u32::from_be_bytes([body[0], body[1], body[2], body[3]]))
 }
 
-fn writer(target: &Target, rx: &Receiver<Copy>, identity: &[u8]) {
+fn writer(target: &Target, rx: &Receiver<Copy>, identity: &[u8], dropped: &AtomicU64) {
     let version = format!("TelltaleDNS {}", crate::build_info::VERSION);
     let mut conn: Option<Box<dyn Stream>> = None;
     let mut backoff = Duration::from_secs(1);
     let mut next_try = std::time::Instant::now();
     let mut warned = false;
+    let mut write_warned = false;
     loop {
         let c = match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(c) => Some(c),
@@ -278,7 +295,11 @@ fn writer(target: &Target, rx: &Receiver<Copy>, identity: &[u8]) {
                 }
             }
         }
-        let (Some(c), Some(s)) = (c, conn.as_mut()) else {
+        let Some(c) = c else {
+            continue;
+        };
+        let Some(s) = conn.as_mut() else {
+            dropped.fetch_add(1, Ordering::Relaxed);
             continue;
         };
         let mut frames = Vec::with_capacity(1024);
@@ -294,8 +315,20 @@ fn writer(target: &Target, rx: &Receiver<Copy>, identity: &[u8]) {
             frames.extend_from_slice(&u32::try_from(payload.len()).unwrap_or(0).to_be_bytes());
             frames.extend(payload);
         }
-        if s.write_all(&frames).is_err() {
-            conn = None;
+        match s.write_all(&frames) {
+            Ok(()) => write_warned = false,
+            Err(e) => {
+                // REQ: OBS-007 (review 04-08) — a reader that stopped reading shows up here
+                // (the write timed out): say so once, and reconnect after the backoff.
+                if !write_warned {
+                    warn!(?target, error = %e, "dnstap: the reader isn't taking copies; reconnecting (copies are dropped meanwhile)");
+                    write_warned = true;
+                }
+                dropped.fetch_add(1, Ordering::Relaxed);
+                conn = None;
+                next_try = std::time::Instant::now() + backoff;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
         }
     }
     if let Some(mut s) = conn {

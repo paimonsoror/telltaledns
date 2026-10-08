@@ -572,6 +572,19 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
             );
         }
     }
+    // REQ: OBS-007 (review 04-08) — dnstap copies that never reached the reader.
+    if let Some(tap) = src.pipeline.dnstap.get() {
+        w.family(
+            "telltale_dnstap_dropped_total",
+            "counter",
+            "dnstap copies dropped: the queue was full, the reader couldn't be reached, or it stopped reading.",
+        )
+        .sample(
+            "telltale_dnstap_dropped_total",
+            &[],
+            tap.dropped.load(std::sync::atomic::Ordering::Relaxed),
+        );
+    }
     // REQ: OBS-002 (T9.13) — restarts survive restarts: counted in the data directory.
     let runs = crate::datadir::runs();
     w.family(
