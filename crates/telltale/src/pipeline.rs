@@ -2151,7 +2151,9 @@ enum Internal {
 /// A NOERROR answer with no AAAA record (CNAMEs only, or none) outside the exclusion set
 /// (T9.10): DNS64 applies.
 fn needs_dns64(resp: &[u8], exclude: &[Cidr]) -> bool {
-    if response_rcode(resp) != rcode::NOERROR {
+    // A truncated answer (too big for the buffer) has no records to judge; the client
+    // retries over TCP.
+    if response_rcode(resp) != rcode::NOERROR || telltale_proto::header::flags(resp).tc() {
         return false;
     }
     records(resp).is_ok_and(|mut it| {
@@ -3556,8 +3558,14 @@ groups = ["kids"]
         }
         let info = allocation_counter::measure(|| {
             for _ in 0..1000 {
-                assert!(matches!(h.handle(&hit, &meta, &mut out), Response::Ready(_)));
-                assert!(matches!(h.handle(&blocked, &meta, &mut out), Response::Ready(_)));
+                assert!(matches!(
+                    h.handle(&hit, &meta, &mut out),
+                    Response::Ready(_)
+                ));
+                assert!(matches!(
+                    h.handle(&blocked, &meta, &mut out),
+                    Response::Ready(_)
+                ));
             }
         });
         assert_eq!(info.count_total, 0, "hot paths allocated: {info:?}");

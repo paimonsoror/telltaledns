@@ -714,3 +714,49 @@ fn dns_006_opt_counted_as_an_answer_is_unusable() {
         Err(Uncacheable::Malformed)
     );
 }
+
+/// REQ: DNS-005, DNS-006 — a cached answer larger than the caller's buffer (a UDP worker's
+/// 4 KiB) is served truncated from the cache: TC=1, the client's question and OPT, no
+/// records. It is a hit, not a miss that resolves the name upstream again.
+#[test]
+fn dns_005_oversized_cached_answer_is_truncated_not_missed() {
+    let cache = Cache::new(CachePolicy::default());
+    let now = Instant::now();
+    let req = query_bytes("big.example", rtype::TXT, Some(EdnsOut::new(1232)), 9);
+    let q = parse_query(&req).unwrap();
+    let mut resp = vec![0u8; 8192];
+    let mut b = ResponseBuilder::new(&q, &mut resp, rcode::NOERROR).unwrap();
+    let mut rdata = vec![255u8];
+    rdata.extend_from_slice(&[b'x'; 255]);
+    for _ in 0..20 {
+        b.answer_rdata(None, rtype::TXT, 300, &rdata).unwrap();
+    }
+    let len = b.finish(None).unwrap();
+    assert!(len > 4096);
+    cache.insert(&key(&q), &q, &resp[..len], now).unwrap();
+    let client = Client::from_query(&q, Some(EdnsOut::new(1232)));
+
+    let mut small = [0u8; 4096];
+    let got = cache.get(&key(&q), &q.qname, &client, now, &mut small);
+    let Lookup::Hit { len: n, .. } = got else {
+        unreachable!("a cached answer that doesn't fit must still be a hit: {got:?}");
+    };
+    let s = summarize(&small[..n]).unwrap();
+    assert!(s.header.flags.tc(), "truncated");
+    assert_eq!(
+        (s.header.ancount, s.header.arcount),
+        (0, 1),
+        "question and OPT only"
+    );
+    assert_eq!(&small[12..q.question_end], q.question_bytes());
+
+    let mut big = [0u8; 8192];
+    let got = cache.get(&key(&q), &q.qname, &client, now, &mut big);
+    let Lookup::Hit { len: n, .. } = got else {
+        unreachable!("{got:?}");
+    };
+    let s = summarize(&big[..n]).unwrap();
+    assert!(!s.header.flags.tc());
+    assert_eq!(s.header.ancount, 20);
+    assert_eq!(cache.stats().hits, 2);
+}

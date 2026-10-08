@@ -302,7 +302,8 @@ impl<'a> Client<'a> {
 }
 
 /// Writes `e` for `client` into `out`. `ttl_override` sets every TTL (serve-stale); otherwise
-/// TTLs count down by the entry's age. Returns `None` if `out` is too small. Allocation-free.
+/// TTLs count down by the entry's age. An answer that doesn't fit `out` is written truncated
+/// (TC=1, the question only). Returns `None` only if even that doesn't fit. Allocation-free.
 pub(crate) fn write(
     e: &Entry,
     client: &Client<'_>,
@@ -311,24 +312,35 @@ pub(crate) fn write(
     out: &mut [u8],
 ) -> Option<usize> {
     let wire = e.wire();
-    let len = wire.len();
     let qend = usize::from(e.question_end);
     if client.question.len() != qend - HEADER_LEN {
         return None;
     }
-    out.get_mut(..len)?.copy_from_slice(wire);
+    // REQ: DNS-005 — too big for the caller's buffer (a UDP worker's): served truncated from
+    // the cache, so the client retries over TCP where it fits, instead of being treated as
+    // a miss and resolved upstream again on every UDP query.
+    let truncated = out.len() < wire.len();
+    let len = if truncated { qend } else { wire.len() };
+    out.get_mut(..len)?.copy_from_slice(&wire[..len]);
     header::set_id(out, client.id);
     let mut flags = header::flags(out)
         .with(FlagBit::Rd, client.rd)
-        .with(FlagBit::Aa, false);
+        .with(FlagBit::Aa, false)
+        .with(FlagBit::Tc, truncated);
     if !client.ad_ok {
         flags = flags.with(FlagBit::Ad, false);
     }
     header::set_flags(out, flags);
     out[HEADER_LEN..qend].copy_from_slice(client.question);
-    match ttl_override {
-        Some(t) => set_ttls_packed(&mut out[..len], e.packed_offsets(), t),
-        None => patch_ttls_packed(&mut out[..len], e.packed_offsets(), e.elapsed_secs(now), 0),
+    if truncated {
+        out[6..HEADER_LEN].fill(0); // no records follow
+    } else {
+        match ttl_override {
+            Some(t) => set_ttls_packed(&mut out[..len], e.packed_offsets(), t),
+            None => {
+                patch_ttls_packed(&mut out[..len], e.packed_offsets(), e.elapsed_secs(now), 0);
+            }
+        }
     }
     match &client.edns {
         Some(edns) => append_opt(out, len, edns).ok(),
