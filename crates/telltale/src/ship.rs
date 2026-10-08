@@ -267,11 +267,66 @@ pub(crate) fn receive(
     }
     std::fs::rename(&tmp, &dest).map_err(io)?;
     stats.segments_received.fetch_add(1, Ordering::Relaxed);
+    sweep_partials(data_dir, now_s());
     let now_hour = now_s() / 3600;
     if let Err(e) = retention::enforce(&dir, now_hour, retention_days, retention_bytes, None) {
         warn!(node = peer, "shipped query log retention: {e}");
     }
     Ok(b"done".to_vec())
+}
+
+/// How long a half-received segment may wait for the rest of it.
+const PARTIAL_MAX_AGE: Duration = Duration::from_hours(24);
+
+/// REQ: CLU-007 (review 05-11) — at most once an hour, removes half-received segments
+/// (`.incoming/*.part`) older than a day, under every sender: a transfer that stopped, or a
+/// resolver pod that died mid-way (its node ID is never used again, so nothing retries it).
+fn sweep_partials(data_dir: &str, now_s: u64) {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let last = LAST.load(Ordering::Relaxed);
+    if now_s.saturating_sub(last) < 3600
+        || LAST
+            .compare_exchange(last, now_s, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    let removed = remove_partials(&shipped_root(data_dir), PARTIAL_MAX_AGE);
+    if removed > 0 {
+        info!(
+            files = removed,
+            "shipped query log: removed half-received segments older than a day"
+        );
+    }
+}
+
+/// Removes `<root>/<sender>/.incoming/*.part` files last written more than `max_age` ago.
+fn remove_partials(root: &std::path::Path, max_age: Duration) -> usize {
+    let Ok(senders) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for sender in senders.flatten() {
+        let Ok(files) = std::fs::read_dir(sender.path().join(".incoming")) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let path = f.path();
+            let stale = f
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > max_age);
+            if stale
+                && path.extension().is_some_and(|e| e == "part")
+                && std::fs::remove_file(&path).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 fn now_s() -> u64 {
@@ -422,6 +477,32 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: CLU-007 (review 05-11) — half-received segments older than a day are removed under
+    // every sender; fresh ones and other files stay.
+    #[test]
+    fn clu_007_stale_partial_segments_are_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let incoming = tmp.path().join("0123456789abcdef").join(".incoming");
+        std::fs::create_dir_all(&incoming).unwrap();
+        let stale = incoming.join("1-0-0.seg.part");
+        let fresh = incoming.join("2-0-0.seg.part");
+        let other = incoming.join("notes.txt");
+        let two_days_ago = std::time::SystemTime::now() - 2 * PARTIAL_MAX_AGE;
+        for p in [&stale, &fresh, &other] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        for p in [&stale, &other] {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(two_days_ago)
+                .unwrap();
+        }
+        assert_eq!(remove_partials(tmp.path(), PARTIAL_MAX_AGE), 1);
+        assert!(!stale.exists() && fresh.exists() && other.exists());
+    }
 
     // REQ: CLU-007 — a segment arrives in chunks, is verified, and lands under the sender's
     // node ID; a bad checksum or a hostile node ID never lands.
