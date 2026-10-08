@@ -758,6 +758,13 @@ impl Cluster {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(id);
+        // Nothing can be asked of a member that left (the reply to its own leave goes out on a
+        // sender the caller already holds). Without this its stream lingered in the outbox and
+        // every federated read listed it as a node that didn't answer, by bare node ID.
+        self.outbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         self.event("left", id, "shut down (scaled in, replaced, or deleted)");
         Ok(())
     }
@@ -790,14 +797,13 @@ impl Cluster {
         let _ = self.rpc_handler.set(HandlerSlot(h));
     }
 
-    /// Peers with an open stream (their node IDs).
+    /// Peers with an open stream (their node IDs). A stream whose write side has ended is
+    /// dropped here: the read side ends first, and it purges before the writer notices, so a
+    /// peer that left would otherwise stay listed (and show up as a node that didn't answer).
     pub fn reachable_peers(&self) -> Vec<String> {
-        self.outbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .cloned()
-            .collect()
+        let mut outbox = self.outbox.lock().unwrap_or_else(PoisonError::into_inner);
+        outbox.retain(|_, tx| !tx.is_closed());
+        outbox.keys().cloned().collect()
     }
 
     /// Calls `kind` on `peer` over its stream; fails fast when no stream is open, and after
