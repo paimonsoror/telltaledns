@@ -73,5 +73,7 @@ dhat = { version = "0.3.3", optional = true }
 dhat-heap = ["dep:dhat"]
 
 [dev-dependencies]
+# REQ: NFR-002 — the whole-pipeline allocation test (`pipeline.rs`).
+allocation-counter = "0.8.1"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["io-util"] }

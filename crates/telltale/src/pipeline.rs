@@ -3526,6 +3526,43 @@ groups = ["kids"]
         rt.shutdown_timeout(Duration::from_secs(1));
     }
 
+    /// REQ: NFR-002 — the whole synchronous pipeline, as a UDP worker runs it, allocates
+    /// nothing in the steady state: a cache hit (with a filter installed, so CNAME
+    /// inspection runs), and a blocked answer, both for a configured client. The cache
+    /// crate's own test covers only parse → key → lookup; this one includes identification,
+    /// access and special-name checks, local data, quick rules, the filter, routing, the
+    /// metrics counters, and the event ring.
+    #[test]
+    fn nfr_002_pipeline_hot_paths_do_not_allocate() {
+        let cfg = format!(
+            "{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||ads.example^\"]\n\
+             [[client]]\nname = \"tablet\"\nmatch = [\"10.0.0.5\"]\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example^\n");
+        cache_a(&p, "hit.example.com", Ipv4Addr::new(192, 0, 2, 1));
+        let meta = RequestMeta {
+            peer: "10.0.0.5:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let hit = query("hit.example.com", rtype::A, true);
+        let blocked = query("ads.example", rtype::A, true);
+        let h = Handler(Arc::clone(&p));
+        let mut out = [0u8; 4096];
+        // Warm up: the thread's event-ring producer and filter scratch are made on first use.
+        for req in [&hit, &blocked] {
+            assert!(matches!(h.handle(req, &meta, &mut out), Response::Ready(_)));
+        }
+        let info = allocation_counter::measure(|| {
+            for _ in 0..1000 {
+                assert!(matches!(h.handle(&hit, &meta, &mut out), Response::Ready(_)));
+                assert!(matches!(h.handle(&blocked, &meta, &mut out), Response::Ready(_)));
+            }
+        });
+        assert_eq!(info.count_total, 0, "hot paths allocated: {info:?}");
+    }
+
     /// Every answered query leaves an event with its client, status, rule, and name.
     #[test]
     fn obs_001_queries_emit_attributed_events() {
