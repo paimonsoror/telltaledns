@@ -1,5 +1,5 @@
 //! NFR-002 / FLT-003: steady-state filter decisions allocate nothing (blocked, allowed, miss,
-//! modifier rules, regexes, overlay), in both lookup modes. Its own test binary so nothing
+//! modifier rules, regexes), in both lookup modes. Its own test binary so nothing
 //! else is counted.
 
 #![allow(clippy::unwrap_used)]
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use telltale_config::ListKind;
 use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Lookup, Matcher, Overlay, Scratch};
+use telltale_filter::matcher::{ClientCtx, Decision, ListMask, Lookup, Matcher, Scratch};
 use telltale_filter::parse::ListOptions;
 use telltale_filter::snapshot::Snapshot;
 use telltale_proto::{NameBuf, rtype};
@@ -37,7 +37,7 @@ fn nfr_002_filter_decisions_do_not_allocate() {
         s
     });
     block.push_str(
-        "||v6.example.com^$dnstype=AAAA\n/^track[0-9]+\\./\n||kids.example.org^$client=192.168.1.0/24\n*.wild.example.org\n",
+        "||v6.example.com^$dnstype=AAAA\n/^track[0-9]+\\./\n||kids.example.org^$client=192.168.1.0/24\n*.wild.example.org\n||manual.example.net^\n/^ov[0-9]+\\./\n",
     );
     compile(
         vec![
@@ -74,13 +74,7 @@ fn nfr_002_filter_decisions_do_not_allocate() {
         client_id: None,
     };
     for lookup in [Lookup::Walk, Lookup::Indexed] {
-        let (overlay, _) = Overlay::build(&[(
-            2,
-            ListOptions::default(),
-            "||manual.example.net^\n/^ov[0-9]+\\./\n",
-        )])
-        .unwrap();
-        let m = Matcher::with_lookup(Some(Arc::clone(&snap)), overlay, lookup).unwrap();
+        let m = Matcher::with_lookup(Some(Arc::clone(&snap)), lookup).unwrap();
         let mut scratch = Scratch::default();
         // Warm up: the scratch builds its regex caches on first use.
         for n in &names {

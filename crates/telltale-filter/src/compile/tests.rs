@@ -288,7 +288,7 @@ fn flt_003_regex_set_that_only_fails_as_a_whole_is_trimmed() {
     assert!(report.manifest.stats.regexes >= 1, "the small one stays");
     let snap = std::sync::Arc::new(Snapshot::open(&out).unwrap());
     assert!(
-        crate::matcher::Matcher::new(Some(snap), crate::matcher::Overlay::default()).is_ok(),
+        crate::matcher::Matcher::new(Some(snap)).is_ok(),
         "the snapshot must activate"
     );
 }

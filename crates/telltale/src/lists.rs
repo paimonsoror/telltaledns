@@ -18,7 +18,7 @@ use telltale_filter::compile::{CompileOptions, CompileReport, ListData, ListInpu
 use telltale_filter::fetch::{
     Client, FetchSettings, Fetcher, ListSpec, Outcome, Resolve, Store, SystemResolver,
 };
-use telltale_filter::matcher::{Lookup, Matcher, Overlay};
+use telltale_filter::matcher::{Lookup, Matcher};
 use telltale_filter::parse::{ListOptions, parse_list};
 use telltale_filter::snapshot::{MANIFEST, Manifest, Snapshot};
 use telltale_upstream::Bootstrap;
@@ -433,18 +433,17 @@ impl Publisher {
                 false
             }
         };
-        let walk =
-            match Matcher::with_lookup(Some(Arc::clone(&snap)), Overlay::default(), Lookup::Walk) {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(
-                        version,
-                        "cannot activate filter snapshot; keeping the current filter: {e}"
-                    );
-                    self.fall_back(dir, generation);
-                    return;
-                }
-            };
+        let walk = match Matcher::with_lookup(Some(Arc::clone(&snap)), Lookup::Walk) {
+            Ok(m) => m,
+            Err(e) => {
+                error!(
+                    version,
+                    "cannot activate filter snapshot; keeping the current filter: {e}"
+                );
+                self.fall_back(dir, generation);
+                return;
+            }
+        };
         if !store(walk) {
             return; // a newer snapshot was published meanwhile
         }
@@ -456,9 +455,7 @@ impl Publisher {
         // The index build is background work like compiling: never at the cost of queries.
         telltale_net::background_thread();
         let t = std::time::Instant::now();
-        if let Ok(m) =
-            Matcher::with_lookup(Some(Arc::clone(&snap)), Overlay::default(), Lookup::Indexed)
-        {
+        if let Ok(m) = Matcher::with_lookup(Some(Arc::clone(&snap)), Lookup::Indexed) {
             #[allow(clippy::cast_precision_loss)] // MiB for a log line
             let mib = m.index_bytes() as f64 / f64::from(1u32 << 20);
             let lookup = m.lookup();
@@ -633,7 +630,7 @@ pub(crate) fn newest_matcher(cfg: &Config) -> Result<Option<Matcher>, String> {
         return Ok(None);
     };
     let snap = Snapshot::open(&newest).map_err(|e| format!("{}: {e}", newest.display()))?;
-    Matcher::with_lookup(Some(Arc::new(snap)), Overlay::default(), Lookup::Walk).map(Some)
+    Matcher::with_lookup(Some(Arc::new(snap)), Lookup::Walk).map(Some)
 }
 
 /// Reads stored list sources (for explain's line lookups).

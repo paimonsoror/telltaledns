@@ -7,7 +7,7 @@ use telltale_proto::{NameBuf, rtype};
 
 use super::*;
 use crate::compile::{CompileOptions, ListData, ListInput, compile};
-use crate::matcher::{ClientCtx, ListMask, Lookup, Overlay};
+use crate::matcher::{ClientCtx, ListMask, Lookup};
 use crate::snapshot::Snapshot;
 
 /// Compiles `lists` and returns the matcher plus the sources by list name.
@@ -29,7 +29,7 @@ fn setup(lists: &[(&str, ListKind, &str)]) -> (Matcher, HashMap<String, Vec<u8>>
         .collect();
     compile(inputs, &out, &CompileOptions::default()).unwrap();
     let snap = Arc::new(Snapshot::open(&out).unwrap());
-    let m = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+    let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
     let sources = lists
         .iter()
         .map(|(n, _, t)| ((*n).to_owned(), t.as_bytes().to_vec()))

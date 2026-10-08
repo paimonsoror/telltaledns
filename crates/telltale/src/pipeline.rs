@@ -2360,7 +2360,6 @@ mod tests {
     /// Compiles `rules` into a snapshot and installs it as the pipeline's filter.
     fn install_filter(p: &Pipeline, rules: &str, lookup: telltale_filter::matcher::Lookup) {
         use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-        use telltale_filter::matcher::Overlay;
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("snap");
         let input = ListInput {
@@ -2372,14 +2371,14 @@ mod tests {
         };
         compile(vec![input], &out, &CompileOptions::default()).unwrap();
         let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
-        let m = Matcher::with_lookup(Some(snap), Overlay::default(), lookup).unwrap();
+        let m = Matcher::with_lookup(Some(snap), lookup).unwrap();
         p.set_filter(Some(Arc::new(m)));
     }
 
     /// Compiles several named lists into one snapshot and installs it.
     fn install_lists(p: &Pipeline, lists: &[(&str, &str)]) {
         use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-        use telltale_filter::matcher::{Lookup, Overlay};
+        use telltale_filter::matcher::Lookup;
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("snap");
         let inputs = lists
@@ -2394,7 +2393,7 @@ mod tests {
             .collect();
         compile(inputs, &out, &CompileOptions::default()).unwrap();
         let snap = Arc::new(telltale_filter::snapshot::Snapshot::open(&out).unwrap());
-        let m = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+        let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
         p.set_filter(Some(Arc::new(m)));
     }
 

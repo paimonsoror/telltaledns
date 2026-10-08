@@ -16,6 +16,7 @@ Format: Context → Decision → Consequences. New ADRs append here (`ADR-0NN`).
 **Context:** Pi-hole keeps lists in SQLite with a verdict cache, and Technitium keeps them as in-memory zones; both suit their designs. TelltaleDNS's goals (multi-million-name lists on a Pi, lookup cost independent of list size, no pause during updates) call for a compiled index.
 **Decision:** Immutable, mmappable FST snapshots (reversed-label keys) + a multi-pattern lazy DFA, built in the background and swapped atomically.
 **Consequences:** ~10× less memory per domain, O(|qname|) lookups, and instant reloads. Snapshots are immutable, so every edit triggers a recompile. To keep manual rule edits instant, a small **overlay** (a HashMap of manual rules) is consulted before the FST and folded into the next compile.
+**Amendment (2026-10-07, review 02-07; owner's answer: remove):** the overlay was never used. Quick rules (ADR-067, `telltale-policy::quick`) are what make manual rule edits instant: they decide before the lists, and the matcher no longer has an overlay (no code constructed one outside tests). Rule edits that belong in a list are list edits, which recompile in the background. The paragraph above is kept as the record of what was first decided.
 
 ## ADR-004 — Container-first distribution, Kubernetes-first operations (Accepted)
 **Context:** The owner prioritizes Kubernetes and also runs a Raspberry Pi. Native packaging and installers per distro are costly to build and keep working.

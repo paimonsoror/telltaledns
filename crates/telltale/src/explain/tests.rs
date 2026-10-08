@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use telltale_cache::{Cache, CachePolicy};
 use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
-use telltale_filter::matcher::{Lookup, Matcher, Overlay};
+use telltale_filter::matcher::{Lookup, Matcher};
 use telltale_filter::parse::ListOptions;
 use telltale_filter::snapshot::Snapshot;
 use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
@@ -110,7 +110,7 @@ fn setup_with(extra: &str) -> (Arc<Pipeline>, HashMap<String, Vec<u8>>) {
     let out = tmp.path().join("snap");
     compile(inputs, &out, &CompileOptions::default()).unwrap();
     let snap = Arc::new(Snapshot::open(&out).unwrap());
-    let m = Matcher::with_lookup(Some(snap), Overlay::default(), Lookup::Indexed).unwrap();
+    let m = Matcher::with_lookup(Some(snap), Lookup::Indexed).unwrap();
     p.set_filter(Some(Arc::new(m)));
     (p, sources)
 }
