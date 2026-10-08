@@ -6,7 +6,7 @@
 //! event and counts it; counters and histograms in [`crate::Metrics`] never drop.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -46,6 +46,8 @@ pub struct Hub {
     clock_step_us: AtomicI64,
     /// What the aggregator thread has folded in so far.
     aggregates: Mutex<Aggregates>,
+    /// The privacy level the analytics follow ([`Hub::set_privacy`]).
+    privacy: AtomicU8,
 }
 
 static NEXT_HUB: AtomicU64 = AtomicU64::new(1);
@@ -87,6 +89,7 @@ impl Hub {
             clock_steps: AtomicU64::new(0),
             clock_step_us: AtomicI64::new(0),
             aggregates: Mutex::new(Aggregates::new()),
+            privacy: AtomicU8::new(0),
         })
     }
 
@@ -128,6 +131,13 @@ impl Hub {
         self.clock_steps.fetch_add(1, Ordering::Relaxed);
         self.clock_step_us.store(step, Ordering::Relaxed);
         Some(step)
+    }
+
+    /// REQ: OBS-009 (`spec/06` §4, review 04-04) — the query log's privacy level, which the
+    /// in-memory analytics follow too: from the next drain on, they get names hashed (1+)
+    /// and no client addresses (2+). The query log, tail, and sinks apply it themselves.
+    pub fn set_privacy(&self, level: u8) {
+        self.privacy.store(level, Ordering::Relaxed);
     }
 
     /// Clock steps followed so far and the latest one (microseconds), for `/metrics`.
@@ -243,9 +253,14 @@ impl Hub {
                     let t = Instant::now();
                     hub.resync_clock();
                     {
+                        let level = hub.privacy.load(Ordering::Relaxed);
                         let mut agg = hub.aggregates();
                         drainer.drain(|r| {
-                            agg.record(&r);
+                            if level == 0 {
+                                agg.record(&r);
+                            } else {
+                                agg.record(&crate::event::private(&r, level));
+                            }
                             if let Some(s) = sink.as_mut() {
                                 s.record(&r);
                             }
@@ -269,8 +284,9 @@ impl Hub {
 
     /// One drain into the aggregates. Returns the number of records.
     pub fn drain_once(&self, drainer: &mut Drainer) -> usize {
+        let level = self.privacy.load(Ordering::Relaxed);
         let mut agg = self.aggregates();
-        drainer.drain(|r| agg.record(&r))
+        drainer.drain(|r| agg.record(&crate::event::private(&r, level)))
     }
 
     /// The single consumer of this hub's rings.

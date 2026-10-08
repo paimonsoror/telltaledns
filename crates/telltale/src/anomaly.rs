@@ -46,9 +46,10 @@ fn settings(cfg: &Config) -> Settings {
 
 impl Anomalies {
     /// The engine for `cfg`, with saved state when there is some. `None` when disabled or the
-    /// query-log privacy level hides names (3).
+    /// query-log privacy level hides names (1 and above: findings name domains and devices,
+    /// and the DGA score would read hashed names as random; review 04-04, `spec/06` §7.1).
     pub(crate) fn start(cfg: &Config) -> Option<Arc<Self>> {
-        if !cfg.telemetry.anomaly.enabled || cfg.telemetry.qlog.privacy_level >= 3 {
+        if !cfg.telemetry.anomaly.enabled || cfg.telemetry.qlog.privacy_level >= 1 {
             return None;
         }
         let path = PathBuf::from(cfg.node.data_dir.as_str()).join("anomaly.json");
@@ -191,8 +192,10 @@ mod tests {
         a.save();
         let b = Anomalies::start(&cfg).unwrap();
         assert_eq!(b.counters().1, 1, "the device's state came back");
-        // Privacy level 3 hides names: no engine.
-        cfg.telemetry.qlog.privacy_level = 3;
-        assert!(Anomalies::start(&cfg).is_none());
+        // Privacy levels that hide names: no engine (review 04-04).
+        for level in [1, 2, 3] {
+            cfg.telemetry.qlog.privacy_level = level;
+            assert!(Anomalies::start(&cfg).is_none(), "level {level}");
+        }
     }
 }

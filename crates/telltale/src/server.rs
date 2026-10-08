@@ -771,6 +771,10 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let tail = crate::tail::Tail::new(cfg.telemetry.qlog.privacy_level);
     // REQ: OBS-013 — the anomaly engine rides the same aggregator pass (off the query path).
     let anomalies = crate::anomaly::Anomalies::start(&cfg);
+    // REQ: OBS-009 (review 04-04) — the in-memory analytics follow the privacy level.
+    pipeline
+        .telemetry
+        .set_privacy(cfg.telemetry.qlog.privacy_level);
     let anomaly_sink = anomalies
         .as_ref()
         .map(|a| Box::new(a.sink()) as Box<dyn telltale_telemetry::ring::Sink>);
@@ -1219,6 +1223,10 @@ async fn reload(
             .set(new.agents.enabled, new.agents.rate_per_minute);
         a.agents().set_require_approval(new.agents.require_approval);
     }
+    sources
+        .pipeline
+        .telemetry
+        .set_privacy(new.telemetry.qlog.privacy_level);
     sources.config.store(Arc::new(new.clone()));
     sources.file_config.store(Arc::new(file));
     *current = new;

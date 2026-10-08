@@ -1291,14 +1291,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
-## ADR-102 — Privacy levels cover what is kept and sent out; live analytics wait for a decision (Proposed)
-**Context:** review 04-04 and 04-05. `spec/06` §4 defines privacy levels 0–3 ("Pi-hole parity"), and §7.1 says anomaly findings honour them. The levels were applied to the query log, the live tail, and event sinks, but not to `rollups.db`'s hourly top lists, the in-memory analytics the API serves (top lists, a device's page, first-seen domains, anomaly findings), or the anomaly engine's per-device baselines. Level 1's hash is unsalted, so anyone holding a log can confirm a guessed name.
+## ADR-102 — Privacy levels cover everything kept or shown (Proposed)
+**Context:** review 04-04 and 04-05. `spec/06` §4 defines privacy levels 0–3 ("Pi-hole parity"), and §7.1 says anomaly findings honour them. The levels were applied to the query log, the live tail, and event sinks, but not to `rollups.db`'s hourly top lists, the in-memory analytics the API serves (top lists, a device's page, first-seen domains, anomaly findings), or the anomaly engine. Level 1's hash is unsalted, so anyone holding a log can confirm a guessed name.
 
-**Decision (the conservative reading until the owner decides):**
-- Everything *stored or sent out* follows the level: the query log, the tail, sinks, and now `rollups.db`'s top lists (names hashed as the query log does at 1 and above; no client list at 2 and above).
-- The live analytics and the anomaly baselines stay as they are at levels 1 and 2, and `docs/running.md` says so, together with what level 1's hash does and doesn't protect against.
+**Decision (the owner chose Pi-hole's reading, 2026-10-08):**
+- The levels govern everything kept or shown. The aggregator thread applies them once, before the in-memory analytics see an event (`Hub::set_privacy`): names hashed exactly as the query log stores them at 1 and above, client addresses dropped at 2 and above. The query log, tail, and sinks keep applying the level themselves, so nothing is hashed twice; `rollups.db` takes its top lists from the analytics and drops the client list at 2 and above.
+- The anomaly engine is off at 1 and above, as it was at 3: its findings name domains and devices, and the DGA score would read hashed names as random. New-device alerts come from it, so they stop too. The masked-client detector is off at 2 and above, where every query looks like one client.
+- Counts, graphs, and latency percentiles work at every level.
 
-**Open for the owner:** (1) whether levels 1 and 2 also govern the live analytics (Pi-hole's reading, and §7.1's for findings), which at level 2 removes per-device analytics, the masked-IP detector, and device anomaly alerts; (2) a per-installation or per-cluster key for level 1's hash, or storing nothing for names at level 1.
+**Open:** a per-installation or per-cluster key for level 1's hash (review 04-05).
 
 ## ADR-101 — A snapshot keeps at most `[filter] max_regexes` regex rules, 1,000 by default (Proposed)
 **Context:** Code review of v0.2.0, finding 02-08 (owner's answer, 2026-10-07: a cap, with the overflow reported). Regex rules are tried on every query that no exact or suffix rule settles, and nothing bounded their number. Measured with `matcher_bench` on synthetic patterns sharing a prefix: 200 cost 0.4 µs per query at the median, 1,000 cost 1.1 µs, 1,500 cost 1.6 µs (41 MiB), and 2,000 grew past 5.9 GiB of memory within two minutes. The cause inside the regex engine's automaton wasn't pinned down.

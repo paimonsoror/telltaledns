@@ -1718,7 +1718,7 @@ fsync = false                # true: sync every write (slower on SD cards)
 ```
 - Writes are sequential and batched, about one every 10 seconds on a quiet network, so it's gentle on SD cards. A slow or full disk never slows DNS: if the writer falls behind, rows are dropped and counted (`telltale_qlog_rows_dropped_total`).
 - `privacy_level = 1` stores each name as a hash, so identical names still group together but can't be read back; `2` also drops client addresses; `3` keeps no per-query log at all (counters, top lists, and graphs still work).
-- What the levels cover: the query log, the live tail, [event sinks](#event-sinks), and each hour's top lists kept in `rollups.db` (names hashed at 1 and above, no list of clients at 2 and above). The live analytics are not affected at levels 1 and 2: the dashboard's top lists for the last two hours, a device's page, first-seen domains, and anomaly findings still show full names and devices to signed-in users and agents, and the anomaly engine keeps its per-device baselines in `anomaly.json`.
+- What the levels cover: everything TelltaleDNS keeps or shows, as on Pi-hole. The query log, the live tail, [event sinks](#event-sinks), the dashboard's top lists, a device's page, and the hourly top lists kept in `rollups.db` all show hashed names at 1 and above, and no client addresses at 2 and above (every query then counts as one client). Anomaly detection and new-device alerts are off at 1 and above: their findings name domains and devices. The masked-client warning is off at 2 and above. Counts, graphs, and latency keep working at every level.
 - What level 1 protects against: someone reading the log can't see a name nobody guesses. The hash is the same on every installation, though, so anyone holding the log can check whether a name they suspect was queried, and when. Use level 3 if that matters.
 - Search it from the command line (the API comes later):
   ```sh
@@ -1815,7 +1815,7 @@ ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity chec
 nxdomain_per_minute = 30       # NXDOMAIN storm: answers per minute...
 nxdomain_percent = 50          # ...that are at least this share of the device's queries
 ```
-The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level = 3` (names aren't kept). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
+The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level` is 1 or above (names and devices are hidden). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
 ## Alerts
 TelltaleDNS can tell you when something needs attention: by email, on your phone through [ntfy](https://ntfy.sh) or Gotify, in a Slack-compatible channel (Slack, Mattermost, Discord's `/slack` webhook URL), or on any webhook.

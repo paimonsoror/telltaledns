@@ -93,8 +93,13 @@ impl Sources {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let window = self.pipeline.telemetry.aggregates().recent_clients(now);
         let cfg = self.config.load();
+        // REQ: OPS-003, OBS-009 (review 04-04) — at privacy level 2 the analytics keep no client
+        // addresses, so every query looks like one client: nothing to judge.
+        if cfg.telemetry.qlog.privacy_level >= 2 {
+            return None;
+        }
+        let window = self.pipeline.telemetry.aggregates().recent_clients(now);
         self.masking
             .check(window.as_ref(), &cfg.clients.infrastructure)
     }

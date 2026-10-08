@@ -156,12 +156,10 @@ type Tops = Vec<(&'static str, Vec<TopRow>)>;
 type Extras = (Tops, Vec<LatencyRow>);
 
 /// REQ: OBS-003, OBS-004 (`spec/06` §4; review 04-04) — the last complete hour's top-K lists,
-/// as the query log's privacy level lets them be kept for 400 days: at 1 and above names are
-/// stored hashed exactly as the query log stores them, and at 2 and above there is no list of
-/// clients.
+/// as the query log's privacy level lets them be kept for 400 days. The analytics already
+/// hold names hashed as the query log stores them at 1 and above (`Hub::set_privacy`); at 2
+/// and above there is no list of clients (they're all one).
 fn hour_tops(agg: &telltale_telemetry::Aggregates, privacy: u8) -> Tops {
-    let hidden =
-        |wire: &[u8]| telltale_telemetry::event::dotted(&telltale_store::qlog::hidden_name(wire));
     [
         ("domains", TopKind::Domains),
         ("blocked", TopKind::Blocked),
@@ -171,12 +169,8 @@ fn hour_tops(agg: &telltale_telemetry::Aggregates, privacy: u8) -> Tops {
     .into_iter()
     .filter(|(_, kind)| privacy < 2 || *kind != TopKind::Clients)
     .map(|(name, kind)| {
-        let tops = if privacy >= 1 {
-            agg.top_names_shown(kind, HourSel::Previous, TOP_KEPT, hidden)
-        } else {
-            agg.top_names(kind, HourSel::Previous, TOP_KEPT)
-        };
-        let rows = tops
+        let rows = agg
+            .top_names(kind, HourSel::Previous, TOP_KEPT)
             .into_iter()
             .map(|t| TopRow {
                 key: t.key,
@@ -258,18 +252,20 @@ mod tests {
         }
     }
 
-    /// An hour with one blocked query for `ads.example` from 192.168.1.5, then the next hour.
-    fn closed_hour() -> Aggregates {
+    /// An hour with one blocked query for `ads.example` from 192.168.1.5, then the next hour,
+    /// as the analytics see them at privacy level `level`.
+    fn closed_hour(level: u8) -> Aggregates {
         let mut agg = Aggregates::new();
         let hour = 1_700_000_000 / 3600 * 3600 * 1_000_000;
-        agg.record(&Record::Query(
+        let seen = |r: Record| telltale_telemetry::event::private(&r, level);
+        agg.record(&seen(Record::Query(
             query(hour + 5, Status::Blocked),
             Name::from_wire(ADS),
-        ));
-        agg.record(&Record::Query(
+        )));
+        agg.record(&seen(Record::Query(
             query(hour + 3_600_000_000, Status::Cached),
             Name::from_wire(b"\x03new\x07example\x00"),
-        ));
+        )));
         agg
     }
 
@@ -284,22 +280,21 @@ mod tests {
     /// client list at 2 and above.
     #[test]
     fn obs_003_stored_top_lists_follow_the_privacy_level() {
-        let agg = closed_hour();
         let hashed = telltale_telemetry::event::dotted(&telltale_store::qlog::hidden_name(ADS));
         let plain = telltale_telemetry::event::dotted(ADS);
         assert_ne!(hashed, plain);
 
-        let full = hour_tops(&agg, 0);
+        let full = hour_tops(&closed_hour(0), 0);
         assert_eq!(keys(&full, "blocked"), Some(vec![plain.as_str()]));
         assert_eq!(keys(&full, "clients"), Some(vec!["192.168.1.5"]));
 
-        let level1 = hour_tops(&agg, 1);
+        let level1 = hour_tops(&closed_hour(1), 1);
         assert_eq!(keys(&level1, "domains"), Some(vec![hashed.as_str()]));
         assert_eq!(keys(&level1, "blocked"), Some(vec![hashed.as_str()]));
         assert_eq!(keys(&level1, "clients"), Some(vec!["192.168.1.5"]));
 
         for level in [2, 3] {
-            let hidden = hour_tops(&agg, level);
+            let hidden = hour_tops(&closed_hour(level), level);
             assert_eq!(keys(&hidden, "blocked"), Some(vec![hashed.as_str()]));
             assert_eq!(keys(&hidden, "clients"), None, "level {level}");
         }

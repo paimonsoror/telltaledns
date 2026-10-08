@@ -3605,6 +3605,7 @@ name = "telltale-telemetry"
 version = "0.3.0"
 dependencies = [
  "allocation-counter",
+ "blake3",
  "hdrhistogram",
  "rtrb",
  "serde",

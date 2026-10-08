@@ -399,3 +399,28 @@ fn obs_001_event_time_follows_a_clock_step() {
     assert_eq!(hub.ts_us(at), before, "and back");
     assert_eq!(hub.clock_steps(), (2, -7_200_000_000));
 }
+
+/// REQ: OBS-009 (`spec/06` §4, review 04-04) — the in-memory analytics follow the privacy
+/// level: names hashed as the query log stores them at 1, and no client address at 2.
+#[test]
+fn obs_009_analytics_follow_the_privacy_level() {
+    let name = wire("tracker.example.com");
+    let hidden = event::dotted(&event::hidden_name(&name));
+    for (level, want_name, want_client) in [
+        (0, "tracker.example.com", "10.0.0.7"),
+        (1, hidden.as_str(), "10.0.0.7"),
+        (2, hidden.as_str(), "::"),
+    ] {
+        let hub = Hub::new(1 << 16);
+        hub.set_privacy(level);
+        let mut drainer = hub.drainer();
+        let t0 = 1_700_000_000_000_000;
+        hub.emit_query(&query(t0, ipv4(10, 0, 0, 7), Status::Forwarded, 1), &name);
+        assert_eq!(hub.drain_once(&mut drainer), 1);
+        let agg = hub.aggregates();
+        let domains = agg.top_names(TopKind::Domains, HourSel::Current, 5);
+        let clients = agg.top_names(TopKind::Clients, HourSel::Current, 5);
+        assert_eq!(domains[0].key, want_name, "level {level}");
+        assert_eq!(clients[0].key, want_client, "level {level}");
+    }
+}

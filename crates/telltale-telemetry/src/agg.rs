@@ -530,19 +530,6 @@ impl Aggregates {
 
     /// The heaviest names (presentation form) for `kind`, heaviest first.
     pub fn top_names(&self, kind: TopKind, sel: HourSel, n: usize) -> Vec<Top<String>> {
-        self.top_names_shown(kind, sel, n, crate::event::dotted)
-    }
-
-    /// [`Self::top_names`], with each name (wire format) presented by `show`: the rollup
-    /// writer hashes them as the query log does at privacy level 1 (`spec/06` §4). Client
-    /// keys are unchanged.
-    pub fn top_names_shown(
-        &self,
-        kind: TopKind,
-        sel: HourSel,
-        n: usize,
-        show: impl Fn(&[u8]) -> String,
-    ) -> Vec<Top<String>> {
         let Some(h) = self.hour(sel) else {
             return Vec::new();
         };
@@ -550,7 +537,7 @@ impl Aggregates {
             t.top(n)
                 .into_iter()
                 .map(|x| Top {
-                    key: show(&x.key),
+                    key: crate::event::dotted(&x.key),
                     count: x.count,
                     error: x.error,
                 })

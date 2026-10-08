@@ -4,6 +4,8 @@
 //! full wire-format qname (lowercased), so long names (the interesting ones for DGA and
 //! anomaly detection) are never truncated; a typical record is ~85 bytes (ADR-026).
 
+use std::fmt::Write as _;
+
 use crate::{Proto, Status};
 
 /// Longest wire-format name (RFC 1035 §2.3.4).
@@ -165,6 +167,38 @@ impl Name {
 }
 
 /// Presentation form of a wire name (no escaping: names are stored as received, lowercased).
+/// Privacy level 1+: the name is replaced by a one-label hash, so the same name still groups
+/// together but can't be read (`spec/06` §4 privacy levels).
+pub fn hidden_name(name: &[u8]) -> Box<[u8]> {
+    let h = blake3::hash(name);
+    let mut label = String::from("h");
+    for b in &h.as_bytes()[..8] {
+        let _ = write!(label, "{b:02x}");
+    }
+    let mut wire = Vec::with_capacity(label.len() + 2);
+    wire.push(u8::try_from(label.len()).unwrap_or(0));
+    wire.extend_from_slice(label.as_bytes());
+    wire.push(0);
+    wire.into()
+}
+
+/// REQ: OBS-003, OBS-009 (`spec/06` §4 and §7.1, review 04-04) — `r` as the analytics may
+/// keep it at privacy level `level`: the name hashed as the query log stores it at 1 and
+/// above, and no client address at 2 and above. Upstream events carry neither.
+pub fn private(r: &Record, level: u8) -> Record {
+    match r {
+        Record::Query(e, name) if level >= 1 => {
+            let mut e = *e;
+            if level >= 2 {
+                e.client_ip = [0; 16];
+                e.client_ref = 0;
+            }
+            Record::Query(e, Name::from_wire(&hidden_name(name.as_wire())))
+        }
+        other => *other,
+    }
+}
+
 pub fn dotted(wire: &[u8]) -> String {
     let mut out = String::new();
     let mut pos = 0;
