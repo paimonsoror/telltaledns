@@ -1,6 +1,6 @@
 # Running TelltaleDNS
 
-> **Status:** 0.1.0 is the first stable release. This page describes `main`; each release's notes say what it contains. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change. What stands between 0.x and 1.0 is tracked in [`docs/v1-gate.md`](v1-gate.md).
+> **Status:** stable releases are listed on the [releases page](https://github.com/paimonsoror/telltaledns/releases). This page describes `main`; each release's notes say what it contains. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change. What stands between 0.x and 1.0 is tracked in [`docs/v1-gate.md`](v1-gate.md).
 
 ## Start
 ```sh
@@ -41,7 +41,7 @@ Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with
 ```sh
 docker run -d --name telltale --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  -p 53:53/udp -p 53:53/tcp -p 9153:9153 \
+  -p 53:53/udp -p 53:53/tcp -p 8053:8053 -p 9153:9153 \
   -v "$PWD/telltale.toml:/etc/telltale/telltale.toml:ro" \
   -v telltale-data:/var/lib/telltale \
   ghcr.io/paimonsoror/telltale:latest

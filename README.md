@@ -10,6 +10,15 @@ Every connection on your network starts with a DNS lookup. TelltaleDNS answers i
 
 > A *telltale* is the strip of yarn sailors tie to a sail to see what the wind is really doing. DNS is your network's telltale: it reveals what every device is up to.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.jpg">
+    <img alt="The TelltaleDNS dashboard: queries, blocked share, and cache hits; queries by status and by group over 15 minutes; where time goes; and the top domains, blocked names, and devices with their groups" src="docs/images/dashboard-light.jpg" width="900">
+  </picture>
+  <br>
+  <sub>The dashboard on a demo network. Every device, name, and address in it is made up.</sub>
+</p>
+
 ## Mission
 Give everyone who runs a home or small network an honest, real-time view of what their devices are doing, and full control over it, without trading away speed, footprint, or reliability.
 
@@ -18,7 +27,28 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Never fail:** DNS keeps answering from its last good config, whatever happens to the control plane.
 - **Run anywhere:** the same artifact on a Pi, in a cluster, or both at once.
 
-**Status:** pre-1.0, built from `main` (`edge`). Resolving and caching, blocklists with per-device groups, encrypted DNS both ways, DNSSEC validation, the query log and analytics, the web UI, clustering across a Pi and Kubernetes, and agent access all work today; see the [roadmap](spec/10-roadmap-and-tasks.md) for what's next. Project site: **https://paimonsoror.github.io/telltaledns/** · Running it: [`docs/running.md`](docs/running.md).
+## What it does
+- **Every answer explained.** The query log ties each query to a named device, times every stage, and says why it was answered that way. Names come from your router, from what devices announce over mDNS, or from the UI.
+- **Your rules, per device.** Blocklists, groups for each network or VLAN, schedules, safe search, blocked services, rewrites, and quick rules.
+- **Encrypted both ways.** DoT, DoH, and DoQ for your devices and to your upstreams, DNSSEC validation, and full recursion when you'd rather not forward at all.
+- **Watch it work.** A dashboard for the whole cluster, one node, or one site; device anomalies and alerts; Prometheus metrics, OpenTelemetry, dnstap, and event sinks for your SIEM.
+- **One cluster, many places.** A Pi and Kubernetes nodes share one config and one management plane. A witness lets a replica take over automatically, and the config can live in Git.
+- **Private by design.** Privacy levels decide how much of each query is kept, from everything to counters only, and every change lands in an audit log.
+- **Ready for agents.** A documented REST API with OpenAPI, `telltale ctl` for the shell, and MCP tools with plans and approval for AI agents.
+- **Small.** One static binary in an image of about 11 MiB, for amd64, arm64, and 32-bit Pi OS, with signed releases.
+
+## Quick start
+On a Raspberry Pi or any Linux host with Docker:
+```sh
+mkdir telltale && cd telltale
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/paimonsoror/telltaledns/main/deploy/compose/telltale.toml
+docker compose up -d
+docker compose exec telltale telltale auth setup-token     # then open http://<host>:8053/
+```
+Kubernetes (Helm), a native systemd install, clustering, and moving from Pi-hole or Technitium are covered in [`docs/running.md`](docs/running.md).
+
+**Status:** pre-1.0. Tagged [releases](https://github.com/paimonsoror/telltaledns/releases) are stable (`latest`), and `edge` is built from every commit on `main`. Releases before 1.0 can still change configuration keys and APIs, and their notes call out every such change; the [roadmap](spec/10-roadmap-and-tasks.md) shows what's next. Project site: **https://paimonsoror.github.io/telltaledns/**
 
 | Read this | If you want |
 |---|---|
