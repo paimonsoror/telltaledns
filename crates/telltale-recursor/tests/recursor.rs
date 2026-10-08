@@ -15,6 +15,7 @@ use tokio::net::UdpSocket;
 
 /// A zone: its records, its delegations (child, server name, glue), and quirks.
 #[derive(Clone, Default)]
+#[allow(clippy::struct_excessive_bools)] // independent quirks
 struct Zone {
     origin: &'static str,
     records: Vec<(&'static str, u16, Vec<u8>)>,
@@ -25,6 +26,9 @@ struct Zone {
     poison: bool,
     /// Always refers back to the root (lame).
     lame: bool,
+    /// Before every answer, sends a forged one first: the question in lowercase and the
+    /// address 6.6.6.6 (an off-path spoofer who guessed the ID and port, but not the case).
+    spoof: bool,
     /// Milliseconds to wait before answering (changeable while running).
     delay_ms: Option<Arc<AtomicU64>>,
 }
@@ -182,6 +186,16 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
                 if ms > 0 {
                     tokio::time::sleep(Duration::from_millis(ms)).await;
                 }
+            }
+            if z.spoof {
+                let mut fake = z.clone();
+                fake.lowercase = true;
+                for r in &mut fake.records {
+                    if r.1 == rtype::A {
+                        r.2 = a([6, 6, 6, 6]);
+                    }
+                }
+                let _ = s.send_to(&respond(&fake, q), from).await;
             }
             let _ = s.send_to(&respond(&z, q), from).await;
         }
@@ -416,6 +430,32 @@ async fn dns_012_case_randomization() {
         seen.iter()
             .any(|(_, n)| n.chars().any(|c| c.is_ascii_uppercase())),
         "some letters went out uppercase: {seen:?}"
+    );
+}
+
+/// REQ: DNS-012 — 0x20 holds against a spoofed reply: an answer whose letter case differs
+/// is not the server's word, so the resolver keeps waiting for one with the case intact
+/// instead of asking again plainly (which would let a spoofer who guessed the ID and port
+/// win on the retry).
+#[tokio::test]
+async fn dns_012_case_mismatch_does_not_drop_0x20() {
+    let (mut s, log) = tree(|z| z[2].1.spoof = true).await;
+    s.case_randomization = true;
+    let r = Recursor::new(s);
+    let res = r
+        .resolve(name("www.example.com"), rtype::A, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        addrs(&res),
+        vec![IpAddr::from([10, 0, 0, 1])],
+        "the server's answer, not the spoofed one"
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter().filter(|(ip, _)| *ip == 4).count(),
+        1,
+        "asked once, never again plainly: {seen:?}"
     );
 }
 

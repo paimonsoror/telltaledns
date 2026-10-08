@@ -3,6 +3,7 @@
 //! randomization of the name (checked on the way back).
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use telltale_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
@@ -94,9 +95,17 @@ pub(crate) async fn ask(
 ) -> Result<Vec<u8>, NetError> {
     let id: u16 = rand::random();
     let query = wire_query(id, name, qtype, dnssec_ok, mix_case).ok_or(NetError::Bad)?;
-    let resp = tokio::time::timeout(timeout, udp(server, &query, mix_case))
-        .await
-        .map_err(|_| NetError::Timeout)??;
+    // REQ: DNS-012 — a reply whose letter case differs is not taken as the server's word: it
+    // may be a spoof that guessed the ID and port but not the case. The one with the case
+    // intact is waited for; only when none comes in time does the server count as one that
+    // doesn't echo the case.
+    let case_changed = AtomicBool::new(false);
+    let resp =
+        match tokio::time::timeout(timeout, udp(server, &query, mix_case, &case_changed)).await {
+            Ok(r) => r?,
+            Err(_) if case_changed.load(Ordering::Relaxed) => return Err(NetError::CaseMismatch),
+            Err(_) => return Err(NetError::Timeout),
+        };
     if Header::parse(&resp).is_some_and(|h| h.flags.tc()) {
         // Truncated: the whole answer over TCP (RFC 7766), with a little more time.
         return tokio::time::timeout(timeout * 2, tcp(server, &query, mix_case))
@@ -106,7 +115,12 @@ pub(crate) async fn ask(
     Ok(resp)
 }
 
-async fn udp(server: SocketAddr, query: &[u8], exact: bool) -> Result<Vec<u8>, NetError> {
+async fn udp(
+    server: SocketAddr,
+    query: &[u8],
+    exact: bool,
+    case_changed: &AtomicBool,
+) -> Result<Vec<u8>, NetError> {
     let bind: SocketAddr = match server.ip() {
         IpAddr::V4(_) => (std::net::Ipv4Addr::UNSPECIFIED, 0).into(),
         IpAddr::V6(_) => (std::net::Ipv6Addr::UNSPECIFIED, 0).into(),
@@ -122,7 +136,8 @@ async fn udp(server: SocketAddr, query: &[u8], exact: bool) -> Result<Vec<u8>, N
                 buf.truncate(n);
                 return Ok(buf);
             }
-            Err(NetError::CaseMismatch) => return Err(NetError::CaseMismatch),
+            // The case changed: noted, and the wait for an intact one goes on.
+            Err(NetError::CaseMismatch) => case_changed.store(true, Ordering::Relaxed),
             // Stray or spoofed: keep waiting for the real one.
             Err(_) => {}
         }
