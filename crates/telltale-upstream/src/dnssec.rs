@@ -131,7 +131,7 @@ impl DnsHandle for GroupHandle {
             let a = group
                 .resolve(question, budget)
                 .await
-                .map_err(|e| NetError::from(format!("upstream: {e}")))?;
+                .map_err(upstream_failure)?;
             *last.lock() = (a.upstream_id, a.attempts);
             DnsResponse::from_buffer(a.bytes).map_err(|e| NetError::from(e.to_string()))
         }))
@@ -805,9 +805,33 @@ pub(crate) fn error_verdict(e: &NetError) -> Verdict {
     }
 }
 
+/// REQ: DNS-011, DNS-013 (review 03-06) — the upstream group gave no answer (as opposed to
+/// something the validator found wrong with the answers it got). Carried inside an I/O error so
+/// the validator's `NetError` can be told apart by type, not by what its message happens to
+/// start with.
+#[derive(Debug)]
+struct UpstreamFailure(String);
+
+impl std::fmt::Display for UpstreamFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upstream: {}", self.0)
+    }
+}
+
+impl std::error::Error for UpstreamFailure {}
+
+fn upstream_failure(e: impl std::fmt::Display) -> NetError {
+    NetError::Io(Arc::new(std::io::Error::other(UpstreamFailure(
+        e.to_string(),
+    ))))
+}
+
 fn is_transport(e: &NetError) -> bool {
-    let s = e.to_string();
-    s.starts_with("upstream:") || matches!(e, NetError::Timeout)
+    match e {
+        NetError::Timeout => true,
+        NetError::Io(io) => matches!(io.get_ref(), Some(inner) if inner.is::<UpstreamFailure>()),
+        _ => false,
+    }
 }
 
 /// The weakest proof among the records that answer the question.
@@ -899,6 +923,26 @@ pub fn unvalidated(a: Answer) -> Validated {
 #[cfg(test)]
 mod depth_tests {
     use super::*;
+
+    /// REQ: DNS-011, DNS-013 (review 03-06) — an error is an upstream failure by its type: the
+    /// marker the handle puts on it (also through a clone), a timeout; not a validation error
+    /// whose message begins `upstream:`, and not some other I/O error.
+    #[test]
+    fn dns_011_transport_errors_are_told_apart_by_type() {
+        let marked = upstream_failure("all upstreams failed");
+        assert!(is_transport(&marked));
+        assert!(is_transport(&marked.clone()), "clones keep the marker");
+        assert!(is_transport(&NetError::Timeout));
+        assert!(
+            marked
+                .to_string()
+                .contains("upstream: all upstreams failed")
+        );
+        let lookalike = NetError::from("upstream: but this is a validation message".to_owned());
+        assert!(!is_transport(&lookalike), "a message is not a marker");
+        let other_io = NetError::Io(Arc::new(std::io::Error::other("connection reset")));
+        assert!(!is_transport(&other_io));
+    }
 
     /// REQ: DNS-011 (T10.9) — the zones an unsigned-zone proof walks, top down.
     #[test]
