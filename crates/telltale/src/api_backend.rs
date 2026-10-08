@@ -1910,6 +1910,11 @@ impl Backend for ApiBackend {
         }
         let src = Arc::clone(&self.src);
         Box::pin(async move {
+            // REQ: API-002, API-010 (ADR-040) — one change at a time: the plan below is
+            // checked against what the store then changes, and the result is applied before
+            // the next write looks (two writes planned on the same snapshot could each be
+            // valid and together not: the reload would then fall back to the files alone).
+            let _one_at_a_time = src.config_writes.lock().await;
             let state = src
                 .auth
                 .get()
@@ -3272,6 +3277,11 @@ impl ApiBackend {
     ) -> BoxFuture<Result<ConfigChange, Problem>> {
         let src = Arc::clone(&self.src);
         Box::pin(async move {
+            // REQ: API-002, API-010 (ADR-040) — one change at a time: the plan below is
+            // checked against what the store then changes, and the result is applied before
+            // the next write looks (two writes planned on the same snapshot could each be
+            // valid and together not: the reload would then fall back to the files alone).
+            let _one_at_a_time = src.config_writes.lock().await;
             let state = src
                 .auth
                 .get()

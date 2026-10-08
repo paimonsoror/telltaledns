@@ -859,6 +859,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         ship: Arc::default(),
         git_poke: Arc::default(),
         reload: reload_tx,
+        config_writes: tokio::sync::Mutex::new(()),
     });
     http::serve_peers(&sources);
     // REQ: CLU-003 — the Git config source polls on the primary (ADR-049).

@@ -82,6 +82,9 @@ pub(crate) struct Sources {
     /// Asks the main loop to re-read the config files and state.db and apply them; answers
     /// whether it worked (ADR-040).
     pub(crate) reload: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<bool>>,
+    /// REQ: API-002, API-010 (ADR-040) — configuration changes through the API run one at a
+    /// time: a plan is checked against the configuration the store then changes.
+    pub(crate) config_writes: tokio::sync::Mutex<()>,
 }
 
 impl Sources {
@@ -1384,6 +1387,7 @@ mod tests {
             ship: Arc::default(),
             git_poke: Arc::default(),
             reload: tokio::sync::mpsc::channel(1).0,
+            config_writes: tokio::sync::Mutex::new(()),
             allowed: Vec::new(),
         }
     }
