@@ -27,6 +27,8 @@ cluster:
   # The shared join secret. Empty: the chart creates one (kept across upgrades). With Argo CD
   # (no `lookup`), create the Secret yourself and name it here.
   bootstrapSecret:
+    # A Secret of your own instead of the generated one (48 random characters). Use at
+    # least 32 random characters: anyone who knows it can join as a resolver pod.
     existingSecret: ""
     key: bootstrap
 

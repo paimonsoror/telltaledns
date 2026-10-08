@@ -241,7 +241,7 @@ the chart's schema rejects a mistyped value with its path.
   helm install telltale deploy/helm/telltale -n telltale --set mode=scaled --set resolvers.replicas=3
   ```
   - The StatefulSet becomes the cluster's **controller**: it creates the cluster on first start, keeps the volume, and serves the UI and API.
-  - Each **resolver pod** joins it automatically with a Secret the chart generates. It takes the controller's configuration and compiled lists, and ships its query log to the controller's volume.
+  - Each **resolver pod** joins it automatically with a Secret the chart generates (48 random characters; with `cluster.bootstrapSecret.existingSecret`, use at least 32, or the log warns). It takes the controller's configuration and compiled lists, and ships its query log to the controller's volume.
   - Resolver pods are trusted less than the controller: they never get the cluster's signing key, can't vote or be promoted, can't step the primary down, and can't change anything on other nodes (forward configuration changes, pause blocking, or flush caches). Make those changes on the controller.
   - A resolver pod reports ready only once it has the configuration, so it never answers unfiltered. Pods come and go: one that's gone for `resolvers.ephemeralTtlSeconds` (default 600) leaves the cluster's list of nodes. The Cluster page shows them grouped by site ("k8s: 3 resolver pods").
   - The DNS Service spreads queries over the controller and every resolver pod.

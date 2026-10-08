@@ -44,6 +44,18 @@ pub(crate) fn start(
     // re-read at every join, so a rotated Secret applies without a restart.
     if let Some(path) = &cfg.cluster.bootstrap_secret_file {
         cluster.set_bootstrap_file(std::path::PathBuf::from(path.as_str()));
+        // REQ: CLU-009 (review 05-06) — the CA proof (`POST /cluster/v1/ca`) answers
+        // anyone, so a short secret can be guessed offline from collected proofs. Warned,
+        // not refused: refusing would stop existing resolver pods from joining.
+        if let Some(s) = bootstrap_secret(cfg)
+            && s.len() < MIN_BOOTSTRAP_SECRET
+        {
+            warn!(
+                path = %path,
+                length = s.len(),
+                "cluster: the bootstrap secret is short; use at least {MIN_BOOTSTRAP_SECRET} random characters (anyone who guesses it can join as a resolver pod)"
+            );
+        }
     }
     if let Ok(addr) = cfg.cluster.listen.as_str().parse::<SocketAddr>() {
         let (c, stop) = (Arc::clone(&cluster), stop.clone());
@@ -105,6 +117,9 @@ pub(crate) fn start(
     });
     Some(cluster)
 }
+
+/// Shorter bootstrap secrets are warned about at startup (the chart generates 48 characters).
+const MIN_BOOTSTRAP_SECRET: usize = 32;
 
 /// The shared bootstrap secret from `[cluster] bootstrap_secret_file`, if set and readable.
 fn bootstrap_secret(cfg: &telltale_config::Config) -> Option<String> {
