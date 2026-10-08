@@ -401,7 +401,8 @@ pub struct QueryParams {
     pub qtype: Option<String>,
     /// Response codes, comma-separated (`NXDOMAIN,SERVFAIL`).
     pub rcode: Option<String>,
-    /// Upstream ID.
+    /// Upstream ID. Not recorded on queries yet (ADR-026): a value other than 0 matches
+    /// nothing. Per-upstream numbers are in `/upstreams` and `/stats/latency?by=upstream`.
     pub upstream: Option<u16>,
     /// Only queries from devices in this group (a group name, ADR-050).
     pub group: Option<String>,

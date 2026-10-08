@@ -2555,7 +2555,7 @@
           {
             "name": "upstream",
             "in": "query",
-            "description": "Upstream ID.",
+            "description": "Upstream ID. Not recorded on queries yet (ADR-026): a value other than 0 matches\nnothing. Per-upstream numbers are in `/upstreams` and `/stats/latency?by=upstream`.",
             "required": false,
             "schema": {
               "type": "integer",
