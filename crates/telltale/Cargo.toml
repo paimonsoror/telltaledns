@@ -20,7 +20,7 @@ workspace = true
 socket2 = { version = "0.6.5", features = ["all"] }
 http = "1.5.0"
 base64 = "0.22.1"
-telltale-git = { version = "0.3.0", path = "../telltale-git" }
+telltale-git = { version = "0.4.0", path = "../telltale-git" }
 blake3 = "1.8.7"
 arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }
@@ -49,17 +49,17 @@ webpki-roots = "1.0.9"
 # float_roundtrip: saved anomaly baselines reload bit-exact (OBS-013 determinism).
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 bytes = "1.12.1"
-telltale-api = { version = "0.3.0", path = "../telltale-api" }
-telltale-cache = { version = "0.3.0", path = "../telltale-cache" }
-telltale-cluster = { version = "0.3.0", path = "../telltale-cluster" }
+telltale-api = { version = "0.4.0", path = "../telltale-api" }
+telltale-cache = { version = "0.4.0", path = "../telltale-cache" }
+telltale-cluster = { version = "0.4.0", path = "../telltale-cluster" }
 telltale-config.workspace = true
-telltale-filter = { version = "0.3.0", path = "../telltale-filter" }
-telltale-store = { version = "0.3.0", path = "../telltale-store" }
-telltale-net = { version = "0.3.0", path = "../telltale-net" }
-telltale-policy = { version = "0.3.0", path = "../telltale-policy" }
-telltale-proto = { version = "0.3.0", path = "../telltale-proto" }
-telltale-telemetry = { version = "0.3.0", path = "../telltale-telemetry" }
-telltale-upstream = { version = "0.3.0", path = "../telltale-upstream" }
+telltale-filter = { version = "0.4.0", path = "../telltale-filter" }
+telltale-store = { version = "0.4.0", path = "../telltale-store" }
+telltale-net = { version = "0.4.0", path = "../telltale-net" }
+telltale-policy = { version = "0.4.0", path = "../telltale-policy" }
+telltale-proto = { version = "0.4.0", path = "../telltale-proto" }
+telltale-telemetry = { version = "0.4.0", path = "../telltale-telemetry" }
+telltale-upstream = { version = "0.4.0", path = "../telltale-upstream" }
 # io-std/io-util: `telltale mcp --stdio` (AGT-006).
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "signal", "macros", "time", "io-std", "io-util"] }
 toml = "1.1.6"
