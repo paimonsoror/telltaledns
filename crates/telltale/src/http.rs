@@ -1150,6 +1150,14 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
+    write_tcp_metrics(w, src);
+    write_doq_metrics(w, src);
+    write_doh_metrics(w, src);
+}
+
+/// REQ: DNS-001, DNS-002 — TCP and DoT listener counters (also DoH's TLS and PROXY failures).
+fn write_tcp_metrics(w: &mut PromWriter, src: &Sources) {
+    use std::sync::atomic::Ordering::Relaxed;
     let tcp = src.tcp.load();
     let tsum = |f: fn(&TcpStats) -> u64| tcp.iter().map(|s| f(s)).sum::<u64>();
     for (name, help, v) in [
@@ -1167,6 +1175,11 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
             "telltale_tcp_idle_closed_total",
             "TCP connections closed for idleness.",
             tsum(|s| s.idle_closed.load(Relaxed)),
+        ),
+        (
+            "telltale_tcp_stalled_closed_total",
+            "TCP connections closed because the client stopped reading answers.",
+            tsum(|s| s.stalled_closed.load(Relaxed)),
         ),
         (
             "telltale_tls_handshake_failures_total",
@@ -1193,7 +1206,10 @@ fn render_listeners(w: &mut PromWriter, src: &Sources) {
     ] {
         w.family(name, "counter", help).sample(name, &[], v);
     }
-    write_doq_metrics(w, src);
+}
+
+fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
+    use std::sync::atomic::Ordering::Relaxed;
     // REQ: DNS-003 — DoH requests (queries are also in telltale_queries_total{proto="doh"}).
     let doh = src.doh.load();
     let dsum = |f: fn(&DohStats) -> u64| doh.iter().map(|s| f(s)).sum::<u64>();
@@ -1287,6 +1303,7 @@ mod tests {
             "telltale_upstream_requests_total",
             "telltale_udp_received_total",
             "telltale_tcp_connections_total",
+            "telltale_tcp_stalled_closed_total",
         ] {
             assert!(
                 text.contains(&format!("# TYPE {family} ")),

@@ -138,6 +138,48 @@ async fn dns_001_tcp_connection_cap() {
     server.shutdown().await;
 }
 
+/// REQ: DNS-001 (RFC 7766 §6.2.3) — a client that sends queries but never reads the answers
+/// must not hold its connection (and its slot) forever: once a write stalls for the idle
+/// timeout the server closes it, and the slot serves the next client.
+#[tokio::test]
+async fn dns_001_tcp_slow_reader_is_closed() {
+    // Big answers fill the socket buffers quickly.
+    fn big(req: &[u8], _: &RequestMeta, out: &mut [u8]) -> Response {
+        out[..12].copy_from_slice(&req[..12]);
+        out[2] |= 0x80;
+        Response::Ready(60_000)
+    }
+    let mut c = cfg();
+    c.idle_timeout = Duration::from_millis(300);
+    c.max_connections = 1;
+    let server = TcpServer::bind(c, Arc::new(big)).unwrap();
+    let mut stuck = TcpStream::connect(server.local_addr()).await.unwrap();
+    // Queries without ever reading: the kernel buffers fill and the server's writes stall.
+    let mut batch = Vec::new();
+    for id in 0..2000u16 {
+        batch.extend(frame(id));
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(1), stuck.write_all(&batch)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let mut next = TcpStream::connect(server.local_addr()).await.unwrap();
+    next.write_all(&frame(7)).await.unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut next)).await;
+    assert!(
+        matches!(r, Ok(Ok(_))),
+        "the stalled connection should have been closed and its slot freed: {r:?}"
+    );
+    assert_eq!(
+        server
+            .stats()
+            .stalled_closed
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    drop(stuck);
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn dns_001_tcp_runt_length_closes_connection() {
     let server = TcpServer::bind(cfg(), Arc::new(echo)).unwrap();

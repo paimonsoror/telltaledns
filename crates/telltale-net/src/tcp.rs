@@ -78,6 +78,9 @@ pub struct TcpStats {
     pub tls_failed: AtomicU64,
     /// Connections closed for a missing or malformed PROXY header.
     pub proxy_rejected: AtomicU64,
+    /// Connections closed because the client stopped reading its answers (a write stalled
+    /// for the idle timeout).
+    pub stalled_closed: AtomicU64,
 }
 
 /// A running TCP DNS listener.
@@ -277,17 +280,19 @@ async fn serve_conn<S, H>(
         transport: cfg.transport,
         client_id,
     };
+    // REQ: DNS-001 (RFC 7766 §6.2.3) — a client that stops reading its answers must not hold
+    // the connection (and its slot) forever: a write that stalls for the idle timeout closes
+    // it. Dropping `rx` then fails the reader's next send, so it stops too.
+    let (write_timeout, wstats) = (cfg.idle_timeout, Arc::clone(stats));
     let writer = tokio::spawn(async move {
         while let Some(buf) = rx.recv().await {
-            if wr.write_all(&buf).await.is_err() {
-                break;
-            }
             // TLS buffers records; push them out once nothing else is queued.
-            if rx.is_empty() && wr.flush().await.is_err() {
+            let flush = rx.is_empty();
+            if !written(&mut wr, &buf, flush, write_timeout, &wstats).await {
                 break;
             }
         }
-        let _ = wr.shutdown().await;
+        let _ = timeout(write_timeout, wr.shutdown()).await;
     });
 
     let mut req = Vec::with_capacity(512);
@@ -363,4 +368,30 @@ async fn serve_conn<S, H>(
 enum Outcome {
     Now(Option<Vec<u8>>),
     Later(crate::handler::Deferred),
+}
+
+/// Writes `buf` (and flushes, if `flush`) within `limit`; false on an error. A stall for the
+/// whole limit means the client stopped reading, and is counted (REQ: DNS-001).
+async fn written<W: AsyncWrite + Unpin>(
+    wr: &mut W,
+    buf: &[u8],
+    flush: bool,
+    limit: Duration,
+    stats: &TcpStats,
+) -> bool {
+    let io = async {
+        wr.write_all(buf).await?;
+        if flush {
+            wr.flush().await?;
+        }
+        Ok::<(), io::Error>(())
+    };
+    match timeout(limit, io).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            stats.stalled_closed.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
 }
