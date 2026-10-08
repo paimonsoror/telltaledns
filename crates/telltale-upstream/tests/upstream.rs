@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use telltale_proto::{NameBuf, ResponseBuilder, parse_query, rcode, rtype, summarize};
+use telltale_upstream::health::Breaker;
 use telltale_upstream::{Endpoint, Group, Question, Strategy, Upstream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -425,6 +426,32 @@ async fn ups_006_failure_kinds_are_counted() {
         (1, 0)
     );
     assert_eq!(dead.health.snapshot().failures, 1);
+}
+
+/// REQ: UPS-006 — a healthy upstream that answers SERVFAIL (a broken domain a browser keeps
+/// retrying) stays in service, with its real latency; a dead one is benched after three.
+#[tokio::test]
+async fn ups_006_servfail_is_an_answer_not_a_dead_upstream() {
+    let timeout = Duration::from_millis(500);
+    let healthy = upstream(1, fake(Fake::ServFail).await, 1);
+    for _ in 0..5 {
+        let _ = healthy.exchange(&question("broken.example"), timeout).await;
+    }
+    let s = healthy.health.snapshot();
+    assert_eq!((s.failures, s.breaker), (5, Breaker::Closed));
+    assert_eq!(healthy.health.consecutive_failures(), 0);
+    assert!(
+        healthy.health.ewma().unwrap() < timeout / 2,
+        "SERVFAIL is recorded at its real latency, not the timeout: {:?}",
+        healthy.health.ewma()
+    );
+    let dead = upstream(2, fake(Fake::Blackhole).await, 1);
+    for _ in 0..3 {
+        let _ = dead
+            .exchange(&question("x.example"), Duration::from_millis(50))
+            .await;
+    }
+    assert_eq!(dead.health.snapshot().breaker, Breaker::Open);
 }
 
 /// REQ: DNS-015 (T9.9) — `ecs = "client"`: the query carries the client's /24, and a

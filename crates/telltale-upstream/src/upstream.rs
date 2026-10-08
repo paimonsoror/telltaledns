@@ -744,8 +744,9 @@ impl Upstream {
             Err(ExchangeError::BadResponse) => Outcome::BadResponse,
             Err(ExchangeError::Unresolved) => Outcome::Unresolved,
         };
-        let ok = outcome == Outcome::Ok;
-        let latency = if ok {
+        // A failure that is no answer counts as the whole timeout (a dead upstream sorts behind
+        // slow ones); a SERVFAIL or REFUSED came back in the time it took (review 03-04).
+        let latency = if outcome == Outcome::Ok || outcome.is_answer() {
             start.elapsed()
         } else {
             start.elapsed().max(timeout)

@@ -66,7 +66,8 @@ Common options per upstream: `timeout_ms`, `tls_server_name`, `tls_ca`, `tls_cli
 Retry budget: total query budget 2 s; per-attempt timeout = min(upstream.timeout_ms, adaptive 3 × EWMA + 50 ms, 1000 ms). A SERVFAIL/REFUSED from an upstream counts as a failure and triggers the next attempt (configurable).
 
 ## 5. Health and circuit breaking (UPS-006)
-- **Passive:** a rolling window of the last 50 outcomes. If the error rate exceeds 50% with ≥ 10 samples, the breaker goes **open** for 10 s (exponential backoff up to 5 min), then **half-open** (1 probe query).
+- **Passive:** a rolling window of the last 50 outcomes. If the error rate exceeds 50% with ≥ 10 samples, the breaker goes **open** for 10 s (exponential backoff up to 5 min), then **half-open** (1 probe query). Three failures in a row open it too.
+- **SERVFAIL and REFUSED are answers, not outages:** they are errors in the window and trigger the next attempt (§4), but they don't count toward the three in a row (an answer ends the streak), and their latency is the measured one, not the attempt's timeout. A client retrying one broken domain can't bench a healthy upstream, but an upstream that SERVFAILs more than half of everything still opens (review 03-04).
 - **Active:** every 30 s, query `health_check_name` (default `.` NS or a configured name) for upstreams not used in the last 30 s.
 - If all members are unhealthy, still try the least-recently-failed member (never return SERVFAIL without at least one attempt), then serve stale.
 - Exported per upstream: state, EWMA, p50/p95/p99 (HDR), request/err/timeout counters, pool size, TLS handshake count, and h2/h3 stream counts.

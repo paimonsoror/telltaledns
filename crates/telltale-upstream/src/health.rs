@@ -78,6 +78,16 @@ impl Outcome {
     fn index(self) -> Option<usize> {
         Self::FAILURES.iter().position(|k| *k == self)
     }
+
+    /// REQ: UPS-006 — SERVFAIL and REFUSED are answers: the upstream is up and said no, which
+    /// is often the domain's doing (a lame or DNSSEC-broken name that a browser retries). They
+    /// still count in the rolling error window (an upstream that SERVFAILs half of everything
+    /// is unhealthy) and still send the query to the next member, but they are not the
+    /// upstream being *down*: they don't count toward the consecutive failures that open the
+    /// breaker, and their latency is the real one, not the attempt's timeout.
+    pub fn is_answer(self) -> bool {
+        matches!(self, Self::ServFail | Self::Refused)
+    }
 }
 
 /// A point-in-time view for metrics and the API (OBS-011).
@@ -170,63 +180,77 @@ impl Health {
     /// REQ: UPS-006, OBS-011 — records an attempt with what went wrong, so that failures can
     /// be told apart (`telltale_upstream_failures_total{kind}`); then as [`Self::record`].
     pub fn record_outcome(&self, outcome: Outcome, latency: Duration, now: Instant) {
+        let mut h = self.0.lock();
         if let Some(i) = outcome.index() {
-            self.0.lock().by_kind[i] += 1;
+            h.by_kind[i] += 1;
         }
-        self.record(outcome == Outcome::Ok, latency, now);
+        let ok = outcome == Outcome::Ok;
+        h.observe(ok, !ok && !outcome.is_answer(), latency, now);
     }
 
     /// Records an attempt's outcome. Failures count as `latency` toward the EWMA too, so a
     /// slow or dead upstream sorts behind healthy ones under `fastest`.
     pub fn record(&self, ok: bool, latency: Duration, now: Instant) {
-        let mut h = self.0.lock();
-        h.requests += 1;
-        h.last_used = Some(now);
+        self.0.lock().observe(ok, !ok, latency, now);
+    }
+}
+
+impl Inner {
+    /// One attempt. `ok` goes into the rolling window; `down` (a failure that isn't an answer,
+    /// see [`Outcome::is_answer`]) is what counts toward the consecutive failures that open the
+    /// breaker, and an attempt that was answered ends the streak.
+    fn observe(&mut self, ok: bool, down: bool, latency: Duration, now: Instant) {
+        self.requests += 1;
+        self.last_used = Some(now);
         let us = latency.as_secs_f64() * 1e6;
-        h.ewma_us = Some(h.ewma_us.map_or(us, |e| ALPHA * us + (1.0 - ALPHA) * e));
+        self.ewma_us = Some(self.ewma_us.map_or(us, |e| ALPHA * us + (1.0 - ALPHA) * e));
 
-        let pos = h.pos;
-        if h.filled == WINDOW_U32 && !h.window[pos] {
-            h.errors -= 1;
+        let pos = self.pos;
+        if self.filled == WINDOW_U32 && !self.window[pos] {
+            self.errors -= 1;
         }
-        h.window[pos] = ok;
-        h.pos = (pos + 1) % WINDOW;
-        h.filled = (h.filled + 1).min(WINDOW_U32);
-        if ok {
-            h.consecutive_failures = 0;
+        self.window[pos] = ok;
+        self.pos = (pos + 1) % WINDOW;
+        self.filled = (self.filled + 1).min(WINDOW_U32);
+        if !ok {
+            self.errors += 1;
+            self.failures += 1;
+        }
+        if down {
+            self.consecutive_failures += 1;
+            self.last_failure = Some(now);
         } else {
-            h.errors += 1;
-            h.failures += 1;
-            h.consecutive_failures += 1;
-            h.last_failure = Some(now);
+            self.consecutive_failures = 0;
         }
 
-        match h.breaker {
+        match self.breaker {
             Breaker::HalfOpen => {
-                h.probe_in_flight = false;
+                self.probe_in_flight = false;
                 if ok {
-                    h.breaker = Breaker::Closed;
-                    h.backoff = BASE_BACKOFF;
-                    h.reset_window();
+                    self.breaker = Breaker::Closed;
+                    self.backoff = BASE_BACKOFF;
+                    self.reset_window();
                 } else {
-                    let next = (h.backoff * 2).min(MAX_BACKOFF);
-                    h.backoff = next;
-                    h.breaker = Breaker::Open;
-                    h.open_until = Some(now + next);
+                    let next = (self.backoff * 2).min(MAX_BACKOFF);
+                    self.backoff = next;
+                    self.breaker = Breaker::Open;
+                    self.open_until = Some(now + next);
                 }
             }
             Breaker::Closed => {
-                let too_many = h.filled >= MIN_SAMPLES && h.errors * 2 > h.filled;
-                if too_many || h.consecutive_failures >= CONSECUTIVE_TO_OPEN {
-                    h.breaker = Breaker::Open;
-                    h.open_until = Some(now + h.backoff);
-                    h.reset_window();
+                let too_many = self.filled >= MIN_SAMPLES && self.errors * 2 > self.filled;
+                if too_many || self.consecutive_failures >= CONSECUTIVE_TO_OPEN {
+                    self.breaker = Breaker::Open;
+                    self.open_until = Some(now + self.backoff);
+                    self.reset_window();
                 }
             }
             Breaker::Open => {}
         }
     }
+}
 
+impl Health {
     /// Marks the upstream used (for active-check scheduling) without recording an outcome.
     pub fn touch(&self, now: Instant) {
         self.0.lock().last_used = Some(now);
@@ -359,6 +383,60 @@ mod tests {
             .map(|(k, n)| (k.label(), n))
             .collect();
         assert_eq!(by, vec![("timeout", 1), ("servfail", 2)]);
+    }
+
+    /// REQ: UPS-006 (review 03-04) — SERVFAIL and REFUSED are answers: three in a row leave the
+    /// breaker closed and end a streak of timeouts, but a resolver that answers them to more
+    /// than half of everything still opens, and three timeouts open it.
+    #[test]
+    fn ups_006_servfail_does_not_open_the_breaker_by_itself() {
+        let t = Instant::now();
+        let h = Health::default();
+        for _ in 0..3 {
+            h.record_outcome(Outcome::ServFail, MS, t);
+        }
+        assert_eq!(h.snapshot().breaker, Breaker::Closed);
+        assert_eq!(h.consecutive_failures(), 0);
+        assert_eq!(
+            h.snapshot().failures,
+            3,
+            "still failures, and counted by kind"
+        );
+        for _ in 0..3 {
+            h.record_outcome(Outcome::Refused, MS, t);
+        }
+        assert_eq!(h.snapshot().breaker, Breaker::Closed);
+
+        let h = Health::default();
+        for _ in 0..3 {
+            h.record_outcome(Outcome::Timeout, 400 * MS, t);
+        }
+        assert_eq!(h.snapshot().breaker, Breaker::Open);
+
+        // An answer between two timeouts ends the streak.
+        let h = Health::default();
+        for o in [
+            Outcome::Timeout,
+            Outcome::ServFail,
+            Outcome::Timeout,
+            Outcome::Timeout,
+        ] {
+            h.record_outcome(o, MS, t);
+        }
+        assert_eq!(h.snapshot().breaker, Breaker::Closed);
+        assert_eq!(h.consecutive_failures(), 2);
+
+        // Half of everything SERVFAILing is unhealthy: the rolling window still counts it.
+        let h = Health::default();
+        for i in 0..40 {
+            let o = if i % 3 == 0 {
+                Outcome::Ok
+            } else {
+                Outcome::ServFail
+            };
+            h.record_outcome(o, MS, t);
+        }
+        assert_eq!(h.snapshot().breaker, Breaker::Open);
     }
 
     #[test]
