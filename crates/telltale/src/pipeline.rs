@@ -1121,13 +1121,30 @@ impl Pipeline {
     }
 
     /// REQ: FLT-011 (T7.11) — the safe-search name for this query, when the group has safe
-    /// search and the name is an engine's. Nothing to do (no allocation) for other groups.
-    /// Shared with `explain` (FLT-013).
+    /// search and the name is an engine's. Never allocates: the name is rebuilt in presentation
+    /// form on the stack (the engine tables only hold letters, digits, and hyphens, so a label
+    /// with anything else can't match), which is what the groups that use this feature (the
+    /// kids' devices, typically) pay per query (review 02-06). Shared with `explain` (FLT-013).
     pub(crate) fn safe_search_target(q: &Query<'_>, group: &Group) -> Option<NameBuf> {
         let youtube = group.safe_search?;
-        let mut name = q.qname.display().to_string();
-        name.make_ascii_lowercase();
-        let target = telltale_config::safesearch::target(name.trim_end_matches('.'), youtube)?;
+        // A wire name is at most 255 bytes, its presentation form at most 253.
+        let mut buf = [0u8; 255];
+        let mut n = 0;
+        for (i, label) in q.qname.labels().enumerate() {
+            if i > 0 {
+                *buf.get_mut(n)? = b'.';
+                n += 1;
+            }
+            for &b in label {
+                if !(b.is_ascii_alphanumeric() || b == b'-') {
+                    return None;
+                }
+                *buf.get_mut(n)? = b.to_ascii_lowercase();
+                n += 1;
+            }
+        }
+        let name = std::str::from_utf8(buf.get(..n)?).ok()?;
+        let target = telltale_config::safesearch::target(name, youtube)?;
         NameBuf::from_presentation(target).ok()
     }
 
@@ -3553,8 +3570,11 @@ groups = ["kids"]
     /// metrics counters, and the event ring.
     #[test]
     fn nfr_002_pipeline_hot_paths_do_not_allocate() {
+        // A group with safe search on, as the kids' devices have (review 02-06): every query
+        // from it is checked against the engines' names.
         let cfg = format!(
             "{UPSTREAM}[[list]]\nname = \"ads\"\nrules = [\"||ads.example^\"]\n\
+             [[group]]\nname = \"default\"\nsafe_search = true\n\
              [[client]]\nname = \"tablet\"\nmatch = [\"10.0.0.5\"]\n"
         );
         let p = pipeline_with(&cfg, "||ads.example^\n");
