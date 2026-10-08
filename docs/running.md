@@ -1458,6 +1458,11 @@ and whom it waits for. Ephemeral members (resolver pods) don't hold it up. A nod
 for the whole rotation can't connect afterwards and must join again with a token. Join tokens
 made before a rotation pin the old CA, so make new ones afterwards.
 
+Rotation helps when the cluster key may have leaked but hasn't been used. Whoever holds the
+current key can sign configuration and rotate trust to a CA of their own, exactly as the
+primary does. If that may already have happened (configuration or a rotation you didn't make),
+re-create the cluster: `telltale cluster init` on one node, and join the others with new tokens.
+
 **Automatic failover (with a witness or three eligible nodes).** Two nodes can't tell "the
 other node is down" from "the link between us is down", so automatic failover needs a third
 vote: another eligible node, or a **witness**, a tiny vote-only process that can run on a NAS,

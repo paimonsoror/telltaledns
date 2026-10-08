@@ -267,6 +267,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** Full names in every event. About 2–8 MiB of rings depending on thread count, and bounded aggregate memory (windows ~1 MiB, top-K ~1 MiB, histograms ≤ ~7 MiB). If a host's aggregator can't keep up (a slow Pi under a flood), events drop and are counted, and DNS is unaffected.
 
+**Amended 2026-10-08 (review 04-01, 04-07; amendment Proposed):** the epoch (`Hub::ts_us` = epoch + monotonic elapsed) follows steps of the system clock: the aggregator thread re-anchors it when the wall clock and the epoch-derived time differ by a second or more (one clock read per drain; the query path reads one relaxed atomic). A Pi without an RTC is stepped by NTP after TelltaleDNS starts, which left every later event, query-log row, and rollup minute on the old offset until a restart. Steps are exported (`telltale_clock_steps_total`, `telltale_clock_last_step_seconds`). `QueryEvent.upstream` still stays 0; the API's `upstream` filter is now documented as matching nothing until the owner decides whether to record the answering upstream.
+
 ## ADR-027 — Query-log segment format and search (Accepted)
 **Context:** `spec/06` §4 defines the query log: hourly columnar segments, blocks of up to 8192 rows, per-column encodings with zstd, a block index with a 1 KiB bloom over name and client IDs, a segment dictionary, dictionary-first search, and a small search pool with "1 thread on Pi by default". T3.2's AC: a search over a 50M-row synthetic dataset in ≤ 2 s on a Pi 4, with the format fuzzed. Measuring against that AC changed several details.
 
@@ -333,6 +335,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 
 **Consequences:** The API is safe to expose on the LAN, and the UI (T3.9) can build sign-in and first-run screens on `/auth/status`. TLS on the API listener and OIDC (API-004) are later tasks; until TLS, HTTP Basic needs a TLS-terminating proxy.
 
+**Amended 2026-10-08 (review 06-01, 06-08; amendment Proposed):** at most four password checks (Argon2id, 19 MiB each) run at once; beyond that sign-in and uncached HTTP Basic answer 503 with `Retry-After: 1`, not counted as a failure, so a burst of sign-ins can't run the node out of memory (`02 §8`). HTTP Basic failures now count against the address as well as the username, and a success clears both, as the sign-in form does.
+
 ## ADR-030 — Web UI MVP: serving, security, and scope (Accepted)
 **Context:** T3.9 (API-005) asks for a UI MVP: login, dashboard, query log + explain, groups, lists, upstreams, local DNS, and settings, ≤ 400 KiB gzipped, with a Playwright suite. ADR-009 fixes the stack (Svelte + uPlot, embedded). The API has no configuration mutations yet, no live tail (T3.7), and no OIDC (T3.6).
 
@@ -359,6 +363,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **API:** `step` gains `hour` and `day` (rollups); `step=minute` merges stored minutes with memory (memory wins); `stats/summary` sums hours for ranges beyond 48 hours. The dashboard UI adds 7- and 30-day ranges.
 
 **Consequences:** Charts and summaries reach back 400 days and survive restarts with ~1 KiB per stored minute at most. Querying a past hour's top-K through the API is not exposed yet (stored for the analytics pages).
+
+**Amended 2026-10-08 (review 04-04, 04-11; amendment Proposed):** the hourly top lists in `rollups.db` follow the query log's privacy level: names hashed exactly as the query log stores them at level 1 and above, no list of clients at level 2 and above (they were kept in plain text for 400 days at every level). A restart in the minute after an hour closes no longer loses that hour's lists: once the startup replay is over, the writer stores them if nothing is stored for the hour.
 
 ## ADR-032 — Live tail over Server-Sent Events (Accepted)
 **Context:** OBS-008 / `06` §6: `GET /api/v1/queries/stream` (SSE) "or `/ws`", server-side filters (client, group, status set, qname glob, upstream, min latency, node), and a per-subscriber rate cap (default 500 events/s) with inline drop counts. Rule 4 forbids hot-path cost; rule 5 says telemetry can't affect DNS.
@@ -634,6 +640,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - The price is that with a GitOps authority, configuration is frozen (never lost or wrong) while no GitOps node is up. That is the right trade for a homelab where the k8s node is the one being changed.
 - Implemented with T5.4 (elections and promotion) and T5.7 (writes); until then the owner's cluster uses the convention of the homelab node as primary, set up by hand.
 
+**Amended 2026-10-08 (review 05-04; amendment Proposed):** the takeover promised above now works by hand: `promote` is allowed over a running primary only when it is the emergency primary of the version this node applied and this node would publish; its newer epoch fences the emergency primary, which had no writes. The Cluster page offers it on a Git-managed replica. The automatic takeover is still open (an owner question).
+
 ## ADR-049 — Git as the cluster's config source: the primary fetches, the cluster distributes (Accepted)
 **Context:** owner idea 2026-10-04, building on ADR-048: let nodes that aren't in Kubernetes (the Pi) also take their configuration from the Git repository, an "external control plane" every node sources from. Two shapes were weighed:
 1. **Every node pulls Git.** Rejected as the default:
@@ -751,6 +759,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - With the owner's homelab node as the GitOps primary, the Pi becomes an *emergency* primary candidate: if k8s is down for long, promoting the Pi keeps the cluster coordinated while configuration stays frozen. ADR-049 (Git source) later makes the Pi a full candidate.
 - Existing clusters migrate in place: the CA holder becomes `role = primary` at epoch 1, and eligible replicas receive the key on their next connection.
 
+**Amended 2026-10-08 (review 05-01, 05-02; amendment Proposed):** standing is the primary's decision, not the member's. A join with the bootstrap secret (ADR-058) is always an ephemeral member, never eligible or a witness, so the key share never reaches a resolver pod; a Hello can't raise a known member's eligibility (a member the registry doesn't know is still taken at its word once). Fencing by epoch (Hello, heartbeat, and the election's view of the highest epoch) counts only voters in the signed registry, so a member that can't vote can't make the primary step down with an unsigned frame. A stricter follow-up would fence only on a verified, signed manifest.
+
 ## ADR-052 — Node-local overrides: node-only records, and warn (not refuse) on shared settings in a replica's file (Accepted)
 **Context:** T5.5 (CLU-006). `spec/12` §4 says a node's own overrides allow listen addresses, cache size, query-log retention, worker count, site, and local-only records, and that overriding anything else is "rejected at startup with a clear error". ADR-047 already makes the node-local sections (`node`, `cluster`, `listen`, `api`, `auth`, `telemetry`, `cache`) stay with each node, and replaces everything else with the primary's.
 
@@ -800,6 +810,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 - **Not forwarded:** under a GitOps authority, writes are refused on every node (409 `gitops_managed`, ADR-048). Promotion and the node's own users, tokens and sessions stay local until ADR-045 replicates identities.
 
 **Consequences:** the owner can manage the cluster from the Pi's UI as well as the homelab node's, as long as both are on the API authority. Today's cluster is GitOps-managed, so there it stays read-only, by design.
+
+**Amended 2026-10-08 (review 05-03; amendment Proposed):** "a member node is trusted to replicate configuration anyway" no longer covers every member since ADR-058. Forwarded writes and the reads that change the answering node (pause, resume, cache flush) are refused from members the registry marks ephemeral: they serve no UI, so no user's change arrives through them.
 
 ## ADR-055 — Query-log ship mode v1: closed segment files, delivered once, searched where they land (Accepted)
 **Context:** T5.8 (CLU-007). `spec/12` §7 describes `ship` mode: raw events are streamed to a target in batches of columnar blocks, spilled to a 64 MiB buffer when the target is unreachable, and replayed; rollups are shipped as per-minute aggregates; `both` mode does both; receivers keep per-source-node segments.
@@ -917,6 +929,8 @@ Workspace crates set `publish = false`, so the short prefix can't collide on cra
 **Consequences:**
 - `deploy/helm/scaled-e2e.sh` (CI, this build's binary on kind) proves the controller and two pods join and sync, a pod answers DNS, an outside node joins through the cluster port, and a deleted pod is replaced and expires.
 - A pod restart is a new member, by design. A registry of long-gone pods is cleaned within `ttl + 1 min`.
+
+**Amended 2026-10-08 (review 05-01, 05-06; amendment Proposed):** what makes a pod untrusted is now enforced by the primary: a join with the bootstrap secret is ephemeral whatever it asks for. The primary's `POST /cluster/v1/ca` proof answers anyone, so a weak secret could be brute-forced offline from collected proofs: a secret shorter than 32 bytes is warned about at startup (not refused, so existing deployments keep joining), and the docs ask for 32 random bytes or more. The chart generates 48 characters.
 
 ## ADR-059 — Version compatibility v1: a protocol window, a schema stamp, and refusal over guessing (Accepted)
 **Context:** T5.11 (CLU-010). `spec/12` §9 says RPC carries a protocol version and manifests a schema version; nodes accept N and N−1; the primary refuses to emit features the oldest connected node doesn't support, and warns. Until now, peers needed the exact same protocol, and manifests carried no schema. The shared configuration is parsed strictly (`deny_unknown_fields`), so an older replica would reject a newer primary's new settings.
@@ -1121,6 +1135,8 @@ Tokens so far had a role-like `scope` (read/write/admin), and the audit log alre
 - Per-group analytics views beyond top lists would let restricted agents see more.
 - OAuth for agents (AGT-008) stays P1.
 
+**Amended 2026-10-08 (review 06-02, 06-09; amendment Proposed):** an agent's pre-save list check returns how many lines couldn't be used and why, not their text (the node would otherwise read any URL it can reach for the agent). Viewers list only their own plans; operators and admins see all.
+
 ## ADR-065 — MCP server v1: read-only tools over the REST routes, one implementation for two transports (Accepted)
 **Context:** T6.6 (AGT-006, AGT-008 bearer part, AGT-009; ADR-010). `spec/13` §3.1 lists the read-only tools, and §4 suggests a `telltale-mcp` crate with schemas generated from the Rust types (`schemars`) and a catalog snapshot test. The AC asks for:
 - an MCP conformance test;
@@ -1148,6 +1164,8 @@ Tokens so far had a role-like `scope` (read/write/admin), and the audit log alre
 - OAuth for MCP clients (AGT-008) is P1.
 - MCP resources and prompts are later.
 - An SSE stream (`GET /mcp`) would be needed only for server-initiated messages.
+
+**Amended 2026-10-08 (review 06-04, 06-07; amendment Proposed):** the REST calls behind a tool carry the `/mcp` request's client address (`OnBehalfOf`, an extension only in-process requests can carry), so changes made through MCP are audited from the agent's address, not `0.0.0.0`. They don't take from the agent's rate-limit bucket again: the rate counts tool calls, and each message of a JSON-RPC batch, which holds at most 16 messages. A resource cut at 32 KiB says so.
 
 ## ADR-066 — CA rotation: two trusted CAs, three member-gated phases (Accepted)
 **Context:** T5.4c (CLU-001, CLU-005). `spec/12` and the roadmap ask for:
@@ -1187,6 +1205,8 @@ ADR-057 already renews node certificates (same key) over the channel. A CA rotat
 - A member offline for the whole rotation must rejoin.
 - Join tokens pin the CA fingerprint, so tokens from before a rotation stop working.
 - A forced rotation (with members down) is a possible follow-up.
+
+**Corrected 2026-10-08 (review 05-10):** "a stolen CA alone can't replace it" overstates the rule. The rule stops a CA the node doesn't trust from replacing trust; it doesn't contain a stolen *current* CA key, whose holder can rotate trust to a CA of their own in three manifests, exactly as the legitimate primary does. That is inherent (the key signs everything): a suspected compromise of the cluster key means re-creating the cluster, as `docs/running.md` now says.
 
 ## ADR-067 — Quick rules: their own layer, the most specific scope wins, expiry on the server (Accepted)
 **Context:** T6.12 (owner request 2026-10-05) wants everyday per-person rules:
@@ -1270,6 +1290,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 **Consequences:**
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
+
+## ADR-102 — Privacy levels cover what is kept and sent out; live analytics wait for a decision (Proposed)
+**Context:** review 04-04 and 04-05. `spec/06` §4 defines privacy levels 0–3 ("Pi-hole parity"), and §7.1 says anomaly findings honour them. The levels were applied to the query log, the live tail, and event sinks, but not to `rollups.db`'s hourly top lists, the in-memory analytics the API serves (top lists, a device's page, first-seen domains, anomaly findings), or the anomaly engine's per-device baselines. Level 1's hash is unsalted, so anyone holding a log can confirm a guessed name.
+
+**Decision (the conservative reading until the owner decides):**
+- Everything *stored or sent out* follows the level: the query log, the tail, sinks, and now `rollups.db`'s top lists (names hashed as the query log does at 1 and above; no client list at 2 and above).
+- The live analytics and the anomaly baselines stay as they are at levels 1 and 2, and `docs/running.md` says so, together with what level 1's hash does and doesn't protect against.
+
+**Open for the owner:** (1) whether levels 1 and 2 also govern the live analytics (Pi-hole's reading, and §7.1's for findings), which at level 2 removes per-device analytics, the masked-IP detector, and device anomaly alerts; (2) a per-installation or per-cluster key for level 1's hash, or storing nothing for names at level 1.
 
 ## ADR-101 — A snapshot keeps at most `[filter] max_regexes` regex rules, 1,000 by default (Proposed)
 **Context:** Code review of v0.2.0, finding 02-08 (owner's answer, 2026-10-07: a cap, with the overflow reported). Regex rules are tried on every query that no exact or suffix rule settles, and nothing bounded their number. Measured with `matcher_bench` on synthetic patterns sharing a prefix: 200 cost 0.4 µs per query at the median, 1,000 cost 1.1 µs, 1,500 cost 1.6 µs (41 MiB), and 2,000 grew past 5.9 GiB of memory within two minutes. The cause inside the regex engine's automaton wasn't pinned down.
