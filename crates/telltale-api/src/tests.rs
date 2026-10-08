@@ -1534,3 +1534,65 @@ async fn agt_009_a_tool_call_costs_one_request() {
         "the third in a minute: {v}"
     );
 }
+
+// REQ: AGT-009 — a JSON-RPC batch is bounded: every message in it runs in turn.
+#[tokio::test]
+async fn agt_009_mcp_batches_are_bounded() {
+    let (app, _) = app();
+    let rpc = |n: usize| {
+        let msgs: Vec<serde_json::Value> = (0..n)
+            .map(|i| serde_json::json!({"jsonrpc": "2.0", "id": i, "method": "ping"}))
+            .collect();
+        Request::post("/mcp")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::Value::Array(msgs).to_string()))
+            .unwrap()
+    };
+    // 16 is `mcp::MAX_BATCH` (spelled out so the test also runs against older code).
+    let (s, _, v) = send(&app, rpc(16)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v.as_array().map(Vec::len), Some(16));
+    let (s, _, v) = send(&app, rpc(17)).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_i64()),
+        (StatusCode::BAD_REQUEST, Some(-32600)),
+        "{v}"
+    );
+}
+
+// REQ: AGT-009 (review 06-07) — every message in a batch counts against an agent's rate, so a
+// batch can't multiply it.
+#[tokio::test]
+async fn agt_009_a_batch_counts_each_message() {
+    let (app, _) = app();
+    let token = |name: &str| {
+        Request::post("/api/v1/tokens")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": name, "kind": "agent",
+                    "scopes": ["analytics:read"], "ratePerMinute": 3})
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let batch = |agent: &str, n: usize| {
+        let msgs: Vec<serde_json::Value> = (0..n)
+            .map(|i| serde_json::json!({"jsonrpc": "2.0", "id": i, "method": "ping"}))
+            .collect();
+        Request::post("/mcp")
+            .header("authorization", format!("Bearer {agent}"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::Value::Array(msgs).to_string()))
+            .unwrap()
+    };
+    let (_, _, v) = send(&app, token("three")).await;
+    let three = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, batch(&three, 3)).await;
+    assert_eq!(s, StatusCode::OK, "three messages fit a rate of 3: {v}");
+    let (_, _, v) = send(&app, token("four")).await;
+    let four = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(&app, batch(&four, 4)).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "four don't: {v}");
+}

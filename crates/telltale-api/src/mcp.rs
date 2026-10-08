@@ -28,6 +28,8 @@ const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Most rows a tool returns, and most bytes of text (AGT-009).
 pub const MAX_ROWS: u64 = 200;
 pub const MAX_BYTES: usize = 32 * 1024;
+/// Most messages in one JSON-RPC batch: each runs in turn, with its REST calls (AGT-009).
+pub const MAX_BATCH: usize = 16;
 
 /// A tool's REST calls for its arguments: `(result key, GET path with query)`, or why the
 /// arguments are wrong.
@@ -1300,6 +1302,34 @@ fn rpc_ok(id: &Value, result: &Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
 
+/// REQ: AGT-009 (review 06-07) — takes `n − 1` more requests from an agent token's bucket
+/// for a batch of `n` messages (the request took one), so a batch can't multiply its rate.
+fn charge_batch(
+    auth: &crate::auth::Auth,
+    ext: &axum::http::Extensions,
+    n: usize,
+) -> Result<(), crate::problem::Problem> {
+    let Ok(p) = crate::auth::routes::principal(ext) else {
+        return Ok(());
+    };
+    let (Some(grant), crate::auth::Via::Token { id }) = (&p.agent, &p.via) else {
+        return Ok(());
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    for _ in 1..n {
+        if let Err(wait) = auth.agents().take(id, grant.rate_per_minute, now_ms) {
+            return Err(crate::problem::Problem::new(
+                crate::problem::Code::RateLimited,
+                format!("this agent token is over its request rate; try again in {wait} s"),
+            )
+            .retry_after(wait));
+        }
+    }
+    Ok(())
+}
+
 /// Caps a value at [`MAX_BYTES`] of JSON text (AGT-009).
 fn capped(v: &Value) -> (String, bool) {
     let text = serde_json::to_string(v).unwrap_or_default();
@@ -1823,11 +1853,14 @@ impl Mcp {
                 if ok { body } else { json!({"error": body}) },
             );
         }
-        let (text, _) = capped(&Value::Object(doc));
-        rpc_ok(
-            id,
-            &json!({"contents": [{"uri": r.uri, "mimeType": "application/json", "text": text}]}),
-        )
+        let (text, truncated) = capped(&Value::Object(doc));
+        let mut contents =
+            vec![json!({"uri": r.uri, "mimeType": "application/json", "text": text})];
+        // REQ: AGT-009 (review 06-07) — a cut document says so, as tool results do.
+        if truncated {
+            contents.push(json!({"uri": r.uri, "mimeType": "text/plain", "text": format!("(truncated at {} KiB: the JSON above is incomplete; use the tools for narrower reads)", MAX_BYTES / 1024)}));
+        }
+        rpc_ok(id, &json!({"contents": contents}))
     }
 
     /// One JSON-RPC message; `None` for notifications.
@@ -1938,6 +1971,20 @@ pub async fn post(
         .map(str::to_owned);
     let mut new_session = None;
     let reply = if let Value::Array(batch) = &msg {
+        // REQ: AGT-009 — one request can't queue up an unbounded amount of work.
+        if batch.len() > MAX_BATCH {
+            let e = rpc_error(
+                &Value::Null,
+                -32600,
+                &format!("at most {MAX_BATCH} messages in a batch"),
+            );
+            return (StatusCode::BAD_REQUEST, axum::Json(e)).into_response();
+        }
+        // REQ: AGT-009 — each message counts against an agent's rate, as its own request
+        // would (the request itself took one).
+        if let Err(p) = charge_batch(&mcp.auth, &ext, batch.len()) {
+            return p.into_response();
+        }
         let mut out = Vec::new();
         for m in batch {
             let (r, sid) = mcp
