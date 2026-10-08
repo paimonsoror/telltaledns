@@ -24,7 +24,20 @@ Then rebuild the binary (`cargo build -p telltale`) to embed `dist/`. A binary b
 cargo build -p telltale && npm run build
 npx playwright install --with-deps --only-shell chromium
 npm run test:e2e             # starts the real binary (tests/e2e/server.mjs) on 127.0.0.1:18054
-SHOTS=1 npm run test:e2e     # also saves screenshots to test-results/shots/
+SHOTS=1 npm run test:e2e     # also refreshes the site's screenshots (../site/assets/shots/)
+                             # and saves every page to .shots/ for design review
+```
+
+## Dashboard screenshots
+
+The README's and the site's dashboard pictures come from a made-up home network, so no real
+network ever shows up in them. `tests/demo/run.sh` starts two stub upstreams and a fresh server
+with `tests/demo/demo.toml`, sends about 14 minutes of synthetic traffic from invented devices,
+and then writes `../docs/images/dashboard-*.jpg` and `../site/assets/shots/dashboard-*.jpg`:
+
+```sh
+npm run build && cargo build -p telltale     # the binary embeds the UI
+tests/demo/run.sh            # or `tests/demo/run.sh 60` for a quick look
 ```
 
 ## Rules

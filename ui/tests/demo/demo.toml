@@ -1,0 +1,96 @@
+# The screenshot demo (run.sh): a made-up home network on loopback addresses. Nothing here is
+# real: devices, groups, and names are invented, and the upstreams are local stubs (stub.py).
+[node]
+data_dir = "/tmp/telltale-demo/data"
+name = "home-dns"
+
+[[listen]]
+proto = "udp"
+addr = "127.0.0.1:25353"
+
+[[upstream]]
+name = "quad9"
+url = "udp://127.0.0.1:25401"
+
+[[upstream]]
+name = "cloudflare"
+url = "udp://127.0.0.1:25402"
+
+[[upstream_group]]
+name = "default"
+members = ["quad9", "cloudflare"]
+strategy = "fastest"
+
+[[group]]
+name = "Family"
+networks = ["127.0.1.0/24"]
+color = "#3b82f6"
+
+[[group]]
+name = "Kids"
+networks = ["127.0.2.0/24"]
+color = "#f59e0b"
+
+[[group]]
+name = "IoT"
+networks = ["127.0.3.0/24"]
+color = "#8b5cf6"
+
+[[group]]
+name = "Work"
+networks = ["127.0.4.0/24"]
+color = "#10b981"
+
+[[client]]
+name = "Mom's Phone"
+match = ["127.0.1.11"]
+
+[[client]]
+name = "Dad's Laptop"
+match = ["127.0.4.30"]
+
+[[client]]
+name = "Ava's iPad"
+match = ["127.0.2.10"]
+
+[[client]]
+name = "Gaming PC"
+match = ["127.0.2.12"]
+
+[[client]]
+name = "Living Room TV"
+match = ["127.0.3.20"]
+
+[[client]]
+name = "Thermostat"
+match = ["127.0.3.21"]
+
+[[client]]
+name = "Kitchen Speaker"
+match = ["127.0.3.22"]
+
+[[list]]
+name = "ads-and-trackers"
+rules = [
+  "||doubleclick.net^",
+  "||googlesyndication.com^",
+  "||app-measurement.com^",
+  "||ads.example.com^",
+  "||telemetry.example.net^",
+  "||metrics.tv-vendor.example^",
+  "||tracker.example.org^",
+]
+
+[[record]]
+name = "nas.home.arpa"
+type = "A"
+value = "192.168.1.10"
+
+[telemetry.metrics]
+listen = "127.0.0.1:29154"
+
+[telemetry.qlog]
+flush_interval_secs = 1
+
+[api]
+listen = "127.0.0.1:28053"

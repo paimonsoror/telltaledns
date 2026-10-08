@@ -25,16 +25,15 @@ for (const theme of ['light', 'dark'] as const) {
     await page.getByLabel('Username', { exact: true }).fill('admin');
     await page.getByLabel('Password', { exact: true }).fill('correct horse battery');
     await page.getByRole('button', { name: 'Sign in' }).click();
+    // The dashboard's site shots come from the demo network instead (tests/demo/run.sh): this
+    // server is minutes old and has one client, which makes for an empty-looking dashboard.
     for (const [name, path] of [
-      ['dashboard', '/#/'],
       ['queries', '/#/queries'],
       ['lists', '/#/lists'],
       ['settings', '/#/settings?tab=tokens'],
       ['cache', '/#/cache'],
     ]) {
       await page.goto(path);
-      // The test server is minutes old: the 15-minute range shows its traffic.
-      if (name === 'dashboard') await page.getByRole('button', { name: '15 min' }).click();
       await page.waitForTimeout(600);
       await page.screenshot({ path: shot(`${name}-${theme}`), type: 'jpeg', quality: 80 });
     }
