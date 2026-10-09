@@ -280,6 +280,9 @@ mod tests {
     /// client list at 2 and above.
     #[test]
     fn obs_003_stored_top_lists_follow_the_privacy_level() {
+        let _key = crate::privacy::TEST_KEY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let hashed = telltale_telemetry::event::dotted(&telltale_store::qlog::hidden_name(ADS));
         let plain = telltale_telemetry::event::dotted(ADS);
         assert_ne!(hashed, plain);

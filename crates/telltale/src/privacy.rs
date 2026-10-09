@@ -86,6 +86,11 @@ pub(crate) fn adopt(data_dir: &Path, hex: &str) {
     info!("privacy key: using the cluster's (level-1 names now hash as on the primary)");
 }
 
+/// The key is process-wide: a test that sets it and a test that hashes names with it must not
+/// run at the same time (they did, and the hashing test failed now and then).
+#[cfg(test)]
+pub(crate) static TEST_KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +99,9 @@ mod tests {
     /// the primary's; nonsense is ignored.
     #[test]
     fn obs_003_privacy_key_is_made_once_and_adopted_from_the_primary() {
+        let _key = TEST_KEY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let first = current_hex(dir.path()).unwrap();
         assert_eq!(first.len(), 64);
