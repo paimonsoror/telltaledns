@@ -147,7 +147,16 @@
     void route.path;
     menuOpen = false;
   });
+  // On phones the menu covers the page and its own button: any link in it closes it (also the
+  // page you're already on, which changes no route), as do the dimmed page beside it and Esc.
+  const closeMenu = () => (menuOpen = false);
 </script>
+
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape' && menuOpen) closeMenu();
+  }}
+/>
 
 {#if !session.loaded}
   <p class="empty">Loading…</p>
@@ -162,12 +171,15 @@
   <Login />
 {:else}
   <div class="layout" class:open={menuOpen}>
+    {#if menuOpen}
+      <button type="button" class="scrim" aria-label="Close the menu" data-testid="menu-scrim" onclick={closeMenu}></button>
+    {/if}
     <nav class="side" aria-label="Main">
-      <a class="brand" href="#/"><Logo /> <span>TelltaleDNS</span></a>
+      <a class="brand" href="#/" onclick={closeMenu}><Logo /> <span>TelltaleDNS</span></a>
       {#each sections as sec (sec)}
         <div class="section">{sec}</div>
         {#each pages.filter((p) => p.section === sec) as p (p.path)}
-          <a class="nav" href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined}>
+          <a class="nav" href={href(p.path)} aria-current={current.path === p.path ? 'page' : undefined} onclick={closeMenu}>
             <Icon name={p.icon} /> <span>{p.label}</span>
             {#if badges[p.path]}
               <b class="count" class:alert={p.path === '/lists'} title={p.path === '/lists' ? 'lists failing to download' : 'new anomalies in the last 24 hours (not acknowledged)'}>{badges[p.path]}</b>
@@ -195,7 +207,7 @@
       </div>
       <!-- REQ: OPS-004 (ADR-046) — which build this is, and whether a newer one exists. -->
       {#if info?.build}
-        <a class="build small" href="#/settings?tab=system" data-testid="build-footer" title={`commit ${info.build.commit}, ${info.build.target}`}>
+        <a class="build small" href="#/settings?tab=system" data-testid="build-footer" onclick={closeMenu} title={`commit ${info.build.commit}, ${info.build.target}`}>
           {#if info.node}<span class="node">{info.node}</span>{/if}
           <span>{info.build.version} · {info.build.commit}</span>
           {#if info.update?.state === 'available'}<span class="pill">update</span>{/if}
@@ -457,6 +469,10 @@
   .menu {
     display: none;
   }
+  /* The page beside the open phone menu: dimmed, and a tap closes the menu. */
+  .scrim {
+    display: none;
+  }
   .content {
     grid-area: content;
     padding: 8px 24px 32px;
@@ -566,6 +582,18 @@
     }
     .layout.open .side {
       display: flex;
+    }
+    .scrim {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 14;
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: rgb(0 0 0 / 45%);
+      cursor: default;
     }
     .content {
       padding: 8px 12px 24px;

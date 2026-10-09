@@ -435,11 +435,25 @@ test('works at phone width (360 px)', async () => {
   await page.setViewportSize({ width: 360, height: 740 });
   await page.goto('/#/queries');
   await expect(page.getByRole('heading', { name: 'Query log' })).toBeVisible();
+  const menu = page.getByRole('navigation', { name: 'Main' });
   await page.getByRole('button', { name: 'Menu' }).click();
   await page.getByRole('link', { name: 'Dashboard' }).click();
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(menu).toBeHidden();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+  // The menu closes on the page you're already on (no route change), on a tap beside it,
+  // and on Esc: it covers its own button, so it must never stay stuck open.
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await expect(menu).toBeVisible();
+  await menu.getByRole('link', { name: 'Dashboard' }).click();
+  await expect(menu).toBeHidden();
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.getByTestId('menu-scrim').click({ position: { x: 350, y: 400 } });
+  await expect(menu).toBeHidden();
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
 });
 
 // REQ: OPS-003 — every e2e query comes from 127.0.0.1 (infrastructure), so 100+ of them
