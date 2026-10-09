@@ -62,7 +62,8 @@ pub struct Config {
     /// Per-client query rate limits (DNS-014).
     pub ratelimit: RateLimitConfig,
     /// REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics.
-    #[serde(skip_serializing_if = "ExclusionsConfig::is_default")]
+    /// Always serialized, like every top-level section: a replica merges the primary's shared
+    /// sections into its own by key (`shared::with_shared`).
     pub exclusions: ExclusionsConfig,
     /// REQ: DNS-005 — settings of the DNS answers themselves.
     pub dns: DnsConfig,

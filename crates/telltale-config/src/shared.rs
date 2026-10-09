@@ -155,6 +155,26 @@ mod tests {
         Loader::new().toml_str("t", toml).load().unwrap().config
     }
 
+    // REQ: OBS-022, DNS-021, CLU-003 (regression 2026-10-09) — a replica whose own files leave
+    // the M12 sections at their defaults takes the primary's: `[exclusions]` was skipped when
+    // default, so the replica's merge didn't know the key and refused the whole version.
+    #[test]
+    fn clu_003_replica_takes_new_sections_it_leaves_at_defaults() {
+        let primary = load(
+            "[dns]\nnsid = true\n[exclusions]\nnames = [\"technitium1.dnscluster\"]\n[filter]\nstale_after_days = 7\n[[group]]\nname = \"guest\"\nnetworks = [\"10.9.0.0/24\"]\nfilter_aaaa = true\n",
+        );
+        let shared = shared_part(&primary);
+        let replica = load("[node]\nname = \"pi\"\n");
+        let merged = with_shared(&replica, &shared).unwrap();
+        assert!(merged.dns.nsid);
+        assert_eq!(merged.exclusions.names.len(), 1);
+        assert_eq!(merged.filter.stale_after_days, 7);
+        assert!(merged.group.iter().any(|g| g.filter_aaaa));
+        // And back: the primary turning them off again reaches the replica too.
+        let off = with_shared(&merged, &shared_part(&load(""))).unwrap();
+        assert!(!off.dns.nsid && off.exclusions.names.is_empty());
+    }
+
     #[test]
     fn clu_006_local_sections_stay_and_shared_ones_come_from_the_primary() {
         let primary = load(

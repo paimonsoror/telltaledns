@@ -160,8 +160,13 @@
       }
     },
     "exclusions": {
-      "description": "REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics.",
-      "$ref": "#/$defs/ExclusionsConfig"
+      "description": "REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics.\nAlways serialized, like every top-level section: a replica merges the primary's shared\nsections into its own by key (`shared::with_shared`).",
+      "$ref": "#/$defs/ExclusionsConfig",
+      "default": {
+        "clients": [],
+        "enabled": true,
+        "names": []
+      }
     },
     "filter": {
       "description": "List download and compile settings.",
