@@ -297,6 +297,18 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
+        // REQ: OBS-019 (ADR-108)
+        Tool {
+            name: "upstream_checks",
+            description: "Read-only. Are the upstreams telling the truth? Per node and upstream: DNSSEC verdicts on its answers, the Extended DNS Error codes it returned (15 Blocked, 16 Censored, 17 Filtered mean it filters), and, when second opinions are on ([upstream_check] sample_every), how sampled answers compared with another upstream's: same, different addresses (CDNs do this; usually harmless), different response code, filtered (one side had addresses, the other none or 0.0.0.0), unanswered; plus the latest disagreements with both answers.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "upstreamChecks".into(),
+                    "/api/v1/analytics/upstream-checks".into(),
+                )])
+            },
+        },
         // REQ: OBS-020 (ADR-107)
         Tool {
             name: "probe_status",

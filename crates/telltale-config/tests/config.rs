@@ -731,6 +731,60 @@ to = ["phone"]
     }
 }
 
+/// REQ: OBS-019 (T11.4) — second opinions: off by default; a reference group that exists; a
+/// warning when the sample adds noticeable traffic.
+#[test]
+fn obs_019_upstream_check_is_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    assert_eq!(
+        telltale_config::Config::default()
+            .upstream_check
+            .sample_every,
+        0
+    );
+    let ok = r#"
+[[upstream]]
+name = "quad9"
+url = "udp://9.9.9.9"
+[[upstream_group]]
+name = "reference"
+members = ["quad9"]
+[upstream_check]
+sample_every = 1000
+reference = "reference"
+keep = 50
+"#;
+    let loaded = load(ok).unwrap();
+    assert_eq!(loaded.config.upstream_check.keep, 50);
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .all(|w| !w.contains("upstream_check"))
+    );
+    let busy = load(&ok.replace("sample_every = 1000", "sample_every = 10")).unwrap();
+    assert!(
+        busy.warnings.iter().any(|w| w.contains("asked twice")),
+        "{:?}",
+        busy.warnings
+    );
+    for (bad, why) in [
+        (
+            ok.replace("reference = \"reference\"", "reference = \"nope\""),
+            "no upstream group `nope`",
+        ),
+        (ok.replace("keep = 50", "keep = 0"), "from 1 to 1000"),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}
+
 /// REQ: OBS-020 (T11.3) — probes: targets by IP with a scheme probes speak; a sane schedule;
 /// `cert_expiring` thresholds in days.
 #[test]

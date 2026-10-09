@@ -387,6 +387,14 @@
         "$ref": "#/$defs/Upstream"
       }
     },
+    "upstream_check": {
+      "description": "REQ: OBS-019 (T11.4) — second opinions: a sample of forwarded questions asked again of\nanother upstream, and the answers compared. Off by default.",
+      "$ref": "#/$defs/UpstreamCheckConfig",
+      "default": {
+        "keep": 100,
+        "sample_every": 0
+      }
+    },
     "upstream_group": {
       "description": "Named groups of upstreams with a selection strategy.",
       "type": "array",
@@ -3314,6 +3322,35 @@
         "name",
         "url"
       ]
+    },
+    "UpstreamCheckConfig": {
+      "description": "REQ: OBS-019 (T11.4, ADR-108, `spec/04` §9) — second opinions: one forwarded question in\n`sample_every` is asked again, off the query path, of another upstream (another member of\nthe same upstream group, or the `reference` group), and the two answers are compared: the\nsame, different addresses (CDNs do this), a different response code, or filtered (one side\nhas addresses, the other none or only `0.0.0.0`/loopback). Off by default: the second\nupstream sees the sampled names.",
+      "type": "object",
+      "properties": {
+        "keep": {
+          "description": "Disagreements kept for the API and the Upstreams page, newest first (1 to 1000).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 100,
+          "minimum": 0
+        },
+        "reference": {
+          "description": "The upstream group asked for second opinions. Unset: another upstream of the group\nthat answered (a group with one upstream gets none).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "sample_every": {
+          "description": "One forwarded question in this many gets a second opinion (0 = off, the default).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "UpstreamGroup": {
       "type": "object",

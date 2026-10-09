@@ -426,6 +426,11 @@ pub(crate) struct Pipeline {
     dnssec: ArcSwapOption<Dnssec>,
     /// Validation counters, kept across reloads.
     pub(crate) dnssec_stats: Arc<telltale_upstream::dnssec::Stats>,
+    /// REQ: OBS-019 (T11.4) — per-upstream answer quality (EDE codes, DNSSEC verdicts, second
+    /// opinions), kept across reloads.
+    pub(crate) quality: Arc<crate::upstream_checks::Quality>,
+    /// Second opinions (`[upstream_check]`), when on; replaced on reload.
+    checker: ArcSwapOption<crate::upstream_checks::Checker>,
 }
 
 /// The validator and how strictly its verdict is applied.
@@ -489,7 +494,47 @@ impl Pipeline {
             rt: tokio::runtime::Handle::try_current().ok(),
             dnssec: ArcSwapOption::empty(),
             dnssec_stats: Arc::default(),
+            quality: Arc::default(),
+            checker: ArcSwapOption::empty(),
         })
+    }
+
+    /// REQ: OBS-019 (T11.4) — second opinions on or off for `cfg` (at start and on reload).
+    pub(crate) fn set_upstream_check(&self, cfg: &telltale_config::Config) {
+        self.checker
+            .store(crate::upstream_checks::Checker::from_config(cfg).map(Arc::new));
+    }
+
+    /// REQ: OBS-019 (T11.4) — after an upstream answered: its EDE code (if any) is counted,
+    /// and now and then the same question goes to a second upstream in the background.
+    fn after_upstream(
+        &self,
+        st: &Arc<Dynamic>,
+        group: &Arc<telltale_upstream::Group>,
+        question: &Question,
+        answer: &[u8],
+        upstream: u16,
+    ) {
+        self.quality.note_answer(upstream, answer);
+        let Some(c) = self.checker.load_full() else {
+            return;
+        };
+        if !c.sample() {
+            return;
+        }
+        let Some(rt) = &self.rt else {
+            return;
+        };
+        c.spawn(
+            rt,
+            Arc::clone(&st.router),
+            Arc::clone(group),
+            question,
+            answer,
+            upstream,
+            Arc::clone(&self.quality),
+            self.telemetry.ts_us(Instant::now()),
+        );
     }
 
     /// This process's cache hash of a wire-format name (for reloading a cache dump, DNS-009).
@@ -1940,7 +1985,7 @@ impl Pipeline {
             && d.validator.covers(&q.qname.display().to_string())
         {
             return self
-                .resolve_validated(q, key, &group, &question, &d, started)
+                .resolve_validated(&st, q, key, &group, &question, &d, started)
                 .await;
         }
         let result = group.resolve(question, self.settings.budget).await;
@@ -1958,13 +2003,16 @@ impl Pipeline {
         });
         let answer = result.ok()?;
         let _ = self.cache.insert(&key, q, &answer.bytes, Instant::now());
+        self.after_upstream(&st, &group, &question, &answer.bytes, upstream);
         Some((answer.bytes.into(), upstream))
     }
 
     /// One upstream answer, DNSSEC-validated (DNS-011). Bogus answers come back as an empty
     /// marker (SERVFAIL + EDE 6) and are never cached; in permissive mode they're served.
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_validated(
         &self,
+        st: &Arc<Dynamic>,
         q: &Query<'_>,
         key: CacheKey,
         group: &Arc<telltale_upstream::Group>,
@@ -1995,6 +2043,8 @@ impl Pipeline {
             attempts,
         });
         let v = result.ok()?;
+        // REQ: OBS-019 (T11.4) — the verdict, per upstream.
+        self.quality.note_dnssec(upstream, v.verdict);
         // REQ: DNS-011 (ADR-098) — which names fail, while trying validation out.
         if v.verdict == Verdict::Bogus && d.permissive {
             tracing::info!(
@@ -2012,9 +2062,11 @@ impl Pipeline {
             // proven unsigned, T10.9): fetch it unvalidated.
             let a = group.resolve(*question, self.settings.budget).await.ok()?;
             let _ = self.cache.insert(&key, q, &a.bytes, Instant::now());
+            self.after_upstream(st, group, question, &a.bytes, a.upstream_id);
             return Some((a.bytes.into(), a.upstream_id));
         }
         let _ = self.cache.insert(&key, q, &v.bytes, Instant::now());
+        self.after_upstream(st, group, question, &v.bytes, upstream);
         Some((v.bytes.into(), upstream))
     }
 
@@ -3748,6 +3800,100 @@ groups = ["kids"]
         assert_eq!(forwarded[0].status, Status::Forwarded);
         assert_ne!(id, 0);
         assert_eq!(forwarded[0].upstream, id, "the upstream that answered");
+    }
+
+    /// A fake upstream on 127.0.0.1: NXDOMAIN with EDE 17 (a filtering resolver), or an A
+    /// record (an honest one). Returns its address.
+    async fn fake_upstream(filtering: bool) -> std::net::SocketAddr {
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while let Ok((n, from)) = s.recv_from(&mut b).await {
+                let q = parse_query(&b[..n]).unwrap();
+                let mut out = [0u8; 512];
+                let rc = if filtering {
+                    rcode::NXDOMAIN
+                } else {
+                    rcode::NOERROR
+                };
+                let mut r = ResponseBuilder::new(&q, &mut out, rc).unwrap();
+                if !filtering {
+                    r.answer_a(60, std::net::Ipv4Addr::new(192, 0, 2, 7))
+                        .unwrap();
+                }
+                let edns = telltale_proto::EdnsOut {
+                    udp_payload: 1232,
+                    dnssec_ok: false,
+                    ede: filtering.then_some((17, "filtered")),
+                };
+                let len = r.finish(Some(edns)).unwrap();
+                let _ = s.send_to(&out[..len], from).await;
+            }
+        });
+        addr
+    }
+
+    /// REQ: OBS-019 (T11.4) — a forwarded answer from a filtering upstream gets its EDE counted
+    /// and, sampled, a second opinion from the group's other upstream: `filtered`, kept with
+    /// both answers. The client's answer doesn't wait for it.
+    #[tokio::test]
+    async fn obs_019_second_opinions_through_the_pipeline() {
+        let (filtering, honest) = (fake_upstream(true).await, fake_upstream(false).await);
+        let toml = format!(
+            "[[upstream]]\nname = \"family\"\nurl = \"udp://{filtering}\"\n\
+             [[upstream]]\nname = \"honest\"\nurl = \"udp://{honest}\"\n\
+             [[upstream_group]]\nname = \"default\"\nstrategy = \"failover\"\nmembers = [\"family\", \"honest\"]\n\
+             [upstream_check]\nsample_every = 1\n"
+        );
+        let pipe = pipeline_with(&toml, "");
+        let cfg = telltale_config::Loader::new()
+            .toml_str("t.toml", &toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        pipe.set_upstream_check(&cfg);
+        let family = pipe.current().router.upstreams()[0].id;
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let req = query("casino.example.org", rtype::A, true);
+        let Response::Deferred(answer) = Handler(Arc::clone(&pipe)).handle(&req, &meta, &mut out)
+        else {
+            panic!("a miss goes upstream");
+        };
+        let resp = answer.await.unwrap();
+        assert_eq!(
+            response_rcode(&resp),
+            rcode::NXDOMAIN,
+            "the first upstream's answer"
+        );
+        for _ in 0..100 {
+            if !pipe.quality.check_counts().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(pipe.quality.check_counts(), vec![(family, [0, 0, 0, 1, 0])]);
+        assert_eq!(pipe.quality.ede_counts(), vec![((family, 17), 1)]);
+        let view = pipe
+            .quality
+            .view(&cfg.upstream_check, &[(family, "family".into())]);
+        let d = &view.recent[0];
+        assert_eq!(
+            (d.result.as_str(), d.upstream.as_str(), d.reference.as_str()),
+            ("filtered", "family", "honest")
+        );
+        assert_eq!(
+            (d.answer.as_str(), d.reference_answer.as_str()),
+            ("NXDOMAIN", "NOERROR 192.0.2.7")
+        );
+        assert_eq!(d.name, "casino.example.org");
     }
 
     #[test]

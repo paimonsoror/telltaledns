@@ -447,6 +447,16 @@
       "general": true
     },
     {
+      "id": "upstream-checks",
+      "title": "Answer quality",
+      "term": "Upstream truth checks (second opinions, DNSSEC, EDE)",
+      "summary": "Whether each upstream's answers can be trusted: the DNSSEC verdicts on them, the error codes it attaches (EDE 15 Blocked, 16 Censored, 17 Filtered mean it filters names itself), and, if you turn them on, second opinions: a small sample of questions asked again of another upstream, with the two answers compared.",
+      "when": "A site works on one network but not yours, an upstream seems to block things you didn't, or you want to know whether an upstream rewrites answers (an ISP's resolver, a 'family' filter).",
+      "example": "family-dns answered NXDOMAIN for casino.example.org while quad9 had an address: a 'filtered' disagreement, and family-dns's answers carry EDE 17 (Filtered).",
+      "caution": "Different addresses are normal for big sites (CDNs answer per resolver). Second opinions are off by default because the second upstream sees the sampled names; one in 1,000 is a good start.",
+      "docs": "upstream-truth-checks"
+    },
+    {
       "id": "probes",
       "title": "Listener checks",
       "term": "Synthetic probes",

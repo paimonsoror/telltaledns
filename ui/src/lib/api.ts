@@ -179,6 +179,8 @@ export const api = {
   blockingPause: (body: S['BlockingRequest']) => post<S['Items_BlockingNode']>('/blocking/pause', body),
   blockingResume: (body: S['BlockingRequest']) => post<S['Items_BlockingNode']>('/blocking/resume', body),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
+  // REQ: OBS-019 — upstream answer quality and second opinions, per node.
+  upstreamChecks: () => get<S['Items_UpstreamChecks']>('/analytics/upstream-checks'),
 
   // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a
   // retried request (flaky Wi-Fi) is applied once.

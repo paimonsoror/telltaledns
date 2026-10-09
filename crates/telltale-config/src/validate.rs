@@ -53,6 +53,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     alerts(cfg, &mut r);
     slo(cfg, &mut r);
     probes(cfg, &mut r);
+    upstream_check(cfg, &mut r);
     sinks(cfg, &mut r);
     routers(cfg, &mut r);
     rewrites(cfg, &mut r);
@@ -483,6 +484,29 @@ pub fn probe_target(t: &str) -> Result<(&str, std::net::SocketAddr, Option<&str>
         .parse::<std::net::SocketAddr>()
         .map_err(|_| "an IP address and port, e.g. 192.168.5.112:53 or [fd00::53]:53")?;
     Ok((scheme, addr, path))
+}
+
+// REQ: OBS-019 (T11.4) — second opinions: a reference group that exists, a bounded history,
+// and a warning when the sample is large enough to add noticeable upstream traffic.
+fn upstream_check(cfg: &Config, r: &mut Report<'_>) {
+    let c = &cfg.upstream_check;
+    if let Some(g) = &c.reference
+        && !cfg.upstream_group.iter().any(|x| x.name == *g)
+    {
+        r.err(
+            "upstream_check.reference",
+            format!("no upstream group `{}`", g.as_str()),
+        );
+    }
+    if !(1..=1000).contains(&c.keep) {
+        r.err("upstream_check.keep", "from 1 to 1000");
+    }
+    if (1..100).contains(&c.sample_every) {
+        r.warn(format!(
+            "upstream_check.sample_every = {}: one forwarded question in {} is asked twice (more upstream traffic, and the second upstream sees those names)",
+            c.sample_every, c.sample_every
+        ));
+    }
 }
 
 // REQ: OBS-020 (T11.3) — probes: a sane schedule and timeout, targets by IP.

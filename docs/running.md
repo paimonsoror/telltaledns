@@ -1752,6 +1752,22 @@ targets = ["udp://192.168.5.112:53"]     # extra: by IP, e.g. a load balancer's 
 - **Where:** **Settings → System → Listener checks**, `GET /api/v1/system/probes` (every node), the MCP tool `probe_status`, and `/metrics`: `telltale_probe_success{target,proto}`, `telltale_probe_duration_seconds`, `telltale_probe_failures_total`, and `telltale_listener_cert_expiry_timestamp_seconds{target}`.
 - **Cost:** a handful of queries a minute, from a background task. They count in `telltale_queries_total` like any query, but stay out of the query log, the dashboard's top lists, device analytics, and event sinks. dnstap still sees them as client queries from loopback.
 
+### Upstream truth checks
+Are your upstreams telling the truth? The **Upstreams** page's **Answer quality** card (and `GET /api/v1/analytics/upstream-checks`, the MCP tool `upstream_checks`) shows, per node and upstream since start:
+- **DNSSEC verdicts** on its answers, when `[dnssec] mode` validates: secure, unsigned, bogus, undecided. An upstream with bogus answers others don't have may be tampering, or broken.
+- **Error codes** it attached to its answers (Extended DNS Errors, RFC 8914). EDE 15 (Blocked), 16 (Censored), and 17 (Filtered) mean the upstream filters names itself: expected from a family filter, a surprise from a "plain" resolver.
+- **Second opinions** (off by default):
+  ```toml
+  [upstream_check]
+  sample_every = 1000          # one forwarded question in 1,000 is asked again (0 = off)
+  # reference = "quad9-only"   # an upstream group to ask; default: another member of the same group
+  keep = 100                   # disagreements kept
+  ```
+  After the device has its answer, a background task asks another upstream the same question and compares: **same**; **other addresses** (both had addresses, none in common: CDNs and geo-DNS answer differently per resolver, usually harmless); **other response** (a different response code); **filtered** (one side had addresses, the other none, or only `0.0.0.0`, `::`, or loopback: one of them filters that name); **no second answer**. The latest disagreements are listed with both answers; names follow the query log's privacy level. A group with a single upstream gets no second opinions unless `reference` names another group. At most 8 run at once; more are skipped.
+- **Privacy:** the second upstream sees the sampled names, which is why it's off by default. One in 1,000 adds 0.1% to upstream traffic.
+- `/metrics`: `telltale_upstream_dnssec_total{upstream,result}`, `telltale_upstream_ede_total{upstream,code}`, `telltale_upstream_check_total{upstream,result}`.
+- Cost: on the path to an upstream only (never for cached or blocked answers): one look for an EDE in each upstream answer and a counter per DNSSEC verdict.
+
 ### Query events
 Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics; the query log and the API for reading them come in later releases.
 - Each thread writes events into its own buffer without waiting or locking, and a background thread collects them every 25 ms. If a buffer ever fills, events are dropped and counted, and DNS answers are never held back. Counters and the metrics above never drop.

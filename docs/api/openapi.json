@@ -546,6 +546,28 @@
         }
       }
     },
+    "/api/v1/analytics/upstream-checks": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Upstream answer quality and second opinions.",
+        "description": "Per node, per upstream since start: the DNSSEC verdicts on its answers (when validating),\nthe Extended DNS Error codes it returned (EDE 15 Blocked, 16 Censored, 17 Filtered mean the\nupstream filters), and, when `[upstream_check] sample_every` is set, how sampled answers\ncompared with a second upstream's: `same`, `differentAddresses` (CDNs and geo-DNS answer per\nresolver, usually harmless), `differentRcode`, `filtered` (one side had addresses, the other\nnone or only 0.0.0.0/loopback), or `unanswered`. `recent` lists the latest disagreements with\nboth answers. Names follow the query-log privacy level.",
+        "operationId": "upstream_checks",
+        "responses": {
+          "200": {
+            "description": "One entry per node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_UpstreamChecks"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/analytics/vqlog": {
       "get": {
         "tags": [
@@ -7025,6 +7047,33 @@
           }
         }
       },
+      "EdeCount": {
+        "type": "object",
+        "description": "REQ: OBS-019 — answers carrying one EDE code.",
+        "required": [
+          "code",
+          "name",
+          "count"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "example": 15,
+            "minimum": 0
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "The registry's name (`Blocked`, `Censored`, `Filtered`, `Stale Answer`, ...).",
+            "example": "Blocked"
+          }
+        }
+      },
       "ExplainBlock": {
         "type": "object",
         "required": [
@@ -9572,6 +9621,75 @@
           }
         }
       },
+      "Items_UpstreamChecks": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: OBS-019 (ADR-108) — one node's view of its upstreams' answers: second opinions\n(sampled, `[upstream_check]`), DNSSEC verdicts, and the EDE codes they returned.",
+              "required": [
+                "enabled",
+                "sampleEvery",
+                "upstreams",
+                "recent"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Second opinions are on (`sample_every` > 0)."
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node (cluster nodes only)."
+                },
+                "recent": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamDisagreement"
+                  },
+                  "description": "The latest disagreements, newest first."
+                },
+                "reference": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The upstream group asked (none: another member of the answering group)."
+                },
+                "sampleEvery": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "One forwarded question in this many gets a second opinion.",
+                  "minimum": 0
+                },
+                "upstreams": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpstreamQuality"
+                  },
+                  "description": "Per upstream that answered."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_UpstreamInfo": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -11823,6 +11941,101 @@
           }
         }
       },
+      "UpstreamChecks": {
+        "type": "object",
+        "description": "REQ: OBS-019 (ADR-108) — one node's view of its upstreams' answers: second opinions\n(sampled, `[upstream_check]`), DNSSEC verdicts, and the EDE codes they returned.",
+        "required": [
+          "enabled",
+          "sampleEvery",
+          "upstreams",
+          "recent"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Second opinions are on (`sample_every` > 0)."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (cluster nodes only)."
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamDisagreement"
+            },
+            "description": "The latest disagreements, newest first."
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The upstream group asked (none: another member of the answering group)."
+          },
+          "sampleEvery": {
+            "type": "integer",
+            "format": "int32",
+            "description": "One forwarded question in this many gets a second opinion.",
+            "minimum": 0
+          },
+          "upstreams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpstreamQuality"
+            },
+            "description": "Per upstream that answered."
+          }
+        }
+      },
+      "UpstreamDisagreement": {
+        "type": "object",
+        "description": "REQ: OBS-019 — two upstreams that answered the same question differently.",
+        "required": [
+          "at",
+          "name",
+          "qtype",
+          "result",
+          "upstream",
+          "answer",
+          "reference",
+          "referenceAnswer"
+        ],
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name (hashed at privacy level 1 and above) and type."
+          },
+          "qtype": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string",
+            "description": "The second opinion."
+          },
+          "referenceAnswer": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "description": "`different_addresses`, `different_rcode`, or `filtered`."
+          },
+          "upstream": {
+            "type": "string",
+            "description": "Who answered first, and what."
+          }
+        }
+      },
       "UpstreamInfo": {
         "type": "object",
         "description": "An upstream server and its health.",
@@ -11880,6 +12093,82 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "UpstreamQuality": {
+        "type": "object",
+        "description": "REQ: OBS-019 — one upstream's answers since start.",
+        "required": [
+          "upstream",
+          "same",
+          "differentAddresses",
+          "differentRcode",
+          "filtered",
+          "unanswered",
+          "dnssecSecure",
+          "dnssecInsecure",
+          "dnssecBogus",
+          "dnssecIndeterminate",
+          "ede"
+        ],
+        "properties": {
+          "differentAddresses": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "differentRcode": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dnssecBogus": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dnssecIndeterminate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dnssecInsecure": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dnssecSecure": {
+            "type": "integer",
+            "format": "int64",
+            "description": "DNSSEC verdicts on its answers (when `[dnssec] mode` validates).",
+            "minimum": 0
+          },
+          "ede": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EdeCount"
+            },
+            "description": "The Extended DNS Error codes in its answers (RFC 8914)."
+          },
+          "filtered": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "same": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Second opinions by outcome: the same answer; different addresses (CDNs and geo-DNS\ndo this); a different response code; filtered (one side had addresses, the other none\nor only 0.0.0.0/loopback); the second upstream didn't answer.",
+            "minimum": 0
+          },
+          "unanswered": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upstream": {
+            "type": "string"
           }
         }
       },

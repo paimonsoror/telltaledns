@@ -72,6 +72,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint, device anomaly detection (`[telemetry.anomaly]`) | `spec/06`, OBS-013 |
+| `[upstream_check]` | second opinions: one forwarded question in `sample_every` asked again of another upstream and compared (off by default) | `spec/04` §9, OBS-019 |
 | `[probe]` | synthetic probes of every listener and extra targets: interval, timeout, certificate warning days | `spec/06` §9, OBS-020 |
 | `[slo]` | service-level objectives: availability and latency targets, the latency threshold, the error budget's window | `spec/06` §8.2, OBS-016 |
 | `[api]` | REST API listener (also serves `/metrics` and health probes) | `spec/07`, ADR-028 |

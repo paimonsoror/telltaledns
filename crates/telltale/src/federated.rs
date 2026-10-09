@@ -113,6 +113,8 @@ enum Read {
     Health,
     /// REQ: OBS-020 — the peer's own probes (older peers don't know it).
     Probes,
+    /// REQ: OBS-019 — the peer's own upstream answer quality (older peers don't know it).
+    UpstreamChecks,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -179,6 +181,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Anomalies { since_s } => serde_json::to_vec(&b.anomalies(since_s)),
         Read::Health => serde_json::to_vec(&b.health()),
         Read::Probes => serde_json::to_vec(&b.probes()),
+        Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
     }
     .map_err(|e| e.to_string())
 }
@@ -1224,6 +1227,31 @@ impl Backend for Federated {
     }
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.local.forwards()
+    }
+    // REQ: OBS-019 (ADR-108) — each node asks its own upstreams: one entry per node.
+    fn upstream_checks(&self) -> Vec<telltale_api::model::UpstreamChecks> {
+        let own = self.own_label();
+        let mut rows: Vec<_> = if self.with_me() {
+            self.local
+                .upstream_checks()
+                .into_iter()
+                .map(|mut r| {
+                    r.node = Some(own.clone());
+                    r
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (label, peer_rows) in self
+            .everyone_labelled::<Vec<telltale_api::model::UpstreamChecks>>(|| Read::UpstreamChecks)
+        {
+            rows.extend(peer_rows.into_iter().map(|mut r| {
+                r.node = Some(label.clone());
+                r
+            }));
+        }
+        rows
     }
     // REQ: OBS-020 (ADR-107) — each node probes its own listeners: every node's, labelled.
     fn probes(&self) -> Vec<telltale_api::model::ProbeResult> {

@@ -233,6 +233,44 @@ test('obs_020 listener checks', async () => {
   expect(log.items).toEqual([]);
 });
 
+// REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
+// (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
+// disagreement.
+test('obs_019 upstream answer quality', async () => {
+  await page.goto('/#/upstreams');
+  const card = page.getByTestId('upstream-quality');
+  await expect(card).toContainText('Answer quality');
+  await expect(card).toContainText('Second opinions are off');
+  await page.route('**/api/v1/analytics/upstream-checks', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            enabled: true, sampleEvery: 1000,
+            upstreams: [{
+              upstream: 'family-dns', same: 40, differentAddresses: 3, differentRcode: 0, filtered: 2, unanswered: 0,
+              dnssecSecure: 10, dnssecInsecure: 30, dnssecBogus: 1, dnssecIndeterminate: 0,
+              ede: [{ code: 17, name: 'Filtered', count: 12 }],
+            }],
+            recent: [{
+              at: '2026-10-09T12:00:00.000Z', name: 'casino.example.org', qtype: 'A', result: 'filtered',
+              upstream: 'family-dns', answer: 'NXDOMAIN', reference: 'quad9', referenceAnswer: 'NOERROR 192.0.2.7',
+            }],
+          },
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  await expect(card).toContainText('2 filtered');
+  await expect(card).toContainText('1 bogus');
+  await expect(card).toContainText('17 Filtered: 12');
+  await expect(card).toContainText('casino.example.org');
+  await expect(card).toContainText('quad9: NOERROR 192.0.2.7');
+  await expect(card).not.toContainText('Second opinions are off');
+  await page.unroute('**/api/v1/analytics/upstream-checks');
+});
+
 // REQ: OBS-014 — acknowledging a finding hides it (and drops it from the badge) until "Show
 // acknowledged"; the acknowledge itself goes to the real server. A fresh server has no
 // findings yet (devices learn for a week), so the list is stubbed.

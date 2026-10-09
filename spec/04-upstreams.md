@@ -92,3 +92,8 @@ pub trait Upstream: Send + Sync {
 ## 7. Bootstrap and loops (UPS-009)
 - Hostname upstreams resolve through `bootstrap` IPs (per upstream or global; default: the system resolver from `/etc/resolv.conf`, **excluding** our own listen addresses). Results are cached and re-resolved at TTL.
 - Loop detection: tag outbound queries with an EDNS option (local-use code 65429) carrying the node ID. Drop and alert on receipt of our own tag.
+
+## 9. Answer quality and second opinions (OBS-019, ADR-108)
+- **Always:** after an upstream answers (the asynchronous path only), its first OPT EDE code is counted per (upstream, code) (at most 2,048 pairs) and, when validating, the DNSSEC verdict per upstream (atomic counters, 256 upstream IDs).
+- **Second opinions** (`[upstream_check] sample_every`, 0 = off by default): one forwarded answer in N (an atomic counter) spawns a task that asks the `reference` group (or another member of the answering group; none for single-member groups) the same `Question`, at most 8 at once (more are skipped). Answers are reduced to (RCODE, A/AAAA set) and compared: `filtered` when exactly one side has real addresses (none, or only unspecified/loopback, is a sinkhole); else `different_rcode`; else `different_addresses` when both have addresses and none in common; else `same`; `unanswered` when the second upstream fails. Disagreements keep both answers (names per the privacy level), newest first, at most `keep`.
+- `GET /api/v1/analytics/upstream-checks` (federated, `Read::UpstreamChecks`), MCP `upstream_checks`, the Upstreams page's Answer quality card, `telltale_upstream_dnssec_total`, `telltale_upstream_ede_total`, `telltale_upstream_check_total`.

@@ -1626,6 +1626,80 @@ pub struct AnomalyAckResult {
     pub unknown: Vec<String>,
 }
 
+/// REQ: OBS-019 (ADR-108) — one node's view of its upstreams' answers: second opinions
+/// (sampled, `[upstream_check]`), DNSSEC verdicts, and the EDE codes they returned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamChecks {
+    /// The node (cluster nodes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// Second opinions are on (`sample_every` > 0).
+    pub enabled: bool,
+    /// One forwarded question in this many gets a second opinion.
+    pub sample_every: u32,
+    /// The upstream group asked (none: another member of the answering group).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// Per upstream that answered.
+    pub upstreams: Vec<UpstreamQuality>,
+    /// The latest disagreements, newest first.
+    pub recent: Vec<UpstreamDisagreement>,
+}
+
+/// REQ: OBS-019 — one upstream's answers since start.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamQuality {
+    pub upstream: String,
+    /// Second opinions by outcome: the same answer; different addresses (CDNs and geo-DNS
+    /// do this); a different response code; filtered (one side had addresses, the other none
+    /// or only 0.0.0.0/loopback); the second upstream didn't answer.
+    pub same: u64,
+    pub different_addresses: u64,
+    pub different_rcode: u64,
+    pub filtered: u64,
+    pub unanswered: u64,
+    /// DNSSEC verdicts on its answers (when `[dnssec] mode` validates).
+    pub dnssec_secure: u64,
+    pub dnssec_insecure: u64,
+    pub dnssec_bogus: u64,
+    pub dnssec_indeterminate: u64,
+    /// The Extended DNS Error codes in its answers (RFC 8914).
+    pub ede: Vec<EdeCount>,
+}
+
+/// REQ: OBS-019 — answers carrying one EDE code.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EdeCount {
+    #[schema(example = 15)]
+    pub code: u16,
+    /// The registry's name (`Blocked`, `Censored`, `Filtered`, `Stale Answer`, ...).
+    #[schema(example = "Blocked")]
+    pub name: String,
+    pub count: u64,
+}
+
+/// REQ: OBS-019 — two upstreams that answered the same question differently.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamDisagreement {
+    /// RFC 3339.
+    pub at: String,
+    /// The name (hashed at privacy level 1 and above) and type.
+    pub name: String,
+    pub qtype: String,
+    /// `different_addresses`, `different_rcode`, or `filtered`.
+    pub result: String,
+    /// Who answered first, and what.
+    pub upstream: String,
+    pub answer: String,
+    /// The second opinion.
+    pub reference: String,
+    pub reference_answer: String,
+}
+
 /// REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own
 /// protocol, or an extra target, from one node, and the listener's certificate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

@@ -1305,6 +1305,25 @@ impl Backend for ApiBackend {
         self.src.probes.results()
     }
 
+    // REQ: OBS-019 (ADR-108)
+    fn upstream_checks(&self) -> Vec<telltale_api::model::UpstreamChecks> {
+        let names: Vec<(u16, String)> = self
+            .src
+            .pipeline
+            .current()
+            .router
+            .upstreams()
+            .iter()
+            .map(|u| (u.id, u.name.clone()))
+            .collect();
+        vec![
+            self.src
+                .pipeline
+                .quality
+                .view(&self.src.config.load().upstream_check, &names),
+        ]
+    }
+
     // REQ: OBS-016 (ADR-105)
     fn slo_settings(&self) -> telltale_api::slo::Settings {
         crate::health::slo_settings(&self.src.config.load())

@@ -461,6 +461,7 @@ pub(crate) fn render(src: &Sources) -> String {
     }
     let state = src.pipeline.current();
     render_upstreams(&mut w, &state.router);
+    render_upstream_quality(&mut w, &src.pipeline.quality, &state.router);
     render_exported(&mut w, src, &state);
     if let Some(l) = src.lists.load_full() {
         render_lists(&mut w, &l.fetcher);
@@ -1086,6 +1087,72 @@ fn render_filter(w: &mut PromWriter, lists: &ListsShared) {
                 "telltale_list_regex_skipped",
                 &[("list", m.name.as_str())],
                 l.regex_skipped,
+            );
+        }
+    }
+}
+
+/// REQ: OBS-019 (T11.4, ADR-108) — what the upstreams' answers said: DNSSEC verdicts, EDE
+/// codes, and second opinions, per upstream (bounded: upstreams × a few values).
+fn render_upstream_quality(
+    w: &mut PromWriter,
+    q: &crate::upstream_checks::Quality,
+    router: &Router,
+) {
+    let ups = router.upstreams();
+    let name = |id: u16| {
+        ups.iter()
+            .find(|u| u.id == id)
+            .map_or("unknown", |u| u.name.as_str())
+    };
+    w.family(
+        "telltale_upstream_dnssec_total",
+        "counter",
+        "DNSSEC verdicts on each upstream's answers (when validating).",
+    );
+    for u in ups {
+        let c = q.dnssec_counts(u.id);
+        if c.iter().sum::<u64>() == 0 {
+            continue;
+        }
+        for (result, n) in ["secure", "insecure", "bogus", "indeterminate"]
+            .iter()
+            .zip(c)
+        {
+            w.sample(
+                "telltale_upstream_dnssec_total",
+                &[("upstream", u.name.as_str()), ("result", result)],
+                n,
+            );
+        }
+    }
+    w.family(
+        "telltale_upstream_ede_total",
+        "counter",
+        "Answers from each upstream carrying an Extended DNS Error code (RFC 8914; 15 Blocked, 16 Censored, 17 Filtered: the upstream filters).",
+    );
+    for ((id, code), n) in q.ede_counts() {
+        w.sample(
+            "telltale_upstream_ede_total",
+            &[("upstream", name(id)), ("code", code.to_string().as_str())],
+            n,
+        );
+    }
+    let checks = q.check_counts();
+    if checks.is_empty() {
+        return;
+    }
+    w.family(
+        "telltale_upstream_check_total",
+        "counter",
+        "Second opinions ([upstream_check]) on each upstream's answers, by how they compared.",
+    );
+    for (id, counts) in checks {
+        for (a, n) in crate::upstream_checks::Agreement::ALL.iter().zip(counts) {
+            w.sample(
+                "telltale_upstream_check_total",
+                &[("upstream", name(id)), ("result", a.label())],
+                n,
             );
         }
     }

@@ -236,6 +236,10 @@ pub trait Backend: Send + Sync + 'static {
     fn probes(&self) -> Vec<model::ProbeResult> {
         Vec::new()
     }
+    /// REQ: OBS-019 (ADR-108) — each node's upstream answer quality and second opinions.
+    fn upstream_checks(&self) -> Vec<model::UpstreamChecks> {
+        Vec::new()
+    }
     /// REQ: OBS-016 (ADR-105) — the objectives as configured (`[slo]`). The status itself is
     /// worked out from [`Backend::timeseries`] ([`slo::status`]), so it covers what that
     /// covers (every node, in a cluster).
@@ -537,6 +541,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/analytics/anomalies", get(anomalies))
         .route("/api/v1/analytics/new-domains", get(new_domains))
         .route("/api/v1/analytics/vqlog", get(vqlog_query))
+        .route("/api/v1/analytics/upstream-checks", get(upstream_checks))
         .route("/api/v1/dhcp/leases", get(dhcp_leases))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/zones", get(zones))
@@ -637,7 +642,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
+        system_info, system_health, system_probes, upstream_checks, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -655,7 +660,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -826,6 +831,28 @@ async fn system_probes(
 ) -> Result<Json<Items<model::ProbeResult>>, Problem> {
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.probes())).await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
+}
+
+/// Upstream answer quality and second opinions.
+///
+/// Per node, per upstream since start: the DNSSEC verdicts on its answers (when validating),
+/// the Extended DNS Error codes it returned (EDE 15 Blocked, 16 Censored, 17 Filtered mean the
+/// upstream filters), and, when `[upstream_check] sample_every` is set, how sampled answers
+/// compared with a second upstream's: `same`, `differentAddresses` (CDNs and geo-DNS answer per
+/// resolver, usually harmless), `differentRcode`, `filtered` (one side had addresses, the other
+/// none or only 0.0.0.0/loopback), or `unanswered`. `recent` lists the latest disagreements with
+/// both answers. Names follow the query-log privacy level.
+#[utoipa::path(get, path = "/api/v1/analytics/upstream-checks", tag = "stats",
+    responses((status = 200, body = Items<model::UpstreamChecks>, description = "One entry per node.")))]
+async fn upstream_checks(
+    State(b): State<Shared>,
+) -> Result<Json<Items<model::UpstreamChecks>>, Problem> {
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.upstream_checks())).await?;
     Ok(Json(Items {
         missing_nodes: b.missing_nodes(),
         items,

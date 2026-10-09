@@ -668,6 +668,8 @@ fn build_pipeline(
     };
     let p = Pipeline::new(settings, cache, router, policy);
     p.set_dnssec(cfg);
+    // REQ: OBS-019 (T11.4)
+    p.set_upstream_check(cfg);
     p
 }
 
@@ -1197,6 +1199,7 @@ async fn reload(
     }
     pipeline.reload(router, policy);
     pipeline.set_dnssec(&new);
+    pipeline.set_upstream_check(&new);
     let stats = listeners.stats();
     sources.udp.store(Arc::new(stats.udp));
     sources.tcp.store(Arc::new(stats.tcp));

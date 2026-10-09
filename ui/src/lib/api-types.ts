@@ -201,6 +201,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/upstream-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Upstream answer quality and second opinions.
+         * @description Per node, per upstream since start: the DNSSEC verdicts on its answers (when validating),
+         *     the Extended DNS Error codes it returned (EDE 15 Blocked, 16 Censored, 17 Filtered mean the
+         *     upstream filters), and, when `[upstream_check] sample_every` is set, how sampled answers
+         *     compared with a second upstream's: `same`, `differentAddresses` (CDNs and geo-DNS answer per
+         *     resolver, usually harmless), `differentRcode`, `filtered` (one side had addresses, the other
+         *     none or only 0.0.0.0/loopback), or `unanswered`. `recent` lists the latest disagreements with
+         *     both answers. Names follow the query-log privacy level.
+         */
+        get: operations["upstream_checks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/vqlog": {
         parameters: {
             query?: never;
@@ -2834,6 +2860,21 @@ export interface components {
              */
             source: string;
         };
+        /** @description REQ: OBS-019 — answers carrying one EDE code. */
+        EdeCount: {
+            /**
+             * Format: int32
+             * @example 15
+             */
+            code: number;
+            /** Format: int64 */
+            count: number;
+            /**
+             * @description The registry's name (`Blocked`, `Censored`, `Filtered`, `Stale Answer`, ...).
+             * @example Blocked
+             */
+            name: string;
+        };
         ExplainBlock: {
             /** Format: int32 */
             edeCode: number;
@@ -3781,6 +3822,28 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_UpstreamChecks: {
+            items: {
+                /** @description Second opinions are on (`sample_every` > 0). */
+                enabled: boolean;
+                /** @description The node (cluster nodes only). */
+                node?: string | null;
+                /** @description The latest disagreements, newest first. */
+                recent: components["schemas"]["UpstreamDisagreement"][];
+                /** @description The upstream group asked (none: another member of the answering group). */
+                reference?: string | null;
+                /**
+                 * Format: int32
+                 * @description One forwarded question in this many gets a second opinion.
+                 */
+                sampleEvery: number;
+                /** @description Per upstream that answered. */
+                upstreams: components["schemas"]["UpstreamQuality"][];
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_UpstreamInfo: {
             items: {
                 /** @description Circuit breaker: `closed` (healthy), `open` (benched), or `half_open` (probing). */
@@ -4713,6 +4776,43 @@ export interface components {
             resetTotp?: boolean | null;
             role?: components["schemas"]["Role"] | null;
         };
+        /**
+         * @description REQ: OBS-019 (ADR-108) — one node's view of its upstreams' answers: second opinions
+         *     (sampled, `[upstream_check]`), DNSSEC verdicts, and the EDE codes they returned.
+         */
+        UpstreamChecks: {
+            /** @description Second opinions are on (`sample_every` > 0). */
+            enabled: boolean;
+            /** @description The node (cluster nodes only). */
+            node?: string | null;
+            /** @description The latest disagreements, newest first. */
+            recent: components["schemas"]["UpstreamDisagreement"][];
+            /** @description The upstream group asked (none: another member of the answering group). */
+            reference?: string | null;
+            /**
+             * Format: int32
+             * @description One forwarded question in this many gets a second opinion.
+             */
+            sampleEvery: number;
+            /** @description Per upstream that answered. */
+            upstreams: components["schemas"]["UpstreamQuality"][];
+        };
+        /** @description REQ: OBS-019 — two upstreams that answered the same question differently. */
+        UpstreamDisagreement: {
+            answer: string;
+            /** @description RFC 3339. */
+            at: string;
+            /** @description The name (hashed at privacy level 1 and above) and type. */
+            name: string;
+            qtype: string;
+            /** @description The second opinion. */
+            reference: string;
+            referenceAnswer: string;
+            /** @description `different_addresses`, `different_rcode`, or `filtered`. */
+            result: string;
+            /** @description Who answered first, and what. */
+            upstream: string;
+        };
         /** @description An upstream server and its health. */
         UpstreamInfo: {
             /** @description Circuit breaker: `closed` (healthy), `open` (benched), or `half_open` (probing). */
@@ -4741,6 +4841,38 @@ export interface components {
             name: string;
             /** Format: int64 */
             requests: number;
+        };
+        /** @description REQ: OBS-019 — one upstream's answers since start. */
+        UpstreamQuality: {
+            /** Format: int64 */
+            differentAddresses: number;
+            /** Format: int64 */
+            differentRcode: number;
+            /** Format: int64 */
+            dnssecBogus: number;
+            /** Format: int64 */
+            dnssecIndeterminate: number;
+            /** Format: int64 */
+            dnssecInsecure: number;
+            /**
+             * Format: int64
+             * @description DNSSEC verdicts on its answers (when `[dnssec] mode` validates).
+             */
+            dnssecSecure: number;
+            /** @description The Extended DNS Error codes in its answers (RFC 8914). */
+            ede: components["schemas"]["EdeCount"][];
+            /** Format: int64 */
+            filtered: number;
+            /**
+             * Format: int64
+             * @description Second opinions by outcome: the same answer; different addresses (CDNs and geo-DNS
+             *     do this); a different response code; filtered (one side had addresses, the other none
+             *     or only 0.0.0.0/loopback); the second upstream didn't answer.
+             */
+            same: number;
+            /** Format: int64 */
+            unanswered: number;
+            upstream: string;
         };
         UserInfo: {
             allowBasicApi: boolean;
@@ -5215,6 +5347,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upstream_checks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One entry per node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_UpstreamChecks"];
                 };
             };
         };

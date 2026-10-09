@@ -49,6 +49,7 @@ mod smtp;
 mod tail;
 mod technitium;
 mod updates;
+mod upstream_checks;
 mod vqlog;
 mod warm;
 

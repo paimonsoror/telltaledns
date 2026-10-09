@@ -13,14 +13,21 @@
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let latency = $state<S['LatencyRow'][]>([]);
+  // REQ: OBS-019 — what the upstreams' answers said, per node.
+  let checks = $state<S['UpstreamChecks'][]>([]);
   let error = $state<unknown>(null);
 
   $effect(() =>
     poll(async () => {
       try {
-        const [u, l] = await Promise.all([api.upstreams(), api.latency('upstream')]);
+        const [u, l, c] = await Promise.all([
+          api.upstreams(),
+          api.latency('upstream'),
+          api.upstreamChecks().catch(() => ({ items: [] as S['UpstreamChecks'][] })),
+        ]);
         upstreams = u.items;
         latency = l.items;
+        checks = c.items;
         error = null;
       } catch (e) {
         error = e;
@@ -63,6 +70,21 @@
     { key: 'strategy', label: 'Strategy', type: 'select', options: ['failover', 'round_robin', 'weighted', 'fastest', 'parallel'],
       help: 'failover: in order, the next on failure. fastest: the quickest lately. parallel: ask several, take the first answer.' },
   ]);
+  const results: [keyof S['UpstreamQuality'], string, string][] = [
+    ['same', 'same', ''],
+    ['differentAddresses', 'other addresses', 'Both had addresses, none in common: CDNs and geo-DNS answer per resolver, usually harmless.'],
+    ['differentRcode', 'other response', 'A different response code (SERVFAIL, REFUSED, ...).'],
+    ['filtered', 'filtered', 'One had addresses, the other none or only 0.0.0.0/loopback: one of them filters this name.'],
+    ['unanswered', 'no second answer', 'The second upstream didn’t answer.'],
+  ];
+  const resultLabel: Record<string, string> = {
+    different_addresses: 'other addresses',
+    different_rcode: 'other response',
+    filtered: 'filtered',
+  };
+  const opinions = (q: S['UpstreamQuality']) => results.reduce((n, [k]) => n + (q[k] as number), 0);
+  const multiNode = $derived(checks.length > 1);
+  const anyQuality = $derived(checks.some((c) => c.upstreams.length > 0));
   const reload = async () => {
     upstreams = (await api.upstreams()).items;
   };
@@ -113,6 +135,64 @@
     Health: <strong>closed</strong> = healthy, <strong>open</strong> = benched after failures,
     <strong>half_open</strong> = being probed. Percentiles cover this hour.
   </p>
+  <!-- REQ: OBS-019 (ADR-108) — are the upstreams telling the truth? -->
+  <section class="card" data-testid="upstream-quality">
+    <h2>Answer quality<HelpButton id="upstream-checks" /></h2>
+    {#if !anyQuality}
+      <p class="empty">Nothing to show yet: DNSSEC verdicts and error codes appear as upstreams answer.</p>
+    {:else}
+      <div class="table-wrap">
+        <table class="compact">
+          <thead>
+            <tr>
+              {#if multiNode}<th>Node</th>{/if}<th>Upstream</th><th>Second opinions</th><th>DNSSEC</th><th>Error codes (EDE)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each checks as c (c.node ?? '')}
+              {#each c.upstreams as q (q.upstream)}
+                <tr>
+                  {#if multiNode}<td>{c.node ?? ''}</td>{/if}
+                  <td><strong>{q.upstream}</strong></td>
+                  <td class="small">
+                    {#if opinions(q) === 0}<span class="muted">–</span>{/if}
+                    {#each results as [k, label, tip] (k)}
+                      {#if (q[k] as number) > 0}<span class="chip" class:bad={k === 'filtered'} title={tip}>{num(q[k] as number)} {label}</span>{/if}
+                    {/each}
+                  </td>
+                  <td class="small">
+                    {#if q.dnssecSecure + q.dnssecInsecure + q.dnssecBogus + q.dnssecIndeterminate === 0}<span class="muted">–</span>
+                    {:else}{num(q.dnssecSecure)} secure · {num(q.dnssecInsecure)} unsigned{#if q.dnssecBogus} · <span class="bad-text">{num(q.dnssecBogus)} bogus</span>{/if}{#if q.dnssecIndeterminate} · {num(q.dnssecIndeterminate)} undecided{/if}{/if}
+                  </td>
+                  <td class="small">
+                    {#if q.ede.length === 0}<span class="muted">none</span>{/if}
+                    {#each q.ede as e (e.code)}<span class="chip" class:bad={e.code >= 15 && e.code <= 17}>{e.code} {e.name}: {num(e.count)}</span>{/each}
+                  </td>
+                </tr>
+              {/each}
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+    {#if checks.length && !checks.some((c) => c.enabled)}
+      <p class="muted small">
+        Second opinions are off. With <code>[upstream_check] sample_every = 1000</code>, one forwarded question in 1,000 is
+        asked again of another upstream and the answers compared (that upstream sees those names).
+      </p>
+    {/if}
+    {#each checks.filter((c) => c.recent.length) as c (c.node ?? '')}
+      <h3 class="small">Latest disagreements{#if multiNode} on {c.node}{/if}</h3>
+      <ul class="disagreements small">
+        {#each c.recent.slice(0, 10) as d (`${d.at}|${d.name}`)}
+          <li>
+            <span class="mono">{d.name}</span> {d.qtype} · <strong>{d.upstream}</strong>: {d.answer} · <strong>{d.reference}</strong>: {d.referenceAnswer}
+            <span class="chip" class:bad={d.result === 'filtered'}>{resultLabel[d.result] ?? d.result}</span>
+          </li>
+        {/each}
+      </ul>
+    {/each}
+  </section>
   <ConfigEditor kind="upstream" path="upstreams" title="Upstream servers" noun="upstream" fields={upstreamFields}
     summary={(d) => String(d.url ?? '')} onchanged={reload} formAction={tryUpstream} />
   <ConfigEditor kind="upstream_group" path="upstream-groups" title="Upstream groups" noun="upstream group" fields={groupFields}
@@ -122,3 +202,23 @@
     <a href={href('/local-dns')}>Names on my network</a> page.<HelpButton id="routes" />
   </p>
 </div>
+
+<style>
+  .chip {
+    display: inline-block;
+    padding: 0 6px;
+    margin: 1px 4px 1px 0;
+    border-radius: 999px;
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .chip.bad,
+  .bad-text {
+    color: var(--bad);
+    font-weight: 600;
+  }
+  .disagreements {
+    margin: 4px 0 0;
+    padding-left: 18px;
+  }
+</style>

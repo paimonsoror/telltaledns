@@ -1291,6 +1291,17 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-108 — Upstream truth checks: sampled second opinions compared by RCODE and addresses (Proposed)
+**Context:** the owner asked (2026-10-08) for upstream truth checks: sampled comparison with a second upstream, and per-upstream DNSSEC-failure and EDE breakdowns (OBS-019), without costing DNS performance.
+**Decision:**
+- Second opinions are **off by default** (`sample_every = 0`): the second upstream sees the sampled names, a privacy choice the owner should make per network. A sample below 1 in 100 warns.
+- They run after the client's answer, in their own task, at most 8 at once (more are skipped, never queued), from the asynchronous upstream path only. Sampling is one atomic counter.
+- The comparison is deliberately coarse: response code plus the set of A/AAAA addresses. `filtered` (one side resolves, the other gives nothing or a sinkhole) is the signal that matters; `different_addresses` is expected from CDNs and shown as such, not as an alarm. TTLs, record order, and other types are ignored.
+- The second opinion comes from the `reference` group when set (its strategy picks the member), else from another member of the answering group: comparing upstreams the user already trusts with the same question. A one-member group gets none unless a reference is set.
+- EDE codes and DNSSEC verdicts are counted for every upstream answer (no sampling): a scan of the answer's records for the OPT, a lock only when an EDE is present, and an atomic increment per verdict. The (upstream, code) map is capped at 2,048 pairs.
+- Counts are since start, per node; nothing alerts or changes health on its own (no thresholds the owner has agreed to yet).
+**Consequences:** second opinions add upstream traffic (1/N) and a little upstream load. The second exchange is ordinary upstream traffic: it updates that upstream's health and appears in dnstap's forwarder messages.
+
 ## ADR-107 — Synthetic probes through the upstream client, kept out of the analytics (Proposed)
 **Context:** the owner asked (2026-10-08) for synthetic probes of every listener and protocol, plus listener certificate expiry (OBS-020). `/readyz` only says the sockets are bound; nothing checked that a listener answers, and only the cluster certificate's expiry was exported.
 **Decision:**

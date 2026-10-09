@@ -82,6 +82,9 @@ pub struct Config {
     /// REQ: OBS-020 (T11.3) — synthetic probes: each DNS listener asked through its own
     /// protocol on a schedule, plus extra targets; TLS certificate expiry.
     pub probe: ProbeConfig,
+    /// REQ: OBS-019 (T11.4) — second opinions: a sample of forwarded questions asked again of
+    /// another upstream, and the answers compared. Off by default.
+    pub upstream_check: UpstreamCheckConfig,
     /// The REST API (and, later, the web UI).
     pub api: ApiConfig,
     /// Sign-in: sessions, HTTP Basic, two-factor policy (API-003).
@@ -129,6 +132,7 @@ impl Default for Config {
             telemetry: TelemetryConfig::default(),
             slo: SloConfig::default(),
             probe: ProbeConfig::default(),
+            upstream_check: UpstreamCheckConfig::default(),
             api: ApiConfig::default(),
             auth: AuthConfig::default(),
         }
@@ -1585,6 +1589,35 @@ impl Default for SloConfig {
             latency_target: 99.0,
             latency_ms: 250,
             window_days: 30,
+        }
+    }
+}
+
+/// REQ: OBS-019 (T11.4, ADR-108, `spec/04` §9) — second opinions: one forwarded question in
+/// `sample_every` is asked again, off the query path, of another upstream (another member of
+/// the same upstream group, or the `reference` group), and the two answers are compared: the
+/// same, different addresses (CDNs do this), a different response code, or filtered (one side
+/// has addresses, the other none or only `0.0.0.0`/loopback). Off by default: the second
+/// upstream sees the sampled names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UpstreamCheckConfig {
+    /// One forwarded question in this many gets a second opinion (0 = off, the default).
+    pub sample_every: u32,
+    /// The upstream group asked for second opinions. Unset: another upstream of the group
+    /// that answered (a group with one upstream gets none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<SafeString>,
+    /// Disagreements kept for the API and the Upstreams page, newest first (1 to 1000).
+    pub keep: u32,
+}
+
+impl Default for UpstreamCheckConfig {
+    fn default() -> Self {
+        Self {
+            sample_every: 0,
+            reference: None,
+            keep: 100,
         }
     }
 }
