@@ -71,12 +71,13 @@
   function query(): Record<string, string> {
     const q = route.params;
     const o: Record<string, string> = {};
-    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'rcode', 'from', 'minLatencyMs', 'group']) {
+    for (const k of ['name', 'match', 'client', 'status', 'qtype', 'rcode', 'from', 'minLatencyMs', 'group', 'trace']) {
       const v = q.get(k);
       if (v) o[k] = v;
     }
     if (!q.has('from')) o.from = '-24h';
-    if (o.from === 'all') delete o.from;
+    // REQ: OBS-017 — a trace ID names its own time.
+    if (o.from === 'all' || o.trace) delete o.from;
     if (o.name === undefined) delete o.match;
     return o;
   }
@@ -212,6 +213,13 @@
   </div>
   {#if liveIgnores}
     <div class="notice warn small">The live view ignores the Rcode, Since, and Group filters; it shows new queries as they happen.</div>
+  {/if}
+  {#if route.params.get('trace') && !live}
+    <!-- REQ: OBS-017 — from a latency exemplar (Grafana) or an exported trace. -->
+    <div class="notice small" data-testid="trace-filter">
+      The query with trace ID <code>{route.params.get('trace')}</code><HelpButton id="exemplars" />
+      <button type="button" class="link" onclick={clear}>Show all queries</button>
+    </div>
   {/if}
 
   <form class="card filters" onsubmit={search}>

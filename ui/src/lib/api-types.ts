@@ -7229,6 +7229,11 @@ export interface operations {
                  *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
                  */
                 scope?: string;
+                /**
+                 * @description REQ: OBS-017 (ADR-110) — the query a trace ID names (32 hex digits, from an exemplar
+                 *     on `/metrics` or an exported trace). Replaces `from` and `to`.
+                 */
+                trace?: string;
             };
             header?: never;
             path?: never;

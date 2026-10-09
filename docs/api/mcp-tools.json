@@ -85,7 +85,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time. Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+    "description": "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -137,6 +137,10 @@
         },
         "to": {
           "description": "End (default now).",
+          "type": "string"
+        },
+        "trace": {
+          "description": "A trace ID (32 hex digits) from an exemplar on /metrics or an exported trace: the query it names (replaces from/to).",
           "type": "string"
         }
       },

@@ -156,7 +156,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "search_queries",
-            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time. Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
+            description: "Read-only. Search the query log, newest first: who asked for what, the answer, and timings. Filter by client, group, name (substring), status (blocked, cached, forwarded, local, ...), qtype, rcode, minimum latency, and time, or find the one query a trace ID names (from an exemplar or an exported trace). Pages with `cursor` (from the previous result's nextCursor). Needs the querylog:read scope; subject to the privacy level.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "Part of the queried name."},
@@ -170,6 +170,7 @@ pub fn tools() -> Vec<Tool> {
                 "to": {"type": "string", "description": "End (default now)."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows (default 50)."},
                 "cursor": {"type": "string", "description": "From the previous page's nextCursor."},
+                "trace": {"type": "string", "description": "A trace ID (32 hex digits) from an exemplar on /metrics or an exported trace: the query it names (replaces from/to)."},
                 "scope": scope_schema()
             }, "additionalProperties": false})
             },
@@ -188,6 +189,7 @@ pub fn tools() -> Vec<Tool> {
                         ("from", "from"),
                         ("to", "to"),
                         ("cursor", "cursor"),
+                        ("trace", "trace"),
                         ("scope", "scope"),
                     ],
                 );

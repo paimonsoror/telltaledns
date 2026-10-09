@@ -94,6 +94,12 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 - **Sinks (P1):** JSON-lines file (rotated), syslog RFC 5424 (UDP/TCP/TLS), and batched HTTP webhook (e.g., Loki, Elastic, Splunk HEC) with retry and a disk spill cap.
 - **Grafana:** ship `deploy/grafana/telltale-dashboard.json` built on the Prometheus metrics.
 
+### 5.1 Exemplars and traces (OBS-017, ADR-110)
+- **Trace ID** (`event::trace_id`): 16 bytes = the query's start (`ts_us`, 8 bytes big-endian) ‖ the first 8 bytes of a BLAKE3 hash, keyed with the cluster's privacy key (OBS-003), of `ts_us` and the query-log row's `client`, `qtype`, and `name` text after the privacy level. Any node can recompute it from a returned row, the start time narrows the search to one microsecond, and without the key a guessed name can't be checked against an ID.
+- **Exemplars:** a telemetry-thread sink keeps, per `telltale_query_duration_seconds` (path, bucket), the latest query's trace ID, latency, and time, replacing a slot at most once a second (one bucket lookup and a comparison per event otherwise). `/metrics` answers OpenMetrics 1.0 when `Accept` asks for `application/openmetrics-text` (and `[telemetry.metrics] exemplars`, default on): the 0.0.4 exposition converted (counter families without `_total`, `unknown` for a counter without it, HELP escaped, `# EOF`) with ` # {trace_id="…"} <seconds> <timestamp>` on each bucket that has one.
+- **Traces:** with `[telemetry.otlp] endpoint` and `traces_sample_every` (1 in N) or `traces_slow_ms`, the sink queues the chosen events (≤ 4,096; more dropped, counted) as the privacy level keeps them; a task sends them every 5 s, ≤ 512 per request, as OTLP/HTTP JSON to `<endpoint>/v1/traces`: a SERVER span (`DNS <qtype>`, the query's attributes) and, when `t_upstream_us > 0`, a CLIENT child span for the upstream wait placed at the query's end. `telltale_traces_total{result}`.
+- **Lookup:** `GET /api/v1/queries?trace=<32 hex>` searches `[ts, ts+1)` and keeps rows whose recomputed ID matches (after federation, so older nodes still answer); the UI's `#/queries?trace=`; MCP `search_queries` `trace`.
+
 ## 6. Live tail (OBS-008)
 `GET /api/v1/queries/stream` (SSE) or `/ws`. Server-side filters: client, group, status set, qname glob, upstream, min latency, node(s). Rate-capped per subscriber (default 500 events/s, with drop counts sent inline).
 

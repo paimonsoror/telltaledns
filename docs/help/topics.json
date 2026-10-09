@@ -467,6 +467,16 @@
       "docs": "trying-a-list-first-shadow-mode"
     },
     {
+      "id": "exemplars",
+      "title": "Trace IDs",
+      "term": "Exemplars and traces",
+      "summary": "Each latency bucket on /metrics carries an exemplar: a recent query that landed in it, named by a trace ID. The same ID is on the query's trace when traces are exported. Opening the query log with ?trace=<ID> shows that one query.",
+      "when": "A latency graph spikes and you want a concrete slow query behind it: click the exemplar dot in Grafana, then open its trace ID here.",
+      "example": "The p99 for upstream answers jumps to 800 ms; the exemplar in that bucket is 00065d61…, which turns out to be a TXT lookup that waited on a slow upstream.",
+      "caution": "An exemplar is replaced at most once a second, so it's a recent example, not the slowest query. Prometheus keeps exemplars only with --enable-feature=exemplar-storage.",
+      "docs": "exemplars-and-traces"
+    },
+    {
       "id": "upstream-checks",
       "title": "Answer quality",
       "term": "Upstream truth checks (second opinions, DNSSEC, EDE)",

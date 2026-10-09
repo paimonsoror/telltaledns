@@ -347,13 +347,16 @@
         },
         "metrics": {
           "enabled": true,
+          "exemplars": true,
           "listen": "0.0.0.0:9153",
           "per_client": false,
           "per_client_cap": 100
         },
         "mode": "local",
         "otlp": {
-          "interval_secs": 60
+          "interval_secs": 60,
+          "traces_sample_every": 0,
+          "traces_slow_ms": 0
         },
         "qlog": {
           "enabled": true,
@@ -1952,6 +1955,11 @@
           "type": "boolean",
           "default": true
         },
+        "exemplars": {
+          "description": "REQ: OBS-017 (T11.6) — a scraper that asks for OpenMetrics gets it, with an exemplar\n(a recent query's trace ID) on each `telltale_query_duration_seconds` bucket. `false`:\nalways the plain Prometheus text format.",
+          "type": "boolean",
+          "default": true
+        },
         "listen": {
           "type": "string",
           "default": "0.0.0.0:9153"
@@ -2211,6 +2219,20 @@
           "type": "integer",
           "format": "uint32",
           "default": 60,
+          "minimum": 0
+        },
+        "traces_sample_every": {
+          "description": "REQ: OBS-017 (T11.6) — send 1 in this many queries as a trace to\n`<endpoint>/v1/traces` (0: none). Needs `endpoint`.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "traces_slow_ms": {
+          "description": "REQ: OBS-017 (T11.6) — also send every query that took at least this long (ms; 0: none).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
           "minimum": 0
         }
       },
@@ -3071,6 +3093,7 @@
           "$ref": "#/$defs/MetricsConfig",
           "default": {
             "enabled": true,
+            "exemplars": true,
             "listen": "0.0.0.0:9153",
             "per_client": false,
             "per_client_cap": 100
@@ -3084,7 +3107,9 @@
           "description": "REQ: OBS-006 (T7.17) — metrics pushed to an OpenTelemetry collector.",
           "$ref": "#/$defs/OtlpConfig",
           "default": {
-            "interval_secs": 60
+            "interval_secs": 60,
+            "traces_sample_every": 0,
+            "traces_slow_ms": 0
           }
         },
         "qlog": {

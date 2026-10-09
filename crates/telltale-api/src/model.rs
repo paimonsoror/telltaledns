@@ -431,6 +431,9 @@ pub struct QueryParams {
     /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
     /// (this node). Federated reads list nodes that didn't answer in `missingNodes`.
     pub scope: Option<String>,
+    /// REQ: OBS-017 (ADR-110) — the query a trace ID names (32 hex digits, from an exemplar
+    /// on `/metrics` or an exported trace). Replaces `from` and `to`.
+    pub trace: Option<String>,
 }
 
 /// One logged query.

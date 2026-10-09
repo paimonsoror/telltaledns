@@ -231,6 +231,70 @@ pub fn private(r: &Record, level: u8) -> Record {
     }
 }
 
+/// REQ: OBS-017 (T11.6, ADR-110) — the trace ID of one query: its start time (8 bytes,
+/// big-endian microseconds) and 8 bytes of a hash, keyed like [`hidden_name`], of the query
+/// as the query log returns it (`client`, `qtype`, and `name` as text, after the privacy
+/// level). So the ID found in an exemplar or a trace leads to the query-log row (search that
+/// microsecond, keep the row whose fields give the same ID), and the key keeps a guessed
+/// name from being confirmed against an ID.
+pub fn trace_id(ts_us: u64, client: &str, qtype: &str, name: &str) -> [u8; 16] {
+    let key = *PRIVACY_KEY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    trace_id_with(key.as_ref(), ts_us, client, qtype, name)
+}
+
+/// [`trace_id`] with an explicit key (`None`: unkeyed).
+pub fn trace_id_with(
+    key: Option<&[u8; 32]>,
+    ts_us: u64,
+    client: &str,
+    qtype: &str,
+    name: &str,
+) -> [u8; 16] {
+    let mut h = key.map_or_else(blake3::Hasher::new, blake3::Hasher::new_keyed);
+    // The time too, so two IDs of the same device and name can't be linked by their hash.
+    h.update(&ts_us.to_le_bytes());
+    // Lengths keep the fields apart.
+    for part in [client, qtype, name] {
+        h.update(&(part.len() as u64).to_le_bytes());
+        h.update(part.as_bytes());
+    }
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&ts_us.to_be_bytes());
+    id[8..].copy_from_slice(&h.finalize().as_bytes()[..8]);
+    id
+}
+
+/// The trace ID as 32 lowercase hex digits (W3C Trace Context, OTLP JSON).
+pub fn trace_hex(id: &[u8; 16]) -> String {
+    let mut s = String::with_capacity(32);
+    for b in id {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// A trace ID from 32 hex digits; `None` for anything else (or the all-zero ID).
+pub fn parse_trace(hex: &str) -> Option<[u8; 16]> {
+    let hex = hex.trim();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut id = [0u8; 16];
+    for (i, b) in id.iter_mut().enumerate() {
+        *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    (id != [0; 16]).then_some(id)
+}
+
+/// When the query a trace ID names started (microseconds since the Unix epoch).
+pub fn trace_time_us(id: &[u8; 16]) -> u64 {
+    let mut ts = [0u8; 8];
+    ts.copy_from_slice(&id[..8]);
+    u64::from_be_bytes(ts)
+}
+
 pub fn dotted(wire: &[u8]) -> String {
     let mut out = String::new();
     let mut pos = 0;

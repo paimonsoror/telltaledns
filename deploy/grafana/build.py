@@ -183,7 +183,12 @@ ts("Answer time by path (p50 / p95 / p99)", 0, 12, 8,
    [(q(0.5, "telltale_query_duration_seconds", "path"), "p50 {{path}}"),
     (q(0.95, "telltale_query_duration_seconds", "path"), "p95 {{path}}"),
     (q(0.99, "telltale_query_duration_seconds", "path"), "p99 {{path}}")],
-   "s", "Receive-to-answer time per answer path (cache, upstream, local, synthesized).", fill=0)
+   "s", "Receive-to-answer time per answer path (cache, upstream, local, synthesized). The dots are "
+   "exemplars: a recent query in each latency bucket; its trace_id opens it in the query log "
+   "(#/queries?trace=...). Needs Prometheus with --enable-feature=exemplar-storage.", fill=0)
+# REQ: OBS-017 (T11.6) — exemplars on the answer-time panel.
+for _t in panels[-1]["targets"]:
+    _t["exemplar"] = True
 ts("Where time goes", 12, 12, 8,
    [(q(0.5, "telltale_stage_duration_seconds", "stage"), "p50 {{stage}}"),
     (q(0.95, "telltale_stage_duration_seconds", "stage"), "p95 {{stage}}"),

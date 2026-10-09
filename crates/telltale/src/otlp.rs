@@ -277,30 +277,61 @@ pub(crate) fn logs_body(lines: &[String], resource: &Value) -> String {
     .to_string()
 }
 
+/// The collector's base URL (no trailing slash), when OTLP export is configured.
+pub(crate) fn endpoint(cfg: &telltale_config::Config) -> Option<String> {
+    cfg.telemetry
+        .otlp
+        .endpoint
+        .as_ref()
+        .map(|e| e.trim_end_matches('/').to_owned())
+}
+
+/// The HTTP client the exports use.
+pub(crate) fn client() -> Option<telltale_filter::fetch::Client> {
+    match telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])
+    {
+        Ok(c) => Some(c),
+        Err(e) => {
+            warn!("OTLP export disabled: {e}");
+            None
+        }
+    }
+}
+
+/// One OTLP/HTTP JSON request with the configured headers and a 10 s timeout. `Err`: why it
+/// wasn't delivered.
+pub(crate) async fn post(
+    client: &telltale_filter::fetch::Client,
+    url: &str,
+    cfg: &telltale_config::Config,
+    body: String,
+) -> Result<(), String> {
+    let mut req = http::Request::post(url)
+        .header("content-type", "application/json")
+        .header("user-agent", "TelltaleDNS");
+    for (k, v) in &cfg.telemetry.otlp.headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let req = req.body(body.into_bytes()).map_err(|e| e.to_string())?;
+    match tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024)).await {
+        Ok(Ok(r)) if r.status().is_success() => Ok(()),
+        Ok(Ok(r)) => Err(format!("HTTP {}", r.status())),
+        Ok(Err(e)) => Err(e.message),
+        Err(_) => Err("timed out".into()),
+    }
+}
+
 /// The metrics export task.
 pub(crate) async fn run(
     sources: Arc<crate::http::Sources>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let cfg = sources.config.load_full();
-    let Some(endpoint) = cfg
-        .telemetry
-        .otlp
-        .endpoint
-        .as_ref()
-        .map(|e| e.trim_end_matches('/').to_owned())
-    else {
+    let Some(endpoint) = endpoint(&cfg) else {
         return;
     };
-    let client = match telltale_filter::fetch::Client::new(
-        Arc::new(telltale_filter::fetch::SystemResolver),
-        &[],
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("OTLP export disabled: {e}");
-            return;
-        }
+    let Some(client) = client() else {
+        return;
     };
     let start_ns = crate::pipeline::unix_now().saturating_mul(1_000_000_000);
     let url = format!("{endpoint}/v1/metrics");
@@ -321,31 +352,15 @@ pub(crate) async fn run(
             now_ns,
         )
         .to_string();
-        let mut req = http::Request::post(url.as_str())
-            .header("content-type", "application/json")
-            .header("user-agent", "TelltaleDNS");
-        for (k, v) in &cfg.telemetry.otlp.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        let Ok(req) = req.body(body.into_bytes()) else {
-            continue;
-        };
-        let result =
-            tokio::time::timeout(Duration::from_secs(10), client.request(req, 64 * 1024)).await;
-        match result {
-            Ok(Ok(r)) if r.status().is_success() => {
+        match post(&client, &url, &cfg, body).await {
+            Ok(()) => {
                 if failing {
                     debug!("OTLP export: delivered again");
                 }
                 failing = false;
             }
-            other => {
+            Err(why) => {
                 if !failing {
-                    let why = match other {
-                        Ok(Ok(r)) => format!("HTTP {}", r.status()),
-                        Ok(Err(e)) => e.message,
-                        Err(_) => "timed out".into(),
-                    };
                     warn!(%url, error = %why, "OTLP metrics not delivered (logged once until it works again)");
                 }
                 failing = true;

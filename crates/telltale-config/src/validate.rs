@@ -265,6 +265,20 @@ fn otlp(cfg: &Config, r: &mut Report<'_>) {
     if o.interval_secs < 5 {
         r.err("telemetry.otlp.interval_secs", "at least 5 seconds");
     }
+    // REQ: OBS-017 (T11.6) — traces go to the same collector.
+    if o.endpoint.is_none() {
+        for (field, on) in [
+            ("traces_sample_every", o.traces_sample_every > 0),
+            ("traces_slow_ms", o.traces_slow_ms > 0),
+        ] {
+            if on {
+                r.err(
+                    format!("telemetry.otlp.{field}"),
+                    "traces are sent to the OTLP collector: set telemetry.otlp.endpoint too",
+                );
+            }
+        }
+    }
     // REQ: OBS-007 (T7.18)
     let d = &cfg.telemetry.dnstap;
     if d.socket.is_some() && d.address.is_some() {

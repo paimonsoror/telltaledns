@@ -469,3 +469,79 @@ fn obs_009_analytics_follow_the_privacy_level() {
         assert_eq!(clients[0].key, want_client, "level {level}");
     }
 }
+
+/// REQ: OBS-017 (T11.6, ADR-110) — a trace ID carries the query's start time and a keyed hash
+/// of its query-log fields: the same query gives the same ID, any field (or the key) another;
+/// it round-trips through hex, and nothing else parses as one.
+#[test]
+fn obs_017_trace_ids_carry_time_and_a_keyed_hash() {
+    let key = [7u8; 32];
+    let id =
+        |k: Option<&[u8; 32]>, ts, client, name| event::trace_id_with(k, ts, client, "A", name);
+    let a = id(
+        Some(&key),
+        1_791_000_000_123_456,
+        "192.168.1.5",
+        "ads.example",
+    );
+    assert_eq!(
+        a,
+        id(
+            Some(&key),
+            1_791_000_000_123_456,
+            "192.168.1.5",
+            "ads.example"
+        )
+    );
+    assert_eq!(event::trace_time_us(&a), 1_791_000_000_123_456);
+    for other in [
+        id(
+            Some(&key),
+            1_791_000_000_123_457,
+            "192.168.1.5",
+            "ads.example",
+        ),
+        id(
+            Some(&key),
+            1_791_000_000_123_456,
+            "192.168.1.6",
+            "ads.example",
+        ),
+        id(
+            Some(&key),
+            1_791_000_000_123_456,
+            "192.168.1.5",
+            "ads.example.org",
+        ),
+        id(
+            Some(&[8u8; 32]),
+            1_791_000_000_123_456,
+            "192.168.1.5",
+            "ads.example",
+        ),
+        id(None, 1_791_000_000_123_456, "192.168.1.5", "ads.example"),
+        // Field boundaries count: "1.5"+"a" differs from "1."+"5a".
+        event::trace_id_with(Some(&key), 1, "1.5", "A", "x"),
+    ] {
+        assert_ne!(a[8..], other[8..]);
+    }
+    assert_ne!(
+        event::trace_id_with(Some(&key), 1, "1.5", "A", "x"),
+        event::trace_id_with(Some(&key), 1, "1.", "5A", "x")
+    );
+    let hex = event::trace_hex(&a);
+    assert_eq!(hex.len(), 32);
+    assert!(hex.starts_with("00065c"), "{hex}");
+    assert_eq!(event::parse_trace(&hex), Some(a));
+    assert_eq!(event::parse_trace(&hex.to_uppercase()), Some(a));
+    for bad in [
+        "",
+        "abc",
+        &hex[..31],
+        &format!("{hex}0"),
+        &"0".repeat(32),
+        &"zz".repeat(16),
+    ] {
+        assert_eq!(event::parse_trace(bad), None, "{bad}");
+    }
+}

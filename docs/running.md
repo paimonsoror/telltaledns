@@ -1833,6 +1833,23 @@ interval_secs = 60
 - For **query events as OpenTelemetry logs**, add an event sink with `format = "otlp_logs"` (below), pointed at `<collector>/v1/logs`. Each record has a one-line body (`A example.com from 192.168.1.5: blocked`) and attributes (`dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `client.name`, `telltale.status`, `telltale.list`, ...); blocks are `WARN`, the rest `INFO`.
 - A collector that's down costs only that interval's points; DNS never waits for it.
 
+### Exemplars and traces
+From a latency graph to the query behind it.
+
+- **Exemplars:** each bucket of `telltale_query_duration_seconds` carries an *exemplar*, a recent query that landed in it (its trace ID, its latency, and when it happened). They're in the OpenMetrics format, which Prometheus asks for by default. Prometheus keeps them when started with `--enable-feature=exemplar-storage`, and Grafana then shows them as dots on the latency panels (the bundled dashboard turns them on). Each bucket's exemplar is replaced at most once a second, so it's a recent example from that bucket, not the slowest query. `[telemetry.metrics] exemplars = false` turns OpenMetrics off; `/metrics` then always answers the plain Prometheus text format.
+- **From the dot to the query:** in Grafana's Prometheus data source, under *Exemplars*, add a link with label name `trace_id` and URL `https://<your TelltaleDNS>/#/queries?trace=${__value.raw}` (or point it at your Tempo data source when traces go there).
+- **The query behind a trace ID:** open the query log with `#/queries?trace=<ID>` (or `GET /api/v1/queries?trace=<ID>`, the MCP tool `search_queries` with `trace`). The ID holds the query's start time and a hash of its query-log fields, keyed with the cluster's privacy key, so it finds the row on whichever node logged it and can't be used to confirm a guessed name.
+- **Traces:** send some queries to your OpenTelemetry collector as traces (Grafana Tempo, Jaeger, and the like):
+  ```toml
+  [telemetry.otlp]
+  endpoint = "http://otel-collector:4318"   # traces go to <endpoint>/v1/traces
+  traces_sample_every = 1000                # 1 query in 1,000 (0: none, the default)
+  traces_slow_ms = 250                      # and every query that took at least 250 ms (0: none)
+  ```
+  Each query is a server span (`DNS A`, with `dns.question.name`, `dns.question.type`, `dns.response_code`, `client.address`, `network.transport`, `telltale.status`, `telltale.group`, `telltale.node`) and, when upstreams were asked, a client span for the wait (`upstream quad9`, with `telltale.upstream` and `telltale.attempts`; it's placed at the end of the query, since the event records how long the wait was, not when it began). A SERVFAIL marks the span as an error. Its trace ID is the same as the exemplar's and the query log's.
+- Spans are built from the query event on the analytics thread and sent every 5 seconds, at most 512 queries per request. At most 4,096 wait; more are dropped, never slowing DNS. `telltale_traces_total{result="sent"|"dropped"|"failed"}` counts them.
+- Names and clients follow the query log's privacy level: names hashed at 1 and above, no client address at 2 and above.
+
 ### dnstap
 Stream client queries and responses, as the DNS messages themselves, to a dnstap reader (`dnstap-read`, `fstrm_capture`, Vector, Logstash, a network-security monitor):
 ```toml

@@ -118,9 +118,34 @@ impl Backend for Fake {
             "queries {:?} {:?} {from_us} {to_us} {limit}",
             q.name, q.name_match
         ));
+        // OBS-017 — two queries logged in the microsecond a trace ID names.
+        let row = |name: &str| QueryRow {
+            time: "2026-10-04T12:00:00.000Z".into(),
+            ts_unix_micros: from_us,
+            client: "192.168.1.20".into(),
+            client_name: None,
+            group: None,
+            name: name.into(),
+            qtype: "A".into(),
+            status: "forwarded".into(),
+            rcode: Some("NOERROR".into()),
+            proto: "udp".into(),
+            list: None,
+            rule: None,
+            total_ms: 30.0,
+            upstream_ms: 29.0,
+            response_bytes: 60,
+            answers: 1,
+            node: None,
+        };
+        let items = if q.trace.is_some() {
+            vec![row("ads.example.com"), row("cdn.example.com")]
+        } else {
+            Vec::new()
+        };
         Ok(QueryPage {
-            items: Vec::new(),
-            next_cursor: None,
+            next_cursor: q.trace.is_some().then(|| "more".into()),
+            items,
             scanned: ScanStats::default(),
             missing_nodes: Vec::new(),
         })
@@ -974,6 +999,35 @@ async fn api_001_parameters_reach_the_backend() {
             (NOW - 900) * 1_000_000
         )
     );
+}
+
+// REQ: OBS-017 (ADR-110) — `trace` searches the microsecond its ID names (whatever `from`
+// says) and keeps only the row whose fields give that ID; anything but 32 hex digits is
+// refused.
+#[tokio::test]
+async fn obs_017_queries_by_trace_id() {
+    let (app, fake) = app();
+    let ts = 1_791_072_000_123_456;
+    let id = telltale_telemetry::event::trace_id(ts, "192.168.1.20", "A", "ads.example.com");
+    let hex = telltale_telemetry::event::trace_hex(&id);
+    let (status, _, v) = get(&app, &format!("/api/v1/queries?trace={hex}&from=-15m")).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{v}");
+    assert_eq!(items[0]["name"], "ads.example.com");
+    assert!(v.get("nextCursor").is_none(), "one query: no more pages");
+    assert_eq!(
+        fake.seen.lock().unwrap().last().unwrap(),
+        &format!("queries None None {ts} {} 100", ts + 1)
+    );
+    for bad in ["xyz", "00", &"0".repeat(32)] {
+        let (status, _, v) = get(&app, &format!("/api/v1/queries?trace={bad}")).await;
+        assert_eq!(
+            (status, v["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid_parameter")),
+            "{bad}"
+        );
+    }
 }
 
 // REQ: CLU-008 — a standalone node says so (the binary fills in a cluster's view).

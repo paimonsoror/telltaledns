@@ -49,6 +49,7 @@ mod sinks;
 mod smtp;
 mod tail;
 mod technitium;
+mod traces;
 mod updates;
 mod upstream_checks;
 mod vqlog;

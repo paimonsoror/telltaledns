@@ -1223,9 +1223,32 @@ async fn queries(
     if p.name_match.is_some_and(|m| m != NameMatch::Substring) && p.name.is_none() {
         return Err(Problem::invalid("`match` needs `name`"));
     }
-    let (from_us, to_us) = (from.saturating_mul(1_000_000), to.saturating_mul(1_000_000));
+    // REQ: OBS-017 (ADR-110) — a trace ID names the microsecond its query started; of the rows
+    // logged then, the one whose fields give the same ID. Checked here, after every node
+    // answered, so nodes that don't know `trace` still help.
+    let trace = match p.trace.as_deref() {
+        None => None,
+        Some(t) => Some(telltale_telemetry::event::parse_trace(t).ok_or_else(|| {
+            Problem::invalid("`trace`: 32 hex digits")
+                .hint("A trace ID from an exemplar on /metrics or from an exported trace.")
+        })?),
+    };
+    let (from_us, to_us) = match trace {
+        Some(id) => {
+            let ts = telltale_telemetry::event::trace_time_us(&id);
+            (ts, ts.saturating_add(1))
+        }
+        None => (from.saturating_mul(1_000_000), to.saturating_mul(1_000_000)),
+    };
     let bk = Arc::clone(&b);
     let mut page = blocking(move || bk.queries(&p, from_us, to_us, limit)).await?;
+    if let Some(id) = trace {
+        page.items.retain(|r| {
+            telltale_telemetry::event::trace_id(r.ts_unix_micros, &r.client, &r.qtype, &r.name)
+                == id
+        });
+        page.next_cursor = None;
+    }
     page.missing_nodes = b.missing_nodes();
     Ok(Json(page))
 }

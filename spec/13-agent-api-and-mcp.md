@@ -33,7 +33,7 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 |---|---|
 | `get_overview` | KPIs for a window: queries, blocked %, cache hit %, latency p50/p95/p99, active clients, node health |
 | `top_items` | Top domains / blocked domains / clients / NXDOMAIN / upstreams for a window, optionally per client or group |
-| `search_queries` | Query-log search (client, group, qname pattern, status, qtype, rcode, upstream, min latency, node, time range), paginated |
+| `search_queries` | Query-log search (client, group, qname pattern, status, qtype, rcode, upstream, min latency, node, time range), paginated; or the one query a trace ID names (`trace`, OBS-017) |
 | `explain_decision` | `explain` for name + client + qtype: rules matched, winner, upstream route |
 | `get_client_profile` | Device profile: identity, groups, traffic, top/new domains, latency, protocols |
 | `latency_breakdown` | Percentiles by stage / upstream / client / qtype |

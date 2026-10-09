@@ -2859,6 +2859,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "trace",
+            "in": "query",
+            "description": "REQ: OBS-017 (ADR-110) — the query a trace ID names (32 hex digits, from an exemplar\non `/metrics` or an exported trace). Replaces `from` and `to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

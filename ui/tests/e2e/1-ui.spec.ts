@@ -105,6 +105,31 @@ test('query log finds the blocked query and explains it', async () => {
   }).toPass({ timeout: 20_000 });
 });
 
+// REQ: OBS-017 — /metrics in OpenMetrics carries an exemplar per latency bucket; its trace ID
+// opens that query in the log.
+test('obs_017 an exemplar opens its query in the log', async () => {
+  expect(await query('nas.e2e.test')).toBe(0);
+  let trace = '';
+  await expect(async () => {
+    const r = await fetch('http://127.0.0.1:19154/metrics', { headers: { accept: 'application/openmetrics-text;version=1.0.0' } });
+    expect(r.headers.get('content-type')).toContain('application/openmetrics-text');
+    const text = await r.text();
+    expect(text.endsWith('# EOF\n')).toBe(true);
+    const m = text.match(/telltale_query_duration_seconds_bucket\{path="local",le="[^"]+"\} \d+ # \{trace_id="([0-9a-f]{32})"\}/);
+    expect(m).not.toBeNull();
+    trace = m?.[1] ?? '';
+  }).toPass({ timeout: 15_000 });
+  await page.goto(`/#/queries?trace=${trace}`);
+  await expect(page.getByTestId('trace-filter')).toContainText(trace);
+  await expect(async () => {
+    await page.reload();
+    await expect(page.locator('table.log tbody tr')).toHaveCount(1, { timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(page.locator('table.log tbody tr').first()).toContainText('nas.e2e.test');
+  await page.getByRole('button', { name: 'Show all queries' }).click();
+  await expect(page).not.toHaveURL(/trace=/);
+});
+
 test('live view streams new queries', async () => {
   await page.goto('/#/queries?status=blocked');
   await page.getByLabel('Live').check();

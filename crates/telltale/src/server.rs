@@ -799,10 +799,14 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         Arc::clone(&shadow),
         Arc::clone(&pipeline),
     )) as Box<dyn telltale_telemetry::ring::Sink>;
+    // REQ: OBS-017 (T11.6) — latency exemplars and queries to trace, on the same pass.
+    let traces = Arc::new(crate::traces::Traces::default());
+    let trace_sink = Box::new(crate::traces::TraceSink::new(Arc::clone(&traces), &cfg))
+        as Box<dyn telltale_telemetry::ring::Sink>;
     let extra: Vec<Box<dyn telltale_telemetry::ring::Sink>> = anomaly_sink
         .into_iter()
         .chain(events)
-        .chain(std::iter::once(shadow_sink))
+        .chain([shadow_sink, trace_sink])
         .collect();
     let extra =
         Some(Box::new(crate::tail::Fanout(extra)) as Box<dyn telltale_telemetry::ring::Sink>);
@@ -886,6 +890,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         config_writes: tokio::sync::Mutex::new(()),
         probes: Arc::default(),
         shadow,
+        traces,
     });
     http::serve_peers(&sources);
     // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.
@@ -938,6 +943,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     ));
     // REQ: OBS-006 (T7.17)
     tokio::spawn(crate::otlp::run(Arc::clone(&sources), http_stopped.clone()));
+    // REQ: OBS-017 (T11.6) — sampled and slow queries as OTLP traces.
+    tokio::spawn(crate::traces::run(
+        Arc::clone(&sources),
+        http_stopped.clone(),
+    ));
     // REQ: T8.2 — device names from the routers' DHCP (read at startup).
     tokio::spawn(crate::routers::run(
         cfg.router.clone(),

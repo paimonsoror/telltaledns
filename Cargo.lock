@@ -3423,6 +3423,7 @@ dependencies = [
  "serde",
  "serde_json",
  "telltale-store",
+ "telltale-telemetry",
  "tokio",
  "totp-rs",
  "tower",

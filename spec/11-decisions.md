@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-110 — Exemplars and traces from query events; trace IDs the query log can find (Proposed)
+**Context:** the owner asked (2026-10-08) for OpenMetrics exemplars on the latency histograms and sampled/slow queries as OTLP traces (OBS-017), without costing DNS performance. The latency histogram is counted on the query path in per-thread atomics; nothing there knows a query's identity, and adding it would cost every query.
+**Decision:**
+- Exemplars and traces are built on the telemetry thread from the query events it already drains (a `Sink`), never on the query path. An exemplar slot per (path, bucket) is replaced at most once a second, so the per-event cost is a bucket lookup and a comparison; the trace ID is hashed only when a slot is refreshed or a query is traced.
+- **Trace ID = start time ‖ keyed hash of the query-log row**, not a random ID: `ts_us` (8 bytes) ‖ BLAKE3 keyed with the cluster's privacy key over `ts_us`, `client`, `qtype`, `name` as the query log returns them (after the privacy level). No storage change: the query log finds it by searching that microsecond and recomputing the ID per row, on any node (the key is the cluster's) and across a mixed-version cluster (the route checks after federation). A random ID would need a new query-log column; an unkeyed hash would let anyone with an ID confirm a guessed name. It's not random as W3C recommends; the time it reveals is already in the exemplar.
+- OpenMetrics is served only when the scraper asks (`Accept`), by converting our 0.0.4 exposition (one writer, two formats). Prometheus asks for it by default, so it's verified against Prometheus 3.5 and the strict `prometheus_client` parser, with `[telemetry.metrics] exemplars = false` as the way back.
+- Traces reuse the OTLP endpoint (JSON, like metrics and logs; no new dependency), off by default (`traces_sample_every`, `traces_slow_ms`). Spans come from the event's timings only: a server span and an upstream client span placed at the query's end (the event has the wait's length, not its start). Bounded queue (4,096), dropped and failed counted.
+- Only `telltale_query_duration_seconds` gets exemplars: upstream exchanges have no query name (their histogram stays as is).
+**Consequences:** an exemplar is a recent example per bucket, not the worst one. Trace IDs of queries before a privacy-key change (joining a cluster) no longer match their rows. Privacy level 3 still sends traces (hashed names, no clients), like event sinks.
+
 ## ADR-109 — Shadow lists decided again on the telemetry thread; over-blocking from retries and quick allows (Proposed)
 **Context:** the owner asked (2026-10-08) for shadow mode for lists (count what a list would block for a week without enforcing it) and an over-blocking view (blocked names that are retried or allowed right after), within the no-performance-cost condition (OBS-018).
 **Decision:**

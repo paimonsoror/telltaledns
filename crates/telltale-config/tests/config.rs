@@ -754,6 +754,37 @@ fn obs_018_shadow_mode_is_validated() {
     assert!(err.contains("shadow is for block lists"), "{err}");
 }
 
+/// REQ: OBS-017 (T11.6) — exemplars on by default, traces off; traces need the collector.
+#[test]
+fn obs_017_traces_need_an_endpoint() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let cfg = load("").unwrap().config;
+    assert!(cfg.telemetry.metrics.exemplars);
+    assert_eq!(
+        (
+            cfg.telemetry.otlp.traces_sample_every,
+            cfg.telemetry.otlp.traces_slow_ms
+        ),
+        (0, 0)
+    );
+    let err = format!(
+        "{:?}",
+        load("[telemetry.otlp]\ntraces_slow_ms = 500\n").unwrap_err()
+    );
+    assert!(err.contains("telemetry.otlp.traces_slow_ms"), "{err}");
+    let cfg = load(
+        "[telemetry.otlp]\nendpoint = \"http://otel:4318\"\ntraces_slow_ms = 500\ntraces_sample_every = 1000\n",
+    )
+    .unwrap()
+    .config;
+    assert_eq!(cfg.telemetry.otlp.traces_sample_every, 1000);
+}
+
 /// REQ: OBS-019 (T11.4) — second opinions: off by default; a reference group that exists; a
 /// warning when the sample adds noticeable traffic.
 #[test]

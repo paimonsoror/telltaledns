@@ -89,6 +89,8 @@ pub(crate) struct Sources {
     pub(crate) probes: Arc<crate::probes::Probes>,
     /// REQ: OBS-018 (T11.5) — shadow lists' would-be blocks and over-blocking suspects.
     pub(crate) shadow: Arc<crate::shadow::Shadow>,
+    /// REQ: OBS-017 (T11.6) — latency exemplars and the queries waiting to go out as traces.
+    pub(crate) traces: Arc<crate::traces::Traces>,
 }
 
 impl Sources {
@@ -190,8 +192,15 @@ async fn readyz(State(src): State<Arc<Sources>>) -> impl IntoResponse {
     }
 }
 
-async fn metrics(State(src): State<Arc<Sources>>) -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, CONTENT_TYPE)], render(&src))
+async fn metrics(State(src): State<Arc<Sources>>, headers: header::HeaderMap) -> Response {
+    let text = render(&src);
+    // REQ: OBS-017 (T11.6) — OpenMetrics with exemplars for a scraper that asks for it.
+    let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
+    if src.config.load().telemetry.metrics.exemplars && crate::traces::wants_openmetrics(accept) {
+        let body = crate::traces::openmetrics(&text, &src.traces.exemplars());
+        return ([(header::CONTENT_TYPE, crate::traces::OPENMETRICS)], body).into_response();
+    }
+    ([(header::CONTENT_TYPE, CONTENT_TYPE)], text).into_response()
 }
 
 /// The node's name: `[node] name`, or the host name.
@@ -470,6 +479,7 @@ pub(crate) fn render(src: &Sources) -> String {
         render_filter(&mut w, &l);
     }
     render_shadow(&mut w, &src.shadow);
+    render_traces(&mut w, src);
     render_lookup_mode(&mut w, src);
     // REQ: FLT-009 — active pauses (group="*" = everyone).
     let now = std::time::SystemTime::now()
@@ -597,6 +607,32 @@ fn render_shadow(w: &mut PromWriter, shadow: &crate::shadow::Shadow) {
             "telltale_list_shadow_hits_total",
             &[("list", list.as_str())],
             *n,
+        );
+    }
+}
+
+/// REQ: OBS-017 (T11.6, ADR-110) — the trace export, while it's configured.
+fn render_traces(w: &mut PromWriter, src: &Sources) {
+    let cfg = src.config.load();
+    let o = &cfg.telemetry.otlp;
+    if o.endpoint.is_none() || (o.traces_sample_every == 0 && o.traces_slow_ms == 0) {
+        return;
+    }
+    w.family(
+        "telltale_traces_total",
+        "counter",
+        "Queries exported as OTLP traces, by result: sent, dropped (the queue was full), failed (the collector didn't take them).",
+    );
+    let t = &src.traces;
+    for (result, n) in [
+        ("sent", &t.sent),
+        ("dropped", &t.dropped),
+        ("failed", &t.failed),
+    ] {
+        w.sample(
+            "telltale_traces_total",
+            &[("result", result)],
+            n.load(Ordering::Relaxed),
         );
     }
 }
@@ -1611,7 +1647,45 @@ mod tests {
             allowed: Vec::new(),
             probes: Arc::default(),
             shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
+            traces: Arc::default(),
         }
+    }
+
+    /// REQ: OBS-017 (T11.6) — `/metrics` answers OpenMetrics (ending in `# EOF`) to a scraper
+    /// that asks for it, the Prometheus text format otherwise or with `exemplars = false`.
+    #[tokio::test]
+    async fn obs_017_metrics_negotiates_openmetrics() {
+        let src = Arc::new(sources());
+        let ask = |src: &Arc<Sources>, accept: Option<&'static str>| {
+            let src = Arc::clone(src);
+            async move {
+                let mut h = header::HeaderMap::new();
+                if let Some(a) = accept {
+                    h.insert(header::ACCEPT, header::HeaderValue::from_static(a));
+                }
+                let r = metrics(State(src), h).await;
+                let ct = r.headers()[header::CONTENT_TYPE]
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
+                let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (ct, String::from_utf8(body.to_vec()).unwrap())
+            }
+        };
+        let om = "application/openmetrics-text;version=1.0.0,text/plain;version=0.0.4;q=0.5";
+        let (ct, body) = ask(&src, Some(om)).await;
+        assert!(ct.starts_with("application/openmetrics-text"), "{ct}");
+        assert!(body.ends_with("# EOF\n"));
+        assert!(body.contains("# TYPE telltale_queries counter\n"));
+        let (ct, body) = ask(&src, None).await;
+        assert_eq!(ct, CONTENT_TYPE);
+        assert!(!body.contains("# EOF"));
+        let mut cfg = telltale_config::Config::default();
+        cfg.telemetry.metrics.exemplars = false;
+        src.config.store(Arc::new(cfg));
+        assert_eq!(ask(&src, Some(om)).await.0, CONTENT_TYPE);
     }
 
     #[test]

@@ -1721,6 +1721,11 @@ pub struct OtlpConfig {
     /// Extra headers (an API key for a hosted collector).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<SafeString, SafeString>,
+    /// REQ: OBS-017 (T11.6) — send 1 in this many queries as a trace to
+    /// `<endpoint>/v1/traces` (0: none). Needs `endpoint`.
+    pub traces_sample_every: u32,
+    /// REQ: OBS-017 (T11.6) — also send every query that took at least this long (ms; 0: none).
+    pub traces_slow_ms: u32,
 }
 
 impl Default for OtlpConfig {
@@ -1729,6 +1734,8 @@ impl Default for OtlpConfig {
             endpoint: None,
             interval_secs: 60,
             headers: BTreeMap::new(),
+            traces_sample_every: 0,
+            traces_slow_ms: 0,
         }
     }
 }
@@ -2116,6 +2123,10 @@ pub struct MetricsConfig {
     pub per_client: bool,
     /// At most this many clients get their own series (default 100); the rest are "other".
     pub per_client_cap: u32,
+    /// REQ: OBS-017 (T11.6) — a scraper that asks for OpenMetrics gets it, with an exemplar
+    /// (a recent query's trace ID) on each `telltale_query_duration_seconds` bucket. `false`:
+    /// always the plain Prometheus text format.
+    pub exemplars: bool,
 }
 
 impl Default for MetricsConfig {
@@ -2125,6 +2136,7 @@ impl Default for MetricsConfig {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9153),
             per_client: false,
             per_client_cap: 100,
+            exemplars: true,
         }
     }
 }
