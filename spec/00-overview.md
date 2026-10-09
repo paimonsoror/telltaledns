@@ -22,7 +22,7 @@ and to beat both on **performance, observability, and cloud-native operation**. 
 - A DHCP server. Routers hand out addresses; TelltaleDNS reads their client lists for device names (ADR-091).
 - Windows/macOS native service packaging. Containers cover those hosts.
 - LDAP/Active Directory authentication. Auth is local users (basic auth) + OIDC only.
-- Running HTTP block pages. HTTPS makes them ineffective; we return DNS-level block responses with EDE codes instead.
+- Running HTTP block pages. HTTPS makes them ineffective; we return DNS-level block responses with EDE codes instead. *Reconsidered 2026-10-09 (owner) and kept:* a page on HTTPS sites needs a locally trusted certificate authority on every client, which isn't practical for the broad audience this project targets; plain HTTP alone would rarely be seen. Revisit if browsers adopt Structured DNS Errors (an IETF draft), which would let them show "blocked by your network" from the EDE we already send.
 
 ## 4. Personas
 | Persona | Needs |
