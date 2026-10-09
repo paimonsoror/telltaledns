@@ -309,6 +309,20 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
                 (l.name, s)
             })
             .collect(),
+        // REQ: OBS-023 (T12.3) — downloads fine, but the content stopped changing.
+        AlertWhen::ListStale => b
+            .lists()
+            .into_iter()
+            .filter(|l| l.enabled && l.error.is_none())
+            .filter_map(|l| {
+                let days = l.stale_days?;
+                let s = format!(
+                    "list {} hasn't changed in {days} days: its source may be abandoned",
+                    l.name
+                );
+                Some((l.name, s))
+            })
+            .collect(),
         // REQ: OBS-013, OBS-014 — every node's findings (federated), except ones someone
         // already acknowledged.
         AlertWhen::Anomaly => b

@@ -437,6 +437,9 @@ pub enum ManagedKind {
     /// REQ: DNS-014 (review 01 q1) — the per-client rate limit, `[ratelimit]` (`/ratelimit/default`):
     /// one entry, named `default`, that replaces the files' section until it's reverted.
     RateLimit,
+    /// REQ: OBS-022 (T12.1) — `[exclusions]` (`/exclusions/default`): names and devices kept
+    /// out of the query log and analytics; one entry, like the rate limit.
+    Exclusions,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -664,7 +667,7 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, forwards, rules, anomalies, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, forwards, rules, anomalies, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(

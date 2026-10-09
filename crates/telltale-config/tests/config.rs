@@ -754,6 +754,56 @@ fn obs_018_shadow_mode_is_validated() {
     assert!(err.contains("shadow is for block lists"), "{err}");
 }
 
+/// REQ: OBS-022 (T12.1) — exclusions: on by default but empty; names must be domain names
+/// (`*.` and a trailing dot allowed), clients addresses or networks; off keeps the lists.
+#[test]
+fn obs_022_exclusions_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let cfg = load("").unwrap().config;
+    assert!(cfg.exclusions.enabled && !cfg.exclusions.active());
+    let cfg = load(
+        "[exclusions]\nnames = [\"*.ntp.org\", \"connectivitycheck.gstatic.com.\"]\nclients = [\"192.168.1.10\", \"fd00::/64\"]\n",
+    )
+    .unwrap()
+    .config;
+    assert!(cfg.exclusions.active());
+    let off = load("[exclusions]\nenabled = false\nnames = [\"ntp.org\"]\n")
+        .unwrap()
+        .config;
+    assert!(
+        !off.exclusions.active(),
+        "off keeps the list, excludes nothing"
+    );
+    for bad in [
+        "[exclusions]\nnames = [\"not a name\"]\n",
+        "[exclusions]\nnames = [\"\"]\n",
+        "[exclusions]\nclients = [\"300.1.1.1\"]\n",
+    ] {
+        assert!(load(bad).is_err(), "{bad}");
+    }
+}
+
+/// REQ: OBS-023 (T12.3) — lists go stale after 30 days unchanged by default; per list too.
+#[test]
+fn obs_023_stale_after_days() {
+    let cfg = telltale_config::Loader::new()
+        .toml_str(
+            "t.toml",
+            "[[list]]\nname = \"slow\"\nurl = \"https://lists.example/slow.txt\"\nstale_after_days = 0\n",
+        )
+        .env(Vec::<(String, String)>::new())
+        .load()
+        .unwrap()
+        .config;
+    assert_eq!(cfg.filter.stale_after_days, 30);
+    assert_eq!(cfg.list[0].stale_after_days, Some(0));
+}
+
 /// REQ: OBS-017 (T11.6) — exemplars on by default, traces off; traces need the collector.
 #[test]
 fn obs_017_traces_need_an_endpoint() {

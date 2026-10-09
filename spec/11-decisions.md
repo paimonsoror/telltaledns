@@ -1291,6 +1291,31 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-114 — AAAA filtering per group, after blocking, before rewrites and upstreams (Proposed)
+**Context:** the owner picked per-group AAAA filtering (FLT-016, from Pi-hole's feature requests): devices on a network with broken IPv6 wait on AAAA answers before falling back to IPv4.
+**Decision:** `[[group]] filter_aaaa` answers the group's AAAA questions NOERROR with no records (no SOA: clients just ask again, cheaply). Placed after local data, zones, quick rules, schedules, list rewrites, and the filter decision, so configured local IPv6 addresses still answer and blocked names still get their block answer; before rewrites, safe search, the cache, and upstreams, so nothing is fetched for it. Status `special`; explain reports it. Rejected with `dns64` (contradictory). HTTPS records are left alone: stripping `ipv6hint` would mean rewriting RDATA on the query path, and the request was for AAAA.
+**Consequences:** the cost is one comparison for non-AAAA queries and a group lookup for AAAA. Browsers that use HTTPS-record IPv6 hints may still try IPv6; documented.
+
+## ADR-113 — NSID from the node's name, only when asked, appended to our OPT (Proposed)
+**Context:** the owner picked NSID (DNS-021, from Technitium #1932): behind one address (a load balancer, resolver pods, the homelab's .112), there's no way to tell which node answered.
+**Decision:** `[dns] nsid` (default off: any allowed client sees the name) adds an NSID option with this node's name (`[node] name`, else the host name, a pod's name in Kubernetes) to answers whose query carried the NSID option. It's added in `finish`, which every answer path goes through, by appending to our OPT record when it's the message's last record and fits; otherwise the answer goes out unchanged. The name lives in the reloadable policy, so `[dns]` being shared turns it on cluster-wide while each node names itself. `id.server`/`hostname.bind` (RFC 4892) stay REFUSED for now.
+**Consequences:** queries without NSID pay one option scan of their OPT (usually empty); bench-smoke unchanged.
+
+## ADR-112 — Stale lists: content unchanged for 30 days, URL lists only (Proposed)
+**Context:** the owner picked stale-list detection (OBS-023, from Technitium #2198 and Pi-hole's "adlists that haven't changed in a long time"): a list whose maintainer stopped still downloads with HTTP 200 and the same body, so nothing fails.
+**Decision:** a URL list is stale when its `last_changed` (the body's BLAKE3 changed; identical downloads don't count) is at least `stale_after_days` ago: `[filter]` default 30 days (a conservative value: the popular lists update daily or weekly), per list too, 0 = never. Exposed as `ListInfo.staleDays`, health reason `list_stale` (degraded, like a failing list), alert rule `list_stale`, and a line on the Lists page. Files and inline rules are never stale (they change when you change them).
+**Consequences:** a list that's fine but rarely updated needs `stale_after_days = 0`; documented.
+
+## ADR-111 — Exclusions applied by the aggregator, a shared one-of section managed like the rate limit (Proposed)
+**Context:** the owner picked "keep names and devices out of the log and stats" (OBS-022, Pi-hole's most-voted logging request) and asked for a toggle in the settings and in GitOps.
+**Decision:**
+- One shared section, `[exclusions] { enabled, names, clients }`, outside `[telemetry]` (which stays with each node) so a cluster excludes the same everywhere. `enabled` is the toggle that keeps the lists.
+- Applied on the aggregator thread when events are drained: a match is dropped before the analytics and every sink (query log, tail, anomalies, event sinks, shadow lists, exemplars, traces), and counted (`telltale_queries_excluded_total`). The hot-path `Metrics` counters still count it, so Prometheus totals stay complete and DNS cost is zero. The startup replay skips them too.
+- Managed like `[ratelimit]` (ADR-069's one-of kind, now shared code): `PUT/DELETE /api/v1/exclusions/default` checked and applied, Settings → System with Revert to the file, MCP `plan_set_exclusions`, scope `config:write:exclusions`; under a GitOps authority, refused with the TOML to commit.
+**Consequences:** the dashboard's totals no longer match Prometheus when exclusions are on (documented). Excluded queries can't be searched later. Up to 1,000 names and 1,000 clients (validated) keep the per-event check cheap.
+
+**Note (2026-10-09):** the owner also picked "alert when a new device joins"; that exists already (alert rule `new_device`, OBS-010/T9.5, cluster-wide), so nothing was built. It's off at privacy level 1 and above.
+
 ## ADR-110 — Exemplars and traces from query events; trace IDs the query log can find (Proposed)
 **Context:** the owner asked (2026-10-08) for OpenMetrics exemplars on the latency histograms and sampled/slow queries as OTLP traces (OBS-017), without costing DNS performance. The latency histogram is counted on the query path in per-thread atomics; nothing there knows a query's identity, and adding it would cost every query.
 **Decision:**

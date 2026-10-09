@@ -58,6 +58,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:ratelimit",
         "change the per-client rate limit, or go back to the config file's",
     ),
+    (
+        "config:write:exclusions",
+        "change which names and devices are kept out of the query log and analytics",
+    ),
     ("ops:pause", "pause and resume blocking"),
     ("ops:cache", "flush the cache"),
     (
@@ -205,6 +209,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         // REQ: DNS-014 (review 01 q1)
         if under("/api/v1/ratelimit") {
             return Need::Scope("config:write:ratelimit");
+        }
+        // REQ: OBS-022 (T12.1)
+        if under("/api/v1/exclusions") {
+            return Need::Scope("config:write:exclusions");
         }
     }
     if *method == Method::POST
@@ -540,8 +548,8 @@ mod tests {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            10,
-            "nine write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit) + analytics"
+            11,
+            "ten write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, exclusions) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

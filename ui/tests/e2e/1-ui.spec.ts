@@ -1335,6 +1335,35 @@ test('ups_007 a group picks its upstream group from the UI', async () => {
   await expect(g).toContainText('config file');
 });
 
+// REQ: OBS-022 (T12.1) — Settings → System keeps a name out of the log: it's still answered,
+// but only the other name is logged; then back to the file's (nothing excluded). Near the end:
+// its names get cached (the cache test counts what's cached).
+test('obs_022 exclusions from Settings', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=system');
+  const editor = page.getByTestId('editor-exclusions');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('nothing excluded');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('textbox', { name: 'Names', exact: true }).fill('quiet.cache.e2e.test');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('1 names, 0 devices');
+  await expect(row).toContainText('overrides the file');
+  expect(await query('quiet.cache.e2e.test')).toBe(0);
+  expect(await query('loud.cache.e2e.test')).toBe(0);
+  const logged = async () =>
+    ((await (await page.request.get('/api/v1/queries?name=.cache.e2e.test&from=-10m')).json()).items as { name: string }[]).map(
+      (r) => r.name,
+    );
+  await expect.poll(logged, { timeout: 20_000 }).toContain('loud.cache.e2e.test');
+  expect(await logged()).not.toContain('quiet.cache.e2e.test');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('nothing excluded');
+  await expect(row).toContainText('config file');
+});
+
 // REQ: OBS-018 — a list in shadow mode never blocks: its name is answered (by the stub
 // upstream) and counted under "Would have blocked"; the list carries a shadow badge.
 // Last, because it caches a name (the cache test counts what's cached).

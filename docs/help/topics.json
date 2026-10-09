@@ -467,6 +467,26 @@
       "docs": "trying-a-list-first-shadow-mode"
     },
     {
+      "id": "filter-aaaa",
+      "title": "No IPv6 addresses",
+      "term": "AAAA filtering",
+      "summary": "The group's devices get no IPv6 (AAAA) answers, so they connect over IPv4. Your own names (local records and zones) still answer, and blocked names stay blocked.",
+      "when": "A network whose IPv6 is broken or half set up: pages hang for a while before falling back to IPv4.",
+      "example": "The guest Wi-Fi gets IPv6 from the ISP but its firewall drops it: turn this on for the guest group and pages load at once.",
+      "caution": "HTTPS records can still carry IPv6 hints some browsers use. Not with DNS64, which makes IPv6 answers on purpose.",
+      "docs": "no-ipv6-addresses-for-a-group"
+    },
+    {
+      "id": "exclusions",
+      "title": "Kept out of the log",
+      "term": "Exclusions",
+      "summary": "Names and devices whose queries are still answered, but left out of the query log, the live view, the dashboard and top lists, anomalies, and exports. Prometheus metrics still count them.",
+      "when": "Noise drowns out what matters: phones' connectivity checks, time servers, a monitoring probe that asks every few seconds, or a device you don't care to watch.",
+      "example": "Add connectivitycheck.gstatic.com and ntp.org, and the monitoring host 192.168.1.10: the top domains show what people use, and the probe's queries no longer fill the log.",
+      "caution": "Excluded queries can't be searched later, and the dashboard's totals leave them out (Prometheus doesn't). Queries logged before stay. Under a Git-managed configuration, change [exclusions] in Git.",
+      "docs": "keeping-names-and-devices-out-of-the-log"
+    },
+    {
       "id": "exemplars",
       "title": "Trace IDs",
       "term": "Exemplars and traces",

@@ -70,6 +70,9 @@
     // REQ: DNS-016 (T9.10)
     { key: 'dns64_exclude', label: 'DNS64 exclusions', type: 'lines', placeholder: '2001:db8:bad::/48', advanced: true,
       help: 'IPv6 addresses here count as missing (the name gets made-up ones); IPv4 addresses here are never made into IPv6.' },
+    // REQ: FLT-016 (T12.5)
+    { key: 'filter_aaaa', label: 'No IPv6 addresses', type: 'bool', advanced: true,
+      help: 'Answer IPv6 (AAAA) questions with nothing, so these devices use IPv4: for a network whose IPv6 is broken. Your own names still answer. Not with DNS64.' },
     // REQ: FLT-010 (T9.7)
     { key: 'schedules', label: 'Schedules', type: 'multi', options: scheduleNames,
       help: 'Schedules this group follows (make them under Schedules, below).' },
@@ -172,6 +175,9 @@
           <div class="small" data-testid="group-dns64">
             DNS64 on (<span class="mono">{g.dns64Prefix ?? '64:ff9b::/96'}</span>)<HelpButton id="dns64" />
           </div>
+        {/if}
+        {#if g.filterAaaa}
+          <div class="small" data-testid="group-filter-aaaa">No IPv6 addresses (AAAA answered with nothing)<HelpButton id="filter-aaaa" /></div>
         {/if}
         <dl class="stats">
           <div><dt>Queries (24 h)</dt><dd>{num(g.queries24h)}{#if total}<span class="muted small"> · {pct((g.queries24h / total) * 100, 0)}</span>{/if}</dd></div>

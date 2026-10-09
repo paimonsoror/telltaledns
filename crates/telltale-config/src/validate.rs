@@ -59,6 +59,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     rewrites(cfg, &mut r);
     zones(cfg, &mut r);
     otlp(cfg, &mut r);
+    exclusions(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
@@ -181,6 +182,13 @@ fn rewrites(cfg: &Config, r: &mut Report<'_>) {
                 "only with `dns64 = true`",
             );
         }
+        // REQ: FLT-016 (T12.5) — DNS64 makes up AAAA answers; filtering them contradicts it.
+        if g.dns64 && g.filter_aaaa {
+            r.err(
+                format!("group[{i}].filter_aaaa"),
+                "not with `dns64 = true` (DNS64 makes AAAA answers; this removes them)",
+            );
+        }
         if let Some(p) = g.dns64_prefix
             && (!p.addr.is_ipv6() || p.prefix != 96)
         {
@@ -247,6 +255,34 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
         }
         if x.tls_insecure_skip_verify {
             r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca)"));
+        }
+    }
+}
+
+// REQ: OBS-022 (T12.1) — excluded names are domain names (a leading `*.` is allowed); at most
+// 1,000 of each, so the per-event check stays cheap.
+fn exclusions(cfg: &Config, r: &mut Report<'_>) {
+    let x = &cfg.exclusions;
+    for (i, n) in x.names.iter().enumerate() {
+        let bare = n.trim().trim_start_matches("*.").trim_end_matches('.');
+        let ok = !bare.is_empty()
+            && bare.len() <= 253
+            && bare.split('.').all(|l| {
+                !l.is_empty()
+                    && l.len() <= 63
+                    && l.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            });
+        if !ok {
+            r.err(
+                format!("exclusions.names[{i}]"),
+                format!("`{n}` isn't a domain name (e.g. connectivitycheck.gstatic.com)"),
+            );
+        }
+    }
+    for (what, n) in [("names", x.names.len()), ("clients", x.clients.len())] {
+        if n > 1000 {
+            r.err(format!("exclusions.{what}"), "at most 1,000");
         }
     }
 }

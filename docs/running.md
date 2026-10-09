@@ -748,6 +748,23 @@ Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `t
 time() - telltale_list_last_success_timestamp_seconds > 172800
 ```
 
+### Lists that stopped changing
+A list whose maintainer gave up can keep answering HTTP 200 with the same content forever: it downloads fine, so nothing fails, but it stops keeping up. A URL list whose content hasn't changed in 30 days is called **stale**:
+- the **Lists** page says *unchanged for N days*, the health icon shows `list_stale` (degraded), and the alert rule `list_stale` can tell you;
+- `GET /api/v1/lists` has `staleDays` for it.
+
+Change the limit for every list, or for one that rarely changes on purpose (0 = never stale):
+```toml
+[filter]
+stale_after_days = 30
+
+[[list]]
+name = "my-small-list"
+url = "https://example.com/rarely-changes.txt"
+stale_after_days = 0
+```
+Files and inline rules change when you change them, so they're never stale. The days count from the last time the content changed (identical downloads don't count), which is also `telltale_list_last_change_timestamp_seconds`.
+
 ### Trying a list first (shadow mode)
 Not sure a list is safe for your network? Add it in **shadow mode**: it's downloaded and checked like any other, but never blocks.
 ```toml
@@ -963,6 +980,19 @@ dns64 = true
 - **Exclusions** (`dns64_exclude`, RFC 6147 §5.1.4): IPv6 addresses in these networks count as missing, for names whose IPv6 addresses your devices can't reach (a broken tunnel, a provider's unreachable range); the name gets made-up AAAA records instead, or keeps its other real ones. IPv4-mapped addresses (`::ffff:0:0/96`) are always excluded. IPv4 networks listed here are never turned into AAAA, so those destinations stay unreachable from IPv6-only devices.
 - **Reverse lookups** for addresses in the prefix follow the IPv4 address: `dig -x 64:ff9b::c000:221` answers with a CNAME to `33.2.0.192.in-addr.arpa` and that name's PTR (RFC 6147 §5.3.1). Private IPv4 addresses inside the prefix get NXDOMAIN locally, as their in-addr.arpa names would.
 
+### No IPv6 addresses for a group
+The opposite of DNS64: a network whose IPv6 is broken or half set up (pages hang, then fall back to IPv4). Answer the group's IPv6 (AAAA) questions with nothing, so its devices use IPv4 at once:
+```toml
+[[group]]
+name = "guest"
+networks = ["192.168.50.0/24"]
+filter_aaaa = true
+```
+- AAAA questions get NOERROR with no records, from TelltaleDNS itself (no upstream asked); A and every other type are unchanged. The query log shows them as `special`.
+- Your [local records](#local-records) and zones still answer AAAA (you configured those addresses), and blocked names stay blocked.
+- HTTPS records (type 65) can still carry IPv6 hints, which some browsers use; this setting leaves them alone.
+- Not with `dns64` (which makes AAAA answers on purpose). In the UI: **Groups**, edit the group, *No IPv6 addresses* (Advanced view).
+
 ### Rebinding protection
 A website can make your browser attack devices on your network by pointing its own name at a private address (DNS rebinding). Turn on the protection per group:
 ```toml
@@ -1174,6 +1204,19 @@ TelltaleDNS is never an open resolver by default. If you widen `allowed_networks
 edns_payload = 1232     # 512 to 4096; needs a restart
 ```
 This is the UDP payload size announced in EDNS(0) answers (RFC 6891), and the largest UDP answer sent to a client that announces at least as much; bigger answers are cut and flagged truncated, and the client retries over TCP. 1232 is the DNS Flag Day 2020 value and avoids IP fragmentation on almost every path. Raise it only on a network known to carry larger datagrams (jumbo frames, an IPv6-only network that doesn't fragment). The ceiling is 4096, the size of the UDP workers' send buffer.
+
+### Which node answered (NSID)
+```toml
+[dns]
+nsid = true
+```
+Answers carry this node's name in the NSID option (RFC 5001) when a query asks for it, so you can tell which node or pod answered when several share one address (a load balancer, resolver pods):
+```
+$ dig +nsid example.com @192.168.5.112
+; NSID: 74 65 6c 6c 74 61 6c 65 64 6e 73 2d 72 65 73 6f 6c 76 65 72 ... ("telltaledns-resolver-786d9bf5df-c6pr8")
+```
+- The name is `[node] name`, or the host name (a pod's name in Kubernetes). It's added only to answers whose query asked for NSID; others are unchanged.
+- Off by default: any client allowed to query sees the name. In a cluster, `[dns]` is shared, so one setting turns it on everywhere, and each node answers with its own name.
 
 ## Special names
 Handled before anything else (each can be turned off under `[special]`):
@@ -1820,6 +1863,19 @@ fsync = false                # true: sync every write (slower on SD cards)
 - Searching is fast because it looks at the list of names first and skips whole files that can't match: on a Raspberry Pi 4, finding a rare name in 50 million queries over 30 days takes about 0.2 s, and the slowest searches about 2 s. Searches use up to 4 threads at the lowest CPU priority, so they never slow DNS down.
 - Metrics: `telltale_qlog_rows_written_total`, `_rows_dropped_total`, `_bytes_written_total`, `_segments_removed_total`, `_write_errors_total`.
 
+### Keeping names and devices out of the log
+Noise drowns out what matters: phones checking their connection, time servers, a monitoring probe asking every few seconds. Keep them out of the log and the statistics:
+```toml
+[exclusions]
+enabled = true                                           # off keeps the lists, logs everything again
+names = ["connectivitycheck.gstatic.com", "ntp.org"]     # each with its subdomains
+clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
+```
+- Their queries are still answered as usual and still counted in Prometheus (`telltale_queries_total`), but left out of the query log, the live view, the dashboard and top lists, device pages, anomalies, the event sinks, OTLP traces, and exemplars. `telltale_queries_excluded_total` counts them.
+- The dashboard's totals leave them out, so they'll be lower than Prometheus's.
+- From the next query on, on every node of a cluster (`[exclusions]` is shared). Queries logged before stay (and the top lists rebuilt after a restart skip them too).
+- In the UI: **Settings → System → Kept out of the log**, with a toggle, checked before it's applied, and *Revert to the file*. Under a Git-managed configuration, change `[exclusions]` in Git; the UI shows the TOML to commit. API: `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions`.
+
 ### OpenTelemetry (OTLP)
 Push the metrics to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) instead of, or as well as, having Prometheus scrape them:
 ```toml
@@ -1960,6 +2016,7 @@ Rules watch:
 | `upstream_down` | an upstream's circuit breaker is open | upstream |
 | `node_down` | a cluster node isn't connected | node |
 | `list_failing` | a list fails to update | list |
+| `list_stale` | a URL list's content hasn't changed in `stale_after_days` (default 30; see [Lists that stopped changing](#lists-that-stopped-changing)) | list |
 | `servfail_rate` | SERVFAIL above `threshold` % (default 5) over 5 minutes, at least 50 queries | node |
 | `anomaly` | a [device anomaly](#device-anomalies) is found | finding |
 | `update_available` | a newer TelltaleDNS build is out | version |
@@ -2017,7 +2074,7 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | Icon | Level | When |
 |---|---|---|
 | circle with a check (quiet) | healthy | nothing below |
-| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download; a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days |
 | octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS (its listeners aren't bound, or none answers its own check), SERVFAIL for 25% or more, or a listener's certificate has expired |
 
 Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.

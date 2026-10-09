@@ -112,6 +112,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/ratelimit/default",
             put(put_ratelimit).delete(delete_ratelimit),
         )
+        // REQ: OBS-022 (T12.1)
+        .route(
+            "/api/v1/exclusions/default",
+            put(put_exclusions).delete(delete_exclusions),
+        )
         .with_state((backend, auth))
 }
 
@@ -1013,6 +1018,76 @@ pub(crate) async fn delete_ratelimit(
     .await
 }
 
+/// Keep names and devices out of the query log and analytics (OBS-022).
+///
+/// The body has the same fields as `[exclusions]` in `telltale.toml`: `enabled` (turn them on or
+/// off without losing the lists), `names` (each with its subdomains, e.g.
+/// `connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are
+/// still answered and still counted in `/metrics`, but left out of the query log, the live view,
+/// the dashboard and top lists, anomalies, and every export. It replaces the whole section until
+/// it's deleted again; it applies to every node of a cluster from the next query on.
+#[utoipa::path(put, path = "/api/v1/exclusions/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A name isn't a domain name, a client isn't an address or network, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_exclusions(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /exclusions/default {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Exclusions, Some(input)),
+    )
+    .await
+}
+
+/// Go back to the config file's exclusions (OBS-022).
+///
+/// Removes what the API or UI stored, so `[exclusions]` in the config files (or none) applies
+/// again. 404 when nothing was stored.
+#[utoipa::path(delete, path = "/api/v1/exclusions/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's exclusions are in effect already."),
+    ))]
+pub(crate) async fn delete_exclusions(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        "DELETE /exclusions/default".to_owned(),
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Exclusions, None),
+    )
+    .await
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -1034,6 +1109,7 @@ impl Op {
             Self::Managed(ManagedKind::AlertRule, _) => "alert_rule",
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
+            Self::Managed(ManagedKind::Exclusions, _) => "exclusions",
         }
     }
     fn deleting(&self) -> bool {

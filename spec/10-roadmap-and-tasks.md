@@ -529,6 +529,19 @@ From the project review of 2026-10-08: the owner picked six observability capabi
 - [x] **T11.6 Exemplars and traces.** *(OBS-017, ADR-110)* OpenMetrics exemplars on the latency histograms; sampled and slow queries as OTLP traces; trace IDs the query log finds.
   - *AC:* trace IDs carry the start time and a keyed hash of the query-log fields (round-trip, keyed, field boundaries); one recent exemplar per bucket, refreshed at most once a second; `/metrics` negotiates OpenMetrics (counter families, escaped HELP, exemplars, `# EOF`) and falls back to text, or always with `exemplars = false`; traces sampled 1-in-N and slow, bounded queue, privacy levels; spans (server + upstream client) under the same ID; config validation (traces need the endpoint); `GET /queries?trace=` finds the row; verified against Prometheus 3.5 (exemplar storage), the strict `prometheus_client` OpenMetrics parser, and an OpenTelemetry Collector; Playwright: an exemplar's trace ID opens its query in the log. *Deferred:* exemplars on the per-upstream histogram (its events carry no query).
 
+## M12 — Ideas from the community trackers (owner request 2026-10-09)
+From a survey of the most-requested open issues on Pi-hole's and Technitium's trackers (Pi-hole's feature-request forum included); the owner picked these.
+
+- [x] **T12.1 Exclusions.** *(OBS-022, ADR-111)* Names and devices kept out of the query log, live view, analytics, and exports (still answered and counted in metrics), with a toggle; Settings → System and `[exclusions]` (GitOps).
+  - *AC:* names cover their subdomains (label boundaries), clients by address or network (IPv4 and IPv6); excluded events never reach the aggregates or sinks and are counted; the toggle keeps the lists; set, checked, reverted, and kept-in-Git like the rate limit; validation (domain names, at most 1,000 each); the startup replay skips them; Playwright: an excluded name is answered but never logged.
+- [x] **T12.2 New-device alerts.** *(OBS-010)* Already there: the `new_device` alert rule (T9.5), cluster-wide. Nothing to build.
+- [x] **T12.3 Stale lists.** *(OBS-023, ADR-112)* A URL list unchanged for `stale_after_days` (default 30, per list too): `staleDays`, health `list_stale`, alert rule `list_stale`, a line on the Lists page.
+  - *AC:* whole days from `last_changed`; per-list override and 0 = never; files, inline, disabled, and never-downloaded lists aren't stale; health reason and alert; config defaults.
+- [x] **T12.4 NSID.** *(DNS-021, ADR-113)* `[dns] nsid`: answers to queries that ask carry the node's name.
+  - *AC:* only when asked; off by default; the OPT's length stays consistent; reloadable.
+- [x] **T12.5 AAAA filtering per group.** *(FLT-016, ADR-114)* `[[group]] filter_aaaa`: AAAA answered with no data.
+  - *AC:* the group gets NOERROR/no records even with an IPv6 address cached; A still answers; other groups unaffected; local records still answer; blocks still win; explain says so; not with `dns64`; the Groups page shows and edits it.
+
 ## M9 — Follow-ups to v1 (owner request 2026-10-06)
 The deferrals collected after M8, worked through one by one. DHCP is out of scope (owner decision 2026-10-06; the server itself was removed in T9.15, ADR-091: DHCP stays out of the platform's direction).
 

@@ -48,6 +48,9 @@ pub struct Hub {
     aggregates: Mutex<Aggregates>,
     /// The privacy level the analytics follow ([`Hub::set_privacy`]).
     privacy: AtomicU8,
+    /// REQ: OBS-022 — queries left out of the analytics and every sink, and how many so far.
+    exclusions: Mutex<Option<Arc<crate::exclude::Exclusions>>>,
+    excluded: AtomicU64,
 }
 
 static NEXT_HUB: AtomicU64 = AtomicU64::new(1);
@@ -90,6 +93,8 @@ impl Hub {
             clock_step_us: AtomicI64::new(0),
             aggregates: Mutex::new(Aggregates::new()),
             privacy: AtomicU8::new(0),
+            exclusions: Mutex::new(None),
+            excluded: AtomicU64::new(0),
         })
     }
 
@@ -138,6 +143,37 @@ impl Hub {
     /// and no client addresses (2+). The query log, tail, and sinks apply it themselves.
     pub fn set_privacy(&self, level: u8) {
         self.privacy.store(level, Ordering::Relaxed);
+    }
+
+    /// REQ: OBS-022 (T12.1) — from the next drain on, queries these match are left out of the
+    /// analytics and every sink (`None` or empty: nothing is).
+    pub fn set_exclusions(&self, x: Option<crate::exclude::Exclusions>) {
+        *self
+            .exclusions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = x.filter(|x| !x.is_empty()).map(Arc::new);
+    }
+
+    /// Queries left out so far ([`Self::set_exclusions`]), for `/metrics`.
+    pub fn excluded_total(&self) -> u64 {
+        self.excluded.load(Ordering::Relaxed)
+    }
+
+    /// The exclusions in force, read once per drain.
+    fn exclusions(&self) -> Option<Arc<crate::exclude::Exclusions>> {
+        self.exclusions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether `r` is left out (counting it when it is).
+    fn left_out(&self, x: Option<&crate::exclude::Exclusions>, r: &Record) -> bool {
+        let out = x.is_some_and(|x| x.excludes(r));
+        if out {
+            self.excluded.fetch_add(1, Ordering::Relaxed);
+        }
+        out
     }
 
     /// Clock steps followed so far and the latest one (microseconds), for `/metrics`.
@@ -254,11 +290,12 @@ impl Hub {
                     hub.resync_clock();
                     {
                         let level = hub.privacy.load(Ordering::Relaxed);
+                        let excluded = hub.exclusions();
                         let mut agg = hub.aggregates();
                         drainer.drain(|r| {
                             // REQ: OBS-020 — the listener probes stay out of the analytics,
-                            // the query log, and every export.
-                            if r.is_probe() {
+                            // the query log, and every export; so do excluded queries (OBS-022).
+                            if r.is_probe() || hub.left_out(excluded.as_deref(), &r) {
                                 return;
                             }
                             if level == 0 {
@@ -290,9 +327,10 @@ impl Hub {
     /// One drain into the aggregates. Returns the number of records.
     pub fn drain_once(&self, drainer: &mut Drainer) -> usize {
         let level = self.privacy.load(Ordering::Relaxed);
+        let excluded = self.exclusions();
         let mut agg = self.aggregates();
         drainer.drain(|r| {
-            if !r.is_probe() {
+            if !r.is_probe() && !self.left_out(excluded.as_deref(), &r) {
                 agg.record(&crate::event::private(&r, level));
             }
         })

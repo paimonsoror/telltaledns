@@ -674,7 +674,25 @@ fn build_pipeline(
 }
 
 /// REQ: OBS-005 — per-client query series are opt-in and capped (`[telemetry.metrics]`).
+/// REQ: OBS-022 (T12.1, ADR-111) — the exclusions the aggregator applies from its next drain
+/// (at start and on every reload, a replica's included).
+pub(crate) fn exclusions(cfg: &Config) -> Option<telltale_telemetry::exclude::Exclusions> {
+    let x = &cfg.exclusions;
+    if !x.active() {
+        return None;
+    }
+    let names = x.names.iter().filter_map(|n| {
+        let bare = n.trim().trim_start_matches("*.");
+        telltale_proto::NameBuf::from_presentation(bare)
+            .ok()
+            .map(|b| b.as_wire().to_vec())
+    });
+    let nets: Vec<(std::net::IpAddr, u8)> = x.clients.iter().map(|c| (c.addr, c.prefix)).collect();
+    Some(telltale_telemetry::exclude::Exclusions::new(names, &nets))
+}
+
 fn set_client_metrics(cfg: &Config, pipeline: &Pipeline) {
+    pipeline.telemetry.set_exclusions(exclusions(cfg));
     let m = &cfg.telemetry.metrics;
     let mut agg = pipeline.telemetry.aggregates();
     agg.exported.client_cap = if m.per_client {

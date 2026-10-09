@@ -33,6 +33,15 @@
     { key: 'ipv6_prefix', label: 'IPv6: count clients per /N', type: 'number', advanced: true, placeholder: '64',
       help: '64 groups a device\'s rotating privacy addresses.' },
   ];
+  // REQ: OBS-022 (T12.1) — the fields of `[exclusions]`.
+  const exclusionFields: Field[] = [
+    { key: 'enabled', label: 'Leave these out of the log and stats', type: 'bool', initial: true,
+      help: 'Off keeps the lists below but logs everything again.' },
+    { key: 'names', label: 'Names', type: 'lines', placeholder: 'connectivitycheck.gstatic.com\nntp.org',
+      help: 'One per line; each covers its subdomains too. Noise like connectivity checks, time servers, or a monitoring probe.' },
+    { key: 'clients', label: 'Devices', type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
+      help: 'Addresses or networks, one per line (a monitoring host, say).' },
+  ];
   const tab = $derived.by(() => {
     const t = route.params.get('tab');
     return tabs.some((x) => x.id === t) ? (t as string) : 'account';
@@ -705,6 +714,17 @@
     <p class="muted small">
       One client is one address (IPv6: one /64). A router or proxy that forwards for a whole network looks like one client:
       add it to "Never limited", or raise the number. A change applies at once and every client's count starts over.
+    </p>
+    <!-- REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics. -->
+    <ConfigEditor kind="exclusions" path="exclusions" singleton title="Kept out of the log" noun="exclusions" fields={exclusionFields}
+      summary={(d) => {
+        const n = (k: string) => (Array.isArray(d[k]) ? (d[k] as unknown[]).length : 0);
+        if (n('names') + n('clients') === 0) return 'nothing excluded';
+        return `${d.enabled === false ? 'off: ' : ''}${n('names')} names, ${n('clients')} devices`;
+      }} />
+    <p class="muted small">
+      Their queries are still answered and still counted in <code>/metrics</code>, but left out of the query log, the live view,
+      the dashboard and top lists, anomalies, and exports, on every node. Queries logged before stay.<HelpButton id="exclusions" />
     </p>
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->

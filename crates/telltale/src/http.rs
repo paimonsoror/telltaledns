@@ -812,6 +812,13 @@ fn render_telemetry(w: &mut PromWriter, hub: &telltale_telemetry::Hub) {
             *dropped,
         );
     }
+    // REQ: OBS-022 (T12.1) — queries kept out of the log and analytics by `[exclusions]`.
+    w.family(
+        "telltale_queries_excluded_total",
+        "counter",
+        "Queries left out of the query log, analytics, and exports by [exclusions] (still in telltale_queries_total).",
+    )
+    .sample("telltale_queries_excluded_total", &[], hub.excluded_total());
     // REQ: OBS-001 — clock steps the event clock followed (NTP's first sync on a Pi).
     let (steps, latest_step_us) = hub.clock_steps();
     w.family(

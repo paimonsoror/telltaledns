@@ -27,6 +27,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | DNS-018 | P1 | Local zones: a small authoritative zone loaded from an RFC 1035 zone file or config (split-horizon views per group). |
 | DNS-019 | P0 | Refuse ANY queries (RFC 8482 minimal response) and drop malformed packets cheaply. |
 | DNS-020 | P1 | PROXY protocol v2 on TCP/DoT/DoH listeners, to preserve client IPs behind load balancers. |
+| DNS-021 | P2 | NSID (RFC 5001), off by default: a query that asks for it gets the answering node's name, so a client can tell which node or pod answered behind a shared address (owner request 2026-10-09, from Technitium #1932). |
 
 ## Upstreams (UPS) — see `04`
 | ID | Pri | Requirement |
@@ -62,6 +63,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | FLT-013 | P0 | Rule attribution: every block or allow decision records list ID + rule ID, and the API can explain "why was X blocked for client Y". |
 | FLT-014 | P1 | Rewrites (`$dnsrewrite`-like): map a domain to an answer per group. |
 | FLT-015 | P1 | Response IP filtering: block answers whose A/AAAA falls in a configured CIDR (DNS rebinding protection; private IPs from public names). |
+| FLT-016 | P2 | Per-group AAAA filtering: a group's AAAA questions get no data (devices fall back to IPv4 on a network with broken IPv6); local data still answers, blocks still win, not combined with DNS64 (owner request 2026-10-09, from Pi-hole's feature requests). |
 
 ## Observability (OBS) — see `06`
 | ID | Pri | Requirement |
@@ -84,6 +86,8 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | OBS-019 | P1 | Upstream truth checks (owner request, 2026-10-08): a sampled share of forwarded questions (off by default) is asked again of a second upstream off the query path and the answers compared (same, different addresses, different response code, filtered/sinkholed); per-upstream counts of DNSSEC verdicts and of the EDE codes upstreams return (`04` §9). |
 | OBS-020 | P1 | Synthetic probes (owner request, 2026-10-08): every DNS listener (UDP, TCP, DoT, DoH, DoQ) is asked a question through its own protocol on a schedule, plus optional extra targets (a load balancer's address); success, latency, and each TLS listener's certificate expiry are exported, degrade the health level when failing or near expiry, and can alert (`06` §9). |
 | OBS-021 | P1 | Cache sizing advice (owner request, 2026-10-08): a sampled ghost list of evicted keys estimates the extra hits a 1.25×, 1.5×, and 2× cache would have served, and the peak use says whether the cache could shrink; shown on the Cache page, in the API and MCP, and as metrics (`03` §4.1). |
+| OBS-022 | P1 | Exclusions (owner request 2026-10-09): names (with their subdomains) and clients (addresses, networks) kept out of the query log, live view, analytics, anomalies, and exports while still answered and counted in metrics; an on/off toggle; editable in the UI (checked, applied, reverted) and in the config files / Git; shared by the cluster (`06` §4.1). |
+| OBS-023 | P1 | Stale lists (owner request 2026-10-09): a URL list whose content hasn't changed in `stale_after_days` (default 30, per list too) is reported on the Lists page and in the API, degrades the health level (`list_stale`), and can alert (`05` §3.5). |
 | OBS-010 | P1 | Event sinks: JSON-lines file, syslog (RFC 5424), HTTP webhook (batched), and alert rules (threshold → webhook/ntfy/email). |
 | OBS-011 | P0 | Upstream health dashboard data: per-upstream p50/p95/p99 latency, error/timeout rates, breaker state, share of traffic. |
 | OBS-012 | P0 | Cluster-wide (federated) analytics: every dashboard and query-log search can scope to one node, a set of nodes, or the whole cluster (see `12`). |

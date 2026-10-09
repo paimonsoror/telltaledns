@@ -69,6 +69,9 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 - **Privacy levels** (Pi-hole parity): `0` full; `1` hide domains (stored as hash); `2` hide domains + clients; `3` anonymous (no per-query log, aggregates only). Configurable per group.
 - **Escape hatch:** `telltale ctl qlog export --from --to --format parquet|csv|jsonl` for offline analysis (Parquet behind a feature flag).
 
+### 4.1 Exclusions (OBS-022, ADR-111)
+`[exclusions]` (`enabled`, `names`, `clients`) is shared configuration. The aggregator thread checks each drained query against it (once per drain it takes the current set; per event: a hash lookup per name suffix, a scan of the client networks) and drops matches before the analytics and every sink: query log, live tail, anomalies, event sinks, shadow/over-blocking, exemplars and traces. `Metrics` (hot-path counters) still counts them; `telltale_queries_excluded_total` counts the drops. The startup replay of the query log skips them too. Set at start and on every reload (a replica's included). Managed as a one-of kind like `[ratelimit]` (`PUT/DELETE /api/v1/exclusions/default`, scope `config:write:exclusions`, MCP `plan_set_exclusions`, Settings → System); under a GitOps authority the write is refused and the TOML to commit is shown.
+
 ## 5. Exporters (OBS-005..007, OBS-010)
 ### Prometheus `/metrics` (default port 9153; also on the API port)
 | Metric | Type | Labels |

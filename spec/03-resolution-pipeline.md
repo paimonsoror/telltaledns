@@ -34,7 +34,8 @@ proxy_protocol = false
 7. **Cache lookup** (§4). Hit → patch → step 10. A stale hit with serve-stale enabled → respond stale (EDE 3) and trigger a background refresh.
 8. **Upstream resolution** (04). Route by (qname suffix, group, qtype) → upstream group → strategy.
 9. **Response policy:** DNSSEC validation (if enabled) → CNAME deep inspection (FLT-007: run every CNAME target through the filter for this client; on block, replace the response with the block response and attribute the rule plus the chain) → response IP filtering (FLT-015) → ECS scrubbing → cache insert (only after policy, keyed so per-group policy can't leak; see §4).
-10. **Respond.** Set the RA bit, copy RD, add EDE options when applicable, truncate for UDP if > advertised size (TC=1), and send. Emit a QueryEvent.
+10. **Respond.** Set the RA bit, copy RD, add EDE options when applicable, add NSID (DNS-021, ADR-113: `[dns] nsid`, only when the query carries the NSID option, appended to our OPT when it's the last record), truncate for UDP if > advertised size (TC=1), and send. Emit a QueryEvent.
+   - Between steps 6 and 7, a group with `filter_aaaa` (FLT-016) answers AAAA with no data.
 
 ## 4. Cache (DNS-006..009)
 - **Key:** `(qname_hash, qtype, qclass, DO-bit, cd-bit, upstream_view_id)`. `upstream_view_id` separates answers obtained from different upstream groups (e.g., a kids' group routed to a family-filter upstream must not share a cache with adults). Filtering is applied *before* the cache, so cached entries are policy-neutral.

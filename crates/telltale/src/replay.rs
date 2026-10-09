@@ -50,6 +50,8 @@ pub(crate) fn spawn(cfg: &Config, pipeline: &Arc<Pipeline>) {
     }
     let started_us = now_us();
     let pipeline = Arc::clone(pipeline);
+    // REQ: OBS-022 — queries logged before a name or device was excluded stay out too.
+    let excluded = crate::server::exclusions(cfg);
     let spawned = std::thread::Builder::new()
         .name("qlog-replay".into())
         .spawn(move || {
@@ -58,6 +60,12 @@ pub(crate) fn spawn(cfg: &Config, pipeline: &Arc<Pipeline>) {
             let fold = |events: &[(QueryEvent, Name)]| {
                 let mut agg = pipeline.telemetry.aggregates();
                 for (e, name) in events {
+                    if excluded
+                        .as_ref()
+                        .is_some_and(|x| x.client(&e.client_ip) || x.name(name.as_wire()))
+                    {
+                        continue;
+                    }
                     agg.replay_hours(started_us / 1_000_000, e, name);
                 }
             };

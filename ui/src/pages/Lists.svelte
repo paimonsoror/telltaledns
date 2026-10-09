@@ -100,7 +100,11 @@
                   {#if l.regexSkipped > 0}<div class="small warn-text" data-testid="list-regex-skipped">{num(l.regexSkipped)} regex {l.regexSkipped === 1 ? 'rule' : 'rules'} left out (over the limit of <code>max_regexes</code>, or too large to compile)</div>{/if}
                 </td>
                 <td><span class="badge {l.kind === 'allow' ? 'ok' : 'bad'}">{l.kind}</span></td>
-                <td><StatusBadge value={l.state} /></td>
+                <td>
+                  <StatusBadge value={l.state} />
+                  <!-- REQ: OBS-023 — downloads fine, but its content stopped changing. -->
+                  {#if l.staleDays}<div class="small warn-text" data-testid="list-stale" title="Its source may be abandoned while still answering">unchanged for {l.staleDays} days</div>{/if}
+                </td>
                 <td class="num">{num(l.entries)}{#if info?.filterNames && l.kind !== 'allow'}<ShareBar value={(l.entries / info.filterNames) * 100} color="--s-blocked" label="share of the blocked names in the snapshot" />{/if}</td>
                 <!-- REQ: OBS-009 (T7.14) — unique contribution, overlap, hits. -->
                 <td class="num" data-testid="list-unique">

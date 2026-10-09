@@ -146,7 +146,8 @@
       "description": "REQ: DNS-005 — settings of the DNS answers themselves.",
       "$ref": "#/$defs/DnsConfig",
       "default": {
-        "edns_payload": 1232
+        "edns_payload": 1232,
+        "nsid": false
       }
     },
     "dnssec": {
@@ -157,6 +158,10 @@
         "mode": "off",
         "negative_trust_anchors": []
       }
+    },
+    "exclusions": {
+      "description": "REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics.",
+      "$ref": "#/$defs/ExclusionsConfig"
     },
     "filter": {
       "description": "List download and compile settings.",
@@ -172,7 +177,8 @@
         "max_invalid_percent": 50,
         "max_list_bytes": "64MiB",
         "max_regexes": 1000,
-        "refresh_secs": 86400
+        "refresh_secs": 86400,
+        "stale_after_days": 30
       }
     },
     "group": {
@@ -625,6 +631,11 @@
           "description": "A list fails to download (one alert per list).",
           "type": "string",
           "const": "list_failing"
+        },
+        {
+          "description": "REQ: OBS-023 (T12.3) — a URL list's content hasn't changed in `[filter]\nstale_after_days` (one alert per list).",
+          "type": "string",
+          "const": "list_stale"
         },
         {
           "description": "A device anomaly was found (OBS-013; one alert per finding).",
@@ -1212,6 +1223,11 @@
           "default": 1232,
           "maximum": 65535,
           "minimum": 0
+        },
+        "nsid": {
+          "description": "REQ: DNS-021 (T12.4) — answer the NSID option (RFC 5001) with this node's name, so\n`dig +nsid` says which node or pod answered (behind a shared address, say). Only for\nqueries that ask for it.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -1327,6 +1343,36 @@
         "filtered"
       ]
     },
+    "ExclusionsConfig": {
+      "description": "REQ: OBS-022 (T12.1, ADR-111) — queries left out of the query log, the live view, the\nanalytics (dashboard, top lists, anomalies), and every export: noise like connectivity checks,\ntime servers, or a monitoring probe. They're still answered normally, and still counted in\n`/metrics`. Shared by the whole cluster.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Devices left out: addresses or networks.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Turns the exclusions on or off without losing the lists.",
+          "type": "boolean",
+          "default": true
+        },
+        "names": {
+          "description": "Names left out, each with its subdomains (`ntp.org` covers `pool.ntp.org`; a leading\n`*.` means the same).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "FilterConfig": {
       "description": "List download settings (`spec/05` §3.4, FLT-004).",
       "type": "object",
@@ -1421,6 +1467,13 @@
           "format": "uint32",
           "default": 86400,
           "minimum": 0
+        },
+        "stale_after_days": {
+          "description": "REQ: OBS-023 (T12.3) — a URL list whose content hasn't changed in this many days is\n\"stale\": its source may be abandoned while still answering (health reason `list_stale`,\nalert rule `list_stale`). 0 = never. Per list: `stale_after_days`.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -1496,6 +1549,15 @@
             "type": "string",
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
           }
+        },
+        "stale_after_days": {
+          "description": "REQ: OBS-023 (T12.3) — overrides `[filter] stale_after_days` for this list (0: never\nstale, for a list that rarely changes on purpose).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         },
         "url": {
           "description": "`https://` (or `http://`) source, refreshed every `refresh_secs`.",
@@ -1672,6 +1734,10 @@
           "description": "Include which list blocked the name in the EDE text.",
           "type": "boolean",
           "default": true
+        },
+        "filter_aaaa": {
+          "description": "REQ: FLT-016 (T12.5) — answer AAAA questions with no data, so the group's devices use\nIPv4 (a network with broken IPv6). Local records and zones still answer; names blocked\nstay blocked. Not with `dns64`.",
+          "type": "boolean"
         },
         "lists": {
           "description": "Lists (by name) this group uses. Omitted = every enabled list.",

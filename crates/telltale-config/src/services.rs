@@ -106,6 +106,7 @@ pub fn expand(cfg: &Config) -> Config {
             mode: crate::schema::ListMode::Enforce,
             refresh_secs: None,
             max_bytes: None,
+            stale_after_days: None,
         });
     }
     out

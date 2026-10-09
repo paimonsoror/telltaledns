@@ -20,6 +20,7 @@ pub mod dga;
 pub mod event;
 #[cfg(test)]
 mod events_tests;
+pub mod exclude;
 pub mod export;
 pub mod prom;
 pub mod recent;

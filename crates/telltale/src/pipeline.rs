@@ -76,6 +76,8 @@ pub(crate) struct Policy {
     pub(crate) zones: Arc<Vec<Zone>>,
     /// REQ: OBS-018 (T11.5) — lists in `shadow` mode: compiled, never enforced.
     pub(crate) shadow_lists: Vec<Box<str>>,
+    /// REQ: DNS-021 (T12.4) — this node's name for the NSID option (`[dns] nsid`).
+    pub(crate) nsid: Option<Box<[u8]>>,
 }
 
 /// REQ: DNS-018 (T7.22) — one authoritative zone.
@@ -113,6 +115,12 @@ impl Policy {
                 .filter(|l| l.mode == telltale_config::ListMode::Shadow)
                 .map(|l| Box::from(l.name.as_str()))
                 .collect(),
+            // The option's value is at most 65,535 bytes; a name is far shorter.
+            nsid: cfg
+                .dns
+                .nsid
+                .then(|| crate::http::node_name(cfg).into_bytes().into_boxed_slice())
+                .filter(|n| !n.is_empty() && n.len() <= 255),
         }
     }
 
@@ -249,6 +257,28 @@ fn retire<T: Send + 'static>(old: T) {
         });
     // If no thread can be started, the value is dropped here (correct, just not deferred).
     drop(spawned);
+}
+
+/// REQ: DNS-021 (T12.4) — appends an NSID option (RFC 5001) holding `id` to the response's OPT
+/// record and returns the new length. Only when the OPT is the message's last record (ours
+/// always is) and the option fits in `out`; otherwise the answer goes out as it was.
+fn add_nsid(out: &mut [u8], len: usize, id: &[u8]) -> Option<usize> {
+    let opt = records(out.get(..len)?)
+        .ok()?
+        .flatten()
+        .find(|r| r.section == Section::Additional && r.rtype == rtype::OPT)?;
+    let end = opt.rdata_off + usize::from(opt.rdlen);
+    let id_len = u16::try_from(id.len()).ok()?;
+    let rdlen = opt.rdlen.checked_add(4)?.checked_add(id_len)?;
+    let new_len = end.checked_add(4 + id.len())?;
+    if end != len || new_len > out.len() {
+        return None;
+    }
+    out[opt.rdata_off - 2..opt.rdata_off].copy_from_slice(&rdlen.to_be_bytes());
+    out[end..end + 2].copy_from_slice(&telltale_proto::consts::opt::NSID.to_be_bytes());
+    out[end + 2..end + 4].copy_from_slice(&id_len.to_be_bytes());
+    out[end + 4..new_len].copy_from_slice(id);
+    Some(new_len)
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -693,6 +723,21 @@ impl Pipeline {
     }
 
     fn finish(&self, q: &Query<'_>, out: &mut [u8], len: usize, transport: Transport) -> usize {
+        // REQ: DNS-021 (T12.4) — only a query that asks for NSID pays for it.
+        let len = if q
+            .edns
+            .as_ref()
+            .is_some_and(|e| e.option(telltale_proto::consts::opt::NSID).is_some())
+        {
+            let st = self.state.load();
+            st.policy
+                .nsid
+                .as_deref()
+                .and_then(|id| add_nsid(out, len, id))
+                .unwrap_or(len)
+        } else {
+            len
+        };
         match transport {
             Transport::Udp => truncate_for_udp(
                 out,
@@ -756,19 +801,7 @@ impl Pipeline {
             Ok(special) => special,
             Err(early) => return early,
         };
-        // REQ: DNS-010 — local data is authoritative and answered before cache/upstreams.
-        if let Some(len) =
-            st.policy
-                .local
-                .answer(&q, out, response_edns(&q, self.settings.edns_payload, None))
-        {
-            oc.status = Status::Local;
-            return Response::Ready(self.finish(&q, out, len, meta.transport));
-        }
-        // REQ: DNS-018 (T7.22) — authoritative zones (per group), before any filtering.
-        if !st.policy.zones.is_empty()
-            && let Some(len) = self.zone_answer(&q, st.policy.clients.group_names(ident), out)
-        {
+        if let Some(len) = self.local_answer(&q, &st.policy, ident, out) {
             oc.status = Status::Local;
             return Response::Ready(self.finish(&q, out, len, meta.transport));
         }
@@ -802,6 +835,12 @@ impl Pipeline {
                 }
             }
         }
+        // REQ: FLT-016 (T12.5) — the group's devices get no IPv6 addresses (after local data
+        // and blocking, before rewrites and upstreams).
+        if q.qtype == rtype::AAAA && st.policy.clients.primary_group(ident).filter_aaaa {
+            oc.status = Status::Special;
+            return self.simple(&q, out, rcode::NOERROR, None, meta);
+        }
         let groups = st.policy.clients.group_names(ident);
         // REQ: DNS-016 (T9.10) — RFC 6147 §5.3.1: a reverse name inside the NAT64 prefix is
         // the IPv4 address's (a CNAME to its in-addr.arpa name, resolved like any other).
@@ -827,6 +866,28 @@ impl Pipeline {
             return self.safe_search(req, &q, &target, groups, who, meta, out, start, oc);
         }
         self.resolve_or_defer(req, &q, special, groups, who, meta, out, start, oc)
+    }
+
+    /// REQ: DNS-010 — local data is authoritative and answered before cache/upstreams; then
+    /// (DNS-018, T7.22) the authoritative zones the client's groups see, before any filtering.
+    fn local_answer(
+        &self,
+        q: &Query<'_>,
+        policy: &Policy,
+        ident: Identity,
+        out: &mut [u8],
+    ) -> Option<usize> {
+        if let Some(len) =
+            policy
+                .local
+                .answer(q, out, response_edns(q, self.settings.edns_payload, None))
+        {
+            return Some(len);
+        }
+        if policy.zones.is_empty() {
+            return None;
+        }
+        self.zone_answer(q, policy.clients.group_names(ident), out)
     }
 
     /// REQ: DNS-018 (T7.22) — the answer from the most specific zone this client sees: its
@@ -3270,6 +3331,72 @@ groups = ["kids"]
         assert_eq!(plain.answers, 0, "no DNS64 for the other group");
     }
 
+    /// REQ: FLT-016 (T12.5) — a group with `filter_aaaa` gets NOERROR with no records for AAAA
+    /// (even when an IPv6 address is cached), A still answers, other groups still get AAAA,
+    /// a local AAAA record still answers, and a blocked name stays blocked.
+    #[test]
+    fn flt_016_filter_aaaa_per_group() {
+        let cfg = format!(
+            "{UPSTREAM}[[group]]\nname = \"v4only\"\nnetworks = [\"10.0.2.0/24\"]\nfilter_aaaa = true\n\
+             [[record]]\nname = \"nas.home.arpa\"\ntype = \"AAAA\"\nvalue = \"fd00::10\"\n"
+        );
+        let p = pipeline_with(&cfg, "||ads.example^\n");
+        // The whole policy from the config: its local records too.
+        let loaded = telltale_config::Loader::new()
+            .toml_str("t.toml", &cfg)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let (local, _) = LocalData::from_config(&loaded);
+        p.reload(
+            Arc::clone(&p.current().router),
+            Policy {
+                allowed: Policy::open().allowed,
+                ..Policy::from_config(&loaded, local)
+            },
+        );
+        let v6: std::net::Ipv6Addr = "2001:db8::7".parse().unwrap();
+        cache_answer(&p, "dual.example", rtype::AAAA, Some(v6.into()));
+        cache_answer(
+            &p,
+            "dual.example",
+            rtype::A,
+            Some("192.0.2.7".parse().unwrap()),
+        );
+        let filtered = ask_from(&p, "10.0.2.5", "dual.example", rtype::AAAA);
+        let s = summarize(&filtered).unwrap();
+        assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 0));
+        assert!(!contains(&filtered, &v6.octets()));
+        assert_eq!(
+            summarize(&ask_from(&p, "10.0.2.5", "dual.example", rtype::A))
+                .unwrap()
+                .answers,
+            1,
+            "A still answers"
+        );
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.9.5", "dual.example", rtype::AAAA),
+                &v6.octets()
+            ),
+            "other groups keep IPv6"
+        );
+        let local: std::net::Ipv6Addr = "fd00::10".parse().unwrap();
+        assert!(
+            contains(
+                &ask_from(&p, "10.0.2.5", "nas.home.arpa", rtype::AAAA),
+                &local.octets()
+            ),
+            "local records still answer"
+        );
+        let blocked = ask_from(&p, "10.0.2.5", "ads.example", rtype::AAAA);
+        assert!(
+            contains(&blocked, &std::net::Ipv6Addr::UNSPECIFIED.octets()),
+            "still blocked (::)"
+        );
+    }
+
     /// Caches `name`/`qtype` answered with these records (type, RDATA).
     fn cache_records(p: &Pipeline, name: &str, qtype: u16, recs: &[(u16, Vec<u8>)]) {
         let req = query(name, qtype, false);
@@ -3930,6 +4057,50 @@ groups = ["kids"]
         let v = shadow.lists_view(&["candidate".into()]);
         assert_eq!((v[0].hits, v[0].devices), (1, 1));
         assert_eq!(v[0].top_names[0].name, "shop.example");
+    }
+
+    /// REQ: DNS-021 (T12.4) — a query that asks for NSID gets this node's name in the answer's
+    /// OPT (whose length stays consistent); one that doesn't ask, or a node with it off, gets
+    /// none.
+    #[test]
+    fn dns_021_nsid_names_the_node() {
+        let pipe = pipeline_with(UPSTREAM, "");
+        let ask = |p: &Arc<Pipeline>, nsid: bool| {
+            let mut q = query("localhost", rtype::A, true);
+            if nsid {
+                // The OPT is last and empty: its RDLENGTH is the last two bytes.
+                let n = q.len();
+                q[n - 2..].copy_from_slice(&4u16.to_be_bytes());
+                q.extend_from_slice(&[0, 3, 0, 0]);
+            }
+            let mut out = [0u8; 4096];
+            match Handler(Arc::clone(p)).handle(&q, &meta(), &mut out) {
+                Response::Ready(len) => out[..len].to_vec(),
+                _ => panic!("answered locally"),
+            }
+        };
+        let has_nsid = |msg: &[u8]| contains(msg, &[0, 3, 0, 5, b'p', b'o', b'd', b'-', b'a']);
+        assert!(!has_nsid(&ask(&pipe, true)), "off by default");
+        pipe.reload(
+            Arc::clone(&pipe.current().router),
+            Policy {
+                nsid: Some(Box::from(&b"pod-a"[..])),
+                ..Policy::open()
+            },
+        );
+        let r = ask(&pipe, true);
+        assert!(has_nsid(&r), "{r:?}");
+        let opt = records(&r)
+            .unwrap()
+            .flatten()
+            .find(|x| x.rtype == rtype::OPT)
+            .unwrap();
+        assert_eq!(opt.rdata_off + usize::from(opt.rdlen), r.len());
+        assert_eq!(
+            rcode_of(&pipe, &query("localhost", rtype::A, true)),
+            Some(rcode::NOERROR)
+        );
+        assert!(!has_nsid(&ask(&pipe, false)), "only when asked");
     }
 
     /// A fake upstream on 127.0.0.1: NXDOMAIN with EDE 17 (a filtering resolver), or an A

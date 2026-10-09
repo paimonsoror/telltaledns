@@ -79,6 +79,8 @@ pub mod rcode {
 
 /// EDNS option codes.
 pub mod opt {
+    /// Name Server Identifier (RFC 5001).
+    pub const NSID: u16 = 3;
     /// EDNS Client Subnet (RFC 7871).
     pub const ECS: u16 = 8;
     /// DNS Cookie (RFC 7873).

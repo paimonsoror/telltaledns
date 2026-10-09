@@ -58,12 +58,16 @@ Unsupported AdBlock cosmetic/URL-path rules are counted as `unsupported` in list
 - **Hard rule:** the compile runs in a background thread pool with `nice`/low priority (configurable cores, default 1 on Pi), and **never** holds any lock the query path takes.
 - Failure handling: a list that fails to download keeps its last good version. A compile failure keeps the previous snapshot and raises an alert.
 
+### 3.5 Stale lists (OBS-023, ADR-112)
+A URL list that downloads fine but whose content (BLAKE3 of the body) hasn't changed in `stale_after_days` (`[filter]`, default 30; per list, 0 = never) is stale: `ListInfo.staleDays`, health reason `list_stale` (degraded), alert rule `list_stale`. Counted from the list's `last_changed`; files and inline rules are never stale.
+
 ## 4. Policy features
 - **Pause (FLT-009):** a global or per-group atomic `paused_until: u64`. While paused, the decision returns None (the event status records `paused`).
 - **Schedules (FLT-010):** `[[schedule]] { name, tz, windows = [{days=["mon".."fri"], start="21:00", end="07:00"}], action = "block_all" | "enable_lists:[..]" }`. A 15-second ticker recomputes an atomic `active_schedule_mask` per group, so there is no time math per query.
 - **Safe search (FLT-011):** a data file `presets/safesearch.toml` of `domain → CNAME target` (e.g., `www.google.* → forcesafesearch.google.com`, YouTube → `restrict.youtube.com` / `restrictmoderate.youtube.com`). Implemented as an internal rewrite evaluated in pipeline step 5.
 - **Blocked services (FLT-012):** `presets/services/*.toml`, with each service a named list of AdBlock rules, compiled like a list.
 - **Response IP filter (FLT-015):** per-group CIDR deny list applied to answers. The default rebinding protection blocks RFC 1918/ULA answers for non-local names (opt-in, because some homelab names legitimately do this; local-domain exceptions are configurable).
+- **AAAA filtering (FLT-016, ADR-114):** `[[group]] filter_aaaa = true` answers the group's AAAA questions NOERROR with no records, after local data, zones, quick rules, schedules, and the filter decision (blocks win), before rewrites, safe search, the cache, and upstreams. Status `special`; explain says so. Not with `dns64` (validation error). HTTPS records' `ipv6hint` is left as is.
 
 ## 5. Explain API (FLT-013)
 `GET /api/v1/explain?name=ads.example.com&client=192.168.1.20&qtype=A` returns the client resolution, groups, schedule state, every matching rule across tiers (list name, rule line number + text retrieved from the stored source), the winning decision, and the would-be upstream group. The UI exposes this as a "Why?" link on every query-log row.

@@ -37,6 +37,8 @@ pub struct Group {
     pub dns64: Option<Ipv6Addr>,
     /// REQ: DNS-016 (T9.10) — the DNS64 exclusion set (RFC 6147 §5.1.4).
     pub dns64_exclude: Vec<Cidr>,
+    /// REQ: FLT-016 (T12.5) — AAAA questions get an empty answer (no IPv6 addresses).
+    pub filter_aaaa: bool,
 }
 
 /// REQ: FLT-015 (T7.20) — answer addresses a group refuses.
@@ -380,6 +382,7 @@ impl Group {
                 _ => Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0),
             }),
             dns64_exclude: g.dns64_exclude.clone(),
+            filter_aaaa: g.filter_aaaa,
             rewrites: g
                 .rewrite
                 .iter()
@@ -427,6 +430,7 @@ impl ClientTable {
                 rewrites: Vec::new(),
                 dns64: None,
                 dns64_exclude: Vec::new(),
+                filter_aaaa: false,
             });
             groups.len() - 1
         };

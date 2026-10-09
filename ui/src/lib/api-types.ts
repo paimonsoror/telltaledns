@@ -978,6 +978,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/exclusions/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Keep names and devices out of the query log and analytics (OBS-022).
+         * @description The body has the same fields as `[exclusions]` in `telltale.toml`: `enabled` (turn them on or
+         *     off without losing the lists), `names` (each with its subdomains, e.g.
+         *     `connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are
+         *     still answered and still counted in `/metrics`, but left out of the query log, the live view,
+         *     the dashboard and top lists, anomalies, and every export. It replaces the whole section until
+         *     it's deleted again; it applies to every node of a cluster from the next query on.
+         */
+        put: operations["put_exclusions"];
+        post?: never;
+        /**
+         * Go back to the config file's exclusions (OBS-022).
+         * @description Removes what the API or UI stored, so `[exclusions]` in the config files (or none) applies
+         *     again. 404 when nothing was stored.
+         */
+        delete: operations["delete_exclusions"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/explain": {
         parameters: {
             query?: never;
@@ -3090,6 +3120,8 @@ export interface components {
              */
             dns64: boolean;
             dns64Prefix?: string | null;
+            /** @description REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4). */
+            filterAaaa: boolean;
             /** @description Lists this group uses; null means every enabled list. */
             lists?: string[] | null;
             name: string;
@@ -3148,7 +3180,8 @@ export interface components {
         HealthReason: {
             /**
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-             *     `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`, `slo_burn`.
+             *     `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
+             *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`.
              * @example upstream_down
              */
             code: string;
@@ -3530,6 +3563,8 @@ export interface components {
                  */
                 dns64: boolean;
                 dns64Prefix?: string | null;
+                /** @description REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4). */
+                filterAaaa: boolean;
                 /** @description Lists this group uses; null means every enabled list. */
                 lists?: string[] | null;
                 name: string;
@@ -3634,6 +3669,12 @@ export interface components {
                 regexSkipped: number;
                 /** @description URL, file path, or `inline`. */
                 source: string;
+                /**
+                 * Format: int64
+                 * @description REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its
+                 *     `stale_after_days`: the source may be abandoned while still answering.
+                 */
+                staleDays?: number | null;
                 /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
                 state: string;
                 /**
@@ -4080,6 +4121,12 @@ export interface components {
             regexSkipped: number;
             /** @description URL, file path, or `inline`. */
             source: string;
+            /**
+             * Format: int64
+             * @description REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its
+             *     `stale_after_days`: the source may be abandoned while still answering.
+             */
+            staleDays?: number | null;
             /** @description `ok`, `failed`, or `pending` (not downloaded yet). */
             state: string;
             /**
@@ -6637,6 +6684,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_DhcpLease"];
+                };
+            };
+        };
+    };
+    put_exclusions: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A name isn't a domain name, a client isn't an address or network, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_exclusions: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's exclusions are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

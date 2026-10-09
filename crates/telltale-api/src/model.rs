@@ -645,11 +645,17 @@ pub struct ListInfo {
     pub last_checked_unix_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_changed_unix_seconds: Option<u64>,
+    /// REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its
+    /// `stale_after_days`: the source may be abandoned while still answering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_days: Option<u64>,
 }
 
 /// A client group.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+// Independent per-group switches as the config has them; an enum set would only obscure the JSON.
+#[allow(clippy::struct_excessive_bools)]
 pub struct GroupInfo {
     pub name: String,
     pub priority: i32,
@@ -692,6 +698,8 @@ pub struct GroupInfo {
     pub dns64: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dns64_prefix: Option<String>,
+    /// REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4).
+    pub filter_aaaa: bool,
     /// REQ: UPS-007 (T9.25) — the upstream group this group's queries go to (absent: `default`,
     /// or wherever `[[route]]` entries send them).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1904,7 +1912,8 @@ pub struct HealthReason {
     /// `degraded` or `severe`.
     pub level: String,
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-    /// `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`, `slo_burn`.
+    /// `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
+    /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

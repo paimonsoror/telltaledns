@@ -882,9 +882,55 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: OBS-022, AGT-007 (T12.1) — names and devices kept out of the log, as a plan.
+        WriteTool {
+            name: "plan_set_exclusions",
+            description: "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "enabled": {"type": "boolean", "description": "Turn the exclusions on or off (the lists are kept)."},
+                "names": {"type": "array", "items": {"type": "string"}, "description": "Names kept out, each with its subdomains (replaces the current list)."},
+                "clients": {"type": "array", "items": {"type": "string"}, "description": "Addresses or networks kept out (replaces the current list)."},
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: false,
+            write: |a| {
+                let body = pick(
+                    a,
+                    &[
+                        ("enabled", "enabled"),
+                        ("names", "names"),
+                        ("clients", "clients"),
+                    ],
+                );
+                if body.is_empty() {
+                    return Err("give at least one setting to change".into());
+                }
+                let count = |k: &str| body.get(k).and_then(Value::as_array).map(Vec::len);
+                let mut what: Vec<String> = Vec::new();
+                if let Some(on) = body.get("enabled").and_then(Value::as_bool) {
+                    what.push(if on { "on".into() } else { "off".into() });
+                }
+                if let Some(n) = count("names") {
+                    what.push(format!("{n} names"));
+                }
+                if let Some(n) = count("clients") {
+                    what.push(format!("{n} clients"));
+                }
+                Ok(Write {
+                    method: "PUT",
+                    path: "/api/v1/exclusions/default".to_owned(),
+                    summary: format!("Set the query-log exclusions ({})", what.join(", ")),
+                    body: Some(Value::Object(body)),
+                    merge: Some(("exclusions", "default".to_owned())),
+                })
+            },
+        },
         WriteTool {
             name: "plan_update_group",
-            description: "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
+            description: "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority, its schedules, whether it gets IPv6 addresses. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "name": {"type": "string", "description": "The group."},
@@ -893,6 +939,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                 "blockMode": {"type": "string", "enum": ["null_ip", "nxdomain", "nodata", "refused", "custom_ip"], "description": "How blocked names are answered."},
                 "priority": {"type": "integer", "description": "Higher wins when a device matches several groups."},
                 "schedules": {"type": "array", "items": {"type": "string"}, "description": "Schedules (by name) the group follows (plan_set_schedule makes them)."},
+                "filterAaaa": {"type": "boolean", "description": "No IPv6 addresses: AAAA questions get no data, so the group's devices use IPv4 (a network with broken IPv6). Not with DNS64."},
                 "reason": reason_schema()
             }, "required": ["name", "reason"], "additionalProperties": false})
             },
@@ -908,6 +955,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                         ("blockMode", "block_mode"),
                         ("priority", "priority"),
                         ("schedules", "schedules"),
+                        ("filterAaaa", "filter_aaaa"),
                     ],
                 );
                 let what: Vec<&str> = body.keys().map(String::as_str).collect();

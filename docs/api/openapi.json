@@ -1984,6 +1984,110 @@
         }
       }
     },
+    "/api/v1/exclusions/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Keep names and devices out of the query log and analytics (OBS-022).",
+        "description": "The body has the same fields as `[exclusions]` in `telltale.toml`: `enabled` (turn them on or\noff without losing the lists), `names` (each with its subdomains, e.g.\n`connectivitycheck.gstatic.com`), and `clients` (addresses or networks). Their queries are\nstill answered and still counted in `/metrics`, but left out of the query log, the live view,\nthe dashboard and top lists, anomalies, and every export. It replaces the whole section until\nit's deleted again; it applies to every node of a cluster from the next query on.",
+        "operationId": "put_exclusions",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A name isn't a domain name, a client isn't an address or network, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's exclusions (OBS-022).",
+        "description": "Removes what the API or UI stored, so `[exclusions]` in the config files (or none) applies\nagain. 404 when nothing was stored.",
+        "operationId": "delete_exclusions",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's exclusions are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/explain": {
       "get": {
         "tags": [
@@ -7545,7 +7649,8 @@
           "rebindingProtection",
           "blockAnswerIps",
           "rewrites",
-          "dns64"
+          "dns64",
+          "filterAaaa"
         ],
         "properties": {
           "blockAnswerIps": {
@@ -7595,6 +7700,10 @@
               "string",
               "null"
             ]
+          },
+          "filterAaaa": {
+            "type": "boolean",
+            "description": "REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4)."
           },
           "lists": {
             "type": [
@@ -7723,7 +7832,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`, `slo_burn`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,\n`slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`.",
             "example": "upstream_down"
           },
           "level": {
@@ -8705,7 +8814,8 @@
                 "rebindingProtection",
                 "blockAnswerIps",
                 "rewrites",
-                "dns64"
+                "dns64",
+                "filterAaaa"
               ],
               "properties": {
                 "blockAnswerIps": {
@@ -8755,6 +8865,10 @@
                     "string",
                     "null"
                   ]
+                },
+                "filterAaaa": {
+                  "type": "boolean",
+                  "description": "REQ: FLT-016 (T12.5) — AAAA questions get no data (the group's devices use IPv4)."
                 },
                 "lists": {
                   "type": [
@@ -9013,6 +9127,15 @@
                 "source": {
                   "type": "string",
                   "description": "URL, file path, or `inline`."
+                },
+                "staleDays": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its\n`stale_after_days`: the source may be abandoned while still answering.",
+                  "minimum": 0
                 },
                 "state": {
                   "type": "string",
@@ -10197,6 +10320,15 @@
           "source": {
             "type": "string",
             "description": "URL, file path, or `inline`."
+          },
+          "staleDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "REQ: OBS-023 — days since a URL list's content last changed, when that's longer than its\n`stale_after_days`: the source may be abandoned while still answering.",
+            "minimum": 0
           },
           "state": {
             "type": "string",

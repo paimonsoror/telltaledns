@@ -309,6 +309,22 @@ pub(crate) fn rule_labels(
     (Some(list), Some(kind.to_owned()))
 }
 
+/// REQ: OBS-023 (T12.3, ADR-112) — days since an enabled URL list's content last changed, when
+/// longer than its limit (the list's `stale_after_days`, else `[filter]`'s; 0 = never). Files
+/// and inline rules change when you change them: never stale.
+fn stale_days(
+    filter: &telltale_config::FilterConfig,
+    l: &telltale_config::FilterList,
+    last_changed: Option<u64>,
+) -> Option<u64> {
+    let limit = u64::from(l.stale_after_days.unwrap_or(filter.stale_after_days));
+    if !l.enabled || l.url.is_none() || limit == 0 {
+        return None;
+    }
+    let days = crate::pipeline::unix_now().saturating_sub(last_changed?) / 86_400;
+    (days >= limit).then_some(days)
+}
+
 fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter, Problem> {
     let name = q
         .name
@@ -1076,6 +1092,7 @@ impl Backend for ApiBackend {
                     overlap,
                     last_checked_unix_seconds: meta.and_then(|m| m.last_attempt),
                     last_changed_unix_seconds: meta.and_then(|m| m.last_changed),
+                    stale_days: stale_days(&cfg.filter, l, meta.and_then(|m| m.last_changed)),
                 }
             })
             .collect()
@@ -1162,6 +1179,7 @@ impl Backend for ApiBackend {
                 rewrites: Vec::new(),
                 dns64: false,
                 dns64_prefix: None,
+                filter_aaaa: false,
                 upstreams: None,
             })
             .map(|info| with_group_config(info, &cfg))
@@ -1797,6 +1815,20 @@ impl Backend for ApiBackend {
                 }
                 .to_owned(),
                 definition: serde_json::to_value(&cfg.ratelimit).ok(),
+            });
+        }
+        // REQ: OBS-022 (T12.1) — likewise, the exclusions.
+        if want("exclusions") {
+            out.push(telltale_api::model::ConfigEntry {
+                kind: "exclusions".to_owned(),
+                name: "default".to_owned(),
+                source: if e.exclusions.is_some() {
+                    "override"
+                } else {
+                    "file"
+                }
+                .to_owned(),
+                definition: serde_json::to_value(&cfg.exclusions).ok(),
             });
         }
         // REQ: FLT-010 (T9.7)
@@ -2451,6 +2483,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::AlertRule => crate::managed::ALERT_RULE,
         ManagedKind::Schedule => crate::managed::SCHEDULE,
         ManagedKind::RateLimit => crate::managed::RATELIMIT,
+        ManagedKind::Exclusions => crate::managed::EXCLUSIONS,
     }
 }
 
@@ -2755,6 +2788,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::RateLimit, false) => {
             "The config file's rate limit (or the default) applies again from the next query; every client's count starts over.".into()
         }
+        (ManagedKind::Exclusions, true) => {
+            "From the next query on, on every node: matching queries are still answered and counted in /metrics, but left out of the query log, live view, dashboard, anomalies, and exports. Queries already logged stay.".into()
+        }
+        (ManagedKind::Exclusions, false) => {
+            "The config file's exclusions (or none) apply again from the next query.".into()
+        }
     };
     (recent_queries, impact)
 }
@@ -2767,8 +2806,8 @@ fn plan_managed(
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
-    if w.kind == ManagedKind::RateLimit {
-        return plan_ratelimit(src, state, w);
+    if matches!(w.kind, ManagedKind::RateLimit | ManagedKind::Exclusions) {
+        return plan_singleton(src, state, w);
     }
     if matches!(
         w.kind,
@@ -2907,44 +2946,90 @@ fn plan_managed(
     })
 }
 
-/// What a rate-limit write does: the section before and after, what to store (`None` deletes),
-/// and the merged configuration.
+/// What a write to a one-of section does: the section before and after, what to store (`None`
+/// deletes), and the merged configuration.
 #[derive(Debug)]
-struct RateLimitChange {
+struct SingletonChange {
     before: serde_json::Value,
     after: serde_json::Value,
     body: Option<String>,
     merged: telltale_config::Config,
 }
 
-/// REQ: DNS-014 (review 01 q1) — a change to the rate limit: `PUT` (`body` set) stores a whole
-/// `[ratelimit]` section (fields left out take the defaults), `DELETE` removes it so the files'
-/// applies again. The merged configuration must validate.
-fn ratelimit_change(
+/// The section a one-of kind replaces, as JSON.
+fn singleton_section(kind: ManagedKind, cfg: &telltale_config::Config) -> serde_json::Value {
+    if kind == ManagedKind::Exclusions {
+        serde_json::to_value(&cfg.exclusions)
+    } else {
+        serde_json::to_value(&cfg.ratelimit)
+    }
+    .unwrap_or_default()
+}
+
+/// What a one-of kind is called in messages.
+fn singleton_noun(kind: ManagedKind) -> &'static str {
+    if kind == ManagedKind::Exclusions {
+        "exclusions"
+    } else {
+        "rate limit"
+    }
+}
+
+/// Parses and stores `v` as the kind's section; returns it as stored.
+fn singleton_store(
+    kind: ManagedKind,
+    entries: &mut crate::managed::Entries,
+    v: &serde_json::Value,
+) -> Result<String, Problem> {
+    let bad = |e: serde_json::Error| Problem::new(Code::InvalidConfig, format!("{e}"));
+    Ok(if kind == ManagedKind::Exclusions {
+        let x: telltale_config::ExclusionsConfig =
+            serde_json::from_value(v.clone()).map_err(bad)?;
+        let text = serde_json::to_string(&x).unwrap_or_default();
+        entries.exclusions = Some(x);
+        text
+    } else {
+        let r: telltale_config::RateLimitConfig = serde_json::from_value(v.clone()).map_err(bad)?;
+        let text = serde_json::to_string(&r).unwrap_or_default();
+        entries.ratelimit = Some(r);
+        text
+    })
+}
+
+/// REQ: DNS-014 (review 01 q1), OBS-022 (T12.1) — a change to a one-of section (the rate limit,
+/// the exclusions): `PUT` (`body` set) stores a whole section (fields left out take the
+/// defaults), `DELETE` removes it so the files' applies again. The merged configuration must
+/// validate.
+fn singleton_change(
+    kind: ManagedKind,
     file: &telltale_config::Config,
     entries: &mut crate::managed::Entries,
     body: Option<&serde_json::Value>,
-) -> Result<RateLimitChange, Problem> {
+) -> Result<SingletonChange, Problem> {
     let before_cfg = crate::managed::merge(file, entries).unwrap_or_else(|_| file.clone());
-    let before = serde_json::to_value(&before_cfg.ratelimit).unwrap_or_default();
+    let before = singleton_section(kind, &before_cfg);
     let stored = if let Some(v) = body {
-        let r: telltale_config::RateLimitConfig = serde_json::from_value(v.clone())
-            .map_err(|e| Problem::new(Code::InvalidConfig, format!("{e}")))?;
-        let text = serde_json::to_string(&r).unwrap_or_default();
-        entries.ratelimit = Some(r);
-        Some(text)
+        Some(singleton_store(kind, entries, v)?)
     } else {
-        if entries.ratelimit.take().is_none() {
-            return Err(Problem::not_found(
-                "the rate limit wasn't changed through the API or UI: the config file's is in effect",
-            ));
+        let exclusions = kind == ManagedKind::Exclusions;
+        let had = if exclusions {
+            entries.exclusions.take().is_some()
+        } else {
+            entries.ratelimit.take().is_some()
+        };
+        if !had {
+            return Err(Problem::not_found(if exclusions {
+                "the exclusions weren't changed through the API or UI: the config file's are in effect"
+            } else {
+                "the rate limit wasn't changed through the API or UI: the config file's is in effect"
+            }));
         }
         None
     };
     let merged = crate::managed::merge(file, entries)
         .map_err(|errs| Problem::new(Code::InvalidConfig, errs.join("; ")))?;
-    let after = serde_json::to_value(&merged.ratelimit).unwrap_or_default();
-    Ok(RateLimitChange {
+    let after = singleton_section(kind, &merged);
+    Ok(SingletonChange {
         before,
         after,
         body: stored,
@@ -2952,20 +3037,21 @@ fn ratelimit_change(
     })
 }
 
-/// REQ: DNS-014 (review 01 q1) — plans a write to the rate limit (see [`ratelimit_change`]).
-fn plan_ratelimit(
+/// REQ: DNS-014, OBS-022 — plans a write to a one-of section (see [`singleton_change`]).
+fn plan_singleton(
     src: &Sources,
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
     if w.name.trim() != "default" {
-        return Err(Problem::not_found(
-            "there is one rate limit, named `default`",
-        ));
+        return Err(Problem::not_found(format!(
+            "there is one {}, named `default`",
+            singleton_noun(w.kind)
+        )));
     }
     let file = src.file_config.load_full();
     let mut entries = crate::managed::entries(state);
-    let change = ratelimit_change(&file, &mut entries, w.body.as_ref())?;
+    let change = singleton_change(w.kind, &file, &mut entries, w.body.as_ref())?;
     let warnings = telltale_config::validate_config(&change.merged).unwrap_or_default();
     let (recent_queries, impact) = managed_impact(src, w.kind, "default", change.body.is_some());
     Ok(ManagedPlan {
@@ -3164,6 +3250,7 @@ fn with_group_config(mut info: GroupInfo, cfg: &telltale_config::Config) -> Grou
             .collect();
         info.dns64 = c.dns64;
         info.dns64_prefix = c.dns64_prefix.as_ref().map(ToString::to_string);
+        info.filter_aaaa = c.filter_aaaa;
         info.upstreams = c.upstreams.as_ref().map(ToString::to_string);
     }
     info
@@ -3568,19 +3655,25 @@ impl ApiBackend {
 
 /// REQ: API-002 (T7.5, ADR-069) — the configuration TOML that makes an API change permanent in
 /// Git: the section(s) to add (from what the request set), or which block to remove.
-/// REQ: DNS-014 — `[ratelimit]` is one table, not an array of them, and there is nothing to
-/// remove: a revert just makes the configuration's own apply again.
-fn ratelimit_in_git(head: &str, set: bool, after: Option<&serde_json::Value>) -> String {
+/// REQ: DNS-014, OBS-022 — `[ratelimit]` and `[exclusions]` are one table each, not arrays, and
+/// there is nothing to remove: a revert just makes the configuration's own apply again.
+fn singleton_in_git(
+    head: &str,
+    section: &str,
+    set: bool,
+    after: Option<&serde_json::Value>,
+) -> String {
     match after {
         Some(a) if set => {
             let mut root = toml::Table::new();
             if let Ok(toml::Value::Table(t)) = toml::Value::try_from(a) {
-                root.insert("ratelimit".to_owned(), toml::Value::Table(t));
+                root.insert(section.to_owned(), toml::Value::Table(t));
             }
             format!("{head}{}", toml::to_string(&root).unwrap_or_default())
         }
-        _ => "# Nothing to change in Git: the configuration's own [ratelimit] applies again.\n"
-            .to_owned(),
+        _ => format!(
+            "# Nothing to change in Git: the configuration's own [{section}] applies again.\n"
+        ),
     }
 }
 
@@ -3603,10 +3696,11 @@ fn keep_in_git(
         ManagedKind::AlertRule => "alerts.rule",
         ManagedKind::Schedule => "schedule",
         ManagedKind::RateLimit => "ratelimit",
+        ManagedKind::Exclusions => "exclusions",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
-    if kind == ManagedKind::RateLimit {
-        return ratelimit_in_git(head, body.is_some(), after);
+    if matches!(kind, ManagedKind::RateLimit | ManagedKind::Exclusions) {
+        return singleton_in_git(head, section, body.is_some(), after);
     }
     let Some(body) = body else {
         return if after.is_some() {
@@ -3896,6 +3990,53 @@ upstreams = "family"
 }
 
 #[cfg(test)]
+mod stale_tests {
+    use super::*;
+
+    /// REQ: OBS-023 (T12.3) — an enabled URL list unchanged for its limit (the list's, else
+    /// `[filter]`'s) is stale by whole days; 0 turns it off; files, inline rules, disabled
+    /// lists, and lists never downloaded aren't.
+    #[test]
+    fn obs_023_stale_days() {
+        let now = crate::pipeline::unix_now();
+        let filter = telltale_config::FilterConfig::default();
+        let list = |url: bool, own: Option<u32>| telltale_config::FilterList {
+            name: telltale_config::SafeString::new("x".to_owned()).unwrap(),
+            url: url.then(|| {
+                telltale_config::SafeString::new("https://l.example/x".to_owned()).unwrap()
+            }),
+            path: None,
+            rules: Vec::new(),
+            kind: telltale_config::ListKind::Block,
+            match_mode: telltale_config::ListMatch::Subtree,
+            enabled: true,
+            mode: telltale_config::ListMode::Enforce,
+            refresh_secs: None,
+            max_bytes: None,
+            stale_after_days: own,
+        };
+        let days = |d: u64| Some(now - d * 86_400 - 60);
+        assert_eq!(stale_days(&filter, &list(true, None), days(31)), Some(31));
+        assert_eq!(stale_days(&filter, &list(true, None), days(29)), None);
+        assert_eq!(stale_days(&filter, &list(true, Some(7)), days(8)), Some(8));
+        assert_eq!(stale_days(&filter, &list(true, Some(0)), days(400)), None);
+        assert_eq!(
+            stale_days(&filter, &list(false, None), days(400)),
+            None,
+            "not a URL list"
+        );
+        assert_eq!(
+            stale_days(&filter, &list(true, None), None),
+            None,
+            "never downloaded"
+        );
+        let mut off = list(true, None);
+        off.enabled = false;
+        assert_eq!(stale_days(&filter, &off, days(400)), None);
+    }
+}
+
+#[cfg(test)]
 mod ratelimit_tests {
     use super::*;
 
@@ -3917,10 +4058,11 @@ mod ratelimit_tests {
         let f = file("[ratelimit]\nqueries = 100\nwindow_secs = 30\n");
         let mut entries = crate::managed::Entries::default();
 
-        let err = ratelimit_change(&f, &mut entries, None).unwrap_err();
+        let err = singleton_change(ManagedKind::RateLimit, &f, &mut entries, None).unwrap_err();
         assert_eq!(err.status, 404, "nothing stored yet");
 
-        let put = ratelimit_change(
+        let put = singleton_change(
+            ManagedKind::RateLimit,
             &f,
             &mut entries,
             Some(&serde_json::json!({ "queries": 5000, "action": "drop" })),
@@ -3938,7 +4080,7 @@ mod ratelimit_tests {
         assert_eq!(stored.queries, 5000);
         assert!(entries.ratelimit.is_some());
 
-        let back = ratelimit_change(&f, &mut entries, None).unwrap();
+        let back = singleton_change(ManagedKind::RateLimit, &f, &mut entries, None).unwrap();
         assert!(back.body.is_none(), "deleting stores nothing");
         assert_eq!(back.before["queries"], 5000);
         assert_eq!(
@@ -3954,22 +4096,29 @@ mod ratelimit_tests {
     fn dns_014_rate_limit_is_validated() {
         let f = file("");
         let mut entries = crate::managed::Entries::default();
-        let bad = ratelimit_change(
+        let bad = singleton_change(
+            ManagedKind::RateLimit,
             &f,
             &mut entries,
             Some(&serde_json::json!({ "ipv4_prefix": 33 })),
         )
         .unwrap_err();
         assert!(bad.detail.contains("ipv4_prefix"), "{}", bad.detail);
-        let zero = ratelimit_change(
+        let zero = singleton_change(
+            ManagedKind::RateLimit,
             &f,
             &mut entries,
             Some(&serde_json::json!({ "enabled": true, "queries": 0 })),
         )
         .unwrap_err();
         assert!(zero.detail.contains("queries"), "{}", zero.detail);
-        let typo = ratelimit_change(&f, &mut entries, Some(&serde_json::json!({ "querys": 5 })))
-            .unwrap_err();
+        let typo = singleton_change(
+            ManagedKind::RateLimit,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "querys": 5 })),
+        )
+        .unwrap_err();
         assert!(typo.detail.contains("querys"), "{}", typo.detail);
     }
 
@@ -3987,5 +4136,68 @@ mod ratelimit_tests {
         assert_eq!(parsed["ratelimit"]["queries"].as_integer(), Some(5000));
         let gone = keep_in_git(ManagedKind::RateLimit, "default", None, Some(&after));
         assert!(gone.contains("Nothing to change in Git"), "{gone}");
+    }
+
+    /// REQ: OBS-022 (T12.1) — the exclusions are set and reverted like the rate limit: the
+    /// toggle and both lists, validated (a bad name or client is refused), and kept in Git as
+    /// one `[exclusions]` table; the exclusions the aggregator gets follow the toggle.
+    #[test]
+    fn obs_022_exclusions_override_toggle_and_revert() {
+        let f = file("[exclusions]\nnames = [\"ntp.org\"]\n");
+        let mut entries = crate::managed::Entries::default();
+        assert_eq!(
+            singleton_change(ManagedKind::Exclusions, &f, &mut entries, None)
+                .unwrap_err()
+                .status,
+            404
+        );
+        let put = singleton_change(
+            ManagedKind::Exclusions,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({
+                "names": ["connectivitycheck.gstatic.com", "*.ntp.org"],
+                "clients": ["192.168.1.10", "10.20.0.0/24"]
+            })),
+        )
+        .unwrap();
+        assert_eq!(put.before["names"], serde_json::json!(["ntp.org"]));
+        assert_eq!(put.merged.exclusions.clients.len(), 2);
+        assert!(crate::server::exclusions(&put.merged).is_some());
+        let off = singleton_change(
+            ManagedKind::Exclusions,
+            &f,
+            &mut entries,
+            Some(&serde_json::json!({ "enabled": false, "names": ["ntp.org"] })),
+        )
+        .unwrap();
+        assert!(!off.merged.exclusions.enabled);
+        assert!(
+            crate::server::exclusions(&off.merged).is_none(),
+            "off: nothing excluded, lists kept"
+        );
+        for bad in [
+            serde_json::json!({ "names": ["not a name"] }),
+            serde_json::json!({ "clients": ["300.1.1.1"] }),
+        ] {
+            assert!(
+                singleton_change(ManagedKind::Exclusions, &f, &mut entries, Some(&bad)).is_err(),
+                "{bad}"
+            );
+        }
+        let back = singleton_change(ManagedKind::Exclusions, &f, &mut entries, None).unwrap();
+        assert_eq!(back.after["names"], serde_json::json!(["ntp.org"]));
+        let after = serde_json::json!({ "enabled": true, "names": ["ntp.org"], "clients": [] });
+        let toml = keep_in_git(
+            ManagedKind::Exclusions,
+            "default",
+            Some(&after),
+            Some(&after),
+        );
+        let parsed: toml::Table = toml::from_str(&toml).unwrap();
+        assert_eq!(
+            parsed["exclusions"]["names"].as_array().map(Vec::len),
+            Some(1)
+        );
     }
 }

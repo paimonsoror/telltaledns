@@ -248,6 +248,15 @@ pub(crate) fn explain(
     {
         return Ok(e);
     }
+    // REQ: FLT-016 (T12.5) — no IPv6 addresses for the group: after blocking, before rewrites.
+    if q.qtype == telltale_proto::rtype::AAAA && group.filter_aaaa {
+        e.outcome = Outcome::Special;
+        e.summary = format!(
+            "group {} gets no IPv6 addresses (filter_aaaa): answered NOERROR with no records",
+            group.name
+        );
+        return Ok(e);
+    }
     // The group's rewrites and safe search come after the filter (blocks above win).
     if rewrite_step(&mut e, &q, group) {
         return Ok(e);

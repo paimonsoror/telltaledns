@@ -158,6 +158,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 ManagedKind::AlertRule => "alert_rule",
                 ManagedKind::Schedule => "schedule",
                 ManagedKind::RateLimit => "ratelimit",
+                ManagedKind::Exclusions => "exclusions",
             };
             let deleting = body.is_none();
             let r = local

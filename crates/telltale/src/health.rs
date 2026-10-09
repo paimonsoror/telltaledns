@@ -174,6 +174,21 @@ pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
                 "#/lists",
             ));
         }
+        // REQ: OBS-023 (T12.3) — downloads fine, but its content stopped changing.
+        if list.enabled
+            && list.error.is_none()
+            && let Some(days) = list.stale_days
+        {
+            out.push(reason(
+                DEGRADED,
+                "list_stale",
+                format!(
+                    "list {} hasn't changed in {days} days: its source may be abandoned",
+                    list.name
+                ),
+                "#/lists",
+            ));
+        }
     }
     if let Some(d) = l.disk_used_percent.filter(|d| *d > DISK_FULL) {
         out.push(reason(
@@ -550,10 +565,11 @@ mod tests {
         assert_eq!(summarize(r, vec![], String::new()).level, "degraded");
     }
 
-    // REQ: OBS-015 — failing lists and a full disk degrade; severe reasons sort first.
+    // REQ: OBS-015, OBS-023 — failing and stale lists and a full disk degrade; severe reasons
+    // sort first.
     #[test]
     fn obs_015_lists_disk_and_order() {
-        let lists = [ListInfo {
+        let failing = ListInfo {
             name: "hagezi".into(),
             kind: "block".into(),
             enabled: true,
@@ -570,7 +586,16 @@ mod tests {
             overlap: Vec::new(),
             last_checked_unix_seconds: None,
             last_changed_unix_seconds: None,
-        }];
+            stale_days: None,
+        };
+        let stale = ListInfo {
+            name: "old".into(),
+            state: "ok".into(),
+            error: None,
+            stale_days: Some(45),
+            ..failing.clone()
+        };
+        let lists = [failing, stale];
         let ups = [up("quad9", &["default"], "open")];
         let recent = [minute(100, 0, 40)];
         let mut l = local(&ups, &recent);
@@ -588,6 +613,14 @@ mod tests {
             h.reasons
                 .iter()
                 .any(|r| r.code == "list_failing" && r.level == "degraded")
+        );
+        assert!(
+            h.reasons
+                .iter()
+                .any(|r| r.code == "list_stale"
+                    && r.summary.contains("old hasn't changed in 45 days")),
+            "{:?}",
+            h.reasons
         );
         assert!(h.reasons.iter().any(|r| r.code == "disk_full"));
     }

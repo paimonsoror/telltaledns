@@ -43,6 +43,16 @@
       "diagram": "rfc8914"
     },
     {
+      "rfc": "5001",
+      "title": "DNS Name Server Identifier (NSID) option",
+      "status": "supported",
+      "reqs": [
+        "DNS-021"
+      ],
+      "summary": "Off by default. Turned on, a query that asks for NSID learns which node or pod answered, handy behind a load balancer or a shared address; nobody else's answers change.",
+      "diagram": "rfc5001"
+    },
+    {
       "rfc": "8482",
       "title": "Minimal responses to ANY queries",
       "status": "supported",

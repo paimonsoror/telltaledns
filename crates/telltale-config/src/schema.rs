@@ -61,6 +61,9 @@ pub struct Config {
     pub access: AccessConfig,
     /// Per-client query rate limits (DNS-014).
     pub ratelimit: RateLimitConfig,
+    /// REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics.
+    #[serde(skip_serializing_if = "ExclusionsConfig::is_default")]
+    pub exclusions: ExclusionsConfig,
     /// REQ: DNS-005 — settings of the DNS answers themselves.
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
@@ -123,6 +126,7 @@ impl Default for Config {
             filter: FilterConfig::default(),
             access: AccessConfig::default(),
             ratelimit: RateLimitConfig::default(),
+            exclusions: ExclusionsConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
@@ -699,6 +703,11 @@ pub struct GroupConfig {
     /// networks are never made into AAAA. `::ffff:0:0/96` is always excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dns64_exclude: Vec<Cidr>,
+    /// REQ: FLT-016 (T12.5) — answer AAAA questions with no data, so the group's devices use
+    /// IPv4 (a network with broken IPv6). Local records and zones still answer; names blocked
+    /// stay blocked. Not with `dns64`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub filter_aaaa: bool,
     /// REQ: UPS-007 (T9.25) — the `[[upstream_group]]` this group's queries go to (instead of
     /// `default`). A `[[route]]` for a domain, or one that names the group, still wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -943,6 +952,9 @@ pub enum AlertWhen {
     NodeDown,
     /// A list fails to download (one alert per list).
     ListFailing,
+    /// REQ: OBS-023 (T12.3) — a URL list's content hasn't changed in `[filter]
+    /// stale_after_days` (one alert per list).
+    ListStale,
     /// A device anomaly was found (OBS-013; one alert per finding).
     Anomaly,
     /// SERVFAIL above `threshold` percent of queries over the last 5 minutes (at least 50).
@@ -1171,6 +1183,10 @@ pub struct FilterList {
     /// Overrides `[filter] max_list_bytes` for this list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<ByteSize>,
+    /// REQ: OBS-023 (T12.3) — overrides `[filter] stale_after_days` for this list (0: never
+    /// stale, for a list that rarely changes on purpose).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after_days: Option<u32>,
 }
 
 const fn default_true() -> bool {
@@ -1234,6 +1250,10 @@ pub struct FilterConfig {
     /// a power cut can't leave a snapshot whose files are short. Costs a few hundred
     /// milliseconds per large compile on an SD card, off the query path.
     pub fsync: bool,
+    /// REQ: OBS-023 (T12.3) — a URL list whose content hasn't changed in this many days is
+    /// "stale": its source may be abandoned while still answering (health reason `list_stale`,
+    /// alert rule `list_stale`). 0 = never. Per list: `stale_after_days`.
+    pub stale_after_days: u32,
 }
 
 impl Default for FilterConfig {
@@ -1250,6 +1270,7 @@ impl Default for FilterConfig {
             compile_threads: 0,
             compile_memory: ByteSize::mib(128),
             fsync: true,
+            stale_after_days: 30,
         }
     }
 }
@@ -1291,11 +1312,18 @@ pub struct DnsConfig {
     /// 1232 (the DNS Flag Day 2020 value) avoids IP fragmentation on almost every path; raise
     /// it on a network known to carry larger datagrams. Needs a restart.
     pub edns_payload: u16,
+    /// REQ: DNS-021 (T12.4) — answer the NSID option (RFC 5001) with this node's name, so
+    /// `dig +nsid` says which node or pod answered (behind a shared address, say). Only for
+    /// queries that ask for it.
+    pub nsid: bool,
 }
 
 impl Default for DnsConfig {
     fn default() -> Self {
-        Self { edns_payload: 1232 }
+        Self {
+            edns_payload: 1232,
+            nsid: false,
+        }
     }
 }
 
@@ -1339,6 +1367,43 @@ impl Default for RateLimitConfig {
             ipv4_prefix: 32,
             ipv6_prefix: 64,
         }
+    }
+}
+
+/// REQ: OBS-022 (T12.1, ADR-111) — queries left out of the query log, the live view, the
+/// analytics (dashboard, top lists, anomalies), and every export: noise like connectivity checks,
+/// time servers, or a monitoring probe. They're still answered normally, and still counted in
+/// `/metrics`. Shared by the whole cluster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ExclusionsConfig {
+    /// Turns the exclusions on or off without losing the lists.
+    pub enabled: bool,
+    /// Names left out, each with its subdomains (`ntp.org` covers `pool.ntp.org`; a leading
+    /// `*.` means the same).
+    pub names: Vec<SafeString>,
+    /// Devices left out: addresses or networks.
+    pub clients: Vec<Cidr>,
+}
+
+impl Default for ExclusionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            names: Vec::new(),
+            clients: Vec::new(),
+        }
+    }
+}
+
+impl ExclusionsConfig {
+    /// Whether this is the default (left out when the configuration is written back).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+    /// Whether anything is excluded at all.
+    pub fn active(&self) -> bool {
+        self.enabled && !(self.names.is_empty() && self.clients.is_empty())
     }
 }
 

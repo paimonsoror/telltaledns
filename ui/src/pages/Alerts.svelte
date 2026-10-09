@@ -39,7 +39,7 @@
     { key: 'tls_ca', label: 'Private CA (email)', type: 'text', placeholder: '/etc/telltale/mail-ca.pem', advanced: true },
   ];
   const conditions = [
-    'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'servfail_rate', 'anomaly', 'new_device',
+    'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
     'disk_full', 'plan_pending', 'update_available',
   ];
   const ruleFields = $derived<Field[]>([

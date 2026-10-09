@@ -1023,7 +1023,48 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
+    "description": "Plans a change (nothing changes until apply_plan). Changes which names and devices are kept out of the query log, the live view, the dashboard and top lists, anomalies, and exports (noise like connectivity checks or a monitoring probe). Their queries are still answered and still counted in /metrics. `names` covers each name and its subdomains; `clients` takes addresses or networks; both replace the current lists. `enabled` turns the exclusions off without losing the lists. Fields left out keep their current values. Applies to every node from the next query. Needs config:write:exclusions (and config:read to read the current ones).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "clients": {
+          "description": "Addresses or networks kept out (replaces the current list).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "description": "Turn the exclusions on or off (the lists are kept).",
+          "type": "boolean"
+        },
+        "names": {
+          "description": "Names kept out, each with its subdomains (replaces the current list).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_set_exclusions"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). Changes a group (or makes a new one): its networks, which lists apply, how blocked names are answered, its priority, its schedules, whether it gets IPv6 addresses. Fields left out keep their current values. Needs config:write:groups (and config:read to read the current group).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1037,6 +1078,10 @@
             "custom_ip"
           ],
           "type": "string"
+        },
+        "filterAaaa": {
+          "description": "No IPv6 addresses: AAAA questions get no data, so the group's devices use IPv4 (a network with broken IPv6). Not with DNS64.",
+          "type": "boolean"
         },
         "lists": {
           "description": "List names that apply (default: every enabled list).",

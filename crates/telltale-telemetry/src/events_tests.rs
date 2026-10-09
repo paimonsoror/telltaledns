@@ -545,3 +545,40 @@ fn obs_017_trace_ids_carry_time_and_a_keyed_hash() {
         assert_eq!(event::parse_trace(bad), None, "{bad}");
     }
 }
+
+/// REQ: OBS-022 (T12.1) — excluded names and devices never reach the analytics (counted as
+/// excluded); everything else does; clearing the exclusions lets them in again.
+#[test]
+fn obs_022_excluded_queries_stay_out_of_the_analytics() {
+    let hub = Hub::new(1 << 16);
+    let ts = 1_700_000_000_000_000;
+    hub.set_exclusions(Some(crate::exclude::Exclusions::new(
+        [wire("ntp.org")],
+        &[("10.0.0.9".parse().unwrap(), 32)],
+    )));
+    for (ip, name) in [
+        (ipv4(192, 168, 1, 5), "pool.ntp.org"),
+        (ipv4(10, 0, 0, 9), "shop.example"),
+        (ipv4(192, 168, 1, 5), "shop.example"),
+    ] {
+        hub.emit_query(&query(ts, ip, Status::Forwarded, 20), &wire(name));
+    }
+    let mut drainer = hub.drainer();
+    hub.drain_once(&mut drainer);
+    let total = |hub: &Hub| -> u32 {
+        hub.aggregates()
+            .series(Resolution::Second, 0, u64::MAX)
+            .iter()
+            .map(|(_, c)| c.total)
+            .sum()
+    };
+    assert_eq!(total(&hub), 1, "only shop.example from 192.168.1.5");
+    assert_eq!(hub.excluded_total(), 2);
+    hub.set_exclusions(None);
+    hub.emit_query(
+        &query(ts, ipv4(10, 0, 0, 9), Status::Forwarded, 20),
+        &wire("pool.ntp.org"),
+    );
+    hub.drain_once(&mut drainer);
+    assert_eq!(total(&hub), 2);
+}

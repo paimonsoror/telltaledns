@@ -62,13 +62,15 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[route]]` | conditional forwarding by domain suffix, client group, or query type | `spec/04` §1 |
 | `[[record]]` | local records (A, AAAA, CNAME, PTR, TXT, MX, SRV; `*.` wildcards) | `docs/running.md` |
 | `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
-| `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), `mode` (`enforce`/`shadow`: counted, never blocks), per-list refresh and size limit | `docs/running.md` |
-| `[[group]]` | client groups: which lists apply, priority | `docs/running.md` |
+| `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), `mode` (`enforce`/`shadow`: counted, never blocks), per-list refresh, size limit, and `stale_after_days` | `docs/running.md` |
+| `[[group]]` | client groups: which lists apply, priority, answer filtering, DNS64, `filter_aaaa` (no IPv6 addresses) | `docs/running.md`, FLT-016 |
 | `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`), groups | `docs/running.md` |
 | `[clients]` | neighbor table on/off and refresh interval; which forwarders' EDNS MAC to trust; `infrastructure` networks for the masked-client-IP check | FLT-006, OPS-003 |
-| `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory | `spec/05` §3.4 |
+| `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory; `stale_after_days` (when an unchanged URL list counts as stale) | `spec/05` §3.4, OBS-023 |
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
+| `[exclusions]` | names and devices kept out of the query log, analytics, and exports (still answered and counted in metrics), with an on/off toggle; also in Settings → System | OBS-022 |
+| `[dns]` | the advertised EDNS UDP size; `nsid` (answer RFC 5001 NSID with this node's name) | DNS-005, DNS-021 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint (`[telemetry.metrics]`, with `exemplars` for OpenMetrics), OTLP export of metrics and traces (`[telemetry.otlp]`: `traces_sample_every`, `traces_slow_ms`), device anomaly detection (`[telemetry.anomaly]`) | `spec/06`, OBS-013, OBS-017 |
