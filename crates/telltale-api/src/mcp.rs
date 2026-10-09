@@ -297,6 +297,13 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
+        // REQ: OBS-020 (ADR-107)
+        Tool {
+            name: "probe_status",
+            description: "Read-only. Can clients actually reach DNS? Every node asks each of its own listeners a question through the listener's protocol (UDP, TCP, DoT, DoH, DoH3, DoQ), plus any extra targets such as a load balancer's address: per probe, whether the last one answered, how long it took, the error, failures in a row, and for TLS listeners the certificate's expiry (days left). Use it when devices say DNS is down but the server looks fine.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("probes".into(), "/api/v1/system/probes".into())]),
+        },
         // REQ: OBS-021 (ADR-106)
         Tool {
             name: "cache_advice",

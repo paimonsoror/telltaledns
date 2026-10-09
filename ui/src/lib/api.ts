@@ -147,6 +147,8 @@ export const api = {
   unacknowledgeAnomalies: (ids: string[]) => post<S['AnomalyAckResult']>('/analytics/anomalies/unacknowledge', { ids }),
   // REQ: OBS-015 — healthy, degraded, or severe, and why.
   health: () => get<S['Health']>('/system/health'),
+  // REQ: OBS-020 — the synthetic probes of every node's listeners.
+  probes: () => get<S['Items_ProbeResult']>('/system/probes'),
   // REQ: OBS-009 (T7.14)
   newDomains: (since = '-24h', limit = 200) =>
     get<S['Items_NewDomain']>('/analytics/new-domains', { since, limit: String(limit) }),

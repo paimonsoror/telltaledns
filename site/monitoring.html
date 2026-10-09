@@ -35,6 +35,7 @@
     <div class="card"><h3>Live view</h3><p>Questions as they happen, filtered on the server and rate-capped, across every node of a cluster, each row naming the node that answered.</p></div>
     <div class="card"><h3>Latency, honestly</h3><p>Percentiles per answer path, query type, upstream, and device. In a cluster they're computed from every node's merged histograms, so a slow node shows up in the p99 instead of being averaged away.</p></div>
     <div class="card"><h3>Analytics in one line</h3><p><code>from -7d | where group = kids and status = blocked | top 10 domain</code>: <a href="agents.html#vqlog">vqlog</a> answers questions no dashboard has a tile for, with its cost shown up front.</p></div>
+    <div class="card"><h3>Asked like a device would</h3><p>Every node asks each of its listeners a question over UDP, TCP, DoT, DoH, or DoQ every 30 seconds, plus any address you add (a load balancer in front), and watches each certificate's expiry. A listener that stops answering, or a certificate about to lapse, shows on the health icon and can alert.</p></div>
     <div class="card"><h3>Is the cache big enough?</h3><p>Each node estimates what a cache 25%, 50%, or 100% larger would have answered from memory, from a small sample of names asked again after they were evicted, and says whether to grow it, shrink it, or leave it.</p></div>
     <div class="card"><h3>The machine too</h3><p>Memory, CPU, disk, and temperature for every node, with the last hour of history and warnings, on the Cluster page and in metrics.</p></div>
     <div class="card"><h3>Health at a glance</h3><p>One icon in the menu for the whole cluster: healthy, degraded (an upstream or node down, a device rate-limited, a list failing), or severe (no upstream in a group answering, DNS not served). Click it for the reasons and where to look; the same answer is in the API and for AI agents.</p></div>
@@ -67,6 +68,7 @@
           <tr><th scope="row"><code>list_failing</code></th><td>a blocklist stops updating</td></tr>
           <tr><th scope="row"><code>servfail_rate</code></th><td>failures climb above a share of queries</td></tr>
           <tr><th scope="row"><code>slo_burn</code></th><td>an objective spends its monthly error budget too fast</td></tr>
+          <tr><th scope="row"><code>probe_failing</code>, <code>cert_expiring</code></th><td>a listener stops answering its own check, or its certificate is about to expire</td></tr>
           <tr><th scope="row"><code>anomaly</code>, <code>new_device</code></th><td>a device behaves oddly, or a device appears for the first time</td></tr>
           <tr><th scope="row"><code>disk_full</code></th><td>a node's data disk fills up</td></tr>
           <tr><th scope="row"><code>plan_pending</code></th><td>an AI agent's change waits for your approval</td></tr>

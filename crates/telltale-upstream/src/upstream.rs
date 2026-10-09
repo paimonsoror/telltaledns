@@ -179,15 +179,17 @@ pub fn is_own_loop_tag(q: &telltale_proto::Query<'_>) -> bool {
 /// Builds the outbound query: fresh ID, RD=1, our own OPT (client EDNS options such as ECS,
 /// cookies, and MAC are never forwarded) with the loop tag, CD copied from the client.
 pub fn encode_query(q: &Question, id: u16, out: &mut [u8]) -> Option<usize> {
-    encode_query_with(q, id, out, &[])
+    encode_query_with(q, id, out, &[], true)
 }
 
-/// [`encode_query`] with `extra` EDNS options (already encoded) after the loop tag.
+/// [`encode_query`] with `extra` EDNS options (already encoded) after the loop tag; `tag`
+/// false leaves the loop tag out (a self-probe, T11.3).
 pub(crate) fn encode_query_with(
     q: &Question,
     id: u16,
     out: &mut [u8],
     extra: &[u8],
+    tag: bool,
 ) -> Option<usize> {
     let edns = EdnsOut {
         udp_payload: UPSTREAM_EDNS_PAYLOAD,
@@ -202,7 +204,7 @@ pub(crate) fn encode_query_with(
     // The OPT record is last with RDLENGTH 0 in its final two bytes: append the options.
     let rdlen_at = len - 2;
     let mut rdlen = 0u16;
-    if let Some(tag) = NODE_TAG.get() {
+    if let Some(tag) = NODE_TAG.get().filter(|_| tag) {
         let dst = out.get_mut(len..len + 12)?;
         dst[..2].copy_from_slice(&opt::TELLTALE_LOOP.to_be_bytes());
         dst[2..4].copy_from_slice(&8u16.to_be_bytes());
@@ -270,6 +272,7 @@ pub fn matches_query(resp: &[u8], query: &[u8], id: u16) -> bool {
 
 /// Per-upstream settings (from `[[upstream]]`).
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent settings, each from its own config key
 pub struct UpstreamOptions {
     pub timeout: Duration,
     pub weight: u32,
@@ -299,6 +302,10 @@ pub struct UpstreamOptions {
     pub plugin_dir: Option<std::path::PathBuf>,
     /// REQ: UPS-011 (T9.9) — DoH over GET (`?dns=`) instead of POST.
     pub doh_get: bool,
+    /// REQ: OBS-020 (T11.3) — TelltaleDNS asking its own listener (a synthetic probe): the
+    /// query carries no loop tag (the listener would drop it as a forwarding loop, `spec/04`
+    /// §7) and isn't copied to the exchange observer (dnstap's forwarder messages).
+    pub self_probe: bool,
 }
 
 impl Default for UpstreamOptions {
@@ -322,6 +329,7 @@ impl Default for UpstreamOptions {
             plugin_dir: None,
             tls: crate::tls::UpstreamTls::default(),
             doh_get: false,
+            self_probe: false,
         }
     }
 }
@@ -409,6 +417,8 @@ pub struct Upstream {
     ecs: Option<Vec<u8>>,
     /// REQ: DNS-015 (T9.9) — send the client's subnet (`ecs = "client"`).
     pub ecs_client: bool,
+    /// REQ: OBS-020 — see [`UpstreamOptions::self_probe`].
+    self_probe: bool,
 }
 
 /// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
@@ -683,6 +693,7 @@ impl Upstream {
             transport,
             ecs: opts.ecs.clone(),
             ecs_client: opts.ecs_client,
+            self_probe: opts.self_probe,
         })
     }
 
@@ -784,13 +795,14 @@ impl Upstream {
             .as_deref()
             .or(self.ecs.as_deref())
             .unwrap_or_default();
-        let len = encode_query_with(q, id, &mut buf, ecs).ok_or(ExchangeError::BadResponse)?;
+        let len = encode_query_with(q, id, &mut buf, ecs, !self.self_probe)
+            .ok_or(ExchangeError::BadResponse)?;
         let query = &buf[..len];
         // REQ: OBS-007 (T9.19) — dnstap's forwarder messages, when observed (not for our own
         // resolver, whose queries go to many servers).
         let observer = OBSERVER
             .get()
-            .filter(|_| !matches!(self.transport, Transport::Recursive(_)));
+            .filter(|_| !self.self_probe && !matches!(self.transport, Transport::Recursive(_)));
         let sent = observer.map(|_| std::time::SystemTime::now());
         let result = self.send(query, id, timeout).await;
         if let (Some(obs), Some(sent)) = (observer, sent) {
@@ -1001,7 +1013,7 @@ mod tests {
         };
         let mut buf = [0u8; 512];
         let ecs = ecs_option("203.0.113.0".parse().unwrap(), 24);
-        let len = encode_query_with(&q, 7, &mut buf, &ecs).unwrap();
+        let len = encode_query_with(&q, 7, &mut buf, &ecs, true).unwrap();
         let parsed = telltale_proto::parse_query(&buf[..len]).unwrap();
         let edns = parsed.edns.unwrap();
         assert_eq!(edns.client_subnet(), Some(&ecs[4..]));
@@ -1009,5 +1021,29 @@ mod tests {
         let len = encode_query(&q, 7, &mut buf).unwrap();
         let parsed = telltale_proto::parse_query(&buf[..len]).unwrap();
         assert!(parsed.edns.unwrap().client_subnet().is_none());
+    }
+
+    /// REQ: OBS-020 (T11.3) — a self-probe carries no loop tag, so this node's own listener
+    /// answers it instead of dropping it as a forwarding loop; ordinary queries carry it.
+    #[test]
+    fn obs_020_self_probes_carry_no_loop_tag() {
+        set_node_tag(0x5EED);
+        let q = Question {
+            name: telltale_proto::NameBuf::from_presentation("probe.telltale.invalid").unwrap(),
+            qtype: telltale_proto::rtype::A,
+            qclass: 1,
+            dnssec_ok: false,
+            checking_disabled: false,
+            client_subnet: 0,
+        };
+        let mut buf = [0u8; 512];
+        let len = encode_query_with(&q, 7, &mut buf, &[], true).unwrap();
+        assert!(is_own_loop_tag(
+            &telltale_proto::parse_query(&buf[..len]).unwrap()
+        ));
+        let len = encode_query_with(&q, 7, &mut buf, &[], false).unwrap();
+        assert!(!is_own_loop_tag(
+            &telltale_proto::parse_query(&buf[..len]).unwrap()
+        ));
     }
 }

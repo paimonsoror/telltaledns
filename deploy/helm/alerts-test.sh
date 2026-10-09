@@ -21,4 +21,9 @@ PY
 cp "$here/tests/alerts.test.yml" "$out/"
 chmod -R a+rX "$out"   # promtool runs as nobody in its image
 [ "${SHOW:-}" = 1 ] && cat "$out/rules.yml"
-docker run --rm -v "$out:/w" -w /w --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts.test.yml
+# A promtool on PATH (3.x) if there is one, else Prometheus's image.
+if command -v promtool >/dev/null; then
+  (cd "$out" && promtool test rules alerts.test.yml)
+else
+  docker run --rm -v "$out:/w" -w /w --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts.test.yml
+fi

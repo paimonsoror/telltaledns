@@ -114,6 +114,18 @@ pub struct UpstreamEvent {
     pub attempts: u8,
 }
 
+/// REQ: OBS-020 (T11.3) — the name TelltaleDNS's own listener probes ask (wire format,
+/// lowercase): under `.invalid` (RFC 6761), so it's answered NXDOMAIN without an upstream.
+pub const PROBE_NAME: &[u8] = b"\x05probe\x08telltale\x07invalid\x00";
+
+impl Record {
+    /// REQ: OBS-020 — one of TelltaleDNS's own listener probes: counted in the metrics like
+    /// any query, but kept out of the query log, analytics, and exports.
+    pub fn is_probe(&self) -> bool {
+        matches!(self, Self::Query(_, n) if n.as_wire() == PROBE_NAME)
+    }
+}
+
 /// A decoded record.
 // Decoded by value on the aggregator thread only; boxing the name would allocate per event.
 #[allow(clippy::large_enum_variant)]

@@ -103,6 +103,19 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: The cluster certificate on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days.
+        # REQ: OBS-020 (ADR-107) — the nodes' probes of their own listeners.
+        - alert: TelltaleDNSListenerNotAnswering
+          expr: telltale_probe_success{job="{{ include "telltale.fullname" . }}-metrics"} == 0
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} can't get an answer from {{ "{{" }} $labels.target {{ "}}" }} ({{ "{{" }} $labels.proto {{ "}}" }}) through its own probe; see Settings → System → Listener checks."
+        - alert: TelltaleDNSListenerCertExpiring
+          expr: telltale_listener_cert_expiry_timestamp_seconds{job="{{ include "telltale.fullname" . }}-metrics"} - time() < 14 * 86400
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "The certificate of {{ "{{" }} $labels.target {{ "}}" }} on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days; DoT/DoH/DoQ clients stop connecting when it does."
         # REQ: CLU-003 (ADR-049) — the Git configuration source.
         - alert: TelltaleDNSGitCommitRefused
           expr: telltale_cluster_git_refused{job="{{ include "telltale.fullname" . }}-metrics"} == 1

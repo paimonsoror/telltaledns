@@ -240,6 +240,16 @@
         "workers": 0
       }
     },
+    "probe": {
+      "description": "REQ: OBS-020 (T11.3) — synthetic probes: each DNS listener asked through its own\nprotocol on a schedule, plus extra targets; TLS certificate expiry.",
+      "$ref": "#/$defs/ProbeConfig",
+      "default": {
+        "cert_warn_days": 14,
+        "enabled": true,
+        "interval_secs": 30,
+        "timeout_ms": 2000
+      }
+    },
     "ratelimit": {
       "description": "Per-client query rate limits (DNS-014).",
       "$ref": "#/$defs/RateLimitConfig",
@@ -644,6 +654,16 @@
           "description": "REQ: OBS-016 (T11.1) — a service-level objective spends its error budget too fast:\n14.4 times the sustainable rate over the last hour and 5 minutes, or 6 times over 6\nhours and 30 minutes (one alert per objective; `[slo]`).",
           "type": "string",
           "const": "slo_burn"
+        },
+        {
+          "description": "REQ: OBS-020 (T11.3) — a listener or extra target hasn't answered its probe twice in a\nrow, on any node (one alert per node and target; `[probe]`).",
+          "type": "string",
+          "const": "probe_failing"
+        },
+        {
+          "description": "A DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on\nany node (one alert per node and listener).",
+          "type": "string",
+          "const": "cert_expiring"
         }
       ]
     },
@@ -2163,6 +2183,46 @@
           "type": "integer",
           "format": "uint32",
           "default": 60,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProbeConfig": {
+      "description": "REQ: OBS-020 (T11.3, ADR-107, `spec/06` §9) — synthetic probes: every `interval_secs`,\neach DNS listener is asked `probe.telltale.invalid` through its own protocol (UDP, TCP, DoT,\nDoH, DoH3, DoQ) from this node, and so is every extra target; each TLS listener's\ncertificate expiry is read from its file. Probes don't show in the query log or analytics.",
+      "type": "object",
+      "properties": {
+        "cert_warn_days": {
+          "description": "A listener certificate expiring within this many days degrades the health level.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 14,
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "interval_secs": {
+          "description": "Seconds between rounds (at least 5).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "targets": {
+          "description": "Extra addresses to probe, by IP: `udp://192.168.5.112:53` (a load balancer's address),\n`tcp://…`, `tls://…:853`, `https://…:443/dns-query`, `h3://…`, `quic://…:853`.\nCertificates aren't verified (the listeners' own expiry is checked from their files).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "timeout_ms": {
+          "description": "How long one probe may take, in milliseconds (100 to 10000).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 2000,
           "minimum": 0
         }
       },

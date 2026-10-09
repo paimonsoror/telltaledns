@@ -127,3 +127,30 @@ tests:
       - eval_time: 65m
         alertname: TelltaleDNSSLOAvailabilityBurnFast
         exp_alerts: []
+
+  # REQ: OBS-020 (T11.3) — a listener that stops answering its probe for 2 minutes fires; one
+  # that answers doesn't. A certificate 5 days from expiry fires after an hour.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_probe_success{job="telltale-metrics",instance="pi",target="tls://127.0.0.1:853",proto="dot"}'
+        values: "1x5 0x10"
+      - series: 'telltale_probe_success{job="telltale-metrics",instance="pi",target="udp://127.0.0.1:53",proto="udp"}'
+        values: "1x15"
+      - series: 'telltale_listener_cert_expiry_timestamp_seconds{job="telltale-metrics",instance="pi",target="tls://127.0.0.1:853",proto="dot"}'
+        values: "432000x90"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TelltaleDNSListenerNotAnswering
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TelltaleDNSListenerNotAnswering
+        exp_alerts:
+          - exp_labels: { severity: critical, job: telltale-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
+            exp_annotations:
+              summary: "pi can't get an answer from tls://127.0.0.1:853 (dot) through its own probe; see Settings → System → Listener checks."
+      - eval_time: 70m
+        alertname: TelltaleDNSListenerCertExpiring
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
+            exp_annotations:
+              summary: "The certificate of tls://127.0.0.1:853 on pi expires in under 14 days; DoT/DoH/DoQ clients stop connecting when it does."

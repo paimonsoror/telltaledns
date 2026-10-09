@@ -731,6 +731,69 @@ to = ["phone"]
     }
 }
 
+/// REQ: OBS-020 (T11.3) — probes: targets by IP with a scheme probes speak; a sane schedule;
+/// `cert_expiring` thresholds in days.
+#[test]
+fn obs_020_probes_are_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = r#"
+[probe]
+interval_secs = 60
+timeout_ms = 1500
+targets = ["udp://192.168.5.112:53", "https://[fd00::53]:443/dns-query"]
+cert_warn_days = 21
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"
+url = "https://ntfy.sh/my-dns"
+[[alerts.rule]]
+name = "certs"
+when = "cert_expiring"
+threshold = 30
+to = ["phone"]
+"#;
+    let cfg = load(ok).unwrap().config;
+    assert_eq!(cfg.probe.targets.len(), 2);
+    assert!(
+        telltale_config::Config::default().probe.enabled,
+        "on by default"
+    );
+    for (bad, why) in [
+        (
+            ok.replace("udp://192.168.5.112:53", "udp://dns.example:53"),
+            "an IP address and port",
+        ),
+        (
+            ok.replace("udp://192.168.5.112:53", "ftp://192.168.5.112:53"),
+            "the scheme is",
+        ),
+        (
+            ok.replace("udp://192.168.5.112:53", "udp://192.168.5.112:53/x"),
+            "take a path",
+        ),
+        (
+            ok.replace("interval_secs = 60", "interval_secs = 1"),
+            "at least 5 seconds",
+        ),
+        (
+            ok.replace("timeout_ms = 1500", "timeout_ms = 60000"),
+            "from 100 to 10000",
+        ),
+        (
+            ok.replace("threshold = 30", "threshold = 900"),
+            "days from 1 to 365",
+        ),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}
+
 /// REQ: OBS-010 (T7.13) — event sinks: each kind's required settings; known statuses.
 #[test]
 fn obs_010_sinks_are_validated() {

@@ -3932,6 +3932,28 @@
         }
       }
     },
+    "/api/v1/system/probes": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Synthetic probes of the DNS listeners.",
+        "description": "Every `[probe] interval_secs` (30), each node asks each of its own DNS listeners a question\n(`probe.telltale.invalid`, answered NXDOMAIN locally) through the listener's protocol (UDP,\nTCP, DoT, DoH, DoH3, DoQ), plus any extra `[probe] targets` (a load balancer's address). Per\nprobe: whether the last one answered, how long it took, the error, failures in a row, and for\nTLS listeners the certificate's expiry. Two failures in a row, or a certificate within\n`cert_warn_days`, degrade the health level (an expired one is severe). Every node, in a\ncluster; one that doesn't answer is in `missingNodes`.",
+        "operationId": "system_probes",
+        "responses": {
+          "200": {
+            "description": "Every probe, by node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ProbeResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/update-check": {
       "post": {
         "tags": [
@@ -9103,6 +9125,128 @@
           }
         }
       },
+      "Items_ProbeResult": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own\nprotocol, or an extra target, from one node, and the listener's certificate.",
+              "required": [
+                "target",
+                "proto",
+                "listener",
+                "ok",
+                "consecutiveFailures",
+                "checkedUnixSeconds"
+              ],
+              "properties": {
+                "certDaysLeft": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "certError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the certificate couldn't be read."
+                },
+                "certExpiresUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "A TLS listener's certificate: when it expires and the days left (negative: expired).",
+                  "minimum": 0
+                },
+                "checkedUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "consecutiveFailures": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Probes failed in a row (2 or more degrade the health level).",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why it failed."
+                },
+                "lastOkUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "When it last answered, and when it was last asked (Unix seconds).",
+                  "minimum": 0
+                },
+                "latencyMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double",
+                  "description": "How long it took."
+                },
+                "listener": {
+                  "type": "boolean",
+                  "description": "One of this node's listeners (else an extra `[probe] targets` entry)."
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node that probed (cluster nodes only)."
+                },
+                "ok": {
+                  "type": "boolean",
+                  "description": "The last probe got a well-formed answer (any response code)."
+                },
+                "proto": {
+                  "type": "string",
+                  "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`."
+                },
+                "skipped": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Not probed, and why (a listener that requires the PROXY protocol header)."
+                },
+                "target": {
+                  "type": "string",
+                  "description": "What was asked: `udp://127.0.0.1:53`, `https://127.0.0.1:443/dns-query`, ...",
+                  "example": "tls://127.0.0.1:853"
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
       "Items_RuleInfo": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -10274,6 +10418,109 @@
           "tool": {
             "type": "string",
             "description": "The MCP tool that made it, e.g. `plan_block_domain`."
+          }
+        }
+      },
+      "ProbeResult": {
+        "type": "object",
+        "description": "REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own\nprotocol, or an extra target, from one node, and the listener's certificate.",
+        "required": [
+          "target",
+          "proto",
+          "listener",
+          "ok",
+          "consecutiveFailures",
+          "checkedUnixSeconds"
+        ],
+        "properties": {
+          "certDaysLeft": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "certError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the certificate couldn't be read."
+          },
+          "certExpiresUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A TLS listener's certificate: when it expires and the days left (negative: expired).",
+            "minimum": 0
+          },
+          "checkedUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Probes failed in a row (2 or more degrade the health level).",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed."
+          },
+          "lastOkUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it last answered, and when it was last asked (Unix seconds).",
+            "minimum": 0
+          },
+          "latencyMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "How long it took."
+          },
+          "listener": {
+            "type": "boolean",
+            "description": "One of this node's listeners (else an extra `[probe] targets` entry)."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that probed (cluster nodes only)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "The last probe got a well-formed answer (any response code)."
+          },
+          "proto": {
+            "type": "string",
+            "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`."
+          },
+          "skipped": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Not probed, and why (a listener that requires the PROXY protocol header)."
+          },
+          "target": {
+            "type": "string",
+            "description": "What was asked: `udp://127.0.0.1:53`, `https://127.0.0.1:443/dns-query`, ...",
+            "example": "tls://127.0.0.1:853"
           }
         }
       },

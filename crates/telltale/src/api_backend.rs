@@ -1300,6 +1300,11 @@ impl Backend for ApiBackend {
     }
 
     // REQ: OBS-015 (ADR-104) — this node's own conditions.
+    // REQ: OBS-020 (ADR-107)
+    fn probes(&self) -> Vec<telltale_api::model::ProbeResult> {
+        self.src.probes.results()
+    }
+
     // REQ: OBS-016 (ADR-105)
     fn slo_settings(&self) -> telltale_api::slo::Settings {
         crate::health::slo_settings(&self.src.config.load())
@@ -1321,12 +1326,15 @@ impl Backend for ApiBackend {
                     }
                     _ => None,
                 });
+        let probes = self.src.probes.results();
         let mut reasons = crate::health::local_reasons(&crate::health::Local {
             serving: self.src.ready.load(std::sync::atomic::Ordering::Acquire),
             upstreams: &upstreams,
             recent: &recent,
             lists: lists.as_deref(),
             disk_used_percent,
+            probes: &probes,
+            cert_warn_days: self.src.config.load().probe.cert_warn_days,
         });
         // REQ: OBS-016 (ADR-105) — in a cluster the objectives cover every node, so the
         // federated health adds them once; a standalone node adds its own.

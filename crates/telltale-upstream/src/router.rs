@@ -247,6 +247,7 @@ fn upstream_tls(u: &telltale_config::Upstream) -> Result<crate::tls::UpstreamTls
 }
 
 /// Builds every `[[upstream]]`; problems are appended to `errors`.
+#[allow(clippy::too_many_lines)] // one line per upstream setting
 fn build_upstreams<'c>(
     cfg: &'c Config,
     tls: &TlsOptions,
@@ -349,6 +350,7 @@ fn build_upstreams<'c>(
                 ..telltale_recursor::Settings::default()
             }
             .with_ipv6(u.recursive.ipv6),
+            self_probe: false,
         };
         match Upstream::build(id, u.name.as_str(), ep, &opts, tls) {
             Ok(up) => {

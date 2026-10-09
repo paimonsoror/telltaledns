@@ -142,6 +142,7 @@ pub fn required(method: &Method, path: &str) -> Need {
             }
             "/api/v1/system/info"
             | "/api/v1/system/health"
+            | "/api/v1/system/probes"
             | "/api/v1/cluster"
             | "/api/v1/explain"
             | "/api/v1/cache/stats"

@@ -52,6 +52,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     schedules(cfg, &mut r);
     alerts(cfg, &mut r);
     slo(cfg, &mut r);
+    probes(cfg, &mut r);
     sinks(cfg, &mut r);
     routers(cfg, &mut r);
     rewrites(cfg, &mut r);
@@ -447,11 +448,62 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
                 );
             }
         }
-        if let Some(t) = x.threshold
+        if x.when == crate::schema::AlertWhen::CertExpiring {
+            // REQ: OBS-020 (T11.3) — days, not a percentage.
+            if let Some(t) = x.threshold
+                && !(1.0..=365.0).contains(&t)
+            {
+                r.err(format!("{p}.threshold"), "days from 1 to 365");
+            }
+        } else if let Some(t) = x.threshold
             && !(0.0..=100.0).contains(&t)
         {
             r.err(format!("{p}.threshold"), "a percentage from 0 to 100");
         }
+    }
+}
+
+/// REQ: OBS-020 (T11.3) — a probe target's address: `scheme://IP:port[/path]` with a scheme a
+/// probe speaks (the path for `https://` and `h3://` only). `Err` says what's wrong.
+pub fn probe_target(t: &str) -> Result<(&str, std::net::SocketAddr, Option<&str>), &'static str> {
+    let (scheme, rest) = t
+        .split_once("://")
+        .ok_or("use scheme://IP:port, e.g. udp://192.168.5.112:53")?;
+    if !matches!(scheme, "udp" | "tcp" | "tls" | "https" | "h3" | "quic") {
+        return Err("the scheme is udp, tcp, tls, https, h3, or quic");
+    }
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], Some(&rest[i..])),
+        None => (rest, None),
+    };
+    if path.is_some() && !matches!(scheme, "https" | "h3") {
+        return Err("only https:// and h3:// targets take a path");
+    }
+    let addr = authority
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| "an IP address and port, e.g. 192.168.5.112:53 or [fd00::53]:53")?;
+    Ok((scheme, addr, path))
+}
+
+// REQ: OBS-020 (T11.3) — probes: a sane schedule and timeout, targets by IP.
+fn probes(cfg: &Config, r: &mut Report<'_>) {
+    let p = &cfg.probe;
+    if p.interval_secs < 5 {
+        r.err("probe.interval_secs", "at least 5 seconds");
+    }
+    if !(100..=10_000).contains(&p.timeout_ms) {
+        r.err("probe.timeout_ms", "from 100 to 10000 milliseconds");
+    }
+    if p.timeout_ms / 1000 >= p.interval_secs {
+        r.err("probe.timeout_ms", "shorter than interval_secs");
+    }
+    for (i, t) in p.targets.iter().enumerate() {
+        if let Err(why) = probe_target(t) {
+            r.err(format!("probe.targets[{i}]"), why);
+        }
+    }
+    if !(1..=365).contains(&p.cert_warn_days) {
+        r.err("probe.cert_warn_days", "from 1 to 365 days");
     }
 }
 

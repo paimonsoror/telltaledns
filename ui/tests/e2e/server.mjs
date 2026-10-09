@@ -102,6 +102,10 @@ require_approval = true
 # T9.6 — rules made in the Alerts test are checked every 5 s.
 [alerts]
 interval_secs = 5
+
+# T11.3 — the listener probe runs every 5 s, so the System tab shows it soon.
+[probe]
+interval_secs = 5
 `,
 );
 

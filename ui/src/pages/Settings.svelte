@@ -5,6 +5,7 @@
   import { can, session, refreshSession } from '../lib/session.svelte';
   import { route, navigate } from '../lib/router.svelte';
   import { ago, dateTime, duration } from '../lib/format';
+  import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
@@ -281,6 +282,15 @@
 
   // ---- system
   let info = $state<S['SystemInfo'] | null>(null);
+  // REQ: OBS-020 — every node's listener probes, refreshed while the tab is open.
+  let probes = $state<S['ProbeResult'][] | null>(null);
+  async function loadProbes() {
+    try {
+      probes = (await api.probes()).items;
+    } catch {
+      probes = [];
+    }
+  }
 
   $effect(() => {
     if (tab === 'tokens') void loadTokens();
@@ -288,6 +298,15 @@
     if (tab === 'audit' && can('admin')) void loadAudit();
     if (tab === 'system') api.info().then((i) => (info = i)).catch(() => {});
   });
+  $effect(() => {
+    if (tab === 'system') return poll(loadProbes, 10_000);
+  });
+  const certText = (p: S['ProbeResult']) =>
+    p.certDaysLeft == null
+      ? (p.certError ?? '')
+      : p.certDaysLeft < 0
+        ? `certificate expired ${-p.certDaysLeft} day(s) ago`
+        : `certificate expires in ${p.certDaysLeft} day(s)`;
 
   // REQ: OPS-004 — check the release index now instead of at the daily check.
   let checking = $state(false);
@@ -605,6 +624,41 @@
       {/if}
       <p class="muted small">API reference: <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer">/api/v1/openapi.json</a> (OpenAPI 3.1).</p>
     </section>
+    <!-- REQ: OBS-020 (ADR-107) — can clients reach each listener? -->
+    <section class="card" data-testid="probes">
+      <h2>Listener checks<HelpButton id="probes" /></h2>
+      {#if probes == null}
+        <p class="empty">Loading…</p>
+      {:else if probes.length === 0}
+        <p class="empty">No results yet (the first round runs a few seconds after start), or probes are off (<code>[probe] enabled = false</code>).</p>
+      {:else}
+        <div class="table-wrap">
+          <table class="compact">
+            <thead><tr>{#if probes.some((p) => p.node)}<th>Node</th>{/if}<th>Asked</th><th>Result</th><th class="num">Time</th><th>Notes</th></tr></thead>
+            <tbody>
+              {#each probes as p (`${p.node ?? ''}|${p.target}`)}
+                <tr>
+                  {#if probes.some((x) => x.node)}<td>{p.node ?? ''}</td>{/if}
+                  <td class="mono">{p.target}{#if !p.listener}<span class="muted small"> (extra target)</span>{/if}</td>
+                  <td>
+                    {#if p.skipped}<span class="badge">skipped</span>
+                    {:else if p.ok}<span class="badge ok">answers</span>
+                    {:else if p.consecutiveFailures >= 2}<span class="badge bad">not answering</span>
+                    {:else}<span class="badge warn">missed once</span>{/if}
+                  </td>
+                  <td class="num">{p.latencyMs != null ? `${p.latencyMs.toFixed(1)} ms` : '–'}</td>
+                  <td class="small">
+                    {p.skipped ?? p.error ?? ''}
+                    {#if certText(p)}<span class:cert-soon={(p.certDaysLeft ?? 99) < 14}>{certText(p)}</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+      <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would.</p>
+    </section>
     {#if info}
       <!-- REQ: OPS-004 (ADR-046) -->
       <section class="card" data-testid="updates">
@@ -671,6 +725,10 @@
 </div>
 
 <style>
+  .cert-soon {
+    color: var(--warn);
+    font-weight: 600;
+  }
   .agent-scopes {
     display: grid;
     gap: 0.35rem;

@@ -231,6 +231,11 @@ pub trait Backend: Send + Sync + 'static {
             ))
         })
     }
+    /// REQ: OBS-020 (ADR-107) — the synthetic probes' latest results (every node, in a
+    /// cluster).
+    fn probes(&self) -> Vec<model::ProbeResult> {
+        Vec::new()
+    }
     /// REQ: OBS-016 (ADR-105) — the objectives as configured (`[slo]`). The status itself is
     /// worked out from [`Backend::timeseries`] ([`slo::status`]), so it covers what that
     /// covers (every node, in a cluster).
@@ -515,6 +520,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     let data = Router::new()
         .route("/api/v1/system/info", get(system_info))
         .route("/api/v1/system/health", get(system_health))
+        .route("/api/v1/system/probes", get(system_probes))
         .route("/api/v1/cluster", get(cluster))
         .route("/api/v1/stats/summary", get(stats_summary))
         .route("/api/v1/stats/timeseries", get(stats_timeseries))
@@ -631,7 +637,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
+        system_info, system_health, system_probes, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -649,7 +655,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -802,6 +808,28 @@ async fn system_health(State(b): State<Shared>) -> Result<Json<model::Health>, P
         .await
         .map(Json)
         .map_err(|e| Problem::internal(format!("health: {e}")))
+}
+
+/// Synthetic probes of the DNS listeners.
+///
+/// Every `[probe] interval_secs` (30), each node asks each of its own DNS listeners a question
+/// (`probe.telltale.invalid`, answered NXDOMAIN locally) through the listener's protocol (UDP,
+/// TCP, DoT, DoH, DoH3, DoQ), plus any extra `[probe] targets` (a load balancer's address). Per
+/// probe: whether the last one answered, how long it took, the error, failures in a row, and for
+/// TLS listeners the certificate's expiry. Two failures in a row, or a certificate within
+/// `cert_warn_days`, degrade the health level (an expired one is severe). Every node, in a
+/// cluster; one that doesn't answer is in `missingNodes`.
+#[utoipa::path(get, path = "/api/v1/system/probes", tag = "system",
+    responses((status = 200, body = Items<model::ProbeResult>, description = "Every probe, by node.")))]
+async fn system_probes(
+    State(b): State<Shared>,
+) -> Result<Json<Items<model::ProbeResult>>, Problem> {
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.probes())).await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
 }
 
 /// Check for updates now.

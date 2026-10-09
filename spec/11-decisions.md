@@ -1291,6 +1291,17 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-107 — Synthetic probes through the upstream client, kept out of the analytics (Proposed)
+**Context:** the owner asked (2026-10-08) for synthetic probes of every listener and protocol, plus listener certificate expiry (OBS-020). `/readyz` only says the sockets are bound; nothing checked that a listener answers, and only the cluster certificate's expiry was exported.
+**Decision:**
+- Each node probes its own listeners (so in a cluster every node is checked, resolver pods included) with the upstream client it already has for every protocol: a probe is a real client of the listener. Wildcard binds are asked on loopback. TLS verification is off (the probe connects by IP); expiry comes from the certificate file instead.
+- The question is `probe.telltale.invalid` A: RFC 6761 makes `.invalid` NXDOMAIN, which the special-name handling answers without an upstream, so a probe tests TelltaleDNS and not the internet. Any well-formed answer is a success (a REFUSED from tight `allowed_networks` still proves the listener answers).
+- Probe queries pay the normal query path, so they're counted by the counters (a few per minute), but the telemetry thread drops their events before the analytics, the query log, and the exports (a byte comparison per event there; nothing on the query path). They skip dnstap's forwarder observer (`UpstreamOptions::observe`); dnstap's client-side tap still sees them.
+- PROXY-protocol listeners are skipped (the client doesn't send the header) and say so.
+- Health (conservative, not in the request): two failures in a row degrade, so one dropped UDP packet doesn't; a node whose every listener fails is `not_serving` (and softened like it in a cluster); a certificate within `cert_warn_days` (14) degrades, an expired one is severe.
+- Extra targets (`[probe] targets`, by IP) cover the path devices use: a load balancer's address. Hostnames are refused (no resolver to trust for the probe's own name).
+**Consequences:** a new upstream client per probe per round (connection setup included, which is part of what's tested). An extra target that isn't TelltaleDNS answers with whatever it answers, which still counts as answering.
+
 ## ADR-106 — Cache sizing from a sampled ghost list of evicted keys (Proposed)
 **Context:** the owner asked (2026-10-08) for cache sizing advice from a ghost list (OBS-021), without costing DNS performance. The memory gate (T10.2) is failing, so the estimate itself must stay small; a full ghost list (one record per evicted key) would cost tens of bytes per cached answer.
 **Decision:**

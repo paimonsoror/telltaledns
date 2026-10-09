@@ -872,8 +872,11 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         git_poke: Arc::default(),
         reload: reload_tx,
         config_writes: tokio::sync::Mutex::new(()),
+        probes: Arc::default(),
     });
     http::serve_peers(&sources);
+    // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.
+    crate::probes::spawn(Arc::clone(&sources), http_stopped.clone());
     // REQ: CLU-003 — the Git config source polls on the primary (ADR-049).
     if let Some(c) = &sources.cluster
         && cfg.cluster.git.is_some()

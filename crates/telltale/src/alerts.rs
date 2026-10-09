@@ -352,6 +352,49 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
                 Vec::new()
             }
         }
+        // REQ: OBS-020 (ADR-107) — every node's probes and certificates.
+        AlertWhen::ProbeFailing => b
+            .probes()
+            .into_iter()
+            .filter(|p| {
+                p.skipped.is_none() && p.consecutive_failures >= crate::probes::FAILING_AFTER
+            })
+            .map(|p| {
+                let node = p.node.clone().unwrap_or_else(|| "this node".to_owned());
+                (
+                    format!("{node}|{}", p.target),
+                    format!(
+                        "{} on {node} doesn't answer its probe ({} in a row: {})",
+                        p.target,
+                        p.consecutive_failures,
+                        p.error.as_deref().unwrap_or("no answer")
+                    ),
+                )
+            })
+            .collect(),
+        AlertWhen::CertExpiring => {
+            let days = rule.threshold.unwrap_or(14.0);
+            b.probes()
+                .into_iter()
+                .filter_map(|p| {
+                    let left = p.cert_days_left?;
+                    #[allow(clippy::cast_precision_loss)] // days
+                    let soon = (left as f64) < days;
+                    soon.then(|| {
+                        let node = p.node.clone().unwrap_or_else(|| "this node".to_owned());
+                        let when = if left < 0 {
+                            format!("expired {} day(s) ago", -left)
+                        } else {
+                            format!("expires in {left} day(s)")
+                        };
+                        (
+                            format!("{node}|{}", p.target),
+                            format!("the certificate of {} on {node} {when}", p.target),
+                        )
+                    })
+                })
+                .collect()
+        }
         // REQ: OBS-016 (ADR-105) — an objective spending its error budget fast (every node).
         AlertWhen::SloBurn => {
             let s = b.slo_settings();

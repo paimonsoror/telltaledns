@@ -1563,6 +1563,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/probes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Synthetic probes of the DNS listeners.
+         * @description Every `[probe] interval_secs` (30), each node asks each of its own DNS listeners a question
+         *     (`probe.telltale.invalid`, answered NXDOMAIN locally) through the listener's protocol (UDP,
+         *     TCP, DoT, DoH, DoH3, DoQ), plus any extra `[probe] targets` (a load balancer's address). Per
+         *     probe: whether the last one answered, how long it took, the error, failures in a row, and for
+         *     TLS listeners the certificate's expiry. Two failures in a row, or a certificate within
+         *     `cert_warn_days`, degrade the health level (an expired one is severe). Every node, in a
+         *     cluster; one that doesn't answer is in `missingNodes`.
+         */
+        get: operations["system_probes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/update-check": {
         parameters: {
             query?: never;
@@ -3592,6 +3618,56 @@ export interface components {
             missingNodes?: string[];
         };
         /** @description A list wrapper used by every collection endpoint. */
+        Items_ProbeResult: {
+            items: {
+                /** Format: int64 */
+                certDaysLeft?: number | null;
+                /** @description Why the certificate couldn't be read. */
+                certError?: string | null;
+                /**
+                 * Format: int64
+                 * @description A TLS listener's certificate: when it expires and the days left (negative: expired).
+                 */
+                certExpiresUnixSeconds?: number | null;
+                /** Format: int64 */
+                checkedUnixSeconds: number;
+                /**
+                 * Format: int32
+                 * @description Probes failed in a row (2 or more degrade the health level).
+                 */
+                consecutiveFailures: number;
+                /** @description Why it failed. */
+                error?: string | null;
+                /**
+                 * Format: int64
+                 * @description When it last answered, and when it was last asked (Unix seconds).
+                 */
+                lastOkUnixSeconds?: number | null;
+                /**
+                 * Format: double
+                 * @description How long it took.
+                 */
+                latencyMs?: number | null;
+                /** @description One of this node's listeners (else an extra `[probe] targets` entry). */
+                listener: boolean;
+                /** @description The node that probed (cluster nodes only). */
+                node?: string | null;
+                /** @description The last probe got a well-formed answer (any response code). */
+                ok: boolean;
+                /** @description `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`. */
+                proto: string;
+                /** @description Not probed, and why (a listener that requires the PROXY protocol header). */
+                skipped?: string | null;
+                /**
+                 * @description What was asked: `udp://127.0.0.1:53`, `https://127.0.0.1:443/dns-query`, ...
+                 * @example tls://127.0.0.1:853
+                 */
+                target: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
         Items_RuleInfo: {
             items: {
                 /** @description `allow` or `block`. */
@@ -4028,6 +4104,55 @@ export interface components {
             summary: string;
             /** @description The MCP tool that made it, e.g. `plan_block_domain`. */
             tool: string;
+        };
+        /**
+         * @description REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own
+         *     protocol, or an extra target, from one node, and the listener's certificate.
+         */
+        ProbeResult: {
+            /** Format: int64 */
+            certDaysLeft?: number | null;
+            /** @description Why the certificate couldn't be read. */
+            certError?: string | null;
+            /**
+             * Format: int64
+             * @description A TLS listener's certificate: when it expires and the days left (negative: expired).
+             */
+            certExpiresUnixSeconds?: number | null;
+            /** Format: int64 */
+            checkedUnixSeconds: number;
+            /**
+             * Format: int32
+             * @description Probes failed in a row (2 or more degrade the health level).
+             */
+            consecutiveFailures: number;
+            /** @description Why it failed. */
+            error?: string | null;
+            /**
+             * Format: int64
+             * @description When it last answered, and when it was last asked (Unix seconds).
+             */
+            lastOkUnixSeconds?: number | null;
+            /**
+             * Format: double
+             * @description How long it took.
+             */
+            latencyMs?: number | null;
+            /** @description One of this node's listeners (else an extra `[probe] targets` entry). */
+            listener: boolean;
+            /** @description The node that probed (cluster nodes only). */
+            node?: string | null;
+            /** @description The last probe got a well-formed answer (any response code). */
+            ok: boolean;
+            /** @description `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`. */
+            proto: string;
+            /** @description Not probed, and why (a listener that requires the PROXY protocol header). */
+            skipped?: string | null;
+            /**
+             * @description What was asked: `udp://127.0.0.1:53`, `https://127.0.0.1:443/dns-query`, ...
+             * @example tls://127.0.0.1:853
+             */
+            target: string;
         };
         /**
          * @description An API error.
@@ -7519,6 +7644,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemInfo"];
+                };
+            };
+        };
+    };
+    system_probes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every probe, by node. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ProbeResult"];
                 };
             };
         };

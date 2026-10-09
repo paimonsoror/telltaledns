@@ -79,6 +79,9 @@ pub struct Config {
     /// REQ: OBS-016 (T11.1) — service-level objectives: how reliably and how fast DNS should
     /// answer, the error budget that leaves, and how fast it's being spent.
     pub slo: SloConfig,
+    /// REQ: OBS-020 (T11.3) — synthetic probes: each DNS listener asked through its own
+    /// protocol on a schedule, plus extra targets; TLS certificate expiry.
+    pub probe: ProbeConfig,
     /// The REST API (and, later, the web UI).
     pub api: ApiConfig,
     /// Sign-in: sessions, HTTP Basic, two-factor policy (API-003).
@@ -125,6 +128,7 @@ impl Default for Config {
             updates: UpdatesConfig::default(),
             telemetry: TelemetryConfig::default(),
             slo: SloConfig::default(),
+            probe: ProbeConfig::default(),
             api: ApiConfig::default(),
             auth: AuthConfig::default(),
         }
@@ -956,6 +960,12 @@ pub enum AlertWhen {
     /// 14.4 times the sustainable rate over the last hour and 5 minutes, or 6 times over 6
     /// hours and 30 minutes (one alert per objective; `[slo]`).
     SloBurn,
+    /// REQ: OBS-020 (T11.3) — a listener or extra target hasn't answered its probe twice in a
+    /// row, on any node (one alert per node and target; `[probe]`).
+    ProbeFailing,
+    /// A DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on
+    /// any node (one alert per node and listener).
+    CertExpiring,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.
@@ -1575,6 +1585,39 @@ impl Default for SloConfig {
             latency_target: 99.0,
             latency_ms: 250,
             window_days: 30,
+        }
+    }
+}
+
+/// REQ: OBS-020 (T11.3, ADR-107, `spec/06` §9) — synthetic probes: every `interval_secs`,
+/// each DNS listener is asked `probe.telltale.invalid` through its own protocol (UDP, TCP, DoT,
+/// DoH, DoH3, DoQ) from this node, and so is every extra target; each TLS listener's
+/// certificate expiry is read from its file. Probes don't show in the query log or analytics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProbeConfig {
+    pub enabled: bool,
+    /// Seconds between rounds (at least 5).
+    pub interval_secs: u32,
+    /// How long one probe may take, in milliseconds (100 to 10000).
+    pub timeout_ms: u32,
+    /// Extra addresses to probe, by IP: `udp://192.168.5.112:53` (a load balancer's address),
+    /// `tcp://…`, `tls://…:853`, `https://…:443/dns-query`, `h3://…`, `quic://…:853`.
+    /// Certificates aren't verified (the listeners' own expiry is checked from their files).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<SafeString>,
+    /// A listener certificate expiring within this many days degrades the health level.
+    pub cert_warn_days: u32,
+}
+
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 30,
+            timeout_ms: 2000,
+            targets: Vec::new(),
+            cert_warn_days: 14,
         }
     }
 }

@@ -48,6 +48,71 @@ pub(crate) struct Local<'a> {
     /// Its lists, when it downloads them (a replica takes the primary's snapshot instead).
     pub(crate) lists: Option<&'a [ListInfo]>,
     pub(crate) disk_used_percent: Option<f64>,
+    /// REQ: OBS-020 — its synthetic probes, and when a certificate expiring counts.
+    pub(crate) probes: &'a [telltale_api::model::ProbeResult],
+    pub(crate) cert_warn_days: u32,
+}
+
+/// REQ: OBS-020 (ADR-107) — listeners (or extra targets) that failed their probe twice in a
+/// row are degraded; when every probed listener does, the node isn't serving DNS (`not_serving`,
+/// severe unless other nodes serve). A certificate within `cert_warn_days` is degraded; an
+/// expired one is severe: DoT/DoH/DoQ clients can't connect.
+fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
+    let failing = |p: &&telltale_api::model::ProbeResult| {
+        p.skipped.is_none() && p.consecutive_failures >= crate::probes::FAILING_AFTER
+    };
+    let listeners: Vec<_> = l
+        .probes
+        .iter()
+        .filter(|p| p.listener && p.skipped.is_none())
+        .collect();
+    if l.serving && !listeners.is_empty() && listeners.iter().all(failing) {
+        out.push(reason(
+            SEVERE,
+            "not_serving",
+            "isn't answering DNS: none of its listeners answers its own probe".into(),
+            "#/settings?tab=system",
+        ));
+    } else {
+        for p in l.probes.iter().filter(failing) {
+            let what = if p.listener {
+                "listener"
+            } else {
+                "probe target"
+            };
+            out.push(reason(
+                DEGRADED,
+                "probe_failing",
+                format!(
+                    "{what} {} doesn't answer its probe ({} in a row: {})",
+                    p.target,
+                    p.consecutive_failures,
+                    p.error.as_deref().unwrap_or("no answer")
+                ),
+                "#/settings?tab=system",
+            ));
+        }
+    }
+    for p in l.probes {
+        match p.cert_days_left {
+            Some(d) if d < 0 => out.push(reason(
+                SEVERE,
+                "cert_expired",
+                format!(
+                    "the certificate of {} expired {} day(s) ago: encrypted DNS clients can't connect",
+                    p.target, -d
+                ),
+                "#/settings?tab=system",
+            )),
+            Some(d) if d < i64::from(l.cert_warn_days) => out.push(reason(
+                DEGRADED,
+                "cert_expiring",
+                format!("the certificate of {} expires in {d} day(s)", p.target),
+                "#/settings?tab=system",
+            )),
+            _ => {}
+        }
+    }
 }
 
 /// One node's own conditions.
@@ -62,6 +127,7 @@ pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
         ));
     }
     upstream_reasons(l.upstreams, &mut out);
+    probe_reasons(l, &mut out);
     let sum =
         |f: &dyn Fn(&TimeBucket) -> u32| -> u64 { l.recent.iter().map(|b| u64::from(f(b))).sum() };
     let total = sum(&|b| b.total);
@@ -313,7 +379,70 @@ mod tests {
             recent,
             lists: None,
             disk_used_percent: Some(40.0),
+            probes: &[],
+            cert_warn_days: 14,
         }
+    }
+
+    fn probe(
+        target: &str,
+        listener: bool,
+        failures: u32,
+        cert_days: Option<i64>,
+    ) -> telltale_api::model::ProbeResult {
+        telltale_api::model::ProbeResult {
+            target: target.into(),
+            proto: "udp".into(),
+            listener,
+            ok: failures == 0,
+            consecutive_failures: failures,
+            cert_days_left: cert_days,
+            ..telltale_api::model::ProbeResult::default()
+        }
+    }
+
+    // REQ: OBS-020 (ADR-107) — a probe failing twice degrades; every listener failing is
+    // `not_serving`; one blip doesn't count; certificates degrade near expiry, expired is
+    // severe.
+    #[test]
+    fn obs_020_probes_and_certificates() {
+        let ps = [
+            probe("udp://127.0.0.1:53", true, 0, None),
+            probe("tls://127.0.0.1:853", true, 3, Some(40)),
+            probe("udp://192.168.5.112:53", false, 1, None),
+        ];
+        let mut l = local(&[], &[]);
+        l.probes = &ps;
+        assert_eq!(
+            codes(&summarize(local_reasons(&l), vec![], String::new())),
+            vec![("degraded", "probe_failing")]
+        );
+        let all = [
+            probe("udp://127.0.0.1:53", true, 2, None),
+            probe("tcp://127.0.0.1:53", true, 5, None),
+        ];
+        l.probes = &all;
+        let mut r = local_reasons(&l);
+        assert_eq!(
+            codes(&summarize(r.clone(), vec![], String::new())),
+            vec![("severe", "not_serving")]
+        );
+        soften_not_serving(&mut r, 2);
+        assert_eq!(
+            summarize(r, vec![], String::new()).level,
+            "degraded",
+            "others serve"
+        );
+        let certs = [
+            probe("tls://127.0.0.1:853", true, 0, Some(5)),
+            probe("https://127.0.0.1:443/dns-query", true, 0, Some(-2)),
+        ];
+        l.probes = &certs;
+        let h = summarize(local_reasons(&l), vec![], String::new());
+        assert_eq!(
+            codes(&h),
+            vec![("severe", "cert_expired"), ("degraded", "cert_expiring")]
+        );
     }
 
     fn codes(h: &Health) -> Vec<(&str, &str)> {

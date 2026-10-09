@@ -35,6 +35,7 @@ mod otlp;
 mod pihole;
 mod pipeline;
 mod privacy;
+mod probes;
 mod qlog_cli;
 mod replay;
 mod replication;

@@ -323,6 +323,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Can clients actually reach DNS? Every node asks each of its own listeners a question through the listener's protocol (UDP, TCP, DoT, DoH, DoH3, DoQ), plus any extra targets such as a load balancer's address: per probe, whether the last one answered, how long it took, the error, failures in a row, and for TLS listeners the certificate's expiry (days left). Use it when devices say DNS is down but the server looks fine.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "probe_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Is each node's cache the right size? Per node: hit rate, memory used and its budget, the estimated extra hits a cache 25%, 50%, and 100% larger would have served (from a sample of evicted names), the peak memory used, and the advice: grow (with the max_bytes to try), shrink (it never filled), ok, or learning (too few lookups yet).",
     "inputSchema": {
       "additionalProperties": false,

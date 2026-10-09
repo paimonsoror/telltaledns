@@ -191,6 +191,38 @@ fn obs_002_rings_carry_every_event_from_every_thread() {
     assert_eq!(drainer.drain(|_| {}), 0);
 }
 
+/// REQ: OBS-020 (T11.3) — the listener probes' queries (`probe.telltale.invalid`, any case)
+/// never reach the analytics; other names, `.invalid` ones included, do.
+#[test]
+fn obs_020_probe_queries_stay_out_of_the_analytics() {
+    let hub = Hub::new(1 << 16);
+    let ts = 1_700_000_000_000_000;
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Special, 20),
+        &wire("PROBE.telltale.invalid"),
+    );
+    hub.emit_query(
+        &query(ts, ipv4(127, 0, 0, 1), Status::Special, 20),
+        &wire("other.invalid"),
+    );
+    assert_eq!(event::PROBE_NAME, &wire("probe.telltale.invalid")[..]);
+    let mut drainer = hub.drainer();
+    hub.drain_once(&mut drainer);
+    let agg = hub.aggregates();
+    let total: u32 = agg
+        .series(Resolution::Second, 0, u64::MAX)
+        .iter()
+        .map(|(_, c)| c.total)
+        .sum();
+    assert_eq!(total, 1, "only other.invalid");
+    let names: Vec<String> = agg
+        .top_names(TopKind::Domains, HourSel::Current, 10)
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    assert_eq!(names, ["other.invalid"]);
+}
+
 #[test]
 fn obs_002_a_full_ring_drops_whole_events_and_counts_them() {
     let hub = Hub::new(1); // rounded up to the minimum (4 max-size records)

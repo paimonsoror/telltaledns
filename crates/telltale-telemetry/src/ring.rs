@@ -256,6 +256,11 @@ impl Hub {
                         let level = hub.privacy.load(Ordering::Relaxed);
                         let mut agg = hub.aggregates();
                         drainer.drain(|r| {
+                            // REQ: OBS-020 — the listener probes stay out of the analytics,
+                            // the query log, and every export.
+                            if r.is_probe() {
+                                return;
+                            }
                             if level == 0 {
                                 agg.record(&r);
                             } else {
@@ -286,7 +291,11 @@ impl Hub {
     pub fn drain_once(&self, drainer: &mut Drainer) -> usize {
         let level = self.privacy.load(Ordering::Relaxed);
         let mut agg = self.aggregates();
-        drainer.drain(|r| agg.record(&crate::event::private(&r, level)))
+        drainer.drain(|r| {
+            if !r.is_probe() {
+                agg.record(&crate::event::private(&r, level));
+            }
+        })
     }
 
     /// The single consumer of this hub's rings.

@@ -85,6 +85,8 @@ pub(crate) struct Sources {
     /// REQ: API-002, API-010 (ADR-040) — configuration changes through the API run one at a
     /// time: a plan is checked against the configuration the store then changes.
     pub(crate) config_writes: tokio::sync::Mutex<()>,
+    /// REQ: OBS-020 (T11.3) — the synthetic probes' latest results.
+    pub(crate) probes: Arc<crate::probes::Probes>,
 }
 
 impl Sources {
@@ -523,6 +525,7 @@ pub(crate) fn render(src: &Sources) -> String {
     );
     cluster_metrics(src, &mut w);
     render_slo(&mut w, &src.config.load().slo);
+    render_probes(&mut w, &src.probes);
     if let Some(f) = src.pipeline.filter.load_full() {
         w.family(
             "telltale_filter_lookup_index_bytes",
@@ -572,6 +575,65 @@ fn render_slo(w: &mut PromWriter, s: &telltale_config::SloConfig) {
         &[],
         f64::from(s.latency_ms) / 1000.0,
     );
+}
+
+/// REQ: OBS-020 (T11.3, ADR-107) — the synthetic probes and the listeners' certificates.
+fn render_probes(w: &mut PromWriter, probes: &crate::probes::Probes) {
+    let results = probes.results();
+    if results.is_empty() {
+        return;
+    }
+    let asked: Vec<_> = results.iter().filter(|r| r.skipped.is_none()).collect();
+    w.family(
+        "telltale_probe_success",
+        "gauge",
+        "1 if the last synthetic probe of a listener (or [probe] target) got an answer through its protocol.",
+    );
+    for r in &asked {
+        w.sample(
+            "telltale_probe_success",
+            &[("target", r.target.as_str()), ("proto", r.proto.as_str())],
+            u8::from(r.ok),
+        );
+    }
+    w.family(
+        "telltale_probe_duration_seconds",
+        "gauge",
+        "How long the last successful probe took.",
+    );
+    for r in asked.iter().filter(|r| r.ok) {
+        w.sample(
+            "telltale_probe_duration_seconds",
+            &[("target", r.target.as_str()), ("proto", r.proto.as_str())],
+            r.latency_ms.unwrap_or(0.0) / 1000.0,
+        );
+    }
+    w.family(
+        "telltale_probe_failures_total",
+        "counter",
+        "Probes that got no answer, since start.",
+    );
+    for r in &asked {
+        w.sample(
+            "telltale_probe_failures_total",
+            &[("target", r.target.as_str()), ("proto", r.proto.as_str())],
+            probes.failures_total(&r.target),
+        );
+    }
+    w.family(
+        "telltale_listener_cert_expiry_timestamp_seconds",
+        "gauge",
+        "When a DoT/DoH/DoQ listener's certificate expires (Unix time).",
+    );
+    for r in &results {
+        if let Some(at) = r.cert_expires_unix_seconds {
+            w.sample(
+                "telltale_listener_cert_expiry_timestamp_seconds",
+                &[("target", r.target.as_str()), ("proto", r.proto.as_str())],
+                at,
+            );
+        }
+    }
 }
 
 fn render_process(w: &mut PromWriter, src: &Sources) {
@@ -1457,6 +1519,7 @@ mod tests {
             reload: tokio::sync::mpsc::channel(1).0,
             config_writes: tokio::sync::Mutex::new(()),
             allowed: Vec::new(),
+            probes: Arc::default(),
         }
     }
 

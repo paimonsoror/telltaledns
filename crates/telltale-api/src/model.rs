@@ -1626,6 +1626,48 @@ pub struct AnomalyAckResult {
     pub unknown: Vec<String>,
 }
 
+/// REQ: OBS-020 (ADR-107) — one synthetic probe: a DNS listener asked through its own
+/// protocol, or an extra target, from one node, and the listener's certificate.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResult {
+    /// The node that probed (cluster nodes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// What was asked: `udp://127.0.0.1:53`, `https://127.0.0.1:443/dns-query`, ...
+    #[schema(example = "tls://127.0.0.1:853")]
+    pub target: String,
+    /// `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`.
+    pub proto: String,
+    /// One of this node's listeners (else an extra `[probe] targets` entry).
+    pub listener: bool,
+    /// The last probe got a well-formed answer (any response code).
+    pub ok: bool,
+    /// How long it took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Probes failed in a row (2 or more degrade the health level).
+    pub consecutive_failures: u32,
+    /// When it last answered, and when it was last asked (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ok_unix_seconds: Option<u64>,
+    pub checked_unix_seconds: u64,
+    /// Not probed, and why (a listener that requires the PROXY protocol header).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+    /// A TLS listener's certificate: when it expires and the days left (negative: expired).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_expires_unix_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_days_left: Option<i64>,
+    /// Why the certificate couldn't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_error: Option<String>,
+}
+
 /// REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast
 /// they're being spent, over every node's answers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

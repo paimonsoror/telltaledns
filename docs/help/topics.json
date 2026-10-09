@@ -447,6 +447,16 @@
       "general": true
     },
     {
+      "id": "probes",
+      "title": "Listener checks",
+      "term": "Synthetic probes",
+      "summary": "Every 30 seconds each node asks each of its own DNS listeners a question the way a device would: over UDP, TCP, DNS over TLS, DNS over HTTPS (HTTP/2 or HTTP/3), or DNS over QUIC. It also reads when each encrypted listener's certificate expires.",
+      "when": "Devices say DNS is broken but the dashboard looks fine: a listener can be bound and still not answer (a stuck TLS handshake, a firewall, a load balancer in front). Add the load balancer's address under [probe] targets to check the path devices really use.",
+      "example": "tls://127.0.0.1:853 answers in 1.8 ms, certificate expires in 9 days: the health icon turns amber so you renew it before Android's Private DNS stops working.",
+      "caution": "Probes connect by IP, so they don't check the certificate's name; the expiry is read from the certificate file. A listener with PROXY protocol on is skipped (probes don't send the header).",
+      "docs": "listener-checks"
+    },
+    {
       "id": "slo",
       "title": "Service level",
       "term": "Service-level objectives (SLOs) and error budgets",

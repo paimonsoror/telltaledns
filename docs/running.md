@@ -1735,6 +1735,23 @@ window_days = 30             # 1 to 90
 - **Where:** the dashboard's **Service level** card, `GET /api/v1/stats/slo`, and the MCP tool `slo_status`. In a cluster the objectives cover every node's answers. They're worked out from the per-minute and per-hour counts the dashboard already keeps, so they cost nothing on the query path; slow answers are counted in the rollups from this release on (older hours count none).
 - **Prometheus:** `telltale_slo_objective_ratio{slo}` and `telltale_slo_latency_threshold_seconds` publish the settings. With `prometheusRule.enabled`, the Helm chart adds recording rules (`telltale:slo_availability_errors:ratio_rate5m` … `_3d`, and `telltale:slo_latency_errors:…`) and alerts (`TelltaleDNSSLOAvailabilityBurnFast`, `…BurnSlow`, `…BurnTicket`, and the same for latency) with the same windows and minimums; set `prometheusRule.slo` to the same targets as `[slo]`. Without Kubernetes, load `deploy/prometheus/telltale-slo-rules.yaml` (the same rules, for a scrape job named `telltale-metrics`). The Grafana dashboard's **Service level** row shows the SLIs, the budget left over the dashboard's time range, and the burn rate.
 
+### Listener checks
+A listener can be bound and still not answer: a stuck TLS stack, a firewall rule, a load balancer in front of it. So every node asks each of its own DNS listeners a question the way a device would, through the listener's own protocol:
+```toml
+[probe]
+enabled = true
+interval_secs = 30
+timeout_ms = 2000
+cert_warn_days = 14                      # a certificate expiring sooner degrades the health level
+targets = ["udp://192.168.5.112:53"]     # extra: by IP, e.g. a load balancer's address
+```
+- **What's asked:** `probe.telltale.invalid`, type A, which TelltaleDNS answers NXDOMAIN itself (no upstream). Any well-formed answer counts. A listener bound to `0.0.0.0` or `[::]` is asked on loopback; DoH on its `path`. Targets take `udp://`, `tcp://`, `tls://`, `https://…/dns-query`, `h3://`, and `quic://` with an IP address. Certificates aren't checked by name (probes connect by IP); a listener with `proxy_protocol = true` is skipped, since probes don't send the PROXY header.
+- **Certificates:** each DoT/DoH/DoH3/DoQ listener's certificate file is read for its expiry.
+- **Health:** a probe that fails twice in a row degrades the level (`probe_failing`); when every listener of a node fails, the node isn't serving DNS (`not_serving`, severe unless other nodes serve). A certificate within `cert_warn_days` degrades (`cert_expiring`); an expired one is severe (`cert_expired`), since encrypted clients can't connect.
+- **Alerts:** `probe_failing` and `cert_expiring` rules (below); with `prometheusRule.enabled`, the Helm chart adds `TelltaleDNSListenerNotAnswering` (2 minutes) and `TelltaleDNSListenerCertExpiring` (under 14 days).
+- **Where:** **Settings → System → Listener checks**, `GET /api/v1/system/probes` (every node), the MCP tool `probe_status`, and `/metrics`: `telltale_probe_success{target,proto}`, `telltale_probe_duration_seconds`, `telltale_probe_failures_total`, and `telltale_listener_cert_expiry_timestamp_seconds{target}`.
+- **Cost:** a handful of queries a minute, from a background task. They count in `telltale_queries_total` like any query, but stay out of the query log, the dashboard's top lists, device analytics, and event sinks. dnstap still sees them as client queries from loopback.
+
 ### Query events
 Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics; the query log and the API for reading them come in later releases.
 - Each thread writes events into its own buffer without waiting or locking, and a background thread collects them every 25 ms. If a buffer ever fills, events are dropped and counted, and DNS answers are never held back. Counters and the metrics above never drop.
@@ -1904,6 +1921,8 @@ Rules watch:
 | `disk_full` | a node's data disk is more than `threshold` % full (default 90) | node |
 | `plan_pending` | an AI agent's change waits for approval (`[agents] require_approval`) | plan |
 | `slo_burn` | a [service-level objective](#service-level-objectives) spends its error budget fast (14.4× over 1 hour and 5 minutes, or 6× over 6 hours and 30 minutes) | objective |
+| `probe_failing` | a [listener check](#listener-checks) (or an extra target) got no answer twice in a row, on any node | node and target |
+| `cert_expiring` | a DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on any node | node and listener |
 
 - A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, and pending plans go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
@@ -1951,8 +1970,8 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | Icon | Level | When |
 |---|---|---|
 | circle with a check (quiet) | healthy | nothing below |
-| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download; a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast |
-| octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS, or SERVFAIL for 25% or more |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download; a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days |
+| octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS (its listeners aren't bound, or none answers its own check), SERVFAIL for 25% or more, or a listener's certificate has expired |
 
 Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.
 

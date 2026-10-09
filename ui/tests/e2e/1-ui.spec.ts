@@ -219,6 +219,20 @@ test('obs_016 service level card', async () => {
   await page.unroute('**/api/v1/stats/slo*');
 });
 
+// REQ: OBS-020 — Settings → System lists the listener probes: the e2e server's UDP listener
+// answers its own probe (every 5 s there), and probe queries stay out of the query log.
+test('obs_020 listener checks', async () => {
+  await page.goto('/#/settings?tab=system');
+  const card = page.getByTestId('probes');
+  await expect(card).toContainText('Listener checks');
+  await expect(card).toContainText('udp://127.0.0.1:15354', { timeout: 15_000 });
+  await expect(card).toContainText('answers');
+  const log = await page.evaluate(async () =>
+    (await fetch('/api/v1/queries?name=probe.telltale.invalid&limit=5')).json(),
+  );
+  expect(log.items).toEqual([]);
+});
+
 // REQ: OBS-014 — acknowledging a finding hides it (and drops it from the badge) until "Show
 // acknowledged"; the acknowledge itself goes to the real server. A fresh server has no
 // findings yet (devices learn for a week), so the list is stubbed.
