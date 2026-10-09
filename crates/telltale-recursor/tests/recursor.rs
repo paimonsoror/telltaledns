@@ -531,7 +531,9 @@ async fn dns_012_root_priming() {
 #[tokio::test]
 async fn dns_012_hedged_queries() {
     let slow = Arc::new(AtomicU64::new(0));
-    let other = Arc::new(AtomicU64::new(5));
+    // 20 ms, not 5: on a busy CI runner a few ms of scheduling noise made the copy look as fast
+    // as .4, so the "slow" lookup went to the copy first and never waited (arm, 2026-10-08/09).
+    let other = Arc::new(AtomicU64::new(20));
     let (slow2, other2) = (Arc::clone(&slow), Arc::clone(&other));
     let (s, _) = tree(move |zones| {
         // example.com has two servers: .4 (made slow later) and .10, a copy.
@@ -556,7 +558,7 @@ async fn dns_012_hedged_queries() {
             let mut st = s;
             st.hedge = hedge;
             let r = Recursor::new(st);
-            // .4 answers at once, .10 after 5 ms, so .4 is tried first.
+            // .4 answers at once, .10 after 20 ms, so .4 is tried first.
             for _ in 0..4 {
                 r.resolve(name("www.example.com"), rtype::A, false)
                     .await
@@ -575,8 +577,8 @@ async fn dns_012_hedged_queries() {
             t0.elapsed()
         }
     };
-    // The hedge goes after 150 ms; without it, the slow server's attempt times out at its
-    // 250 ms floor. The best of three runs each, so a busy machine (the whole suite runs in
+    // The hedge goes after 150 ms (answered ~20 ms later); without it, the slow server's
+    // attempt times out at its 250 ms floor before the copy is asked. The best of three runs each, so a busy machine (the whole suite runs in
     // parallel) doesn't decide.
     let (mut hedged, mut plain) = (Duration::MAX, Duration::MAX);
     for _ in 0..3 {
