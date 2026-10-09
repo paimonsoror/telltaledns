@@ -447,6 +447,16 @@
       "general": true
     },
     {
+      "id": "slo",
+      "title": "Service level",
+      "term": "Service-level objectives (SLOs) and error budgets",
+      "summary": "Two promises about DNS on your network: answers that work (not SERVFAIL) and answers that are quick (within 250 ms). Each allows a few bad answers a month, its error budget; the card shows how much of it is left and how fast it's going right now.",
+      "when": "You want one honest number for \"is DNS good here?\" over a month, and a warning when a problem is eating the month's allowance fast, not every time one lookup fails.",
+      "example": "Target 99.9%: of 1,000,000 answers this month, 1,000 may be SERVFAIL. If an upstream outage causes 300 in an hour, the burn rate jumps far above 1, the card says \"burning fast\", the health icon turns amber, and a slo_burn alert goes out.",
+      "caution": "A target of 100% leaves no budget, so it isn't allowed. On a quiet network a few bad answers can look like a big share: alerts wait for at least 50 answers in the short window and 10 bad ones in the long one.",
+      "docs": "service-level-objectives"
+    },
+    {
       "id": "new-domains",
       "title": "New domains",
       "term": "First-seen domains and DGA scores",

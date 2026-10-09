@@ -146,6 +146,45 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "{{ "{{" }} $labels.instance {{ "}}" }} has been at 80 °C or more for 10 minutes; check its cooling."
+    {{- with .Values.prometheusRule.slo }}
+    {{- if .enabled }}
+    # REQ: OBS-016 (ADR-105) — the objectives over every node (a cluster is one service): error
+    # ratios per window, then alerts when a long and a short window both burn the error budget
+    # too fast (14.4x: 2% of a 30-day budget in an hour; 6x: 5% in 6 hours; 1x: on course to
+    # spend it all). Dropped queries got no answer and count for neither objective.
+    - name: telltale-slo
+      rules:
+        {{- $sel := printf "job=\"%s-metrics\"" (include "telltale.fullname" $) }}
+        {{- $le := divf .latencyMs 1000 }}
+        {{- range $w := list "5m" "30m" "1h" "6h" "3d" }}
+        - record: telltale:slo_availability_errors:ratio_rate{{ $w }}
+          expr: sum(rate(telltale_responses_total{ {{- $sel }},rcode="SERVFAIL"}[{{ $w }}])) / sum(rate(telltale_responses_total{ {{- $sel }}}[{{ $w }}]))
+        - record: telltale:slo_latency_errors:ratio_rate{{ $w }}
+          expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{ {{- $sel }},le="{{ $le }}"}[{{ $w }}])) / sum(rate(telltale_query_duration_seconds_count{ {{- $sel }}}[{{ $w }}]))
+        {{- end }}
+        {{- /* name, title, target ratio, bad answers in words, answers and bad answers over a window (%s) */}}
+        {{- $answers := printf "sum(increase(telltale_responses_total{%s}[%%s]))" $sel }}
+        {{- $servfail := printf "sum(increase(telltale_responses_total{%s,rcode=\"SERVFAIL\"}[%%s]))" $sel }}
+        {{- $timed := printf "sum(increase(telltale_query_duration_seconds_count{%s}[%%s]))" $sel }}
+        {{- $slow := printf "(sum(increase(telltale_query_duration_seconds_count{%s}[%%s])) - sum(increase(telltale_query_duration_seconds_bucket{%s,le=\"%v\"}[%%s])))" $sel $sel $le }}
+        {{- range $o := list (list "availability" "Availability" (divf $.Values.prometheusRule.slo.availabilityTarget 100) "SERVFAIL answers" $answers $servfail) (list "latency" "Latency" (divf $.Values.prometheusRule.slo.latencyTarget 100) (printf "answers slower than %v ms" $.Values.prometheusRule.slo.latencyMs) $timed $slow) }}
+        {{- $name := index $o 0 }}{{- $title := index $o 1 }}{{- $target := index $o 2 }}{{- $bad := index $o 3 }}
+        {{- range $a := list (list "Fast" "1h" "5m" "14.4" "critical") (list "Slow" "6h" "30m" "6" "critical") (list "Ticket" "3d" "6h" "1" "warning") }}
+        - alert: TelltaleDNSSLO{{ $title }}Burn{{ index $a 0 }}
+          # Like the web UI: at least 50 answers in the short window and 10 bad ones in the
+          # long window, so one SERVFAIL on a quiet network doesn't page.
+          expr: |
+            telltale:slo_{{ $name }}_errors:ratio_rate{{ index $a 1 }} > ({{ index $a 3 }} * (1 - {{ $target }}))
+            and telltale:slo_{{ $name }}_errors:ratio_rate{{ index $a 2 }} > ({{ index $a 3 }} * (1 - {{ $target }}))
+            and on() {{ printf (index $o 4) (index $a 2) }} >= 50
+            and on() {{ $s := index $o 5 }}{{ if eq $name "latency" }}{{ printf $s (index $a 1) (index $a 1) }}{{ else }}{{ printf $s (index $a 1) }}{{ end }} >= 10
+          labels: { severity: {{ index $a 4 }}, slo: {{ $name }} }
+          annotations:
+            summary: "The {{ $name }} objective ({{ mulf $target 100 }}%) is spending its error budget over {{ index $a 3 }}x too fast ({{ $bad }} over the last {{ index $a 1 }} and {{ index $a 2 }}); see the dashboard's Service level card."
+        {{- end }}
+        {{- end }}
+    {{- end }}
+    {{- end }}
 ---
 {{- end }}
 {{- if .Values.grafanaDashboard.enabled }}

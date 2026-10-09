@@ -674,11 +674,15 @@ fn build_pipeline(
 /// REQ: OBS-005 — per-client query series are opt-in and capped (`[telemetry.metrics]`).
 fn set_client_metrics(cfg: &Config, pipeline: &Pipeline) {
     let m = &cfg.telemetry.metrics;
-    pipeline.telemetry.aggregates().exported.client_cap = if m.per_client {
+    let mut agg = pipeline.telemetry.aggregates();
+    agg.exported.client_cap = if m.per_client {
         usize::try_from(m.per_client_cap).unwrap_or(usize::MAX)
     } else {
         0
     };
+    // REQ: OBS-016 (ADR-105) — the time buckets count answers slower than the latency
+    // objective's threshold.
+    agg.slo_latency_us = u64::from(cfg.slo.latency_ms) * 1000;
 }
 
 /// Starts the metrics and API listeners; both stop when `stop` turns true.

@@ -207,6 +207,36 @@ pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
     out
 }
 
+/// REQ: OBS-016 (ADR-105) — `[slo]` as the API's settings.
+pub(crate) fn slo_settings(cfg: &telltale_config::Config) -> telltale_api::slo::Settings {
+    let s = &cfg.slo;
+    telltale_api::slo::Settings {
+        enabled: s.enabled,
+        availability_target: s.availability_target,
+        latency_target: s.latency_target,
+        latency_ms: s.latency_ms,
+        window_days: s.window_days,
+    }
+}
+
+/// REQ: OBS-016 (ADR-105) — degraded while an objective spends its error budget fast (the
+/// `fast` or `slow` burn-rate pair), from `b`'s minute buckets of the last 6 hours.
+pub(crate) fn slo_reasons(b: &dyn telltale_api::Backend, now: u64) -> Vec<HealthReason> {
+    let s = b.slo_settings();
+    if !s.enabled {
+        return Vec::new();
+    }
+    let minutes = b.timeseries(
+        telltale_api::model::Step::Minute,
+        now.saturating_sub(telltale_api::slo::MINUTE_SPAN_S),
+        now + 1,
+    );
+    telltale_api::slo::burning(&s, now, &minutes)
+        .into_iter()
+        .map(|(_, _, summary)| reason(DEGRADED, "slo_burn", summary, "#/"))
+        .collect()
+}
+
 /// How the cluster page and every other reason name a node: its pod, else its site, else its ID.
 fn node_name(n: &telltale_api::model::ClusterNode) -> String {
     if let Some(pod) = n.pod.as_ref().filter(|p| !p.is_empty()) {

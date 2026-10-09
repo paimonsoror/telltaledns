@@ -3624,6 +3624,50 @@
         }
       }
     },
+    "/api/v1/stats/slo": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Service-level objectives and error budgets.",
+        "description": "Two objectives over every node's answers (`[slo]`): `availability`, the share of answers\nthat aren't SERVFAIL (default target 99.9%), and `latency`, the share sent within\n`latency_ms` (default 99% within 250 ms). For each: the SLI and error budget left over\n`window_days` (default 30), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly\nthe budget), and `alert`: `fast` (14.4× over 1h and 5m) or `slow` (6× over 6h and 30m)\ndegrade the health level and fire `slo_burn` alert rules; `ticket` (1× over 3d and 6h) is\nshown only. Queries dropped without an answer count for neither. Example:\n`GET /api/v1/stats/slo`.",
+        "operationId": "stats_slo",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`\n(this node). Federated reads list nodes that didn't answer in `missingNodes`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "cluster"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The objectives.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SloStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/summary": {
       "get": {
         "tags": [
@@ -7444,7 +7488,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`.",
+            "description": "Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,\n`sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`, `slo_burn`.",
             "example": "upstream_down"
           },
           "level": {
@@ -9179,6 +9223,12 @@
                     "type": "string"
                   }
                 },
+                "slow": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "REQ: OBS-016 — answered queries slower than the latency objective's threshold\n(`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.",
+                  "minimum": 0
+                },
                 "startUnixSeconds": {
                   "type": "integer",
                   "format": "int64",
@@ -10674,6 +10724,161 @@
           }
         }
       },
+      "SloBurn": {
+        "type": "object",
+        "description": "REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the\nshare the target allows (1 spends exactly the budget over the objective's window).",
+        "required": [
+          "window",
+          "total",
+          "bad"
+        ],
+        "properties": {
+          "bad": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "None when there were no answers (or no hourly data for `3d`)."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers in the window, and bad ones.",
+            "minimum": 0
+          },
+          "window": {
+            "type": "string",
+            "description": "`5m`, `30m`, `1h`, `6h`, or `3d`.",
+            "example": "1h"
+          }
+        }
+      },
+      "SloObjective": {
+        "type": "object",
+        "description": "REQ: OBS-016 — one objective: `availability` (answers that aren't SERVFAIL) or `latency`\n(answers within `latencyMs`). Dropped queries got no answer and count for neither.",
+        "required": [
+          "name",
+          "goodMeans",
+          "targetPercent",
+          "good",
+          "total",
+          "burnRates",
+          "summary"
+        ],
+        "properties": {
+          "alert": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`fast` (14.4× over 1h and 5m), `slow` (6× over 6h and 30m), or `ticket` (1× over 3d\nand 6h); none when the budget lasts. `fast` and `slow` degrade the health level and\nfire `slo_burn` alerts.",
+            "example": "fast"
+          },
+          "budgetRemainingPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The window's error budget left, in percent: 100 untouched, 0 spent, below 0 overspent."
+          },
+          "burnRates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SloBurn"
+            },
+            "description": "Burn rates over 5m, 30m, 1h, 6h, and 3d."
+          },
+          "good": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Good and all answers over the window.",
+            "minimum": 0
+          },
+          "goodMeans": {
+            "type": "string",
+            "description": "What counts as a good answer, in words.",
+            "example": "answers that aren't SERVFAIL"
+          },
+          "latencyMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The latency objective's threshold.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "`availability` or `latency`.",
+            "example": "availability"
+          },
+          "sliPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Good answers over the window, in percent (none: no answers yet)."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One sentence with the numbers."
+          },
+          "targetPercent": {
+            "type": "number",
+            "format": "double",
+            "description": "The share of good answers aimed for, in percent.",
+            "example": 99.9
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SloStatus": {
+        "type": "object",
+        "description": "REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast\nthey're being spent, over every node's answers.",
+        "required": [
+          "enabled",
+          "windowDays",
+          "objectives"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`[slo] enabled`; when false there are no objectives."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that didn't answer (their answers aren't counted)."
+          },
+          "objectives": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SloObjective"
+            }
+          },
+          "windowDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days each error budget covers (`[slo] window_days`).",
+            "minimum": 0
+          }
+        }
+      },
       "Step": {
         "type": "string",
         "description": "Time-bucket size for [`TimeseriesParams`].",
@@ -10976,6 +11181,12 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "slow": {
+            "type": "integer",
+            "format": "int32",
+            "description": "REQ: OBS-016 — answered queries slower than the latency objective's threshold\n(`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.",
+            "minimum": 0
           },
           "startUnixSeconds": {
             "type": "integer",

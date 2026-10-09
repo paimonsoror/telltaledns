@@ -456,6 +456,40 @@ async fn obs_014_acknowledging_anomalies_over_http() {
     assert_eq!((s, v["level"].as_str()), (StatusCode::OK, Some("healthy")));
 }
 
+// REQ: OBS-016 — the objectives over HTTP: worked out from the last 6 hours' minutes and the
+// window's hours of the (federated) time buckets.
+#[tokio::test]
+async fn obs_016_slo_over_http() {
+    let (app, fake) = app();
+    let (s, _, v) = get(&app, "/api/v1/stats/slo").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["enabled"], true);
+    assert_eq!(v["windowDays"], 30);
+    let o = &v["objectives"];
+    assert_eq!(o[0]["name"], "availability");
+    assert_eq!(o[0]["targetPercent"], 99.9);
+    assert_eq!(o[0]["sliPercent"], 100.0);
+    assert_eq!(o[0]["budgetRemainingPercent"], 100.0);
+    assert_eq!(o[1]["name"], "latency");
+    assert_eq!(o[1]["latencyMs"], 250);
+    assert_eq!(o[1]["burnRates"][2]["window"], "1h");
+    let seen = fake.seen.lock().unwrap().clone();
+    assert!(
+        seen.contains(&format!("timeseries Minute {} {}", NOW - 6 * 3600, NOW + 1)),
+        "{seen:?}"
+    );
+    assert!(
+        seen.contains(&format!(
+            "timeseries Hour {} {}",
+            NOW - 30 * 86_400,
+            NOW + 1
+        )),
+        "{seen:?}"
+    );
+    let (s, _, _) = get(&app, "/api/v1/stats/slo?scope=bogus").await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
 // REQ: AGT-004, AGT-005, AGT-009 — an agent token over HTTP: its scopes and nothing else,
 // a reason on every change, the kill switch, and `agent:` attribution.
 #[tokio::test]
@@ -962,7 +996,7 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 75);
+    assert_eq!(paths.len(), 76);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

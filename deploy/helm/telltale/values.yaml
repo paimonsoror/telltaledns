@@ -199,6 +199,15 @@ serviceMonitor:
 prometheusRule:
   enabled: false
   labels: {}
+  # REQ: OBS-016 (ADR-105) — SLO recording rules (telltale:slo_*_errors:ratio_rate<window>)
+  # and multi-window burn-rate alerts over every node. Keep these equal to the nodes' [slo]
+  # settings, which the web UI and the API use; latencyMs must be a bucket bound of
+  # telltale_query_duration_seconds (1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000).
+  slo:
+    enabled: true
+    availabilityTarget: 99.9
+    latencyTarget: 99
+    latencyMs: 250
 
 # The Grafana dashboard as a ConfigMap for the Grafana sidecar.
 grafanaDashboard:

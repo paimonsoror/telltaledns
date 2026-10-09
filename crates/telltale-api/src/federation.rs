@@ -29,6 +29,7 @@ pub fn merge_timeseries(parts: Vec<Vec<TimeBucket>>) -> Vec<TimeBucket> {
         t.total += b.total;
         t.upstream_queries += b.upstream_queries;
         t.upstream_failures += b.upstream_failures;
+        t.slow += b.slow;
         add(&mut t.by_status, b.by_status);
         add(&mut t.by_qtype, b.by_qtype);
         add(&mut t.by_rcode, b.by_rcode);

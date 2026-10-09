@@ -522,6 +522,7 @@ pub(crate) fn render(src: &Sources) -> String {
         u8::from(src.masked_clients().is_some()),
     );
     cluster_metrics(src, &mut w);
+    render_slo(&mut w, &src.config.load().slo);
     if let Some(f) = src.pipeline.filter.load_full() {
         w.family(
             "telltale_filter_lookup_index_bytes",
@@ -538,6 +539,39 @@ pub(crate) fn render(src: &Sources) -> String {
     w.family("telltale_local_records", "gauge", "Local records loaded.")
         .sample("telltale_local_records", &[], state.policy.local.len());
     w.finish()
+}
+
+/// REQ: OBS-016 (ADR-105) — the objectives as configured, so dashboards and recording rules
+/// can show them next to the SLIs they compute from `telltale_responses_total` and
+/// `telltale_query_duration_seconds`.
+fn render_slo(w: &mut PromWriter, s: &telltale_config::SloConfig) {
+    if !s.enabled {
+        return;
+    }
+    // Rounded to the configured precision, so 99.9 reads 0.999 and not 0.9990000000000001.
+    let ratio = |pct: f64| (pct * 1000.0).round() / 100_000.0;
+    let name = "telltale_slo_objective_ratio";
+    w.family(
+        name,
+        "gauge",
+        "Service-level objectives ([slo]): the share of answers that must be good (availability: not SERVFAIL; latency: within telltale_slo_latency_threshold_seconds).",
+    );
+    w.sample(
+        name,
+        &[("slo", "availability")],
+        ratio(s.availability_target),
+    );
+    w.sample(name, &[("slo", "latency")], ratio(s.latency_target));
+    w.family(
+        "telltale_slo_latency_threshold_seconds",
+        "gauge",
+        "The latency objective's threshold (a telltale_query_duration_seconds bucket bound).",
+    )
+    .sample(
+        "telltale_slo_latency_threshold_seconds",
+        &[],
+        f64::from(s.latency_ms) / 1000.0,
+    );
 }
 
 fn render_process(w: &mut PromWriter, src: &Sources) {

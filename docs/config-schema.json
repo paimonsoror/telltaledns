@@ -296,6 +296,17 @@
         "$ref": "#/$defs/ScheduleConfig"
       }
     },
+    "slo": {
+      "description": "REQ: OBS-016 (T11.1) — service-level objectives: how reliably and how fast DNS should\nanswer, the error budget that leaves, and how fast it's being spent.",
+      "$ref": "#/$defs/SloConfig",
+      "default": {
+        "availability_target": 99.9,
+        "enabled": true,
+        "latency_ms": 250,
+        "latency_target": 99.0,
+        "window_days": 30
+      }
+    },
     "special": {
       "description": "Special-name handling (RFC 6761 etc.).",
       "$ref": "#/$defs/SpecialConfig",
@@ -628,6 +639,11 @@
           "description": "An AI agent's change waits for approval (`[agents] require_approval`; once per plan).",
           "type": "string",
           "const": "plan_pending"
+        },
+        {
+          "description": "REQ: OBS-016 (T11.1) — a service-level objective spends its error budget too fast:\n14.4 times the sustainable rate over the last hour and 5 minutes, or 6 times over 6\nhours and 30 minutes (one alert per objective; `[slo]`).",
+          "type": "string",
+          "const": "slo_burn"
         }
       ]
     },
@@ -2861,6 +2877,44 @@
         "syslog",
         "webhook"
       ]
+    },
+    "SloConfig": {
+      "description": "REQ: OBS-016 (T11.1, ADR-105, `spec/06` §8.2) — two service-level objectives over every\nnode's answers: availability (answers that aren't SERVFAIL) and latency (answers within\n`latency_ms`). Each leaves an error budget over `window_days`; burn rates say how fast it\ngoes. Queries dropped without an answer (rate limits, junk) count for neither.",
+      "type": "object",
+      "properties": {
+        "availability_target": {
+          "description": "Percent of answers that must not be SERVFAIL (default 99.9).",
+          "type": "number",
+          "format": "double",
+          "default": 99.9
+        },
+        "enabled": {
+          "description": "Off: no objectives (nothing to show, and `slo_burn` alerts never fire).",
+          "type": "boolean",
+          "default": true
+        },
+        "latency_ms": {
+          "description": "The latency objective's threshold: one of 1, 5, 10, 25, 50, 100, 250, 500, 1000,\n2500, 5000 ms (the bucket bounds of `telltale_query_duration_seconds`). Default 250.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 250,
+          "minimum": 0
+        },
+        "latency_target": {
+          "description": "Percent of answers that must arrive within `latency_ms` (default 99).",
+          "type": "number",
+          "format": "double",
+          "default": 99.0
+        },
+        "window_days": {
+          "description": "Days the error budget covers (1 to 90; default 30). The burn-rate alerts are tuned\nfor 30.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "SpecialConfig": {
       "description": "Built-in handling of special names (`spec/03` §3 step 4).",

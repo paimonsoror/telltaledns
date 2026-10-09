@@ -1420,6 +1420,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stats/slo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Service-level objectives and error budgets.
+         * @description Two objectives over every node's answers (`[slo]`): `availability`, the share of answers
+         *     that aren't SERVFAIL (default target 99.9%), and `latency`, the share sent within
+         *     `latency_ms` (default 99% within 250 ms). For each: the SLI and error budget left over
+         *     `window_days` (default 30), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly
+         *     the budget), and `alert`: `fast` (14.4× over 1h and 5m) or `slow` (6× over 6h and 30m)
+         *     degrade the health level and fire `slo_burn` alert rules; `ticket` (1× over 3d and 6h) is
+         *     shown only. Queries dropped without an answer count for neither. Example:
+         *     `GET /api/v1/stats/slo`.
+         */
+        get: operations["stats_slo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/summary": {
         parameters: {
             query?: never;
@@ -2948,7 +2975,7 @@ export interface components {
         HealthReason: {
             /**
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-             *     `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`.
+             *     `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`, `slo_burn`.
              * @example upstream_down
              */
             code: string;
@@ -3579,6 +3606,12 @@ export interface components {
                     [key: string]: number;
                 };
                 /**
+                 * Format: int32
+                 * @description REQ: OBS-016 — answered queries slower than the latency objective's threshold
+                 *     (`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.
+                 */
+                slow?: number;
+                /**
                  * Format: int64
                  * @description Bucket start, Unix seconds.
                  */
@@ -4170,6 +4203,100 @@ export interface components {
             username: string;
         };
         /**
+         * @description REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the
+         *     share the target allows (1 spends exactly the budget over the objective's window).
+         */
+        SloBurn: {
+            /** Format: int64 */
+            bad: number;
+            /**
+             * Format: double
+             * @description None when there were no answers (or no hourly data for `3d`).
+             */
+            rate?: number | null;
+            /**
+             * Format: int64
+             * @description Answers in the window, and bad ones.
+             */
+            total: number;
+            /**
+             * @description `5m`, `30m`, `1h`, `6h`, or `3d`.
+             * @example 1h
+             */
+            window: string;
+        };
+        /**
+         * @description REQ: OBS-016 — one objective: `availability` (answers that aren't SERVFAIL) or `latency`
+         *     (answers within `latencyMs`). Dropped queries got no answer and count for neither.
+         */
+        SloObjective: {
+            /**
+             * @description `fast` (14.4× over 1h and 5m), `slow` (6× over 6h and 30m), or `ticket` (1× over 3d
+             *     and 6h); none when the budget lasts. `fast` and `slow` degrade the health level and
+             *     fire `slo_burn` alerts.
+             * @example fast
+             */
+            alert?: string | null;
+            /**
+             * Format: double
+             * @description The window's error budget left, in percent: 100 untouched, 0 spent, below 0 overspent.
+             */
+            budgetRemainingPercent?: number | null;
+            /** @description Burn rates over 5m, 30m, 1h, 6h, and 3d. */
+            burnRates: components["schemas"]["SloBurn"][];
+            /**
+             * Format: int64
+             * @description Good and all answers over the window.
+             */
+            good: number;
+            /**
+             * @description What counts as a good answer, in words.
+             * @example answers that aren't SERVFAIL
+             */
+            goodMeans: string;
+            /**
+             * Format: int32
+             * @description The latency objective's threshold.
+             */
+            latencyMs?: number | null;
+            /**
+             * @description `availability` or `latency`.
+             * @example availability
+             */
+            name: string;
+            /**
+             * Format: double
+             * @description Good answers over the window, in percent (none: no answers yet).
+             */
+            sliPercent?: number | null;
+            /** @description One sentence with the numbers. */
+            summary: string;
+            /**
+             * Format: double
+             * @description The share of good answers aimed for, in percent.
+             * @example 99.9
+             */
+            targetPercent: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /**
+         * @description REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast
+         *     they're being spent, over every node's answers.
+         */
+        SloStatus: {
+            /** @description `[slo] enabled`; when false there are no objectives. */
+            enabled: boolean;
+            /** @description Cluster nodes that didn't answer (their answers aren't counted). */
+            missingNodes?: string[];
+            objectives: components["schemas"]["SloObjective"][];
+            /**
+             * Format: int32
+             * @description Days each error budget covers (`[slo] window_days`).
+             */
+            windowDays: number;
+        };
+        /**
          * @description Time-bucket size for [`TimeseriesParams`].
          * @enum {string}
          */
@@ -4291,6 +4418,12 @@ export interface components {
             byStatus: {
                 [key: string]: number;
             };
+            /**
+             * Format: int32
+             * @description REQ: OBS-016 — answered queries slower than the latency objective's threshold
+             *     (`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.
+             */
+            slow?: number;
             /**
              * Format: int64
              * @description Bucket start, Unix seconds.
@@ -7118,6 +7251,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_LatencyRow"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stats_slo: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`
+                 *     (this node). Federated reads list nodes that didn't answer in `missingNodes`.
+                 * @example cluster
+                 */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The objectives. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SloStatus"];
                 };
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */

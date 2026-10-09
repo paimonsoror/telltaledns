@@ -51,6 +51,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     services(cfg, &mut r);
     schedules(cfg, &mut r);
     alerts(cfg, &mut r);
+    slo(cfg, &mut r);
     sinks(cfg, &mut r);
     routers(cfg, &mut r);
     rewrites(cfg, &mut r);
@@ -451,6 +452,39 @@ fn alerts(cfg: &Config, r: &mut Report<'_>) {
         {
             r.err(format!("{p}.threshold"), "a percentage from 0 to 100");
         }
+    }
+}
+
+// REQ: OBS-016 (T11.1) — objectives below 100% (a 100% target leaves no budget to burn), a
+// threshold Prometheus can compute too, a window the rollups hold.
+fn slo(cfg: &Config, r: &mut Report<'_>) {
+    let s = &cfg.slo;
+    for (key, t) in [
+        ("slo.availability_target", s.availability_target),
+        ("slo.latency_target", s.latency_target),
+    ] {
+        if !(50.0..100.0).contains(&t) {
+            r.err(
+                key,
+                "a percentage from 50 up to (not including) 100, e.g. 99.9",
+            );
+        }
+    }
+    if !crate::schema::SLO_LATENCY_MS.contains(&s.latency_ms) {
+        r.err(
+            "slo.latency_ms",
+            format!(
+                "one of {} (the /metrics histogram's bucket bounds)",
+                crate::schema::SLO_LATENCY_MS
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
+    if !(1..=90).contains(&s.window_days) {
+        r.err("slo.window_days", "from 1 to 90 days");
     }
 }
 

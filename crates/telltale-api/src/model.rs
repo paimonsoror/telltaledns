@@ -204,6 +204,10 @@ pub struct TimeBucket {
     /// Blocked queries by group.
     #[serde(default)]
     pub blocked_by_group: BTreeMap<String, u32>,
+    /// REQ: OBS-016 — answered queries slower than the latency objective's threshold
+    /// (`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.
+    #[serde(default)]
+    pub slow: u32,
 }
 
 /// Query parameters for `GET /stats/timeseries`.
@@ -1585,6 +1589,72 @@ pub struct AnomalyAckResult {
     pub unknown: Vec<String>,
 }
 
+/// REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast
+/// they're being spent, over every node's answers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SloStatus {
+    /// `[slo] enabled`; when false there are no objectives.
+    pub enabled: bool,
+    /// Days each error budget covers (`[slo] window_days`).
+    pub window_days: u32,
+    pub objectives: Vec<SloObjective>,
+    /// Cluster nodes that didn't answer (their answers aren't counted).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: OBS-016 — one objective: `availability` (answers that aren't SERVFAIL) or `latency`
+/// (answers within `latencyMs`). Dropped queries got no answer and count for neither.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SloObjective {
+    /// `availability` or `latency`.
+    #[schema(example = "availability")]
+    pub name: String,
+    /// What counts as a good answer, in words.
+    #[schema(example = "answers that aren't SERVFAIL")]
+    pub good_means: String,
+    /// The share of good answers aimed for, in percent.
+    #[schema(example = 99.9)]
+    pub target_percent: f64,
+    /// The latency objective's threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u32>,
+    /// Good answers over the window, in percent (none: no answers yet).
+    pub sli_percent: Option<f64>,
+    /// Good and all answers over the window.
+    pub good: u64,
+    pub total: u64,
+    /// The window's error budget left, in percent: 100 untouched, 0 spent, below 0 overspent.
+    pub budget_remaining_percent: Option<f64>,
+    /// Burn rates over 5m, 30m, 1h, 6h, and 3d.
+    pub burn_rates: Vec<SloBurn>,
+    /// `fast` (14.4× over 1h and 5m), `slow` (6× over 6h and 30m), or `ticket` (1× over 3d
+    /// and 6h); none when the budget lasts. `fast` and `slow` degrade the health level and
+    /// fire `slo_burn` alerts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "fast")]
+    pub alert: Option<String>,
+    /// One sentence with the numbers.
+    pub summary: String,
+}
+
+/// REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the
+/// share the target allows (1 spends exactly the budget over the objective's window).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SloBurn {
+    /// `5m`, `30m`, `1h`, `6h`, or `3d`.
+    #[schema(example = "1h")]
+    pub window: String,
+    /// None when there were no answers (or no hourly data for `3d`).
+    pub rate: Option<f64>,
+    /// Answers in the window, and bad ones.
+    pub total: u64,
+    pub bad: u64,
+}
+
 /// REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1609,7 +1679,7 @@ pub struct HealthReason {
     /// `degraded` or `severe`.
     pub level: String,
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
-    /// `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`.
+    /// `sync_lag`, `list_failing`, `rate_limited`, `servfail_rate`, `disk_full`, `slo_burn`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.

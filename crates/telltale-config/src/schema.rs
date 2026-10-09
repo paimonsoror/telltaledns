@@ -76,6 +76,9 @@ pub struct Config {
     pub updates: UpdatesConfig,
     /// Telemetry, query log, and metrics.
     pub telemetry: TelemetryConfig,
+    /// REQ: OBS-016 (T11.1) — service-level objectives: how reliably and how fast DNS should
+    /// answer, the error budget that leaves, and how fast it's being spent.
+    pub slo: SloConfig,
     /// The REST API (and, later, the web UI).
     pub api: ApiConfig,
     /// Sign-in: sessions, HTTP Basic, two-factor policy (API-003).
@@ -121,6 +124,7 @@ impl Default for Config {
             agents: AgentsConfig::default(),
             updates: UpdatesConfig::default(),
             telemetry: TelemetryConfig::default(),
+            slo: SloConfig::default(),
             api: ApiConfig::default(),
             auth: AuthConfig::default(),
         }
@@ -948,6 +952,10 @@ pub enum AlertWhen {
     DiskFull,
     /// An AI agent's change waits for approval (`[agents] require_approval`; once per plan).
     PlanPending,
+    /// REQ: OBS-016 (T11.1) — a service-level objective spends its error budget too fast:
+    /// 14.4 times the sustainable rate over the last hour and 5 minutes, or 6 times over 6
+    /// hours and 30 minutes (one alert per objective; `[slo]`).
+    SloBurn,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.
@@ -1532,6 +1540,43 @@ pub struct TelemetryConfig {
     pub otlp: OtlpConfig,
     /// REQ: OBS-007 (T7.18) — client queries and responses as dnstap.
     pub dnstap: DnstapConfig,
+}
+
+/// Thresholds the latency objective may use, in milliseconds: the `/metrics` latency
+/// histogram's bucket bounds, so Prometheus can compute the same objective (ADR-105).
+pub const SLO_LATENCY_MS: &[u32] = &[1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+
+/// REQ: OBS-016 (T11.1, ADR-105, `spec/06` §8.2) — two service-level objectives over every
+/// node's answers: availability (answers that aren't SERVFAIL) and latency (answers within
+/// `latency_ms`). Each leaves an error budget over `window_days`; burn rates say how fast it
+/// goes. Queries dropped without an answer (rate limits, junk) count for neither.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct SloConfig {
+    /// Off: no objectives (nothing to show, and `slo_burn` alerts never fire).
+    pub enabled: bool,
+    /// Percent of answers that must not be SERVFAIL (default 99.9).
+    pub availability_target: f64,
+    /// Percent of answers that must arrive within `latency_ms` (default 99).
+    pub latency_target: f64,
+    /// The latency objective's threshold: one of 1, 5, 10, 25, 50, 100, 250, 500, 1000,
+    /// 2500, 5000 ms (the bucket bounds of `telltale_query_duration_seconds`). Default 250.
+    pub latency_ms: u32,
+    /// Days the error budget covers (1 to 90; default 30). The burn-rate alerts are tuned
+    /// for 30.
+    pub window_days: u32,
+}
+
+impl Default for SloConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            availability_target: 99.9,
+            latency_target: 99.0,
+            latency_ms: 250,
+            window_days: 30,
+        }
+    }
 }
 
 /// REQ: OBS-007 (T7.18, `spec/06` §5) — dnstap over Frame Streams.

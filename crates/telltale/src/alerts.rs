@@ -352,6 +352,22 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
                 Vec::new()
             }
         }
+        // REQ: OBS-016 (ADR-105) — an objective spending its error budget fast (every node).
+        AlertWhen::SloBurn => {
+            let s = b.slo_settings();
+            if !s.enabled {
+                return Vec::new();
+            }
+            let minutes = b.timeseries(
+                Step::Minute,
+                now.saturating_sub(telltale_api::slo::MINUTE_SPAN_S),
+                now + 1,
+            );
+            telltale_api::slo::burning(&s, now, &minutes)
+                .into_iter()
+                .map(|(name, _, summary)| (name, summary))
+                .collect()
+        }
         AlertWhen::UpdateAvailable => {
             let u = b.system_info().update;
             match (u.state.as_str(), u.latest) {

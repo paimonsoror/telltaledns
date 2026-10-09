@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod model;
 pub mod plans;
 pub mod problem;
+pub mod slo;
 pub mod time;
 pub mod ui;
 pub mod vqlog;
@@ -229,6 +230,12 @@ pub trait Backend: Send + Sync + 'static {
                 "acknowledging anomalies isn't available on this node",
             ))
         })
+    }
+    /// REQ: OBS-016 (ADR-105) — the objectives as configured (`[slo]`). The status itself is
+    /// worked out from [`Backend::timeseries`] ([`slo::status`]), so it covers what that
+    /// covers (every node, in a cluster).
+    fn slo_settings(&self) -> slo::Settings {
+        slo::Settings::default()
     }
     /// REQ: OBS-015 (ADR-104) — healthy, degraded, or severe, with the reasons (every node, in
     /// a cluster).
@@ -513,6 +520,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/stats/timeseries", get(stats_timeseries))
         .route("/api/v1/stats/top", get(stats_top))
         .route("/api/v1/stats/latency", get(stats_latency))
+        .route("/api/v1/stats/slo", get(stats_slo))
         .route("/api/v1/queries", get(queries))
         .route("/api/v1/queries/stream", get(queries_stream))
         .route("/api/v1/explain", get(explain))
@@ -623,7 +631,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, queries,
+        system_info, system_health, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -641,7 +649,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -904,6 +912,47 @@ async fn stats_summary(
     s.latency = latency;
     s.missing_nodes = b.missing_nodes();
     Ok(Json(s))
+}
+
+/// Service-level objectives and error budgets.
+///
+/// Two objectives over every node's answers (`[slo]`): `availability`, the share of answers
+/// that aren't SERVFAIL (default target 99.9%), and `latency`, the share sent within
+/// `latency_ms` (default 99% within 250 ms). For each: the SLI and error budget left over
+/// `window_days` (default 30), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly
+/// the budget), and `alert`: `fast` (14.4× over 1h and 5m) or `slow` (6× over 6h and 30m)
+/// degrade the health level and fire `slo_burn` alert rules; `ticket` (1× over 3d and 6h) is
+/// shown only. Queries dropped without an answer count for neither. Example:
+/// `GET /api/v1/stats/slo`.
+#[utoipa::path(get, path = "/api/v1/stats/slo", tag = "stats", params(model::ScopeParam),
+    responses((status = 200, body = model::SloStatus, description = "The objectives."), (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it.")))]
+async fn stats_slo(
+    State(b): State<Shared>,
+    Query(p): Query<model::ScopeParam>,
+) -> Result<Json<model::SloStatus>, Problem> {
+    let b = pick(&b, p.scope.as_deref())?;
+    let now = b.now_unix_seconds();
+    let s = b.slo_settings();
+    if !s.enabled {
+        return Ok(Json(slo::status(&s, now, &[], &[])));
+    }
+    // The window's hours, from the hour it starts in (as `slo::status` counts them).
+    let from = now.saturating_sub(u64::from(s.window_days) * 86_400);
+    let bk = Arc::clone(&b);
+    let (minutes, hours) = blocking(move || {
+        Ok((
+            bk.timeseries(
+                Step::Minute,
+                now.saturating_sub(slo::MINUTE_SPAN_S),
+                now + 1,
+            ),
+            bk.timeseries(Step::Hour, from - from % 3600, now + 1),
+        ))
+    })
+    .await?;
+    let mut st = slo::status(&s, now, &minutes, &hours);
+    st.missing_nodes = b.missing_nodes();
+    Ok(Json(st))
 }
 
 /// Query counts over time.

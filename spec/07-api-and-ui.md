@@ -12,7 +12,7 @@
 |---|---|
 | Auth | `POST /auth/login`, `POST /auth/logout`, `POST /auth/totp/verify`, `GET /auth/oidc/*`, `GET/POST/DELETE /tokens` |
 | Users/RBAC | `/users`, `/users/{id}/roles` |
-| Dashboard | `GET /stats/summary`, `/stats/timeseries?metric=&step=`, `/stats/top?kind=domains\|blocked\|clients\|nxdomain&limit=`, `/stats/latency?by=upstream\|client\|qtype\|stage` (percentiles) |
+| Dashboard | `GET /stats/summary`, `/stats/timeseries?metric=&step=`, `/stats/top?kind=domains\|blocked\|clients\|nxdomain&limit=`, `/stats/latency?by=upstream\|client\|qtype\|stage` (percentiles), `/stats/slo` (objectives, error budgets, burn rates; OBS-016) |
 | Query log | `GET /queries` (filters: client, group, qname (substring/glob/regex), status[], qtype[], rcode[], upstream, node, minLatencyMs, cursor), `GET /queries/stream` (SSE), `GET /queries/export` |
 | Explain | `GET /explain?name=&client=&qtype=` |
 | Clients | `/clients` (CRUD; merge identities), `/clients/{id}/profile` (analytics), `/clients/discovered` |

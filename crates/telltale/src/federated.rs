@@ -847,6 +847,11 @@ impl Backend for Federated {
     fn backup(&self) -> Result<(String, Vec<u8>), Problem> {
         self.local.backup()
     }
+    // REQ: OBS-016 — the objectives are configuration, the same on every node; the status is
+    // worked out from the federated time buckets.
+    fn slo_settings(&self) -> telltale_api::slo::Settings {
+        self.local.slo_settings()
+    }
 
     // REQ: CLU-002 — counters sum across nodes.
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
@@ -1143,6 +1148,8 @@ impl Backend for Federated {
         let missing = self.missing_nodes();
         crate::health::soften_not_serving(&mut reasons, reporting);
         reasons.extend(crate::health::cluster_reasons(&self.local.cluster()));
+        // REQ: OBS-016 (ADR-105) — an objective spending its budget fast, over every node.
+        reasons.extend(crate::health::slo_reasons(self, now));
         crate::health::summarize(
             reasons,
             missing,

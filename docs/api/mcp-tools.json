@@ -323,6 +323,26 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Is DNS meeting its service-level objectives? For availability (answers that aren't SERVFAIL) and latency (answers within the configured threshold): the target, the share of good answers and the error budget left over the window (30 days by default), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly the budget), and whether it burns fast enough to alert (fast, slow) or to look at soon (ticket). Covers every node.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "slo_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
     "inputSchema": {
       "additionalProperties": false,

@@ -70,6 +70,27 @@
           "text": "All",
           "value": "$__all"
         }
+      },
+      {
+        "name": "slo_le",
+        "label": "Latency objective",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "hide": 2,
+        "query": {
+          "query": "query_result(max(telltale_slo_latency_threshold_seconds{job=~\"$job\"}))",
+          "refId": "slo_le"
+        },
+        "definition": "query_result(max(telltale_slo_latency_threshold_seconds{job=~\"$job\"}))",
+        "regex": "/ ([0-9.e+-]+) [0-9]+$/",
+        "refresh": 2,
+        "current": {
+          "text": "0.25",
+          "value": "0.25"
+        }
       }
     ]
   },
@@ -681,7 +702,7 @@
     },
     {
       "type": "row",
-      "title": "Latency",
+      "title": "Service level",
       "id": 10,
       "collapsed": false,
       "gridPos": {
@@ -693,9 +714,364 @@
       "panels": []
     },
     {
+      "type": "stat",
+      "title": "Availability",
+      "id": 11,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Answers that weren't SERVFAIL over the time range (objective: telltale_slo_objective_ratio{slo=\"availability\"}).",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "1 - (sum(increase(telltale_responses_total{job=~\"$job\", instance=~\"$instance\", rcode=\"SERVFAIL\"}[$__range])) / sum(increase(telltale_responses_total{job=~\"$job\", instance=~\"$instance\"}[$__range])))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 3
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Within the latency threshold",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Answers sent within [slo] latency_ms over the time range.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "1 - (1 - sum(increase(telltale_query_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", le=\"$slo_le\"}[$__range])) / sum(increase(telltale_query_duration_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__range])))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 3
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Availability budget left",
+      "id": 13,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The error budget left if the time range were the objective's window (set it to the window, 30 days by default, to match the web UI).",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "1 - (sum(increase(telltale_responses_total{job=~\"$job\", instance=~\"$instance\", rcode=\"SERVFAIL\"}[$__range])) / sum(increase(telltale_responses_total{job=~\"$job\", instance=~\"$instance\"}[$__range]))) / scalar(1 - max(telltale_slo_objective_ratio{job=~\"$job\", instance=~\"$instance\", slo=\"availability\"}))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.25
+              },
+              {
+                "color": "green",
+                "value": 0.5
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Latency budget left",
+      "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The latency objective's error budget left over the time range.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "1 - (1 - sum(increase(telltale_query_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", le=\"$slo_le\"}[$__range])) / sum(increase(telltale_query_duration_seconds_count{job=~\"$job\", instance=~\"$instance\"}[$__range]))) / scalar(1 - max(telltale_slo_objective_ratio{job=~\"$job\", instance=~\"$instance\", slo=\"latency\"}))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.25
+              },
+              {
+                "color": "green",
+                "value": 0.5
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Burn rate over the last hour",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How fast each error budget is being spent: 1 spends exactly the budget over the window; 14.4 (fast) and 6 (slow) alert.",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(telltale_responses_total{job=~\"$job\", instance=~\"$instance\", rcode=\"SERVFAIL\"}[1h])) / sum(rate(telltale_responses_total{job=~\"$job\", instance=~\"$instance\"}[1h]))) / scalar(1 - max(telltale_slo_objective_ratio{job=~\"$job\", instance=~\"$instance\", slo=\"availability\"}))",
+          "legendFormat": "availability",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(1 - sum(rate(telltale_query_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\", le=\"$slo_le\"}[1h])) / sum(rate(telltale_query_duration_seconds_count{job=~\"$job\", instance=~\"$instance\"}[1h]))) / scalar(1 - max(telltale_slo_objective_ratio{job=~\"$job\", instance=~\"$instance\", slo=\"latency\"}))",
+          "legendFormat": "latency",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 6
+              },
+              {
+                "color": "red",
+                "value": 14.4
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Latency",
+      "id": 16,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "panels": []
+    },
+    {
       "type": "timeseries",
       "title": "Answer time by path (p50 / p95 / p99)",
-      "id": 11,
+      "id": 17,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -705,7 +1081,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 14
+        "y": 26
       },
       "targets": [
         {
@@ -770,7 +1146,7 @@
     {
       "type": "timeseries",
       "title": "Where time goes",
-      "id": 12,
+      "id": 18,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -780,7 +1156,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 14
+        "y": 26
       },
       "targets": [
         {
@@ -845,20 +1221,20 @@
     {
       "type": "row",
       "title": "Upstreams",
-      "id": 13,
+      "id": 19,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 34
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Upstream latency (p50 / p95 / p99)",
-      "id": 14,
+      "id": 20,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -868,7 +1244,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 35
       },
       "targets": [
         {
@@ -933,7 +1309,7 @@
     {
       "type": "timeseries",
       "title": "Upstream share of traffic",
-      "id": 15,
+      "id": 21,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -943,7 +1319,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 23
+        "y": 35
       },
       "targets": [
         {
@@ -990,7 +1366,7 @@
     {
       "type": "timeseries",
       "title": "Upstream failure rate",
-      "id": 16,
+      "id": 22,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1000,7 +1376,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 23
+        "y": 35
       },
       "targets": [
         {
@@ -1047,7 +1423,7 @@
     {
       "type": "state-timeline",
       "title": "Circuit breakers",
-      "id": 17,
+      "id": 23,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1057,7 +1433,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 43
       },
       "targets": [
         {
@@ -1115,20 +1491,20 @@
     {
       "type": "row",
       "title": "Filtering",
-      "id": 18,
+      "id": 24,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 48
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Blocked by list",
-      "id": 19,
+      "id": 25,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1138,7 +1514,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 49
       },
       "targets": [
         {
@@ -1185,7 +1561,7 @@
     {
       "type": "timeseries",
       "title": "Blocked by group",
-      "id": 20,
+      "id": 26,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1195,7 +1571,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 37
+        "y": 49
       },
       "targets": [
         {
@@ -1242,7 +1618,7 @@
     {
       "type": "table",
       "title": "Lists",
-      "id": 21,
+      "id": 27,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1252,7 +1628,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 37
+        "y": 49
       },
       "targets": [
         {
@@ -1306,20 +1682,20 @@
     {
       "type": "row",
       "title": "Cache",
-      "id": 22,
+      "id": 28,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 57
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Cache activity",
-      "id": 23,
+      "id": 29,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1329,7 +1705,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 46
+        "y": 58
       },
       "targets": [
         {
@@ -1412,7 +1788,7 @@
     {
       "type": "timeseries",
       "title": "Cache size",
-      "id": 24,
+      "id": 30,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1422,7 +1798,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 46
+        "y": 58
       },
       "targets": [
         {
@@ -1469,20 +1845,20 @@
     {
       "type": "row",
       "title": "Clients",
-      "id": 25,
+      "id": 31,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 65
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Top clients",
-      "id": 26,
+      "id": 32,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1492,7 +1868,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 66
       },
       "targets": [
         {
@@ -1539,20 +1915,20 @@
     {
       "type": "row",
       "title": "Transports",
-      "id": 27,
+      "id": 33,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 62
+        "y": 74
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Queries by transport",
-      "id": 28,
+      "id": 34,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1562,7 +1938,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 75
       },
       "targets": [
         {
@@ -1609,7 +1985,7 @@
     {
       "type": "timeseries",
       "title": "Encrypted DNS problems",
-      "id": 29,
+      "id": 35,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1619,7 +1995,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 63
+        "y": 75
       },
       "targets": [
         {
@@ -1702,20 +2078,20 @@
     {
       "type": "row",
       "title": "TelltaleDNS",
-      "id": 30,
+      "id": 36,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 82
       },
       "panels": []
     },
     {
       "type": "stat",
       "title": "Uptime",
-      "id": 31,
+      "id": 37,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1725,7 +2101,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 71
+        "y": 83
       },
       "targets": [
         {
@@ -1774,7 +2150,7 @@
     {
       "type": "stat",
       "title": "Restarts",
-      "id": 32,
+      "id": 38,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1784,7 +2160,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 71
+        "y": 83
       },
       "targets": [
         {
@@ -1838,7 +2214,7 @@
     {
       "type": "stat",
       "title": "After a crash or a kill",
-      "id": 33,
+      "id": 39,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1848,7 +2224,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 71
+        "y": 83
       },
       "targets": [
         {
@@ -1902,7 +2278,7 @@
     {
       "type": "stat",
       "title": "OOM kills",
-      "id": 34,
+      "id": 40,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1912,7 +2288,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 71
+        "y": 83
       },
       "targets": [
         {
@@ -1966,7 +2342,7 @@
     {
       "type": "timeseries",
       "title": "Telemetry and query log",
-      "id": 35,
+      "id": 41,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1976,7 +2352,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 87
       },
       "targets": [
         {
@@ -2050,7 +2426,7 @@
     {
       "type": "timeseries",
       "title": "Memory",
-      "id": 36,
+      "id": 42,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2060,7 +2436,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 75
+        "y": 87
       },
       "targets": [
         {
@@ -2116,7 +2492,7 @@
     {
       "type": "timeseries",
       "title": "Machine",
-      "id": 37,
+      "id": 43,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2126,7 +2502,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 82
+        "y": 94
       },
       "targets": [
         {
@@ -2173,7 +2549,7 @@
     {
       "type": "timeseries",
       "title": "Temperature and disk",
-      "id": 38,
+      "id": 44,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2183,7 +2559,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 82
+        "y": 94
       },
       "targets": [
         {

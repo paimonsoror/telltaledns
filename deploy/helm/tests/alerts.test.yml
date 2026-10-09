@@ -85,3 +85,45 @@ tests:
           - exp_labels: { severity: warning, job: telltale-metrics, instance: pi }
             exp_annotations:
               summary: "pi has been at 80 °C or more for 10 minutes; check its cooling."
+
+  # REQ: OBS-016 (T11.1) — SLO burn rates over every node: 3% SERVFAIL for an hour burns a
+  # 99.9% budget 30x (fast); 30% slow answers burn a 99% latency budget 30x. Before the hour's
+  # bad answers reach 10, nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_responses_total{job="telltale-metrics",instance="pi",rcode="NOERROR"}'
+        values: "0+485x70"
+      - series: 'telltale_responses_total{job="telltale-metrics",instance="pod",rcode="NOERROR"}'
+        values: "0+485x70"
+      - series: 'telltale_responses_total{job="telltale-metrics",instance="pod",rcode="SERVFAIL"}'
+        values: "0+30x70"
+      - series: 'telltale_query_duration_seconds_count{job="telltale-metrics",instance="pod",path="upstream"}'
+        values: "0+1000x70"
+      - series: 'telltale_query_duration_seconds_bucket{job="telltale-metrics",instance="pod",path="upstream",le="0.25"}'
+        values: "0+700x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: TelltaleDNSSLOAvailabilityBurnFast
+        exp_alerts:
+          - exp_labels: { severity: critical, slo: availability }
+            exp_annotations:
+              summary: "The availability objective (99.9%) is spending its error budget over 14.4x too fast (SERVFAIL answers over the last 1h and 5m); see the dashboard's Service level card."
+      - eval_time: 65m
+        alertname: TelltaleDNSSLOLatencyBurnFast
+        exp_alerts:
+          - exp_labels: { severity: critical, slo: latency }
+            exp_annotations:
+              summary: "The latency objective (99%) is spending its error budget over 14.4x too fast (answers slower than 250 ms over the last 1h and 5m); see the dashboard's Service level card."
+
+  # A quiet network: 5 answers a minute with a SERVFAIL every 5 minutes burns 40x, but the
+  # last 5 minutes hold fewer than 50 answers, so the fast alert stays quiet (as in the web UI).
+  - interval: 1m
+    input_series:
+      - series: 'telltale_responses_total{job="telltale-metrics",instance="pi",rcode="NOERROR"}'
+        values: "0+5x70"
+      - series: 'telltale_responses_total{job="telltale-metrics",instance="pi",rcode="SERVFAIL"}'
+        values: "0+0.2x70"
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: TelltaleDNSSLOAvailabilityBurnFast
+        exp_alerts: []

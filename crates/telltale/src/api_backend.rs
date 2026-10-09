@@ -1300,6 +1300,11 @@ impl Backend for ApiBackend {
     }
 
     // REQ: OBS-015 (ADR-104) — this node's own conditions.
+    // REQ: OBS-016 (ADR-105)
+    fn slo_settings(&self) -> telltale_api::slo::Settings {
+        crate::health::slo_settings(&self.src.config.load())
+    }
+
     fn health(&self) -> telltale_api::model::Health {
         let now = crate::pipeline::unix_now();
         let recent = self.timeseries(Step::Minute, now.saturating_sub(300), now);
@@ -1316,13 +1321,18 @@ impl Backend for ApiBackend {
                     }
                     _ => None,
                 });
-        let reasons = crate::health::local_reasons(&crate::health::Local {
+        let mut reasons = crate::health::local_reasons(&crate::health::Local {
             serving: self.src.ready.load(std::sync::atomic::Ordering::Acquire),
             upstreams: &upstreams,
             recent: &recent,
             lists: lists.as_deref(),
             disk_used_percent,
         });
+        // REQ: OBS-016 (ADR-105) — in a cluster the objectives cover every node, so the
+        // federated health adds them once; a standalone node adds its own.
+        if self.src.cluster.is_none() {
+            reasons.extend(crate::health::slo_reasons(self, now));
+        }
         crate::health::summarize(
             reasons,
             Vec::new(),
@@ -3679,6 +3689,7 @@ fn time_buckets(src: &Sources, series: Vec<(u64, Counts)>) -> Vec<TimeBucket> {
                 total: c.total,
                 upstream_queries: c.upstreams.iter().sum(),
                 upstream_failures: c.upstream_failures,
+                slow: c.slow,
                 ..TimeBucket::default()
             };
             for (i, s) in Status::ALL.iter().enumerate() {

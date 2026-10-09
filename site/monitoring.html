@@ -37,6 +37,7 @@
     <div class="card"><h3>Analytics in one line</h3><p><code>from -7d | where group = kids and status = blocked | top 10 domain</code>: <a href="agents.html#vqlog">vqlog</a> answers questions no dashboard has a tile for, with its cost shown up front.</p></div>
     <div class="card"><h3>The machine too</h3><p>Memory, CPU, disk, and temperature for every node, with the last hour of history and warnings, on the Cluster page and in metrics.</p></div>
     <div class="card"><h3>Health at a glance</h3><p>One icon in the menu for the whole cluster: healthy, degraded (an upstream or node down, a device rate-limited, a list failing), or severe (no upstream in a group answering, DNS not served). Click it for the reasons and where to look; the same answer is in the API and for AI agents.</p></div>
+    <div class="card"><h3>A month in one number</h3><p>Service-level objectives for answers that work (not SERVFAIL) and answers that are quick (within 250 ms by default), each with an error budget for the month. The dashboard shows how much is left and how fast it's going; a fast burn turns the health icon amber and can alert, while a single failed lookup on a quiet night doesn't. Prometheus gets the same rules.</p></div>
   </div>
 </section>
 
@@ -64,6 +65,7 @@
           <tr><th scope="row"><code>node_down</code>, <code>sync_lag</code></th><td>a cluster node drops out, or falls behind the configuration</td></tr>
           <tr><th scope="row"><code>list_failing</code></th><td>a blocklist stops updating</td></tr>
           <tr><th scope="row"><code>servfail_rate</code></th><td>failures climb above a share of queries</td></tr>
+          <tr><th scope="row"><code>slo_burn</code></th><td>an objective spends its monthly error budget too fast</td></tr>
           <tr><th scope="row"><code>anomaly</code>, <code>new_device</code></th><td>a device behaves oddly, or a device appears for the first time</td></tr>
           <tr><th scope="row"><code>disk_full</code></th><td>a node's data disk fills up</td></tr>
           <tr><th scope="row"><code>plan_pending</code></th><td>an AI agent's change waits for your approval</td></tr>
@@ -96,7 +98,7 @@ to = ["inbox"]</code></pre>
   <p class="eyebrow">Export</p>
   <h2>Into the tools you already run</h2>
   <div class="grid">
-    <div class="card"><h3>Prometheus and Grafana</h3><p>A <code>/metrics</code> endpoint with query, cache, upstream, filter, cluster, and host series, and a ready-made <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/grafana/telltale-dashboard.json">Grafana dashboard</a>: traffic by transport, latency, upstreams, filtering, cache, and the node itself (uptime, restarts after a crash or an OOM kill, CPU, temperature, disk). The Helm chart can add a ServiceMonitor.</p></div>
+    <div class="card"><h3>Prometheus and Grafana</h3><p>A <code>/metrics</code> endpoint with query, cache, upstream, filter, cluster, and host series, and a ready-made <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/grafana/telltale-dashboard.json">Grafana dashboard</a>: service level, traffic by transport, latency, upstreams, filtering, cache, and the node itself (uptime, restarts after a crash or an OOM kill, CPU, temperature, disk). The Helm chart can add a ServiceMonitor, and alert and SLO burn-rate rules.</p></div>
     <div class="card"><h3>OpenTelemetry</h3><p>Metrics and query events as OTLP over HTTP, to a collector or any OTLP backend.</p></div>
     <div class="card"><h3>Event sinks</h3><p>Every query as a JSON line to a file, to syslog (RFC 5424, UDP or TCP), or batched to a webhook, with the same fields as the query log.</p></div>
     <div class="card"><h3>dnstap</h3><p>Raw query and response messages in the standard dnstap format, for DNS-specific tooling.</p></div>

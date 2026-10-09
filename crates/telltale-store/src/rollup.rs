@@ -111,28 +111,56 @@ pub fn encode(c: &Counts) -> Vec<u8> {
             out.extend_from_slice(&g.blocked.to_le_bytes());
         }
     }
+    // REQ: OBS-016 (T11.1) — slow answers, after the groups: builds that predate it read the
+    // group section and stop (or, with no groups, see an unknown tag and read none).
+    if c.slow > 0 {
+        out.push(SLOW_TAG);
+        out.extend_from_slice(&c.slow.to_le_bytes());
+    }
     out
 }
 
 /// Marks the named-group section (T6.16).
 const GROUPS_TAG: u8 = b'G';
+/// Marks the slow-answer count (T11.1).
+const SLOW_TAG: u8 = b'S';
 
-/// The named-group section at `b` (see [`encode`]); empty when absent or damaged.
-fn decode_groups(b: &[u8]) -> Vec<telltale_telemetry::agg::NamedGroup> {
+/// The tagged sections after the fixed columns (see [`encode`]): the named groups and the
+/// slow-answer count. A damaged section ends the reading; what came before it is kept.
+fn decode_tail(mut b: &[u8]) -> (Vec<telltale_telemetry::agg::NamedGroup>, u32) {
+    let mut groups = Vec::new();
+    let mut slow = 0;
+    while let Some((&tag, rest)) = b.split_first() {
+        match tag {
+            GROUPS_TAG => match decode_groups(rest) {
+                Some((g, r)) => {
+                    groups = g;
+                    b = r;
+                }
+                None => break,
+            },
+            SLOW_TAG => match rest.split_first_chunk::<4>() {
+                Some((n, r)) => {
+                    slow = u32::from_le_bytes(*n);
+                    b = r;
+                }
+                None => break,
+            },
+            _ => break,
+        }
+    }
+    (groups, slow)
+}
+
+/// The named-group section's body (after its tag) and what follows it; `None` when damaged.
+fn decode_groups(b: &[u8]) -> Option<(Vec<telltale_telemetry::agg::NamedGroup>, &[u8])> {
     let mut out = Vec::new();
-    let Some((&GROUPS_TAG, rest)) = b.split_first() else {
-        return out;
-    };
-    let Some((n, mut rest)) = rest.split_first_chunk::<2>() else {
-        return out;
-    };
+    let (n, mut rest) = b.split_first_chunk::<2>()?;
     for _ in 0..u16::from_le_bytes(*n) {
-        let Some((&len, r)) = rest.split_first() else {
-            return Vec::new();
-        };
+        let (&len, r) = rest.split_first()?;
         let len = usize::from(len);
         if r.len() < len + 8 {
-            return Vec::new();
+            return None;
         }
         let name = String::from_utf8_lossy(&r[..len]);
         let total = u32::from_le_bytes([r[len], r[len + 1], r[len + 2], r[len + 3]]);
@@ -140,7 +168,7 @@ fn decode_groups(b: &[u8]) -> Vec<telltale_telemetry::agg::NamedGroup> {
         telltale_telemetry::agg::add_named(&mut out, &name, total, blocked);
         rest = &r[len + 8..];
     }
-    out
+    Some((out, rest))
 }
 
 /// Bytes → `Counts` (upstream exchanges come back as a single total in `upstreams[0]`).
@@ -189,7 +217,7 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
     }
     c.upstreams = vec![words.next()?];
     c.upstream_failures = words.next()?;
-    c.named_groups = decode_groups(tail);
+    (c.named_groups, c.slow) = decode_tail(tail);
     Some(c)
 }
 
@@ -215,6 +243,7 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     let total = a.upstreams.iter().fold(0u32, |s, v| s.saturating_add(*v));
     a.upstreams = vec![total.saturating_add(up)];
     a.upstream_failures = a.upstream_failures.saturating_add(b.upstream_failures);
+    a.slow = a.slow.saturating_add(b.slow);
     for g in &b.named_groups {
         telltale_telemetry::agg::add_named(&mut a.named_groups, &g.name, g.total, g.blocked);
     }
@@ -681,5 +710,52 @@ mod tests {
             .map(|g| (&*g.name, g.total, g.blocked))
             .collect();
         assert_eq!(by, [("kids", 6, 1), ("lab", 4, 3), ("other", 5, 0)]);
+    }
+
+    /// The group section as a build before T11.1 reads it: only a leading `G` section.
+    fn old_build_groups(row: &[u8]) -> usize {
+        let fixed = encode(&Counts::default()).len();
+        match row.get(fixed..) {
+            Some([GROUPS_TAG, rest @ ..]) => decode_groups(rest).map_or(0, |(g, _)| g.len()),
+            _ => 0,
+        }
+    }
+
+    /// REQ: OBS-016 (T11.1) — the slow-answer count round-trips after the groups (or alone),
+    /// sums into hours and days, and leaves the bytes a build without it reads unchanged.
+    #[test]
+    fn obs_016_slow_answers_round_trip_and_roll_up() {
+        let mut c = counts(10, 0);
+        c.slow = 3;
+        c.groups = vec![10];
+        c.name_groups(&["kids"]);
+        let bytes = encode(&c);
+        let d = decode(&bytes).unwrap();
+        assert_eq!((d.slow, d.named_groups.len()), (3, 1));
+        assert_eq!(
+            old_build_groups(&bytes),
+            1,
+            "older builds still read the groups"
+        );
+        let mut alone = counts(10, 0);
+        alone.slow = 2;
+        let bytes = encode(&alone);
+        assert_eq!(decode(&bytes).unwrap().slow, 2);
+        assert_eq!(
+            old_build_groups(&bytes),
+            0,
+            "and see no groups when there are none"
+        );
+        // Truncated: what came before is kept.
+        let mut cut = encode(&c);
+        cut.pop();
+        let d = decode(&cut).unwrap();
+        assert_eq!((d.slow, d.named_groups.len()), (0, 1));
+        // Hours and days add them up.
+        let r = Rollups::in_memory().unwrap();
+        let h0 = 1_759_700_000 - 1_759_700_000 % 3600;
+        r.put_minutes(&[(h0, c), (h0 + 60, alone)]).unwrap();
+        assert_eq!(r.range(Level::Hour, h0, h0 + 3600).unwrap()[0].1.slow, 5);
+        assert_eq!(r.range(Level::Day, 0, u64::MAX / 2).unwrap()[0].1.slow, 5);
     }
 }

@@ -297,6 +297,18 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
+        // REQ: OBS-016 (ADR-105)
+        Tool {
+            name: "slo_status",
+            description: "Read-only. Is DNS meeting its service-level objectives? For availability (answers that aren't SERVFAIL) and latency (answers within the configured threshold): the target, the share of good answers and the error budget left over the window (30 days by default), burn rates over 5m, 30m, 1h, 6h, and 3d (1 = spending exactly the budget), and whether it burns fast enough to alert (fast, slow) or to look at soon (ticket). Covers every node.",
+            input_schema: || json!({"type": "object", "properties": {"scope": scope_schema()}, "additionalProperties": false}),
+            calls: |a| {
+                Ok(vec![(
+                    "slo".into(),
+                    query("/api/v1/stats/slo", a, &[("scope", "scope")]),
+                )])
+            },
+        },
         Tool {
             name: "new_domains",
             description: "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",

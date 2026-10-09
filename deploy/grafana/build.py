@@ -140,6 +140,43 @@ ts("Responses by RCODE", 12, 12, 8,
    "reqps", "Responses per second by response code.", stack=True, fill=30)
 advance(8)
 
+# ---- Service level (REQ: OBS-016, ADR-105): the same objectives as the web UI's card, over
+# the dashboard's time range. $slo_le is the configured threshold, read from /metrics.
+row("Service level")
+SERVFAIL_RATIO = (f'(sum(increase(telltale_responses_total{{{SEL}, rcode="SERVFAIL"}}[$__range])) / '
+                  f'sum(increase(telltale_responses_total{{{SEL}}}[$__range])))')
+SLOW_RATIO = (f'(1 - sum(increase(telltale_query_duration_seconds_bucket{{{SEL}, le="$slo_le"}}[$__range])) / '
+              f'sum(increase(telltale_query_duration_seconds_count{{{SEL}}}[$__range])))')
+ALLOWED = 'scalar(1 - max(telltale_slo_objective_ratio{{{sel}, slo="{slo}"}}))'
+BUDGET_STEPS = [{"color": "red", "value": None}, {"color": "orange", "value": 0.25},
+                {"color": "green", "value": 0.5}]
+stat("Availability", 0, 6, f'1 - {SERVFAIL_RATIO}', "percentunit",
+     "Answers that weren't SERVFAIL over the time range (objective: telltale_slo_objective_ratio{slo=\"availability\"}).",
+     decimals=3)
+stat("Within the latency threshold", 6, 6, f'1 - {SLOW_RATIO}', "percentunit",
+     "Answers sent within [slo] latency_ms over the time range.", decimals=3)
+stat("Availability budget left", 12, 6,
+     f'1 - {SERVFAIL_RATIO} / {ALLOWED.format(sel=SEL, slo="availability")}', "percentunit",
+     "The error budget left if the time range were the objective's window (set it to the window, 30 days by default, to match the web UI).",
+     thresholds=BUDGET_STEPS, decimals=0)
+stat("Latency budget left", 18, 6,
+     f'1 - {SLOW_RATIO} / {ALLOWED.format(sel=SEL, slo="latency")}', "percentunit",
+     "The latency objective's error budget left over the time range.",
+     thresholds=BUDGET_STEPS, decimals=0)
+advance(4)
+ts("Burn rate over the last hour", 0, 24, 7,
+   [(f'(sum(rate(telltale_responses_total{{{SEL}, rcode="SERVFAIL"}}[1h])) / sum(rate(telltale_responses_total{{{SEL}}}[1h]))) / '
+     f'{ALLOWED.format(sel=SEL, slo="availability")}', "availability"),
+    (f'(1 - sum(rate(telltale_query_duration_seconds_bucket{{{SEL}, le="$slo_le"}}[1h])) / sum(rate(telltale_query_duration_seconds_count{{{SEL}}}[1h]))) / '
+     f'{ALLOWED.format(sel=SEL, slo="latency")}', "latency")],
+   "none", "How fast each error budget is being spent: 1 spends exactly the budget over the window; 14.4 (fast) and 6 (slow) alert.",
+   fill=0,
+   overrides=[])
+panels[-1]["fieldConfig"]["defaults"]["custom"]["thresholdsStyle"] = {"mode": "line"}
+panels[-1]["fieldConfig"]["defaults"]["thresholds"] = {"mode": "absolute", "steps": [
+    {"color": "green", "value": None}, {"color": "orange", "value": 6}, {"color": "red", "value": 14.4}]}
+advance(7)
+
 # ---- Latency
 row("Latency")
 ts("Answer time by path (p50 / p95 / p99)", 0, 12, 8,
@@ -304,6 +341,12 @@ dashboard = {
          "query": {"query": 'label_values(telltale_build_info{job=~"$job"}, instance)', "refId": "instance"},
          "definition": 'label_values(telltale_build_info{job=~"$job"}, instance)', "refresh": 2,
          "includeAll": True, "multi": True, "allValue": ".*", "current": {"text": "All", "value": "$__all"}},
+        # REQ: OBS-016 — the latency objective's threshold as a histogram `le` label.
+        {"name": "slo_le", "label": "Latency objective", "type": "query", "datasource": DS, "hide": 2,
+         "query": {"query": 'query_result(max(telltale_slo_latency_threshold_seconds{job=~"$job"}))',
+                   "refId": "slo_le"},
+         "definition": 'query_result(max(telltale_slo_latency_threshold_seconds{job=~"$job"}))',
+         "regex": "/ ([0-9.e+-]+) [0-9]+$/", "refresh": 2, "current": {"text": "0.25", "value": "0.25"}},
     ]},
     "annotations": {"list": []},
     "panels": panels,

@@ -1695,9 +1695,25 @@ With `prometheusRule.enabled`, the chart adds matching alerts:
 
 The card lists what's unavailable. Older nodes in a mixed-version cluster simply show no card.
 
-**Grafana:** import `deploy/grafana/telltale-dashboard.json` (traffic by status, answer-time percentiles, where time goes, upstream latency/share/failures/breakers, blocks by list and group, cache, top clients, and the health of TelltaleDNS itself). Pick the Prometheus data source, job, and instance at the top.
+**Grafana:** import `deploy/grafana/telltale-dashboard.json` (service level, traffic by status, answer-time percentiles, where time goes, upstream latency/share/failures/breakers, blocks by list and group, cache, top clients, and the health of TelltaleDNS itself). Pick the Prometheus data source, job, and instance at the top.
 
 **History:** once a minute, completed minutes are saved to `<data_dir>/rollups.db` (SQLite): per-minute counts for 7 days, per-hour for 400 days, per-day forever, and each hour's top domains, blocked names, NXDOMAIN names, clients, and latency percentiles. The dashboard's 7- and 30-day views, `GET /api/v1/stats/timeseries?step=hour|day`, and long `stats/summary` ranges read them, and they survive restarts. If the file can't be opened, history is limited to the 48 hours kept in memory; DNS is unaffected.
+
+### Service-level objectives
+Two promises about DNS, each with an **error budget**: the bad answers it still allows over a window (30 days by default).
+```toml
+[slo]
+enabled = true
+availability_target = 99.9   # percent of answers that aren't SERVFAIL
+latency_target = 99          # percent of answers sent within latency_ms
+latency_ms = 250             # 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, or 5000
+window_days = 30             # 1 to 90
+```
+- **What counts:** availability counts every answer (any response code) and the SERVFAIL ones; latency counts every query that got an answer and the ones slower than `latency_ms`. Queries dropped without an answer (rate limits, junk) count for neither. DNSSEC failures and domains broken at their own servers are SERVFAIL too: that's what your devices saw.
+- **Burn rate:** how fast a budget is being spent. 1 spends exactly the budget over the window; 14.4 spends 2% of a 30-day budget in an hour. Each objective shows it over 5 minutes, 30 minutes, 1 hour, 6 hours, and 3 days.
+- **When it warns:** a long and a short window both burn too fast (the Google SRE workbook's pairs): **fast**, 14.4× over 1 hour and 5 minutes; **slow**, 6× over 6 hours and 30 minutes; **ticket**, 1× over 3 days and 6 hours (shown only). Fast and slow turn the [health](#health) icon amber (`slo_burn`) and fire `slo_burn` [alert rules](#alerts). A pair needs at least 50 answers in its short window and 10 bad answers in its long one, so a single SERVFAIL on a quiet network doesn't warn.
+- **Where:** the dashboard's **Service level** card, `GET /api/v1/stats/slo`, and the MCP tool `slo_status`. In a cluster the objectives cover every node's answers. They're worked out from the per-minute and per-hour counts the dashboard already keeps, so they cost nothing on the query path; slow answers are counted in the rollups from this release on (older hours count none).
+- **Prometheus:** `telltale_slo_objective_ratio{slo}` and `telltale_slo_latency_threshold_seconds` publish the settings. With `prometheusRule.enabled`, the Helm chart adds recording rules (`telltale:slo_availability_errors:ratio_rate5m` … `_3d`, and `telltale:slo_latency_errors:…`) and alerts (`TelltaleDNSSLOAvailabilityBurnFast`, `…BurnSlow`, `…BurnTicket`, and the same for latency) with the same windows and minimums; set `prometheusRule.slo` to the same targets as `[slo]`. Without Kubernetes, load `deploy/prometheus/telltale-slo-rules.yaml` (the same rules, for a scrape job named `telltale-metrics`). The Grafana dashboard's **Service level** row shows the SLIs, the budget left over the dashboard's time range, and the burn rate.
 
 ### Query events
 Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics; the query log and the API for reading them come in later releases.
@@ -1867,6 +1883,7 @@ Rules watch:
 | `new_device` | a device TelltaleDNS has never seen starts asking, on any node (quiet for the first day after a fresh start, while every device is new) | device |
 | `disk_full` | a node's data disk is more than `threshold` % full (default 90) | node |
 | `plan_pending` | an AI agent's change waits for approval (`[agents] require_approval`) | plan |
+| `slo_burn` | a [service-level objective](#service-level-objectives) spends its error budget fast (14.4× over 1 hour and 5 minutes, or 6× over 6 hours and 30 minutes) | objective |
 
 - A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, and pending plans go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
@@ -1898,7 +1915,7 @@ Open `http://<server>:8053/` in a browser. On first start it asks for the setup 
 
 | Page | What it shows |
 |---|---|
-| Dashboard | queries, blocked %, cache hits, upstream latency, active clients; queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients with their groups (click through to the query log); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
+| Dashboard | queries, blocked %, cache hits, upstream latency, active clients; the [service level](#service-level-objectives) (each objective's last 30 days, error budget left, and burn rates); queries over time by status (15 min to 48 h); where time goes; top domains, blocked names, and clients with their groups (click through to the query log); upstream share and health. In a cluster, **Showing** switches between every node together, one node, or one site's nodes (remembered in your browser) |
 | Query log | search by name (contains, exact, subdomains, wildcard, regex), client, status, type, response code, slowness, and time; each row shows how long it took and how much of that was the upstream; **Why?** explains the decision. Filters live in the URL, so a search can be bookmarked or shared. **Live** streams new matching queries as they happen (the newest 500 stay on screen) |
 | Explain | why any name is or isn't blocked for any device |
 | Clients, Groups, Lists, Upstreams | devices seen and configured; groups and their lists; list download state and size; upstream health (circuit breaker), traffic, failures by kind (timeouts, connection errors, SERVFAIL, ...), and latency |
@@ -1914,7 +1931,7 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | Icon | Level | When |
 |---|---|---|
 | circle with a check (quiet) | healthy | nothing below |
-| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download; a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full |
+| triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download; a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast |
 | octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS, or SERVFAIL for 25% or more |
 
 Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.

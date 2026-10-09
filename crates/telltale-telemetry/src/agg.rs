@@ -48,6 +48,9 @@ pub struct Counts {
     /// indexes above only mean something within one process's group table). Empty in live
     /// buckets.
     pub named_groups: Vec<NamedGroup>,
+    /// REQ: OBS-016 (T11.1) — answered queries slower than the latency objective's
+    /// threshold ([`Aggregates::slo_latency_us`] when they were counted).
+    pub slow: u32,
 }
 
 /// One group's queries and blocked queries in a stored bucket (T6.16).
@@ -102,8 +105,12 @@ fn bump(v: &mut Vec<u32>, id: usize) {
 }
 
 impl Counts {
-    fn add_query(&mut self, e: &QueryEvent) {
+    fn add_query(&mut self, e: &QueryEvent, slow_us: u64) {
         self.total = self.total.saturating_add(1);
+        // REQ: OBS-016 — the latency objective's bad events (dropped queries got no answer).
+        if e.status != Status::Dropped && u64::from(e.t_total_us) > slow_us {
+            self.slow = self.slow.saturating_add(1);
+        }
         let s = &mut self.status[e.status as usize];
         *s = s.saturating_add(1);
         let q = &mut self.qtype[qtype_index(e.qtype)];
@@ -420,7 +427,13 @@ pub struct Aggregates {
     pub exported: Exported,
     /// Per-client counts in 10-minute windows (OPS-003).
     recent: RecentClients,
+    /// REQ: OBS-016 (T11.1) — answers slower than this (µs) count as `slow` in the time
+    /// buckets: the latency objective's threshold (`[slo] latency_ms`).
+    pub slo_latency_us: u64,
 }
+
+/// The latency objective's default threshold (`[slo] latency_ms = 250`).
+pub const DEFAULT_SLO_LATENCY_US: u64 = 250_000;
 
 impl Default for Aggregates {
     fn default() -> Self {
@@ -446,6 +459,7 @@ impl Aggregates {
             latest_s: 0,
             exported: Exported::default(),
             recent: RecentClients::default(),
+            slo_latency_us: DEFAULT_SLO_LATENCY_US,
         }
     }
 
@@ -468,9 +482,10 @@ impl Aggregates {
             Record::Query(e, name) => {
                 self.exported.add_query(e);
                 self.recent.add(e.client_ip, ts_s);
+                let slow_us = self.slo_latency_us;
                 for series in [&mut self.seconds, &mut self.minutes] {
                     if let Some(c) = series.at(ts_s) {
-                        c.add_query(e);
+                        c.add_query(e, slow_us);
                     }
                 }
                 if in_hour {

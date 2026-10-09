@@ -177,6 +177,48 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+// REQ: OBS-016 — the dashboard's Service level card: the server's objectives (a few local
+// answers make them "on track"), then a stubbed outage that burns the availability budget fast.
+test('obs_016 service level card', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  for (let i = 0; i < 5; i++) await query(`slo${i}.localhost`).catch(() => 0);
+  await page.goto('/#/');
+  const card = page.getByTestId('slo-card');
+  await expect(card).toContainText('Service level');
+  await expect(card).toContainText('(last 30 days)');
+  await expect(card.getByTestId('slo-availability')).toContainText('Answers that work');
+  await expect(card.getByTestId('slo-latency')).toContainText('answers sent within 250 ms');
+  const burns = (rates: number[]) =>
+    ['5m', '30m', '1h', '6h', '3d'].map((window, i) => ({ window, rate: rates[i], total: 10000, bad: Math.round(rates[i] * 10) }));
+  await page.route('**/api/v1/stats/slo*', (route) =>
+    route.fulfill({
+      json: {
+        enabled: true,
+        windowDays: 30,
+        objectives: [
+          {
+            name: 'availability', goodMeans: "answers that aren't SERVFAIL", targetPercent: 99.9, sliPercent: 99.912,
+            good: 999120, total: 1000000, budgetRemainingPercent: 12, burnRates: burns([20.1, 17.5, 16.2, 3.1, 1.2]),
+            alert: 'fast', summary: 'availability: …',
+          },
+          {
+            name: 'latency', goodMeans: 'answers sent within 250 ms', targetPercent: 99, latencyMs: 250, sliPercent: 99.7,
+            good: 997000, total: 1000000, budgetRemainingPercent: 70, burnRates: burns([0.2, 0.3, 0.3, 0.3, 0.3]), summary: 'latency: …',
+          },
+        ],
+      },
+    }),
+  );
+  await page.reload();
+  const a = card.getByTestId('slo-availability');
+  await expect(a).toContainText('burning fast');
+  await expect(a).toContainText('99.912%');
+  await expect(a).toContainText('12% of the error budget left');
+  await expect(a).toContainText('1h 16×');
+  await expect(card.getByTestId('slo-latency')).toContainText('on track');
+  await page.unroute('**/api/v1/stats/slo*');
+});
+
 // REQ: OBS-014 — acknowledging a finding hides it (and drops it from the badge) until "Show
 // acknowledged"; the acknowledge itself goes to the real server. A fresh server has no
 // findings yet (devices learn for a week), so the list is stubbed.

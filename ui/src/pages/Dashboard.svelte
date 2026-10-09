@@ -13,6 +13,7 @@
   import StatusBadge from '../lib/components/StatusBadge.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import SloCard from '../lib/components/SloCard.svelte';
 
   const ranges = [
     { id: '15m', label: '15 min', from: '-15m', step: 'second' as const, summary: '-15m', secs: 900 },
@@ -34,6 +35,8 @@
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let stages = $state<S['LatencyRow'][]>([]);
   let byPath = $state<S['LatencyRow'][]>([]);
+  // REQ: OBS-016 — the objectives (their own window, not the dashboard's range).
+  let slo = $state<S['SloStatus'] | null>(null);
   // What each "Where time goes" row means (path/transport, or a wait stage).
   const paths: Record<string, string> = {
     cache: 'Answered from the cache: a repeat question, no upstream asked. Usually well under a millisecond.',
@@ -106,7 +109,7 @@
     try {
       const g = group || undefined;
       const sc = scope || undefined;
-      const [s, ts, d, b, c, u, st, lp, gs, cl] = await Promise.all([
+      const [s, ts, d, b, c, u, st, lp, gs, cl, sl] = await Promise.all([
         api.summary(r.summary, undefined, sc),
         api.timeseries({ from: r.from, step: r.step, scope: sc }),
         api.top('domains', 10, undefined, g, sc),
@@ -117,7 +120,9 @@
         api.latency('path', sc),
         api.groups(),
         api.cluster().catch(() => null),
+        api.slo(sc).catch(() => null),
       ]);
+      slo = sl;
       groups = gs.items;
       nodes = cl?.enabled ? cl.nodes : [];
       summary = s;
@@ -155,6 +160,7 @@
           upstreamFailures: 0,
           byGroup: {},
           blockedByGroup: {},
+          slow: 0,
         },
       );
     }
@@ -286,6 +292,8 @@
     <Kpi label="Active clients" value={num(summary?.activeClients)} sub="this hour" delta={change(summary?.activeClients, previous?.activeClients)} />
     <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
   </div>
+
+  <SloCard {slo} />
 
   <div class="status-row">
     <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />

@@ -670,6 +670,67 @@ to = ["phone"]
     }
 }
 
+/// REQ: OBS-016 (T11.1) — objectives below 100%, a threshold that is a histogram bucket bound,
+/// a window the rollups hold; `slo_burn` is an alert condition.
+#[test]
+fn obs_016_slo_is_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = r#"
+[slo]
+availability_target = 99.95
+latency_target = 99.0
+latency_ms = 100
+window_days = 28
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"
+url = "https://ntfy.sh/my-dns"
+[[alerts.rule]]
+name = "budget"
+when = "slo_burn"
+to = ["phone"]
+"#;
+    let cfg = load(ok).unwrap().config;
+    assert_eq!((cfg.slo.latency_ms, cfg.slo.window_days), (100, 28));
+    assert!(cfg.slo.enabled, "on by default");
+    let d = telltale_config::Config::default().slo;
+    assert_eq!(
+        (
+            d.availability_target,
+            d.latency_target,
+            d.latency_ms,
+            d.window_days
+        ),
+        (99.9, 99.0, 250, 30)
+    );
+    for (bad, why) in [
+        (
+            ok.replace("availability_target = 99.95", "availability_target = 100"),
+            "up to (not including) 100",
+        ),
+        (
+            ok.replace("latency_target = 99.0", "latency_target = 20"),
+            "from 50",
+        ),
+        (
+            ok.replace("latency_ms = 100", "latency_ms = 120"),
+            "bucket bounds",
+        ),
+        (
+            ok.replace("window_days = 28", "window_days = 365"),
+            "from 1 to 90 days",
+        ),
+    ] {
+        let err = format!("{:?}", load(&bad).unwrap_err());
+        assert!(err.contains(why), "{why}: {err}");
+    }
+}
+
 /// REQ: OBS-010 (T7.13) — event sinks: each kind's required settings; known statuses.
 #[test]
 fn obs_010_sinks_are_validated() {
