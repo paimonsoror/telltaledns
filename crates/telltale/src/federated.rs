@@ -82,6 +82,11 @@ enum Read {
     },
     /// The configuration version (a replica's `If-Match` and `ETag` use the primary's; T5.7).
     ConfigVersion,
+    /// REQ: API-002, CLU-002 — the primary's configuration entries (what the settings
+    /// editors list), for a replica's UI.
+    ConfigEntries {
+        kind: Option<String>,
+    },
     /// REQ: DNS-006 (T6.13) — the peer's own cache: counters, a lookup, a flush.
     CacheStats,
     /// T7.1 — pauses.
@@ -166,6 +171,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
             limit,
         } => serde_json::to_vec(&b.queries(&params, from_us, to_us, limit).map_err(text)?),
         Read::ConfigVersion => serde_json::to_vec(&b.config_version()),
+        Read::ConfigEntries { kind } => serde_json::to_vec(&b.config_entries(kind.as_deref())),
         Read::CacheStats => serde_json::to_vec(&b.cache_stats()),
         Read::BlockingState => serde_json::to_vec(&b.blocking_state()),
         Read::BlockingPause { group, minutes } => serde_json::to_vec(
@@ -1561,6 +1567,27 @@ impl Backend for Federated {
         }
         self.local.config_version()
     }
+    // REQ: API-002 (ADR-069), CLU-002 — the settings editors list the entries in force, and the
+    // configuration is the primary's: a replica asks it (so every node shows the same rows, and
+    // what the API changed on the primary). Without a reachable primary, or with one too old to
+    // answer, this node's own view. (Before: the trait's default, an empty list, so every
+    // editor said "None yet" on a cluster node; owner report 2026-10-09.)
+    fn config_entries(&self, kind: Option<&str>) -> Vec<telltale_api::model::ConfigEntry> {
+        if !self.cluster.is_primary()
+            && let Some(primary) = self.cluster.reachable_primary()
+            && let Some(Ok(body)) = self.call_one(
+                &primary,
+                &Read::ConfigEntries {
+                    kind: kind.map(str::to_owned),
+                },
+                VERSION_DEADLINE,
+            )
+            && let Ok(v) = serde_json::from_slice::<Vec<telltale_api::model::ConfigEntry>>(&body)
+        {
+            return v;
+        }
+        self.local.config_entries(kind)
+    }
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         match self.write_route() {
             WriteRoute::Primary(primary) => Box::pin(crate::forward::client(
@@ -1649,10 +1676,47 @@ mod ephemeral_tests {
         assert!(!changes_state(&Read::CacheStats));
         assert!(!changes_state(&Read::BlockingState));
         assert!(!changes_state(&Read::ConfigVersion));
+        assert!(!changes_state(&Read::ConfigEntries { kind: None }));
         assert!(!changes_state(&Read::Timeseries {
             step: Step::Minute,
             from_s: 0,
             to_s: 1
         }));
+    }
+
+    /// The `fn` names of one `impl` block in a source file.
+    fn methods(src: &str, marker: &str) -> std::collections::BTreeSet<String> {
+        let start = src.find(marker).expect("the impl block");
+        let end = start + src[start..].find("\n}\n").expect("its end");
+        src[start..end]
+            .lines()
+            .filter_map(|l| l.strip_prefix("    fn "))
+            .filter_map(|l| l.split('(').next())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// REQ: CLU-002 (regression 2026-10-09) — every API read a node answers on its own, a
+    /// cluster node answers too: `Federated` overrides each `Backend` method `ApiBackend`
+    /// implements, so none silently falls back to the trait's empty default (as
+    /// `config_entries` did: every settings editor said "None yet" on a cluster node). The
+    /// exceptions are reads only peers make, answered by each node's own backend.
+    #[test]
+    fn clu_002_federated_covers_every_backend_read() {
+        let api = methods(
+            include_str!("api_backend.rs"),
+            "impl Backend for ApiBackend",
+        );
+        let fed = methods(include_str!("federated.rs"), "impl Backend for Federated");
+        let peer_only = ["latency_hists", "shipped_timeseries"];
+        let missing: Vec<&String> = api
+            .iter()
+            .filter(|m| !fed.contains(*m) && !peer_only.contains(&m.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Federated doesn't implement {missing:?}"
+        );
+        assert!(fed.contains("config_entries"));
     }
 }
