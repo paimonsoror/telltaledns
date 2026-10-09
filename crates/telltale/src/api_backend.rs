@@ -1626,6 +1626,8 @@ impl Backend for ApiBackend {
     // REQ: DNS-006 (T6.13) — this node's cache.
     fn cache_stats(&self) -> Vec<telltale_api::model::CacheNodeStats> {
         let s = self.src.cache.stats();
+        // REQ: OBS-021 (T11.2) — whether the cache is the right size.
+        let sizing = crate::cache_sizing::advise(&s, self.src.cache.policy().max_bytes as u64);
         let looked = s.hits + s.misses;
         #[allow(clippy::cast_precision_loss)] // a percentage for display
         let hit_percent =
@@ -1645,6 +1647,7 @@ impl Backend for ApiBackend {
             settings: Some(cache_settings(&self.src.config.load().cache)),
             warm_start: self.src.cache_history.warm_start(),
             history: self.src.cache_history.points(),
+            sizing: Some(sizing),
         }]
     }
 

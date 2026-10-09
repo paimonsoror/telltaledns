@@ -2169,6 +2169,7 @@ export interface components {
             /** Format: int64 */
             prefetches: number;
             settings?: components["schemas"]["CacheSettings"] | null;
+            sizing?: components["schemas"]["CacheSizing"] | null;
             /** Format: int64 */
             staleServed: number;
             /** Format: int64 */
@@ -2247,6 +2248,56 @@ export interface components {
              * @description How long expired answers are kept for that.
              */
             staleMaxAgeSeconds: number;
+        };
+        /**
+         * @description REQ: OBS-021 (ADR-106) — one node's cache size advice: what a bigger cache would have
+         *     answered (estimated from a sample of evicted names), and its peak use.
+         */
+        CacheSizing: {
+            /** @description The advice in one or two sentences, with the `[cache] max_bytes` to try. */
+            advice: string;
+            /**
+             * Format: int64
+             * @description Lookups since start (what the percentages are of).
+             */
+            lookups: number;
+            /**
+             * Format: int64
+             * @description The most memory the cache held since start.
+             */
+            peakBytes: number;
+            /** @description A cache 125%, 150%, and 200% of today's size. */
+            steps: components["schemas"]["CacheSizingStep"][];
+            /**
+             * Format: int64
+             * @description The `[cache] max_bytes` the advice suggests, if any.
+             */
+            suggestedMaxBytes?: number | null;
+            /**
+             * @description `grow`, `shrink`, `ok`, or `learning` (too few lookups to judge).
+             * @example grow
+             */
+            verdict: string;
+        };
+        /** @description REQ: OBS-021 — what one larger cache would have added. */
+        CacheSizingStep: {
+            /**
+             * Format: int64
+             * @description The extra memory it takes.
+             */
+            extraBytes: number;
+            /** Format: double */
+            extraHitPercent: number;
+            /**
+             * Format: int64
+             * @description Estimated extra hits since start, and as a share of lookups (percentage points).
+             */
+            extraHits: number;
+            /**
+             * Format: int32
+             * @description The size, in percent of today's (125, 150, 200).
+             */
+            sizePercent: number;
         };
         /** @description One entry in a node's top list. */
         CacheTopEntry: {
@@ -3234,6 +3285,7 @@ export interface components {
                 /** Format: int64 */
                 prefetches: number;
                 settings?: components["schemas"]["CacheSettings"] | null;
+                sizing?: components["schemas"]["CacheSizing"] | null;
                 /** Format: int64 */
                 staleServed: number;
                 /** Format: int64 */

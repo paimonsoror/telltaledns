@@ -768,6 +768,9 @@ test('dns_006 cache page', async () => {
   await expect(node).toHaveCount(1);
   await expect(node).toContainText('Hit rate');
   await expect(node.getByTestId('cache-warm')).toContainText('cold (keeping the cache across restarts is off)');
+  // REQ: OBS-021 — a fresh server has too few lookups to judge the size.
+  await expect(node.getByTestId('cache-sizing')).toContainText('learning');
+  await expect(node.getByTestId('cache-sizing')).toContainText('Not enough lookups yet');
   await node.getByText('Settings', { exact: true }).click();
   await expect(node.getByTestId('cache-settings')).toContainText('Serve stale');
   const top = page.getByTestId('cache-top');

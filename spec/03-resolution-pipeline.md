@@ -47,6 +47,9 @@ proxy_protocol = false
 - **Persistence** (DNS-009): on graceful shutdown write `cache.bin` (zstd), restore on start, and drop expired entries beyond the stale window.
 - **Flush APIs:** all, by name (with subtree), by upstream view.
 
+### 4.1 Sizing advice (OBS-021, ADR-106)
+Each shard follows a 1-in-16 sample of keys (fingerprint bits 32–35 clear) after eviction: fingerprint → (evictions so far, expiry). When a sampled key is inserted again while its old answer would still be fresh, `evictions now − evictions then` is how many more entries the shard needed to still hold it; counted at the smallest of +25%, +50%, +100% of its live entries that covers it. Ghosts further back than +100% are forgotten, and the list is capped at 2 × live/16 + 16 per shard. It runs only in `insert` (after an upstream answer) and eviction, never on a lookup. `stats()` scales the counts by 16 and makes them cumulative (`ghost_hits`); shards also keep their peak weight (`peak_bytes`, the sum of shard peaks). The advice (`grow` at ≥ 1 point of extra hits, the smallest such step; `shrink` with no evictions after 100,000 lookups and a peak under half the budget, to peak × 1.5 ≥ 4 MiB; `ok`; `learning` under 10,000 lookups) is in `GET /api/v1/cache/stats` (`sizing`), MCP `cache_advice`, and `telltale_cache_ghost_hits_total{size}` / `telltale_cache_peak_bytes`.
+
 ## 5. DNSSEC (DNS-011)
 - Modes: `off`, `validate` (default once stable), `validate_permissive` (log bogus, don't fail).
 - Set DO=1 upstream when validating. Validate the chain of trust from the configured trust anchor (root KSK; RFC 5011 auto-update P1). Cache DNSKEY/DS through the same cache.

@@ -155,6 +155,9 @@
   const total = (m: S['CacheMakeup']) => m.positive + m.nxdomain + m.nodata + m.servfail;
   const ttl = (s: number) => (s >= 0 ? `${duration(s)} left` : `stale ${duration(-s)}`);
   let lookupName = $state('');
+  // REQ: OBS-021 — the size advice's verdicts.
+  const sizingLabel: Record<string, string> = { grow: 'could grow', shrink: 'could shrink', ok: 'right size', learning: 'learning' };
+  const sizingTone: Record<string, string> = { grow: 'warn', shrink: 'info', ok: 'ok', learning: '' };
 </script>
 
 <div class="page">
@@ -193,6 +196,22 @@
               –
             {/if}
           </dd>
+          {#if s.sizing}
+            <!-- REQ: OBS-021 — whether the cache is the right size. -->
+            {@const z = s.sizing}
+            <dt>Size</dt>
+            <dd class="small" data-testid="cache-sizing">
+              <span class="badge {sizingTone[z.verdict] ?? ''}">{sizingLabel[z.verdict] ?? z.verdict}</span>
+              {z.advice}
+              {#if z.verdict !== 'learning'}
+                <span class="muted">
+                  Bigger:
+                  {#each z.steps as st, j (st.sizePercent)}{j ? ' · ' : ''}{st.sizePercent}% → +{st.extraHitPercent}% hits{/each}.
+                  Peak {bytes(z.peakBytes)}.
+                </span>
+              {/if}
+            </dd>
+          {/if}
         </dl>
         {#if s.settings}
           {@const c = s.settings}

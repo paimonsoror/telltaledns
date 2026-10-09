@@ -1037,6 +1037,43 @@ pub struct CacheNodeStats {
     /// The last hour, every 15 s, oldest first (empty from older nodes).
     #[serde(default)]
     pub history: Vec<CachePoint>,
+    /// REQ: OBS-021 (T11.2) — whether the cache is the right size (absent from older nodes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sizing: Option<CacheSizing>,
+}
+
+/// REQ: OBS-021 (ADR-106) — one node's cache size advice: what a bigger cache would have
+/// answered (estimated from a sample of evicted names), and its peak use.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSizing {
+    /// `grow`, `shrink`, `ok`, or `learning` (too few lookups to judge).
+    #[schema(example = "grow")]
+    pub verdict: String,
+    /// The advice in one or two sentences, with the `[cache] max_bytes` to try.
+    pub advice: String,
+    /// Lookups since start (what the percentages are of).
+    pub lookups: u64,
+    /// A cache 125%, 150%, and 200% of today's size.
+    pub steps: Vec<CacheSizingStep>,
+    /// The most memory the cache held since start.
+    pub peak_bytes: u64,
+    /// The `[cache] max_bytes` the advice suggests, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_max_bytes: Option<u64>,
+}
+
+/// REQ: OBS-021 — what one larger cache would have added.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSizingStep {
+    /// The size, in percent of today's (125, 150, 200).
+    pub size_percent: u32,
+    /// Estimated extra hits since start, and as a share of lookups (percentage points).
+    pub extra_hits: u64,
+    pub extra_hit_percent: f64,
+    /// The extra memory it takes.
+    pub extra_bytes: u64,
 }
 
 /// REQ: DNS-006 (T6.15) — the `[cache]` settings a node runs with.

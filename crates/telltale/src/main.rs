@@ -11,6 +11,7 @@ mod auth_setup;
 mod backup;
 mod build_info;
 mod cache_history;
+mod cache_sizing;
 mod checks;
 mod cluster;
 mod ctl;

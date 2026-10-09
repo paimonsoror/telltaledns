@@ -50,8 +50,13 @@ fn epoch() -> Instant {
 }
 
 /// Tenths of a second since [`epoch`] (saturating; 13 years fit in a `u32`).
-fn tenths(t: Instant) -> u32 {
+pub(crate) fn tenths(t: Instant) -> u32 {
     u32::try_from(t.saturating_duration_since(epoch()).as_millis() / 100).unwrap_or(u32::MAX)
+}
+
+/// REQ: OBS-021 — when an entry stops being fresh, in [`tenths`] (the cache's sizing clock).
+pub(crate) fn expires(e: &Entry) -> u32 {
+    e.inserted.saturating_add(e.ttl.saturating_mul(10))
 }
 
 impl Entry {

@@ -884,6 +884,22 @@ fn render_cache(w: &mut PromWriter, cache: &Cache) {
     ] {
         w.family(name, kind, help).sample(name, &[], v);
     }
+    // REQ: OBS-021 (T11.2, ADR-106) — whether the cache is the right size.
+    let name = "telltale_cache_ghost_hits_total";
+    w.family(
+        name,
+        "counter",
+        "Estimated extra hits a larger cache would have served (from a 1-in-16 sample of evicted names; cumulative: size=\"1.5x\" includes \"1.25x\").",
+    );
+    for (size, n) in ["1.25x", "1.5x", "2x"].iter().zip(c.ghost_hits) {
+        w.sample(name, &[("size", size)], n);
+    }
+    w.family(
+        "telltale_cache_peak_bytes",
+        "gauge",
+        "The most memory the cache has held since start.",
+    )
+    .sample("telltale_cache_peak_bytes", &[], c.peak_bytes as u64);
 }
 
 /// Name, type, help, and value of one per-list gauge.

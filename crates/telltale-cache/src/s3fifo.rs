@@ -24,6 +24,34 @@ struct Node<V> {
 /// One eviction step; returns whether anything was evicted or promoted.
 type Evict<K, V, S> = fn(&mut S3Fifo<K, V, S>) -> bool;
 
+/// REQ: OBS-021 (T11.2, ADR-106) — keys whose fingerprint has these bits clear (1 in 16) are
+/// followed after eviction, to estimate what a bigger cache would have hit (spatial sampling, as
+/// in SHARDS: a uniform sample of keys keeps their reuse distances exact).
+pub const SIZING_SAMPLE_SHIFT: u32 = 4;
+const SIZING_SAMPLE_MASK: u64 = (1 << SIZING_SAMPLE_SHIFT) - 1;
+/// The larger sizes estimated, in percent more than the current one.
+pub const SIZING_STEPS: [u64; 3] = [25, 50, 100];
+
+/// REQ: OBS-021 — evicted sampled keys, and the hits a bigger cache would have had with them.
+#[derive(Debug)]
+struct Sizing<S> {
+    /// Fingerprint → (evictions so far when it was evicted, when its answer expires).
+    ghosts: HashMap<u64, (u64, u32), S>,
+    /// The same, oldest first, to forget what's past every estimated size.
+    order: VecDeque<(u64, u64)>,
+    /// Sampled re-insertions a cache [`SIZING_STEPS`] larger would have answered from memory,
+    /// by the smallest step that would have.
+    hits: [u64; 3],
+}
+
+/// When a value stops being fresh, on the clock [`S3Fifo::insert_at`] is given.
+type Expiry<V> = fn(&V) -> u32;
+
+/// A fingerprint in the sample.
+const fn sampled(fp: u64) -> bool {
+    (fp >> 32) & SIZING_SAMPLE_MASK == 0
+}
+
 /// A weighted S3-FIFO map. `K` should be cheap to copy (queues hold copies).
 #[derive(Debug)]
 pub struct S3Fifo<K, V, S> {
@@ -38,6 +66,9 @@ pub struct S3Fifo<K, V, S> {
     max_entries: usize,
     next_gen: u32,
     evictions: u64,
+    /// REQ: OBS-021 — the sizing estimate, with when a value expires on the caller's clock (off
+    /// unless [`S3Fifo::with_sizing`]).
+    sizing: Option<(Sizing<S>, Expiry<V>)>,
 }
 
 impl<K, V, S> S3Fifo<K, V, S>
@@ -59,7 +90,31 @@ where
             max_entries,
             next_gen: 0,
             evictions: 0,
+            sizing: None,
         }
+    }
+
+    /// REQ: OBS-021 — also estimates what a bigger cache would hit; `expiry` says when a value
+    /// stops being fresh, on the clock [`S3Fifo::insert_at`] is given.
+    #[must_use]
+    pub fn with_sizing(mut self, expiry: Expiry<V>) -> Self {
+        let hasher = self.map.hasher().clone();
+        self.sizing = Some((
+            Sizing {
+                ghosts: HashMap::with_hasher(hasher),
+                order: VecDeque::new(),
+                hits: [0; 3],
+            },
+            expiry,
+        ));
+        self
+    }
+
+    /// REQ: OBS-021 — sampled re-insertions a cache 25%, 50%, and 100% larger would have
+    /// answered (each counted once, at the smallest size that would have; multiply by
+    /// `1 << SIZING_SAMPLE_SHIFT` for an estimate of all keys).
+    pub fn sizing_hits(&self) -> [u64; 3] {
+        self.sizing.as_ref().map_or([0; 3], |(s, _)| s.hits)
     }
 
     pub fn len(&self) -> usize {
@@ -93,6 +148,11 @@ where
 
     /// Inserts or replaces `key`, then evicts until within budget.
     pub fn insert(&mut self, key: K, value: V, weight: usize) {
+        self.insert_at(key, value, weight, 0);
+    }
+
+    /// [`Self::insert`] at `now` on the sizing clock (see [`Self::with_sizing`]).
+    pub fn insert_at(&mut self, key: K, value: V, weight: usize, now: u32) {
         if let Some(node) = self.map.get_mut(&key) {
             let old = node.weight;
             node.value = value;
@@ -105,6 +165,7 @@ where
         } else {
             let fp = self.fingerprint(&key);
             let to_main = self.ghost_set.remove(&fp);
+            self.sizing_reinserted(fp, now);
             let generation = self.next_gen;
             self.next_gen = self.next_gen.wrapping_add(1);
             self.map.insert(
@@ -223,9 +284,10 @@ where
                 return true;
             }
             let fp = self.fingerprint(&key);
-            self.remove(&key);
+            let gone = self.remove(&key);
             self.evictions += 1;
             self.remember_ghost(fp);
+            self.sizing_evicted(fp, gone.as_ref());
             return true;
         }
         false
@@ -247,11 +309,70 @@ where
                 self.main.push_back((key, generation));
                 continue;
             }
-            self.remove(&key);
+            let gone = self.remove(&key);
             self.evictions += 1;
+            if self.sizing.is_some() {
+                let fp = self.fingerprint(&key);
+                self.sizing_evicted(fp, gone.as_ref());
+            }
             return true;
         }
         false
+    }
+
+    /// REQ: OBS-021 — notes a sampled key's eviction, and forgets evictions further back than
+    /// the largest size estimated (twice the entries); the list stays bounded however the
+    /// cache is used.
+    fn sizing_evicted(&mut self, fp: u64, value: Option<&V>) {
+        let live = self.map.len() as u64;
+        let evictions = self.evictions;
+        let Some((s, expiry)) = self.sizing.as_mut() else {
+            return;
+        };
+        if sampled(fp)
+            && let Some(v) = value
+        {
+            s.ghosts.insert(fp, (evictions, expiry(v)));
+            s.order.push_back((fp, evictions));
+        }
+        let reach = live.max(16) * SIZING_STEPS[2] / 100;
+        let cap = (live >> SIZING_SAMPLE_SHIFT) * 2 + 16;
+        while let Some(&(old, at)) = s.order.front() {
+            if evictions.saturating_sub(at) <= reach && s.order.len() as u64 <= cap {
+                break;
+            }
+            s.order.pop_front();
+            if s.ghosts.get(&old).is_some_and(|(e, _)| *e == at) {
+                s.ghosts.remove(&old);
+            }
+        }
+    }
+
+    /// REQ: OBS-021 — a new key that was evicted (and sampled) is back while its answer would
+    /// still have been fresh: a cache bigger by the evictions since would have answered it.
+    /// Counted at the smallest of [`SIZING_STEPS`] that covers that distance.
+    fn sizing_reinserted(&mut self, fp: u64, now: u32) {
+        if !sampled(fp) {
+            return;
+        }
+        let live = (self.map.len() as u64).max(1);
+        let evictions = self.evictions;
+        let Some((s, _)) = self.sizing.as_mut() else {
+            return;
+        };
+        let Some((at, expires)) = s.ghosts.remove(&fp) else {
+            return;
+        };
+        if expires <= now {
+            return;
+        }
+        let distance = evictions.saturating_sub(at);
+        if let Some(i) = SIZING_STEPS
+            .iter()
+            .position(|step| distance * 100 <= live * step)
+        {
+            s.hits[i] += 1;
+        }
     }
 
     fn remember_ghost(&mut self, fp: u64) {
@@ -326,6 +447,31 @@ mod tests {
         c.retain(|k, _| *k == 3);
         assert_eq!(c.weight(), 5);
         assert_eq!(c.len(), 1);
+    }
+
+    // REQ: OBS-021 — a working set larger than the cache: evicted keys coming back show up as
+    // hits a bigger cache would have had (within twice the size); none when everything fits,
+    // and none for answers that would have expired anyway.
+    #[test]
+    fn obs_021_sizing_counts_what_a_bigger_cache_would_hit() {
+        let run = |keys: u32, cap: usize, expires: u32| {
+            let mut c: S3Fifo<u32, u32, RandomState> =
+                S3Fifo::new(cap, 0, RandomState::new()).with_sizing(|v| *v);
+            for round in 0..20 {
+                for k in 0..keys {
+                    if c.get_mut(&k).is_none() {
+                        c.insert_at(k, expires, 1, round);
+                    }
+                }
+            }
+            c.sizing_hits()
+        };
+        let h = run(1000, 700, u32::MAX);
+        assert!(h.iter().sum::<u64>() > 0, "{h:?}");
+        assert_eq!(run(500, 700, u32::MAX), [0; 3], "everything fits");
+        assert_eq!(run(1000, 700, 0), [0; 3], "they'd have expired");
+        let plain: S3Fifo<u32, u32, RandomState> = S3Fifo::new(10, 0, RandomState::new());
+        assert_eq!(plain.sizing_hits(), [0; 3], "off unless asked for");
     }
 
     #[test]

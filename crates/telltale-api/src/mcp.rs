@@ -297,6 +297,13 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
+        // REQ: OBS-021 (ADR-106)
+        Tool {
+            name: "cache_advice",
+            description: "Read-only. Is each node's cache the right size? Per node: hit rate, memory used and its budget, the estimated extra hits a cache 25%, 50%, and 100% larger would have served (from a sample of evicted names), the peak memory used, and the advice: grow (with the max_bytes to try), shrink (it never filled), ok, or learning (too few lookups yet).",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| Ok(vec![("caches".into(), "/api/v1/cache/stats".into())]),
+        },
         // REQ: OBS-016 (ADR-105)
         Tool {
             name: "slo_status",

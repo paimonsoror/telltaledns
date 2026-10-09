@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-106 — Cache sizing from a sampled ghost list of evicted keys (Proposed)
+**Context:** the owner asked (2026-10-08) for cache sizing advice from a ghost list (OBS-021), without costing DNS performance. The memory gate (T10.2) is failing, so the estimate itself must stay small; a full ghost list (one record per evicted key) would cost tens of bytes per cached answer.
+**Decision:**
+- Spatial sampling (SHARDS, Waldspurger et al., FAST '15): only keys whose fingerprint has bits 32–35 clear (1 in 16; the shard uses the high bits and the map the low ones, so the sample is spread over every shard). A sampled key's reuse distance is exact, so the counts scaled by 16 estimate the whole cache.
+- Distance in evictions, compared with the shard's live entry count: S3-FIFO isn't LRU, so "N more entries would have held it" is an approximation, good enough to separate "1% more hits" from "nothing to gain"; the advice says "estimated".
+- A key counts only if its answer would still have been fresh when it came back (expiry on the entry's own clock), so a bigger cache isn't credited with answers it would have had to fetch again.
+- Recorded in `insert` (an upstream answer arrived) and eviction only: the lookup path, hit or miss, is unchanged. Memory: about 50 bytes per sampled ghost, at most 2 × live/16 + 16 per shard (~3 bytes per cached answer).
+- Advice thresholds (conservative, not in the request): grow when a step adds ≥ 1 percentage point of hits (the smallest such step); shrink only with no evictions after 100,000 lookups and a peak under half the budget (to the peak plus half, at least 4 MiB); nothing before 10,000 lookups.
+**Consequences:** counts restart with the process. The peak is the sum of shard peaks (an upper bound), which only makes "shrink" less likely. Each cluster node judges its own cache.
+
 ## ADR-105 — Service-level objectives from the time buckets, with multi-window burn rates (Proposed)
 **Context:** the owner asked (2026-10-08) for SLOs with burn-rate alerts, an error-budget card in the UI, and the burn folded into the health level (OBS-016). The data was there (per-minute and per-hour counts by RCODE, latency histograms on `/metrics`), but nothing turned it into objectives, and the time buckets had no latency information.
 **Decision:**

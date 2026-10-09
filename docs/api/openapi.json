@@ -5525,6 +5525,17 @@
               }
             ]
           },
+          "sizing": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CacheSizing",
+                "description": "REQ: OBS-021 (T11.2) — whether the cache is the right size (absent from older nodes)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "staleServed": {
             "type": "integer",
             "format": "int64",
@@ -5688,6 +5699,90 @@
             "type": "integer",
             "format": "int32",
             "description": "How long expired answers are kept for that.",
+            "minimum": 0
+          }
+        }
+      },
+      "CacheSizing": {
+        "type": "object",
+        "description": "REQ: OBS-021 (ADR-106) — one node's cache size advice: what a bigger cache would have\nanswered (estimated from a sample of evicted names), and its peak use.",
+        "required": [
+          "verdict",
+          "advice",
+          "lookups",
+          "steps",
+          "peakBytes"
+        ],
+        "properties": {
+          "advice": {
+            "type": "string",
+            "description": "The advice in one or two sentences, with the `[cache] max_bytes` to try."
+          },
+          "lookups": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lookups since start (what the percentages are of).",
+            "minimum": 0
+          },
+          "peakBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The most memory the cache held since start.",
+            "minimum": 0
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CacheSizingStep"
+            },
+            "description": "A cache 125%, 150%, and 200% of today's size."
+          },
+          "suggestedMaxBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `[cache] max_bytes` the advice suggests, if any.",
+            "minimum": 0
+          },
+          "verdict": {
+            "type": "string",
+            "description": "`grow`, `shrink`, `ok`, or `learning` (too few lookups to judge).",
+            "example": "grow"
+          }
+        }
+      },
+      "CacheSizingStep": {
+        "type": "object",
+        "description": "REQ: OBS-021 — what one larger cache would have added.",
+        "required": [
+          "sizePercent",
+          "extraHits",
+          "extraHitPercent",
+          "extraBytes"
+        ],
+        "properties": {
+          "extraBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The extra memory it takes.",
+            "minimum": 0
+          },
+          "extraHitPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "extraHits": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Estimated extra hits since start, and as a share of lookups (percentage points).",
+            "minimum": 0
+          },
+          "sizePercent": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The size, in percent of today's (125, 150, 200).",
             "minimum": 0
           }
         }
@@ -8172,6 +8267,17 @@
                     {
                       "$ref": "#/components/schemas/CacheSettings",
                       "description": "REQ: DNS-006, OBS-003 (T6.15) — the `[cache]` settings in effect (absent from older\nnodes)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sizing": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/CacheSizing",
+                      "description": "REQ: OBS-021 (T11.2) — whether the cache is the right size (absent from older nodes)."
                     },
                     {
                       "type": "null"

@@ -630,6 +630,57 @@ fn dns_006_byte_budget_is_respected() {
     assert!(s.evictions > 0);
 }
 
+/// REQ: OBS-021 (T11.2) — names asked again after they were evicted, while their answers would
+/// still be fresh, count as hits a bigger cache would have served (estimated, cumulative by
+/// size); the peak memory is kept. Lookups themselves are untouched.
+#[test]
+fn obs_021_cache_sizing_estimates() {
+    let policy = CachePolicy {
+        max_bytes: 64 * 1024,
+        shards: 4,
+        ..CachePolicy::default()
+    };
+    let cache = Cache::new(policy);
+    let t0 = Instant::now();
+    // About 1.5 times what fits, asked in a cycle: each round re-inserts evicted names.
+    let names = 64 * 1024 / 250 * 3 / 2;
+    for round in 0..10u64 {
+        let now = t0 + Duration::from_secs(round);
+        for i in 0..names {
+            let m = query_bytes(&format!("host{i}.example.com"), rtype::A, None, 1);
+            let q = parse_query(&m).unwrap();
+            cache
+                .insert(&key(&q), &q, &upstream_a(&q, &[300]), now)
+                .unwrap();
+        }
+    }
+    let s = cache.stats();
+    assert!(s.ghost_hits[2] > 0, "{s:?}");
+    assert!(
+        s.ghost_hits[0] <= s.ghost_hits[1] && s.ghost_hits[1] <= s.ghost_hits[2],
+        "cumulative: {s:?}"
+    );
+    assert_eq!(s.ghost_hits[2] % 16, 0, "a 1-in-16 sample, scaled");
+    assert!(s.peak_bytes >= s.bytes && s.peak_bytes > 0);
+    // Answers that would have expired don't count: a TTL of 1 s, re-inserted 5 s later.
+    let cache = Cache::new(CachePolicy {
+        max_bytes: 64 * 1024,
+        shards: 4,
+        ..CachePolicy::default()
+    });
+    for round in 0..10u64 {
+        let now = t0 + Duration::from_secs(round * 5);
+        for i in 0..names {
+            let m = query_bytes(&format!("host{i}.example.com"), rtype::A, None, 1);
+            let q = parse_query(&m).unwrap();
+            cache
+                .insert(&key(&q), &q, &upstream_a(&q, &[1]), now)
+                .unwrap();
+        }
+    }
+    assert_eq!(cache.stats().ghost_hits, [0; 3]);
+}
+
 #[tokio::test]
 async fn dns_006_singleflight_coalesces_identical_misses() {
     let sf = Singleflight::new();

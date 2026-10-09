@@ -1245,6 +1245,26 @@ API: `GET /api/v1/cache/stats`, `GET /api/v1/cache/lookup?name=`, and
 field optional; an empty body empties every node's cache). Agents need `analytics:read` to
 look and `ops:cache` to flush.
 
+### Is the cache the right size?
+Each node's card on the Cache page has a **Size** line: whether a bigger cache would answer
+noticeably more lookups from memory, or a smaller one would do.
+- **How it's estimated:** the cache follows a fixed sample of names (1 in 16) after they're
+  evicted. When one of them is asked again while its answer would still have been fresh, the
+  number of evictions in between says how much bigger the cache needed to be to still hold it.
+  That gives the extra hits a cache 25%, 50%, and 100% larger would have had (the sample's count
+  times 16). This is the SHARDS technique: a uniform sample of names keeps their reuse distances
+  exact, so the estimate is good with a small fraction of the memory. It runs when an answer is
+  stored or evicted, never on a lookup, and needs about 3 bytes per cached answer.
+- **The verdict:** *could grow* when a size 25%, 50%, or 100% larger would have answered at least
+  1% more lookups from memory (the smallest such size is suggested, with the `max_bytes` to set);
+  *could shrink* when, after 100,000 lookups, nothing was ever evicted and the cache never held
+  half its budget (it suggests the peak plus half, at least 4 MiB); *right size* otherwise;
+  *learning* before 10,000 lookups.
+- Since start: a restart starts the estimate over. In a cluster each node judges its own cache.
+- `GET /api/v1/cache/stats` has it as `sizing`, the MCP tool `cache_advice` reads it, and
+  `/metrics` has `telltale_cache_ghost_hits_total{size="1.25x"|"1.5x"|"2x"}` (estimated, cumulative)
+  and `telltale_cache_peak_bytes`.
+
 ## DNSSEC validation
 TelltaleDNS can check DNSSEC signatures on forwarded answers itself, instead of trusting the
 upstream:

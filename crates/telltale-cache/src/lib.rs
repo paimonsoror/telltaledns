@@ -298,12 +298,20 @@ pub struct CacheStats {
     pub prefetches: u64,
     pub entries: usize,
     pub bytes: usize,
+    /// REQ: OBS-021 (T11.2) — estimated extra hits a cache 25%, 50%, and 100% larger would
+    /// have served since start (cumulative: the 50% figure includes the 25% one).
+    pub ghost_hits: [u64; 3],
+    /// The most memory the cache has held since start (the shards' peaks added up, so at
+    /// least the real peak).
+    pub peak_bytes: usize,
 }
 
 #[derive(Debug)]
 struct Shard {
     fifo: S3Fifo<CacheKey, Entry, BuildPassThrough>,
     stats: CacheStats,
+    /// REQ: OBS-021 — the most this shard has held.
+    peak: usize,
 }
 
 /// Cache-line aligned so neighboring shard locks don't false-share.
@@ -331,8 +339,12 @@ impl Cache {
         let shards = (0..n)
             .map(|_| {
                 PaddedShard(Mutex::new(Shard {
-                    fifo: S3Fifo::new(per_bytes, per_entries, BuildPassThrough::default()),
+                    // REQ: OBS-021 — sizing is followed on inserts and evictions only (never on
+                    // a lookup), for 1 key in 16.
+                    fifo: S3Fifo::new(per_bytes, per_entries, BuildPassThrough::default())
+                        .with_sizing(entry::expires),
                     stats: CacheStats::default(),
+                    peak: 0,
                 }))
             })
             .collect();
@@ -446,8 +458,9 @@ impl Cache {
         match prepared {
             Ok(e) => {
                 let w = e.weight();
-                shard.fifo.insert(*key, e, w);
+                shard.fifo.insert_at(*key, e, w, entry::tenths(now));
                 shard.stats.inserts += 1;
+                shard.peak = shard.peak.max(shard.fifo.weight());
                 Ok(())
             }
             Err(why) => {
@@ -594,6 +607,13 @@ impl Cache {
             t.evictions += s.fifo.evictions();
             t.entries += s.fifo.len();
             t.bytes += s.fifo.weight();
+            t.peak_bytes += s.peak;
+            // REQ: OBS-021 — sampled counts, scaled to every key and made cumulative.
+            let mut running = 0;
+            for (i, n) in s.fifo.sizing_hits().iter().enumerate() {
+                running += n << s3fifo::SIZING_SAMPLE_SHIFT;
+                t.ghost_hits[i] += running;
+            }
         }
         t
     }
