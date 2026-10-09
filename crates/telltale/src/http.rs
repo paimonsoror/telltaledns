@@ -87,6 +87,8 @@ pub(crate) struct Sources {
     pub(crate) config_writes: tokio::sync::Mutex<()>,
     /// REQ: OBS-020 (T11.3) — the synthetic probes' latest results.
     pub(crate) probes: Arc<crate::probes::Probes>,
+    /// REQ: OBS-018 (T11.5) — shadow lists' would-be blocks and over-blocking suspects.
+    pub(crate) shadow: Arc<crate::shadow::Shadow>,
 }
 
 impl Sources {
@@ -467,6 +469,7 @@ pub(crate) fn render(src: &Sources) -> String {
         render_lists(&mut w, &l.fetcher);
         render_filter(&mut w, &l);
     }
+    render_shadow(&mut w, &src.shadow);
     render_lookup_mode(&mut w, src);
     // REQ: FLT-009 — active pauses (group="*" = everyone).
     let now = std::time::SystemTime::now()
@@ -576,6 +579,26 @@ fn render_slo(w: &mut PromWriter, s: &telltale_config::SloConfig) {
         &[],
         f64::from(s.latency_ms) / 1000.0,
     );
+}
+
+/// REQ: OBS-018 (T11.5, ADR-109) — what the shadow lists would have blocked.
+fn render_shadow(w: &mut PromWriter, shadow: &crate::shadow::Shadow) {
+    let hits = shadow.hits();
+    if hits.is_empty() {
+        return;
+    }
+    w.family(
+        "telltale_list_shadow_hits_total",
+        "counter",
+        "Queries a list in shadow mode would have blocked (it doesn't block; they were answered).",
+    );
+    for (list, n) in &hits {
+        w.sample(
+            "telltale_list_shadow_hits_total",
+            &[("list", list.as_str())],
+            *n,
+        );
+    }
 }
 
 /// REQ: OBS-020 (T11.3, ADR-107) — the synthetic probes and the listeners' certificates.
@@ -1587,6 +1610,7 @@ mod tests {
             config_writes: tokio::sync::Mutex::new(()),
             allowed: Vec::new(),
             probes: Arc::default(),
+            shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
         }
     }
 

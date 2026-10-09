@@ -1460,6 +1460,10 @@
             }
           ]
         },
+        "mode": {
+          "description": "REQ: OBS-018 (T11.5) — `enforce` (the default) blocks; `shadow` compiles the list but\nnever blocks with it: what it would have blocked is counted (Lists page), so a new list\ncan be judged before it's turned on. Block lists only.",
+          "$ref": "#/$defs/ListMode"
+        },
         "name": {
           "description": "Stable ID: lowercase letters, digits, `-` and `_`, at most 64 characters. Used in file\nnames, metrics, and the API, so renaming a list re-downloads it.",
           "type": "string",
@@ -1782,6 +1786,22 @@
           "description": "Only the exact name (Pi-hole \"exact\" lists).",
           "type": "string",
           "const": "exact"
+        }
+      ]
+    },
+    "ListMode": {
+      "description": "REQ: OBS-018 (T11.5) — whether a list blocks or only counts what it would block.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "enforce"
+          ]
+        },
+        {
+          "description": "Compiled and checked, never blocks: its would-be blocks are counted.",
+          "type": "string",
+          "const": "shadow"
         }
       ]
     },

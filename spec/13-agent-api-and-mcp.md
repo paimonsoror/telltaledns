@@ -41,6 +41,8 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `list_effectiveness` | Hits, unique contribution, overlap, dead lists |
 | `find_anomalies` | New domains, NXDOMAIN storms, DGA-suspicious names, rate anomalies, per-domain volume anomalies, behavior drift, beaconing (OBS-013), with evidence, over a window; every node's, each with its ID and acknowledgement (OBS-014), optionally only unacknowledged |
 | `health` | One level for the deployment (healthy, degraded, severe) and every reason with its node and where to look (OBS-015) |
+| `shadow_lists` | Per list in shadow mode: what it would have blocked (queries, devices, top names), to judge it before enforcing (OBS-018) |
+| `overblocking_suspects` | Blocked names someone seems to want (answered soon after a block, retry bursts), with the deciding lists (OBS-018) |
 | `upstream_checks` | Per node and upstream: DNSSEC verdicts, EDE codes returned, second-opinion outcomes, and the latest disagreements with both answers (OBS-019) |
 | `probe_status` | Every node's synthetic probes of its own listeners (and extra targets): answering, latency, failures in a row, certificate days left (OBS-020) |
 | `cache_advice` | Per node: hit rate, memory, the estimated extra hits a 25/50/100% larger cache would serve, peak use, and grow/shrink/ok advice (OBS-021) |

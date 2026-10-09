@@ -297,6 +297,34 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("health".into(), "/api/v1/system/health".into())]),
         },
+        // REQ: OBS-018 (ADR-109)
+        Tool {
+            name: "shadow_lists",
+            description: "Read-only. What would a list block if it were turned on? For each list in shadow mode (compiled and checked, never blocking): the queries it would have blocked since start, the devices, the names most often, and the last one. Use it to judge a new list before enforcing it (then plan_add_list or a config change to set mode = enforce).",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![(
+                    "shadowLists".into(),
+                    "/api/v1/analytics/shadow-lists".into(),
+                )])
+            },
+        },
+        Tool {
+            name: "overblocking_suspects",
+            description: "Read-only. Blocked names that look like over-blocking, best first: allowedAfterBlock counts devices that got the name answered within 10 minutes of a block (someone paused blocking or allowed it, the strongest sign); retryBursts counts devices asking 10+ times a minute while blocked (broken apps, but also ad libraries). With the lists that blocked them. Use it to find allowlist candidates or a list that's too aggressive.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many (default 50)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let n = a.get("limit").and_then(Value::as_u64).unwrap_or(50);
+                Ok(vec![(
+                    "suspects".into(),
+                    format!("/api/v1/analytics/overblocking?limit={n}"),
+                )])
+            },
+        },
         // REQ: OBS-019 (ADR-108)
         Tool {
             name: "upstream_checks",

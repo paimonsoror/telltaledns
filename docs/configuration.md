@@ -62,7 +62,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[route]]` | conditional forwarding by domain suffix, client group, or query type | `spec/04` §1 |
 | `[[record]]` | local records (A, AAAA, CNAME, PTR, TXT, MX, SRV; `*.` wildcards) | `docs/running.md` |
 | `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
-| `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), per-list refresh and size limit | `docs/running.md` |
+| `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), `mode` (`enforce`/`shadow`: counted, never blocks), per-list refresh and size limit | `docs/running.md` |
 | `[[group]]` | client groups: which lists apply, priority | `docs/running.md` |
 | `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`), groups | `docs/running.md` |
 | `[clients]` | neighbor table on/off and refresh interval; which forwarders' EDNS MAC to trust; `infrastructure` networks for the masked-client-IP check | FLT-006, OPS-003 |

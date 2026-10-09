@@ -181,6 +181,14 @@ pub struct ScopeParam {
     pub scope: Option<String>,
 }
 
+/// Query parameter `limit` alone.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct LimitParam {
+    /// At most this many (1–500, default 50).
+    pub limit: Option<usize>,
+}
+
 /// Counts for one time bucket.
 #[derive(Debug, Clone, Default, Serialize, ToSchema, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -574,6 +582,10 @@ pub struct ExplainRule {
     pub name: Option<String>,
     /// The client's groups use this list.
     pub enabled: bool,
+    /// REQ: OBS-018 — the list is in shadow mode: it never blocks, its would-be blocks are
+    /// counted.
+    #[serde(default)]
+    pub shadow: bool,
     /// This rule decides the query.
     pub winner: bool,
     /// Where the rule is in the list.
@@ -604,6 +616,9 @@ pub struct ListInfo {
     /// `block` or `allow`.
     pub kind: String,
     pub enabled: bool,
+    /// REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are
+    /// at `GET /analytics/shadow-lists`).
+    pub mode: String,
     /// URL, file path, or `inline`.
     pub source: String,
     /// `ok`, `failed`, or `pending` (not downloaded yet).
@@ -1624,6 +1639,60 @@ pub struct AnomalyAckResult {
     /// recorded when acknowledging, in case a node that found them was unreachable).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unknown: Vec<String>,
+}
+
+/// REQ: OBS-018 (ADR-109) — what a `shadow` list would have blocked (it never does), since
+/// the node started (every node's, merged, in a cluster).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ShadowListStats {
+    pub list: String,
+    /// When counting started (RFC 3339): the earliest node's start, in a cluster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// Queries it would have blocked (answered normally instead).
+    pub hits: u64,
+    /// Devices those queries came from (each node counts its own; capped at 4,096 per node).
+    pub devices: u64,
+    /// The names it would have blocked most (hashed at privacy level 1 and above).
+    pub top_names: Vec<NameCount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_hit_at: Option<String>,
+    /// The nodes that counted (cluster nodes only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
+}
+
+/// A name and how often.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NameCount {
+    pub name: String,
+    pub count: u64,
+}
+
+/// REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept
+/// retrying it, or it was answered normally soon after being blocked (someone paused
+/// blocking or allowed it).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OverblockSuspect {
+    /// Hashed at privacy level 1 and above.
+    pub name: String,
+    /// The lists that blocked it.
+    pub lists: Vec<String>,
+    /// Devices involved (none counted at privacy level 2 and above).
+    pub devices: u64,
+    /// Times a device asked for it 10 or more times within a minute while it was blocked
+    /// (apps that break retry; ad libraries do too).
+    pub retry_bursts: u64,
+    /// Times a device got it answered normally within 10 minutes of a block (a pause, a
+    /// quick allow, or an allowlist entry: someone wanted it).
+    pub allowed_after_block: u64,
+    /// RFC 3339.
+    pub last_seen: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
 }
 
 /// REQ: OBS-019 (ADR-108) — one node's view of its upstreams' answers: second opinions

@@ -748,6 +748,20 @@ Metrics: `telltale_queries_total{status="blocked"}` (including CNAME blocks), `t
 time() - telltale_list_last_success_timestamp_seconds > 172800
 ```
 
+### Trying a list first (shadow mode)
+Not sure a list is safe for your network? Add it in **shadow mode**: it's downloaded and checked like any other, but never blocks.
+```toml
+[[list]]
+name = "hagezi-ultimate"
+url = "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/ultimate.txt"
+mode = "shadow"          # enforce (the default) or shadow
+```
+- **What you see:** the **Lists** page marks it *shadow*, and **Would have blocked** shows, per shadow list, how many queries it would have blocked, from how many devices, the names most often, and the last one. When those are names you want gone, change `mode` to `enforce` (or edit the list on the Lists page). `GET /api/v1/analytics/shadow-lists`, the MCP tool `shadow_lists`, and `telltale_list_shadow_hits_total{list}` have the same.
+- **How:** shadow lists sit in the compiled snapshot but in no group's enforcing set. For each query answered normally, the telemetry thread asks the filter again with the device's group's lists plus its shadow lists; a block by a shadow list is counted. It respects groups (a shadow list only counts for groups that would use it), allow lists, and `$client`-style rules. It never runs on the query path; with no list in shadow mode it does nothing. A very busy server may skip some (dropped events are counted), never slow down. Counts start at each restart. In **explain**, a shadow list's rules say *shadow*.
+- **Likely over-blocking** (on the same page, `GET /api/v1/analytics/overblocking`, the MCP tool `overblocking_suspects`): blocked names that someone seems to want. *Allowed soon after* counts devices that got the name answered within 10 minutes of a block (you paused blocking, or allowed it); *retry bursts* count devices asking for it 10 or more times within a minute while it was blocked (apps that break retry; ad libraries do too, so it's the weaker sign). With the lists that blocked them: candidates for an allowlist, or a sign a list is too aggressive.
+- Names follow the query log's privacy level (hashed at 1 and above); devices aren't counted at 2 and above.
+- Like every list, a shadow list is checked once the snapshot is compiled (a few seconds after start or a change): queries answered before that aren't counted. `telltale explain` marks its rules with `~`.
+
 ## Groups and devices
 Decide which lists apply to which devices:
 ```toml
@@ -1121,7 +1135,7 @@ telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
 # ad.doubleclick.net A from 192.168.1.50
 # client   tablet (identified by ip); groups: kids
 # outcome  ALLOWED: allowed by list family-allow; resolved normally
-# rules    snapshot 1, in precedence order (* decides, - list not used by this client)
+# rules    snapshot 1, in precedence order (* decides, - list not used by this client, ~ shadow list: counted, never blocks)
 #   * allow  family-allow         doubleclick.net (and subdomains)
 #              family-allow:1  @@||doubleclick.net^
 #   - block  stevenblack          ad.doubleclick.net (and subdomains)

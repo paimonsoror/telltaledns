@@ -201,6 +201,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/overblocking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Likely over-blocking.
+         * @description Blocked names that look like they shouldn't be, best first (at most `limit`, default 50):
+         *     `allowedAfterBlock` counts devices that got the name answered normally within 10 minutes of
+         *     a block (someone paused blocking or allowed it: the strongest sign), `retryBursts` the times
+         *     a device asked for it 10 or more times within a minute while blocked (apps that break retry;
+         *     ad libraries do too, so weigh it lower). With the lists that blocked it. Since start; every
+         *     node's, merged by name. Names follow the query-log privacy level.
+         */
+        get: operations["overblocking"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/shadow-lists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the shadow lists would have blocked.
+         * @description A list with `mode = "shadow"` is compiled and checked but never blocks. For each query
+         *     answered normally, the telemetry thread checks it against the device's group's shadow lists
+         *     too; this is what they would have blocked since start: queries, devices, the names most
+         *     often, the last one. Every list in shadow mode is listed (with zero until it would block
+         *     something). Use it to judge a new list before turning it on. In a cluster, every node's
+         *     counts add up. Names follow the query-log privacy level.
+         */
+        get: operations["shadow_lists"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analytics/upstream-checks": {
         parameters: {
             query?: never;
@@ -2923,6 +2973,11 @@ export interface components {
             name?: string | null;
             /** @description `subtree`, `exact`, or `subdomains`. */
             scope?: string | null;
+            /**
+             * @description REQ: OBS-018 — the list is in shadow mode: it never blocks, its would-be blocks are
+             *     counted.
+             */
+            shadow?: boolean;
             /** @description `important_allow`, `important_block`, `allow`, or `block`. */
             tier: string;
             /** @description This rule decides the query. */
@@ -3563,6 +3618,11 @@ export interface components {
                 lastCheckedUnixSeconds?: number | null;
                 /** Format: int64 */
                 lines: number;
+                /**
+                 * @description REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are
+                 *     at `GET /analytics/shadow-lists`).
+                 */
+                mode: string;
                 name: string;
                 /** @description Lists it shares names with, most shared first. */
                 overlap: components["schemas"]["ListShare"][];
@@ -3611,6 +3671,37 @@ export interface components {
                 domain: string;
                 /** @description When it was first seen (RFC 3339). */
                 time: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_OverblockSuspect: {
+            items: {
+                /**
+                 * Format: int64
+                 * @description Times a device got it answered normally within 10 minutes of a block (a pause, a
+                 *     quick allow, or an allowlist entry: someone wanted it).
+                 */
+                allowedAfterBlock: number;
+                /**
+                 * Format: int64
+                 * @description Devices involved (none counted at privacy level 2 and above).
+                 */
+                devices: number;
+                /** @description RFC 3339. */
+                lastSeen: string;
+                /** @description The lists that blocked it. */
+                lists: string[];
+                /** @description Hashed at privacy level 1 and above. */
+                name: string;
+                nodes?: string[];
+                /**
+                 * Format: int64
+                 * @description Times a device asked for it 10 or more times within a minute while it was blocked
+                 *     (apps that break retry; ad libraries do too).
+                 */
+                retryBursts: number;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -3747,6 +3838,31 @@ export interface components {
                 id: string;
                 /** @example TikTok */
                 name: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_ShadowListStats: {
+            items: {
+                /**
+                 * Format: int64
+                 * @description Devices those queries came from (each node counts its own; capped at 4,096 per node).
+                 */
+                devices: number;
+                /**
+                 * Format: int64
+                 * @description Queries it would have blocked (answered normally instead).
+                 */
+                hits: number;
+                lastHitAt?: string | null;
+                list: string;
+                /** @description The nodes that counted (cluster nodes only). */
+                nodes?: string[];
+                /** @description When counting started (RFC 3339): the earliest node's start, in a cluster. */
+                since?: string | null;
+                /** @description The names it would have blocked most (hashed at privacy level 1 and above). */
+                topNames: components["schemas"]["NameCount"][];
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -3948,6 +4064,11 @@ export interface components {
             lastCheckedUnixSeconds?: number | null;
             /** Format: int64 */
             lines: number;
+            /**
+             * @description REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are
+             *     at `GET /analytics/shadow-lists`).
+             */
+            mode: string;
             name: string;
             /** @description Lists it shares names with, most shared first. */
             overlap: components["schemas"]["ListShare"][];
@@ -4083,6 +4204,12 @@ export interface components {
             /** @description How this request authenticated: `session`, `token`, or `basic`. */
             via: string;
         };
+        /** @description A name and how often. */
+        NameCount: {
+            /** Format: int64 */
+            count: number;
+            name: string;
+        };
         /**
          * @description How `name` in [`QueryParams`] is matched.
          * @enum {string}
@@ -4112,6 +4239,37 @@ export interface components {
             id: string;
             /** @description Label. */
             name: string;
+        };
+        /**
+         * @description REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept
+         *     retrying it, or it was answered normally soon after being blocked (someone paused
+         *     blocking or allowed it).
+         */
+        OverblockSuspect: {
+            /**
+             * Format: int64
+             * @description Times a device got it answered normally within 10 minutes of a block (a pause, a
+             *     quick allow, or an allowlist entry: someone wanted it).
+             */
+            allowedAfterBlock: number;
+            /**
+             * Format: int64
+             * @description Devices involved (none counted at privacy level 2 and above).
+             */
+            devices: number;
+            /** @description RFC 3339. */
+            lastSeen: string;
+            /** @description The lists that blocked it. */
+            lists: string[];
+            /** @description Hashed at privacy level 1 and above. */
+            name: string;
+            nodes?: string[];
+            /**
+             * Format: int64
+             * @description Times a device asked for it 10 or more times within a minute while it was blocked
+             *     (apps that break retry; ad libraries do too).
+             */
+            retryBursts: number;
         };
         PasswordChange: {
             currentPassword: string;
@@ -4441,6 +4599,30 @@ export interface components {
             /** @description From the server log or `<data_dir>/setup-token`. */
             setupToken: string;
             username: string;
+        };
+        /**
+         * @description REQ: OBS-018 (ADR-109) — what a `shadow` list would have blocked (it never does), since
+         *     the node started (every node's, merged, in a cluster).
+         */
+        ShadowListStats: {
+            /**
+             * Format: int64
+             * @description Devices those queries came from (each node counts its own; capped at 4,096 per node).
+             */
+            devices: number;
+            /**
+             * Format: int64
+             * @description Queries it would have blocked (answered normally instead).
+             */
+            hits: number;
+            lastHitAt?: string | null;
+            list: string;
+            /** @description The nodes that counted (cluster nodes only). */
+            nodes?: string[];
+            /** @description When counting started (RFC 3339): the earliest node's start, in a cluster. */
+            since?: string | null;
+            /** @description The names it would have blocked most (hashed at privacy level 1 and above). */
+            topNames: components["schemas"]["NameCount"][];
         };
         /**
          * @description REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the
@@ -5347,6 +5529,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    overblocking: {
+        parameters: {
+            query?: {
+                /** @description At most this many (1–500, default 50). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The suspects, best first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_OverblockSuspect"];
+                };
+            };
+        };
+    };
+    shadow_lists: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One entry per list in shadow mode. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_ShadowListStats"];
                 };
             };
         };

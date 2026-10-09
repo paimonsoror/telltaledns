@@ -97,6 +97,8 @@
               <span class="mark">{r.winner ? '★' : ''}</span>
               <span class="badge {r.tier.includes('allow') ? 'ok' : 'bad'}">{tierLabel[r.tier] ?? r.tier}</span>
               <strong>{r.list}</strong>
+              <!-- REQ: OBS-018 — a shadow list's rule is counted, never enforced. -->
+              {#if r.shadow}<span class="badge info" title="This list is in shadow mode: it never blocks">shadow</span>{/if}
               {#if r.name}<span class="mono">{r.name}</span>{/if}
               <span class="muted small">{r.kind}{r.scope ? ` · ${r.scope}` : ''}</span>
             </div>

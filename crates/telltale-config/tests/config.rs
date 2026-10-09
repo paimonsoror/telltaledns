@@ -731,6 +731,29 @@ to = ["phone"]
     }
 }
 
+/// REQ: OBS-018 (T11.5) — `mode = "shadow"` for block lists only; enforce by default.
+#[test]
+fn obs_018_shadow_mode_is_validated() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    let ok = "[[list]]\nname = \"candidate\"\nrules = [\"||shop.example^\"]\nmode = \"shadow\"\n";
+    let cfg = load(ok).unwrap().config;
+    assert_eq!(cfg.list[0].mode, telltale_config::ListMode::Shadow);
+    let plain = load("[[list]]\nname = \"x\"\nrules = [\"||a.example^\"]\n")
+        .unwrap()
+        .config;
+    assert_eq!(plain.list[0].mode, telltale_config::ListMode::Enforce);
+    let err = format!(
+        "{:?}",
+        load(&format!("{ok}kind = \"allow\"\n")).unwrap_err()
+    );
+    assert!(err.contains("shadow is for block lists"), "{err}");
+}
+
 /// REQ: OBS-019 (T11.4) — second opinions: off by default; a reference group that exists; a
 /// warning when the sample adds noticeable traffic.
 #[test]

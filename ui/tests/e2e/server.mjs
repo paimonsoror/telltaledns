@@ -76,6 +76,12 @@ value = "192.168.1.40"
 name = "e2e-block"
 rules = ["||ads.e2e.test^"]
 
+# T11.5 — a list in shadow mode (the stub upstream answers names under cache.e2e.test).
+[[list]]
+name = "e2e-shadow"
+rules = ["||shadow.cache.e2e.test^"]
+mode = "shadow"
+
 [[record]]
 name = "nas.e2e.test"
 type = "A"

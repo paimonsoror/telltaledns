@@ -39,6 +39,80 @@ pub fn merge_timeseries(parts: Vec<Vec<TimeBucket>>) -> Vec<TimeBucket> {
     by_start.into_values().collect()
 }
 
+/// REQ: OBS-018 (ADR-109) — every node's shadow-list counts, merged by list: hits and devices
+/// add (a device seen by two nodes counts twice), the top names add by name (20 kept), the
+/// earliest start and the latest hit win.
+pub fn merge_shadow(
+    parts: Vec<Vec<crate::model::ShadowListStats>>,
+) -> Vec<crate::model::ShadowListStats> {
+    let mut by: BTreeMap<String, crate::model::ShadowListStats> = BTreeMap::new();
+    for s in parts.into_iter().flatten() {
+        let Some(t) = by.get_mut(&s.list) else {
+            by.insert(s.list.clone(), s);
+            continue;
+        };
+        t.hits += s.hits;
+        t.devices += s.devices;
+        t.since = match (t.since.take(), s.since) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        t.last_hit_at = t.last_hit_at.take().max(s.last_hit_at);
+        for n in s.top_names {
+            match t.top_names.iter_mut().find(|x| x.name == n.name) {
+                Some(x) => x.count += n.count,
+                None => t.top_names.push(n),
+            }
+        }
+        t.nodes.extend(s.nodes);
+    }
+    by.into_values()
+        .map(|mut s| {
+            s.top_names
+                .sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+            s.top_names.truncate(20);
+            s
+        })
+        .collect()
+}
+
+/// REQ: OBS-018 (ADR-109) — every node's over-blocking suspects, merged by name and ranked:
+/// a normal answer soon after a block weighs ten retry bursts; at most `limit`.
+pub fn merge_overblocking(
+    parts: Vec<Vec<crate::model::OverblockSuspect>>,
+    limit: usize,
+) -> Vec<crate::model::OverblockSuspect> {
+    let mut by: BTreeMap<String, crate::model::OverblockSuspect> = BTreeMap::new();
+    for s in parts.into_iter().flatten() {
+        let Some(t) = by.get_mut(&s.name) else {
+            by.insert(s.name.clone(), s);
+            continue;
+        };
+        t.devices += s.devices;
+        t.retry_bursts += s.retry_bursts;
+        t.allowed_after_block += s.allowed_after_block;
+        if s.last_seen > t.last_seen {
+            t.last_seen = s.last_seen;
+        }
+        for l in s.lists {
+            if !t.lists.contains(&l) {
+                t.lists.push(l);
+            }
+        }
+        t.nodes.extend(s.nodes);
+    }
+    let mut v: Vec<_> = by.into_values().collect();
+    let score = |s: &crate::model::OverblockSuspect| s.allowed_after_block * 10 + s.retry_bursts;
+    v.sort_by(|a, b| {
+        score(b)
+            .cmp(&score(a))
+            .then_with(|| b.last_seen.cmp(&a.last_seen))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    v.truncate(limit);
+    v
+}
+
 /// Merges top lists: counts and error bounds add per key; heaviest `limit` first.
 pub fn merge_top(parts: Vec<Vec<TopItem>>, limit: usize) -> Vec<TopItem> {
     let mut by_key: HashMap<String, TopItem> = HashMap::new();
@@ -225,6 +299,74 @@ fn data_encoding_base64url(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{NameCount, OverblockSuspect, ShadowListStats};
+
+    // REQ: OBS-018 — two nodes' shadow counts add up by list, top names by name, the earliest
+    // start and latest hit win; suspects merge by name and rank allows above retries.
+    #[test]
+    fn obs_018_shadow_and_suspects_merge() {
+        let s = |node: &str, hits, since: &str, top: &[(&str, u64)]| ShadowListStats {
+            list: "candidate".into(),
+            since: Some(since.into()),
+            hits,
+            devices: 1,
+            top_names: top
+                .iter()
+                .map(|(n, c)| NameCount {
+                    name: (*n).into(),
+                    count: *c,
+                })
+                .collect(),
+            last_hit_at: Some(format!("{since}-last")),
+            nodes: vec![node.into()],
+        };
+        let m = merge_shadow(vec![
+            vec![s(
+                "pi",
+                3,
+                "2026-10-09T01",
+                &[("a.example", 2), ("b.example", 1)],
+            )],
+            vec![s("pod", 5, "2026-10-08T23", &[("b.example", 4)])],
+        ]);
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].hits, m[0].devices), (8, 2));
+        assert_eq!(m[0].since.as_deref(), Some("2026-10-08T23"));
+        assert_eq!(
+            (m[0].top_names[0].name.as_str(), m[0].top_names[0].count),
+            ("b.example", 5)
+        );
+        assert_eq!(m[0].nodes, ["pi", "pod"]);
+        let o = |name: &str, retries, allowed, list: &str| OverblockSuspect {
+            name: name.into(),
+            lists: vec![list.into()],
+            devices: 1,
+            retry_bursts: retries,
+            allowed_after_block: allowed,
+            last_seen: "2026-10-09T00:00:00.000Z".into(),
+            nodes: Vec::new(),
+        };
+        let v = merge_overblocking(
+            vec![
+                vec![
+                    o("ads.example", 9, 0, "oisd"),
+                    o("shop.example", 0, 1, "hagezi"),
+                ],
+                vec![o("shop.example", 1, 0, "oisd")],
+            ],
+            10,
+        );
+        assert_eq!(
+            v[0].name, "shop.example",
+            "an allow after a block weighs more"
+        );
+        assert_eq!(
+            (v[0].retry_bursts, v[0].allowed_after_block, v[0].devices),
+            (1, 1, 2)
+        );
+        assert_eq!(v[0].lists, ["hagezi", "oisd"]);
+        assert_eq!(merge_overblocking(vec![v], 1).len(), 1, "limited");
+    }
 
     fn bucket(start: u64, total: u32, blocked: u32, group: &str) -> TimeBucket {
         let mut b = TimeBucket {

@@ -236,6 +236,15 @@ pub trait Backend: Send + Sync + 'static {
     fn probes(&self) -> Vec<model::ProbeResult> {
         Vec::new()
     }
+    /// REQ: OBS-018 (ADR-109) — what the shadow lists would have blocked (every node, merged).
+    fn shadow_lists(&self) -> Vec<model::ShadowListStats> {
+        Vec::new()
+    }
+    /// REQ: OBS-018 (ADR-109) — blocked names that look like over-blocking, best first.
+    fn overblocking(&self, limit: usize) -> Vec<model::OverblockSuspect> {
+        let _ = limit;
+        Vec::new()
+    }
     /// REQ: OBS-019 (ADR-108) — each node's upstream answer quality and second opinions.
     fn upstream_checks(&self) -> Vec<model::UpstreamChecks> {
         Vec::new()
@@ -542,6 +551,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .route("/api/v1/analytics/new-domains", get(new_domains))
         .route("/api/v1/analytics/vqlog", get(vqlog_query))
         .route("/api/v1/analytics/upstream-checks", get(upstream_checks))
+        .route("/api/v1/analytics/shadow-lists", get(shadow_lists))
+        .route("/api/v1/analytics/overblocking", get(overblocking))
         .route("/api/v1/dhcp/leases", get(dhcp_leases))
         .route("/api/v1/records", get(local_names))
         .route("/api/v1/zones", get(zones))
@@ -642,7 +653,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, upstream_checks, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
+        system_info, system_health, system_probes, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -660,7 +671,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
@@ -831,6 +842,50 @@ async fn system_probes(
 ) -> Result<Json<Items<model::ProbeResult>>, Problem> {
     let bk = Arc::clone(&b);
     let items = blocking(move || Ok(bk.probes())).await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
+}
+
+/// What the shadow lists would have blocked.
+///
+/// A list with `mode = "shadow"` is compiled and checked but never blocks. For each query
+/// answered normally, the telemetry thread checks it against the device's group's shadow lists
+/// too; this is what they would have blocked since start: queries, devices, the names most
+/// often, the last one. Every list in shadow mode is listed (with zero until it would block
+/// something). Use it to judge a new list before turning it on. In a cluster, every node's
+/// counts add up. Names follow the query-log privacy level.
+#[utoipa::path(get, path = "/api/v1/analytics/shadow-lists", tag = "stats",
+    responses((status = 200, body = Items<model::ShadowListStats>, description = "One entry per list in shadow mode.")))]
+async fn shadow_lists(
+    State(b): State<Shared>,
+) -> Result<Json<Items<model::ShadowListStats>>, Problem> {
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.shadow_lists())).await?;
+    Ok(Json(Items {
+        missing_nodes: b.missing_nodes(),
+        items,
+    }))
+}
+
+/// Likely over-blocking.
+///
+/// Blocked names that look like they shouldn't be, best first (at most `limit`, default 50):
+/// `allowedAfterBlock` counts devices that got the name answered normally within 10 minutes of
+/// a block (someone paused blocking or allowed it: the strongest sign), `retryBursts` the times
+/// a device asked for it 10 or more times within a minute while blocked (apps that break retry;
+/// ad libraries do too, so weigh it lower). With the lists that blocked it. Since start; every
+/// node's, merged by name. Names follow the query-log privacy level.
+#[utoipa::path(get, path = "/api/v1/analytics/overblocking", tag = "stats", params(model::LimitParam),
+    responses((status = 200, body = Items<model::OverblockSuspect>, description = "The suspects, best first.")))]
+async fn overblocking(
+    State(b): State<Shared>,
+    Query(p): Query<model::LimitParam>,
+) -> Result<Json<Items<model::OverblockSuspect>>, Problem> {
+    let limit = p.limit.unwrap_or(50).clamp(1, 500);
+    let bk = Arc::clone(&b);
+    let items = blocking(move || Ok(bk.overblocking(limit))).await?;
     Ok(Json(Items {
         missing_nodes: b.missing_nodes(),
         items,

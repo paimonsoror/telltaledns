@@ -179,6 +179,9 @@ export const api = {
   blockingPause: (body: S['BlockingRequest']) => post<S['Items_BlockingNode']>('/blocking/pause', body),
   blockingResume: (body: S['BlockingRequest']) => post<S['Items_BlockingNode']>('/blocking/resume', body),
   upstreams: () => get<S['Items_UpstreamInfo']>('/upstreams'),
+  // REQ: OBS-018 — what shadow lists would have blocked, and likely over-blocking.
+  shadowLists: () => get<S['Items_ShadowListStats']>('/analytics/shadow-lists'),
+  overblocking: (limit = 50) => get<S['Items_OverblockSuspect']>('/analytics/overblocking', { limit }),
   // REQ: OBS-019 — upstream answer quality and second opinions, per node.
   upstreamChecks: () => get<S['Items_UpstreamChecks']>('/analytics/upstream-checks'),
 

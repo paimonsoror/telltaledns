@@ -1276,3 +1276,34 @@ test('ups_007 a group picks its upstream group from the UI', async () => {
   await g.getByRole('button', { name: 'Revert to the file' }).click();
   await expect(g).toContainText('config file');
 });
+
+// REQ: OBS-018 — a list in shadow mode never blocks: its name is answered (by the stub
+// upstream) and counted under "Would have blocked"; the list carries a shadow badge.
+// Last, because it caches a name (the cache test counts what's cached).
+test('obs_018 shadow list and over-blocking', async () => {
+  for (let i = 0; i < 2; i++) expect(await query('shadow.cache.e2e.test')).toBe(0);
+  await page.goto('/#/lists');
+  // The lists table comes first; the "Would have blocked" card also names the list.
+  const row = page.locator('tr', { hasText: 'e2e-shadow' }).first();
+  // Last in the suite: the earlier config changes can keep the first load busy for a while.
+  await expect(row.locator('.badge', { hasText: 'shadow' })).toBeVisible({ timeout: 15_000 });
+  // The page reads the counts once; the telemetry thread counts the queries moments later.
+  const card = page.getByTestId('shadow-lists');
+  await expect(async () => {
+    await page.reload();
+    await expect(card).toContainText('shadow.cache.e2e.test', { timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await expect(card).toContainText('2 queries from 1 device');
+  await page.route('**/api/v1/analytics/overblocking*', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ name: 'login.bank.example', lists: ['e2e-block'], devices: 1, retryBursts: 0, allowedAfterBlock: 2, lastSeen: new Date().toISOString() }],
+      },
+    }),
+  );
+  await page.reload();
+  const ob = page.getByTestId('overblocking');
+  await expect(ob).toContainText('login.bank.example');
+  await expect(ob).toContainText('e2e-block');
+  await page.unroute('**/api/v1/analytics/overblocking*');
+});

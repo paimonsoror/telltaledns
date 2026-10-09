@@ -43,6 +43,7 @@ mod rollups;
 mod routers;
 mod selfupdate;
 mod server;
+mod shadow;
 mod ship;
 mod sinks;
 mod smtp;

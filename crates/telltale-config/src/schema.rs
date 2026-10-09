@@ -1160,6 +1160,11 @@ pub struct FilterList {
     pub match_mode: ListMatch,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// REQ: OBS-018 (T11.5) — `enforce` (the default) blocks; `shadow` compiles the list but
+    /// never blocks with it: what it would have blocked is counted (Lists page), so a new list
+    /// can be judged before it's turned on. Block lists only.
+    #[serde(default, skip_serializing_if = "ListMode::is_enforce")]
+    pub mode: ListMode,
     /// Overrides `[filter] refresh_secs` for this list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_secs: Option<u32>,
@@ -1170,6 +1175,23 @@ pub struct FilterList {
 
 const fn default_true() -> bool {
     true
+}
+
+/// REQ: OBS-018 (T11.5) — whether a list blocks or only counts what it would block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListMode {
+    #[default]
+    Enforce,
+    /// Compiled and checked, never blocks: its would-be blocks are counted.
+    Shadow,
+}
+
+impl ListMode {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+    pub fn is_enforce(&self) -> bool {
+        *self == Self::Enforce
+    }
 }
 
 /// List download settings (`spec/05` §3.4, FLT-004).

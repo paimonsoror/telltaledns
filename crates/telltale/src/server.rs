@@ -790,12 +790,22 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         .map(|a| Box::new(a.sink()) as Box<dyn telltale_telemetry::ring::Sink>);
     // REQ: OBS-010 (T7.13) — event sinks (file, syslog, webhook) on the same pass.
     let events = crate::sinks::start(&cfg, &pipeline, &tokio::runtime::Handle::current());
+    // REQ: OBS-018 (T11.5) — shadow lists and over-blocking suspects, on the same pass.
+    let shadow = Arc::new(crate::shadow::Shadow::new(
+        cfg.telemetry.qlog.privacy_level,
+        pipeline.telemetry.ts_us(std::time::Instant::now()),
+    ));
+    let shadow_sink = Box::new(crate::shadow::ShadowSink::new(
+        Arc::clone(&shadow),
+        Arc::clone(&pipeline),
+    )) as Box<dyn telltale_telemetry::ring::Sink>;
+    let extra: Vec<Box<dyn telltale_telemetry::ring::Sink>> = anomaly_sink
+        .into_iter()
+        .chain(events)
+        .chain(std::iter::once(shadow_sink))
+        .collect();
     let extra =
-        match (anomaly_sink, events) {
-            (Some(a), Some(b)) => Some(Box::new(crate::tail::Fanout(vec![a, b]))
-                as Box<dyn telltale_telemetry::ring::Sink>),
-            (a, b) => a.or(b),
-        };
+        Some(Box::new(crate::tail::Fanout(extra)) as Box<dyn telltale_telemetry::ring::Sink>);
     let sink = crate::tail::combine(qlog, tail.as_deref(), extra);
     let _aggregator = pipeline
         .telemetry
@@ -875,6 +885,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         reload: reload_tx,
         config_writes: tokio::sync::Mutex::new(()),
         probes: Arc::default(),
+        shadow,
     });
     http::serve_peers(&sources);
     // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.

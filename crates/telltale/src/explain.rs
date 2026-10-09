@@ -594,7 +594,14 @@ pub(crate) fn run_cli(
         let text = serde_json::to_string_pretty(&e).map_err(|err| err.to_string())?;
         return writeln!(out, "{text}").map_err(io);
     }
-    render(&e, qtype_text, out).map_err(io)
+    // REQ: OBS-018 — the lists in shadow mode, marked in the rules.
+    let shadow: Vec<&str> = cfg
+        .list
+        .iter()
+        .filter(|l| l.mode == telltale_config::ListMode::Shadow)
+        .map(|l| l.name.as_str())
+        .collect();
+    render(&e, qtype_text, &shadow, out).map_err(io)
 }
 
 fn tier_text(t: Tier) -> &'static str {
@@ -607,7 +614,12 @@ fn tier_text(t: Tier) -> &'static str {
 }
 
 /// Human-readable form of an explanation.
-fn render(e: &Explanation, qtype: &str, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+fn render(
+    e: &Explanation,
+    qtype: &str,
+    shadow: &[&str],
+    out: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
     writeln!(
         out,
         "{} {} from {}",
@@ -648,11 +660,14 @@ fn render(e: &Explanation, qtype: &str, out: &mut dyn std::io::Write) -> std::io
                 let v = v.map_or_else(String::new, |v| format!("snapshot {v}, "));
                 writeln!(
                     out,
-                    "rules    {v}in precedence order (* decides, - list not used by this client)"
+                    "rules    {v}in precedence order (* decides, - list not used by this client, ~ shadow list: counted, never blocks)"
                 )?;
                 for r in &f.rules {
                     let mark = if r.winner {
                         "*"
+                    } else if shadow.contains(&r.list.as_str()) {
+                        // REQ: OBS-018 — what the list would do, not what it does.
+                        "~"
                     } else if r.enabled {
                         " "
                     } else {

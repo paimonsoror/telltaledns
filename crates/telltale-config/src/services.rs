@@ -103,6 +103,7 @@ pub fn expand(cfg: &Config) -> Config {
             kind: ListKind::Block,
             match_mode: ListMatch::Subtree,
             enabled: true,
+            mode: crate::schema::ListMode::Enforce,
             refresh_secs: None,
             max_bytes: None,
         });

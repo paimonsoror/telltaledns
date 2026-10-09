@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-109 — Shadow lists decided again on the telemetry thread; over-blocking from retries and quick allows (Proposed)
+**Context:** the owner asked (2026-10-08) for shadow mode for lists (count what a list would block for a week without enforcing it) and an over-blocking view (blocked names that are retried or allowed right after), within the no-performance-cost condition (OBS-018).
+**Decision:**
+- A shadow list is compiled into the same snapshot (no second compile, no extra memory beyond its names) and left out of every enforcing mask, so the query path is unchanged: it never consults shadow lists at all.
+- The would-be decision is made **off the query path**: a telemetry-thread sink re-runs `Matcher::decide` for answered queries with the group's mask plus its shadow lists. This costs a filter lookup (about 0.3–1 µs) per answered query on the telemetry thread, and only while some list is in shadow mode. If the thread falls behind, events drop (counted) and DNS is unaffected. The group comes from the event (the primary group); a device whose own client entry names extra groups is judged by its primary group only.
+- Over-blocking evidence uses only what the events already carry: retry bursts (10 blocked queries in 60 s from one device; ad libraries do this too, so it's ranked low) and `allowed_after_block` (the same device answered within 10 minutes of a block: a pause or a quick allow; ranked ×10). Thresholds are fixed for now (conservative, not in the request).
+- Bounded state: recent blocks 8,192, suspects 512, devices 4,096 per shadow list and 64 per suspect, 256 tracked names per list. Since start, per node; reads merge every node's.
+- Names follow the privacy level (hashed at 1+); devices aren't counted at 2+.
+**Consequences:** counts reset on restart (Prometheus keeps `telltale_list_shadow_hits_total` history). Turning a list from shadow to enforce is an ordinary list change (API, UI, MCP plans).
+
 ## ADR-108 — Upstream truth checks: sampled second opinions compared by RCODE and addresses (Proposed)
 **Context:** the owner asked (2026-10-08) for upstream truth checks: sampled comparison with a second upstream, and per-upstream DNSSEC-failure and EDE breakdowns (OBS-019), without costing DNS performance.
 **Decision:**

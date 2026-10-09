@@ -113,6 +113,11 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 | Latency explainer | Stage breakdown percentiles | "Where does time go?" chart (cache vs upstream vs DNSSEC) |
 | Cache efficiency | Hit ratio, stale-served, prefetch success, eviction reasons | Sizing recommendations |
 
+### 7.2 Shadow lists and over-blocking suspects (OBS-018, ADR-109)
+- **Shadow lists:** `[[list]] mode = "shadow"` (block lists only) are compiled into the snapshot, but `FilterState` leaves them out of every enforcing mask; per group it keeps `shadow_group_masks` (the group's lists including its shadow ones) and `shadow_ids`. A telemetry-thread sink re-decides each answered query (`cached`, `forwarded`, `stale`, no allow rule) with the group's shadow mask; a block whose list is a shadow list is counted per list: queries, devices (≤ 4,096), Space-Saving top names (256 tracked, 20 reported), last hit. Nothing runs while no list is in shadow mode.
+- **Over-blocking suspects:** the same sink remembers recent blocks per (device, name) (≤ 8,192): 10 blocked queries within 60 s is a retry burst (once per burst); the same device getting the name answered normally within 10 min of its last block is `allowed_after_block`. Suspects are kept per name (≤ 512, least recent evicted) with the deciding lists and devices (≤ 64); ranked by allowed × 10 + bursts.
+- Names per the privacy level (hashed at 1+), devices not counted at 2+. Since start, per node; `GET /api/v1/analytics/shadow-lists` and `/analytics/overblocking` merge every node's (`federation::merge_shadow`, `merge_overblocking`); MCP `shadow_lists`, `overblocking_suspects`; `telltale_list_shadow_hits_total{list}`; the Lists page; explain's `shadow` flag.
+
 ### 7.1 Anomaly engine rules (OBS-013, ADR-019)
 - **Deterministic:** fixed-math streaming statistics only (counts, EWMA, median absolute deviation, histogram periodicity); no trained models. Time comes from event timestamps, never the wall clock, so replaying the same events yields the same alerts. Golden tests replay recorded fixtures.
 - **Explainable:** every finding carries its evidence: metric, observed value, baseline (center ± spread), threshold, window, and sample query-log links. The UI and `find_anomalies` (MCP) show the numbers, not just a score.

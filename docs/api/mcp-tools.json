@@ -323,6 +323,43 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. What would a list block if it were turned on? For each list in shadow mode (compiled and checked, never blocking): the queries it would have blocked since start, the devices, the names most often, and the last one. Use it to judge a new list before enforcing it (then plan_add_list or a config change to set mode = enforce).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "shadow_lists"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Blocked names that look like over-blocking, best first: allowedAfterBlock counts devices that got the name answered within 10 minutes of a block (someone paused blocking or allowed it, the strongest sign); retryBursts counts devices asking 10+ times a minute while blocked (broken apps, but also ad libraries). With the lists that blocked them. Use it to find allowlist candidates or a list that's too aggressive.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "At most this many (default 50).",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "overblocking_suspects"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Are the upstreams telling the truth? Per node and upstream: DNSSEC verdicts on its answers, the Extended DNS Error codes it returned (15 Blocked, 16 Censored, 17 Filtered mean it filters), and, when second opinions are on ([upstream_check] sample_every), how sampled answers compared with another upstream's: same, different addresses (CDNs do this; usually harmless), different response code, filtered (one side had addresses, the other none or 0.0.0.0), unanswered; plus the latest disagreements with both answers.",
     "inputSchema": {
       "additionalProperties": false,

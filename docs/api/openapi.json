@@ -546,6 +546,62 @@
         }
       }
     },
+    "/api/v1/analytics/overblocking": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Likely over-blocking.",
+        "description": "Blocked names that look like they shouldn't be, best first (at most `limit`, default 50):\n`allowedAfterBlock` counts devices that got the name answered normally within 10 minutes of\na block (someone paused blocking or allowed it: the strongest sign), `retryBursts` the times\na device asked for it 10 or more times within a minute while blocked (apps that break retry;\nad libraries do too, so weigh it lower). With the lists that blocked it. Since start; every\nnode's, merged by name. Names follow the query-log privacy level.",
+        "operationId": "overblocking",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many (1–500, default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The suspects, best first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_OverblockSuspect"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/analytics/shadow-lists": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "What the shadow lists would have blocked.",
+        "description": "A list with `mode = \"shadow\"` is compiled and checked but never blocks. For each query\nanswered normally, the telemetry thread checks it against the device's group's shadow lists\ntoo; this is what they would have blocked since start: queries, devices, the names most\noften, the last one. Every list in shadow mode is listed (with zero until it would block\nsomething). Use it to judge a new list before turning it on. In a cluster, every node's\ncounts add up. Names follow the query-log privacy level.",
+        "operationId": "shadow_lists",
+        "responses": {
+          "200": {
+            "description": "One entry per list in shadow mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_ShadowListStats"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/analytics/upstream-checks": {
       "get": {
         "tags": [
@@ -7245,6 +7301,10 @@
             ],
             "description": "`subtree`, `exact`, or `subdomains`."
           },
+          "shadow": {
+            "type": "boolean",
+            "description": "REQ: OBS-018 — the list is in shadow mode: it never blocks, its would-be blocks are\ncounted."
+          },
           "tier": {
             "type": "string",
             "description": "`important_allow`, `important_block`, `allow`, or `block`."
@@ -8858,6 +8918,7 @@
                 "name",
                 "kind",
                 "enabled",
+                "mode",
                 "source",
                 "state",
                 "bytes",
@@ -8919,6 +8980,10 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are\nat `GET /analytics/shadow-lists`)."
                 },
                 "name": {
                   "type": "string"
@@ -9046,6 +9111,78 @@
                 "time": {
                   "type": "string",
                   "description": "When it was first seen (RFC 3339)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_OverblockSuspect": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept\nretrying it, or it was answered normally soon after being blocked (someone paused\nblocking or allowed it).",
+              "required": [
+                "name",
+                "lists",
+                "devices",
+                "retryBursts",
+                "allowedAfterBlock",
+                "lastSeen"
+              ],
+              "properties": {
+                "allowedAfterBlock": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Times a device got it answered normally within 10 minutes of a block (a pause, a\nquick allow, or an allowlist entry: someone wanted it).",
+                  "minimum": 0
+                },
+                "devices": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Devices involved (none counted at privacy level 2 and above).",
+                  "minimum": 0
+                },
+                "lastSeen": {
+                  "type": "string",
+                  "description": "RFC 3339."
+                },
+                "lists": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The lists that blocked it."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Hashed at privacy level 1 and above."
+                },
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "retryBursts": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Times a device asked for it 10 or more times within a minute while it was blocked\n(apps that break retry; ad libraries do too).",
+                  "minimum": 0
                 }
               }
             }
@@ -9427,6 +9564,79 @@
                 "name": {
                   "type": "string",
                   "example": "TikTok"
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_ShadowListStats": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: OBS-018 (ADR-109) — what a `shadow` list would have blocked (it never does), since\nthe node started (every node's, merged, in a cluster).",
+              "required": [
+                "list",
+                "hits",
+                "devices",
+                "topNames"
+              ],
+              "properties": {
+                "devices": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Devices those queries came from (each node counts its own; capped at 4,096 per node).",
+                  "minimum": 0
+                },
+                "hits": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Queries it would have blocked (answered normally instead).",
+                  "minimum": 0
+                },
+                "lastHitAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "list": {
+                  "type": "string"
+                },
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The nodes that counted (cluster nodes only)."
+                },
+                "since": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "When counting started (RFC 3339): the earliest node's start, in a cluster."
+                },
+                "topNames": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NameCount"
+                  },
+                  "description": "The names it would have blocked most (hashed at privacy level 1 and above)."
                 }
               }
             }
@@ -9892,6 +10102,7 @@
           "name",
           "kind",
           "enabled",
+          "mode",
           "source",
           "state",
           "bytes",
@@ -9953,6 +10164,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "REQ: OBS-018 — `enforce`, or `shadow` (compiled, never blocks; its would-be blocks are\nat `GET /analytics/shadow-lists`)."
           },
           "name": {
             "type": "string"
@@ -10313,6 +10528,24 @@
           }
         }
       },
+      "NameCount": {
+        "type": "object",
+        "description": "A name and how often.",
+        "required": [
+          "name",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "NameMatch": {
         "type": "string",
         "description": "How `name` in [`QueryParams`] is matched.",
@@ -10388,6 +10621,59 @@
           "name": {
             "type": "string",
             "description": "Label."
+          }
+        }
+      },
+      "OverblockSuspect": {
+        "type": "object",
+        "description": "REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept\nretrying it, or it was answered normally soon after being blocked (someone paused\nblocking or allowed it).",
+        "required": [
+          "name",
+          "lists",
+          "devices",
+          "retryBursts",
+          "allowedAfterBlock",
+          "lastSeen"
+        ],
+        "properties": {
+          "allowedAfterBlock": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Times a device got it answered normally within 10 minutes of a block (a pause, a\nquick allow, or an allowlist entry: someone wanted it).",
+            "minimum": 0
+          },
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Devices involved (none counted at privacy level 2 and above).",
+            "minimum": 0
+          },
+          "lastSeen": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The lists that blocked it."
+          },
+          "name": {
+            "type": "string",
+            "description": "Hashed at privacy level 1 and above."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retryBursts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Times a device asked for it 10 or more times within a minute while it was blocked\n(apps that break retry; ad libraries do too).",
+            "minimum": 0
           }
         }
       },
@@ -11192,6 +11478,60 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "ShadowListStats": {
+        "type": "object",
+        "description": "REQ: OBS-018 (ADR-109) — what a `shadow` list would have blocked (it never does), since\nthe node started (every node's, merged, in a cluster).",
+        "required": [
+          "list",
+          "hits",
+          "devices",
+          "topNames"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Devices those queries came from (each node counts its own; capped at 4,096 per node).",
+            "minimum": 0
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries it would have blocked (answered normally instead).",
+            "minimum": 0
+          },
+          "lastHitAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "list": {
+            "type": "string"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The nodes that counted (cluster nodes only)."
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When counting started (RFC 3339): the earliest node's start, in a cluster."
+          },
+          "topNames": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NameCount"
+            },
+            "description": "The names it would have blocked most (hashed at privacy level 1 and above)."
           }
         }
       },

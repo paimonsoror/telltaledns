@@ -115,6 +115,11 @@ enum Read {
     Probes,
     /// REQ: OBS-019 — the peer's own upstream answer quality (older peers don't know it).
     UpstreamChecks,
+    /// REQ: OBS-018 — the peer's own shadow-list counts and over-blocking suspects.
+    ShadowLists,
+    Overblocking {
+        limit: usize,
+    },
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -182,6 +187,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Health => serde_json::to_vec(&b.health()),
         Read::Probes => serde_json::to_vec(&b.probes()),
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
+        Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
+        Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
     }
     .map_err(|e| e.to_string())
 }
@@ -1227,6 +1234,50 @@ impl Backend for Federated {
     }
     fn forwards(&self) -> Vec<ForwardInfo> {
         self.local.forwards()
+    }
+    // REQ: OBS-018 (ADR-109) — every node's counts, merged by list.
+    fn shadow_lists(&self) -> Vec<telltale_api::model::ShadowListStats> {
+        let label = |rows: Vec<telltale_api::model::ShadowListStats>, node: &str| {
+            rows.into_iter()
+                .map(|mut r| {
+                    r.nodes = vec![node.to_owned()];
+                    r
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(label(self.local.shadow_lists(), &self.own_label()));
+        }
+        for (node, rows) in self
+            .everyone_labelled::<Vec<telltale_api::model::ShadowListStats>>(|| Read::ShadowLists)
+        {
+            parts.push(label(rows, &node));
+        }
+        telltale_api::federation::merge_shadow(parts)
+    }
+    // REQ: OBS-018 (ADR-109) — every node's suspects, merged by name.
+    fn overblocking(&self, limit: usize) -> Vec<telltale_api::model::OverblockSuspect> {
+        let label = |rows: Vec<telltale_api::model::OverblockSuspect>, node: &str| {
+            rows.into_iter()
+                .map(|mut r| {
+                    r.nodes = vec![node.to_owned()];
+                    r
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(label(self.local.overblocking(limit), &self.own_label()));
+        }
+        for (node, rows) in
+            self.everyone_labelled::<Vec<telltale_api::model::OverblockSuspect>>(|| {
+                Read::Overblocking { limit }
+            })
+        {
+            parts.push(label(rows, &node));
+        }
+        telltale_api::federation::merge_overblocking(parts, limit)
     }
     // REQ: OBS-019 (ADR-108) — each node asks its own upstreams: one entry per node.
     fn upstream_checks(&self) -> Vec<telltale_api::model::UpstreamChecks> {

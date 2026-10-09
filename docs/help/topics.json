@@ -447,6 +447,26 @@
       "general": true
     },
     {
+      "id": "shadow-lists",
+      "title": "Would have blocked",
+      "term": "Shadow lists",
+      "summary": "A list in shadow mode is downloaded and checked like any other but never blocks. Every question your devices ask that it would have blocked is counted here: how many, from how many devices, and which names most often.",
+      "when": "Before turning on a new or aggressive list: run it in shadow mode for a week, look at what it would have blocked, then switch it to enforce (or don't).",
+      "example": "hagezi-ultimate in shadow mode: 4,210 queries from 9 devices this week; the top names are telemetry and ad hosts, plus one banking app's login server. Add that one to an allowlist, then enforce.",
+      "caution": "Counts start over when TelltaleDNS restarts. A shadow list is checked off the query path, so a very busy server may skip some (counted as dropped events), never slow down.",
+      "docs": "trying-a-list-first-shadow-mode"
+    },
+    {
+      "id": "overblocking",
+      "title": "Likely over-blocking",
+      "term": "Over-blocking suspects",
+      "summary": "Blocked names that someone seems to want: a device got the name answered within 10 minutes of a block (you paused blocking or allowed it), or an app kept retrying it 10 or more times a minute.",
+      "when": "Something broke on a device and you suspect a blocklist; or you want allowlist candidates.",
+      "example": "login.bank.example: blocked by oisd, then answered 3 minutes later on the same phone after a pause, twice this week. A good candidate for the allowlist.",
+      "caution": "Ad libraries retry blocked names too, so retry bursts alone are weak evidence; 'allowed soon after' is the stronger sign.",
+      "docs": "trying-a-list-first-shadow-mode"
+    },
+    {
       "id": "upstream-checks",
       "title": "Answer quality",
       "term": "Upstream truth checks (second opinions, DNSSEC, EDE)",

@@ -955,6 +955,10 @@ impl Backend for ApiBackend {
                     .rules
                     .into_iter()
                     .map(|r| ExplainRule {
+                        // REQ: OBS-018 (T11.5)
+                        shadow: cfg.list.iter().any(|l| {
+                            l.name.as_str() == r.list && l.mode == telltale_config::ListMode::Shadow
+                        }),
                         list: r.list,
                         tier: label(&r.tier),
                         kind: label(&r.kind),
@@ -1059,6 +1063,7 @@ impl Backend for ApiBackend {
                     name: l.name.to_string(),
                     kind: label(&l.kind),
                     enabled: l.enabled,
+                    mode: label(&l.mode),
                     source,
                     state: state.to_owned(),
                     error: meta.and_then(|m| m.last_error.clone()),
@@ -1303,6 +1308,16 @@ impl Backend for ApiBackend {
     // REQ: OBS-020 (ADR-107)
     fn probes(&self) -> Vec<telltale_api::model::ProbeResult> {
         self.src.probes.results()
+    }
+
+    // REQ: OBS-018 (ADR-109)
+    fn shadow_lists(&self) -> Vec<telltale_api::model::ShadowListStats> {
+        self.src
+            .shadow
+            .lists_view(&self.src.pipeline.current().policy.shadow_lists)
+    }
+    fn overblocking(&self, limit: usize) -> Vec<telltale_api::model::OverblockSuspect> {
+        self.src.shadow.suspects_view(limit)
     }
 
     // REQ: OBS-019 (ADR-108)

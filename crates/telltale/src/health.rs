@@ -557,6 +557,7 @@ mod tests {
             name: "hagezi".into(),
             kind: "block".into(),
             enabled: true,
+            mode: "enforce".into(),
             source: "https://lists.example/hagezi.txt".into(),
             state: "failed".into(),
             error: Some("HTTP 404".into()),

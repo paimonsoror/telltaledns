@@ -74,6 +74,8 @@ pub(crate) struct Policy {
     pub(crate) quick: Arc<telltale_policy::QuickRules>,
     /// REQ: DNS-018 (T7.22) — authoritative zones, most specific first.
     pub(crate) zones: Arc<Vec<Zone>>,
+    /// REQ: OBS-018 (T11.5) — lists in `shadow` mode: compiled, never enforced.
+    pub(crate) shadow_lists: Vec<Box<str>>,
 }
 
 /// REQ: DNS-018 (T7.22) — one authoritative zone.
@@ -105,6 +107,12 @@ impl Policy {
             quick,
             clients: Arc::new(clients),
             zones: Arc::default(),
+            shadow_lists: cfg
+                .list
+                .iter()
+                .filter(|l| l.mode == telltale_config::ListMode::Shadow)
+                .map(|l| Box::from(l.name.as_str()))
+                .collect(),
         }
     }
 
@@ -210,6 +218,13 @@ pub(crate) struct FilterState {
     pub(crate) reasons: Vec<String>,
     /// The same for blocks found through a CNAME target (FLT-007).
     pub(crate) cname_reasons: Vec<String>,
+    /// The snapshot's list names, by list ID.
+    pub(crate) list_names: Vec<String>,
+    /// REQ: OBS-018 (T11.5) — the `shadow` lists' IDs, and per group the lists it enforces plus
+    /// the shadow lists it would use: what the telemetry thread decides with to find would-be
+    /// blocks. Empty when no list is in shadow mode (nothing to do).
+    pub(crate) shadow_ids: ListMask,
+    pub(crate) shadow_group_masks: Vec<ListMask>,
 }
 
 /// Who sent a query, as far as identification needs (carried into deferred answers).
@@ -247,11 +262,22 @@ impl FilterState {
         matcher: Arc<Matcher>,
         clients: Arc<ClientTable>,
         sched: &ScheduleNow,
+        shadow: &[Box<str>],
     ) -> Self {
         let names: Vec<String> = matcher
             .snapshot()
             .map(|s| s.manifest.lists.iter().map(|l| l.name.clone()).collect())
             .unwrap_or_default();
+        // REQ: OBS-018 (T11.5) — shadow lists are never in an enforcing mask.
+        let mut shadow_ids = ListMask::default();
+        for (i, n) in names.iter().enumerate() {
+            if shadow.iter().any(|s| **s == **n)
+                && let Ok(id) = u16::try_from(i)
+            {
+                shadow_ids.set(id);
+            }
+        }
+        let mut shadow_group_masks = Vec::new();
         // A group's lists → list IDs in this snapshot (a group naming a list that isn't
         // compiled yet simply doesn't get it until it is). REQ: FLT-012 (T7.9) — blocked
         // services (`svc-<id>` lists) apply only to the groups that name them, also when a
@@ -280,6 +306,21 @@ impl FilterState {
                     if wanted && let Ok(id) = u16::try_from(i) {
                         m.set(id);
                     }
+                }
+                // REQ: OBS-018 (T11.5) — what the group enforces plus the shadow lists it would
+                // use; the shadow lists then leave the enforcing mask.
+                if !shadow.is_empty() {
+                    shadow_group_masks.push(m.clone());
+                    let mut enforced = ListMask::default();
+                    for i in 0..names.len() {
+                        if let Ok(id) = u16::try_from(i)
+                            && m.contains(id)
+                            && !shadow_ids.contains(id)
+                        {
+                            enforced.set(id);
+                        }
+                    }
+                    m = enforced;
                 }
                 m
             })
@@ -323,6 +364,9 @@ impl FilterState {
                     None => format!("CNAME target blocked by list {n}"),
                 })
                 .collect(),
+            list_names: names,
+            shadow_ids,
+            shadow_group_masks,
             clients,
             matcher,
         }
@@ -618,12 +662,15 @@ impl Pipeline {
                 None => return,
             },
         };
-        let clients = Arc::clone(&self.state.load().policy.clients);
+        let state = self.state.load();
+        let clients = Arc::clone(&state.policy.clients);
         let sched = self.schedules.load();
-        retire(
-            self.filter
-                .swap(Some(Arc::new(FilterState::new(matcher, clients, &sched)))),
-        );
+        retire(self.filter.swap(Some(Arc::new(FilterState::new(
+            matcher,
+            clients,
+            &sched,
+            &state.policy.shadow_lists,
+        )))));
     }
 
     /// The current routing/policy state.
@@ -3800,6 +3847,89 @@ groups = ["kids"]
         assert_eq!(forwarded[0].status, Status::Forwarded);
         assert_ne!(id, 0);
         assert_eq!(forwarded[0].upstream, id, "the upstream that answered");
+    }
+
+    /// REQ: OBS-018 (T11.5) — a list in shadow mode is compiled but never blocks; the shadow
+    /// sink, fed the answered query's event, counts what it would have blocked. An enforced
+    /// list next to it still blocks.
+    #[test]
+    fn obs_018_shadow_lists_count_but_never_block() {
+        use telltale_telemetry::ring::Sink as _;
+        let pipe = pipeline_with(UPSTREAM, "");
+        let cfg = telltale_config::Loader::new()
+            .toml_str("t.toml", UPSTREAM)
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        pipe.reload(
+            Arc::clone(&pipe.current().router),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                shadow_lists: vec!["candidate".into()],
+                ..Policy::open()
+            },
+        );
+        install_lists(
+            &pipe,
+            &[
+                ("enforced", "||ads.example^\n"),
+                ("candidate", "||shop.example^\n"),
+            ],
+        );
+        cache_a(&pipe, "shop.example", Ipv4Addr::new(192, 0, 2, 9));
+        assert_eq!(
+            rcode_of(&pipe, &query("ads.example", rtype::A, false)),
+            Some(rcode::NOERROR),
+            "blocked (null IP)"
+        );
+        let mut out = [0u8; 4096];
+        let resp = Handler(Arc::clone(&pipe)).handle(
+            &query("shop.example", rtype::A, false),
+            &meta(),
+            &mut out,
+        );
+        let Response::Ready(len) = resp else {
+            panic!("a cache hit")
+        };
+        assert!(
+            contains(&out[..len], &[192, 0, 2, 9]),
+            "answered, not blocked"
+        );
+        // The telemetry thread's view of that answer.
+        let shadow = Arc::new(crate::shadow::Shadow::new(0, 0));
+        let mut sink = crate::shadow::ShadowSink::new(Arc::clone(&shadow), Arc::clone(&pipe));
+        let wire = NameBuf::from_presentation("shop.example").unwrap();
+        let mut ev = QueryEvent {
+            ts_us: 1,
+            client_ip: Ipv4Addr::new(10, 0, 0, 5).to_ipv6_mapped().octets(),
+            client_ref: 0,
+            group: 0,
+            qtype: rtype::A,
+            qclass: 1,
+            rcode: Some(0),
+            status: Status::Cached,
+            proto: Proto::Udp,
+            flags: 0,
+            rule: None,
+            upstream: 0,
+            attempts: 0,
+            t_total_us: 10,
+            t_upstream_us: 0,
+            resp_size: 60,
+            answers: 1,
+        };
+        let name = telltale_telemetry::event::Name::from_wire(wire.as_wire());
+        sink.record(&telltale_telemetry::event::Record::Query(ev, name));
+        let other = telltale_telemetry::event::Name::from_wire(
+            NameBuf::from_presentation("www.example").unwrap().as_wire(),
+        );
+        sink.record(&telltale_telemetry::event::Record::Query(ev, other));
+        ev.status = Status::Blocked;
+        sink.record(&telltale_telemetry::event::Record::Query(ev, name));
+        let v = shadow.lists_view(&["candidate".into()]);
+        assert_eq!((v[0].hits, v[0].devices), (1, 1));
+        assert_eq!(v[0].top_names[0].name, "shop.example");
     }
 
     /// A fake upstream on 127.0.0.1: NXDOMAIN with EDE 17 (a filtering resolver), or an A

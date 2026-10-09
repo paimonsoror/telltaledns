@@ -1224,6 +1224,13 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
         if sources != 1 {
             r.err(&p, "set exactly one of `url`, `path`, or `rules`");
         }
+        // REQ: OBS-018 (T11.5) — only a block list has blocks to count.
+        if l.mode == crate::schema::ListMode::Shadow && l.kind != crate::schema::ListKind::Block {
+            r.err(
+                format!("{p}.mode"),
+                "shadow is for block lists (an allow list has nothing to count)",
+            );
+        }
         if let Some(url) = &l.url {
             match url.split_once("://") {
                 Some(("https", rest)) if !rest.is_empty() => {}
