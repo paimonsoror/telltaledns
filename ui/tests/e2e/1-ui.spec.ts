@@ -202,13 +202,17 @@ test('obs_015 health icon, its reasons, and the phone dot', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
-// REQ: OBS-016 — the dashboard's Service level card: the server's objectives (a few local
-// answers make them "on track"), then a stubbed outage that burns the availability budget fast.
+// REQ: OBS-016 — the dashboard's Service level card (Advanced view only): the server's
+// objectives (a few local answers make them "on track"), then a stubbed outage that burns the
+// availability budget fast.
 test('obs_016 service level card', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
   for (let i = 0; i < 5; i++) await query(`slo${i}.localhost`).catch(() => 0);
   await page.goto('/#/');
   const card = page.getByTestId('slo-card');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(card).toHaveCount(0);
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   await expect(card).toContainText('Service level');
   await expect(card).toContainText('(last 30 days)');
   await expect(card.getByTestId('slo-availability')).toContainText('Answers that work');
@@ -242,6 +246,8 @@ test('obs_016 service level card', async () => {
   await expect(a).toContainText('1h 16×');
   await expect(card.getByTestId('slo-latency')).toContainText('on track');
   await page.unroute('**/api/v1/stats/slo*');
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(card).toHaveCount(0);
 });
 
 // REQ: OBS-020 — Settings → System lists the listener probes: the e2e server's UDP listener

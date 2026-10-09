@@ -14,6 +14,7 @@
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import SloCard from '../lib/components/SloCard.svelte';
+  import { currentMode } from '../lib/mode.svelte';
 
   const ranges = [
     { id: '15m', label: '15 min', from: '-15m', step: 'second' as const, summary: '-15m', secs: 900 },
@@ -35,8 +36,11 @@
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let stages = $state<S['LatencyRow'][]>([]);
   let byPath = $state<S['LatencyRow'][]>([]);
-  // REQ: OBS-016 — the objectives (their own window, not the dashboard's range).
+  // REQ: OBS-016 — the objectives (their own window, not the dashboard's range). The card is
+  // technical detail: Advanced view only (owner, 2026-10-09). Burning budgets still reach
+  // everyone through the health icon and alerts.
   let slo = $state<S['SloStatus'] | null>(null);
+  const advanced = $derived(currentMode() === 'advanced');
   // What each "Where time goes" row means (path/transport, or a wait stage).
   const paths: Record<string, string> = {
     cache: 'Answered from the cache: a repeat question, no upstream asked. Usually well under a millisecond.',
@@ -293,7 +297,7 @@
     <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />
   </div>
 
-  <SloCard {slo} />
+  {#if advanced}<SloCard {slo} />{/if}
 
   <div class="status-row">
     <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />
