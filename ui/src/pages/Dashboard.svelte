@@ -36,9 +36,10 @@
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let stages = $state<S['LatencyRow'][]>([]);
   let byPath = $state<S['LatencyRow'][]>([]);
-  // REQ: OBS-016 — the objectives (their own window, not the dashboard's range). The card is
-  // technical detail: Advanced view only (owner, 2026-10-09). Burning budgets still reach
-  // everyone through the health icon and alerts.
+  // REQ: OBS-016 — the objectives (their own window, not the dashboard's range). The card,
+  // like traffic by group, where time goes, upstreams, and upstream exchanges, is technical
+  // detail: Advanced view only (owner, 2026-10-09). Burning budgets still reach everyone through the health icon
+  // and alerts.
   let slo = $state<S['SloStatus'] | null>(null);
   const advanced = $derived(currentMode() === 'advanced');
   // What each "Where time goes" row means (path/transport, or a wait stage).
@@ -311,10 +312,12 @@
     </section>
   </div>
 
-  {#if groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default')}
+  <!-- Advanced view only (owner, 2026-10-09), like the Service level card above. -->
+  {#if advanced && (groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default'))}
     <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} />
   {/if}
 
+  {#if advanced}
   <div class="grid-2">
     <section class="card">
       <h2>Where time goes <span class="muted small">(this hour)</span><HelpButton id="cache" /></h2>
@@ -363,7 +366,8 @@
     </section>
   </div>
 
-  <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} />
+    <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} />
+  {/if}
 
   <div class="grid-3">
     {#each [

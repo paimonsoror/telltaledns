@@ -319,7 +319,7 @@
       "id": "simple-advanced",
       "title": "Simple or Advanced view",
       "term": "Detail level",
-      "summary": "Simple shows what most homes need; Advanced adds the technical detail (raw rules, record types, protocol specifics, the dashboard's service-level objectives). Your choice is remembered for you.",
+      "summary": "Simple shows what most homes need; Advanced adds the technical detail (raw rules, record types, protocol specifics; on the dashboard, service levels, traffic by group, where time goes, and the upstreams). Your choice is remembered for you.",
       "when": "Switch to Advanced when you're troubleshooting or know DNS well.",
       "example": "Simple shows each list's name and size; Advanced adds its URL, format, and rule counts.",
       "caution": "Simple only hides detail; it never hides something that changes how queries are answered.",

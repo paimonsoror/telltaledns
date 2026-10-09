@@ -821,7 +821,7 @@ networks = ["192.168.10.0/24"]
 - **A network belongs to one group:** the same CIDR in two groups is a configuration error.
   Nested networks are fine; the most specific wins.
 - **Where it shows:**
-  - the dashboard's **Traffic by group** chart, and a group selector for its top lists;
+  - the dashboard's **Traffic by group** chart (in the Advanced view), and a group selector for its top lists;
   - each group's card on the **Groups** page: networks, queries and block rate over 24 hours,
     devices this hour, top names and top blocked;
   - a group chip on every query-log row, and a **Group** filter;

@@ -75,11 +75,20 @@ test('dashboard shows traffic and top blocked names', async () => {
   // Every chart has a table view.
   await page.getByRole('button', { name: 'Table' }).first().click();
   await expect(page.locator('.table-view table').first()).toBeVisible();
+  // The technical cards are in the Advanced view only (owner, 2026-10-09).
+  // (Headings may carry "(this hour)" and a help button after the title.)
+  const heading = (h: string) => page.getByRole('heading', { name: new RegExp(`^${h}( |$)`) });
+  const advancedOnly = ['Where time goes', 'Upstreams', 'Upstream exchanges'];
+  for (const h of advancedOnly) await expect(heading(h)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  for (const h of advancedOnly) await expect(heading(h)).toBeVisible();
   // "Where time goes": each path explains itself on hover (and keyboard focus).
   const local = page.getByRole('button', { name: 'local/udp' });
   await local.hover();
   await expect(page.getByRole('tooltip').filter({ hasText: 'names on your network' })).toBeVisible();
   await expect(local).toHaveAccessibleDescription(/names on your network.*UDP/);
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(heading('Upstreams')).toHaveCount(0);
 });
 
 test('query log finds the blocked query and explains it', async () => {
@@ -500,7 +509,11 @@ test('flt_005 network groups: cards, chart, and query-log filter', async () => {
     await expect(card.locator('dd').first()).not.toHaveText('0', { timeout: 2000 });
   }).toPass({ timeout: 20_000 });
   await page.goto('/#/');
+  // Traffic by group is in the Advanced view.
+  await expect(page.getByRole('heading', { name: 'Traffic by group' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Traffic by group' })).toBeVisible();
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
   await page.getByLabel('Group').selectOption('lab');
   await expect(page.locator('section.card', { hasText: 'Top domains' })).toContainText('nas.e2e.test');
   await page.goto('/#/queries?group=lab');
