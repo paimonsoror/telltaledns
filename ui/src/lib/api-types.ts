@@ -7565,6 +7565,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description What was done (or, with dryRun, what would be), and what changes on every node. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7683,6 +7684,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The stage, the version baking, the canaries, the guard's readings, and the pin. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7812,6 +7814,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description What was done (or, with dryRun, what would be), and what changes on every node. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7849,6 +7852,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description What was done (or, with dryRun, what would be), and what changes on every node. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7886,6 +7890,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The kept versions, newest first. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7936,6 +7941,7 @@ export interface operations {
             };
         };
         responses: {
+            /** @description What was done (or, with dryRun, what would be), and what changes on every node. */
             200: {
                 headers: {
                     [name: string]: unknown;

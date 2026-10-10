@@ -58,7 +58,7 @@ pub fn parse_version(v: &str) -> Result<(u64, u64), Problem> {
 /// answers from the version it applied (`fromPrimary: false`).
 #[utoipa::path(get, path = "/api/v1/cluster/rollout", tag = "system",
     responses(
-        (status = 200, body = RolloutStatus),
+        (status = 200, body = RolloutStatus, description = "The stage, the version baking, the canaries, the guard's readings, and the pin."),
         (status = 503, body = Problem, description = "Not in a cluster (`unavailable`)."),
     ))]
 async fn rollout_status(State(backend): State<Shared>) -> Response {
@@ -75,7 +75,7 @@ async fn rollout_status(State(backend): State<Shared>) -> Response {
 /// its files are still kept (`pinnable`). `[cluster.rollout] history` says how many (20).
 #[utoipa::path(get, path = "/api/v1/cluster/versions", tag = "system",
     responses(
-        (status = 200, body = ClusterVersions),
+        (status = 200, body = ClusterVersions, description = "The kept versions, newest first."),
         (status = 503, body = Problem, description = "Not in a cluster, or the primary is unreachable (`unavailable`)."),
     ))]
 async fn cluster_versions(State(backend): State<Shared>) -> Response {
@@ -124,7 +124,7 @@ async fn run(
 /// rest of the bake. Admin (agents: `cluster:admin`); audit-logged as `rollout.promote`.
 #[utoipa::path(post, path = "/api/v1/cluster/rollout/promote", tag = "system",
     responses(
-        (status = 200, body = RolloutAction),
+        (status = 200, body = RolloutAction, description = "What was done (or, with dryRun, what would be), and what changes on every node."),
         (status = 409, body = Problem, description = "No version is baking (`no_rollout`)."),
         (status = 503, body = Problem, description = "The primary is unreachable (`unavailable`)."),
     ))]
@@ -153,7 +153,7 @@ async fn rollout_promote(
 /// audit-logged as `rollout.abort`.
 #[utoipa::path(post, path = "/api/v1/cluster/rollout/abort", tag = "system",
     responses(
-        (status = 200, body = RolloutAction),
+        (status = 200, body = RolloutAction, description = "What was done (or, with dryRun, what would be), and what changes on every node."),
         (status = 409, body = Problem, description = "No version is baking (`no_rollout`)."),
         (status = 503, body = Problem, description = "The primary is unreachable (`unavailable`)."),
     ))]
@@ -189,7 +189,7 @@ async fn rollout_abort(
     params(("version" = String, Path, description = "`<epoch>.<seq>` from GET /api/v1/cluster/versions."), DryRun),
     request_body = PinRequest,
     responses(
-        (status = 200, body = RolloutAction),
+        (status = 200, body = RolloutAction, description = "What was done (or, with dryRun, what would be), and what changes on every node."),
         (status = 404, body = Problem, description = "No kept version by that number (`version_unknown`)."),
         (status = 409, body = Problem, description = "Its files are no longer kept (`version_blobs_missing`)."),
         (status = 412, body = Problem, description = "The configuration changed since `If-Match` (`version_conflict`)."),
@@ -232,7 +232,7 @@ async fn pin_version(
 #[utoipa::path(delete, path = "/api/v1/cluster/pin", tag = "system",
     params(DryRun),
     responses(
-        (status = 200, body = RolloutAction),
+        (status = 200, body = RolloutAction, description = "What was done (or, with dryRun, what would be), and what changes on every node."),
         (status = 409, body = Problem, description = "The cluster isn't pinned (`conflict`)."),
         (status = 412, body = Problem, description = "The configuration changed since `If-Match` (`version_conflict`)."),
         (status = 503, body = Problem, description = "The primary is unreachable (`unavailable`)."),

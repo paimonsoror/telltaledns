@@ -2048,6 +2048,7 @@
         ],
         "responses": {
           "200": {
+            "description": "What was done (or, with dryRun, what would be), and what changes on every node.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2192,6 +2193,7 @@
         "operationId": "rollout_status",
         "responses": {
           "200": {
+            "description": "The stage, the version baking, the canaries, the guard's readings, and the pin.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2363,6 +2365,7 @@
         "operationId": "rollout_abort",
         "responses": {
           "200": {
+            "description": "What was done (or, with dryRun, what would be), and what changes on every node.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2404,6 +2407,7 @@
         "operationId": "rollout_promote",
         "responses": {
           "200": {
+            "description": "What was done (or, with dryRun, what would be), and what changes on every node.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2445,6 +2449,7 @@
         "operationId": "cluster_versions",
         "responses": {
           "200": {
+            "description": "The kept versions, newest first.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2524,6 +2529,7 @@
         },
         "responses": {
           "200": {
+            "description": "What was done (or, with dryRun, what would be), and what changes on every node.",
             "content": {
               "application/json": {
                 "schema": {
