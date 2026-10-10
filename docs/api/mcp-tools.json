@@ -524,6 +524,21 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Staged rollouts and pins: the stage (none, canary: a new version bakes on the canary nodes and the primary before everyone else gets it, waiting: no canary online, or pinned), the version baking and the time left, the canaries and what version each node runs, the guard's readings (SERVFAIL share before and during the bake, answers), whether the cluster is pinned (to which version, since when, by whom, why, and what the pin holds back), and the kept versions with what made each and its outcome. Pin or unpin with plan_pin_version and plan_unpin.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "rollout_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. One section of the running configuration, as the API shows it (no secrets): groups, lists, devices (clients), upstreams, local names (records), authoritative zones (zones), or forwarded domains (forwards). Also returns system information.",
     "inputSchema": {
       "additionalProperties": false,
@@ -1300,6 +1315,64 @@
       "type": "object"
     },
     "name": "plan_update_upstreams"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). An operator must approve it first. Pins the cluster to a kept version (\"roll back\"): every node serves that version's configuration and filter snapshot, published as a new version, until someone unpins; configuration changes are refused meanwhile. The preview lists what changes. The files, the UI's entries, and Git aren't rewritten. Only with [agents] require_approval on; needs the cluster:admin scope. Versions come from rollout_status.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "description": "The version's epoch (the part before the dot in rollout_status).",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "seq": {
+          "description": "The version's number (after the dot).",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "epoch",
+        "seq",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_pin_version"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plans a change (nothing changes until apply_plan). An operator must approve it first. Unpins the cluster: the primary publishes its current configuration again (through a staged rollout when canaries are set). The preview lists what changes. Only with [agents] require_approval on; needs the cluster:admin scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "plan_unpin"
   },
   {
     "annotations": {

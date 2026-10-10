@@ -46,6 +46,9 @@ pub(crate) struct Sources {
     pub(crate) maintenance: Arc<crate::maintenance::Maintenance>,
     /// REQ: OBS-025 — what kind of device each address is.
     pub(crate) identify: Arc<crate::identify::Identifier>,
+    /// REQ: CLU-013 — the operator's rollout and pin commands for the publish loop, and what
+    /// it last reported.
+    pub(crate) rollout: Arc<crate::rollout::Hub>,
     pub(crate) started: Instant,
     pub(crate) allowed: Vec<Cidr>,
     /// The list fetcher and compiler, when this node handles lists.
@@ -385,6 +388,67 @@ fn election_metrics(c: &telltale_cluster::net::Cluster, w: &mut PromWriter) {
     }
 }
 
+/// REQ: CLU-013 — the staged rollout and the pin (the primary reports them).
+fn rollout_metrics(src: &Sources, w: &mut PromWriter) {
+    let s = src.rollout.status();
+    if !s.primary {
+        return;
+    }
+    w.family(
+        "telltale_cluster_rollout_stage",
+        "gauge",
+        "1 while a staged rollout's canary version bakes, else 0 (the primary reports it).",
+    )
+    .sample(
+        "telltale_cluster_rollout_stage",
+        &[],
+        u8::from(s.active.is_some()),
+    );
+    if let Some(a) = &s.active {
+        let v = format!("{}.{}", a.version.0, a.version.1);
+        let started = (a.started_ms / 1000).to_string();
+        w.family(
+            "telltale_cluster_rollout_info",
+            "gauge",
+            "1 for the version baking and when its bake began (Unix seconds).",
+        )
+        .sample(
+            "telltale_cluster_rollout_info",
+            &[("version", &v), ("started", &started)],
+            1,
+        );
+    }
+    w.family(
+        "telltale_cluster_pinned",
+        "gauge",
+        "1 while the cluster is pinned to an older version (changes wait for the unpin).",
+    )
+    .sample("telltale_cluster_pinned", &[], u8::from(s.pinned.is_some()));
+    if let Some(p) = &s.pinned {
+        let v = format!("{}.{}", p.to.0, p.to.1);
+        w.family(
+            "telltale_cluster_pinned_to",
+            "gauge",
+            "1 for the version the cluster is pinned to.",
+        )
+        .sample("telltale_cluster_pinned_to", &[("version", &v)], 1);
+    }
+    w.family(
+        "telltale_cluster_rollouts_total",
+        "counter",
+        "Staged rollouts since the primary's process started, by outcome (started, promoted, failed, aborted, skipped) and pins (pinned, unpinned).",
+    );
+    for outcome in [
+        "started", "promoted", "failed", "aborted", "skipped", "pinned", "unpinned",
+    ] {
+        w.sample(
+            "telltale_cluster_rollouts_total",
+            &[("outcome", outcome)],
+            s.counts.get(outcome).copied().unwrap_or(0),
+        );
+    }
+}
+
 /// REQ: OPS-010 — this node's maintenance: whether it's in it, until when, how many windows
 /// were started since this process did.
 fn render_maintenance(src: &Sources, w: &mut PromWriter) {
@@ -500,7 +564,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
             w.sample(
                 "telltale_cluster_peer_config_lag",
                 &[("node", &p.node_id), ("site", &p.site)],
-                newest.saturating_sub(p.applied_seq),
+                newest.saturating_sub(p.stable_seq()),
             );
         }
         let local = c.local_state();
@@ -511,6 +575,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
         )
         .sample("telltale_cluster_config_seq", &[], local.applied_seq);
         election_metrics(c, w);
+        rollout_metrics(src, w);
         git_metrics(src, w);
         w.family(
             "telltale_cluster_behind_seconds",
@@ -1723,6 +1788,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         Sources {
             identify: Arc::new(crate::identify::Identifier::open(&dir)),
+            rollout: Arc::default(),
             maintenance: Arc::new(crate::maintenance::Maintenance::open(
                 &dir,
                 Arc::clone(&readiness),

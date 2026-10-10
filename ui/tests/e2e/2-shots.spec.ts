@@ -40,10 +40,16 @@ for (const theme of ['light', 'dark'] as const) {
     // The Cluster page with example data (the test server runs alone): a controller and three
     // resolver pods on two Kubernetes nodes, and a Pi. The site's caption says it's an example.
     await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: exampleCluster() }));
+    await page.route('**/api/v1/cluster/rollout', (route) =>
+      route.fulfill({ json: { fromPrimary: true, canaries: ['ephemeral'], bakeSecs: 300, stable: '1.42', stage: 'none', nodes: [] } }),
+    );
+    await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
     await page.goto('/#/cluster');
     await page.waitForTimeout(600);
     await page.screenshot({ path: shot(`cluster-${theme}`), type: 'jpeg', quality: 80 });
     await page.unroute('**/api/v1/cluster');
+    await page.unroute('**/api/v1/cluster/rollout');
+    await page.unroute('**/api/v1/cluster/versions');
     // "Why?" on a blocked query: it names the list and the rule.
     await page.goto('/#/queries?status=blocked');
     await page.getByRole('button', { name: 'Why?' }).first().click();

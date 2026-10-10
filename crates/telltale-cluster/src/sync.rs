@@ -83,6 +83,38 @@ pub struct ClusterManifest {
     /// Absent from older primaries (a replica then keeps its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anomaly_acks: Option<BlobRef>,
+    /// REQ: CLU-013 (ADR-116) — set on a version sent to canary nodes first: shown on the
+    /// Cluster page ("canary of version …"); informational. Absent otherwise and from older
+    /// primaries; older replicas are never sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<RolloutInfo>,
+    /// REQ: CLU-013 — the cluster is pinned: this version serves an older one's content, and
+    /// nothing newer is published until it's unpinned. Authoritative: a replica promoted to
+    /// primary keeps the pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<PinInfo>,
+}
+
+/// REQ: CLU-013 — a staged version's rollout, as its manifest carries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolloutInfo {
+    /// `canary` (only the canaries got it so far).
+    pub stage: String,
+    /// The stable version it would replace.
+    pub of: (u64, u64),
+    pub started_ms: u64,
+    pub bake_secs: u32,
+    /// The canary nodes it went to (node IDs).
+    pub canaries: Vec<String>,
+}
+
+/// REQ: CLU-013 — a pin: which version's content is served, since when, by whom, and why.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinInfo {
+    pub to: (u64, u64),
+    pub since_ms: u64,
+    pub by: String,
+    pub reason: String,
 }
 
 /// A Git commit as a configuration's provenance (ADR-049). `repo`, `git_ref` and `path` also
@@ -233,6 +265,26 @@ impl BlobStore {
         std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
     }
 
+    /// REQ: CLU-013 — stores the file at `path` as blob `b`, hard-linked when possible (a
+    /// compiled snapshot's files cost no extra space), so the version stays pinnable after the
+    /// snapshot directory is pruned. The size must match; the hash is the compiler's.
+    pub fn link(&self, b: &BlobRef, path: &Path) -> Result<(), String> {
+        let dst = self.path(&b.hash).ok_or("bad blob hash")?;
+        if self.has(b) {
+            return Ok(());
+        }
+        let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+        if len != b.bytes {
+            return Err(format!("{}: size doesn't match", path.display()));
+        }
+        if std::fs::hard_link(path, &dst).is_ok() {
+            return Ok(());
+        }
+        let tmp = self.dir.join(format!(".{}.tmp", b.hash));
+        std::fs::copy(path, &tmp).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())
+    }
+
     pub fn read(&self, b: &BlobRef) -> Result<Vec<u8>, String> {
         let path = self.path(&b.hash).ok_or("bad blob hash")?;
         std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
@@ -304,6 +356,54 @@ mod tests {
         old.as_object_mut().unwrap().remove("anomaly_acks");
         let back: ClusterManifest = serde_json::from_value(old).unwrap();
         assert!(back.anomaly_acks.is_none());
+    }
+
+    // REQ: CLU-013 — the rollout and pin fields default to absent (an older primary's manifest
+    // reads; an older replica ignores them), and a pin survives the round trip.
+    #[test]
+    fn clu_013_rollout_and_pin_fields_default() {
+        let m = manifest();
+        let json = serde_json::to_value(&m).unwrap();
+        assert!(json.get("rollout").is_none() && json.get("pinned").is_none());
+        let mut pinned = manifest();
+        pinned.pinned = Some(PinInfo {
+            to: (1, 5),
+            since_ms: 9,
+            by: "guard".into(),
+            reason: "SERVFAIL 40% on canaries".into(),
+        });
+        pinned.rollout = Some(RolloutInfo {
+            stage: "canary".into(),
+            of: (1, 6),
+            ..RolloutInfo::default()
+        });
+        let ca = pki::new_ca("home").unwrap();
+        let back = Signed::sign(&pinned, &ca.key_pem)
+            .unwrap()
+            .verify(&ca.cert_pem)
+            .unwrap();
+        assert_eq!(back, pinned);
+    }
+
+    #[test]
+    fn clu_013_blobs_link_from_snapshot_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+        let file = dir.path().join("subtree-0.fst");
+        std::fs::write(&file, b"shard").unwrap();
+        let b = blob_ref("subtree-0.fst", b"shard");
+        store.link(&b, &file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(
+            store.read(&b).unwrap(),
+            b"shard",
+            "kept after the snapshot is pruned"
+        );
+        assert!(
+            store
+                .link(&blob_ref("x", b"other!"), &dir.path().join("missing"))
+                .is_err()
+        );
     }
 
     #[test]

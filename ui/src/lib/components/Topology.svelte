@@ -161,7 +161,8 @@
 </script>
 
 <script lang="ts">
-  let { nodes, onselect }: { nodes: Node[]; onselect?: (n: Node) => void } = $props();
+  // REQ: CLU-013 — `canaries`: the nodes running a version that bakes (dashed outline).
+  let { nodes, onselect, canaries = [] }: { nodes: Node[]; onselect?: (n: Node) => void; canaries?: string[] } = $props();
 
   const L = $derived(layout(nodes));
   const label = (n: Node) => n.pod ?? n.nodeId.slice(0, 8);
@@ -246,6 +247,7 @@
             class="chip {health(c.node)}"
             class:me={c.node.thisNode}
             class:maint={!!c.node.maintenance}
+            class:canary={canaries.includes(c.node.nodeId) || (c.node.role === 'primary' && canaries.length > 0)}
             role="button"
             tabindex="0"
             aria-label={describe(c.node)}
@@ -275,6 +277,7 @@
               <g
                 class="pod {p.more ? worstOf(p.more) : health(n)}"
                 class:maint={!p.more && !!n.maintenance}
+                class:canary={!p.more && canaries.includes(n.nodeId)}
                 role="button"
                 tabindex="0"
                 aria-label={p.more ? `${p.more.length} more pods on ${g.label}` : describe(n)}
@@ -296,6 +299,7 @@
     <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
     <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
     {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> in maintenance{/if} ·
+    {#if canaries.length}<span class="key canary"></span> runs the version baking ·{/if}
     line thickness = share of queries{#if L.links.some((l) => l.label)}{' · times are round trips from this node'}{/if}
   </p>
 </div>
@@ -372,6 +376,16 @@
     fill: url(#maint-hatch);
     stroke: var(--muted);
     stroke-dasharray: 2 2;
+  }
+  /* REQ: CLU-013 — runs the version baking. */
+  .chip.canary > rect:first-of-type,
+  .pod.canary rect {
+    stroke: var(--accent);
+    stroke-width: 2;
+    stroke-dasharray: 5 3;
+  }
+  .key.canary {
+    border: 2px dashed var(--accent);
   }
   .hatch {
     stroke: var(--warn);

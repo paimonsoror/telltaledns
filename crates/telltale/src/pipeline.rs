@@ -481,6 +481,9 @@ pub(crate) struct Pipeline {
     pub(crate) router_leases: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
     /// REQ: T8.3 — the names devices announce over mDNS, by address.
     pub(crate) mdns_names: Arc<arc_swap::ArcSwap<crate::devices::Leases>>,
+    /// REQ: CLU-013 — while the cluster is pinned, the snapshot the primary serves: no other
+    /// snapshot (a list refresh's) may replace it. Never read on the query path.
+    pub(crate) filter_pin: ArcSwapOption<std::path::PathBuf>,
     /// REQ: OBS-007 (T7.18) — the dnstap tap, set once at startup (one atomic load per query
     /// when unset).
     pub(crate) dnstap: std::sync::OnceLock<Arc<crate::dnstap::Tap>>,
@@ -562,6 +565,7 @@ impl Pipeline {
             dnstap: std::sync::OnceLock::new(),
             router_leases: Arc::default(),
             mdns_names: Arc::default(),
+            filter_pin: ArcSwapOption::empty(),
             flights: Singleflight::new(),
             seed: rand::random(),
             loops: std::sync::atomic::AtomicU64::new(0),

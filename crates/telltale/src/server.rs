@@ -906,6 +906,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         identify: Arc::new(crate::identify::Identifier::open(std::path::Path::new(
             cfg.node.data_dir.as_str(),
         ))),
+        rollout: Arc::default(),
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
         lists: ArcSwapOption::empty(),

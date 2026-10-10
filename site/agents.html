@@ -167,6 +167,7 @@
           <tr><th scope="row"><code>new_domains</code></th><td>first-seen domains per device</td></tr>
           <tr><th scope="row"><code>vqlog</code></th><td>any count, top list, percentile, or time series (below)</td></tr>
           <tr><th scope="row"><code>cluster_status</code></th><td>members, roles, sync, versions, health</td></tr>
+          <tr><th scope="row"><code>rollout_status</code></th><td>the change baking on the canary nodes, the guard's readings, the pin, and the versions kept</td></tr>
           <tr><th scope="row"><code>get_config</code></th><td>a configuration section, without secrets</td></tr>
         </tbody>
       </table></div>
@@ -183,6 +184,7 @@
           <tr><th scope="row"><code>plan_set_schedule</code></th><td>weekly schedules: a bedtime, extra lists, blocked services</td></tr>
           <tr><th scope="row"><code>plan_update_upstreams</code></th><td>upstream servers and strategies</td></tr>
           <tr><th scope="row"><code>plan_set_ratelimit</code></th><td>the per-client rate limit: queries per window, exempt addresses, how clients are grouped</td></tr>
+          <tr><th scope="row"><code>plan_pin_version</code>, <code>plan_unpin</code></th><td>pin the cluster to a kept version, or unpin it (only where a person approves each plan)</td></tr>
           <tr><th scope="row"><code>apply_plan</code>, <code>discard_plan</code>, <code>list_plans</code></th><td>make, drop, or review planned changes</td></tr>
         </tbody>
       </table></div>

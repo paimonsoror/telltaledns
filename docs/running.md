@@ -250,6 +250,10 @@ the chart's schema rejects a mistyped value with its path.
     - list that address in `cluster.advertise` (e.g. `["https://192.168.5.100:9443"]`);
     - create a token on the controller (`kubectl exec sts/telltale -- telltale cluster token create --url https://192.168.5.100:9443 -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml -c /etc/telltale/20-controller.toml`);
     - then run `telltale cluster join <token>` on the Pi.
+  - **Staged rollouts** (off by default): `cluster.rollout.canaries: [ephemeral]` gives each change
+    to the resolver pods (with the controller) first and to a node outside Kubernetes after a
+    5-minute bake, pinning the cluster back if the pods start failing. See
+    [Rolling a change out in stages](#rolling-a-change-out-in-stages).
   - With Argo CD (which can't keep a generated Secret stable), create the join Secret yourself and set `cluster.bootstrapSecret.existingSecret`. A changed secret applies without restarting the controller.
   - `daemonSet` (host-network resolvers on every node) comes later.
   - **Don't raise the replica count of a workload that shares one volume.** Every copy would
@@ -1821,6 +1825,139 @@ for peers. The Helm chart's node alerts leave out a node whose last reported win
 A node that's really failing during its window stays quiet until the window ends: keep windows
 short.
 
+## Rolling a change out in stages
+A bad change (a typo in an upstream, a list that blocks the bank) normally reaches every node
+within seconds. With **canary nodes** set, a change reaches them (and the primary) first, and
+every other node only after a **bake** of 5 minutes, and only if nothing went wrong meanwhile.
+If something did, the cluster is **pinned** to the version before the change (next section)
+and you're told why, while the other nodes never saw the bad version.
+
+**Off until you set it.** `[cluster.rollout] canaries` is empty by default: changes reach
+every node at once, as before. Name canaries in **Settings → Cluster → Staged rollouts** (a
+picker with the cluster's nodes, each site, and "resolver pods"), in the config file, or in
+the Helm chart's `cluster.rollout`:
+
+```toml
+[cluster.rollout]
+canaries = ["ephemeral"]   # node IDs, "site:<name>", or "ephemeral" (the Kubernetes resolver pods)
+bake_secs = 300            # at least 5
+servfail_pct = 5           # fail when the canaries' SERVFAIL share is over max(before + 2 points, this)
+require_traffic = false    # true: keep baking until the canaries answered 50 queries, then judge
+max_bake_secs = 3600       # the longest bake (with require_traffic, or waiting for a canary to apply)
+fail_on_disconnect = true  # a canary gone for a minute after applying fails the change
+history = 20               # versions the primary keeps for pinning back to
+```
+
+`[cluster.rollout]` is shared, so every node knows the canaries. A change to these settings
+is published at once and never staged itself, so a bad canary list can always be fixed.
+
+**The primary runs a change at once.** It's where the change was made, and it serves the
+version it publishes, so it's judged with the canaries. During the bake the Cluster page says
+"version 125 runs on k8s-resolver-0, k8s-resolver-1 and the primary; the others stay on 124".
+
+**The guard.** Every 5 seconds the primary looks at what each canary reports in its heartbeats.
+These fail a version at once:
+- a canary that can't apply it;
+- a canary not ready for 15 seconds after applying it;
+- a canary whose listener checks fail after applying it;
+- a canary gone for a minute after applying it (with `fail_on_disconnect`).
+
+The SERVFAIL share of the canaries and the primary during the bake is compared with their share
+in the same length of time before it, as soon as there are 50 answers: the version fails when
+it's over `servfail_pct` and over the earlier share by more than 2 points, so a bad change is
+usually pinned back seconds after it went out, before the bake ends. A version passes at the end
+of the bake. With fewer than 50 answers by then there's nothing to compare: it passes (only the
+checks above apply), unless `require_traffic` keeps it baking until there are 50, or until
+`max_bake_secs`, when it fails.
+Latency isn't judged: a Pi and a Kubernetes pod differ too much for "slower than before" to mean
+anything.
+
+A pass gives the version to every node, as a new version number with the same content. A fail
+pins the cluster to the version before it, fires the `rollout_failed` alert, and records the
+reason and the readings with the version.
+
+**Promote or abort by hand.** On the Cluster page while a version bakes: **Promote now**
+(everyone gets it without waiting) or **Abort** (pin to the version before it; the primary and
+the canaries ran the change, so they go back too). Both need an admin.
+
+**Good to know:**
+- **A newer change during a bake** replaces the version baking: the canaries get the newer one,
+  and the bake starts over.
+- **Users, tokens, and the member list** wait for the bake to end before they're published (a
+  version for everyone would carry the canary's configuration).
+- **No canary online:** a change waits up to a minute after the primary starts (a canary may
+  still be reconnecting), then goes to every node at once ("rollout skipped: no canary online"
+  in the log and on the Cluster page). Canaries set but none online for 10 minutes is the
+  health condition `rollout_stuck`: changes are reaching every node without a bake.
+- **A restart of the primary during a bake** starts the rollout over.
+- **Older nodes** (from before this release) are never canaries, even when their site is named:
+  they get each change after the bake.
+- **Kubernetes** (`mode: scaled`): with `canaries: [ephemeral]` the resolver pods take each change
+  at once with the controller, under the guard's watch, and nodes outside Kubernetes (a Pi that
+  joined) wait out the bake. A pod rescheduled during a bake counts as a canary gone; unpin to
+  try again.
+
+```sh
+telltale ctl rollout status     # the version baking, the canaries and what each runs, the time left, the guard
+telltale ctl rollout promote
+telltale ctl rollout abort
+```
+
+Over the API: `GET /api/v1/cluster/rollout`, `POST /api/v1/cluster/rollout/promote` and
+`/abort` (admin; audited as `rollout.promote` and `rollout.abort`); the settings are
+`PUT`/`DELETE /api/v1/cluster/rollout-settings/default`. AI agents read `rollout_status`.
+
+**Metrics** (the primary reports them): `telltale_cluster_rollout_stage` (1 while a version
+bakes), `telltale_cluster_rollout_info{version,started}`, and
+`telltale_cluster_rollouts_total{outcome}` (`started`, `promoted`, `failed`, `aborted`,
+`skipped`, `pinned`, `unpinned`). The Helm chart's PrometheusRule has `TelltaleDNSRolloutFailed`.
+
+## Pinning the cluster to a version
+A pin makes every node serve an older version again: its shared configuration and its filter
+snapshot. The guard pins by itself when a rollout fails; an admin can pin any kept version.
+
+- **A pin is a new version.** Pinning to version 124 publishes, say, version 131 with 124's
+  content (version numbers never go backwards), and the primary serves it too.
+- **While pinned, changes wait.** Configuration changes (the UI, the API, agents' plans) answer
+  409 `cluster_pinned`, with a `diff` of what the pin holds back (JSON Patch, and in the hint one
+  sentence per section). A dry run still works. A Git source keeps checking the repository but
+  publishes nothing; list updates still download, but no new filter snapshot goes out.
+- **It's loud.** A banner on the Cluster page (pinned to what, since when, by whom, why, and what
+  it holds back), the health condition `cluster_pinned`, and the alert `cluster_pinned` (a rule
+  with `when = "cluster_pinned"`; the Helm chart's `TelltaleDNSClusterPinned` fires after an hour).
+- **It survives failover.** A replica promoted to primary keeps the pin, and keeps serving the
+  pinned version until someone unpins it there.
+- **Unpin** publishes the current configuration again, through a staged rollout when canaries are
+  set. A pin doesn't rewrite your files, the entries made in the UI, or Git: undo the bad change
+  there (the diff says what it was), or right after unpinning, while the new version bakes on the
+  canaries.
+
+On the Cluster page: the **Versions** table lists the kept versions (when, what made each, its
+outcome and the guard's readings), with **Pin…** on each (a reason, then a preview of what
+changes on every node). The pin banner has **Unpin**.
+
+```sh
+telltale ctl versions                                           # newest first; * = what every node runs
+telltale ctl pin 3.124 --reason "the new list blocks the bank" --dry-run
+telltale ctl pin 3.124 --reason "the new list blocks the bank"
+telltale ctl unpin
+```
+
+Over the API: `GET /api/v1/cluster/versions`, `POST /api/v1/cluster/versions/{epoch}.{seq}/pin`
+with `{"reason": "…"}` (`?dryRun=true` shows the diff), and `DELETE /api/v1/cluster/pin` (admin;
+audited as `cluster.pin` and `cluster.unpin`). Problems: `version_unknown` (404),
+`version_blobs_missing` (409, its files are no longer kept), `no_rollout` (409, promote or abort
+with nothing baking). AI agents use `plan_pin_version` and `plan_unpin` (`cluster:admin`), only
+where an operator approves each plan (`[agents] require_approval = true`), as for promotion.
+
+**What's kept.** The primary keeps the last `history` versions (20) in
+`<data_dir>/cluster/versions.json`, and their files in its blob store: a configuration is a few
+kilobytes, and filter files that didn't change between versions are stored once. A node promoted
+to primary starts its own history (plus the version it was running), so versions only the old
+primary kept can't be pinned there.
+
+**Metrics:** `telltale_cluster_pinned` (0/1) and `telltale_cluster_pinned_to{version}`.
+
 ## Monitoring
 **The dashboard across restarts and upgrades.**
 - Charts over time come from `<data_dir>/rollups.db`, kept by minute (7 days), hour (400 days)
@@ -2162,9 +2299,11 @@ Rules watch:
 | `probe_failing` | a [listener check](#listener-checks) (or an extra target) got no answer twice in a row, on any node | node and target |
 | `cert_expiring` | a DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on any node | node and listener |
 | `maintenance` | a node is in [maintenance](#taking-a-node-down-for-maintenance) (resolves when it leaves; use `for_secs = 0` to hear at once) | node |
+| `rollout_failed` | a [staged rollout](#rolling-a-change-out-in-stages)'s guard failed a version and pinned the cluster to the one before, with the reason | version |
+| `cluster_pinned` | the cluster is [pinned](#pinning-the-cluster-to-a-version) to an older version, so changes wait (raise `for_secs` if you pin on purpose for long) | cluster |
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
-- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, and pending plans go out once each.
+- A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
 - Alerts never affect DNS: a destination that's down is logged (`alert not delivered`) and skipped.

@@ -68,6 +68,31 @@ pub(crate) enum CtlCommand {
     /// Node maintenance (OPS-010): not ready for new traffic, still answering every query.
     #[command(subcommand)]
     Maintenance(MaintenanceCmd),
+    /// Staged rollouts (CLU-013): the version baking on the canary nodes, the guard, and the
+    /// pin; promote or abort.
+    #[command(subcommand)]
+    Rollout(RolloutCmd),
+    /// The cluster versions the primary keeps, newest first (what to pin back to).
+    Versions,
+    /// Pin the cluster to a kept version: every node serves its configuration and filter
+    /// snapshot (published as a new version) until `unpin`. Changes wait meanwhile.
+    Pin {
+        /// `<epoch>.<seq>` from `versions`.
+        version: String,
+        /// Why (shown on the Cluster page, in the alert, and in the audit log).
+        #[arg(long)]
+        reason: String,
+        /// Show what would change without pinning.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Unpin the cluster: the primary publishes its current configuration again (through a
+    /// staged rollout when canaries are set).
+    Unpin {
+        /// Show what would change without unpinning.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Flush the cache (everything, or one name).
     Flush {
         #[arg(long)]
@@ -166,6 +191,18 @@ pub(crate) enum MaintenanceCmd {
     },
     /// Which nodes are in maintenance, until when, and why.
     Status,
+}
+
+/// REQ: CLU-013 — `telltale ctl rollout`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum RolloutCmd {
+    /// The version baking, the canaries and what each runs, the time left, the guard's
+    /// readings, and the pin.
+    Status,
+    /// Give the version baking to every node now.
+    Promote,
+    /// Stop the version baking: pin the cluster to the stable version before it.
+    Abort,
 }
 
 /// A value safe in one path segment (node names are IDs, sites, or pod names).
@@ -574,6 +611,38 @@ pub(crate) async fn run(
             .await?,
             Some(Box::new(|_: &Value| "blocking resumed\n".to_owned())),
         ),
+        // REQ: CLU-013
+        CtlCommand::Rollout(c) => rollout(&api, c).await?,
+        CtlCommand::Versions => (
+            api.get("cluster/versions").await?,
+            Some(Box::new(versions_text)),
+        ),
+        CtlCommand::Pin {
+            version,
+            reason,
+            dry_run,
+        } => (
+            api.call(
+                http::Method::POST,
+                &format!(
+                    "cluster/versions/{}/pin{}",
+                    path_segment(&version),
+                    if dry_run { "?dryRun=true" } else { "" }
+                ),
+                Some(&json!({ "reason": reason })),
+            )
+            .await?,
+            Some(Box::new(action_text)),
+        ),
+        CtlCommand::Unpin { dry_run } => (
+            api.call(
+                http::Method::DELETE,
+                &format!("cluster/pin{}", if dry_run { "?dryRun=true" } else { "" }),
+                None,
+            )
+            .await?,
+            Some(Box::new(action_text)),
+        ),
         // REQ: OPS-010
         CtlCommand::Maintenance(MaintenanceCmd::Start {
             for_secs,
@@ -811,6 +880,193 @@ fn simulation_text(v: &Value) -> String {
         if !t.is_empty() {
             let _ = writeln!(out, "\n{k}: {t}");
         }
+    }
+    out
+}
+
+/// REQ: CLU-013 — `rollout status|promote|abort`.
+async fn rollout(api: &Api, c: RolloutCmd) -> Result<Rendered, String> {
+    Ok(match c {
+        RolloutCmd::Status => (
+            api.get("cluster/rollout").await?,
+            Some(Box::new(rollout_text)),
+        ),
+        RolloutCmd::Promote => (
+            api.call(
+                http::Method::POST,
+                "cluster/rollout/promote",
+                Some(&json!({})),
+            )
+            .await?,
+            Some(Box::new(action_text)),
+        ),
+        RolloutCmd::Abort => (
+            api.call(
+                http::Method::POST,
+                "cluster/rollout/abort",
+                Some(&json!({})),
+            )
+            .await?,
+            Some(Box::new(action_text)),
+        ),
+    })
+}
+
+/// REQ: CLU-013 — a rollout status as text.
+#[allow(clippy::too_many_lines)] // stage, guard, pin, then the nodes
+fn rollout_text(v: &Value) -> String {
+    let mut out = String::new();
+    let canaries = s(v, "canaries");
+    let _ = writeln!(
+        out,
+        "stable version {}; canaries: {}",
+        s(v, "stable"),
+        if canaries.is_empty() {
+            "none (changes reach every node at once)".to_owned()
+        } else {
+            canaries
+        }
+    );
+    match s(v, "stage").as_str() {
+        "canary" => {
+            let _ = writeln!(
+                out,
+                "version {} bakes on {} and the primary: {} s left (until {})",
+                s(v, "version"),
+                s(v, "rolloutCanaries"),
+                s(v, "secondsLeft"),
+                s(v, "bakeEnds")
+            );
+        }
+        "waiting" => {
+            let _ = writeln!(
+                out,
+                "a change waits for a canary node to come online (since {})",
+                s(v, "waitingSince")
+            );
+        }
+        _ => {}
+    }
+    if let Some(r) = v.get("readings").filter(|r| !r.is_null()) {
+        let pct = |k: &str| {
+            r.get(k)
+                .and_then(Value::as_f64)
+                .map_or_else(|| "-".to_owned(), |x| format!("{x:.1}%"))
+        };
+        let _ = writeln!(
+            out,
+            "guard: SERVFAIL {} before, {} during ({} answers){}",
+            pct("beforePercent"),
+            pct("afterPercent"),
+            s(r, "answers"),
+            r.get("reason")
+                .and_then(Value::as_str)
+                .map_or_else(String::new, |x| format!(": {x}"))
+        );
+    }
+    if let Some(p) = v.get("pinned").filter(|p| !p.is_null()) {
+        let _ = writeln!(
+            out,
+            "PINNED to version {} since {} by {}: {}",
+            s(p, "to"),
+            s(p, "since"),
+            s(p, "by"),
+            s(p, "reason")
+        );
+        let changes = s(p, "changes");
+        if !changes.is_empty() {
+            let _ = writeln!(out, "held back: {changes}");
+        }
+    }
+    if let Some(skipped) = v.get("skipped").and_then(Value::as_str) {
+        let _ = writeln!(out, "last change went to every node at once: {skipped}");
+    }
+    let rows: Vec<Vec<String>> = v["nodes"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|n| {
+            vec![
+                s(n, "node"),
+                s(n, "site"),
+                if n["canary"] == Value::Bool(true) {
+                    "canary"
+                } else {
+                    ""
+                }
+                .to_owned(),
+                s(n, "appliedSeq"),
+                if n["connected"] == Value::Bool(false) {
+                    "gone"
+                } else if n["ready"] == Value::Bool(true) {
+                    "ready"
+                } else {
+                    "not ready"
+                }
+                .to_owned(),
+                format!("{}%", s(n, "servfailPercent")),
+            ]
+        })
+        .collect();
+    if !rows.is_empty() {
+        out.push_str(&table(
+            &["NODE", "SITE", "", "RUNS", "STATE", "SERVFAIL"],
+            &rows,
+        ));
+    }
+    out
+}
+
+/// REQ: CLU-013 — the kept versions as a table.
+fn versions_text(v: &Value) -> String {
+    let rows: Vec<Vec<String>> = items(v)
+        .iter()
+        .map(|r| {
+            let mut outcome = s(r, "outcome");
+            if !s(r, "pinnedTo").is_empty() {
+                outcome = format!("{outcome} {}", s(r, "pinnedTo"));
+            }
+            vec![
+                format!(
+                    "{}{}",
+                    s(r, "version"),
+                    if r["current"] == Value::Bool(true) {
+                        " *"
+                    } else {
+                        ""
+                    }
+                ),
+                s(r, "created"),
+                outcome,
+                s(r, "by"),
+                if r["pinnable"] == Value::Bool(true) {
+                    "yes"
+                } else {
+                    "no"
+                }
+                .to_owned(),
+            ]
+        })
+        .collect();
+    table(&["VERSION", "CREATED", "OUTCOME", "BY", "PINNABLE"], &rows)
+}
+
+/// REQ: CLU-013 — what a rollout or pin action did.
+fn action_text(v: &Value) -> String {
+    let mut out = format!(
+        "{}{}
+",
+        if v["dryRun"] == Value::Bool(true) {
+            "dry run: "
+        } else {
+            ""
+        },
+        s(v, "done")
+    );
+    let changes = s(v, "changes");
+    if !changes.is_empty() {
+        let _ = writeln!(out, "changes: {changes}");
     }
     out
 }

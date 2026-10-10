@@ -589,6 +589,8 @@ impl Backend for ApiBackend {
         match &self.src.cluster {
             Some(c) => {
                 let mut v = crate::cluster::view(c, &self.src.host);
+                // REQ: CLU-013 — the rollout and the pin, in brief.
+                v.rollout = crate::rollout::surface::summary(&self.src);
                 // ADR-049 — where the configuration comes from, when it's Git.
                 v.source = crate::gitsource::view(&self.src.config.load(), c.is_primary());
                 let cfg = self.src.config.load_full();
@@ -637,6 +639,7 @@ impl Backend for ApiBackend {
                 conflicts: Vec::new(),
                 failover: None,
                 source: None,
+                rollout: None,
                 // T6.11 — a standalone node still shows its machine.
                 host: crate::host::report(self.src.host.latest(), &self.src.host.history(), None),
             },
@@ -1486,6 +1489,31 @@ impl Backend for ApiBackend {
         crate::maintenance::local_backend_call(Arc::clone(&self.src), node, w)
     }
 
+    // REQ: CLU-013 (T13.2) — rollouts and pins: this node's publisher (the primary), or what
+    // the version it applied says.
+    fn rollout_status(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::RolloutStatus, Problem>> {
+        let r = crate::rollout::surface::status(&self.src);
+        Box::pin(async move { r })
+    }
+
+    fn cluster_versions(
+        &self,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::ClusterVersions, Problem>> {
+        let r = crate::rollout::surface::versions(&self.src);
+        Box::pin(async move { r })
+    }
+
+    fn rollout_command(
+        &self,
+        w: telltale_api::RolloutWrite,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::RolloutAction, Problem>> {
+        let src = Arc::clone(&self.src);
+        let version = self.config_version();
+        Box::pin(async move { crate::rollout::surface::command(&src, version, w).await })
+    }
+
     // REQ: OPS-008 (T7.19) — this node's DHCP leases.
     fn dhcp_leases(&self) -> Vec<telltale_api::model::DhcpLease> {
         // REQ: T8.2 — the routers' DHCP clients.
@@ -1952,6 +1980,20 @@ impl Backend for ApiBackend {
                 definition: serde_json::to_value(&cfg.exclusions).ok(),
             });
         }
+        // REQ: CLU-013 (T13.2) — likewise, the rollout settings.
+        if want("rollout") {
+            out.push(telltale_api::model::ConfigEntry {
+                kind: "rollout".to_owned(),
+                name: "default".to_owned(),
+                source: if e.rollout.is_some() {
+                    "override"
+                } else {
+                    "file"
+                }
+                .to_owned(),
+                definition: serde_json::to_value(&cfg.cluster.rollout).ok(),
+            });
+        }
         // REQ: OBS-024 (T13.1) — likewise, the simulation settings.
         if want("simulate") {
             out.push(telltale_api::model::ConfigEntry {
@@ -2237,12 +2279,25 @@ impl Backend for ApiBackend {
         if let Some(p) = self.replica_read_only() {
             return Box::pin(async move { Err(p) });
         }
+        // REQ: CLU-013 — a pinned cluster publishes nothing new: changes wait for the unpin (a
+        // dry run still shows what one would do).
+        if !w.dry_run
+            && let Some(p) = crate::rollout::surface::pinned_problem(&self.src)
+        {
+            return Box::pin(async move { Err(p) });
+        }
         self.do_write_managed(w)
     }
 
     // REQ: API-002, API-010 — devices named through the API (ADR-040).
     fn write_client(&self, w: ClientWrite) -> BoxFuture<Result<ClientChange, Problem>> {
         if let Some(p) = self.replica_read_only() {
+            return Box::pin(async move { Err(p) });
+        }
+        // REQ: CLU-013 — as for the other configuration changes.
+        if !w.dry_run
+            && let Some(p) = crate::rollout::surface::pinned_problem(&self.src)
+        {
             return Box::pin(async move { Err(p) });
         }
         let src = Arc::clone(&self.src);
@@ -2665,6 +2720,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::RateLimit => crate::managed::RATELIMIT,
         ManagedKind::Exclusions => crate::managed::EXCLUSIONS,
         ManagedKind::Simulate => crate::managed::SIMULATE,
+        ManagedKind::Rollout => crate::managed::ROLLOUT,
     }
 }
 
@@ -2984,6 +3040,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Simulate, false) => {
             "The config file's simulation settings (or the defaults) apply again to the next simulation.".into()
         }
+        (ManagedKind::Rollout, true) => {
+            "Applies to the next change, on every node; this change itself is published at once, not staged.".into()
+        }
+        (ManagedKind::Rollout, false) => {
+            "The config file's rollout settings (or none: every change reaches every node at once) apply again.".into()
+        }
     };
     (recent_queries, impact)
 }
@@ -2998,7 +3060,10 @@ fn plan_managed(
 ) -> Result<ManagedPlan, Problem> {
     if matches!(
         w.kind,
-        ManagedKind::RateLimit | ManagedKind::Exclusions | ManagedKind::Simulate
+        ManagedKind::RateLimit
+            | ManagedKind::Exclusions
+            | ManagedKind::Simulate
+            | ManagedKind::Rollout
     ) {
         return plan_singleton(src, state, w);
     }
@@ -3155,6 +3220,7 @@ fn singleton_section(kind: ManagedKind, cfg: &telltale_config::Config) -> serde_
     match kind {
         ManagedKind::Exclusions => serde_json::to_value(&cfg.exclusions),
         ManagedKind::Simulate => serde_json::to_value(&cfg.simulate),
+        ManagedKind::Rollout => serde_json::to_value(&cfg.cluster.rollout),
         _ => serde_json::to_value(&cfg.ratelimit),
     }
     .unwrap_or_default()
@@ -3165,6 +3231,7 @@ fn singleton_noun(kind: ManagedKind) -> &'static str {
     match kind {
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulation settings",
+        ManagedKind::Rollout => "rollout settings",
         _ => "rate limit",
     }
 }
@@ -3186,6 +3253,11 @@ fn singleton_store(
         let x: telltale_config::SimulateConfig = serde_json::from_value(v.clone()).map_err(bad)?;
         let text = serde_json::to_string(&x).unwrap_or_default();
         entries.simulate = Some(x);
+        text
+    } else if kind == ManagedKind::Rollout {
+        let x: telltale_config::RolloutConfig = serde_json::from_value(v.clone()).map_err(bad)?;
+        let text = serde_json::to_string(&x).unwrap_or_default();
+        entries.rollout = Some(x);
         text
     } else {
         let r: telltale_config::RateLimitConfig = serde_json::from_value(v.clone()).map_err(bad)?;
@@ -3213,6 +3285,7 @@ fn singleton_change(
         let had = match kind {
             ManagedKind::Exclusions => entries.exclusions.take().is_some(),
             ManagedKind::Simulate => entries.simulate.take().is_some(),
+            ManagedKind::Rollout => entries.rollout.take().is_some(),
             _ => entries.ratelimit.take().is_some(),
         };
         if !had {
@@ -3222,6 +3295,9 @@ fn singleton_change(
                 }
                 ManagedKind::Simulate => {
                     "the simulation settings weren't changed through the API or UI: the config file's are in effect"
+                }
+                ManagedKind::Rollout => {
+                    "the rollout settings weren't changed through the API or UI: the config file's are in effect"
                 }
                 _ => {
                     "the rate limit wasn't changed through the API or UI: the config file's is in effect"
@@ -3922,11 +3998,15 @@ fn keep_in_git(
         ManagedKind::RateLimit => "ratelimit",
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulate",
+        ManagedKind::Rollout => "cluster.rollout",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
     if matches!(
         kind,
-        ManagedKind::RateLimit | ManagedKind::Exclusions | ManagedKind::Simulate
+        ManagedKind::RateLimit
+            | ManagedKind::Exclusions
+            | ManagedKind::Simulate
+            | ManagedKind::Rollout
     ) {
         return singleton_in_git(head, section, body.is_some(), after);
     }

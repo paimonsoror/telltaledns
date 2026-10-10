@@ -5,6 +5,9 @@
 #   2. the replica upgraded to N follows the N-1 primary (an edit reaches it);
 #   3. the primary upgraded to N; the N replica follows;
 #   4. the replica back on N-1 follows the N primary (an edit reaches it);
+#   5. REQ: CLU-013 — a staged rollout with an N-1 replica: a canary on N gets the change first;
+#      the N-1 replica, though its site is named a canary too, is only ever sent stable versions
+#      (it gets the change after the bake);
 #   and the client never fails a query (it tries the other server when one doesn't answer).
 # Usage: deploy/cluster/upgrade-e2e.sh <old telltale> [new telltale (default target/debug)]
 set -euo pipefail
@@ -12,9 +15,9 @@ OLD=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 NEW=${2:-target/debug/telltale}
 NEW=$(cd "$(dirname "$NEW")" && pwd)/$(basename "$NEW")
 E=$(mktemp -d)
-P_PID= R_PID= LOAD=
+P_PID= R_PID= C_PID= LOAD=
 cleanup() {
-  for p in $P_PID $R_PID $LOAD; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null || true; done
+  for p in $P_PID $R_PID $C_PID $LOAD; do kill "$p" 2>/dev/null && wait "$p" 2>/dev/null || true; done
   [ "${KEEP:-}" = 1 ] || rm -rf "$E"
 }
 trap cleanup EXIT
@@ -53,9 +56,10 @@ type = "A"
 value = "$5"
 EOF
 }
-mkdir -p "$E/p" "$E/r"
+mkdir -p "$E/p" "$E/r" "$E/c"
 node_config p 25501 29201 28641 10.0.0.1 > "$E/p.toml"
 node_config r 25502 29202 28642 10.0.0.1 > "$E/r.toml"
+node_config c 25503 29203 28643 10.0.0.1 > "$E/c.toml"
 
 cat > "$E/q.py" <<'PY'
 import os, socket, struct, sys, time, random
@@ -140,6 +144,26 @@ stop_r; start_r "$OLD"
 wait_answer 25502 10.0.0.3 10 || fail "the old replica doesn't answer"
 edit 10.0.0.4
 wait_answer 25502 10.0.0.4 15 || fail "an edit on the N primary didn't reach the N-1 replica"
+echo ok
+
+echo "== 5. a staged rollout: the N-1 replica gets stable versions only (CLU-013)"
+T=$("$NEW" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
+"$NEW" cluster join "$T" --site canary -c "$E/c.toml" >/dev/null || fail "the canary couldn't join"
+"$NEW" run -c "$E/c.toml" >> "$E/c.log" 2>&1 & C_PID=$!
+wait_answer 25503 10.0.0.4 15 || fail "the canary never synced"
+sleep 6   # a heartbeat: the primary knows the canary takes part in rollouts
+# The N-1 replica's site is named too: it must still never be sent a canary version.
+printf '\n[cluster.rollout]\ncanaries = ["site:canary", "site:r"]\nbake_secs = 20\n' >> "$E/p.toml"
+kill -HUP "$P_PID"
+sleep 3   # the settings change is published at once
+edit 10.0.0.5
+wait_answer 25503 10.0.0.5 10 || fail "the N canary didn't get the change first"
+for _ in 1 2 3; do
+  [ "$(q 25502 up.test)" = 10.0.0.4 ] || fail "the N-1 replica got the canary version"
+  sleep 3
+done
+wait_answer 25502 10.0.0.5 40 || fail "the N-1 replica never got the version after the bake"
+grep -q "canary node" "$E/p.log" || fail "the primary didn't stage the change"
 echo ok
 
 touch "$E/stop"; wait "$LOAD"; LOAD=

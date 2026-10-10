@@ -828,6 +828,9 @@ test('clu_008 cluster topology', async () => {
     pod('ccccc', 'k3s-2', { up: false, qps: 0, querySharePercent: null }),
   ]);
   await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: current }));
+  // REQ: CLU-013 — this server runs alone: the rollout reads are part of the example too.
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '1.9', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
   await page.goto('/#/cluster');
   const topo = page.getByTestId('cluster-topology');
   await expect(topo.getByTestId('topology-site')).toHaveCount(2);
@@ -860,6 +863,8 @@ test('clu_008 cluster topology', async () => {
   await expect(topo).toContainText('+3');
   await expect(topo).toContainText('node k3s-1 · 8 replica pods');
   await page.unroute('**/api/v1/cluster');
+  await page.unroute('**/api/v1/cluster/rollout');
+  await page.unroute('**/api/v1/cluster/versions');
 });
 
 // REQ: DNS-006, API-005 (T6.13) — the cache: a cached answer shows up in a lookup (the UI
@@ -1434,6 +1439,138 @@ test('obs_024 simulate a quick rule, and the simulation settings', async () => {
   await row.getByRole('button', { name: 'Revert to the file' }).click();
   await expect(row).toContainText('simulate when asked');
   await expect(row).toContainText('config file');
+});
+
+// REQ: CLU-013 (T13.2) — Settings → Cluster → Staged rollouts: pick a node as a canary (the
+// sentence says who gets changes first), apply it, and revert to the file. The cluster view is
+// an example (this server runs alone); the settings are this server's own.
+test('clu_013 staged rollouts: pick a canary in Settings', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.4.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  await page.route('**/api/v1/cluster', (route) =>
+    route.fulfill({
+      json: {
+        enabled: true, clusterId: 'c1', name: 'home', thisNode: 'aaaa1111', newestConfigSeq: 9, healthy: true, checks: [],
+        events: [], conflicts: [], authority: 'api',
+        nodes: [
+          node({ nodeId: 'aaaa1111', site: 'k8s', role: 'primary', thisNode: true, link: 'self' }),
+          node({ nodeId: 'bbbb2222', site: 'pi' }),
+        ],
+      },
+    }),
+  );
+  await page.goto('/#/settings?tab=cluster');
+  const editor = page.getByTestId('editor-rollout');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('off: changes reach every node at once');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const pi = page.getByRole('checkbox', { name: 'pi (bbbb2222)' });
+  await pi.check();
+  await expect(page.getByTestId('editor-note')).toContainText('Changes reach pi (bbbb2222) (and the primary) first');
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('1 canary entry');
+  await expect(row).toContainText('overrides the file');
+  const entries = await (await page.request.get('/api/v1/config/entries?kind=rollout')).json();
+  expect(JSON.stringify(entries)).toContain('bbbb2222');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('off: changes reach every node at once');
+  await page.unroute('**/api/v1/cluster');
+});
+
+// REQ: CLU-013 — the Cluster page: a pin banner (what's held back; Unpin), the kept versions
+// with Pin (a dry run lists the changes first), and a version baking (canaries, time left, the
+// guard's readings; dashed canaries in the topology). The data is an example.
+test('clu_013 the cluster page shows the pin, the versions, and the bake', async () => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const node = (o: Record<string, unknown>) => ({
+    ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.4.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, restarts: 0, ...o,
+  });
+  let baking = false;
+  const view = () => ({
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'aaaa1111', newestConfigSeq: 12, healthy: true, checks: [],
+    events: [], conflicts: [], authority: 'api',
+    nodes: [
+      node({ nodeId: 'aaaa1111', site: 'k8s', role: 'primary', thisNode: true, link: 'self', configSeq: 12 }),
+      node({ nodeId: 'bbbb2222', site: 'canary-box', configSeq: baking ? 12 : 11 }),
+      node({ nodeId: 'cccc3333', site: 'pi', configSeq: 11 }),
+    ],
+    ...(baking ? { rollout: { stage: 'canary', version: '1.12', canaries: ['bbbb2222'] } } : {}),
+  });
+  const pinned = {
+    fromPrimary: true, canaries: ['site:canary-box'], bakeSecs: 300, stable: '1.11', stage: 'pinned', nodes: [],
+    pinned: { to: '1.10', since: '2026-10-10T12:00:00Z', by: 'the guard', reason: 'SERVFAIL 28.0% on the canaries during the bake (limit 5.0%)', changes: ['upstream: changed'] },
+  };
+  const bakingStatus = {
+    fromPrimary: true, canaries: ['site:canary-box'], bakeSecs: 300, stable: '1.11', stage: 'canary', version: '1.12',
+    started: '2026-10-10T12:00:00Z', bakeEnds: '2026-10-10T12:05:00Z', secondsLeft: 125, rolloutCanaries: ['bbbb2222'],
+    readings: { beforePercent: 1.0, afterPercent: 1.2, answers: 640 },
+    nodes: [
+      { node: 'aaaa1111', site: 'k8s', canary: false, appliedSeq: 12, ready: true, connected: true, servfailPercent: 1.1 },
+      { node: 'bbbb2222', site: 'canary-box', canary: true, appliedSeq: 12, ready: true, connected: true, servfailPercent: 1.2 },
+      { node: 'cccc3333', site: 'pi', canary: false, appliedSeq: 11, ready: true, connected: true, servfailPercent: 0.9 },
+    ],
+  };
+  const versions = {
+    history: 20,
+    items: [
+      { version: '1.11', created: '2026-10-10T12:00:10Z', by: 'this node\'s configuration', outcome: 'pinned_to', pinnedTo: '1.10', reason: 'the guard', current: true, pinnable: true },
+      { version: '1.10', created: '2026-10-10T11:00:00Z', by: 'this node\'s configuration', outcome: 'canary_failed', current: false, pinnable: true, readings: { beforePercent: 1, afterPercent: 28, answers: 900, reason: 'SERVFAIL 28.0%' } },
+      { version: '1.9', created: '2026-10-10T10:00:00Z', by: 'this node\'s configuration', outcome: 'canary_promoted', current: false, pinnable: true },
+    ],
+  };
+  const pinCalls: string[] = [];
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view() }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: baking ? bakingStatus : pinned }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: versions }));
+  await page.route('**/api/v1/cluster/versions/*/pin**', (route) => {
+    const dry = route.request().url().includes('dryRun=true');
+    pinCalls.push(`${route.request().url().split('/api/v1/')[1]} ${route.request().postData()}`);
+    return route.fulfill({
+      json: { done: dry ? 'would pin the cluster to version 1.9' : 'pinned to version 1.9 (published as 13)', dryRun: dry, changes: ['list: changed'], diff: [], configVersion: 7 },
+    });
+  });
+  await page.goto('/#/cluster');
+  const banner = page.getByTestId('pin-banner');
+  await expect(banner).toContainText('pinned to version 1.10');
+  await expect(banner).toContainText('the guard');
+  await expect(page.getByTestId('pin-changes')).toContainText('upstream: changed');
+  await expect(banner.getByTestId('unpin')).toBeVisible();
+
+  const rows = page.getByTestId('version-row');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(1)).toContainText('failed');
+  await rows.nth(2).getByTestId('pin-open').click();
+  const form = page.getByTestId('pin-form');
+  await form.getByRole('textbox', { name: 'Reason' }).fill('e2e: back to 1.9');
+  await form.getByTestId('pin-check').click();
+  await expect(form.getByTestId('pin-preview')).toContainText('list: changed');
+  await form.getByTestId('pin-confirm').click();
+  await expect(page.getByTestId('rollout-done')).toContainText('pinned to version 1.9');
+  expect(pinCalls[0]).toMatch(/^cluster\/versions\/1\.9\/pin\?dryRun=true .*e2e: back to 1\.9/);
+  expect(pinCalls[1]).toMatch(/^cluster\/versions\/1\.9\/pin .*e2e: back to 1\.9/);
+
+  // A version baking: the canaries and the time left, Promote and Abort, dashed in the topology.
+  baking = true;
+  await page.reload();
+  const bake = page.getByTestId('rollout-baking');
+  await expect(bake).toContainText('Version 1.12 runs on canary-box and the primary');
+  await expect(bake).toContainText('2m left');
+  await expect(page.getByTestId('rollout-readings')).toContainText('640 answers');
+  await expect(bake.getByTestId('rollout-promote')).toBeVisible();
+  await expect(bake.getByTestId('rollout-abort')).toContainText('pin to 1.11');
+  await expect(page.getByTestId('pin-banner')).toHaveCount(0);
+  await expect(page.getByTestId('cluster-topology').locator('.chip.canary')).toHaveCount(2); // the canary and the primary
+  await expect(page.locator('#node-id-bbbb2222, #node-bbbb2222').getByTestId('cluster-node-canary')).toBeVisible();
+  for (const p of ['**/api/v1/cluster', '**/api/v1/cluster/rollout', '**/api/v1/cluster/versions', '**/api/v1/cluster/versions/*/pin**'])
+    await page.unroute(p);
 });
 
 // REQ: OBS-025 (T13.3) — a "device" (its own loopback address) that asks Roku's names shows

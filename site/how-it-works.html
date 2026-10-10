@@ -290,7 +290,7 @@
       <text x="440" y="94" text-anchor="middle" class="svg-sub">mTLS · signed config snapshots</text>
       <text x="440" y="126" text-anchor="middle" class="svg-sub">manage &amp; analyze from either side</text>
     </svg>
-    <figcaption>Signed configuration replication, one dashboard and query log across every node, changes from any node's UI (forwarded to the primary), manual or elected failover with fencing, and CA rotation without downtime. DNS answering never depends on the cluster being healthy: every node serves from its last good snapshot. Taking a node down for work? Maintenance mode makes it step out of the load balancer for a set time while it keeps answering, pauses its alerts, keeps it out of elections, and hands the primary role over first when the cluster can.</figcaption>
+    <figcaption>Signed configuration replication, one dashboard and query log across every node, changes from any node's UI (forwarded to the primary), manual or elected failover with fencing, and CA rotation without downtime. DNS answering never depends on the cluster being healthy: every node serves from its last good snapshot. Taking a node down for work? Maintenance mode makes it step out of the load balancer for a set time while it keeps answering, pauses its alerts, keeps it out of elections, and hands the primary role over first when the cluster can. Staged rollouts, when you name canary nodes, give each change to them first and to everyone else after a bake; if the canaries start failing, the cluster is pinned back to the version before, and any kept version can be pinned by hand.</figcaption>
   </figure>
 </section>
 

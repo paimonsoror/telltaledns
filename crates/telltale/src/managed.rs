@@ -42,6 +42,9 @@ pub(crate) const EXCLUSIONS: &str = "exclusions";
 /// REQ: OBS-024 (T13.1) — change simulation's settings: one entry, `default`, replacing
 /// `[simulate]`.
 pub(crate) const SIMULATE: &str = "simulate";
+/// REQ: CLU-013 (T13.2) — staged rollouts' settings: one entry, `default`, replacing
+/// `[cluster.rollout]`.
+pub(crate) const ROLLOUT: &str = "rollout";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -132,6 +135,8 @@ pub(crate) struct Entries {
     pub(crate) exclusions: Option<telltale_config::ExclusionsConfig>,
     /// REQ: OBS-024 — the `[simulate]` the API or UI set, likewise.
     pub(crate) simulate: Option<telltale_config::SimulateConfig>,
+    /// REQ: CLU-013 — the `[cluster.rollout]` the API or UI set, likewise.
+    pub(crate) rollout: Option<telltale_config::RolloutConfig>,
 }
 
 /// Where the state database lives.
@@ -220,6 +225,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, x)| x),
+        rollout: decode::<telltale_config::RolloutConfig>(state, ROLLOUT)
+            .into_iter()
+            .next()
+            .map(|(_, x)| x),
     }
 }
 
@@ -241,6 +250,22 @@ fn safe(s: &str) -> Result<SafeString, String> {
     SafeString::new(s)
 }
 
+/// The one-of sections the API or UI set, each replacing the files' section as a whole.
+fn apply_one_of(cfg: &mut Config, e: &Entries) {
+    if let Some(r) = &e.ratelimit {
+        cfg.ratelimit = r.clone();
+    }
+    if let Some(x) = &e.exclusions {
+        cfg.exclusions = x.clone();
+    }
+    if let Some(x) = &e.simulate {
+        cfg.simulate = x.clone();
+    }
+    if let Some(x) = &e.rollout {
+        cfg.cluster.rollout = x.clone();
+    }
+}
+
 /// `file` plus the entries (names the files already use are skipped), if the result validates
 /// (including record values); otherwise `Err` with the reasons.
 pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
@@ -254,15 +279,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     apply_ovr(&mut cfg.schedule, &e.schedules);
-    if let Some(r) = &e.ratelimit {
-        cfg.ratelimit = r.clone();
-    }
-    if let Some(x) = &e.exclusions {
-        cfg.exclusions = x.clone();
-    }
-    if let Some(x) = &e.simulate {
-        cfg.simulate = x.clone();
-    }
+    apply_one_of(&mut cfg, e);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
             cfg.client.push(c.clone());

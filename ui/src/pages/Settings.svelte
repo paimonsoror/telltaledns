@@ -16,6 +16,8 @@
       { id: 'tokens', label: 'API tokens' },
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
       { id: 'system', label: 'System' },
+      // REQ: CLU-013 — staged rollouts are an admin's.
+      ...(can('admin') ? [{ id: 'cluster', label: 'Cluster' }] : []),
     ],
   );
   // REQ: DNS-014 (review 01 q1) — the fields of `[ratelimit]`.
@@ -55,6 +57,41 @@
     { key: 'max_rows', label: 'Most logged queries read per node', type: 'number', placeholder: '2000000', advanced: true,
       help: 'At least 1,000. Newest first.' },
   ];
+  // REQ: CLU-013 (T13.2) — `[cluster.rollout]`: a canary picker over the cluster's nodes, sites,
+  // and its resolver pods, the bake, and the guard.
+  let clusterView = $state<S['ClusterView'] | null>(null);
+  const rolloutFields = $derived.by((): Field[] => {
+    const nodes = clusterView?.nodes ?? [];
+    const fixed = nodes.filter((n) => !n.ephemeral && !n.witness && !n.role.includes('primary'));
+    const sites = [...new Set(nodes.filter((n) => !n.witness).map((n) => n.site))].sort();
+    const options = [...fixed.map((n) => n.nodeId), ...sites.map((s) => `site:${s}`), 'ephemeral'];
+    const optionLabels: Record<string, string> = {
+      ephemeral: 'resolver pods (Kubernetes)',
+      ...Object.fromEntries(fixed.map((n) => [n.nodeId, `${n.site} (${n.nodeId.slice(0, 8)})`])),
+      ...Object.fromEntries(sites.map((s) => [`site:${s}`, `every node at site ${s}`])),
+    };
+    return [
+      { key: 'canaries', label: 'Canary nodes', type: 'multi', options, optionLabels,
+        help: 'They (and the primary) get each change first. None: changes reach every node at once.' },
+      { key: 'bake_secs', label: 'Bake time (seconds)', type: 'number', placeholder: '300',
+        help: 'How long a change runs on the canaries before everyone gets it. At least 5.' },
+      { key: 'servfail_pct', label: 'Fail above this SERVFAIL share (%)', type: 'number', placeholder: '5',
+        help: "Or 2 points over the canaries' share before the change, whichever is higher; judged from 50 answers." },
+      { key: 'require_traffic', label: 'Wait for 50 answers before judging', type: 'bool', advanced: true,
+        help: 'Off: a quiet bake passes. On: keep baking until the canaries answered 50 queries (or the longest bake), then judge.' },
+      { key: 'max_bake_secs', label: 'Longest bake (seconds)', type: 'number', placeholder: '3600', advanced: true },
+      { key: 'fail_on_disconnect', label: 'Fail when a canary disconnects for a minute', type: 'bool', advanced: true, initial: true,
+        help: 'It might have crashed on the change. A pod rescheduled mid-bake fails the rollout too; unpin to try again.' },
+      { key: 'history', label: 'Versions kept for pinning', type: 'number', placeholder: '20', advanced: true },
+    ];
+  });
+  const rolloutNote = (v: Record<string, unknown>) => {
+    const c = (v.canaries as string[] | undefined) ?? [];
+    if (!c.length) return 'No canaries: a change reaches every node at once.';
+    const named = c.map((x) => rolloutFields[0].optionLabels?.[x] ?? x).join(', ');
+    const secs = Number(v.bake_secs ?? 300);
+    return `Changes reach ${named} (and the primary) first, and the rest after ${secs >= 120 ? `${Math.round(secs / 60)} minutes` : `${secs} s`} if nothing fails.`;
+  };
   const tab = $derived.by(() => {
     const t = route.params.get('tab');
     return tabs.some((x) => x.id === t) ? (t as string) : 'account';
@@ -130,7 +167,7 @@
     ['config:write:clients', 'Name and regroup devices'],
     ['config:write:records', 'Change names on my network'],
     ['config:write:forwards', 'Send domains to other servers'],
-    ['cluster:admin', 'Promote a node to primary'],
+    ['cluster:admin', 'Promote a node; staged rollouts and pins'],
   ];
   let tokenScopes = $state<string[]>(['analytics:read', 'config:read']);
   let tokenGroup = $state('');
@@ -319,6 +356,7 @@
     if (tab === 'users' && can('admin')) void loadUsers();
     if (tab === 'audit' && can('admin')) void loadAudit();
     if (tab === 'system') api.info().then((i) => (info = i)).catch(() => {});
+    if (tab === 'cluster') api.cluster().then((v) => (clusterView = v)).catch(() => {});
   });
   $effect(() => {
     if (tab === 'system') return poll(loadProbes, 10_000);
@@ -627,6 +665,22 @@
         {/if}
       {/if}
     </section>
+  {:else if tab === 'cluster' && can('admin')}
+    {#if clusterView && !clusterView.enabled}
+      <section class="card"><p class="empty">This node runs on its own: staged rollouts need a cluster (see the Cluster page).</p></section>
+    {:else}
+      <!-- REQ: CLU-013 (T13.2) — staged rollouts: who gets a change first, and the guard. -->
+      <ConfigEditor kind="rollout" path="cluster/rollout-settings" singleton role="admin" title="Staged rollouts" noun="rollout settings"
+        fields={rolloutFields} help="rollouts" note={rolloutNote}
+        summary={(d) => {
+          const c = Array.isArray(d.canaries) ? (d.canaries as string[]) : [];
+          return c.length ? `${c.length} canary entr${c.length === 1 ? 'y' : 'ies'}; bake ${String(d.bake_secs ?? 300)} s` : 'off: changes reach every node at once';
+        }} />
+      <p class="muted small">
+        A change to these settings reaches every node at once (it's never staged itself). The Cluster page shows the version
+        baking, the guard's readings, and the versions you can pin back to.
+      </p>
+    {/if}
   {:else if tab === 'system'}
     <section class="card">
       <h2>System<HelpButton id="system" /></h2>

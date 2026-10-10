@@ -69,6 +69,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     exclusions(cfg, &mut r);
     simulate(cfg, &mut r);
     identify(cfg, &mut r);
+    rollout(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
@@ -315,6 +316,36 @@ fn simulate(cfg: &Config, r: &mut Report<'_>) {
                 &*s.default_window
             ),
         ),
+    }
+}
+
+// REQ: CLU-013 (T13.2) — rollout bounds, and canaries that can name a node.
+fn rollout(cfg: &Config, r: &mut Report<'_>) {
+    let o = &cfg.cluster.rollout;
+    if o.bake_secs < 5 {
+        r.err("cluster.rollout.bake_secs", "at least 5 seconds");
+    }
+    if o.max_bake_secs < o.bake_secs {
+        r.err("cluster.rollout.max_bake_secs", "at least bake_secs");
+    }
+    if !(0.0..=100.0).contains(&o.servfail_pct) {
+        r.err("cluster.rollout.servfail_pct", "a percentage, 0 to 100");
+    }
+    if !(1..=200).contains(&o.history) {
+        r.err("cluster.rollout.history", "from 1 to 200 versions");
+    }
+    for (i, c) in o.canaries.iter().enumerate() {
+        let c = c.as_str().trim();
+        let ok = c == "ephemeral"
+            || c.strip_prefix("site:")
+                .is_some_and(|s| !s.trim().is_empty())
+            || (!c.is_empty() && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        if !ok {
+            r.err(
+                format!("cluster.rollout.canaries[{i}]"),
+                format!("`{c}`: a node ID, `site:<name>`, or `ephemeral`"),
+            );
+        }
     }
 }
 

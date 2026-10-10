@@ -88,6 +88,9 @@ struct WireProblem {
     code: Code,
     detail: String,
     hint: Option<String>,
+    /// REQ: CLU-013 — a `cluster_pinned` refusal's diff (absent from older primaries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diff: Option<Box<serde_json::Value>>,
 }
 
 impl From<Problem> for WireProblem {
@@ -96,17 +99,17 @@ impl From<Problem> for WireProblem {
             code: p.code,
             detail: p.detail,
             hint: p.hint,
+            diff: p.diff,
         }
     }
 }
 
 impl From<WireProblem> for Problem {
     fn from(w: WireProblem) -> Self {
-        let p = Problem::new(w.code, w.detail);
-        match w.hint {
-            Some(h) => p.hint(h),
-            None => p,
-        }
+        let mut p = Problem::new(w.code, w.detail);
+        p.hint = w.hint;
+        p.diff = w.diff;
+        p
     }
 }
 
@@ -171,6 +174,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 ManagedKind::RateLimit => "ratelimit",
                 ManagedKind::Exclusions => "exclusions",
                 ManagedKind::Simulate => "simulate",
+                ManagedKind::Rollout => "rollout_settings",
             };
             let deleting = body.is_none();
             let r = local

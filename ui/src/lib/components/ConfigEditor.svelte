@@ -7,6 +7,8 @@
     label: string;
     type: 'text' | 'number' | 'select' | 'multi' | 'lines' | 'bool';
     options?: string[];
+    /** How `select`/`multi` options read (CLU-013: node IDs by their site or pod). */
+    optionLabels?: Record<string, string>;
     placeholder?: string;
     help?: string;
     /** Only in the Advanced view. */
@@ -42,9 +44,11 @@
     rowAction,
     formAction,
     singleton = false,
+    role,
+    note,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate' | 'rollout';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings';
     title: string;
     noun: string;
     fields: Field[];
@@ -57,6 +61,10 @@
     formAction?: { label: string; run: (body: Record<string, unknown>) => Promise<{ ok: boolean; text: string }> };
     /** One entry that always exists (the rate limit): no Add, and no Remove, only Revert to the file. */
     singleton?: boolean;
+    /** Who may change it (CLU-013: the rollout settings are an admin's). */
+    role?: 'operator' | 'admin';
+    /** A sentence about the draft, under the fields (CLU-013: who gets a change first). */
+    note?: (values: Record<string, unknown>) => string;
   } = $props();
   let formOut = $state<{ ok: boolean; text: string } | null>(null);
   async function runFormAction() {
@@ -88,7 +96,7 @@
   let result = $state<S['ConfigChange'] | null>(null);
   let busy = $state(false);
   let formError = $state<unknown>(null);
-  const writable = $derived(can('operator'));
+  const writable = $derived(can(role ?? 'operator'));
   const advanced = $derived(currentMode() === 'advanced');
   const shown = $derived(fields.filter((f) => advanced || !f.advanced));
 
@@ -253,8 +261,10 @@
                 {#each f.options ?? [] as o (o)}<option value={o}>{o}</option>{/each}
               </select>
             {:else if f.type === 'multi'}
+              <!-- Values chosen earlier that aren't offered now (a node gone) stay visible. -->
+              {@const chosen = (editing.values[f.key] as string[] | undefined) ?? []}
               <span class="multi" role="group" aria-label={f.label}>
-                {#each f.options ?? [] as o (o)}
+                {#each [...new Set([...(f.options ?? []), ...chosen])] as o (o)}
                   {@const arr = (editing.values[f.key] as string[] | undefined) ?? []}
                   <label class="check"
                     ><input
@@ -264,7 +274,7 @@
                         (editing!.values[f.key] = (ev.currentTarget as HTMLInputElement).checked
                           ? [...arr, o]
                           : arr.filter((x) => x !== o))}
-                    />{o}</label
+                    />{f.optionLabels?.[o] ?? o}</label
                   >
                 {/each}
               </span>
@@ -296,6 +306,7 @@
             {#if f.help}<span class="muted small">{f.help}</span>{/if}
           </label>
         {/each}
+        {#if note}<p class="small" data-testid="editor-note">{note(editing.values)}</p>{/if}
         <ErrorNote error={formError} />
         {#if preview}
           <div class="preview" data-testid="entry-preview">

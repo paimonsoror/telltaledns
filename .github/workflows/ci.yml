@@ -266,6 +266,10 @@ jobs:
       # every member; replication and reconnection afterwards.
       - name: Cluster CA rotation
         run: bash deploy/cluster/rotate-e2e.sh target/bench-fast/telltale
+      # REQ: CLU-013 (T13.2 AC) — staged rollouts: canary first, the guard pins a bad version,
+      # 409 while pinned, unpin, a manual pin, and the pin surviving failover.
+      - name: Cluster staged rollouts and pins
+        run: bash deploy/cluster/rollout-e2e.sh target/bench-fast/telltale
       # REQ: CLU-010 (T5.11 AC) — rolling upgrade: the published edge build (N-1) and this
       # build (N) in one cluster, both ways round, with a two-server client never failing.
       - name: Cluster rolling upgrade (edge build and this build)

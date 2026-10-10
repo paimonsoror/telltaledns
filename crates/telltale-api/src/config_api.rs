@@ -63,7 +63,7 @@ pub const IF_MATCH: &str = "if-match";
 pub const IDEMPOTENCY_KEY: &str = "idempotency-key";
 
 /// `If-Match: "7"`, `7`, or `W/"7"` → 7. `*` or absent → no check.
-fn expected_version(headers: &HeaderMap) -> Result<Option<u64>, Problem> {
+pub(crate) fn expected_version(headers: &HeaderMap) -> Result<Option<u64>, Problem> {
     let Some(v) = headers.get(IF_MATCH) else {
         return Ok(None);
     };
@@ -1118,6 +1118,86 @@ pub(crate) async fn delete_exclusions(
     .await
 }
 
+/// REQ: CLU-013 — `[cluster.rollout]`, for admins (merged with `require_admin`).
+pub(crate) fn rollout_settings_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/cluster/rollout-settings/default",
+            axum::routing::put(put_rollout_settings).delete(delete_rollout_settings),
+        )
+        .with_state((backend, auth))
+}
+
+/// Staged rollouts' settings (CLU-013).
+///
+/// The body has the same fields as `[cluster.rollout]` in `telltale.toml`: `canaries` (node
+/// IDs, `site:<name>`, or `ephemeral` for the resolver pods; empty = no rollouts), `bake_secs`
+/// (at least 5), `servfail_pct`, `require_traffic`, `max_bake_secs`, `fail_on_disconnect`, and
+/// `history` (versions kept for pinning). It replaces the whole section until deleted again,
+/// on every node. A change to these settings is published at once, never staged itself.
+/// Admins only (agents: `cluster:admin`).
+#[utoipa::path(put, path = "/api/v1/cluster/rollout-settings/default", tag = "system",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A bound is out of range or a canary isn't a node ID, `site:<name>`, or `ephemeral`."),
+    ))]
+pub(crate) async fn put_rollout_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /cluster/rollout-settings/default {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Rollout, Some(input)),
+    )
+    .await
+}
+
+/// Go back to the config file's rollout settings (CLU-013).
+///
+/// Removes what the API or UI stored, so `[cluster.rollout]` in the config files (or the
+/// default: no rollouts) applies again. 404 when nothing was stored.
+#[utoipa::path(delete, path = "/api/v1/cluster/rollout-settings/default", tag = "system",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_rollout_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        "DELETE /cluster/rollout-settings/default".to_owned(),
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Rollout, None),
+    )
+    .await
+}
+
 /// Change simulation's settings (OBS-024).
 ///
 /// The body has the same fields as `[simulate]` in `telltale.toml`: `enabled` (simulations at
@@ -1209,6 +1289,7 @@ impl Op {
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
             Self::Managed(ManagedKind::Exclusions, _) => "exclusions",
             Self::Managed(ManagedKind::Simulate, _) => "simulate",
+            Self::Managed(ManagedKind::Rollout, _) => "rollout_settings",
         }
     }
     fn deleting(&self) -> bool {

@@ -83,6 +83,18 @@ data:
 
     [cluster.init]
     advertise = [{{ include "telltale.clusterURL" . | quote }}{{ range .Values.cluster.advertise }}, {{ . | quote }}{{ end }}]
+    {{- with .Values.cluster.rollout }}
+    {{- if .canaries }}
+
+    # REQ: CLU-013 — staged rollouts: changes reach these nodes first.
+    [cluster.rollout]
+    canaries = [{{ range $i, $c := .canaries }}{{ if $i }}, {{ end }}{{ $c | quote }}{{ end }}]
+    bake_secs = {{ .bakeSeconds | int }}
+    servfail_pct = {{ .servfailPct | float64 }}
+    require_traffic = {{ .requireTraffic }}
+    history = {{ .history | int }}
+    {{- end }}
+    {{- end }}
   20-resolver.toml: |
     [cluster]
     site = {{ .Values.cluster.site | quote }}

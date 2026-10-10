@@ -12,6 +12,7 @@
   import Icon from '../lib/components/Icon.svelte';
   import Topology, { type Node } from '../lib/components/Topology.svelte';
   import MaintenanceForm from '../lib/components/MaintenanceForm.svelte';
+  import RolloutPanel from '../lib/components/RolloutPanel.svelte';
   import { refreshHealth } from '../lib/health.svelte';
   import { tick } from 'svelte';
 
@@ -84,15 +85,22 @@
     handover_failed: 'Handover failed',
     lease_released: 'Lease released',
     stepped_down: 'Stepped down',
+    rollout_started: 'Rollout',
+    rollout_promoted: 'Promoted',
+    rollout_failed: 'Rollout failed',
+    pinned: 'Pinned',
+    unpinned: 'Unpinned',
   };
   const kindClass = (k: string) =>
-    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed'
+    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed' || k === 'rollout_failed'
       ? 'bad'
-      : k === 'restarted' || k === 'maintenance' || k === 'handover'
+      : k === 'restarted' || k === 'maintenance' || k === 'handover' || k === 'rollout_started' || k === 'pinned'
         ? 'warn'
-        : k === 'published' || k === 'applied'
+        : k === 'published' || k === 'applied' || k === 'rollout_promoted'
           ? 'ok'
           : '';
+  // REQ: CLU-013 — the nodes running the version baking.
+  const canaries = $derived(view?.rollout?.stage === 'canary' ? (view.rollout.canaries ?? []) : []);
   // REQ: CLU-009 (T6.14) — pod churn: joins, pods gone, and restarts in the last hour.
   const churn = $derived.by(() => {
     const since = Date.now() - 3600_000;
@@ -312,10 +320,13 @@ telltale cluster join tt_join_…</pre>
       {/if}
     </section>
 
+    <!-- REQ: CLU-013 — the pin, the version baking, and the kept versions. -->
+    <RolloutPanel nodes={view.nodes} onchanged={load} />
+
     <!-- REQ: CLU-008 (T6.14) — the cluster at a glance. -->
     <section class="card">
       <h2>Topology<HelpButton id="cluster-topology" /></h2>
-      <Topology nodes={view.nodes} onselect={select} />
+      <Topology nodes={view.nodes} onselect={select} {canaries} />
     </section>
 
     {#if view.conflicts.length}
@@ -402,6 +413,7 @@ telltale cluster join tt_join_…</pre>
                 </td>
                 <td>
                   version {num(n.configSeq)}
+                  {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
                   {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
                   <div class="small {n.configLag ? 'warn-text' : 'muted'}">
                     {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}

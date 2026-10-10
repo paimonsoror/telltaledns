@@ -31,6 +31,24 @@ cluster:
     # least 32 random characters: anyone who knows it can join as a resolver pod.
     existingSecret: ""
     key: bootstrap
+  # REQ: CLU-013 — staged rollouts (mode: scaled): a configuration change reaches the canary
+  # nodes (and the controller, which runs it at once) first, and every other node after
+  # `bakeSeconds` if nothing fails; a failure pins the cluster to the version before. Empty
+  # (the default): changes reach every node at once. Entries are node IDs, `site:<name>`, or
+  # `ephemeral` (the resolver pods). With `[ephemeral]`, the pods take a change at once under
+  # the guard's watch and nodes outside Kubernetes (a Raspberry Pi that joined) wait out the
+  # bake. Also editable in the web UI: Settings → Cluster → Staged rollouts.
+  rollout:
+    canaries: []
+    # How long a change bakes on the canaries before everyone gets it (at least 5).
+    bakeSeconds: 300
+    # Fail when the canaries' SERVFAIL share during the bake is over max(the share before + 2
+    # points, this) percent (with at least 50 answers).
+    servfailPct: 5
+    # Keep baking until the canaries answered 50 queries (or an hour), then judge.
+    requireTraffic: false
+    # Versions kept for pinning back to (their files stay on the controller's volume).
+    history: 20
 
 resolvers:
   replicas: 2

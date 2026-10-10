@@ -619,6 +619,26 @@
       "example": "github.com has no IPv6 address; DNS64 answers 64:ff9b::8c52:7004 and the NAT64 gateway connects to 140.82.112.4.",
       "caution": "Only useful with a NAT64 gateway on the path; without one, the made-up addresses go nowhere.",
       "docs": "dns64"
+    },
+    {
+      "id": "rollouts",
+      "title": "Staged rollouts",
+      "term": "Staged rollout (canary)",
+      "summary": "A configuration change reaches a few canary nodes (and the primary) first. After a bake time (5 minutes by default) every other node gets it, unless a guard saw trouble: a canary that can't apply the change, isn't ready, fails its listener checks, disappears, or answers SERVFAIL clearly more often than before. Then the cluster is pinned to the version before the change and you're told why. Off until you name canaries: nodes, a site, or the Kubernetes resolver pods.",
+      "when": "When a bad change would cost the whole house its DNS: let the Kubernetes pods (or one Pi) take each change first while the others keep the version that works.",
+      "example": "Canaries: the resolver pods, bake 5 minutes. A new upstream group goes to the pods and the primary at once; the Pi in the garage keeps the old one. The pods' SERVFAIL share jumps from 1% to 30%, so after the bake the guard pins the cluster to the version before, and the Pi never saw the bad one.",
+      "caution": "The primary always runs a change at once (it's where you made it), so it's judged with the canaries. With too little traffic (under 50 answers in the bake) the guard can only check health, not answers, unless you require traffic. A newer change during a bake replaces the one baking. Nodes on older versions of TelltaleDNS are never canaries; they get each change after the bake.",
+      "docs": "rolling-a-change-out-in-stages"
+    },
+    {
+      "id": "pins",
+      "title": "Pinning the cluster to a version",
+      "term": "Pin (roll back)",
+      "summary": "Every node serves an older kept version again (its configuration and filter snapshot), published as a new version number, until someone unpins. The guard pins by itself when a staged rollout fails; an admin can pin any kept version from the Cluster page. While pinned, configuration changes are refused with the list of what the pin holds back.",
+      "when": "A change went out and something broke: pin to the version before it, fix the change at your leisure, then unpin.",
+      "example": "Pin to version 3.124 with the reason \"new list blocks the bank\": all nodes serve 3.124 within seconds, the banner shows \"Held back since then: list: changed\", and the cluster_pinned alert keeps reminding you until you unpin.",
+      "caution": "A pin doesn't rewrite your files, the entries made in the UI, or Git: unpinning publishes them as they are, so undo the bad change there first (or right after unpinning, while it bakes on the canaries). The primary keeps the last 20 versions; older ones can't be pinned. A node promoted to primary keeps the pin.",
+      "docs": "pinning-the-cluster-to-a-version"
     }
   ]
 }

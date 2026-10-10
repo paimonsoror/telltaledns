@@ -389,6 +389,11 @@ impl Publisher {
     }
 
     pub(crate) fn publish(&self, dir: PathBuf) {
+        // REQ: CLU-013 — a pinned cluster serves the pinned snapshot only.
+        if self.pinned_elsewhere(&dir) {
+            info!(dir = %dir.display(), "the cluster is pinned: the new snapshot waits until it's unpinned");
+            return;
+        }
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let this = self.clone();
         let spawned = std::thread::Builder::new()
@@ -397,6 +402,15 @@ impl Publisher {
         if let Err(e) = spawned {
             error!("cannot start the snapshot loader: {e}");
         }
+    }
+
+    /// REQ: CLU-013 — whether a pin holds another snapshot than `dir` in place.
+    fn pinned_elsewhere(&self, dir: &Path) -> bool {
+        self.pipeline
+            .filter_pin
+            .load()
+            .as_deref()
+            .is_some_and(|p| p.as_path() != dir)
     }
 
     /// REQ: FLT-004 — at a cold start (nothing is serving yet), a newest snapshot that can't
@@ -435,7 +449,7 @@ impl Publisher {
         };
         let version = snap.manifest.version;
         let store = |m: Matcher| {
-            if self.generation.load(Ordering::SeqCst) == generation {
+            if self.generation.load(Ordering::SeqCst) == generation && !self.pinned_elsewhere(dir) {
                 self.pipeline.set_filter(Some(Arc::new(m)));
                 true
             } else {

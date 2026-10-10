@@ -244,6 +244,34 @@
               "minLength": 1
             }
           }
+        },
+        "rollout": {
+          "type": "object",
+          "properties": {
+            "canaries": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "bakeSeconds": {
+              "type": "integer",
+              "minimum": 5
+            },
+            "servfailPct": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 100
+            },
+            "requireTraffic": {
+              "type": "boolean"
+            },
+            "history": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         }
       }
     },

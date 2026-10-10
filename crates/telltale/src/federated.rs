@@ -259,6 +259,14 @@ pub(crate) fn rpc_handler(
                 .await
                 .map_err(|e| format!("maintenance worker failed: {e}"))?;
             }
+            if kind == crate::rollout::surface::KIND {
+                // REQ: CLU-013 — a replica's rollout request (a user acted there). An ephemeral
+                // member serves no UI: nothing comes through it.
+                if ephemeral {
+                    return Err("an ephemeral member can't run rollout commands".into());
+                }
+                return crate::rollout::surface::handle(src, local, cluster, peer, body).await;
+            }
             if kind == crate::simulate::KIND {
                 // REQ: OBS-024 — another node simulating a change over the cluster's logs.
                 return crate::simulate::handle(src, body).await;
@@ -1332,6 +1340,59 @@ impl Backend for Federated {
                 })
             }
         }
+    }
+    // REQ: CLU-013 (T13.2) — the primary runs rollouts and pins: another node asks it (and,
+    // without a reachable primary, shows what the version it applied says).
+    fn rollout_status(&self) -> BoxFuture<Result<telltale_api::model::RolloutStatus, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.rollout_status();
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        let local = Arc::clone(&self.local);
+        Box::pin(async move {
+            match crate::rollout::surface::send(
+                cluster,
+                primary,
+                crate::rollout::surface::Call::Status,
+            )
+            .await
+            {
+                Ok(s) => Ok(s),
+                Err(_) => local.rollout_status().await,
+            }
+        })
+    }
+    fn cluster_versions(&self) -> BoxFuture<Result<telltale_api::model::ClusterVersions, Problem>> {
+        if self.cluster.is_primary() {
+            return self.local.cluster_versions();
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        Box::pin(crate::rollout::surface::send(
+            cluster,
+            primary,
+            crate::rollout::surface::Call::Versions,
+        ))
+    }
+    fn rollout_command(
+        &self,
+        w: telltale_api::RolloutWrite,
+    ) -> BoxFuture<Result<telltale_api::model::RolloutAction, Problem>> {
+        if self.cluster.is_primary() {
+            // ADR-056 — a primary without its lease publishes nothing.
+            if !self.cluster.may_publish() {
+                return Box::pin(async { Err(no_lease()) });
+            }
+            return self.local.rollout_command(w);
+        }
+        let cluster = Arc::clone(&self.cluster);
+        let primary = self.cluster.reachable_primary();
+        Box::pin(crate::rollout::surface::send(
+            cluster,
+            primary,
+            crate::rollout::surface::Call::Command(w),
+        ))
     }
     // REQ: OBS-010 (T9.6) — alerts are evaluated here (the primary) or nowhere: this node's.
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {

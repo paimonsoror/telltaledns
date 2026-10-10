@@ -76,7 +76,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "ops:maintenance",
         "start and end node maintenance (at most two hours)",
     ),
-    ("cluster:admin", "promote a node to primary"),
+    (
+        "cluster:admin",
+        "promote a node to primary; change the staged-rollout settings; promote or abort a rollout; pin and unpin the cluster",
+    ),
 ];
 
 /// What an agent token gets when none are named: read-only, without the query log.
@@ -183,14 +186,7 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
-            // REQ: OBS-025 — what kind of device each address is.
-            _ if p == "/api/v1/clients/identities"
-                || p.strip_prefix("/api/v1/clients/")
-                    .and_then(|r| r.strip_suffix("/identity"))
-                    .is_some_and(|id| !id.is_empty() && !id.contains('/')) =>
-            {
-                return Need::Scope("analytics:read");
-            }
+            _ if analytics_extra(p) => return Need::Scope("analytics:read"),
             _ => {}
         }
     }
@@ -234,9 +230,14 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/simulate-settings") {
             return Need::Scope("config:write:simulate");
         }
-        // REQ: OPS-010 — ending maintenance (starting it is a POST).
-        if *method == Method::DELETE && maintenance_path(p) {
-            return Need::Scope("ops:maintenance");
+        // REQ: CLU-013 (T13.2) — what every node serves.
+        if under("/api/v1/cluster/rollout-settings") {
+            return Need::Scope("cluster:admin");
+        }
+        if *method == Method::DELETE
+            && let Some(need) = delete_need(p)
+        {
+            return need;
         }
     }
     if *method == Method::POST
@@ -245,6 +246,28 @@ pub fn required(method: &Method, path: &str) -> Need {
         return need;
     }
     Need::Forbidden
+}
+
+/// Reads under `analytics:read` beyond the plain paths.
+fn analytics_extra(p: &str) -> bool {
+    // REQ: OBS-025 — what kind of device each address is.
+    p == "/api/v1/clients/identities"
+        || p.strip_prefix("/api/v1/clients/")
+            .and_then(|r| r.strip_suffix("/identity"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        // REQ: CLU-013 — the rollout in progress and the kept versions.
+        || p == "/api/v1/cluster/rollout"
+        || p == "/api/v1/cluster/versions"
+}
+
+/// What a `DELETE` outside the configuration areas needs.
+fn delete_need(p: &str) -> Option<Need> {
+    // REQ: CLU-013 — unpinning changes what every node serves.
+    if p == "/api/v1/cluster/pin" {
+        return Some(Need::Scope("cluster:admin"));
+    }
+    // REQ: OPS-010 — ending maintenance (starting it is a POST).
+    maintenance_path(p).then_some(Need::Scope("ops:maintenance"))
 }
 
 /// REQ: OPS-010 — `/api/v1/nodes/{id}/maintenance`.
@@ -276,6 +299,17 @@ fn post_need(p: &str) -> Option<Need> {
             Need::Scope("ops:anomalies")
         }
         "/api/v1/cluster/promote" => Need::Scope("cluster:admin"),
+        // REQ: CLU-013 — rollouts and pins change what every node serves.
+        "/api/v1/cluster/rollout/promote" | "/api/v1/cluster/rollout/abort" => {
+            Need::Scope("cluster:admin")
+        }
+        _ if p
+            .strip_prefix("/api/v1/cluster/versions/")
+            .and_then(|r| r.strip_suffix("/pin"))
+            .is_some_and(|v| !v.is_empty() && !v.contains('/')) =>
+        {
+            Need::Scope("cluster:admin")
+        }
         // REQ: OBS-024 — a simulation reads the query log (and, for a whole configuration,
         // `config:read`: checked by the route).
         "/api/v1/simulate" => Need::Scope("querylog:read"),

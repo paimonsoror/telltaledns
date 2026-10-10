@@ -134,6 +134,7 @@ fn one_off(w: AlertWhen) -> bool {
             | AlertWhen::UpdateAvailable
             | AlertWhen::NewDevice
             | AlertWhen::PlanPending
+            | AlertWhen::RolloutFailed
     )
 }
 
@@ -558,6 +559,37 @@ fn observe(
                 .map(|(name, _, summary)| (name, summary))
                 .collect()
         }
+        // REQ: CLU-013 — once per failed version; and while pinned.
+        AlertWhen::RolloutFailed => b
+            .cluster()
+            .rollout
+            .and_then(|r| r.last_failure)
+            .map(|f| {
+                (
+                    f.version.clone(),
+                    format!(
+                        "a staged rollout failed: version {} ({}); the cluster is pinned to the version before it",
+                        f.version, f.reason
+                    ),
+                )
+            })
+            .into_iter()
+            .collect(),
+        AlertWhen::ClusterPinned => b
+            .cluster()
+            .rollout
+            .and_then(|r| r.pinned)
+            .map(|p| {
+                (
+                    "cluster".to_owned(),
+                    format!(
+                        "the cluster is pinned to version {} since {} by {}: {}",
+                        p.to, p.since, p.by, p.reason
+                    ),
+                )
+            })
+            .into_iter()
+            .collect(),
         // REQ: OPS-010 — once when a node enters maintenance, resolved when it leaves.
         AlertWhen::Maintenance => m
             .windows
@@ -1137,6 +1169,7 @@ mod tests {
                 conflicts: Vec::new(),
                 failover: None,
                 source: None,
+                rollout: None,
                 host: None,
             }
         };
@@ -1268,5 +1301,82 @@ mod tests {
             "pi",
         );
         assert!(body.contains("Resolved: upstreams: quad9"), "{body}");
+    }
+
+    /// REQ: CLU-013 — `rollout_failed` goes out once per failed version; `cluster_pinned` fires
+    /// while pinned (after its `for_secs`) and resolves when unpinned.
+    #[test]
+    fn clu_013_rollout_failed_and_cluster_pinned() {
+        use telltale_api::model::{ClusterPin, ClusterRollout, ClusterView, RolloutFailure};
+        let view = |r: Option<ClusterRollout>| ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: None,
+            newest_config_seq: 0,
+            healthy: true,
+            checks: Vec::new(),
+            nodes: Vec::new(),
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            rollout: r,
+            host: None,
+        };
+        let pinned = |failed: &str| ClusterRollout {
+            stage: "pinned".into(),
+            pinned: Some(ClusterPin {
+                to: "1.6".into(),
+                since: "2026-10-10T12:00:00Z".into(),
+                by: "the guard".into(),
+                reason: "SERVFAIL 28%".into(),
+                ..ClusterPin::default()
+            }),
+            last_failure: Some(RolloutFailure {
+                version: failed.into(),
+                reason: "SERVFAIL 28%".into(),
+                at: "2026-10-10T12:00:00Z".into(),
+            }),
+            ..ClusterRollout::default()
+        };
+        let rules = vec![
+            rule(AlertWhen::RolloutFailed, 0),
+            rule(AlertWhen::ClusterPinned, 60),
+        ];
+        let seen = |r: Option<ClusterRollout>| -> Vec<Observed> {
+            let b = Stub {
+                view: view(r),
+                probes: Vec::new(),
+            };
+            rules
+                .iter()
+                .map(|x| observe(&b, x, 1000, &[], &Paused::default()))
+                .collect()
+        };
+        let mut e = Engine::default();
+        let first = e.step(0, &rules, &seen(Some(pinned("1.7"))));
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(
+            first[0].summary.contains("version 1.7") && first[0].summary.contains("SERVFAIL 28%")
+        );
+        // Still pinned a minute later: the pin alert fires; the failure isn't sent again.
+        let later = e.step(60, &rules, &seen(Some(pinned("1.7"))));
+        assert_eq!(later.len(), 1, "{later:?}");
+        assert_eq!(
+            (later[0].rule, later[0].subject.as_str(), later[0].firing),
+            (1, "cluster", true)
+        );
+        assert!(later[0].summary.contains("pinned to version 1.6"));
+        // Unpinned: the pin alert resolves. A later failure of another version goes out.
+        let cleared = e.step(120, &rules, &seen(None));
+        assert_eq!(cleared.len(), 1);
+        assert!(!cleared[0].firing);
+        let again = e.step(180, &rules, &seen(Some(pinned("1.9"))));
+        assert!(
+            again.iter().any(|n| n.rule == 0 && n.subject == "1.9"),
+            "{again:?}"
+        );
     }
 }

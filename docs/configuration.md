@@ -56,6 +56,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 |---|---|---|
 | `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory, `drain_delay_secs`, `maintenance_default_secs` (how long maintenance lasts when a request doesn't say; maintenance itself is node state, started from the Cluster page, `telltale ctl maintenance`, or the API) | `spec/02`, OPS-010 |
 | `[cluster]` | cluster name, site label, primary eligibility | `spec/12` |
+| `[cluster.rollout]` | staged rollouts: `canaries` (node IDs, `site:<name>`, or `ephemeral`; empty, the default, means changes reach every node at once), `bake_secs` (at least 5; 300), `servfail_pct` (5), `require_traffic`, `max_bake_secs` (3,600), `fail_on_disconnect` (true), `history` (versions kept for pinning; 20); shared across a cluster; also in Settings → Cluster | CLU-013, `docs/running.md` |
 | `[[listen]]` | `udp`, `tcp`, `dot`, `doh`, `doh3` (DoH over HTTP/3), and `doq` listeners; `tls` cert/key for the encrypted ones (reloaded on change), DoH `path`, `proxy_protocol` (v2) on TCP-based listeners. Default: UDP + TCP on port 53, IPv4 and IPv6 | `spec/03` §1, DNS-002/003/020 |
 | `[[upstream]]` | upstream resolvers; the URL scheme picks the protocol | `spec/04` |
 | `[[upstream_group]]` | named sets of upstreams with a strategy (`failover`, `round_robin`, `weighted`, `fastest`, `parallel`). Queries that match no route use the group named `default` | `spec/04` §4 |

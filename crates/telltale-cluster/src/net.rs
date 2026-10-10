@@ -375,6 +375,24 @@ pub struct Member {
     /// REQ: OPS-010 — its maintenance window, from its heartbeats (kept while it's silent, so a
     /// node stopped during its window stays in maintenance until the window ends).
     pub maintenance: Option<MaintenanceWindow>,
+    /// REQ: CLU-013 — it can be a canary (older nodes: never), why it couldn't apply the
+    /// newest version, and whether its listener probes fail, from its heartbeats.
+    pub rollouts: bool,
+    pub sync_error: String,
+    pub probe_failing: bool,
+    /// REQ: CLU-013 — while it runs a canary version, the stable `seq` that one would replace.
+    pub canary_of: u64,
+}
+
+/// REQ: CLU-013 — the stable version a node is at: its applied version, or, while it runs a
+/// canary version, the stable one that would replace (configuration lag counts only stable
+/// versions, so nodes waiting out a bake aren't behind).
+fn stable_seq(applied_seq: u64, canary_of: u64) -> u64 {
+    if canary_of > 0 {
+        canary_of
+    } else {
+        applied_seq
+    }
 }
 
 /// REQ: OPS-010 (ADR-118) — a node's maintenance window, as heartbeats carry it.
@@ -396,6 +414,11 @@ impl MaintenanceWindow {
 }
 
 impl Member {
+    /// REQ: CLU-013 — the stable version it's at (see [`stable_seq`]).
+    pub fn stable_seq(&self) -> u64 {
+        stable_seq(self.applied_seq, self.canary_of)
+    }
+
     /// REQ: OPS-010 — its maintenance window, while it's open.
     pub fn in_maintenance(&self, now_ms: u64) -> Option<&MaintenanceWindow> {
         self.maintenance.as_ref().filter(|w| w.active(now_ms))
@@ -430,6 +453,18 @@ pub struct LocalState {
     pub cache_hit_permille: Option<u32>,
     /// REQ: OPS-010 — this node's maintenance window (heartbeats carry it).
     pub maintenance: Option<MaintenanceWindow>,
+    /// REQ: CLU-013 — one of this node's listener probes is failing.
+    pub probe_failing: bool,
+    /// REQ: CLU-013 — while this node runs a canary version, the stable `seq` it would replace.
+    pub canary_of: u64,
+}
+
+/// REQ: CLU-013 (T13.2, ADR-116) — the canary head: a version sent only to these peers (node
+/// IDs) while it bakes; everyone else gets the stable head.
+#[derive(Debug, Clone)]
+pub struct Canary {
+    pub signed: Arc<Signed>,
+    pub peers: Arc<std::collections::BTreeSet<String>>,
 }
 
 /// REQ: OPS-010 — a handover that hasn't produced a new primary after this long is given up:
@@ -507,8 +542,10 @@ pub struct Cluster {
     pub version: String,
     members: Mutex<BTreeMap<String, Member>>,
     local: Mutex<LocalState>,
-    /// The manifest this node publishes (primary), sent on every stream.
+    /// The manifest this node publishes (primary), sent on every stream: the stable head.
     published: watch::Sender<Option<Arc<Signed>>>,
+    /// REQ: CLU-013 — the canary head, sent instead of the stable one to its peers.
+    canary: watch::Sender<Option<Canary>>,
     /// Blobs this node serves, by hash.
     served: Mutex<HashMap<String, BlobSource>>,
     /// The newest manifest received from a peer (verified by whoever applies it).
@@ -583,6 +620,7 @@ impl Cluster {
             version: version.to_owned(),
             members: Mutex::new(BTreeMap::new()),
             published: watch::Sender::new(None),
+            canary: watch::Sender::new(None),
             served: Mutex::new(HashMap::new()),
             incoming: watch::Sender::new(None),
             connected: Mutex::new(None),
@@ -1079,14 +1117,19 @@ impl Cluster {
     }
 
     /// The URL to fetch blobs from: the current primary's, else the connected stream's.
+    ///
+    /// The URL this node's stream to the primary uses comes first: it's the one known to work
+    /// from here. The primary's first advertised URL can be one only some nodes reach (an
+    /// in-cluster Service name, unknown to a node outside Kubernetes), so it's the fallback.
     fn primary_url(&self) -> Option<String> {
-        let mut members = self.members();
-        members.sort_by_key(|m| std::cmp::Reverse(m.epoch));
-        members
-            .iter()
-            .find(|m| m.primary && m.connected)
-            .and_then(|m| m.advertise.first().cloned())
-            .or_else(|| self.connected_primary())
+        self.connected_primary().or_else(|| {
+            let mut members = self.members();
+            members.sort_by_key(|m| std::cmp::Reverse(m.epoch));
+            members
+                .iter()
+                .find(|m| m.primary && m.connected)
+                .and_then(|m| m.advertise.first().cloned())
+        })
     }
 
     /// Changes the role (persisted in `cluster.json`) and tells every stream and task.
@@ -1179,28 +1222,29 @@ impl Cluster {
     }
 
     /// The newest configuration version any node reports (this one included).
+    ///
+    /// REQ: CLU-013 — counting stable versions only: a canary version baking isn't "newest" for
+    /// the nodes that wait for it.
     pub fn newest_seq(&self) -> u64 {
-        let own = self
-            .local
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .applied_seq;
+        let own = self.own_stable_seq();
         self.members
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .values()
-            .map(|m| m.applied_seq)
+            .map(Member::stable_seq)
             .fold(own, u64::max)
+    }
+
+    /// REQ: CLU-013 — the stable version this node is at.
+    pub fn own_stable_seq(&self) -> u64 {
+        let l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+        stable_seq(l.applied_seq, l.canary_of)
     }
 
     /// Since when this node's applied version has been behind the newest known (Unix ms).
     pub fn behind_since(&self) -> Option<u64> {
         let newest = self.newest_seq();
-        let own = self
-            .local
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .applied_seq;
+        let own = self.own_stable_seq();
         let mut b = self
             .behind_since
             .lock()
@@ -1235,10 +1279,54 @@ impl Cluster {
     }
 
     /// Publishes a manifest and the blobs it names (primary): every connected peer gets it at
-    /// once, and peers that connect later get it first thing.
+    /// once, and peers that connect later get it first thing. It's the stable head: a canary
+    /// head ends.
     pub fn publish(&self, signed: Signed, blobs: HashMap<String, BlobSource>) {
         *self.served.lock().unwrap_or_else(PoisonError::into_inner) = blobs;
+        self.canary.send_replace(None);
         self.published.send_replace(Some(Arc::new(signed)));
+    }
+
+    /// REQ: CLU-013 (ADR-116) — publishes `signed` to `peers` only, as the canary head (if
+    /// this node is still the primary of `epoch`); every other peer keeps the stable head. The
+    /// blobs are served beside the stable head's. Returns whether it was published.
+    pub fn publish_canary_as(
+        &self,
+        epoch: u64,
+        signed: Signed,
+        peers: std::collections::BTreeSet<String>,
+        blobs: HashMap<String, BlobSource>,
+    ) -> bool {
+        let _fence = self.fence.lock().unwrap_or_else(PoisonError::into_inner);
+        let (role, current) = self.role();
+        if !matches!(role, Role::Primary | Role::Emergency) || current != epoch {
+            return false;
+        }
+        self.served
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(blobs);
+        self.canary.send_replace(Some(Canary {
+            signed: Arc::new(signed),
+            peers: Arc::new(peers),
+        }));
+        true
+    }
+
+    /// REQ: CLU-013 — the canary head, if a version is baking.
+    pub fn canary(&self) -> Option<Canary> {
+        self.canary.borrow().clone()
+    }
+
+    /// REQ: CLU-013 — the head `peer` is sent: the canary one when it's among the canary's
+    /// peers, else the stable one. Every path that sends a manifest goes through here.
+    pub fn head_for(&self, peer: Option<&str>) -> Option<Arc<Signed>> {
+        if let (Some(p), Some(c)) = (peer, self.canary.borrow().as_ref())
+            && c.peers.contains(p)
+        {
+            return Some(Arc::clone(&c.signed));
+        }
+        self.published.borrow().clone()
     }
 
     /// REQ: CLU-005 (ADR-051) — publishes `signed` only if this node is still the primary (or
@@ -1462,6 +1550,16 @@ impl Cluster {
                     .as_ref()
                     .map(|w| w.by.clone())
                     .unwrap_or_default(),
+                rollouts: true,
+                sync_error: self
+                    .sync
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .error
+                    .clone()
+                    .unwrap_or_default(),
+                probe_failing: l.probe_failing,
+                canary_of: l.canary_of,
             })),
         }
     }
@@ -1541,6 +1639,13 @@ impl Cluster {
                         cache_entries: prev.as_ref().and_then(|p| p.cache_entries),
                         cache_hit_permille: prev.as_ref().and_then(|p| p.cache_hit_permille),
                         maintenance: prev.as_ref().and_then(|p| p.maintenance.clone()),
+                        rollouts: prev.as_ref().is_some_and(|p| p.rollouts),
+                        sync_error: prev
+                            .as_ref()
+                            .map(|p| p.sync_error.clone())
+                            .unwrap_or_default(),
+                        probe_failing: prev.as_ref().is_some_and(|p| p.probe_failing),
+                        canary_of: prev.as_ref().map_or(0, |p| p.canary_of),
                     },
                 );
                 drop(members);
@@ -1558,17 +1663,15 @@ impl Cluster {
                 *echo.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some((hb.ts_ms, tokio::time::Instant::now()));
                 let now = now_ms();
+                let own = {
+                    let l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+                    stable_seq(l.applied_seq, l.canary_of)
+                };
                 let newest = members
                     .values()
-                    .map(|m| m.applied_seq)
-                    .fold(
-                        self.local
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .applied_seq,
-                        u64::max,
-                    )
-                    .max(hb.applied_seq);
+                    .map(Member::stable_seq)
+                    .fold(own, u64::max)
+                    .max(stable_seq(hb.applied_seq, hb.canary_of));
                 let mut restarted = false;
                 let mut maintenance_changed = None;
                 if let Some(m) = members.get_mut(id) {
@@ -1596,6 +1699,10 @@ impl Cluster {
                         ));
                     }
                     m.maintenance = window;
+                    m.rollouts = hb.rollouts;
+                    m.sync_error = std::mem::take(&mut hb.sync_error);
+                    m.probe_failing = hb.probe_failing;
+                    m.canary_of = hb.canary_of;
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
                         m.trust_fp.clone_from(&hb.trust_fp);
@@ -1634,7 +1741,7 @@ impl Cluster {
                         self.record_host(id, &h);
                         m.host = Some(*h);
                     }
-                    if m.applied_seq >= newest {
+                    if m.stable_seq() >= newest {
                         m.behind_since_ms = None;
                     } else if m.behind_since_ms.is_none() {
                         m.behind_since_ms = Some(now);
@@ -1792,6 +1899,8 @@ async fn write_frames(
         return;
     }
     let mut manifests = cluster.published.subscribe();
+    // REQ: CLU-013 — the canary head reaches only its peers (`head_for`).
+    let mut canaries = cluster.canary.subscribe();
     let mut changed = cluster.local_changed.subscribe();
     // RPC frames for this peer go out on this stream (CLU-002).
     let (out_tx, mut outbox) = tokio::sync::mpsc::channel::<Frame>(64);
@@ -1817,8 +1926,12 @@ async fn write_frames(
     // as soon as the registry lists them (checked again on every heartbeat), and again whenever
     // the share changes (a CA rotation adds the next key, T5.4c).
     let mut key_shared: Option<Vec<u8>> = None;
-    // The current manifest first (a peer that just connected), then whatever happens next.
-    let mut pending = manifests.borrow_and_update().clone();
+    // The current manifest first (a peer that just connected), then whatever happens next:
+    // the head for this peer, sent again only when it changes.
+    manifests.borrow_and_update();
+    canaries.borrow_and_update();
+    let mut pending = cluster.head_for(peer.as_deref());
+    let mut sent: Option<Arc<Signed>> = None;
     loop {
         if let Some(frame) = peer.as_deref().and_then(|p| cluster.key_share_for(p)) {
             let bytes = wire::encode(&frame);
@@ -1830,7 +1943,12 @@ async fn write_frames(
             }
         }
         let frame = if let Some(m) = pending.take() {
-            manifest_frame(&m)
+            if sent.as_ref().is_some_and(|s| Arc::ptr_eq(s, &m)) {
+                continue;
+            }
+            let f = manifest_frame(&m);
+            sent = Some(m);
+            f
         } else {
             tokio::select! {
                 _ = tick.tick() => cluster.heartbeat(&echo),
@@ -1840,7 +1958,14 @@ async fn write_frames(
                 }
                 r = manifests.changed() => {
                     if r.is_err() { return; }
-                    pending.clone_from(&manifests.borrow_and_update());
+                    manifests.borrow_and_update();
+                    pending = cluster.head_for(peer.as_deref());
+                    continue;
+                }
+                r = canaries.changed() => {
+                    if r.is_err() { return; }
+                    canaries.borrow_and_update();
+                    pending = cluster.head_for(peer.as_deref());
                     continue;
                 }
                 Some(f) = outbox.recv() => f,
@@ -2437,9 +2562,12 @@ pub async fn follow<F, Fut>(
             match result {
                 Ok(fetched) => {
                     (epoch, seq) = (m.epoch, m.seq);
+                    // REQ: CLU-013 — a canary version says which stable one it would replace.
+                    let canary_of = m.rollout.as_ref().map_or(0, |r| r.of.1);
                     cluster.set_local(|l| {
                         l.applied_seq = seq;
                         l.epoch = l.epoch.max(epoch);
+                        l.canary_of = canary_of;
                     });
                     let duration_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
                     cluster.set_sync_status(|s| {

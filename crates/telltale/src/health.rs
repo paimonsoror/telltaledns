@@ -247,9 +247,47 @@ fn upstream_reasons(upstreams: &[UpstreamInfo], out: &mut Vec<HealthReason>) {
     }
 }
 
+/// REQ: CLU-013 — canaries set and none online this long degrades (changes skip the bake).
+const ROLLOUT_STUCK_SECONDS: u64 = 600;
+
+/// REQ: CLU-013 — the cluster pinned to an older version, or a change stuck waiting for a
+/// canary.
+fn rollout_reasons(view: &ClusterView) -> Vec<HealthReason> {
+    let Some(r) = &view.rollout else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(p) = &r.pinned {
+        out.push(reason(
+            DEGRADED,
+            "cluster_pinned",
+            format!(
+                "the cluster is pinned to version {} since {} by {}: {}; configuration changes wait until it's unpinned",
+                p.to, p.since, p.by, p.reason
+            ),
+            "#/cluster",
+        ));
+    }
+    if let Some(s) = r
+        .canaries_offline_seconds
+        .filter(|s| *s >= ROLLOUT_STUCK_SECONDS)
+    {
+        out.push(reason(
+            DEGRADED,
+            "rollout_stuck",
+            format!(
+                "no canary node has been online for {} minutes, so configuration changes reach every node without a staged rollout",
+                s / 60
+            ),
+            "#/cluster",
+        ));
+    }
+    out
+}
+
 /// The cluster's own conditions, as this node sees them: peers unreachable or behind.
 pub(crate) fn cluster_reasons(view: &ClusterView) -> Vec<HealthReason> {
-    let mut out = Vec::new();
+    let mut out = rollout_reasons(view);
     if !view.enabled {
         return out;
     }
@@ -623,6 +661,7 @@ mod tests {
             conflicts: Vec::new(),
             failover: None,
             source: None,
+            rollout: None,
             host: None,
         };
         let mut reasons = cluster_reasons(&view);
@@ -725,5 +764,63 @@ mod tests {
             h.reasons
         );
         assert!(h.reasons.iter().any(|r| r.code == "disk_full"));
+    }
+
+    // REQ: CLU-013 — a pinned cluster degrades (cluster_pinned); canaries set with none online
+    // for 10 minutes degrades (rollout_stuck); a version baking alone doesn't.
+    #[test]
+    fn clu_013_pinned_and_stuck_rollouts_degrade() {
+        use telltale_api::model::{ClusterPin, ClusterRollout};
+        let view = |r: Option<ClusterRollout>| ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: None,
+            newest_config_seq: 1,
+            healthy: true,
+            checks: Vec::new(),
+            nodes: Vec::new(),
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            host: None,
+            rollout: r,
+        };
+        let code_list = |v: &ClusterView| -> Vec<String> {
+            cluster_reasons(v).into_iter().map(|r| r.code).collect()
+        };
+        assert_eq!(code_list(&view(None)), Vec::<String>::new());
+        let baking = ClusterRollout {
+            stage: "canary".into(),
+            version: Some("1.8".into()),
+            ..ClusterRollout::default()
+        };
+        assert_eq!(code_list(&view(Some(baking))), Vec::<String>::new());
+        let pinned = ClusterRollout {
+            stage: "pinned".into(),
+            pinned: Some(ClusterPin {
+                to: "1.7".into(),
+                by: "the guard".into(),
+                reason: "SERVFAIL 30%".into(),
+                ..ClusterPin::default()
+            }),
+            ..ClusterRollout::default()
+        };
+        let r = cluster_reasons(&view(Some(pinned)));
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].level.as_str(), r[0].code.as_str()),
+            ("degraded", "cluster_pinned")
+        );
+        assert!(r[0].summary.contains("1.7") && r[0].summary.contains("SERVFAIL 30%"));
+        let offline = |secs| ClusterRollout {
+            stage: "none".into(),
+            canaries_offline_seconds: Some(secs),
+            ..ClusterRollout::default()
+        };
+        assert_eq!(code_list(&view(Some(offline(120)))), Vec::<String>::new());
+        assert_eq!(code_list(&view(Some(offline(700)))), vec!["rollout_stuck"]);
     }
 }

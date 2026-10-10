@@ -101,6 +101,18 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: Replication keeps failing on {{ "{{" }} $labels.instance {{ "}}" }} (it serves its last version meanwhile); the Cluster page shows the error.
+        # REQ: CLU-013 (T13.2) — staged rollouts and pins (the primary reports them).
+        - alert: TelltaleDNSRolloutFailed
+          expr: increase(telltale_cluster_rollouts_total{job="{{ include "telltale.fullname" . }}-metrics",outcome="failed"}[15m]) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "A staged rollout failed its guard ({{ "{{" }} $labels.instance {{ "}}" }}): the cluster is pinned to the version before it. The Cluster page shows the reason; unpin once the change is fixed."
+        - alert: TelltaleDNSClusterPinned
+          expr: telltale_cluster_pinned{job="{{ include "telltale.fullname" . }}-metrics"} == 1
+          for: 1h
+          labels: { severity: warning }
+          annotations:
+            summary: "The cluster has been pinned to an older version for over an hour, so configuration changes wait. The Cluster page says why and what the pin holds back."
         - alert: TelltaleDNSClusterCertExpiring
           expr: telltale_cluster_cert_expiry_timestamp_seconds{job="{{ include "telltale.fullname" . }}-metrics"} - time() < 14 * 86400
           for: 1h

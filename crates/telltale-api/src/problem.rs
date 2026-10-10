@@ -51,6 +51,15 @@ pub enum Code {
     SimulationBusy,
     /// REQ: OBS-024 — a simulation window that isn't a duration, or is longer than 7 days.
     SimulationWindow,
+    /// REQ: CLU-013 — the cluster is pinned to an older version: configuration changes wait
+    /// until it's unpinned (`diff` says what the pin holds back).
+    ClusterPinned,
+    /// REQ: CLU-013 — no version is baking (nothing to promote or abort).
+    NoRollout,
+    /// REQ: CLU-013 — no kept version by that number.
+    VersionUnknown,
+    /// REQ: CLU-013 — the version is listed but its files are no longer kept.
+    VersionBlobsMissing,
 }
 
 impl Code {
@@ -76,6 +85,10 @@ impl Code {
             Self::NodeUnknown => "https://telltaledns.dev/problems/node_unknown",
             Self::SimulationBusy => "https://telltaledns.dev/problems/simulation_busy",
             Self::SimulationWindow => "https://telltaledns.dev/problems/simulation_window",
+            Self::ClusterPinned => "https://telltaledns.dev/problems/cluster_pinned",
+            Self::NoRollout => "https://telltaledns.dev/problems/no_rollout",
+            Self::VersionUnknown => "https://telltaledns.dev/problems/version_unknown",
+            Self::VersionBlobsMissing => "https://telltaledns.dev/problems/version_blobs_missing",
         }
     }
 
@@ -101,18 +114,27 @@ impl Code {
             Self::NodeUnknown => "Unknown node",
             Self::SimulationBusy => "Simulation already running",
             Self::SimulationWindow => "Invalid simulation window",
+            Self::ClusterPinned => "Cluster pinned",
+            Self::NoRollout => "No rollout in progress",
+            Self::VersionUnknown => "Unknown version",
+            Self::VersionBlobsMissing => "Version no longer kept",
         }
     }
 
     const fn status(self) -> StatusCode {
         match self {
             Self::InvalidParameter | Self::UnsupportedScope => StatusCode::BAD_REQUEST,
-            Self::NotFound | Self::NodeUnknown => StatusCode::NOT_FOUND,
+            Self::NotFound | Self::NodeUnknown | Self::VersionUnknown => StatusCode::NOT_FOUND,
             Self::Unavailable | Self::NodeUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
-            Self::Conflict | Self::GitopsManaged | Self::SimulationBusy => StatusCode::CONFLICT,
+            Self::Conflict
+            | Self::GitopsManaged
+            | Self::SimulationBusy
+            | Self::ClusterPinned
+            | Self::NoRollout
+            | Self::VersionBlobsMissing => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig
@@ -149,6 +171,11 @@ pub struct Problem {
     /// What to do about it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// REQ: CLU-013 — with `cluster_pinned`: what the pin holds back, as JSON Patch operations
+    /// from the pinned version's shared configuration to the one this node would publish.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub diff: Option<Box<serde_json::Value>>,
     /// Seconds to wait, sent as `Retry-After` (rate limits).
     #[serde(skip)]
     pub retry_after: Option<u64>,
@@ -163,8 +190,16 @@ impl Problem {
             code,
             detail: detail.into(),
             hint: None,
+            diff: None,
             retry_after: None,
         }
+    }
+
+    /// Attaches the diff a `cluster_pinned` problem shows.
+    #[must_use]
+    pub fn diff(mut self, diff: serde_json::Value) -> Self {
+        self.diff = Some(Box::new(diff));
+        self
     }
 
     #[must_use]

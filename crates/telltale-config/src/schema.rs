@@ -235,6 +235,49 @@ pub struct ClusterConfig {
     /// fetches it, validates it, and publishes it to every node. Set it on every node that
     /// may become primary.
     pub git: Option<GitSourceConfig>,
+    /// REQ: CLU-013 (T13.2) — staged rollouts: new configuration reaches the canary nodes
+    /// first and everyone else after a bake under a guard. Off until `canaries` is set. Shared
+    /// by the whole cluster (the one part of `[cluster]` the primary replicates); also in
+    /// Settings → Cluster → Staged rollouts.
+    pub rollout: RolloutConfig,
+}
+
+/// REQ: CLU-013 (T13.2, ADR-116) — `[cluster.rollout]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct RolloutConfig {
+    /// The nodes that get a new version first: node IDs, `site:<name>`, or `ephemeral` (the
+    /// resolver pods). Empty (the default): no rollouts, every node gets a change at once.
+    pub canaries: Vec<SafeString>,
+    /// How long the canaries run a new version before everyone else gets it, in seconds
+    /// (at least 5).
+    pub bake_secs: u32,
+    /// The guard fails a version when the canaries' SERVFAIL share over the bake is above the
+    /// larger of this (percent) and their share before plus 2 points.
+    pub servfail_pct: f64,
+    /// Judge only with at least 50 answers in the bake: keep baking until then, up to
+    /// `max_bake_secs`, then fail. Off: too few answers passes.
+    pub require_traffic: bool,
+    /// With `require_traffic`: the longest bake, in seconds.
+    pub max_bake_secs: u32,
+    /// A canary that disconnects for over a minute after applying the version fails it.
+    pub fail_on_disconnect: bool,
+    /// Published versions kept (and their files protected) for pinning back to.
+    pub history: u32,
+}
+
+impl Default for RolloutConfig {
+    fn default() -> Self {
+        Self {
+            canaries: Vec::new(),
+            bake_secs: 300,
+            servfail_pct: 5.0,
+            require_traffic: false,
+            max_bake_secs: 3600,
+            fail_on_disconnect: true,
+            history: 20,
+        }
+    }
 }
 
 /// `[cluster.git]`: the cluster's configuration from a file in a Git repository (ADR-049).
@@ -313,6 +356,7 @@ impl Default for ClusterConfig {
             ephemeral: false,
             ephemeral_ttl_secs: 600,
             git: None,
+            rollout: RolloutConfig::default(),
         }
     }
 }
@@ -1120,6 +1164,12 @@ pub enum AlertWhen {
     /// REQ: OPS-010 (T13.4) — a node is in maintenance (one alert per node, sent when it
     /// enters and resolved when it leaves; set `for_secs = 0` to hear at once).
     Maintenance,
+    /// REQ: CLU-013 (T13.2) — a staged rollout's guard failed a version and pinned the cluster
+    /// to the one before (once per version, with the reason and the readings).
+    RolloutFailed,
+    /// REQ: CLU-013 — the cluster is pinned to an older version, so configuration changes wait
+    /// (while pinned; raise `for_secs` if you pin on purpose for long).
+    ClusterPinned,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

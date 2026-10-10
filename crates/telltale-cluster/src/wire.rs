@@ -149,6 +149,22 @@ pub struct Heartbeat {
     pub maintenance_by: String,
     #[prost(uint64, tag = "23")]
     pub maintenance_since_ms: u64,
+    /// REQ: CLU-013 (T13.2) — it takes part in staged rollouts (it can be a canary). False
+    /// from older nodes, which are only ever sent stable versions.
+    #[prost(bool, tag = "24")]
+    pub rollouts: bool,
+    /// REQ: CLU-013 — why it couldn't apply the newest version, if it couldn't (the rollout
+    /// guard reads it). Empty from older nodes.
+    #[prost(string, tag = "25")]
+    pub sync_error: String,
+    /// REQ: CLU-013 — one of its own listener probes is failing (the rollout guard reads it).
+    #[prost(bool, tag = "26")]
+    pub probe_failing: bool,
+    /// REQ: CLU-013 — while it runs a canary version: the stable version (`seq`) that one
+    /// would replace, so nodes still on stable don't count as behind during a bake. 0 otherwise
+    /// (and from older nodes).
+    #[prost(uint64, tag = "27")]
+    pub canary_of: u64,
 }
 
 /// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and

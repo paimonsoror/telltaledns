@@ -132,6 +132,15 @@
         "join_url": null,
         "listen": "0.0.0.0:8443",
         "name": "telltale",
+        "rollout": {
+          "bake_secs": 300,
+          "canaries": [],
+          "fail_on_disconnect": true,
+          "history": 20,
+          "max_bake_secs": 3600,
+          "require_traffic": false,
+          "servfail_pct": 5.0
+        },
         "site": "default"
       }
     },
@@ -717,6 +726,16 @@
           "description": "REQ: OPS-010 (T13.4) — a node is in maintenance (one alert per node, sent when it\nenters and resolved when it leaves; set `for_secs = 0` to hear at once).",
           "type": "string",
           "const": "maintenance"
+        },
+        {
+          "description": "REQ: CLU-013 (T13.2) — a staged rollout's guard failed a version and pinned the cluster\nto the one before (once per version, with the reason and the readings).",
+          "type": "string",
+          "const": "rollout_failed"
+        },
+        {
+          "description": "REQ: CLU-013 — the cluster is pinned to an older version, so configuration changes wait\n(while pinned; raise `for_secs` if you pin on purpose for long).",
+          "type": "string",
+          "const": "cluster_pinned"
         }
       ]
     },
@@ -1220,6 +1239,19 @@
           "type": "string",
           "default": "telltale",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "rollout": {
+          "description": "REQ: CLU-013 (T13.2) — staged rollouts: new configuration reaches the canary nodes\nfirst and everyone else after a bake under a guard. Off until `canaries` is set. Shared\nby the whole cluster (the one part of `[cluster]` the primary replicates); also in\nSettings → Cluster → Staged rollouts.",
+          "$ref": "#/$defs/RolloutConfig",
+          "default": {
+            "bake_secs": 300,
+            "canaries": [],
+            "fail_on_disconnect": true,
+            "history": 20,
+            "max_bake_secs": 3600,
+            "require_traffic": false,
+            "servfail_pct": 5.0
+          }
         },
         "site": {
           "description": "Site label used to group nodes in the UI (e.g. `home-pi`, `k8s`).",
@@ -2640,6 +2672,59 @@
           "const": "controller"
         }
       ]
+    },
+    "RolloutConfig": {
+      "description": "REQ: CLU-013 (T13.2, ADR-116) — `[cluster.rollout]`.",
+      "type": "object",
+      "properties": {
+        "bake_secs": {
+          "description": "How long the canaries run a new version before everyone else gets it, in seconds\n(at least 5).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 300,
+          "minimum": 0
+        },
+        "canaries": {
+          "description": "The nodes that get a new version first: node IDs, `site:<name>`, or `ephemeral` (the\nresolver pods). Empty (the default): no rollouts, every node gets a change at once.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "fail_on_disconnect": {
+          "description": "A canary that disconnects for over a minute after applying the version fails it.",
+          "type": "boolean",
+          "default": true
+        },
+        "history": {
+          "description": "Published versions kept (and their files protected) for pinning back to.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 20,
+          "minimum": 0
+        },
+        "max_bake_secs": {
+          "description": "With `require_traffic`: the longest bake, in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 3600,
+          "minimum": 0
+        },
+        "require_traffic": {
+          "description": "Judge only with at least 50 answers in the bake: keep baking until then, up to\n`max_bake_secs`, then fail. Off: too few answers passes.",
+          "type": "boolean",
+          "default": false
+        },
+        "servfail_pct": {
+          "description": "The guard fails a version when the canaries' SERVFAIL share over the bake is above the\nlarger of this (percent) and their share before plus 2 points.",
+          "type": "number",
+          "format": "double",
+          "default": 5.0
+        }
+      },
+      "additionalProperties": false
     },
     "Route": {
       "description": "Conditional forwarding / routing rule (UPS-007, DNS-017).",

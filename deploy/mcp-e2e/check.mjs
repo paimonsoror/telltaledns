@@ -218,5 +218,18 @@ let [e4, p4] = await planSim({});
 if (e4 || p4.preview?.simulation) fail(`after reverting, a plan still simulates: ${JSON.stringify(p4).slice(0, 300)}`);
 console.log(`ok: simulations (${p2.preview.simulation.newlyBlocked.queries} queries newly blocked, on request or by the operator's default)`);
 await sim.close();
+
+// 7. Staged rollouts and pins (CLU-013): read with rollout_status; pins are plans, and this
+// node isn't in a cluster, so both say a cluster is needed.
+const ro = await connect(http(process.env.CLUSTER_TOKEN));
+const rs = await ro.callTool({ name: 'rollout_status', arguments: {} });
+if (!rs.isError || !JSON.stringify(rs).includes('need a cluster')) fail(`rollout_status standalone: ${JSON.stringify(rs).slice(0, 400)}`);
+const pin = await ro.callTool({ name: 'plan_pin_version', arguments: { epoch: 1, seq: 1, reason } });
+const pd = data(pin);
+if (!pin.isError || pd?.planned !== false || !JSON.stringify(pd).includes('need a cluster')) fail(`plan_pin_version standalone: ${JSON.stringify(pin).slice(0, 400)}`);
+const pinNoScope = await w.callTool({ name: 'plan_pin_version', arguments: { epoch: 1, seq: 1, reason } });
+if (!pinNoScope.isError) fail('plan_pin_version worked without cluster:admin');
+await ro.close();
+console.log('ok: rollout_status and plan_pin_version (a cluster is needed; cluster:admin required)');
 await w.close();
 console.log('PASS');

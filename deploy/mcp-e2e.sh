@@ -68,11 +68,13 @@ token() { # scopes JSON
   curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
     -d "{\"name\":\"mcp-$RANDOM\",\"kind\":\"agent\",\"scopes\":$1}" "$API/api/v1/tokens" | field 'd["token"]'
 }
-export AGENT_TOKEN NARROW_TOKEN WRITER_TOKEN SIM_TOKEN ADMIN_PASSWORD=mcp-e2e-pass-1
+export AGENT_TOKEN NARROW_TOKEN WRITER_TOKEN SIM_TOKEN CLUSTER_TOKEN ADMIN_PASSWORD=mcp-e2e-pass-1
 AGENT_TOKEN=$(token '["analytics:read","config:read","querylog:read"]')
 NARROW_TOKEN=$(token '["analytics:read"]')
 WRITER_TOKEN=$(token '["analytics:read","config:write:rules"]')
 SIM_TOKEN=$(token '["analytics:read","config:write:rules","querylog:read"]')
+# REQ: CLU-013 — the rollout tools (on a standalone node they say a cluster is needed).
+CLUSTER_TOKEN=$(token '["analytics:read","cluster:admin"]')
 
 (cd deploy/mcp-e2e && npm install --silent --no-audit --no-fund >/dev/null)
 node deploy/mcp-e2e/check.mjs "$API" "$B" docs/api/mcp-tools.json

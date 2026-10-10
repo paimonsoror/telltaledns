@@ -85,7 +85,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings' | 'cluster/rollout-settings';
 
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
@@ -176,6 +176,17 @@ export const api = {
   startMaintenance: (node: string, body: S['MaintenanceRequest']) =>
     post<S['MaintenanceResult']>(`/nodes/${encodeURIComponent(node)}/maintenance`, body),
   endMaintenance: (node: string) => call<S['MaintenanceResult']>('DELETE', `/nodes/${encodeURIComponent(node)}/maintenance`),
+  // REQ: CLU-013 (T13.2) — staged rollouts and pins (commands need an admin).
+  rolloutStatus: () => get<S['RolloutStatus']>('/cluster/rollout'),
+  clusterVersions: () => get<S['ClusterVersions']>('/cluster/versions'),
+  promoteRollout: () => post<S['RolloutAction']>('/cluster/rollout/promote'),
+  abortRollout: () => post<S['RolloutAction']>('/cluster/rollout/abort'),
+  pinVersion: (version: string, reason: string, dryRun = false) =>
+    call<S['RolloutAction']>('POST', `/cluster/versions/${encodeURIComponent(version)}/pin`, {
+      body: { reason },
+      query: { dryRun: dryRun || undefined },
+    }),
+  unpin: (dryRun = false) => call<S['RolloutAction']>('DELETE', '/cluster/pin', { query: { dryRun: dryRun || undefined } }),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   rules: () => get<S['Items_RuleInfo']>('/rules'),

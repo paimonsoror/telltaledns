@@ -647,6 +647,53 @@ fn clu_005_a_fenced_primary_never_publishes() {
     );
 }
 
+// REQ: CLU-013 (ADR-116) — two heads: a canary version reaches only its peers (every send
+// path asks `head_for`), everyone else and an unknown peer get the stable one; a new stable
+// publish ends the canary head; a fenced node can't start one.
+#[test]
+fn clu_013_the_canary_head_reaches_only_its_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    let (_, epoch) = c.role();
+    let signed = |v: &str| crate::sync::Signed {
+        json: v.as_bytes().to_vec(),
+        sig: Vec::new(),
+    };
+    assert!(c.publish_as(epoch, signed("stable"), HashMap::new()));
+    assert!(c.canary().is_none());
+    let peers: std::collections::BTreeSet<String> = ["pod-a".to_owned()].into();
+    let mut blobs = HashMap::new();
+    blobs.insert("h".repeat(64), BlobSource::Bytes(Bytes::from_static(b"x")));
+    assert!(c.publish_canary_as(epoch, signed("canary"), peers, blobs));
+    let json = |s: Option<Arc<Signed>>| String::from_utf8(s.unwrap().json.clone()).unwrap();
+    assert_eq!(json(c.head_for(Some("pod-a"))), "canary");
+    assert_eq!(json(c.head_for(Some("pi"))), "stable", "a non-canary peer");
+    assert_eq!(json(c.head_for(None)), "stable", "an unknown peer");
+    assert_eq!(json(c.published()), "stable");
+    assert!(
+        c.served.lock().unwrap().contains_key(&"h".repeat(64)),
+        "canary blobs served"
+    );
+    // Promotion (or a pin) publishes a new stable head: the canary head ends.
+    assert!(c.publish_as(epoch, signed("next"), HashMap::new()));
+    assert!(c.canary().is_none());
+    assert_eq!(json(c.head_for(Some("pod-a"))), "next");
+    c.set_role(Role::Replica, epoch + 1).unwrap();
+    assert!(!c.publish_canary_as(
+        epoch,
+        signed("late"),
+        ["pod-a".into()].into(),
+        HashMap::new()
+    ));
+}
+
 // REQ: CLU-009 — a resolver pod shutting down leaves at once (no "down" member until it
 // expires); a member that isn't ephemeral can't be removed that way. A pod that dies without
 // leaving still expires as before (see the test above).
@@ -1047,4 +1094,21 @@ fn clu_001_a_plain_join_token_brings_a_plain_member() {
     let mut plain_member = asks_eligible(primary.identity.create_token(60, None).unwrap().secret);
     plain_member.eligible = false;
     assert!(primary.identity.accept_join(&plain_member, None).is_ok());
+}
+
+// REQ: CLU-013 — a node running a canary version counts as at the stable version it would
+// replace, so the nodes waiting out the bake aren't behind; without a canary version it's at
+// its applied version.
+#[test]
+fn clu_013_lag_counts_stable_versions_only() {
+    assert_eq!(stable_seq(8, 7), 7, "a canary of 7 running 8");
+    assert_eq!(stable_seq(8, 0), 8);
+    // Plain replicas at 7, a canary and the primary at 8 (of 7): nobody is behind.
+    let newest = [stable_seq(7, 0), stable_seq(8, 7), stable_seq(8, 7)]
+        .into_iter()
+        .max()
+        .unwrap();
+    assert_eq!(newest, 7);
+    // A replica still at 6 is.
+    assert!(stable_seq(6, 0) < newest);
 }

@@ -155,6 +155,40 @@ tests:
             exp_annotations:
               summary: "The certificate of tls://127.0.0.1:853 on pi expires in under 14 days; DoT/DoH/DoQ clients stop connecting when it does."
 
+  # REQ: CLU-013 (T13.2) — a failed rollout alerts once (for 15 minutes after the failure); a
+  # pin alerts after an hour and stops when unpinned.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_cluster_rollouts_total{job="telltale-metrics",instance="ctl",outcome="failed"}'
+        values: "0x10 1x60"
+      - series: 'telltale_cluster_pinned{job="telltale-metrics",instance="ctl"}'
+        values: "0x10 1x80 0x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TelltaleDNSRolloutFailed
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TelltaleDNSRolloutFailed
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: ctl, outcome: failed }
+            exp_annotations:
+              summary: "A staged rollout failed its guard (ctl): the cluster is pinned to the version before it. The Cluster page shows the reason; unpin once the change is fixed."
+      - eval_time: 40m
+        alertname: TelltaleDNSRolloutFailed
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: TelltaleDNSClusterPinned
+        exp_alerts: []
+      - eval_time: 75m
+        alertname: TelltaleDNSClusterPinned
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: ctl }
+            exp_annotations:
+              summary: "The cluster has been pinned to an older version for over an hour, so configuration changes wait. The Cluster page says why and what the pin holds back."
+      - eval_time: 95m
+        alertname: TelltaleDNSClusterPinned
+        exp_alerts: []
+
   # REQ: OPS-010 (T13.4) — a node in maintenance stays quiet, even once it stops reporting (its
   # last window, until 3600 s, is still open); others alert as usual; when the window ends, it
   # alerts again. The same for a peer the cluster reports down.

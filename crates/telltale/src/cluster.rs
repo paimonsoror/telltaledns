@@ -393,7 +393,9 @@ pub(crate) fn view(
             since.map(|s| now.saturating_sub(s) / 1000),
         )
     };
-    let (my_lag, my_behind) = lag_of(local.applied_seq, c.behind_since());
+    // REQ: CLU-013 — lag counts stable versions (a canary version baking doesn't make the
+    // nodes waiting for it behind).
+    let (my_lag, my_behind) = lag_of(c.own_stable_seq(), c.behind_since());
     let registry = c.identity.reload().registry();
     let flags = |id: &str| {
         registry
@@ -449,7 +451,7 @@ pub(crate) fn view(
     let mut peers = c.members();
     peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
     for p in &peers {
-        let (lag, behind) = lag_of(p.applied_seq, p.behind_since_ms);
+        let (lag, behind) = lag_of(p.stable_seq(), p.behind_since_ms);
         nodes.push(ClusterNode {
             ephemeral: flags(&p.node_id).0,
             witness: flags(&p.node_id).1,
@@ -539,6 +541,7 @@ pub(crate) fn view(
         conflicts: Vec::new(),
         failover: Some(failover),
         source: None,
+        rollout: None,
         host: None,
     }
 }

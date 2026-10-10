@@ -946,6 +946,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cluster/pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unpin the cluster.
+         * @description The primary publishes its current configuration again (through a staged rollout when
+         *     canaries are set) and serves it itself. `?dryRun=true` checks and shows the diff. The reason
+         *     (`X-Telltale-Reason`) goes into the audit log. Admin (agents: `cluster:admin` with human
+         *     approval); audit-logged as `cluster.unpin`.
+         */
+        delete: operations["unpin_cluster"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cluster/promote": {
         parameters: {
             query?: never;
@@ -975,6 +998,152 @@ export interface paths {
          *     (and `totp` with two-factor sign-in on); API tokens don't.
          */
         post: operations["cluster_promote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster/rollout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The staged rollout in progress, the guard's readings, and the pin.
+         * @description `stage` is `none`, `canary` (a version is baking on the canary nodes and the primary;
+         *     everyone else gets it after `bakeSecs` if the guard passes), `waiting` (canaries are set and
+         *     none is online), or `pinned` (every node serves an older version until someone unpins). On
+         *     the primary a pin carries the `diff` it holds back. A replica that can't reach the primary
+         *     answers from the version it applied (`fromPrimary: false`).
+         */
+        get: operations["rollout_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster/rollout-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Staged rollouts' settings (CLU-013).
+         * @description The body has the same fields as `[cluster.rollout]` in `telltale.toml`: `canaries` (node
+         *     IDs, `site:<name>`, or `ephemeral` for the resolver pods; empty = no rollouts), `bake_secs`
+         *     (at least 5), `servfail_pct`, `require_traffic`, `max_bake_secs`, `fail_on_disconnect`, and
+         *     `history` (versions kept for pinning). It replaces the whole section until deleted again,
+         *     on every node. A change to these settings is published at once, never staged itself.
+         *     Admins only (agents: `cluster:admin`).
+         */
+        put: operations["put_rollout_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's rollout settings (CLU-013).
+         * @description Removes what the API or UI stored, so `[cluster.rollout]` in the config files (or the
+         *     default: no rollouts) applies again. 404 when nothing was stored.
+         */
+        delete: operations["delete_rollout_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster/rollout/abort": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abort the version baking.
+         * @description The cluster is pinned to the stable version before it (the primary and the canaries ran the
+         *     change, so they're reverted too), until someone unpins. Admin (agents: `cluster:admin`);
+         *     audit-logged as `rollout.abort`.
+         */
+        post: operations["rollout_abort"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster/rollout/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promote the version baking.
+         * @description Every node gets it now, as a new version with the same content, without waiting for the
+         *     rest of the bake. Admin (agents: `cluster:admin`); audit-logged as `rollout.promote`.
+         */
+        post: operations["rollout_promote"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The versions the primary keeps for pinning back to, newest first.
+         * @description Each with when and what made it, its outcome (`stable`, `canary`, `canary_promoted`,
+         *     `canary_failed`, `superseded`, `aborted`, `pinned_to`), the guard's readings, and whether
+         *     its files are still kept (`pinnable`). `[cluster.rollout] history` says how many (20).
+         */
+        get: operations["cluster_versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cluster/versions/{version}/pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pin the cluster to a kept version ("roll back").
+         * @description The primary publishes a **new** version (versions never go backwards) whose configuration
+         *     and filter snapshot are `version`'s, and serves it itself; every node follows within
+         *     seconds. While pinned, configuration changes answer `409 cluster_pinned` with the diff they
+         *     would publish, the Git source keeps polling but publishes nothing, and health is
+         *     `degraded` (`cluster_pinned`). The configuration files, the UI's entries, and Git are not
+         *     rewritten: the diff says what to change there. `?dryRun=true` checks and shows the diff.
+         *     `If-Match` (a configuration version) refuses with 412 if the configuration changed since.
+         *     Admin (agents: `cluster:admin` with human approval); audit-logged as `cluster.pin`.
+         */
+        post: operations["pin_version"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2939,6 +3108,45 @@ export interface components {
             /** @description `inbound` (it connected to us) or `outbound`. */
             via: string;
         };
+        /** @description REQ: CLU-013 — what pins the cluster. */
+        ClusterPin: {
+            /** @description Who pinned it: a user, `<user> via <node>`, or `the guard`. */
+            by: string;
+            /** @description The same, one sentence per section (`list: changed`). */
+            changes?: string[];
+            /**
+             * @description What the pin holds back: JSON Patch operations from the pinned version's shared
+             *     configuration to the one the primary would publish once unpinned (the primary only).
+             */
+            diff?: Record<string, never>[];
+            reason: string;
+            /** @description RFC 3339. */
+            since: string;
+            /**
+             * @description The version whose content every node serves, `epoch.seq`.
+             * @example 3.124
+             */
+            to: string;
+        };
+        /** @description REQ: CLU-013 — the staged rollout and the pin, as the cluster view shows them. */
+        ClusterRollout: {
+            /** @description When the bake ends (RFC 3339). */
+            bakeEnds?: string | null;
+            /** @description The canary nodes it went to. */
+            canaries?: string[];
+            /**
+             * Format: int64
+             * @description How long canaries have been set with none online (seconds): changes reach every node at
+             *     once meanwhile.
+             */
+            canariesOfflineSeconds?: number | null;
+            lastFailure?: components["schemas"]["RolloutFailure"] | null;
+            pinned?: components["schemas"]["ClusterPin"] | null;
+            /** @description `none`, `canary`, `waiting`, or `pinned` (see `RolloutStatus`). */
+            stage: string;
+            /** @description The version baking, `epoch.seq`. */
+            version?: string | null;
+        };
         /** @description The cluster's configuration from Git (ADR-049): the commit in use and the last check. */
         ClusterSource: {
             author?: string | null;
@@ -2961,6 +3169,46 @@ export interface components {
             /** @description The allowed signer who signed it (with `require_signed`). */
             signedBy?: string | null;
             subject?: string | null;
+        };
+        /** @description REQ: CLU-013 — one kept version. */
+        ClusterVersion: {
+            /** @description What made it: this node's configuration, a Git commit. */
+            by: string;
+            /** @description RFC 3339. */
+            created: string;
+            /** @description Every node runs it (or is getting it) now. */
+            current: boolean;
+            /**
+             * Format: int64
+             * @description The filter snapshot it carries.
+             */
+            filterVersion?: number | null;
+            /**
+             * @description `stable`, `canary`, `canary_promoted`, `canary_failed`, `superseded`, `aborted`, or
+             *     `pinned_to`.
+             * @example canary_promoted
+             */
+            outcome: string;
+            /** @description Its files are all kept, so the cluster can be pinned to it. */
+            pinnable: boolean;
+            /** @description For a pin: the version whose content it serves, and why. */
+            pinnedTo?: string | null;
+            readings?: components["schemas"]["GuardReadings"] | null;
+            reason?: string | null;
+            /**
+             * @description `epoch.seq`.
+             * @example 3.124
+             */
+            version: string;
+        };
+        /** @description REQ: CLU-013 — `GET /api/v1/cluster/versions`: newest first. */
+        ClusterVersions: {
+            /**
+             * Format: int32
+             * @description How many are kept (`[cluster.rollout] history`).
+             */
+            history: number;
+            items: components["schemas"]["ClusterVersion"][];
         };
         /**
          * @description The cluster as this node sees it (REQ: CLU-008): every node with its health, sync, and
@@ -2989,6 +3237,7 @@ export interface components {
             newestConfigSeq: number;
             /** @description This node first, then peers by site and ID. */
             nodes: components["schemas"]["ClusterNode"][];
+            rollout?: components["schemas"]["ClusterRollout"] | null;
             source?: components["schemas"]["ClusterSource"] | null;
             /** @description The node answering this request. */
             thisNode?: string | null;
@@ -2997,7 +3246,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -3368,6 +3617,28 @@ export interface components {
             upstreams?: string | null;
             youtubeRestrict?: string | null;
         };
+        /** @description REQ: CLU-013 — the guard's readings over a bake. */
+        GuardReadings: {
+            /**
+             * Format: double
+             * @description The same share during the bake.
+             */
+            afterPercent?: number | null;
+            /**
+             * Format: int64
+             * @description Answers the canaries (and the primary) gave during the bake (the share is judged from
+             *     50 on).
+             */
+            answers: number;
+            /**
+             * Format: double
+             * @description The canaries' (and the primary's) SERVFAIL share, in percent, over the bake before the
+             *     rollout began.
+             */
+            beforePercent?: number | null;
+            /** @description Why the guard failed the version, when it did. */
+            reason?: string | null;
+        };
         /** @description REQ: OBS-015 (ADR-104) — how TelltaleDNS is doing, in one word, with the reasons. */
         Health: {
             /** @description When it was worked out (RFC 3339). */
@@ -3393,7 +3664,8 @@ export interface components {
             /**
              * @description Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
              *     `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
-             *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`.
+             *     `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
+             *     `rollout_stuck`.
              * @example upstream_down
              */
             code: string;
@@ -4683,6 +4955,15 @@ export interface components {
             /** @description When blocking turns back on (RFC 3339). */
             until: string;
         };
+        /** @description REQ: CLU-013 — `POST /api/v1/cluster/versions/{version}/pin`. */
+        PinRequest: {
+            /**
+             * @description Why, in a few words (1 to 200 characters, one line): shown on the Cluster page, in the
+             *     `cluster_pinned` alert, and in the audit log.
+             * @example the new upstream group breaks banking sites
+             */
+            reason?: string | null;
+        };
         /** @description A planned change (REQ: AGT-007). */
         Plan: {
             body?: Record<string, never> | null;
@@ -4787,6 +5068,11 @@ export interface components {
             code: components["schemas"]["Code"];
             /** @description What went wrong in this request. */
             detail: string;
+            /**
+             * @description REQ: CLU-013 — with `cluster_pinned`: what the pin holds back, as JSON Patch operations
+             *     from the pinned version's shared configuration to the one this node would publish.
+             */
+            diff?: Record<string, never>[] | null;
             /** @description What to do about it. */
             hint?: string | null;
             /**
@@ -4914,6 +5200,100 @@ export interface components {
          * @enum {string}
          */
         Role: "viewer" | "operator" | "admin";
+        /** @description REQ: CLU-013 — what a rollout or pin action did (or, as a dry run, would do). */
+        RolloutAction: {
+            changes?: string[];
+            /**
+             * Format: int64
+             * @description The configuration version the action was checked against (plans send it back in
+             *     `If-Match`).
+             */
+            configVersion: number;
+            /**
+             * @description For a pin: what changes on every node, as JSON Patch from the version served now to
+             *     the pinned one, and one sentence per section.
+             */
+            diff?: Record<string, never>[];
+            /**
+             * @description In one sentence.
+             * @example pinned to version 3.124 (published as 131)
+             */
+            done: string;
+            /** @description A dry run: nothing changed. */
+            dryRun: boolean;
+        };
+        /** @description REQ: CLU-013 — a version the guard failed. */
+        RolloutFailure: {
+            /** @description RFC 3339. */
+            at: string;
+            reason: string;
+            /** @description `epoch.seq`. */
+            version: string;
+        };
+        /** @description REQ: CLU-013 — one node during a rollout. */
+        RolloutNode: {
+            /**
+             * Format: int64
+             * @description The version it applied (its `seq`).
+             */
+            appliedSeq: number;
+            /** @description Whether it's a canary (of the rollout in progress, or under the settings). */
+            canary: boolean;
+            connected: boolean;
+            node: string;
+            ready: boolean;
+            /**
+             * Format: double
+             * @description Its SERVFAIL share now, in percent.
+             */
+            servfailPercent: number;
+            site: string;
+        };
+        /**
+         * @description REQ: CLU-013 — `GET /api/v1/cluster/rollout`: the rollout in progress, the guard, and the
+         *     pin.
+         */
+        RolloutStatus: {
+            bakeEnds?: string | null;
+            /** Format: int32 */
+            bakeSecs: number;
+            /**
+             * @description `[cluster.rollout] canaries`: node IDs, `site:<name>`, or `ephemeral`; empty means
+             *     changes reach every node at once.
+             */
+            canaries: string[];
+            /**
+             * @description Whether the answer comes from the primary (a replica that can't reach it shows what it
+             *     knows from the version it applied).
+             */
+            fromPrimary: boolean;
+            nodes: components["schemas"]["RolloutNode"][];
+            pinned?: components["schemas"]["ClusterPin"] | null;
+            readings?: components["schemas"]["GuardReadings"] | null;
+            /** @description The canary nodes the version went to. */
+            rolloutCanaries?: string[];
+            /** Format: int64 */
+            secondsLeft?: number | null;
+            /** @description Why the last change went to every node at once although canaries are set. */
+            skipped?: string | null;
+            /**
+             * @description The version every node runs (or is getting), `epoch.seq`.
+             * @example 3.124
+             */
+            stable: string;
+            /**
+             * @description `none`, `canary` (a version is baking), `waiting` (canaries are set and none is online:
+             *     the change goes to every node after a minute), or `pinned`.
+             * @example canary
+             */
+            stage: string;
+            /** @description When the bake began and ends (RFC 3339), and the seconds left. */
+            started?: string | null;
+            /** @description The version baking, `epoch.seq`. */
+            version?: string | null;
+            /** @description Since when a change has waited for a canary (RFC 3339). */
+            waitingSince?: string | null;
+        };
         /** @description A quick rule (files and API), with how long it has left. */
         RuleInfo: {
             /** @description `allow` or `block`. */
@@ -7161,6 +7541,67 @@ export interface operations {
             };
         };
     };
+    unpin_cluster: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RolloutAction"];
+                };
+            };
+            /** @description The cluster isn't pinned (`conflict`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since `If-Match` (`version_conflict`). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The primary is unreachable (`unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     cluster_promote: {
         parameters: {
             query?: {
@@ -7224,6 +7665,323 @@ export interface operations {
             };
             /** @description Too many wrong passwords: wait for Retry-After seconds. */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rollout_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RolloutStatus"];
+                };
+            };
+            /** @description Not in a cluster (`unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_rollout_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A bound is out of range or a canary isn't a node ID, `site:<name>`, or `ephemeral`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_rollout_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rollout_abort: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RolloutAction"];
+                };
+            };
+            /** @description No version is baking (`no_rollout`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The primary is unreachable (`unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    rollout_promote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RolloutAction"];
+                };
+            };
+            /** @description No version is baking (`no_rollout`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The primary is unreachable (`unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cluster_versions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterVersions"];
+                };
+            };
+            /** @description Not in a cluster, or the primary is unreachable (`unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    pin_version: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description `<epoch>.<seq>` from GET /api/v1/cluster/versions. */
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PinRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RolloutAction"];
+                };
+            };
+            /** @description No kept version by that number (`version_unknown`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Its files are no longer kept (`version_blobs_missing`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since `If-Match` (`version_conflict`). */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No usable reason (`maintenance_invalid`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The primary is unreachable (`unavailable`). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

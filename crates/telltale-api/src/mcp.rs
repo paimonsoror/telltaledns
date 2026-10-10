@@ -432,6 +432,18 @@ pub fn tools() -> Vec<Tool> {
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("cluster".into(), "/api/v1/cluster".into())]),
         },
+        // REQ: CLU-013 (T13.2)
+        Tool {
+            name: "rollout_status",
+            description: "Read-only. Staged rollouts and pins: the stage (none, canary: a new version bakes on the canary nodes and the primary before everyone else gets it, waiting: no canary online, or pinned), the version baking and the time left, the canaries and what version each node runs, the guard's readings (SERVFAIL share before and during the bake, answers), whether the cluster is pinned (to which version, since when, by whom, why, and what the pin holds back), and the kept versions with what made each and its outcome. Pin or unpin with plan_pin_version and plan_unpin.",
+            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            calls: |_| {
+                Ok(vec![
+                    ("rollout".into(), "/api/v1/cluster/rollout".into()),
+                    ("versions".into(), "/api/v1/cluster/versions".into()),
+                ])
+            },
+        },
         Tool {
             name: "get_config",
             description: "Read-only. One section of the running configuration, as the API shows it (no secrets): groups, lists, devices (clients), upstreams, local names (records), authoritative zones (zones), or forwarded domains (forwards). Also returns system information.",
@@ -1036,6 +1048,59 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: CLU-013 (T13.2) — pins change what every node serves: plans that need a person's
+        // approval (like cluster promotion, spec/13).
+        WriteTool {
+            name: "plan_pin_version",
+            description: "Plans a change (nothing changes until apply_plan). An operator must approve it first. Pins the cluster to a kept version (\"roll back\"): every node serves that version's configuration and filter snapshot, published as a new version, until someone unpins; configuration changes are refused meanwhile. The preview lists what changes. The files, the UI's entries, and Git aren't rewritten. Only with [agents] require_approval on; needs the cluster:admin scope. Versions come from rollout_status.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "epoch": {"type": "integer", "minimum": 0, "description": "The version's epoch (the part before the dot in rollout_status)."},
+                "seq": {"type": "integer", "minimum": 0, "description": "The version's number (after the dot)."},
+                "reason": reason_schema()
+            }, "required": ["epoch", "seq", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |a| {
+                let epoch = a
+                    .get("epoch")
+                    .and_then(Value::as_u64)
+                    .ok_or("`epoch` is required")?;
+                let seq = a
+                    .get("seq")
+                    .and_then(Value::as_u64)
+                    .ok_or("`seq` is required")?;
+                let why = need(a, "reason")?;
+                Ok(Write {
+                    method: "POST",
+                    path: format!("/api/v1/cluster/versions/{epoch}.{seq}/pin"),
+                    summary: format!("Pin the cluster to version {epoch}.{seq}"),
+                    body: Some(json!({ "reason": why })),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "plan_unpin",
+            description: "Plans a change (nothing changes until apply_plan). An operator must approve it first. Unpins the cluster: the primary publishes its current configuration again (through a staged rollout when canaries are set). The preview lists what changes. Only with [agents] require_approval on; needs the cluster:admin scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "reason": reason_schema()
+            }, "required": ["reason"], "additionalProperties": false})
+            },
+            effect: Effect::Plan,
+            destructive: true,
+            write: |_| {
+                Ok(Write {
+                    method: "DELETE",
+                    path: "/api/v1/cluster/pin".into(),
+                    summary: "Unpin the cluster".into(),
+                    body: None,
+                    merge: None,
+                })
+            },
+        },
         WriteTool {
             name: "flush_cache",
             description: "Changes at once (audited, no plan). Removes cached answers: one name (optionally everything under it), or the whole cache; on every node unless `node` names one. The next query is asked upstream again. Blocked answers are never cached. Needs the ops:cache scope.",
@@ -1456,6 +1521,9 @@ const SIMULATE_KINDS: &[&str] = &[
     "update_group",
 ];
 
+/// REQ: CLU-013 — plans that need a person's approval: they change what every node serves.
+const APPROVAL_ONLY: &[&str] = &["plan_pin_version", "plan_unpin"];
+
 /// A plan tool's schema with the `simulate` parameter.
 fn with_simulate(mut schema: Value) -> Value {
     if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
@@ -1503,7 +1571,7 @@ pub fn catalog() -> Value {
         json!({
             "name": t.name,
             "description": t.description,
-            "inputSchema": if t.effect == Effect::Plan { with_simulate(schema) } else { schema },
+            "inputSchema": if t.effect == Effect::Plan && !APPROVAL_ONLY.contains(&t.name) { with_simulate(schema) } else { schema },
             // A plan stores a plan, nothing else; the change is apply_plan's.
             "annotations": match t.effect {
                 Effect::Plan => ann(false, false, false),
@@ -1857,6 +1925,14 @@ impl Mcp {
             return tool_error(format!("{}: {e}", tool.name));
         }
         let why = [("x-telltale-reason", reason.clone())];
+        // REQ: CLU-013 — like cluster promotion, pins are for agents only where a person
+        // approves each plan (spec/13).
+        if APPROVAL_ONLY.contains(&tool.name) && !self.auth.agents().require_approval() {
+            return tool_error(format!(
+                "{}: pins change what every node serves, so agents may plan them only when an operator approves each plan ([agents] require_approval = true); ask an operator to pin or unpin on the Cluster page",
+                tool.name
+            ));
+        }
         if tool.effect == Effect::Immediate {
             let (status, body) = self
                 .send(w.method, &w.path, w.body.as_ref(), auth, client, &why)

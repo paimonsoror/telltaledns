@@ -22,6 +22,7 @@ pub mod mcp;
 pub mod model;
 pub mod plans;
 pub mod problem;
+pub mod rollout_api;
 pub mod simulate_api;
 pub mod slo;
 pub mod time;
@@ -120,6 +121,7 @@ pub trait Backend: Send + Sync + 'static {
             failover: None,
             source: None,
             host: None,
+            rollout: None,
         }
     }
     /// Buckets with start in `[from_s, to_s)`, oldest first.
@@ -448,6 +450,71 @@ pub trait Backend: Send + Sync + 'static {
             ))
         })
     }
+    /// REQ: CLU-013 (T13.2) — the staged rollout in progress, the guard, and the pin (from the
+    /// primary).
+    fn rollout_status(&self) -> BoxFuture<Result<model::RolloutStatus, Problem>> {
+        Box::pin(async { Err(rollout_api::no_cluster()) })
+    }
+    /// REQ: CLU-013 — the versions the primary keeps for pinning back to, newest first.
+    fn cluster_versions(&self) -> BoxFuture<Result<model::ClusterVersions, Problem>> {
+        Box::pin(async { Err(rollout_api::no_cluster()) })
+    }
+    /// REQ: CLU-013 — promote, abort, pin, or unpin, on the primary's publisher.
+    fn rollout_command(&self, w: RolloutWrite) -> BoxFuture<Result<model::RolloutAction, Problem>> {
+        let _ = w;
+        Box::pin(async { Err(rollout_api::no_cluster()) })
+    }
+}
+
+/// REQ: CLU-013 — a rollout or pin command, as the API checked it (and as it crosses the
+/// cluster channel to the primary).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum RolloutWrite {
+    Promote {
+        by: String,
+    },
+    Abort {
+        by: String,
+    },
+    Pin {
+        epoch: u64,
+        seq: u64,
+        reason: String,
+        dry_run: bool,
+        /// `If-Match`: the configuration version the request was made against.
+        expect: Option<u64>,
+        by: String,
+    },
+    Unpin {
+        dry_run: bool,
+        expect: Option<u64>,
+        by: String,
+    },
+}
+
+impl RolloutWrite {
+    /// Whether it only checks.
+    pub fn dry_run(&self) -> bool {
+        matches!(
+            self,
+            Self::Pin { dry_run: true, .. } | Self::Unpin { dry_run: true, .. }
+        )
+    }
+
+    /// The same, made by `who`.
+    #[must_use]
+    pub fn with_by(mut self, who: String) -> Self {
+        match &mut self {
+            Self::Promote { by }
+            | Self::Abort { by }
+            | Self::Pin { by, .. }
+            | Self::Unpin { by, .. } => {
+                *by = who;
+            }
+        }
+        self
+    }
 }
 
 /// REQ: OPS-010 — a maintenance start or end, as the API checked it (and as it crosses the
@@ -509,6 +576,9 @@ pub enum ManagedKind {
     /// REQ: OBS-024 (T13.1) — `[simulate]` (`/simulate-settings/default`): change simulation's
     /// switches and bounds; one entry, like the rate limit.
     Simulate,
+    /// REQ: CLU-013 (T13.2) — `[cluster.rollout]` (`/cluster/rollout-settings/default`): staged
+    /// rollouts' canaries, bake, and guard; one entry, like the rate limit. Admins only.
+    Rollout,
 }
 
 /// A write to a local name or a forwarded domain.
@@ -615,7 +685,7 @@ async fn resource_metadata(State(auth): State<Arc<auth::Auth>>) -> Response {
 }
 
 /// The `/api/v1` routes without MCP.
-#[allow(clippy::needless_pass_by_value)] // shared by every route
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)] // the route table
 fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
     use axum::middleware::{from_fn, from_fn_with_state};
     let data = Router::new()
@@ -657,6 +727,8 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(simulate_api::routes(Arc::clone(&backend)))
         // REQ: OBS-025 — what kind of device each address is.
         .merge(identify_api::routes(Arc::clone(&backend)))
+        // REQ: CLU-013 — the rollout in progress and the kept versions.
+        .merge(rollout_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
     let protected = data
         .merge(auth::routes::self_service(Arc::clone(&auth)))
@@ -684,6 +756,18 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(
             blocking_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
+        )
+        // REQ: CLU-013 — the rollout settings decide what every node serves: admin (agents:
+        // cluster:admin).
+        .merge(
+            config_api::rollout_settings_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
+        )
+        // REQ: CLU-013 — promoting, aborting, pinning, and unpinning change what every node
+        // serves: admin (agents: cluster:admin).
+        .merge(
+            rollout_api::admin_routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_admin)),
         )
         // REQ: OPS-010 — maintenance needs operator (agents: ops:maintenance).
         .merge(
@@ -761,14 +845,14 @@ async fn fallback(
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
         auth::routes::oidc_callback, config_api::put_client, config_api::delete_client,
-        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, simulate_api::simulate, identify_api::identities, identify_api::identity, forwards, rules, anomalies, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
+        local_names, zones, alerts_status, config_api::put_alert_destination, config_api::delete_alert_destination, config_api::put_alert_rule, config_api::delete_alert_rule, config_api::test_alert_destination, config_api::check_upstream, config_api::check_list, config_api::put_schedule, config_api::delete_schedule, config_api::put_ratelimit, config_api::delete_ratelimit, config_api::put_exclusions, config_api::delete_exclusions, config_api::put_simulate_settings, config_api::delete_simulate_settings, config_api::put_rollout_settings, config_api::delete_rollout_settings, rollout_api::rollout_status, rollout_api::cluster_versions, rollout_api::rollout_promote, rollout_api::rollout_abort, rollout_api::pin_version, rollout_api::unpin_cluster, simulate_api::simulate, identify_api::identities, identify_api::identity, forwards, rules, anomalies, anomaly_api::acknowledge, anomaly_api::unacknowledge, new_domains, vqlog_query, dhcp_leases, cache_api::stats, cache_api::lookup, cache_api::entries, cache_api::flush, blocking_api::state, blocking_api::pause, blocking_api::resume, config_entries, config_api::put_upstream, config_api::delete_upstream, config_api::put_upstream_group, config_api::delete_upstream_group, config_api::put_list, config_api::delete_list, config_api::put_group, config_api::delete_group, config_api::put_records, config_api::delete_records, config_api::put_rule, config_api::delete_rule,
         config_api::put_forward, config_api::delete_forward
     ),
     components(schemas(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::DeviceIdentity, model::IdentityEvidence, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::DeviceIdentity, model::IdentityEvidence, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,

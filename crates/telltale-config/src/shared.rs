@@ -35,6 +35,15 @@ pub fn shared_part(cfg: &Config) -> Value {
         if let Some(Value::Array(records)) = m.get_mut("record") {
             records.retain(|r| r.get("node_only") != Some(&Value::Bool(true)));
         }
+        // REQ: CLU-013 — `[cluster.rollout]` is the one part of `[cluster]` the cluster shares
+        // (who the canaries are, for every node to show). Older replicas skip `cluster`.
+        if cfg.cluster.rollout != crate::RolloutConfig::default()
+            && let Ok(r) = serde_json::to_value(&cfg.cluster.rollout)
+        {
+            let mut c = Map::new();
+            c.insert("rollout".into(), r);
+            m.insert("cluster".into(), Value::Object(c));
+        }
         // REQ: CLU-010 — sections left at their defaults aren't sent: a replica one version
         // behind would refuse a section it doesn't know even when nobody uses it. Replicas
         // read a missing section as the default (`with_shared`).
@@ -95,6 +104,16 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
             }
         }
     }
+    // REQ: CLU-013 — the primary's `[cluster.rollout]` (the default when it didn't send one);
+    // the rest of `[cluster]` stays this node's.
+    let rollout = shared
+        .get("cluster")
+        .and_then(|c| c.get("rollout"))
+        .cloned()
+        .or_else(|| serde_json::to_value(crate::RolloutConfig::default()).ok());
+    if let (Some(r), Some(Value::Object(c))) = (rollout, merged.get_mut("cluster")) {
+        c.insert("rollout".into(), r);
+    }
     for (k, v) in shared {
         if NODE_LOCAL.contains(&k.as_str()) {
             continue;
@@ -153,6 +172,50 @@ mod tests {
 
     fn load(toml: &str) -> Config {
         Loader::new().toml_str("t", toml).load().unwrap().config
+    }
+
+    // REQ: CLU-013 — `[cluster.rollout]` travels with the shared part (the rest of `[cluster]`
+    // doesn't); a replica takes the primary's, and the default when the primary sends none.
+    #[test]
+    fn clu_013_rollout_settings_are_shared() {
+        let primary = load(
+            "[cluster]\nsite = \"k8s\"\nlisten = \"0.0.0.0:9443\"\n[cluster.rollout]\ncanaries = [\"ephemeral\"]\nbake_secs = 60\n",
+        );
+        let shared = shared_part(&primary);
+        let c = shared["cluster"].as_object().unwrap();
+        assert_eq!(
+            c.keys().collect::<Vec<_>>(),
+            vec!["rollout"],
+            "only the rollout"
+        );
+        let replica = load("[cluster]\nsite = \"pi\"\n");
+        let merged = with_shared(&replica, &shared).unwrap();
+        assert_eq!(merged.cluster.rollout.canaries.len(), 1);
+        assert_eq!(merged.cluster.rollout.bake_secs, 60);
+        assert_eq!(
+            merged.cluster.site.as_str(),
+            "pi",
+            "the rest stays the node's"
+        );
+        assert_eq!(merged.cluster.listen.as_str(), "0.0.0.0:8443");
+        // Off at the primary: off everywhere; the default isn't sent at all.
+        let none = shared_part(&load(""));
+        assert!(none.get("cluster").is_none());
+        let off = with_shared(&merged, &none).unwrap();
+        assert_eq!(off.cluster.rollout, crate::RolloutConfig::default());
+        // Validation: bounds and canary names.
+        assert!(
+            Loader::new()
+                .toml_str("t", "[cluster.rollout]\nbake_secs = 1\n")
+                .load()
+                .is_err()
+        );
+        assert!(
+            Loader::new()
+                .toml_str("t", "[cluster.rollout]\ncanaries = [\"site:\"]\n")
+                .load()
+                .is_err()
+        );
     }
 
     // REQ: OBS-022, DNS-021, CLU-003 (regression 2026-10-09) — a replica whose own files leave

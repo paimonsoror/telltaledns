@@ -2195,7 +2195,8 @@ pub struct HealthReason {
     pub level: String,
     /// Stable: `upstream_down`, `upstream_group_down`, `not_serving`, `node_down`,
     /// `sync_lag`, `list_failing`, `list_stale`, `rate_limited`, `servfail_rate`, `disk_full`,
-    /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`.
+    /// `slo_burn`, `probe_failing`, `cert_expiring`, `cert_expired`, `cluster_pinned`,
+    /// `rollout_stuck`.
     #[schema(example = "upstream_down")]
     pub code: String,
     /// In words, with the numbers.
@@ -2240,6 +2241,47 @@ pub struct ClusterView {
     pub source: Option<ClusterSource>,
     /// A standalone node's own machine (T6.11); in a cluster, each node carries its own.
     pub host: Option<HostReport>,
+    /// REQ: CLU-013 — the staged rollout and the pin, in brief (`GET /cluster/rollout` has the
+    /// detail).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout: Option<ClusterRollout>,
+}
+
+/// REQ: CLU-013 — the staged rollout and the pin, as the cluster view shows them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterRollout {
+    /// `none`, `canary`, `waiting`, or `pinned` (see `RolloutStatus`).
+    pub stage: String,
+    /// The version baking, `epoch.seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The canary nodes it went to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canaries: Vec<String>,
+    /// When the bake ends (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bake_ends: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<ClusterPin>,
+    /// How long canaries have been set with none online (seconds): changes reach every node at
+    /// once meanwhile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canaries_offline_seconds: Option<u64>,
+    /// The last version the guard failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<RolloutFailure>,
+}
+
+/// REQ: CLU-013 — a version the guard failed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutFailure {
+    /// `epoch.seq`.
+    pub version: String,
+    pub reason: String,
+    /// RFC 3339.
+    pub at: String,
 }
 
 /// REQ: CLU-008 (T6.11) — the machine a node runs on: its latest sample, what looks wrong,
@@ -2505,4 +2547,179 @@ pub struct ClusterCheck {
     pub summary: String,
     /// What to do about it (failing checks only).
     pub fix: Option<String>,
+}
+
+/// REQ: CLU-013 — the guard's readings over a bake.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardReadings {
+    /// The canaries' (and the primary's) SERVFAIL share, in percent, over the bake before the
+    /// rollout began.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_percent: Option<f64>,
+    /// The same share during the bake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_percent: Option<f64>,
+    /// Answers the canaries (and the primary) gave during the bake (the share is judged from
+    /// 50 on).
+    pub answers: u64,
+    /// Why the guard failed the version, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// REQ: CLU-013 — what pins the cluster.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterPin {
+    /// The version whose content every node serves, `epoch.seq`.
+    #[schema(example = "3.124")]
+    pub to: String,
+    /// RFC 3339.
+    pub since: String,
+    /// Who pinned it: a user, `<user> via <node>`, or `the guard`.
+    pub by: String,
+    pub reason: String,
+    /// What the pin holds back: JSON Patch operations from the pinned version's shared
+    /// configuration to the one the primary would publish once unpinned (the primary only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
+    pub diff: Vec<serde_json::Value>,
+    /// The same, one sentence per section (`list: changed`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<String>,
+}
+
+/// REQ: CLU-013 — one node during a rollout.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutNode {
+    pub node: String,
+    pub site: String,
+    /// Whether it's a canary (of the rollout in progress, or under the settings).
+    pub canary: bool,
+    /// The version it applied (its `seq`).
+    pub applied_seq: u64,
+    pub ready: bool,
+    pub connected: bool,
+    /// Its SERVFAIL share now, in percent.
+    pub servfail_percent: f64,
+}
+
+/// REQ: CLU-013 — `GET /api/v1/cluster/rollout`: the rollout in progress, the guard, and the
+/// pin.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutStatus {
+    /// Whether the answer comes from the primary (a replica that can't reach it shows what it
+    /// knows from the version it applied).
+    pub from_primary: bool,
+    /// `[cluster.rollout] canaries`: node IDs, `site:<name>`, or `ephemeral`; empty means
+    /// changes reach every node at once.
+    pub canaries: Vec<String>,
+    pub bake_secs: u32,
+    /// The version every node runs (or is getting), `epoch.seq`.
+    #[schema(example = "3.124")]
+    pub stable: String,
+    /// `none`, `canary` (a version is baking), `waiting` (canaries are set and none is online:
+    /// the change goes to every node after a minute), or `pinned`.
+    #[schema(example = "canary")]
+    pub stage: String,
+    /// The version baking, `epoch.seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// When the bake began and ends (RFC 3339), and the seconds left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bake_ends: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds_left: Option<u64>,
+    /// The canary nodes the version went to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rollout_canaries: Vec<String>,
+    /// The guard's readings so far, or of the last decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readings: Option<GuardReadings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<ClusterPin>,
+    pub nodes: Vec<RolloutNode>,
+    /// Why the last change went to every node at once although canaries are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+    /// Since when a change has waited for a canary (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<String>,
+}
+
+/// REQ: CLU-013 — one kept version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterVersion {
+    /// `epoch.seq`.
+    #[schema(example = "3.124")]
+    pub version: String,
+    /// RFC 3339.
+    pub created: String,
+    /// What made it: this node's configuration, a Git commit.
+    pub by: String,
+    /// `stable`, `canary`, `canary_promoted`, `canary_failed`, `superseded`, `aborted`, or
+    /// `pinned_to`.
+    #[schema(example = "canary_promoted")]
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readings: Option<GuardReadings>,
+    /// For a pin: the version whose content it serves, and why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The filter snapshot it carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_version: Option<u64>,
+    /// Every node runs it (or is getting it) now.
+    pub current: bool,
+    /// Its files are all kept, so the cluster can be pinned to it.
+    pub pinnable: bool,
+}
+
+/// REQ: CLU-013 — `GET /api/v1/cluster/versions`: newest first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterVersions {
+    pub items: Vec<ClusterVersion>,
+    /// How many are kept (`[cluster.rollout] history`).
+    pub history: u32,
+}
+
+/// REQ: CLU-013 — `POST /api/v1/cluster/versions/{version}/pin`.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinRequest {
+    /// Why, in a few words (1 to 200 characters, one line): shown on the Cluster page, in the
+    /// `cluster_pinned` alert, and in the audit log.
+    #[serde(default)]
+    #[schema(example = "the new upstream group breaks banking sites")]
+    pub reason: Option<String>,
+}
+
+/// REQ: CLU-013 — what a rollout or pin action did (or, as a dry run, would do).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RolloutAction {
+    /// In one sentence.
+    #[schema(example = "pinned to version 3.124 (published as 131)")]
+    pub done: String,
+    /// A dry run: nothing changed.
+    pub dry_run: bool,
+    /// For a pin: what changes on every node, as JSON Patch from the version served now to
+    /// the pinned one, and one sentence per section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
+    pub diff: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<String>,
+    /// The configuration version the action was checked against (plans send it back in
+    /// `If-Match`).
+    pub config_version: u64,
 }

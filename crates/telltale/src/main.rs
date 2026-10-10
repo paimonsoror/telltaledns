@@ -42,6 +42,7 @@ mod qlog_cli;
 mod readiness;
 mod replay;
 mod replication;
+mod rollout;
 mod rollups;
 mod routers;
 mod selfupdate;
