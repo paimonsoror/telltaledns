@@ -57,6 +57,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -126,6 +144,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -232,6 +268,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -301,6 +355,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1688,6 +1760,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1767,6 +1857,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1848,7 +1956,7 @@
           {
             "name": "dryRun",
             "in": "query",
-            "description": "Validate and report the change without applying it.",
+            "description": "Check and report without changing anything.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -2001,6 +2109,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2061,6 +2187,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -2207,6 +2351,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2286,6 +2448,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -2381,6 +2561,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2450,6 +2648,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -2580,6 +2796,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -2649,6 +2883,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3289,6 +3541,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3349,6 +3619,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3423,6 +3711,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3503,6 +3809,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3598,6 +3922,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3678,6 +4020,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3750,6 +4110,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3820,6 +4198,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3871,6 +4267,198 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_ServiceInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/simulate": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "What a candidate configuration would have done (OBS-024).",
+        "description": "The body's `config` is a shared configuration as JSON: the sections a cluster replicates,\nas a Git commit's `telltale/shared.toml` becomes (`telltale config simulate` reads the TOML\nand sends this). Node-local sections are ignored: this node's own apply. Each logged query\nover `window` (default `[simulate] default_window`, at most 7 days; newest first, at most\n`[simulate] max_rows` rows and `max_secs` seconds) is decided again under the configuration\nin effect and under the candidate, and the differences are counted: newly blocked, newly\nallowed, a changed route, a changed answer, by name, device, and group. In a cluster every\nnode replays its own log (and the logs shipped to it) and the counts are summed; nodes that\ndidn't answer are in `missingNodes`. Nothing changes and nothing is audited. Needs the\nviewer role (agents: `config:read` and `querylog:read`).",
+        "operationId": "simulate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The differences (or `available: false` and why).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Simulation"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This node is already running a simulation (`simulation_busy`); retry after Retry-After seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The configuration isn't valid, or the window isn't a duration of at most 7 days (`simulation_window`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/simulate-settings/default": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Change simulation's settings (OBS-024).",
+        "description": "The body has the same fields as `[simulate]` in `telltale.toml`: `enabled` (simulations at\nall), `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs`\n(1 to 300), `max_rows` (at least 1,000), and `default_window` (`24h`; at most `7d`). It\nreplaces the whole section until it's deleted again, on every node of a cluster.",
+        "operationId": "put_simulate_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A bound is out of range, or the configuration wouldn't be valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Go back to the config file's simulation settings (OBS-024).",
+        "description": "Removes what the API or UI stored, so `[simulate]` in the config files (or the defaults)\napplies again. 404 when nothing was stored.",
+        "operationId": "delete_simulate_settings",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing was changed through the API: the file's settings are in effect already.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -4425,6 +5013,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -4494,6 +5100,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -4589,6 +5213,24 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -4658,6 +5300,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -6323,6 +6983,17 @@
             "description": "Queries in the current and previous hour from the addresses it matches: how much\nhistory gets the new label (names are resolved when read, so the past is relabelled).",
             "minimum": 0
           },
+          "simulation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Simulation",
+                "description": "REQ: OBS-024 (T13.1) — with `simulate=` on a dry run: what the change would have done\nto the queries in the query log."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "warnings": {
             "type": "array",
             "items": {
@@ -7138,7 +7809,9 @@
           "maintenance_too_long",
           "maintenance_invalid",
           "node_unreachable",
-          "node_unknown"
+          "node_unknown",
+          "simulation_busy",
+          "simulation_window"
         ]
       },
       "ConfigChange": {
@@ -7190,6 +7863,17 @@
             "format": "int64",
             "description": "Queries in the current and previous hour for the name (or names under the domain)\nthat the change affects. A lower bound: counted from the busiest names.",
             "minimum": 0
+          },
+          "simulation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Simulation",
+                "description": "REQ: OBS-024 (T13.1) — with `simulate=` on a dry run: what the change would have done to\nthe queries in the query log. Absent otherwise."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "warnings": {
             "type": "array",
@@ -11944,6 +12628,279 @@
               "$ref": "#/components/schemas/NameCount"
             },
             "description": "The names it would have blocked most (hashed at privacy level 1 and above)."
+          }
+        }
+      },
+      "SimulateRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/simulate`.",
+        "required": [
+          "config"
+        ],
+        "properties": {
+          "config": {
+            "type": "object",
+            "description": "The candidate shared configuration, as JSON: the shape a Git commit's shared TOML\nbecomes (node-local sections are ignored; this node's own apply)."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The end of the window (RFC 3339 or relative, e.g. `-1h`); default now."
+          },
+          "window": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How far back: `30m`, `24h`, `7d` (at most 7 days). Default `[simulate] default_window`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SimulatedClass": {
+        "type": "object",
+        "description": "One kind of difference: how many queries, from how many devices, and the names most\naffected (at most 20, most first).",
+        "required": [
+          "queries",
+          "devices",
+          "topNames"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "topNames": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SimulatedName"
+            }
+          }
+        }
+      },
+      "SimulatedDevice": {
+        "type": "object",
+        "required": [
+          "client",
+          "newlyBlocked",
+          "newlyAllowed",
+          "changedRoute",
+          "changedAnswer"
+        ],
+        "properties": {
+          "changedAnswer": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changedRoute": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "client": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "newlyAllowed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "newlyBlocked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SimulatedGroup": {
+        "type": "object",
+        "required": [
+          "group",
+          "newlyBlocked",
+          "newlyAllowed",
+          "changedRoute",
+          "changedAnswer"
+        ],
+        "properties": {
+          "changedAnswer": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changedRoute": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "group": {
+            "type": "string"
+          },
+          "newlyAllowed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "newlyBlocked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SimulatedName": {
+        "type": "object",
+        "required": [
+          "name",
+          "queries",
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "list": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What decided: the list (or quick rule, schedule) that blocks or had blocked it, the\nroute change, or the new answer."
+          },
+          "name": {
+            "type": "string"
+          },
+          "queries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Simulation": {
+        "type": "object",
+        "description": "REQ: OBS-024 (T13.1, ADR-115) — what a configuration change would have done to the queries\nalready in the query log: each logged query decided again under the current configuration\nand under the candidate, and the differences counted. Decisions only: nothing is asked of\nupstreams, and caching, DNSSEC, rate limits, pauses, and CNAME-target blocks aren't replayed.\nAbout the past: names nobody asked in the window count for nothing.",
+        "required": [
+          "available",
+          "applicable",
+          "rows",
+          "partial",
+          "newlyBlocked",
+          "newlyAllowed",
+          "changedRoute",
+          "changedAnswer",
+          "unchanged",
+          "undetermined",
+          "byDevice",
+          "byGroup",
+          "notes"
+        ],
+        "properties": {
+          "applicable": {
+            "type": "boolean",
+            "description": "False for a change that can't affect a decision (alerts, users, exclusions): nothing\nwas read."
+          },
+          "available": {
+            "type": "boolean",
+            "description": "False when it couldn't run (`reason` says why: `disabled`, `privacy_level`,\n`no_query_log`, `busy`, ...)."
+          },
+          "byDevice": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SimulatedDevice"
+            },
+            "description": "The devices most affected, most first (at most 50)."
+          },
+          "byGroup": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SimulatedGroup"
+            }
+          },
+          "changedAnswer": {
+            "$ref": "#/components/schemas/SimulatedClass",
+            "description": "Answered differently without a block: a local record, a rewrite, no IPv6 addresses, a\nspecial answer (`list` describes the new answer)."
+          },
+          "changedRoute": {
+            "$ref": "#/components/schemas/SimulatedClass",
+            "description": "Forwarded to another upstream group (`list` says from where to where)."
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The window replayed (RFC 3339)."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes whose queries aren't included (they didn't answer)."
+          },
+          "newlyAllowed": {
+            "$ref": "#/components/schemas/SimulatedClass",
+            "description": "Blocked now, allowed under the change (`list` names the list that had blocked it)."
+          },
+          "newlyBlocked": {
+            "$ref": "#/components/schemas/SimulatedClass",
+            "description": "Allowed now, blocked under the change."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Approximations that applied (`badfilter_cross_snapshot`, `identity_from_event`, ...)."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Stopped early (`[simulate] max_rows` or `max_secs`): the counts cover the newest `rows`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Logged queries read (on every node that answered).",
+            "minimum": 0
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "undetermined": {
+            "type": "integer",
+            "format": "int64",
+            "description": "At privacy level 1 (names hashed), queries of devices whose group changes to one with\ndifferent settings: they can't be decided again without the names.",
+            "minimum": 0
           }
         }
       },

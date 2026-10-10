@@ -158,6 +158,7 @@
           <tr><th scope="row"><code>top_items</code></th><td>top domains, blocked names, NXDOMAIN, clients</td></tr>
           <tr><th scope="row"><code>search_queries</code></th><td>the query log, filtered and paged</td></tr>
           <tr><th scope="row"><code>explain_decision</code></th><td>why a name was blocked or routed, for a device</td></tr>
+          <tr><th scope="row"><code>simulate_change</code></th><td>what a change would have done to the logged queries: newly blocked, newly allowed, rerouted, by name and device</td></tr>
           <tr><th scope="row"><code>get_client_profile</code></th><td>a device: identity, groups, recent and slow queries</td></tr>
           <tr><th scope="row"><code>latency_breakdown</code></th><td>percentiles by stage, upstream, client, or type</td></tr>
           <tr><th scope="row"><code>upstream_health</code></th><td>health, circuit breakers, latency per upstream</td></tr>
@@ -185,6 +186,7 @@
           <tr><th scope="row"><code>apply_plan</code>, <code>discard_plan</code>, <code>list_plans</code></th><td>make, drop, or review planned changes</td></tr>
         </tbody>
       </table></div>
+      <p class="muted">Every plan tool takes <code>simulate</code> (<code>"24h"</code>, up to <code>"7d"</code>): the plan then shows what the change would have done to those queries. Plans only simulate when asked, unless an operator turns on simulating by default in Settings; no agent tool can turn that on.</p>
       <h3>Act at once (low risk, audited)</h3>
       <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>, <code>acknowledge_anomalies</code> (marks findings as seen on every node, or takes it back), <code>start_maintenance</code> (up to 2 hours: a node steps out of the load balancer, keeps answering, and its alerts pause) and <code>end_maintenance</code>. And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
       <h3>Resources and prompts</h3>
@@ -211,7 +213,7 @@ from -180d | where status = blocked | bucket 1d | stats count</code></pre>
   <p class="eyebrow">Safe by design</p>
   <h2>Guardrails that are always on</h2>
   <div class="grid">
-    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>, <code>ops:anomalies</code>, <code>ops:maintenance</code>. A token can also be limited to one group of devices.</p></div>
+    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>, <code>ops:anomalies</code>, <code>ops:maintenance</code>. Simulating a change also needs <code>querylog:read</code>. A token can also be limited to one group of devices.</p></div>
     <div class="card"><h3>Preview before change</h3><p>Every change is a plan with before and after, how many recent questions it would affect, and warnings. A plan made against an older configuration goes stale instead of overwriting newer work.</p></div>
     <div class="card"><h3>A person in the loop</h3><p>Turn on <code>[agents] require_approval</code>, and plans wait in the UI's <b>Agent changes</b> inbox. Agents can't approve anything, their own plans included.</p></div>
     <div class="card"><h3>Full audit</h3><p>Changes are recorded as <code>agent:&lt;token&gt; (owner: &lt;you&gt;)</code>, with the MCP client and the reason the agent gave. Every write needs a reason.</p></div>

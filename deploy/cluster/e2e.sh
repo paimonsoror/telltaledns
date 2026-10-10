@@ -14,7 +14,9 @@
 # replica's query log, in ship mode, ends up on the primary and is still searchable; (T13.4,
 # OPS-010): maintenance on the replica, started from the primary, makes it not ready while DNS
 # keeps answering, survives its restart, keeps node_down quiet while it's stopped, and is
-# audited; a timed-out request isn't applied later; the primary in manual mode stays primary.
+# audited; a timed-out request isn't applied later; the primary in manual mode stays primary;
+# (T13.1, OBS-024): a simulation on the replica covers the primary's rows and its copy of the
+# replica's shipped rows, and one on the primary lists the stopped replica as missing.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -345,6 +347,47 @@ done
 [ "${minutes:-0}" -gt 0 ] || fail "the replica's per-minute counts never reached the primary"
 echo "ok ($shipped parts and $minutes minutes received)"
 
+# REQ: OBS-024 (T13.1) — a simulation asked on the replica (ship mode: no log of its own) covers
+# the cluster's logs: the primary replays its own rows and its copy of the replica's.
+echo "== change simulation across the cluster (OBS-024)"
+for _ in 1 2 3; do q 25301 simp.p.test >/dev/null; done
+for _ in $(seq 40); do
+  [ "$(get '/api/v1/queries?name=simp.p.test&match=exact&scope=node:local' | field 'len(d["items"])')" = 3 ] && break
+  sleep 0.5
+done
+{ cat "$E/p.toml"; cat <<EOF
+[[rule]]
+id = "e2e-sim-p"
+action = "block"
+domain = "simp.p.test"
+[[rule]]
+id = "e2e-sim-r"
+action = "block"
+domain = "ship1.r.test"
+EOF
+} > "$E/cand.toml"
+simcheck() { # file expected-missing-nodes(json)
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+assert s["available"] and s["applicable"], s
+names = {n["name"]: n for n in s["newlyBlocked"]["topNames"]}
+assert names.get("simp.p.test", {}).get("queries") == 3, names
+assert names["simp.p.test"]["list"] == "quick rule: simp.p.test", names
+assert names.get("ship1.r.test", {}).get("queries") == 1, names
+assert s.get("missingNodes", []) == json.loads(sys.argv[2]), s.get("missingNodes")
+PY
+}
+TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" --json > "$E/sim.json" \
+  || fail "telltale config simulate on the replica failed: $(cat "$E/sim.json")"
+simcheck "$E/sim.json" '[]' || fail "the replica's simulation: $(cat "$E/sim.json")"
+TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$RAPI" > "$E/sim.txt" \
+  && grep -q 'newly blocked' "$E/sim.txt" && grep -q 'simp.p.test' "$E/sim.txt" \
+  || fail "the text output lacks the counts: $(cat "$E/sim.txt")"
+curl -s http://127.0.0.1:29001/metrics | grep -q '^telltale_simulations_total{outcome="ok"} [1-9]' \
+  || fail "the primary didn't count its part of the simulation"
+echo "ok ($(python3 -c "import json; s=json.load(open('$E/sim.json')); print(s['rows'], 'rows,', s['newlyBlocked']['queries'], 'newly blocked')"))"
+
 # REQ: OPS-010 (T13.4) — maintenance is the node's own state: asked on the primary, done on the
 # replica. Not ready at once, DNS answered throughout (enter, 30 s, exit), audited there.
 echo "== maintenance on the replica, started from the primary (OPS-010)"
@@ -413,6 +456,10 @@ assert not [x for x in h["reasons"] if x.get("node") == "r"], h["reasons"]
 assert h["level"] == sys.argv[2], (h["level"], sys.argv[2])
 assert "r" not in h.get("missingNodes", []), h.get("missingNodes")
 PY
+# REQ: OBS-024 — a simulation meanwhile covers what the primary holds and names the stopped node.
+TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$API" --json > "$E/sim2.json" \
+  || fail "the primary's simulation with the replica stopped failed: $(cat "$E/sim2.json")"
+simcheck "$E/sim2.json" '["r"]' || fail "the primary's simulation with the replica stopped: $(cat "$E/sim2.json")"
 kill -CONT "$R_PID"
 # Reconnecting can wait out a dial backoff (up to 30 s).
 for _ in $(seq 120); do [ "$(inmaint)" = True ] && break; sleep 0.5; done

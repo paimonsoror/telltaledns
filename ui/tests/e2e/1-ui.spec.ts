@@ -1393,6 +1393,49 @@ test('obs_022 exclusions from Settings', async () => {
   await expect(row).toContainText('config file');
 });
 
+// REQ: OBS-024 (T13.1) — "What would this have done?" on a quick block rule counts the queries
+// this test makes (nothing is saved); Settings → System → Change simulation turns
+// plans_by_default on, and it's reverted to the file.
+test('obs_024 simulate a quick rule, and the simulation settings', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  for (let i = 0; i < 7; i++) expect(await query('sim.cache.e2e.test')).toBe(0);
+  const logged = async () =>
+    ((await (await page.request.get('/api/v1/queries?name=sim.cache.e2e.test&match=exact&from=-10m')).json()).items as unknown[])
+      .length;
+  await expect.poll(logged, { timeout: 20_000 }).toBe(7);
+  await page.goto('/#/rules');
+  const form = page.getByTestId('quick-rule-form');
+  await form.getByRole('button', { name: 'Block' }).click();
+  await form.getByRole('textbox', { name: 'Domain' }).fill('sim.cache.e2e.test');
+  await form.getByRole('combobox', { name: 'Applies to' }).selectOption('everyone');
+  await form.getByTestId('simulate-button').click();
+  const card = form.getByTestId('simulation-card');
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByTestId('sim-newlyBlocked').locator('.num')).toHaveText('7');
+  await expect(card.getByTestId('sim-newlyAllowed').locator('.num')).toHaveText('0');
+  await expect(card).toContainText('sim.cache.e2e.test');
+  await expect(card).toContainText('quick rule: sim.cache.e2e.test');
+  // Only a preview: DNS still answers it.
+  expect(await query('sim.cache.e2e.test')).toBe(0);
+
+  await page.goto('/#/settings?tab=system');
+  const editor = page.getByTestId('editor-simulate');
+  const row = editor.getByTestId('entry-row');
+  await expect(row).toContainText('simulate when asked');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  const box = page.getByRole('checkbox', { name: "Agents' plans simulate by default" });
+  await box.check();
+  await expect(box).toBeChecked();
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
+  await expect(page.getByTestId('entry-preview')).toContainText('next simulation');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(row).toContainText('always simulate');
+  await expect(row).toContainText('overrides the file');
+  await row.getByRole('button', { name: 'Revert to the file' }).click();
+  await expect(row).toContainText('simulate when asked');
+  await expect(row).toContainText('config file');
+});
+
 // REQ: OBS-018 — a list in shadow mode never blocks: its name is answered (by the stub
 // upstream) and counted under "Would have blocked"; the list carries a shadow badge.
 // Last, because it caches a name (the cache test counts what's cached).

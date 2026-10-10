@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use telltale_api::auth::Actor;
 use telltale_api::model::{ClientChange, ClientInput, ConfigChange};
 use telltale_api::problem::{Code, Problem};
-use telltale_api::{AnomalyAckWrite, ClientWrite, ManagedKind, ManagedWrite, Shared};
+use telltale_api::{AnomalyAckWrite, ClientWrite, ManagedKind, ManagedWrite, Shared, SimulateOpts};
 use telltale_cluster::net::Cluster;
 
 use crate::http::Sources;
@@ -23,6 +23,9 @@ use crate::http::Sources;
 pub(crate) const KIND: &str = "api.write";
 /// Writes validate, store, and apply on the primary before answering.
 const DEADLINE: Duration = Duration::from_secs(10);
+/// REQ: OBS-024 — a dry run with `simulate` also replays the cluster's logs: at most
+/// `[simulate] max_secs` (300 s at most), plus the peers' list downloads.
+const SIMULATE_DEADLINE: Duration = Duration::from_secs(10 + 300 + 30);
 
 /// A configuration write, as sent to the primary.
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,6 +38,9 @@ pub(crate) enum Write {
         dry_run: bool,
         expect: Option<u64>,
         by: String,
+        /// REQ: OBS-024 — absent from older nodes (N−1): no simulation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        simulate: Option<SimulateOpts>,
     },
     Client {
         name: String,
@@ -42,6 +48,8 @@ pub(crate) enum Write {
         dry_run: bool,
         expect: Option<u64>,
         by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        simulate: Option<SimulateOpts>,
     },
     /// REQ: OBS-014 (ADR-103) — acknowledging anomalies (not configuration, so a Git-managed cluster takes it too).
     AnomalyAck(AnomalyAckWrite),
@@ -56,6 +64,7 @@ impl From<ManagedWrite> for Write {
             dry_run: w.dry_run,
             expect: w.expect,
             by: w.by,
+            simulate: w.simulate,
         }
     }
 }
@@ -68,6 +77,7 @@ impl From<ClientWrite> for Write {
             dry_run: w.dry_run,
             expect: w.expect,
             by: w.by,
+            simulate: w.simulate,
         }
     }
 }
@@ -145,6 +155,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             dry_run,
             expect,
             by,
+            simulate,
         } => {
             let action = match kind {
                 ManagedKind::Record => "record",
@@ -159,6 +170,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                 ManagedKind::Schedule => "schedule",
                 ManagedKind::RateLimit => "ratelimit",
                 ManagedKind::Exclusions => "exclusions",
+                ManagedKind::Simulate => "simulate",
             };
             let deleting = body.is_none();
             let r = local
@@ -169,6 +181,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                     dry_run,
                     expect,
                     by: format!("{by} via {via}"),
+                    simulate,
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
@@ -180,6 +193,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
             dry_run,
             expect,
             by,
+            simulate,
         } => {
             let deleting = input.is_none();
             let r = local
@@ -189,6 +203,7 @@ async fn apply(src: &Sources, local: &Shared, cluster: &Cluster, peer: &str, w: 
                     dry_run,
                     expect,
                     by: format!("{by} via {via}"),
+                    simulate,
                 })
                 .await
                 .map(|c| serde_json::to_value(c).unwrap_or_default());
@@ -300,9 +315,18 @@ async fn send<T: serde::de::DeserializeOwned>(
         )
         .hint("retry when the primary is back, or make the change on the primary; DNS keeps working meanwhile"));
     };
+    let deadline = match &w {
+        Write::Managed {
+            simulate: Some(_), ..
+        }
+        | Write::Client {
+            simulate: Some(_), ..
+        } => SIMULATE_DEADLINE,
+        _ => DEADLINE,
+    };
     let body = serde_json::to_vec(&w).map_err(|e| Problem::internal(e.to_string()))?;
     let reply = cluster
-        .call(&primary, KIND, body, DEADLINE)
+        .call(&primary, KIND, body, deadline)
         .await
         .map_err(|e| {
             Problem::unavailable(format!("the primary didn't take the change: {e}"))
@@ -388,11 +412,20 @@ mod tests {
             dry_run: true,
             expect: Some(7),
             by: "alice".into(),
+            simulate: Some(SimulateOpts {
+                window: Some("24h".into()),
+                auto: false,
+                until_s: None,
+            }),
         }
         .into();
         let back: Write = serde_json::from_slice(&serde_json::to_vec(&w).unwrap()).unwrap();
         let Write::Managed {
-            kind, expect, by, ..
+            kind,
+            expect,
+            by,
+            simulate,
+            ..
         } = back
         else {
             panic!("expected managed")
@@ -401,5 +434,12 @@ mod tests {
             (kind, expect, by.as_str()),
             (ManagedKind::Forward, Some(7), "alice")
         );
+        assert_eq!(simulate.and_then(|s| s.window).as_deref(), Some("24h"));
+        // REQ: OBS-024 — a write from an older node (no `simulate`) still reads.
+        let old = br#"{"write":"managed","kind":"forward","name":"x","body":null,"dry_run":true,"expect":null,"by":"bob"}"#;
+        let Write::Managed { simulate, .. } = serde_json::from_slice(old).unwrap() else {
+            panic!("expected managed")
+        };
+        assert!(simulate.is_none());
     }
 }

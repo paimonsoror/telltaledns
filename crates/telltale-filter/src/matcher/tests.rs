@@ -425,3 +425,153 @@ fn flt_013_matches_lists_every_rule_in_precedence_order() {
         }
     }
 }
+
+/// Compiles `lists` and returns a matcher with the given lookup.
+fn matcher_lookup(lists: Vec<ListInput>, lookup: Lookup) -> Matcher {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("snap");
+    compile(lists, &out, &CompileOptions::default()).unwrap();
+    let snap = Arc::new(Snapshot::open(&out).unwrap());
+    Matcher::with_lookup(Some(snap), lookup).unwrap()
+}
+
+/// A decision as list name, tier, and kind of rule (indices into a snapshot's rule tables
+/// differ between compiles; what decided doesn't).
+fn verdict(m: &[(&Matcher, u16)], d: Decision) -> String {
+    let (kind, a) = match d {
+        Decision::None => return "none".into(),
+        Decision::Allow(a) => ("allow", a),
+        Decision::Block(a) => ("block", a),
+    };
+    // `a.list` is in the combined ID space: find which matcher it came from.
+    let mut name = format!("#{}", a.list);
+    for (mm, offset) in m {
+        let n = mm.snapshot().map_or(0, |s| s.manifest.lists.len());
+        if let Some(local) = a.list.checked_sub(*offset)
+            && usize::from(local) < n
+        {
+            name = mm
+                .snapshot()
+                .and_then(|s| s.list_name(local))
+                .unwrap_or("?")
+                .to_owned();
+        }
+    }
+    let rule = match a.rule {
+        RuleRef::Domain { scope, labels } => format!("{scope:?}/{labels}"),
+        RuleRef::ModRule { .. } => "mod".into(),
+        RuleRef::Regex { .. } => "regex".into(),
+    };
+    format!("{kind} {name} {:?} {rule}", a.tier)
+}
+
+// REQ: OBS-024 (T13.1, ADR-115) — merging the serving snapshot (lists A) with a side snapshot
+// holding only list B decides exactly as one compile of A then B, for 10,000 names × 3 clients
+// with different lists, A and AAAA, in both lookup modes (no `$badfilter`).
+#[test]
+#[allow(clippy::too_many_lines)] // the lists, the corpus, and the comparison, in one place
+fn obs_024_merged_decisions_equal_a_full_compile() {
+    let a1 = "||ads.example^\n|exact.example^\n||track.example^$important\n/^ad[0-9]+\\./\n\
+              ||m.example^$client=192.168.1.21\n||six.example^$dnstype=AAAA\n||shared.example^\n";
+    let a2 = "@@||ok.ads.example^\n@@||vip.example^$important\n||both.example^\n";
+    let a3 = "||deep.a.b.example^\n||shared.example^\n@@||m.example^\n";
+    let b = "||new.example^\n||ok.ads.example^$important\n@@||shared.example^\n||both.example^\n\
+             /^tr[a-z]+\\./\n||exact.example^\n||b.m.example^$client=192.168.1.22\n";
+    let lists = |with_b: bool, only_b: bool| {
+        let mut v = Vec::new();
+        if !only_b {
+            v.push(input("a1", ListKind::Block, a1));
+            v.push(input("a2", ListKind::Allow, a2));
+            v.push(input("a3", ListKind::Block, a3));
+        }
+        if with_b {
+            v.push(input("b", ListKind::Block, b));
+        }
+        v
+    };
+    let bases = [
+        "ads.example",
+        "exact.example",
+        "track.example",
+        "m.example",
+        "six.example",
+        "shared.example",
+        "ok.ads.example",
+        "vip.example",
+        "both.example",
+        "a.b.example",
+        "deep.a.b.example",
+        "new.example",
+        "b.m.example",
+        "other.test",
+    ];
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut rnd = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let mut names = Vec::with_capacity(10_000);
+    for _ in 0..10_000 {
+        let base = bases[usize::try_from(rnd(bases.len() as u64)).unwrap()];
+        let mut name = base.to_owned();
+        for _ in 0..rnd(4) {
+            let label = match rnd(5) {
+                0 => format!("ad{}", rnd(30)),
+                1 => format!("tr{}", ["x", "ack", "y"][usize::try_from(rnd(3)).unwrap()]),
+                2 => "www".to_owned(),
+                _ => format!("h{}", rnd(1000)),
+            };
+            name = format!("{label}.{name}");
+        }
+        names.push(name);
+    }
+    // Clients: everything; a1 and b; a2, a3, and b (IDs in the full compile: a1 0, a2 1,
+    // a3 2, b 3).
+    let client_lists: [&[u16]; 3] = [&[0, 1, 2, 3], &[0, 3], &[1, 2, 3]];
+    let ips = [20u8, 21, 22];
+    for lookup in [Lookup::Walk, Lookup::Indexed] {
+        let full = matcher_lookup(lists(true, false), lookup);
+        let serving = matcher_lookup(lists(false, false), lookup);
+        let side = matcher_lookup(lists(true, true), lookup);
+        let mut scratch = Scratch::default();
+        let mut compared = 0;
+        for (ci, ids) in client_lists.iter().enumerate() {
+            let client = ClientCtx {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, ips[ci])),
+                name: None,
+                client_id: None,
+            };
+            let mut full_mask = ListMask::default();
+            let mut serving_mask = ListMask::default();
+            let mut side_mask = ListMask::default();
+            for &id in *ids {
+                full_mask.set(id);
+                if id < 3 {
+                    serving_mask.set(id);
+                } else {
+                    side_mask.set(0);
+                }
+            }
+            for (i, name) in names.iter().enumerate() {
+                let qtype = if i % 3 == 0 { rtype::AAAA } else { rtype::A };
+                let w = wire(name);
+                let want = full.decide(&w, qtype, &client, &full_mask, &mut scratch);
+                let mut got =
+                    serving.decide_ranked(&w, qtype, &client, &serving_mask, &mut scratch);
+                let mut extra = side.decide_ranked(&w, qtype, &client, &side_mask, &mut scratch);
+                extra.remap(|id| Some(id + 3));
+                got.merge(&extra);
+                let parts = [(&serving, 0u16), (&side, 3u16)];
+                assert_eq!(
+                    verdict(&parts, got.decision()),
+                    verdict(&[(&full, 0)], want),
+                    "{lookup:?}, client {ci}, {name} type {qtype}"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 30_000);
+    }
+}

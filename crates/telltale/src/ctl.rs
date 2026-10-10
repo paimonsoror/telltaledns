@@ -76,6 +76,18 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         subtree: bool,
     },
+    /// REQ: OBS-024 — what a shared configuration (a TOML file, as a Git commit would hold)
+    /// would have done to the logged queries, compared with the one in effect. Changes nothing.
+    Simulate {
+        /// The candidate configuration (shared sections; node-local ones are ignored).
+        file: std::path::PathBuf,
+        /// How far back: 30m, 24h, 7d (default: `[simulate] default_window`).
+        #[arg(long)]
+        window: Option<String>,
+        /// Where the window ends (RFC 3339 or relative, e.g. -1h; default now).
+        #[arg(long)]
+        until: Option<String>,
+    },
     /// Why a name is or isn't blocked for a device.
     Explain {
         name: String,
@@ -409,6 +421,23 @@ pub(crate) async fn run(
             (api.call(http::Method::PUT, &path, Some(&body)).await?, None)
         }
         CtlCommand::Delete { path } => (api.call(http::Method::DELETE, &path, None).await?, None),
+        CtlCommand::Simulate {
+            file,
+            window,
+            until,
+        } => {
+            let text =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let config: Value = toml::from_str::<toml::Value>(&text)
+                .map_err(|e| format!("{}: {e}", file.display()))
+                .and_then(|t| serde_json::to_value(t).map_err(|e| e.to_string()))?;
+            let body = json!({"config": config, "window": window, "until": until});
+            (
+                api.call(http::Method::POST, "simulate", Some(&body))
+                    .await?,
+                Some(Box::new(simulation_text) as Box<dyn Fn(&Value) -> String>),
+            )
+        }
         CtlCommand::Status => {
             let info = api.get("system/info").await?;
             let sum = api.get("stats/summary?from=-24h").await?;
@@ -719,6 +748,72 @@ pub(crate) async fn run(
 }
 
 type Rendered = (Value, Option<Box<dyn Fn(&Value) -> String>>);
+
+/// REQ: OBS-024 — a simulation as text: the counts, then the top names of each kind.
+fn simulation_text(v: &Value) -> String {
+    let mut out = String::new();
+    if v["available"] == Value::Bool(false) {
+        let _ = writeln!(out, "not simulated: {}", s(v, "reason"));
+        return out;
+    }
+    if v["applicable"] == Value::Bool(false) {
+        out.push_str("nothing to simulate: the change can't affect how queries are answered\n");
+        return out;
+    }
+    let _ = writeln!(
+        out,
+        "{} logged queries from {} to {}{}",
+        s(v, "rows"),
+        s(v, "from"),
+        s(v, "to"),
+        if v["partial"] == Value::Bool(true) {
+            " (partial: the row or time bound was reached)"
+        } else {
+            ""
+        }
+    );
+    let classes = [
+        ("newlyBlocked", "newly blocked"),
+        ("newlyAllowed", "newly allowed"),
+        ("changedRoute", "changed route"),
+        ("changedAnswer", "changed answer"),
+    ];
+    let rows: Vec<Vec<String>> = classes
+        .iter()
+        .map(|(k, label)| {
+            vec![
+                (*label).to_owned(),
+                s(&v[*k], "queries"),
+                s(&v[*k], "devices"),
+            ]
+        })
+        .chain([vec![
+            "unchanged".to_owned(),
+            s(v, "unchanged"),
+            String::new(),
+        ]])
+        .collect();
+    out.push_str(&table(&["", "QUERIES", "DEVICES"], &rows));
+    for (k, label) in classes {
+        let names = v[k]["topNames"].as_array().map_or(&[][..], Vec::as_slice);
+        if names.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "\n{label}:");
+        let rows: Vec<Vec<String>> = names
+            .iter()
+            .map(|n| vec![s(n, "name"), s(n, "queries"), s(n, "devices"), s(n, "list")])
+            .collect();
+        out.push_str(&table(&["NAME", "QUERIES", "DEVICES", "BY"], &rows));
+    }
+    for k in ["notes", "missingNodes"] {
+        let t = s(v, k);
+        if !t.is_empty() {
+            let _ = writeln!(out, "\n{k}: {t}");
+        }
+    }
+    out
+}
 
 fn rule_done(v: &Value) -> String {
     if v.get("dryRun").and_then(Value::as_bool) == Some(true) {

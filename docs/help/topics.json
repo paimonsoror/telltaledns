@@ -527,6 +527,16 @@
       "docs": "taking-a-node-down-for-maintenance"
     },
     {
+      "id": "simulate",
+      "title": "What would this have done?",
+      "term": "Change simulation",
+      "summary": "Before you save a change, replay the query log with it: every query logged in the last day (or the window you pick) is decided again with and without the change, and only the differences are shown. Newly blocked, newly allowed, a different upstream group, or a different answer (a local record, a rewrite, no IPv6 addresses), with the names, the list or rule that decided, the devices, and the groups. In a cluster every node replays its own log and the counts are added up.",
+      "when": "Before blocking a domain for the kids, adding a big list, or moving a device to another group: see whether it would have hit something you need, using yesterday's real traffic instead of a guess.",
+      "example": "Block tiktok.com for the kids group, then \"What would this have done?\": 412 queries newly blocked from 2 devices, most of them to tiktokcdn.com, decided by the quick rule. Nothing else changes.",
+      "caution": "It's about the past and about decisions only: it can't count names nobody asked, and it doesn't predict latency, the cache, or what an upstream would answer. It takes seconds (longer on a Pi) and runs one at a time per node, at background priority; past its time or row limit the answer says partial. At query-log privacy level 1 names are hashed, so only device moves between groups with the same lists can be checked; at 2 and above nothing can. Pauses of blocking aren't replayed.",
+      "docs": "trying-a-change-against-yesterdays-traffic"
+    },
+    {
       "id": "slo",
       "title": "Service level",
       "term": "Service-level objectives (SLOs) and error budgets",

@@ -26,7 +26,7 @@ use telltale_upstream::health::Breaker;
 use crate::http::Sources;
 
 /// The current name of the device at `ip` (v4-mapped), by today's client table.
-fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
+pub(crate) fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
     let v6 = std::net::Ipv6Addr::from(ip);
     let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
     let state = src.pipeline.current();
@@ -1523,6 +1523,41 @@ impl Backend for ApiBackend {
         Box::pin(async move { crate::checks::list(&cfg, body).await })
     }
 
+    // REQ: OBS-024 (T13.1) — a candidate shared configuration against the one in effect, over
+    // the cluster's logs (this node fans out itself: `simulate::simulate`).
+    fn simulate(
+        &self,
+        config: serde_json::Value,
+        opts: telltale_api::SimulateOpts,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::Simulation, Problem>> {
+        let src = Arc::clone(&self.src);
+        let mut config = config;
+        if let Some(o) = config.as_object_mut() {
+            for k in telltale_config::shared::NODE_LOCAL {
+                o.remove(*k);
+            }
+        }
+        Box::pin(async move {
+            let current = src.config.load_full();
+            let candidate = telltale_config::shared::with_shared(&src.file_config.load(), &config)
+                .map_err(|errs| {
+                    Problem::new(
+                        Code::InvalidConfig,
+                        errs.iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
+                    .hint(
+                        "Send the shared sections as JSON, as a Git commit's shared TOML becomes.",
+                    )
+                })?;
+            crate::simulate::simulate(&src, current, Arc::new(candidate), &opts)
+                .await
+                .map(Option::unwrap_or_default)
+        })
+    }
+
     // REQ: OBS-010 (T9.5) — devices this node's anomaly engine met for the first time.
     fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
         let Some(a) = &self.src.anomalies else {
@@ -1865,6 +1900,20 @@ impl Backend for ApiBackend {
                 definition: serde_json::to_value(&cfg.exclusions).ok(),
             });
         }
+        // REQ: OBS-024 (T13.1) — likewise, the simulation settings.
+        if want("simulate") {
+            out.push(telltale_api::model::ConfigEntry {
+                kind: "simulate".to_owned(),
+                name: "default".to_owned(),
+                source: if e.simulate.is_some() {
+                    "override"
+                } else {
+                    "file"
+                }
+                .to_owned(),
+                definition: serde_json::to_value(&cfg.simulate).ok(),
+            });
+        }
         // REQ: FLT-010 (T9.7)
         if want("schedule") {
             rows(
@@ -2150,7 +2199,7 @@ impl Backend for ApiBackend {
             // checked against what the store then changes, and the result is applied before
             // the next write looks (two writes planned on the same snapshot could each be
             // valid and together not: the reload would then fall back to the files alone).
-            let _one_at_a_time = src.config_writes.lock().await;
+            let one_at_a_time = src.config_writes.lock().await;
             let state = src
                 .auth
                 .get()
@@ -2178,6 +2227,7 @@ impl Backend for ApiBackend {
                 recent_queries: plan.recent_queries,
                 impact: plan.impact.clone(),
                 warnings: plan.warnings.clone(),
+                simulation: None,
             };
             if w.dry_run {
                 if let Some(v) = w.expect
@@ -2185,7 +2235,20 @@ impl Backend for ApiBackend {
                 {
                     return Err(version_conflict(current));
                 }
-                return Ok(change(false, current));
+                let mut out = change(false, current);
+                // REQ: OBS-024 — `simulate`: what the device change would have done. Other
+                // writes needn't wait for the replay.
+                drop(one_at_a_time);
+                if let Some(opts) = &w.simulate {
+                    out.simulation = crate::simulate::simulate(
+                        &src,
+                        Arc::clone(&plan.baseline),
+                        Arc::clone(&plan.candidate),
+                        opts,
+                    )
+                    .await?;
+                }
+                return Ok(out);
             }
             let stored = {
                 let (state, w, after) = (Arc::clone(&state), w.clone(), plan.after.clone());
@@ -2365,6 +2428,10 @@ struct ClientPlan {
     recent_queries: u64,
     impact: String,
     warnings: Vec<String>,
+    /// REQ: OBS-024 — the configuration with the change, and the one it's compared with
+    /// (for `simulate`).
+    candidate: Arc<telltale_config::Config>,
+    baseline: Arc<telltale_config::Config>,
 }
 
 /// AGT-002 impact of a device change: recent queries from the addresses it matches (they
@@ -2500,6 +2567,8 @@ fn plan_client(
         recent_queries,
         impact,
         warnings,
+        candidate: Arc::new(candidate),
+        baseline: cfg,
     })
 }
 
@@ -2518,6 +2587,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Schedule => crate::managed::SCHEDULE,
         ManagedKind::RateLimit => crate::managed::RATELIMIT,
         ManagedKind::Exclusions => crate::managed::EXCLUSIONS,
+        ManagedKind::Simulate => crate::managed::SIMULATE,
     }
 }
 
@@ -2561,6 +2631,7 @@ pub(crate) fn spawn_rule_sweep(
                     dry_run: false,
                     expect: None,
                     by: "rule expiry".into(),
+                    simulate: None,
                 };
                 match backend.write_managed(w).await {
                     Ok(c) if c.applied => auth.record(
@@ -2727,6 +2798,8 @@ struct ManagedPlan {
     /// REQ: API-002 (T9.22) — entries the change also needs, stored first: removing an
     /// upstream takes it out of the upstream groups that use it. (kind, name, body).
     also: AlsoStored,
+    /// REQ: OBS-024 — the merged configuration with the change (for `simulate`).
+    candidate: telltale_config::Config,
 }
 
 /// Parses a records body into stored form.
@@ -2828,6 +2901,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Exclusions, false) => {
             "The config file's exclusions (or none) apply again from the next query.".into()
         }
+        (ManagedKind::Simulate, true) => {
+            "Applies to the next simulation, on every node. DNS answers don't change.".into()
+        }
+        (ManagedKind::Simulate, false) => {
+            "The config file's simulation settings (or the defaults) apply again to the next simulation.".into()
+        }
     };
     (recent_queries, impact)
 }
@@ -2840,7 +2919,10 @@ fn plan_managed(
     state: &telltale_store::state::State,
     w: &ManagedWrite,
 ) -> Result<ManagedPlan, Problem> {
-    if matches!(w.kind, ManagedKind::RateLimit | ManagedKind::Exclusions) {
+    if matches!(
+        w.kind,
+        ManagedKind::RateLimit | ManagedKind::Exclusions | ManagedKind::Simulate
+    ) {
         return plan_singleton(src, state, w);
     }
     if matches!(
@@ -2977,6 +3059,7 @@ fn plan_managed(
         impact,
         warnings,
         also: Vec::new(),
+        candidate: merged,
     })
 }
 
@@ -2992,20 +3075,20 @@ struct SingletonChange {
 
 /// The section a one-of kind replaces, as JSON.
 fn singleton_section(kind: ManagedKind, cfg: &telltale_config::Config) -> serde_json::Value {
-    if kind == ManagedKind::Exclusions {
-        serde_json::to_value(&cfg.exclusions)
-    } else {
-        serde_json::to_value(&cfg.ratelimit)
+    match kind {
+        ManagedKind::Exclusions => serde_json::to_value(&cfg.exclusions),
+        ManagedKind::Simulate => serde_json::to_value(&cfg.simulate),
+        _ => serde_json::to_value(&cfg.ratelimit),
     }
     .unwrap_or_default()
 }
 
 /// What a one-of kind is called in messages.
 fn singleton_noun(kind: ManagedKind) -> &'static str {
-    if kind == ManagedKind::Exclusions {
-        "exclusions"
-    } else {
-        "rate limit"
+    match kind {
+        ManagedKind::Exclusions => "exclusions",
+        ManagedKind::Simulate => "simulation settings",
+        _ => "rate limit",
     }
 }
 
@@ -3021,6 +3104,11 @@ fn singleton_store(
             serde_json::from_value(v.clone()).map_err(bad)?;
         let text = serde_json::to_string(&x).unwrap_or_default();
         entries.exclusions = Some(x);
+        text
+    } else if kind == ManagedKind::Simulate {
+        let x: telltale_config::SimulateConfig = serde_json::from_value(v.clone()).map_err(bad)?;
+        let text = serde_json::to_string(&x).unwrap_or_default();
+        entries.simulate = Some(x);
         text
     } else {
         let r: telltale_config::RateLimitConfig = serde_json::from_value(v.clone()).map_err(bad)?;
@@ -3045,17 +3133,22 @@ fn singleton_change(
     let stored = if let Some(v) = body {
         Some(singleton_store(kind, entries, v)?)
     } else {
-        let exclusions = kind == ManagedKind::Exclusions;
-        let had = if exclusions {
-            entries.exclusions.take().is_some()
-        } else {
-            entries.ratelimit.take().is_some()
+        let had = match kind {
+            ManagedKind::Exclusions => entries.exclusions.take().is_some(),
+            ManagedKind::Simulate => entries.simulate.take().is_some(),
+            _ => entries.ratelimit.take().is_some(),
         };
         if !had {
-            return Err(Problem::not_found(if exclusions {
-                "the exclusions weren't changed through the API or UI: the config file's are in effect"
-            } else {
-                "the rate limit wasn't changed through the API or UI: the config file's is in effect"
+            return Err(Problem::not_found(match kind {
+                ManagedKind::Exclusions => {
+                    "the exclusions weren't changed through the API or UI: the config file's are in effect"
+                }
+                ManagedKind::Simulate => {
+                    "the simulation settings weren't changed through the API or UI: the config file's are in effect"
+                }
+                _ => {
+                    "the rate limit wasn't changed through the API or UI: the config file's is in effect"
+                }
             }));
         }
         None
@@ -3097,6 +3190,7 @@ fn plan_singleton(
         impact,
         warnings,
         also: Vec::new(),
+        candidate: change.merged,
     })
 }
 
@@ -3410,6 +3504,7 @@ fn plan_override(
         impact,
         warnings,
         also,
+        candidate: merged,
     })
 }
 
@@ -3572,7 +3667,7 @@ impl ApiBackend {
             // checked against what the store then changes, and the result is applied before
             // the next write looks (two writes planned on the same snapshot could each be
             // valid and together not: the reload would then fall back to the files alone).
-            let _one_at_a_time = src.config_writes.lock().await;
+            let one_at_a_time = src.config_writes.lock().await;
             let state = src
                 .auth
                 .get()
@@ -3601,6 +3696,7 @@ impl ApiBackend {
                 impact: plan.impact.clone(),
                 warnings: plan.warnings.clone(),
                 keep_in_git: keep_in_git.clone(),
+                simulation: None,
             };
             if w.dry_run {
                 if let Some(v) = w.expect
@@ -3608,7 +3704,24 @@ impl ApiBackend {
                 {
                     return Err(version_conflict(current));
                 }
-                return Ok(change(false, current));
+                let mut out = change(false, current);
+                // REQ: OBS-024 — `simulate`: what the change would have done to the logged
+                // queries (after the version check: a stale plan isn't worth replaying).
+                // Other writes needn't wait for the replay.
+                drop(one_at_a_time);
+                if let Some(opts) = &w.simulate {
+                    let baseline = Arc::new(
+                        crate::managed::merge(
+                            &src.file_config.load_full(),
+                            &crate::managed::entries(&state),
+                        )
+                        .map_err(|errs| Problem::internal(errs.join("; ")))?,
+                    );
+                    let candidate = Arc::new(plan.candidate.clone());
+                    out.simulation =
+                        crate::simulate::simulate(&src, baseline, candidate, opts).await?;
+                }
+                return Ok(out);
             }
             let stored = {
                 let (state, w, name, body, also) = (
@@ -3731,9 +3844,13 @@ fn keep_in_git(
         ManagedKind::Schedule => "schedule",
         ManagedKind::RateLimit => "ratelimit",
         ManagedKind::Exclusions => "exclusions",
+        ManagedKind::Simulate => "simulate",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
-    if matches!(kind, ManagedKind::RateLimit | ManagedKind::Exclusions) {
+    if matches!(
+        kind,
+        ManagedKind::RateLimit | ManagedKind::Exclusions | ManagedKind::Simulate
+    ) {
         return singleton_in_git(head, section, body.is_some(), after);
     }
     let Some(body) = body else {

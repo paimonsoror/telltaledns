@@ -47,6 +47,10 @@ pub enum Code {
     NodeUnreachable,
     /// REQ: OPS-010 — no cluster node by that ID, site, or pod name.
     NodeUnknown,
+    /// REQ: OBS-024 — this node is already running a simulation (one at a time per node).
+    SimulationBusy,
+    /// REQ: OBS-024 — a simulation window that isn't a duration, or is longer than 7 days.
+    SimulationWindow,
 }
 
 impl Code {
@@ -70,6 +74,8 @@ impl Code {
             Self::MaintenanceInvalid => "https://telltaledns.dev/problems/maintenance_invalid",
             Self::NodeUnreachable => "https://telltaledns.dev/problems/node_unreachable",
             Self::NodeUnknown => "https://telltaledns.dev/problems/node_unknown",
+            Self::SimulationBusy => "https://telltaledns.dev/problems/simulation_busy",
+            Self::SimulationWindow => "https://telltaledns.dev/problems/simulation_window",
         }
     }
 
@@ -93,6 +99,8 @@ impl Code {
             Self::MaintenanceInvalid => "Invalid maintenance request",
             Self::NodeUnreachable => "Node unreachable",
             Self::NodeUnknown => "Unknown node",
+            Self::SimulationBusy => "Simulation already running",
+            Self::SimulationWindow => "Invalid simulation window",
         }
     }
 
@@ -104,12 +112,13 @@ impl Code {
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
-            Self::Conflict | Self::GitopsManaged => StatusCode::CONFLICT,
+            Self::Conflict | Self::GitopsManaged | Self::SimulationBusy => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
-            Self::InvalidConfig | Self::MaintenanceTooLong | Self::MaintenanceInvalid => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            Self::InvalidConfig
+            | Self::MaintenanceTooLong
+            | Self::MaintenanceInvalid
+            | Self::SimulationWindow => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
 }

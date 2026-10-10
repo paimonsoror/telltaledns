@@ -70,6 +70,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
 | `[exclusions]` | names and devices kept out of the query log, analytics, and exports (still answered and counted in metrics), with an on/off toggle; also in Settings → System | OBS-022 |
+| `[simulate]` | change simulation over the query log: `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs` (1 to 300), `max_rows` (at least 1,000), `default_window` (at most `7d`); shared across a cluster; also in Settings → System | OBS-024, `docs/running.md` |
 | `[dns]` | the advertised EDNS UDP size; `nsid` (answer RFC 5001 NSID with this node's name) | DNS-005, DNS-021 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |

@@ -1423,6 +1423,43 @@ fn render_prompt(p: &Prompt, args: &Value) -> Result<String, String> {
     Ok(text)
 }
 
+/// REQ: OBS-024 (T13.1) — the plan tools' `simulate` parameter.
+const SIMULATE_PARAM: &str = "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.";
+
+/// REQ: OBS-024 — the changes `simulate_change` can preview (each a `plan_<kind>` tool).
+const SIMULATE_KINDS: &[&str] = &[
+    "block_domain",
+    "allow_domain",
+    "add_list",
+    "assign_client",
+    "update_group",
+];
+
+/// A plan tool's schema with the `simulate` parameter.
+fn with_simulate(mut schema: Value) -> Value {
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        props.insert(
+            "simulate".into(),
+            json!({"type": "string", "description": SIMULATE_PARAM}),
+        );
+    }
+    schema
+}
+
+/// REQ: OBS-024 — `simulate_change`'s catalog entry: read-only, nothing is planned.
+fn simulate_change_entry() -> Value {
+    json!({
+        "name": "simulate_change",
+        "description": "Read-only. Nothing is planned or changed. What would a change have done to the queries already in the query log? Give kind (block_domain, allow_domain, add_list, assign_client, update_group), change (the same arguments as the matching plan_* tool, without reason), and window (\"24h\" default, at most \"7d\"). Every logged query in the window is decided again with and without the change; returns the differences: newly blocked, newly allowed, changed route, changed answer, with the top names (and the deciding list), devices, and groups. Busy (one simulation per node at a time): retry in a few seconds. Needs querylog:read and the write scope of that kind of change.",
+        "inputSchema": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": SIMULATE_KINDS},
+            "change": {"type": "object", "description": "The plan tool's arguments, e.g. {\"domain\": \"tiktok.com\", \"groups\": [\"kids\"]} for block_domain."},
+            "window": {"type": "string", "description": "How far back: 30m, 24h, 7d (default: the configured window, usually 24h)."}
+        }, "required": ["kind", "change"], "additionalProperties": false},
+        "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+    })
+}
+
 /// The catalog as `tools/list` returns it. Annotations state each tool's side effects
 /// (AGT-009): reads are read-only; plans change nothing until applied; `apply_plan` and the
 /// immediate operations do.
@@ -1439,11 +1476,13 @@ pub fn catalog() -> Value {
             })
         })
         .collect();
+    out.push(simulate_change_entry());
     out.extend(write_tools().iter().map(|t| {
+        let schema = (t.input_schema)();
         json!({
             "name": t.name,
             "description": t.description,
-            "inputSchema": (t.input_schema)(),
+            "inputSchema": if t.effect == Effect::Plan { with_simulate(schema) } else { schema },
             // A plan stores a plan, nothing else; the change is apply_plan's.
             "annotations": match t.effect {
                 Effect::Plan => ann(false, false, false),
@@ -1806,14 +1845,7 @@ impl Mcp {
                 !status.is_success(),
             );
         }
-        let dry = format!(
-            "{}{}dryRun=true",
-            w.path,
-            if w.path.contains('?') { '&' } else { '?' }
-        );
-        let (status, preview) = self
-            .send(w.method, &dry, w.body.as_ref(), auth, client, &why)
-            .await;
+        let (status, preview, note) = self.plan_dry_run(&w, args, auth, client, &why).await;
         if !status.is_success() {
             return tool_result(json!({"error": preview, "planned": false}), true);
         }
@@ -1849,8 +1881,92 @@ impl Mcp {
         } else {
             "Nothing has changed yet. Call apply_plan with the planId to make the change (within 10 minutes), or discard_plan."
         };
+        let mut out = json!({"planId": plan.id, "state": plan.state, "summary": plan.summary, "preview": plan.preview, "expiresInSeconds": crate::plans::TTL_SECS, "next": next});
+        if let (Some(n), Some(o)) = (note, out.as_object_mut()) {
+            o.insert("note".into(), n.into());
+        }
+        tool_result(out, false)
+    }
+
+    /// A plan's dry run. REQ: OBS-024 — with `simulate` when asked, otherwise `auto` (only if
+    /// an operator turned on `plans_by_default`); a busy node gives the plan without the
+    /// estimate, and a note saying so.
+    async fn plan_dry_run(
+        &self,
+        w: &Write,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        why: &[(&str, String)],
+    ) -> (StatusCode, Value, Option<&'static str>) {
+        let sep = if w.path.contains('?') { '&' } else { '?' };
+        let simulate = s(args, "simulate").unwrap_or_else(|| "auto".to_owned());
+        let dry = format!("{}{sep}dryRun=true&simulate={}", w.path, enc(&simulate));
+        let (status, preview) = self
+            .send(w.method, &dry, w.body.as_ref(), auth, client, why)
+            .await;
+        if status == StatusCode::CONFLICT
+            && preview.get("code").and_then(Value::as_str) == Some("simulation_busy")
+        {
+            let plain = format!("{}{sep}dryRun=true", w.path);
+            let (status, preview) = self
+                .send(w.method, &plain, w.body.as_ref(), auth, client, why)
+                .await;
+            return (
+                status,
+                preview,
+                Some(
+                    "impact not estimated: the node was busy with another simulation (retry the plan with simulate to get it)",
+                ),
+            );
+        }
+        (status, preview, None)
+    }
+
+    /// REQ: OBS-024 (T13.1) — `simulate_change`: the matching plan tool's dry run with
+    /// `simulate`, and only its simulation. Nothing is stored or audited.
+    async fn call_simulate_change(
+        &self,
+        args: &Value,
+        auth: &HeaderMap,
+        client: Option<&str>,
+        caller: Option<&Caller>,
+    ) -> Value {
+        if caller.is_none() {
+            return tool_error("sign in to simulate changes");
+        }
+        let kind = s(args, "kind").unwrap_or_default();
+        if !SIMULATE_KINDS.contains(&kind.as_str()) {
+            return tool_error(format!(
+                "simulate_change: `kind` must be one of {}",
+                SIMULATE_KINDS.join(", ")
+            ));
+        }
+        let name = format!("plan_{kind}");
+        let Some(tool) = write_tools().into_iter().find(|t| t.name == name) else {
+            return tool_error(format!("simulate_change: no tool {name}"));
+        };
+        let change = args.get("change").cloned().unwrap_or_else(|| json!({}));
+        let mut w = match (tool.write)(&change) {
+            Ok(w) => w,
+            Err(e) => return tool_error(format!("simulate_change ({kind}): {e}")),
+        };
+        if let Err(e) = self.merge(&mut w, auth, client).await {
+            return tool_error(format!("simulate_change ({kind}): {e}"));
+        }
+        let window = s(args, "window").unwrap_or_else(|| "true".to_owned());
+        let sep = if w.path.contains('?') { '&' } else { '?' };
+        let path = format!("{}{sep}dryRun=true&simulate={}", w.path, enc(&window));
+        // A dry run changes nothing; agents still say why on every PUT.
+        let why = [("x-telltale-reason", "simulate_change (dry run)".to_owned())];
+        let (status, preview) = self
+            .send(w.method, &path, w.body.as_ref(), auth, client, &why)
+            .await;
+        if !status.is_success() {
+            return tool_result(json!({"error": preview}), true);
+        }
         tool_result(
-            json!({"planId": plan.id, "state": plan.state, "summary": plan.summary, "preview": plan.preview, "expiresInSeconds": crate::plans::TTL_SECS, "next": next}),
+            json!({"change": w.summary, "simulation": preview.get("simulation").cloned().unwrap_or(Value::Null)}),
             false,
         )
     }
@@ -1934,6 +2050,7 @@ impl Mcp {
         )
     }
 
+    #[allow(clippy::too_many_lines)] // the dispatch, then the read tools' shared path
     async fn call_tool(
         &self,
         params: &Value,
@@ -1949,6 +2066,9 @@ impl Mcp {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if name == "simulate_change" {
+            return self.call_simulate_change(&args, auth, client, caller).await;
+        }
         if let Some(w) = write_tools().into_iter().find(|t| t.name == name) {
             return self.call_write(&w, &args, auth, client, caller).await;
         }

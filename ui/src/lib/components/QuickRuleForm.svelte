@@ -4,6 +4,7 @@
   // (prefilled from the query) and on the Quick rules page.
   import { api, type S } from '../api';
   import ErrorNote from './ErrorNote.svelte';
+  import SimulationCard from './SimulationCard.svelte';
 
   let {
     domain = '',
@@ -53,13 +54,9 @@
     return Math.max(1, Math.round((end.getTime() - now.getTime()) / 60000));
   }
 
-  async function save(e: SubmitEvent) {
-    e.preventDefault();
-    saving = true;
-    error = null;
-    saved = '';
+  function ruleBody(): S['RuleInput'] {
     const forMinutes = duration === 'always' ? undefined : duration === 'today' ? untilMidnight() : Number(duration);
-    const body: S['RuleInput'] = {
+    return {
       action,
       domain: name.trim(),
       devices: scope === 'device' ? [who.trim()] : [],
@@ -67,6 +64,20 @@
       forMinutes,
       note: note.trim() || undefined,
     };
+  }
+
+  /** REQ: OBS-024 — the rule as a dry run, replayed over the query log (nothing is saved). */
+  async function simulateRule(): Promise<S['Simulation'] | null | undefined> {
+    const c = await api.putRule(`r-sim-${Date.now().toString(36)}`, ruleBody(), true, 'true');
+    return c.simulation;
+  }
+
+  async function save(e: SubmitEvent) {
+    e.preventDefault();
+    saving = true;
+    error = null;
+    saved = '';
+    const body = ruleBody();
     const id = `r-${Date.now().toString(36)}`;
     try {
       const c = await api.putRule(id, body);
@@ -119,6 +130,7 @@
   </p>
   <ErrorNote {error} />
   {#if saved}<div class="notice ok small" data-testid="quick-rule-saved">{saved}</div>{/if}
+  {#if name.trim() && (scope !== 'device' || who.trim())}<SimulationCard run={simulateRule} />{/if}
 </form>
 
 <style>

@@ -69,6 +69,18 @@
     chosen = chosen.includes(g) ? chosen.filter((x) => x !== g) : [...chosen, g];
   }
 
+  /** REQ: OBS-024 — the device change as a dry run, replayed over the query log. */
+  async function simulateChange(): Promise<S['Simulation'] | null | undefined> {
+    const n = newName.trim();
+    const r = await api.putClient(
+      existing?.name ?? n,
+      { name: n, match: existing ? existing.match : [ip], groups: chosen.length ? chosen : ['default'] },
+      true,
+      'true',
+    );
+    return r.simulation;
+  }
+
   async function save(ev: SubmitEvent) {
     ev.preventDefault();
     const n = newName.trim();
@@ -153,6 +165,7 @@
             device={newName.trim()}
             name="any site"
             sentence={`Queries from ${ip} will show “${newName.trim()}”, past ones included, and get the lists of ${chosen.length ? chosen.join(', ') : 'default'}.`}
+            simulate={simulateChange}
           />
         {/if}
         {#if error}<p class="notice bad" role="alert">{error}</p>{/if}

@@ -1543,6 +1543,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * What a candidate configuration would have done (OBS-024).
+         * @description The body's `config` is a shared configuration as JSON: the sections a cluster replicates,
+         *     as a Git commit's `telltale/shared.toml` becomes (`telltale config simulate` reads the TOML
+         *     and sends this). Node-local sections are ignored: this node's own apply. Each logged query
+         *     over `window` (default `[simulate] default_window`, at most 7 days; newest first, at most
+         *     `[simulate] max_rows` rows and `max_secs` seconds) is decided again under the configuration
+         *     in effect and under the candidate, and the differences are counted: newly blocked, newly
+         *     allowed, a changed route, a changed answer, by name, device, and group. In a cluster every
+         *     node replays its own log (and the logs shipped to it) and the counts are summed; nodes that
+         *     didn't answer are in `missingNodes`. Nothing changes and nothing is audited. Needs the
+         *     viewer role (agents: `config:read` and `querylog:read`).
+         */
+        post: operations["simulate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/simulate-settings/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change simulation's settings (OBS-024).
+         * @description The body has the same fields as `[simulate]` in `telltale.toml`: `enabled` (simulations at
+         *     all), `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs`
+         *     (1 to 300), `max_rows` (at least 1,000), and `default_window` (`24h`; at most `7d`). It
+         *     replaces the whole section until it's deleted again, on every node of a cluster.
+         */
+        put: operations["put_simulate_settings"];
+        post?: never;
+        /**
+         * Go back to the config file's simulation settings (OBS-024).
+         * @description Removes what the API or UI stored, so `[simulate]` in the config files (or the defaults)
+         *     applies again. 404 when nothing was stored.
+         */
+        delete: operations["delete_simulate_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/latency": {
         parameters: {
             query?: never;
@@ -2547,6 +2604,7 @@ export interface components {
              *     history gets the new label (names are resolved when read, so the past is relabelled).
              */
             recentQueries: number;
+            simulation?: components["schemas"]["Simulation"] | null;
             /** @description Configuration warnings after the change. */
             warnings: string[];
         };
@@ -2877,7 +2935,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -2906,6 +2964,7 @@ export interface components {
              *     that the change affects. A lower bound: counted from the busiest names.
              */
             recentQueries?: number;
+            simulation?: components["schemas"]["Simulation"] | null;
             /** @description Configuration warnings after the change. */
             warnings: string[];
         };
@@ -4777,6 +4836,120 @@ export interface components {
             /** @description The names it would have blocked most (hashed at privacy level 1 and above). */
             topNames: components["schemas"]["NameCount"][];
         };
+        /** @description `POST /api/v1/simulate`. */
+        SimulateRequest: {
+            /**
+             * @description The candidate shared configuration, as JSON: the shape a Git commit's shared TOML
+             *     becomes (node-local sections are ignored; this node's own apply).
+             */
+            config: Record<string, never>;
+            /** @description The end of the window (RFC 3339 or relative, e.g. `-1h`); default now. */
+            until?: string | null;
+            /** @description How far back: `30m`, `24h`, `7d` (at most 7 days). Default `[simulate] default_window`. */
+            window?: string | null;
+        };
+        /**
+         * @description One kind of difference: how many queries, from how many devices, and the names most
+         *     affected (at most 20, most first).
+         */
+        SimulatedClass: {
+            /** Format: int64 */
+            devices: number;
+            /** Format: int64 */
+            queries: number;
+            topNames: components["schemas"]["SimulatedName"][];
+        };
+        SimulatedDevice: {
+            /** Format: int64 */
+            changedAnswer: number;
+            /** Format: int64 */
+            changedRoute: number;
+            client: string;
+            name?: string | null;
+            /** Format: int64 */
+            newlyAllowed: number;
+            /** Format: int64 */
+            newlyBlocked: number;
+        };
+        SimulatedGroup: {
+            /** Format: int64 */
+            changedAnswer: number;
+            /** Format: int64 */
+            changedRoute: number;
+            group: string;
+            /** Format: int64 */
+            newlyAllowed: number;
+            /** Format: int64 */
+            newlyBlocked: number;
+        };
+        SimulatedName: {
+            /** Format: int64 */
+            devices: number;
+            /**
+             * @description What decided: the list (or quick rule, schedule) that blocks or had blocked it, the
+             *     route change, or the new answer.
+             */
+            list?: string | null;
+            name: string;
+            /** Format: int64 */
+            queries: number;
+        };
+        /**
+         * @description REQ: OBS-024 (T13.1, ADR-115) — what a configuration change would have done to the queries
+         *     already in the query log: each logged query decided again under the current configuration
+         *     and under the candidate, and the differences counted. Decisions only: nothing is asked of
+         *     upstreams, and caching, DNSSEC, rate limits, pauses, and CNAME-target blocks aren't replayed.
+         *     About the past: names nobody asked in the window count for nothing.
+         */
+        Simulation: {
+            /**
+             * @description False for a change that can't affect a decision (alerts, users, exclusions): nothing
+             *     was read.
+             */
+            applicable: boolean;
+            /**
+             * @description False when it couldn't run (`reason` says why: `disabled`, `privacy_level`,
+             *     `no_query_log`, `busy`, ...).
+             */
+            available: boolean;
+            /** @description The devices most affected, most first (at most 50). */
+            byDevice: components["schemas"]["SimulatedDevice"][];
+            byGroup: components["schemas"]["SimulatedGroup"][];
+            /**
+             * @description Answered differently without a block: a local record, a rewrite, no IPv6 addresses, a
+             *     special answer (`list` describes the new answer).
+             */
+            changedAnswer: components["schemas"]["SimulatedClass"];
+            /** @description Forwarded to another upstream group (`list` says from where to where). */
+            changedRoute: components["schemas"]["SimulatedClass"];
+            /** @description The window replayed (RFC 3339). */
+            from?: string | null;
+            /** @description Cluster nodes whose queries aren't included (they didn't answer). */
+            missingNodes?: string[];
+            /** @description Blocked now, allowed under the change (`list` names the list that had blocked it). */
+            newlyAllowed: components["schemas"]["SimulatedClass"];
+            /** @description Allowed now, blocked under the change. */
+            newlyBlocked: components["schemas"]["SimulatedClass"];
+            /** @description Approximations that applied (`badfilter_cross_snapshot`, `identity_from_event`, ...). */
+            notes: string[];
+            /** @description Stopped early (`[simulate] max_rows` or `max_secs`): the counts cover the newest `rows`. */
+            partial: boolean;
+            reason?: string | null;
+            /**
+             * Format: int64
+             * @description Logged queries read (on every node that answered).
+             */
+            rows: number;
+            to?: string | null;
+            /** Format: int64 */
+            unchanged: number;
+            /**
+             * Format: int64
+             * @description At privacy level 1 (names hashed), queries of devices whose group changes to one with
+             *     different settings: they can't be decided again without the names.
+             */
+            undetermined: number;
+        };
         /**
          * @description REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the
          *     share the target allows (1 spends exactly the budget over the objective's window).
@@ -5328,6 +5501,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -5376,6 +5561,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -5452,6 +5649,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -5500,6 +5709,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -6555,6 +6776,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -6612,6 +6845,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -6683,7 +6928,7 @@ export interface operations {
     cluster_promote: {
         parameters: {
             query?: {
-                /** @description Validate and report the change without applying it. */
+                /** @description Check and report without changing anything. */
                 dryRun?: boolean;
             };
             header?: never;
@@ -6800,6 +7045,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path?: never;
@@ -6845,6 +7102,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path?: never;
@@ -6938,6 +7207,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -6995,6 +7276,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7068,6 +7361,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7116,6 +7421,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7225,6 +7542,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7273,6 +7602,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7666,6 +8007,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path?: never;
@@ -7711,6 +8064,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path?: never;
@@ -7763,6 +8128,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7820,6 +8197,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7893,6 +8282,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -7950,6 +8351,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -8003,6 +8416,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -8051,6 +8476,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -8106,6 +8543,149 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ServiceInfo"];
+                };
+            };
+        };
+    };
+    simulate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulateRequest"];
+            };
+        };
+        responses: {
+            /** @description The differences (or `available: false` and why). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Simulation"];
+                };
+            };
+            /** @description This node is already running a simulation (`simulation_busy`); retry after Retry-After seconds. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration isn't valid, or the window isn't a duration of at most 7 days (`simulation_window`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_simulate_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A bound is out of range, or the configuration wouldn't be valid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_simulate_settings: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description Nothing was changed through the API: the file's settings are in effect already. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };
@@ -8493,6 +9073,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -8541,6 +9133,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -8614,6 +9218,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {
@@ -8662,6 +9278,18 @@ export interface operations {
             query?: {
                 /** @description Validate and report the change without applying it. */
                 dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
             };
             header?: never;
             path: {

@@ -47,6 +47,7 @@ mod selfupdate;
 mod server;
 mod shadow;
 mod ship;
+mod simulate;
 mod sinks;
 mod smtp;
 mod tail;
@@ -584,6 +585,32 @@ enum ConfigCommand {
     },
     /// Print the JSON Schema for telltale.toml (for editor completion).
     Schema,
+    /// REQ: OBS-024 — what a shared configuration would have done to a running node's logged
+    /// queries (the cluster's, in a cluster), compared with the one in effect: newly blocked,
+    /// newly allowed, changed routes and answers. Test a Git commit before pushing it. Same
+    /// as `telltale ctl simulate`; needs an API token (`TELLTALE_TOKEN` or `--token-file`).
+    Simulate {
+        /// The candidate configuration as TOML (shared sections; node-local ones are ignored).
+        file: PathBuf,
+        /// How far back: 30m, 24h, 7d (default: `[simulate] default_window`).
+        #[arg(long)]
+        window: Option<String>,
+        /// Where the window ends (RFC 3339 or relative, e.g. -1h; default now).
+        #[arg(long)]
+        until: Option<String>,
+        /// The node's API address (default: from the config files' `[api] listen`).
+        #[arg(long)]
+        url: Option<String>,
+        /// Read the API token from this file instead of `TELLTALE_TOKEN`.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Print the API's JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Config files (same defaults as `telltale run`), to find the API address.
+        #[arg(short, long = "config")]
+        config: Vec<PathBuf>,
+    },
 }
 
 #[allow(clippy::too_many_lines)] // one arm per subcommand
@@ -1402,6 +1429,28 @@ fn run_explain(
 fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
     let mut out = io::stdout().lock();
     match cmd {
+        ConfigCommand::Simulate {
+            file,
+            window,
+            until,
+            url,
+            token_file,
+            json,
+            config,
+        } => {
+            drop(out);
+            Ok(run_ctl(
+                ctl::CtlCommand::Simulate {
+                    file,
+                    window,
+                    until,
+                },
+                url,
+                token_file.as_deref(),
+                json,
+                config,
+            ))
+        }
         ConfigCommand::Schema => {
             let schema = serde_json::to_string_pretty(&telltale_config::json_schema())
                 .map_err(io::Error::other)?;

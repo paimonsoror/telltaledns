@@ -11,9 +11,14 @@
 //      apply it until an admin approves, then applies it (the name is blocked); a plan made
 //      before another change comes back stale; the audit log names the agent, its owner, and
 //      the reason.
+//   6. OBS-024 (T13.1): a plan without `simulate` has no simulation, one with `simulate: "24h"`
+//      has it (and a writer without querylog:read is refused), simulate_change answers without
+//      a plan, and with the operator's `plans_by_default` on every plan has it; no agent can
+//      turn that on.
 // Usage: node check.mjs <api url> <telltale binary> <catalog json>
 // Env: AGENT_TOKEN (analytics, config, query log), NARROW_TOKEN (analytics only),
-//      WRITER_TOKEN (config:write:rules, analytics), ADMIN_PASSWORD (user `admin`).
+//      WRITER_TOKEN (config:write:rules, analytics), SIM_TOKEN (the writer's scopes plus
+//      querylog:read), ADMIN_PASSWORD (user `admin`).
 import { readFileSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -183,5 +188,35 @@ if (!entry || !entry.actor.startsWith('agent:') || !entry.actor.includes('(owner
 const decided = (await admin('GET', '/api/v1/audit?action=plan.approve&limit=5'))[1];
 if (!(decided?.items?.length > 0)) fail('approvals aren\'t audited');
 console.log(`ok: audited as ${entry.actor}`);
+
+// 6. Change simulation (OBS-024): plans simulate only when asked, unless an operator says so.
+const sim = await connect(http(process.env.SIM_TOKEN));
+const planSim = async (args) => {
+  const r = await sim.callTool({ name: 'plan_block_domain', arguments: { reason, domain: 'sim.mcp.test', ...args } });
+  return [r.isError, data(r)];
+};
+const blocked5 = (s) => s?.newlyBlocked?.queries >= 5 && s.newlyBlocked.topNames?.[0]?.name === 'sim.mcp.test';
+let [e1, p1] = await planSim({});
+if (e1 || !p1.planId || p1.preview?.simulation) fail(`a plan without simulate: ${JSON.stringify(p1).slice(0, 400)}`);
+let [e2, p2] = await planSim({ simulate: '24h' });
+if (e2 || !blocked5(p2.preview?.simulation)) fail(`a plan with simulate: ${JSON.stringify(p2).slice(0, 600)}`);
+const [we] = await call('plan_block_domain', { domain: 'sim.mcp.test', reason, simulate: '24h' });
+if (!we) fail('a plan simulated for a token without querylog:read');
+const sc = data(await sim.callTool({ name: 'simulate_change', arguments: { kind: 'block_domain', change: { domain: 'sim.mcp.test' }, window: '24h' } }));
+if (!blocked5(sc?.simulation)) fail(`simulate_change: ${JSON.stringify(sc).slice(0, 600)}`);
+const settings = (method, headers, body) =>
+  fetch(`${api}/api/v1/simulate-settings/default`, { method, headers: { 'content-type': 'application/json', ...headers }, body });
+const agentFlip = await settings('PUT', { authorization: `Bearer ${process.env.SIM_TOKEN}`, 'x-telltale-reason': 'x' }, '{"plans_by_default": true}');
+if (agentFlip.status !== 403) fail(`an agent changed the simulation settings: ${agentFlip.status}`);
+if (tools.some((t) => /simulat\w*_settings/.test(t.name))) fail('an MCP tool changes the simulation settings');
+const on = await settings('PUT', { cookie, 'x-csrf-token': csrf }, '{"plans_by_default": true}');
+if (on.status !== 200) fail(`turning plans_by_default on: ${on.status} ${await on.text()}`);
+let [e3, p3] = await planSim({});
+if (e3 || !blocked5(p3.preview?.simulation)) fail(`with plans_by_default, a plan: ${JSON.stringify(p3).slice(0, 600)}`);
+if ((await admin('DELETE', '/api/v1/simulate-settings/default'))[0] !== 200) fail('reverting the simulation settings');
+let [e4, p4] = await planSim({});
+if (e4 || p4.preview?.simulation) fail(`after reverting, a plan still simulates: ${JSON.stringify(p4).slice(0, 300)}`);
+console.log(`ok: simulations (${p2.preview.simulation.newlyBlocked.queries} queries newly blocked, on request or by the operator's default)`);
+await sim.close();
 await w.close();
 console.log('PASS');

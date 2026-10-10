@@ -85,7 +85,7 @@ function newKey(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions';
+export type EntryPath = 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings';
 
 const get = <T>(path: string, query?: Query) => call<T>('GET', path, { query });
 const post = <T>(path: string, body?: unknown) => call<T>('POST', path, { body: body ?? {} });
@@ -164,6 +164,8 @@ export const api = {
   // REQ: API-002 (T9.12) — pre-save checks of a draft.
   checkUpstream: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/upstream', body),
   checkList: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/list', body),
+  // REQ: OBS-024 (T13.1) — what a whole shared configuration would have done.
+  simulate: (body: S['SimulateRequest']) => post<S['Simulation']>('/simulate', body),
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false, password = '', totp = '') =>
     post<S['ClusterView']>('/cluster/promote', { emergency, password, ...(totp ? { totp } : {}) }),
@@ -191,41 +193,41 @@ export const api = {
 
   // Configuration changes (API-002, API-010). Each change carries a fresh Idempotency-Key, so a
   // retried request (flaky Wi-Fi) is applied once.
-  putClient: (name: string, body: S['ClientInput'], dryRun = false) =>
+  putClient: (name: string, body: S['ClientInput'], dryRun = false, simulate?: string) =>
     call<S['ClientChange']>('PUT', `/clients/${encodeURIComponent(name)}`, {
       body,
-      query: { dryRun: dryRun || undefined },
+      query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
-  putRecords: (name: string, body: S['RecordsInput'], dryRun = false) =>
+  putRecords: (name: string, body: S['RecordsInput'], dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/records/${encodeURIComponent(name)}`, {
       body,
-      query: { dryRun: dryRun || undefined },
+      query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
   deleteRecords: (name: string) =>
     call<S['ConfigChange']>('DELETE', `/records/${encodeURIComponent(name)}`, { headers: { 'idempotency-key': newKey() } }),
-  putForward: (domain: string, body: S['ForwardInput'], dryRun = false) =>
+  putForward: (domain: string, body: S['ForwardInput'], dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/forwards/${encodeURIComponent(domain)}`, {
       body,
-      query: { dryRun: dryRun || undefined },
+      query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
   deleteForward: (domain: string) =>
     call<S['ConfigChange']>('DELETE', `/forwards/${encodeURIComponent(domain)}`, { headers: { 'idempotency-key': newKey() } }),
   // REQ: FLT-005 (T6.12) — quick rules.
-  putRule: (id: string, body: S['RuleInput'], dryRun = false) =>
+  putRule: (id: string, body: S['RuleInput'], dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/rules/${encodeURIComponent(id)}`, {
       body,
-      query: { dryRun: dryRun || undefined },
+      query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
   // REQ: API-002 (T7.5, ADR-069) — upstreams, upstream groups, lists, and groups.
   configEntries: (kind?: string) => get<S['Items_ConfigEntry']>('/config/entries', { kind }),
-  putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false) =>
+  putEntry: (path: EntryPath, name: string, body: Record<string, unknown>, dryRun = false, simulate?: string) =>
     call<S['ConfigChange']>('PUT', `/${path}/${encodeURIComponent(name)}`, {
       body,
-      query: { dryRun: dryRun || undefined },
+      query: { dryRun: dryRun || undefined, simulate: dryRun ? simulate : undefined },
       headers: dryRun ? {} : { 'idempotency-key': newKey() },
     }),
   deleteEntry: (path: EntryPath, name: string) =>

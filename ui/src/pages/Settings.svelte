@@ -42,6 +42,19 @@
     { key: 'clients', label: 'Devices', type: 'lines', placeholder: '192.168.1.10\n10.20.0.0/24',
       help: 'Addresses or networks, one per line (a monitoring host, say).' },
   ];
+  // REQ: OBS-024 (T13.1) — the fields of `[simulate]`.
+  const simulateFields: Field[] = [
+    { key: 'enabled', label: 'Allow change simulations', type: 'bool', initial: true,
+      help: 'The "What would this have done?" button, the simulate parameter of dry runs, and simulate_change for agents.' },
+    { key: 'plans_by_default', label: "Agents' plans simulate by default", type: 'bool', initial: false,
+      help: 'Off: a plan simulates only when the agent asks (simulate: "24h"). On: every plan replays the query log, which costs CPU on each node.' },
+    { key: 'default_window', label: 'Default window', type: 'text', placeholder: '24h',
+      help: 'How far back a simulation replays when no window is given: 30m, 24h, up to 7d.' },
+    { key: 'max_secs', label: 'Time limit per node (seconds)', type: 'number', placeholder: '20', advanced: true,
+      help: '1 to 300. A node that runs out of time answers with what it read so far (partial).' },
+    { key: 'max_rows', label: 'Most logged queries read per node', type: 'number', placeholder: '2000000', advanced: true,
+      help: 'At least 1,000. Newest first.' },
+  ];
   const tab = $derived.by(() => {
     const t = route.params.get('tab');
     return tabs.some((x) => x.id === t) ? (t as string) : 'account';
@@ -725,6 +738,17 @@
     <p class="muted small">
       Their queries are still answered and still counted in <code>/metrics</code>, but left out of the query log, the live view,
       the dashboard and top lists, anomalies, and exports, on every node. Queries logged before stay.<HelpButton id="exclusions" />
+    </p>
+    <!-- REQ: OBS-024 (T13.1) — change simulation's switches and bounds. -->
+    <ConfigEditor kind="simulate" path="simulate-settings" singleton title="Change simulation" noun="simulation settings" fields={simulateFields}
+      help="simulate"
+      summary={(d) =>
+        d.enabled === false
+          ? 'off'
+          : `on, ${String(d.default_window ?? '24h')} by default; agents' plans ${d.plans_by_default ? 'always simulate' : 'simulate when asked'}`} />
+    <p class="muted small">
+      A simulation replays the query log with and without a change and shows what would have been answered differently. It never
+      touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
     {#if can('admin')}
       <!-- REQ: API-007 (T6.7) -->

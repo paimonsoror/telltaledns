@@ -1051,8 +1051,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    // 82 with OPS-010's /nodes/{id}/maintenance.
-    assert_eq!(paths.len(), 82);
+    // 84 with OPS-010's /nodes/{id}/maintenance and OBS-024's /simulate and
+    // /simulate-settings/default.
+    assert_eq!(paths.len(), 84);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -1768,6 +1769,112 @@ async fn ops_010_maintenance_requests_over_http() {
     )
     .await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+}
+
+// REQ: OBS-024, AGT-004 — simulations over HTTP: `simulate` needs a dry run; agents need
+// `querylog:read` (and `config:read` for a whole configuration), never a group restriction;
+// `POST /simulate` needs no reason header (it changes nothing).
+#[tokio::test]
+async fn obs_024_simulation_requests_over_http() {
+    let (app, _) = app();
+    let put = |token: &str, query: &str| {
+        Request::put(format!("/api/v1/rules/r1{query}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "trying it")
+            .body(Body::from(r#"{"action":"block","domain":"x.example"}"#))
+            .unwrap()
+    };
+    let sim = |token: &str| {
+        Request::post("/api/v1/simulate")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"config":{},"window":"24h"}"#))
+            .unwrap()
+    };
+    let code = |v: &serde_json::Value| v["code"].as_str().map(str::to_owned);
+    let (s, _, v) = send(&app, put(&app.bearer, "?simulate=24h")).await;
+    assert_eq!(
+        (s, code(&v).as_deref()),
+        (StatusCode::BAD_REQUEST, Some("invalid_parameter")),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, put(&app.bearer, "?dryRun=true&simulateUntil=-1h")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // With a dry run the request reaches the backend (this one makes no changes: 503).
+    let (s, _, v) = send(&app, put(&app.bearer, "?dryRun=true&simulate=24h")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    let (s, _, v) = send(&app, sim(&app.bearer)).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+
+    let token = |scopes: &str, group: Option<&str>| {
+        let body = serde_json::json!({"name": format!("t-{scopes}-{group:?}"), "kind": "agent",
+            "scopes": scopes.split(',').collect::<Vec<_>>(), "group": group});
+        Request::post("/api/v1/tokens")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let agent = |scopes: &'static str, group: Option<&'static str>| {
+        let req = token(scopes, group);
+        let app = &app;
+        async move {
+            let (s, _, v) = send(app, req).await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            v["token"].as_str().unwrap().to_owned()
+        }
+    };
+    let writer = agent("config:write:rules", None).await;
+    let (s, _, v) = send(&app, put(&writer, "?dryRun=true&simulate=24h")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(
+        v["detail"].as_str().unwrap().contains("querylog:read"),
+        "{v}"
+    );
+    // `auto` (what plan tools send) is skipped for it, not refused.
+    let (s, _, v) = send(&app, put(&writer, "?dryRun=true&simulate=auto")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    let reader = agent("querylog:read", None).await;
+    let (s, _, v) = send(&app, sim(&reader)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("config:read"), "{v}");
+    let both = agent("querylog:read,config:read", None).await;
+    let (s, _, v) = send(&app, sim(&both)).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "no reason needed: {v}");
+}
+
+// REQ: OBS-024 — `simulate` and `simulateUntil` as the backend takes them.
+#[test]
+fn obs_024_simulate_parameters() {
+    use crate::config_api::{WriteOpts, simulate_opts};
+    let opts = |dry_run: bool, simulate: Option<&str>, until: Option<&str>| WriteOpts {
+        dry_run,
+        simulate: simulate.map(str::to_owned),
+        simulate_until: until.map(str::to_owned),
+    };
+    assert_eq!(simulate_opts(&opts(true, None, None), NOW).unwrap(), None);
+    assert_eq!(
+        simulate_opts(&opts(false, Some("auto"), None), NOW).unwrap(),
+        None
+    );
+    assert!(simulate_opts(&opts(false, Some("24h"), None), NOW).is_err());
+    let s = simulate_opts(&opts(true, Some("true"), None), NOW)
+        .unwrap()
+        .unwrap();
+    assert_eq!((s.window, s.auto, s.until_s), (None, false, None));
+    let s = simulate_opts(&opts(true, Some("auto"), None), NOW)
+        .unwrap()
+        .unwrap();
+    assert!(s.auto);
+    let s = simulate_opts(&opts(true, Some("7d"), Some("-1h")), NOW)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (s.window.as_deref(), s.until_s),
+        (Some("7d"), Some(NOW - 3600))
+    );
+    assert!(simulate_opts(&opts(true, Some("24h"), Some("soon")), NOW).is_err());
 }
 
 // REQ: AGT-005 — a change made through MCP is audited with the agent's address: the REST

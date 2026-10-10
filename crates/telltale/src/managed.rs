@@ -39,6 +39,9 @@ pub(crate) const SCHEDULE: &str = "schedule";
 pub(crate) const RATELIMIT: &str = "ratelimit";
 /// REQ: OBS-022 (T12.1) — the exclusions: one entry, `default`, replacing `[exclusions]`.
 pub(crate) const EXCLUSIONS: &str = "exclusions";
+/// REQ: OBS-024 (T13.1) — change simulation's settings: one entry, `default`, replacing
+/// `[simulate]`.
+pub(crate) const SIMULATE: &str = "simulate";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -127,6 +130,8 @@ pub(crate) struct Entries {
     pub(crate) ratelimit: Option<telltale_config::RateLimitConfig>,
     /// The `[exclusions]` the API or UI set, likewise.
     pub(crate) exclusions: Option<telltale_config::ExclusionsConfig>,
+    /// REQ: OBS-024 — the `[simulate]` the API or UI set, likewise.
+    pub(crate) simulate: Option<telltale_config::SimulateConfig>,
 }
 
 /// Where the state database lives.
@@ -211,6 +216,10 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, x)| x),
+        simulate: decode::<telltale_config::SimulateConfig>(state, SIMULATE)
+            .into_iter()
+            .next()
+            .map(|(_, x)| x),
     }
 }
 
@@ -250,6 +259,9 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     }
     if let Some(x) = &e.exclusions {
         cfg.exclusions = x.clone();
+    }
+    if let Some(x) = &e.simulate {
+        cfg.simulate = x.clone();
     }
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {

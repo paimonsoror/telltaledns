@@ -318,6 +318,17 @@
         "$ref": "#/$defs/ScheduleConfig"
       }
     },
+    "simulate": {
+      "description": "REQ: OBS-024 (T13.1) — change simulation over the query log.",
+      "$ref": "#/$defs/SimulateConfig",
+      "default": {
+        "default_window": "24h",
+        "enabled": true,
+        "max_rows": 2000000,
+        "max_secs": 20,
+        "plans_by_default": false
+      }
+    },
     "slo": {
       "description": "REQ: OBS-016 (T11.1) — service-level objectives: how reliably and how fast DNS should\nanswer, the error budget that leaves, and how fast it's being spent.",
       "$ref": "#/$defs/SloConfig",
@@ -2893,6 +2904,43 @@
           ],
           "default": null,
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SimulateConfig": {
+      "description": "REQ: OBS-024 (T13.1, ADR-115) — change simulation: what a configuration change would have\ndone to the queries in the query log (newly blocked, newly allowed, changed routes and\nanswers), asked for with `simulate=` on a dry run, `POST /api/v1/simulate`, or by agents.\nShared by the whole cluster; also in Settings → System → Change simulation.",
+      "type": "object",
+      "properties": {
+        "default_window": {
+          "description": "The window when a request doesn't name one: `30m`, `24h`, `7d` (at most 7 days).",
+          "type": "string",
+          "default": "24h",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "enabled": {
+          "description": "Off: every simulation answers \"unavailable\" (dry runs still work, without it).",
+          "type": "boolean",
+          "default": true
+        },
+        "max_rows": {
+          "description": "Most logged queries one simulation reads (at least 1,000), newest first.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 2000000,
+          "minimum": 0
+        },
+        "max_secs": {
+          "description": "Longest a simulation reads the query log, in seconds (1 to 300); past it the answer\nis partial (the newest queries).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 20,
+          "minimum": 0
+        },
+        "plans_by_default": {
+          "description": "AI agents' plans simulate only when the agent asks (`simulate` on a `plan_*` tool);\non, every plan carries one over `default_window`. A person sets this, never an agent.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

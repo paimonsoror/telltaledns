@@ -1178,6 +1178,40 @@ telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
 - Line numbers come from the stored copy of each list. If a list was downloaded again after the snapshot was compiled, the output says so.
 - Explain covers the query name only. CNAME targets in an upstream answer are checked too when the server answers (see [Blocking](#blocking)); explain a target name to see its rules.
 
+## Trying a change against yesterday's traffic
+Explain answers for one name. A simulation answers for a whole change: before you save it, the queries already in the query log are decided again with the change and without it, and only the differences are reported.
+
+- **In the UI:** the quick-rule form, the device drawer ("Add to group…"), and the checked preview of a list, group, upstream, or schedule have a **What would this have done?** button. It shows four counts (newly blocked, newly allowed, a changed route, a changed answer), the names behind each with the list or rule that decided, and the devices and groups. A name links to the query log. Nothing is saved until you save the change.
+- **Any dry run:** add `simulate` to a change's `?dryRun=true`. The value is a window, or `true` for the default one. The response gains `simulation`:
+  ```sh
+  curl -X PUT 'https://dns.example.com/api/v1/rules/kids-tiktok?dryRun=true&simulate=24h' \
+    -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -d '{"action":"block","domain":"tiktok.com","groups":["kids"]}'
+  # "simulation": {"rows": 183204, "newlyBlocked": {"queries": 412, "devices": 2,
+  #   "topNames": [{"name": "www.tiktok.com", "queries": 300, "devices": 2, "list": "quick rule: tiktok.com"}]}, ...}
+  ```
+  `simulateUntil` moves the end of the window back (`-24h`, or an RFC 3339 time). A change that can't affect an answer, such as an alert rule or the exclusions, answers `"applicable": false` instead of replaying anything.
+- **A whole configuration:** `POST /api/v1/simulate` takes the shared sections as JSON, the way a Git commit's TOML becomes. `telltale config simulate` reads the TOML for you, so you can test a commit before pushing it:
+  ```sh
+  TELLTALE_TOKEN=... telltale config simulate shared.toml --window 24h --url https://dns.example.com:8053
+  # 183204 logged queries from 2026-10-08T12:00:00.000Z to 2026-10-09T12:00:00.000Z
+  #                  QUERIES  DEVICES
+  # newly blocked    412      2
+  # ...
+  ```
+  Node-local sections in the file are ignored.
+
+How it works, and its limits:
+- **Only the change is compiled.** The running filter is reused. Lists the change adds or edits are compiled on the side, in a temporary snapshot that is removed afterwards, and their matches are merged with the running ones by the usual precedence. A list being removed simply stops taking part.
+- **What is decided again:** who may query, local records and zones, quick rules (at each query's own time), schedules (likewise), list rewrites, the lists, the AAAA filter, group rewrites and safe search, and the upstream group a query would go to. Rate-limited, malformed, and dropped queries never reached those steps and count as unchanged. A pause of blocking isn't replayed: both sides are decided as if nothing were paused.
+- **Devices** are recognized again by address. A device that was recognized by its MAC address or client ID when it asked keeps the group its queries were logged with, and the result notes it.
+- **Bounds:** one simulation runs at a time per node (a second one gets `409 simulation_busy`, retry in a few seconds). Each node reads at most `[simulate] max_rows` queries, newest first, for at most `max_secs` seconds, at background priority; past either bound the answer says `partial`. The window is at most 7 days.
+- **Clusters:** every node replays its own log, and a controller also replays the logs its resolver pods ship to it. The counts are added up, and a node that didn't answer is listed in `missingNodes`.
+- **Privacy:** at query-log privacy level 1 names are stored hashed, so a change that depends on names can't be replayed (`"available": false, "reason": "privacy_level"`). Moving a device between groups still can: its queries count as unchanged when the new groups decide alike, else as undetermined. At level 2 and above nothing can be replayed.
+- DNS answering never waits for a simulation, and a simulation never asks an upstream or touches the cache. It's about decisions: it can't count names nobody asked, and it doesn't predict latency or what an upstream would answer.
+
+Settings: `[simulate]` (Settings → System → Change simulation in the UI): `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask, see [Plans and approval](#plans-and-approval)), `max_secs` (1 to 300, default 20), `max_rows` (at least 1,000, default 2,000,000), and `default_window` (default `24h`, at most `7d`). Metrics: `telltale_simulations_total{outcome}`, `telltale_simulation_duration_seconds`, `telltale_simulation_rows_total`.
+
 ## Who can query, and how often
 ```toml
 [access]
@@ -2366,6 +2400,7 @@ A `plan_*` tool asks the node what the change would do (the same dry run as `?dr
 - **`apply_plan`** makes the change exactly as planned, on every node. If anything in the configuration changed since the plan was made, the plan is **stale** and nothing happens; the agent plans again. Applying twice changes nothing more.
 - **Approval:** with `[agents] require_approval = true`, a plan waits for a person. Operators see **N agent changes to review** in the header and approve or reject on the **Agent changes** page (or `POST /api/v1/plans/{id}/approve` and `/reject`). Agent tokens can't approve anything, their own plans included. Approvals and rejections are audited.
 - **Who did it:** the change is audited as the agent, with its owner, its MCP client, and the plan's reason. The approval is a separate audit entry under the operator's name.
+- **What it would have done:** a plan tool takes `simulate` (`"24h"`, up to `"7d"`): the preview then carries `simulation`, the change replayed over the query log (see [Trying a change against yesterday's traffic](#trying-a-change-against-yesterdays-traffic)). Plans don't simulate unless the agent asks, because a simulation costs CPU on every node; an operator can make every plan simulate with `[simulate] plans_by_default = true` (Settings → System → Change simulation). No agent tool can turn that on. If the node is busy with another simulation, the plan is made without it and its `note` says so. `simulate_change` previews a change's simulation without making a plan. Simulating needs the `querylog:read` scope too.
 - `GET /api/v1/plans` lists plans for the last day (an agent token sees only its own).
 - Plans live in the memory of the node that made them: a restart drops open plans (the agent just plans again). In a cluster, point agents at the node whose UI you use (normally the primary).
 

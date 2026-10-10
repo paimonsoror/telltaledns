@@ -251,6 +251,10 @@ pub(crate) fn rpc_handler(
                 .await
                 .map_err(|e| format!("maintenance worker failed: {e}"))?;
             }
+            if kind == crate::simulate::KIND {
+                // REQ: OBS-024 — another node simulating a change over the cluster's logs.
+                return crate::simulate::handle(src, body).await;
+            }
             if kind == crate::ship::KIND {
                 // REQ: CLU-007 — a node in ship mode delivering its query log.
                 return tokio::task::spawn_blocking(move || {
@@ -1281,6 +1285,14 @@ impl Backend for Federated {
         body: serde_json::Value,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::CheckResult, Problem>> {
         self.local.check_list(body)
+    }
+    // REQ: OBS-024 — the local backend asks the other nodes itself (`sim.run`).
+    fn simulate(
+        &self,
+        config: serde_json::Value,
+        opts: telltale_api::SimulateOpts,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::Simulation, Problem>> {
+        self.local.simulate(config, opts)
     }
     // REQ: OBS-010 (T9.5) — any node may meet a device first; the earliest sighting wins.
     fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {

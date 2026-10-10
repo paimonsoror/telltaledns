@@ -452,7 +452,7 @@ fn rcode_text(rc: u16) -> String {
 /// `spec/03` §3 steps 2–5 (access, ANY, special names, local records and zones): the outcome
 /// if one of them answers, else the special-name class to continue with. Rate limiting
 /// depends on the moment, not the name, so it isn't explained.
-fn answered_early(
+pub(crate) fn answered_early(
     policy: &crate::pipeline::Policy,
     q: &telltale_proto::Query<'_>,
     client: IpAddr,

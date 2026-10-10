@@ -628,8 +628,17 @@ pub(crate) fn render(src: &Sources) -> String {
     );
     cluster_metrics(src, &mut w);
     render_maintenance(src, &mut w);
+    crate::simulate::render(&mut w);
     render_slo(&mut w, &src.config.load().slo);
     render_probes(&mut w, &src.probes);
+    render_filter_index(src, &mut w);
+    render_listeners(&mut w, src);
+    w.family("telltale_local_records", "gauge", "Local records loaded.")
+        .sample("telltale_local_records", &[], state.policy.local.len());
+    w.finish()
+}
+
+fn render_filter_index(src: &Sources, w: &mut PromWriter) {
     if let Some(f) = src.pipeline.filter.load_full() {
         w.family(
             "telltale_filter_lookup_index_bytes",
@@ -642,10 +651,6 @@ pub(crate) fn render(src: &Sources) -> String {
             f.matcher.index_bytes(),
         );
     }
-    render_listeners(&mut w, src);
-    w.family("telltale_local_records", "gauge", "Local records loaded.")
-        .sample("telltale_local_records", &[], state.policy.local.len());
-    w.finish()
 }
 
 /// REQ: OBS-016 (ADR-105) — the objectives as configured, so dashboards and recording rules

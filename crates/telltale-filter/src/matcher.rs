@@ -137,11 +137,50 @@ pub enum Decision {
 }
 
 /// Ordering key for attribution within a tier: exact < deeper suffix < regex < list ID.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Rank(u8, u8, u16);
 
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 struct Best([Option<(Rank, Attribution)>; 4]);
+
+/// REQ: OBS-024 (T13.1, ADR-115) — each tier's best match with its precedence key, so the
+/// decisions of two snapshots (the serving one, and a side snapshot of only the changed lists)
+/// merge exactly as one compile of both would decide: map both into one list-ID space
+/// ([`Ranked::remap`]), then [`Ranked::merge`]. Off the query path (simulations).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Ranked(Best);
+
+impl Ranked {
+    /// Maps each match's list ID (`None` drops the match): IDs must keep their order within
+    /// one snapshot, as list order does in a combined compile.
+    pub fn remap(&mut self, f: impl Fn(u16) -> Option<u16>) {
+        for slot in &mut self.0.0 {
+            *slot = slot.and_then(|(mut rank, mut a)| {
+                let id = f(a.list)?;
+                rank.2 = id;
+                a.list = id;
+                Some((rank, a))
+            });
+        }
+    }
+
+    /// Keeps each tier's better match of `self` and `other`.
+    pub fn merge(&mut self, other: &Self) {
+        for (tier, slot) in other.0.0.iter().enumerate() {
+            if let Some((rank, a)) = slot {
+                let mine = &mut self.0.0[tier];
+                if mine.is_none_or(|(r, _)| *rank < r) {
+                    *mine = Some((*rank, *a));
+                }
+            }
+        }
+    }
+
+    /// The decision, as [`Matcher::decide`] reports it.
+    pub fn decision(&self) -> Decision {
+        self.0.decision()
+    }
+}
 
 impl Best {
     fn offer(&mut self, tier: Tier, rank: Rank, a: Attribution) {
@@ -750,6 +789,24 @@ impl Matcher {
         let mut best = Best::default();
         self.run(&name, qname, qtype, client, mask, scratch, &mut best);
         best.decision()
+    }
+
+    /// REQ: OBS-024 (T13.1) — like [`Matcher::decide`], keeping each tier's best match with its
+    /// precedence key so it can be merged with another snapshot's ([`Ranked`]).
+    pub fn decide_ranked(
+        &self,
+        qname: &[u8],
+        qtype: u16,
+        client: &ClientCtx<'_>,
+        mask: &ListMask,
+        scratch: &mut Scratch,
+    ) -> Ranked {
+        let Some(name) = Name::from_wire(qname) else {
+            return Ranked::default();
+        };
+        let mut best = Best::default();
+        self.run(&name, qname, qtype, client, mask, scratch, &mut best);
+        Ranked(best)
     }
 
     /// REQ: FLT-014 (T9.20) — the `$dnsrewrite` answer for `qname`/`qtype`, if a rewrite rule in

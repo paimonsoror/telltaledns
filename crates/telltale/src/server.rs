@@ -129,6 +129,28 @@ pub(crate) fn build_dynamic(
     Ok((router, policy))
 }
 
+/// REQ: OBS-024 (T13.1) — the policy and router a configuration would run with, built without
+/// side effects or log lines (simulations build one per request, beside the serving state).
+pub(crate) fn build_candidate(cfg: &Config) -> Result<(Arc<Router>, Policy), Vec<String>> {
+    let router = Arc::new(Router::from_config(cfg).map_err(|errs| {
+        errs.into_iter()
+            .map(|e| format!("upstreams: {e}"))
+            .collect::<Vec<_>>()
+    })?);
+    let (local, report) = LocalData::from_config(cfg);
+    if !report.errors.is_empty() {
+        return Err(report
+            .errors
+            .into_iter()
+            .map(|e| format!("local records: {e}"))
+            .collect());
+    }
+    let zones = load_zones(cfg)?;
+    let mut policy = Policy::from_config(cfg, local);
+    policy.zones = Arc::new(zones);
+    Ok((router, policy))
+}
+
 /// REQ: DNS-018 (T7.22) — `[[zone]]`: each zone's file and records, most specific first.
 pub(crate) fn load_zones(cfg: &Config) -> Result<Vec<crate::pipeline::Zone>, Vec<String>> {
     let mut zones = Vec::new();

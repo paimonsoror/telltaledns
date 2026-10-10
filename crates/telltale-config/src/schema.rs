@@ -65,6 +65,8 @@ pub struct Config {
     /// Always serialized, like every top-level section: a replica merges the primary's shared
     /// sections into its own by key (`shared::with_shared`).
     pub exclusions: ExclusionsConfig,
+    /// REQ: OBS-024 (T13.1) — change simulation over the query log.
+    pub simulate: SimulateConfig,
     /// REQ: DNS-005 — settings of the DNS answers themselves.
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
@@ -128,6 +130,7 @@ impl Default for Config {
             access: AccessConfig::default(),
             ratelimit: RateLimitConfig::default(),
             exclusions: ExclusionsConfig::default(),
+            simulate: SimulateConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
@@ -1414,6 +1417,54 @@ impl ExclusionsConfig {
     pub fn active(&self) -> bool {
         self.enabled && !(self.names.is_empty() && self.clients.is_empty())
     }
+}
+
+/// REQ: OBS-024 (T13.1, ADR-115) — change simulation: what a configuration change would have
+/// done to the queries in the query log (newly blocked, newly allowed, changed routes and
+/// answers), asked for with `simulate=` on a dry run, `POST /api/v1/simulate`, or by agents.
+/// Shared by the whole cluster; also in Settings → System → Change simulation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct SimulateConfig {
+    /// Off: every simulation answers "unavailable" (dry runs still work, without it).
+    pub enabled: bool,
+    /// AI agents' plans simulate only when the agent asks (`simulate` on a `plan_*` tool);
+    /// on, every plan carries one over `default_window`. A person sets this, never an agent.
+    pub plans_by_default: bool,
+    /// Longest a simulation reads the query log, in seconds (1 to 300); past it the answer
+    /// is partial (the newest queries).
+    pub max_secs: u32,
+    /// Most logged queries one simulation reads (at least 1,000), newest first.
+    pub max_rows: u64,
+    /// The window when a request doesn't name one: `30m`, `24h`, `7d` (at most 7 days).
+    pub default_window: SafeString,
+}
+
+impl Default for SimulateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            plans_by_default: false,
+            max_secs: 20,
+            max_rows: 2_000_000,
+            default_window: SafeString::from("24h"),
+        }
+    }
+}
+
+/// REQ: OBS-024 — a simulation window (`90m`, `24h`, `7d`; `m`, `h`, `d`) in seconds.
+pub fn window_secs(text: &str) -> Option<u64> {
+    let t = text.trim();
+    let split = t.find(|c: char| !c.is_ascii_digit())?;
+    let (n, unit) = t.split_at(split);
+    let n: u64 = n.parse().ok()?;
+    let mult = match unit {
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return None,
+    };
+    n.checked_mul(mult).filter(|s| *s > 0)
 }
 
 /// Built-in handling of special names (`spec/03` §3 step 4).

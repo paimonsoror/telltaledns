@@ -56,6 +56,8 @@ EOF
 for _ in $(seq 100); do curl -s -o /dev/null "$API/api/v1/auth/status" && break; sleep 0.1; done
 for i in $(seq 20); do dig +short +time=1 -p 25993 @127.0.0.1 tv-portal.mcp.test >/dev/null || true; done
 for _ in $(seq 30); do dig +time=1 -p 25993 @127.0.0.1 ads.mcp.test | grep -q 'EDE: 15' && break; sleep 0.3; done
+# REQ: OBS-024 — five queries for a name a plan will block, for the simulations to find.
+for i in $(seq 5); do dig +short +time=1 -p 25993 @127.0.0.1 sim.mcp.test >/dev/null || true; done
 sleep 2 # the query log flushes every second here
 
 ST=$(cat "$E/data/setup-token")
@@ -66,10 +68,11 @@ token() { # scopes JSON
   curl -sf -b "$E/jar" -H "x-csrf-token: $CSRF" -H 'content-type: application/json' \
     -d "{\"name\":\"mcp-$RANDOM\",\"kind\":\"agent\",\"scopes\":$1}" "$API/api/v1/tokens" | field 'd["token"]'
 }
-export AGENT_TOKEN NARROW_TOKEN WRITER_TOKEN ADMIN_PASSWORD=mcp-e2e-pass-1
+export AGENT_TOKEN NARROW_TOKEN WRITER_TOKEN SIM_TOKEN ADMIN_PASSWORD=mcp-e2e-pass-1
 AGENT_TOKEN=$(token '["analytics:read","config:read","querylog:read"]')
 NARROW_TOKEN=$(token '["analytics:read"]')
 WRITER_TOKEN=$(token '["analytics:read","config:write:rules"]')
+SIM_TOKEN=$(token '["analytics:read","config:write:rules","querylog:read"]')
 
 (cd deploy/mcp-e2e && npm install --silent --no-audit --no-fund >/dev/null)
 node deploy/mcp-e2e/check.mjs "$API" "$B" docs/api/mcp-tools.json

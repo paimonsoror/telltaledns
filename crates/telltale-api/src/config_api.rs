@@ -20,7 +20,7 @@ use crate::auth::Auth;
 use crate::auth::routes::{body, principal, reason, remote};
 use crate::model::{ClientChange, ClientInput, ConfigChange, ForwardInput, RecordsInput};
 use crate::problem::{Code, Problem};
-use crate::{Backend, ClientWrite, ManagedKind, ManagedWrite};
+use crate::{Backend, ClientWrite, ManagedKind, ManagedWrite, SimulateOpts};
 
 type Ctx = (Arc<dyn Backend>, Arc<Auth>);
 
@@ -31,6 +31,31 @@ type Ctx = (Arc<dyn Backend>, Arc<Auth>);
 pub struct DryRun {
     /// Validate and report the change without applying it.
     pub dry_run: Option<bool>,
+    /// REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+    /// `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+    /// change would have done to those queries (`simulation`). `auto`: only when
+    /// `[simulate] plans_by_default` is on.
+    pub simulate: Option<String>,
+    /// REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+    /// Default now.
+    pub simulate_until: Option<String>,
+}
+
+/// `?dryRun=true` alone, where nothing can be simulated (promotion).
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct PlainDryRun {
+    /// Check and report without changing anything.
+    pub dry_run: Option<bool>,
+}
+
+/// A dry run's options.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WriteOpts {
+    pub(crate) dry_run: bool,
+    pub(crate) simulate: Option<String>,
+    pub(crate) simulate_until: Option<String>,
 }
 
 /// Header names.
@@ -116,6 +141,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
         .route(
             "/api/v1/exclusions/default",
             put(put_exclusions).delete(delete_exclusions),
+        )
+        // REQ: OBS-024 (T13.1)
+        .route(
+            "/api/v1/simulate-settings/default",
+            put(put_simulate_settings).delete(delete_simulate_settings),
         )
         .with_state((backend, auth))
 }
@@ -450,7 +480,7 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
 /// Admin only; audited as `cluster.promote`. From a signed-in session it needs `password`
 /// (and `totp` with two-factor sign-in on); API tokens don't.
 #[utoipa::path(post, path = "/api/v1/cluster/promote", tag = "system",
-    params(DryRun),
+    params(PlainDryRun),
     request_body = crate::model::PromoteRequest,
     responses(
         (status = 200, body = crate::model::ClusterView, description = "Promoted; the cluster as it is now. With `dryRun=true`: a `PromotePlan` instead, and nothing changed."),
@@ -462,7 +492,7 @@ pub(crate) fn admin_routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router
     ))]
 pub(crate) async fn cluster_promote(
     State((backend, auth)): State<Ctx>,
-    Query(q): Query<DryRun>,
+    Query(q): Query<PlainDryRun>,
     headers: HeaderMap,
     ext: axum::http::Extensions,
     b: Result<Json<crate::model::PromoteRequest>, JsonRejection>,
@@ -471,7 +501,7 @@ pub(crate) async fn cluster_promote(
         Ok(r) => r,
         Err(p) => return p.into_response(),
     };
-    if dry(&q) {
+    if q.dry_run.unwrap_or(false) {
         let b2 = Arc::clone(&backend);
         return tokio::task::spawn_blocking(move || b2.promote_plan(&req))
             .await
@@ -1088,6 +1118,74 @@ pub(crate) async fn delete_exclusions(
     .await
 }
 
+/// Change simulation's settings (OBS-024).
+///
+/// The body has the same fields as `[simulate]` in `telltale.toml`: `enabled` (simulations at
+/// all), `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs`
+/// (1 to 300), `max_rows` (at least 1,000), and `default_window` (`24h`; at most `7d`). It
+/// replaces the whole section until it's deleted again, on every node of a cluster.
+#[utoipa::path(put, path = "/api/v1/simulate-settings/default", tag = "config",
+    params(DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "A bound is out of range, or the configuration wouldn't be valid."),
+    ))]
+pub(crate) async fn put_simulate_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let request = format!("PUT /simulate-settings/default {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Simulate, Some(input)),
+    )
+    .await
+}
+
+/// Go back to the config file's simulation settings (OBS-024).
+///
+/// Removes what the API or UI stored, so `[simulate]` in the config files (or the defaults)
+/// applies again. 404 when nothing was stored.
+#[utoipa::path(delete, path = "/api/v1/simulate-settings/default", tag = "config",
+    params(DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "Nothing was changed through the API: the file's settings are in effect already."),
+    ))]
+pub(crate) async fn delete_simulate_settings(
+    State((backend, auth)): State<Ctx>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        "DELETE /simulate-settings/default".to_owned(),
+        "default".to_owned(),
+        Op::Managed(ManagedKind::Simulate, None),
+    )
+    .await
+}
+
 /// What a write changes.
 enum Op {
     Client(Option<ClientInput>),
@@ -1110,6 +1208,7 @@ impl Op {
             Self::Managed(ManagedKind::Schedule, _) => "schedule",
             Self::Managed(ManagedKind::RateLimit, _) => "ratelimit",
             Self::Managed(ManagedKind::Exclusions, _) => "exclusions",
+            Self::Managed(ManagedKind::Simulate, _) => "simulate",
         }
     }
     fn deleting(&self) -> bool {
@@ -1117,8 +1216,44 @@ impl Op {
     }
 }
 
-fn dry(q: &DryRun) -> bool {
-    q.dry_run.unwrap_or(false)
+fn dry(q: &DryRun) -> WriteOpts {
+    WriteOpts {
+        dry_run: q.dry_run.unwrap_or(false),
+        simulate: q.simulate.clone(),
+        simulate_until: q.simulate_until.clone(),
+    }
+}
+
+/// REQ: OBS-024 — `simulate`/`simulateUntil` as the backend takes them. Only with a dry run
+/// (`auto` is ignored without one: it means "if the settings say so").
+pub(crate) fn simulate_opts(d: &WriteOpts, now_s: u64) -> Result<Option<SimulateOpts>, Problem> {
+    let Some(text) = d.simulate.as_deref().map(str::trim) else {
+        if d.simulate_until.is_some() {
+            return Err(Problem::invalid("`simulateUntil` needs `simulate`"));
+        }
+        return Ok(None);
+    };
+    let auto = text.eq_ignore_ascii_case("auto");
+    if !d.dry_run {
+        if auto {
+            return Ok(None);
+        }
+        return Err(Problem::invalid("`simulate` needs `dryRun=true`")
+            .hint("A simulation previews a change: add dryRun=true."));
+    }
+    let until_s = d
+        .simulate_until
+        .as_deref()
+        .map(|u| crate::time::parse_time(u, now_s))
+        .transpose()
+        .map_err(|e| Problem::invalid(format!("`simulateUntil`: {e}")))?;
+    let window =
+        (!auto && !text.is_empty() && !text.eq_ignore_ascii_case("true")).then(|| text.to_owned());
+    Ok(Some(SimulateOpts {
+        window,
+        auto,
+        until_s,
+    }))
 }
 
 fn json_of<T: serde::Serialize>(v: &T) -> String {
@@ -1428,13 +1563,13 @@ pub(crate) async fn delete_rule(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one path for every write
 async fn write(
     backend: Arc<dyn Backend>,
     auth: Arc<Auth>,
     headers: HeaderMap,
     ext: axum::http::Extensions,
-    dry_run: bool,
+    dry: WriteOpts,
     request: String,
     name: String,
     op: Op,
@@ -1443,6 +1578,19 @@ async fn write(
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
+    let dry_run = dry.dry_run;
+    let simulate = match simulate_opts(&dry, backend.now_unix_seconds()) {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    // REQ: OBS-024 — a simulation reads the query log: agents need that scope too.
+    if simulate.as_ref().is_some_and(|s| !s.auto)
+        && let Err(e) = crate::simulate_api::agent_may_simulate(&p, None)
+    {
+        return e.into_response();
+    }
+    // `simulate=auto` from a token that can't read the log: no simulation, not an error.
+    let simulate = simulate.filter(|_| crate::simulate_api::agent_may_simulate(&p, None).is_ok());
     if let Err(e) = group_guard(&p, backend.as_ref(), &name, &op) {
         return e.into_response();
     }
@@ -1487,6 +1635,7 @@ async fn write(
                 dry_run,
                 expect,
                 by: actor.name.clone(),
+                simulate: simulate.clone(),
             })
             .await
             .map(|c| serde_json::to_value(c).unwrap_or_default()),
@@ -1498,10 +1647,12 @@ async fn write(
                 dry_run,
                 expect,
                 by: actor.name.clone(),
+                simulate,
             })
             .await
             .map(|c| serde_json::to_value(c).unwrap_or_default()),
     };
+    let result = result.map_err(|e| crate::simulate_api::sanitize_problem(&p, e));
     let (status, text) = match &result {
         Ok(c) => (StatusCode::OK, c.to_string()),
         Err(e) => (e.code_status(), json_of(e)),

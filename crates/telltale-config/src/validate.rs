@@ -67,6 +67,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     zones(cfg, &mut r);
     otlp(cfg, &mut r);
     exclusions(cfg, &mut r);
+    simulate(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
@@ -291,6 +292,28 @@ fn exclusions(cfg: &Config, r: &mut Report<'_>) {
         if n > 1000 {
             r.err(format!("exclusions.{what}"), "at most 1,000");
         }
+    }
+}
+
+// REQ: OBS-024 (T13.1) — bounds a Pi and a pod can both keep; a window of at most 7 days.
+fn simulate(cfg: &Config, r: &mut Report<'_>) {
+    let s = &cfg.simulate;
+    if !(1..=300).contains(&s.max_secs) {
+        r.err("simulate.max_secs", "from 1 to 300 seconds");
+    }
+    if s.max_rows < 1000 {
+        r.err("simulate.max_rows", "at least 1000");
+    }
+    match crate::schema::window_secs(&s.default_window) {
+        Some(w) if w <= 7 * 86_400 => {}
+        Some(_) => r.err("simulate.default_window", "at most 7 days (7d)"),
+        None => r.err(
+            "simulate.default_window",
+            format!(
+                "`{}`: a number and m, h, or d (e.g. 24h)",
+                &*s.default_window
+            ),
+        ),
     }
 }
 

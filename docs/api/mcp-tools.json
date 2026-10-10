@@ -529,6 +529,44 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. Nothing is planned or changed. What would a change have done to the queries already in the query log? Give kind (block_domain, allow_domain, add_list, assign_client, update_group), change (the same arguments as the matching plan_* tool, without reason), and window (\"24h\" default, at most \"7d\"). Every logged query in the window is decided again with and without the change; returns the differences: newly blocked, newly allowed, changed route, changed answer, with the top names (and the deciding list), devices, and groups. Busy (one simulation per node at a time): retry in a few seconds. Needs querylog:read and the write scope of that kind of change.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "change": {
+          "description": "The plan tool's arguments, e.g. {\"domain\": \"tiktok.com\", \"groups\": [\"kids\"]} for block_domain.",
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "block_domain",
+            "allow_domain",
+            "add_list",
+            "assign_client",
+            "update_group"
+          ],
+          "type": "string"
+        },
+        "window": {
+          "description": "How far back: 30m, 24h, 7d (default: the configured window, usually 24h).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "change"
+      ],
+      "type": "object"
+    },
+    "name": "simulate_change"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false
@@ -562,6 +600,10 @@
         },
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
         }
       },
@@ -610,6 +652,10 @@
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
           "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
         }
       },
       "required": [
@@ -641,6 +687,10 @@
         },
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
         }
       },
@@ -684,6 +734,10 @@
         },
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
         }
       },
@@ -739,6 +793,10 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
         }
       },
       "required": [
@@ -767,6 +825,10 @@
         },
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
         }
       },
@@ -803,6 +865,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
         }
       },
       "required": [
@@ -851,6 +917,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
         },
         "url": {
           "description": "Where to download it (https).",
@@ -906,6 +976,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
         },
         "tz": {
           "description": "IANA time zone, e.g. America/New_York (default: the node's).",
@@ -1003,6 +1077,10 @@
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
           "type": "string"
         },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
+        },
         "windowSecs": {
           "description": "The window, in seconds (default 60).",
           "minimum": 1,
@@ -1047,6 +1125,10 @@
         },
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
         }
       },
@@ -1115,6 +1197,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
+          "type": "string"
         }
       },
       "required": [
@@ -1157,6 +1243,10 @@
         },
         "reason": {
           "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "simulate": {
+          "description": "Optional: also replay the query log over this window (\"24h\", \"7d\"; at most 7 days) and show in preview.simulation what the change would have done to those queries: newly blocked, newly allowed, changed route, changed answer, by name, device, and group. Plans don't simulate unless you pass it (or an operator turned on plans_by_default). Takes seconds; needs the querylog:read scope.",
           "type": "string"
         },
         "strategy": {

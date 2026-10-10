@@ -62,6 +62,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "config:write:exclusions",
         "change which names and devices are kept out of the query log and analytics",
     ),
+    (
+        "config:write:simulate",
+        "change the change-simulation settings (on/off, bounds, plans simulating by default)",
+    ),
     ("ops:pause", "pause and resume blocking"),
     ("ops:cache", "flush the cache"),
     (
@@ -218,6 +222,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/exclusions") {
             return Need::Scope("config:write:exclusions");
         }
+        // REQ: OBS-024 (T13.1)
+        if under("/api/v1/simulate-settings") {
+            return Need::Scope("config:write:simulate");
+        }
         // REQ: OPS-010 — ending maintenance (starting it is a POST).
         if *method == Method::DELETE && maintenance_path(p) {
             return Need::Scope("ops:maintenance");
@@ -260,6 +268,9 @@ fn post_need(p: &str) -> Option<Need> {
             Need::Scope("ops:anomalies")
         }
         "/api/v1/cluster/promote" => Need::Scope("cluster:admin"),
+        // REQ: OBS-024 — a simulation reads the query log (and, for a whole configuration,
+        // `config:read`: checked by the route).
+        "/api/v1/simulate" => Need::Scope("querylog:read"),
         _ => return None,
     })
 }
@@ -405,8 +416,9 @@ pub fn check(
         .hint("Restricted tokens can read the query log, top lists, and devices, and change devices, for their group."));
     }
     // MCP messages are POSTs, but the tools are read-only (their REST calls are GETs).
+    // REQ: OBS-024 — nor does a simulation change anything.
     let changes = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
-        && path.trim_end_matches('/') != "/mcp";
+        && !matches!(path.trim_end_matches('/'), "/mcp" | "/api/v1/simulate");
     if changes && reason.is_none_or(|r| r.trim().is_empty()) {
         return Err(
             Problem::invalid("agents must say why they change something").hint(
@@ -590,13 +602,36 @@ mod tests {
         );
     }
 
+    /// REQ: OBS-024 — the simulation settings need their own write scope; a simulation needs
+    /// the query log.
+    #[test]
+    fn obs_024_simulation_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/simulate-settings/default"),
+                Scope("config:write:simulate"),
+                "{m}"
+            );
+        }
+        assert_eq!(
+            required(&Method::POST, "/api/v1/simulate"),
+            Scope("querylog:read")
+        );
+        assert_eq!(required(&Method::GET, "/api/v1/simulate"), Forbidden);
+        assert_eq!(
+            implied_role(&parse_scopes(&["config:write:simulate".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
     #[test]
     fn agt_004_scopes_parse_and_imply_roles() {
         let s = parse_scopes(&["config:write:*".into(), "analytics:read".into()]).unwrap();
         assert_eq!(
             s.len(),
-            11,
-            "ten write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, exclusions) + analytics"
+            12,
+            "eleven write areas (clients, records, forwards, rules, upstreams, lists, groups, alerts, ratelimit, exclusions, simulate) + analytics"
         );
         assert!(s.contains("config:write:upstreams") && s.contains("config:write:lists"));
         assert!(s.contains("config:write:rules"));

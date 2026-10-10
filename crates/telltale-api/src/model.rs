@@ -813,6 +813,10 @@ pub struct ClientChange {
     pub impact: String,
     /// Configuration warnings after the change.
     pub warnings: Vec<String>,
+    /// REQ: OBS-024 (T13.1) — with `simulate=` on a dry run: what the change would have done
+    /// to the queries in the query log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation: Option<Simulation>,
 }
 
 /// An upstream server and its health.
@@ -1427,6 +1431,118 @@ pub struct ConfigChange {
     /// `state.db`, not in Git. Absent on other nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_in_git: Option<String>,
+    /// REQ: OBS-024 (T13.1) — with `simulate=` on a dry run: what the change would have done to
+    /// the queries in the query log. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation: Option<Simulation>,
+}
+
+/// REQ: OBS-024 (T13.1, ADR-115) — what a configuration change would have done to the queries
+/// already in the query log: each logged query decided again under the current configuration
+/// and under the candidate, and the differences counted. Decisions only: nothing is asked of
+/// upstreams, and caching, DNSSEC, rate limits, pauses, and CNAME-target blocks aren't replayed.
+/// About the past: names nobody asked in the window count for nothing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Simulation {
+    /// False when it couldn't run (`reason` says why: `disabled`, `privacy_level`,
+    /// `no_query_log`, `busy`, ...).
+    pub available: bool,
+    /// False for a change that can't affect a decision (alerts, users, exclusions): nothing
+    /// was read.
+    pub applicable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The window replayed (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Logged queries read (on every node that answered).
+    pub rows: u64,
+    /// Stopped early (`[simulate] max_rows` or `max_secs`): the counts cover the newest `rows`.
+    pub partial: bool,
+    /// Allowed now, blocked under the change.
+    pub newly_blocked: SimulatedClass,
+    /// Blocked now, allowed under the change (`list` names the list that had blocked it).
+    pub newly_allowed: SimulatedClass,
+    /// Forwarded to another upstream group (`list` says from where to where).
+    pub changed_route: SimulatedClass,
+    /// Answered differently without a block: a local record, a rewrite, no IPv6 addresses, a
+    /// special answer (`list` describes the new answer).
+    pub changed_answer: SimulatedClass,
+    pub unchanged: u64,
+    /// At privacy level 1 (names hashed), queries of devices whose group changes to one with
+    /// different settings: they can't be decided again without the names.
+    pub undetermined: u64,
+    /// The devices most affected, most first (at most 50).
+    pub by_device: Vec<SimulatedDevice>,
+    pub by_group: Vec<SimulatedGroup>,
+    /// Approximations that applied (`badfilter_cross_snapshot`, `identity_from_event`, ...).
+    pub notes: Vec<String>,
+    /// Cluster nodes whose queries aren't included (they didn't answer).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+}
+
+/// One kind of difference: how many queries, from how many devices, and the names most
+/// affected (at most 20, most first).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatedClass {
+    pub queries: u64,
+    pub devices: u64,
+    pub top_names: Vec<SimulatedName>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatedName {
+    pub name: String,
+    pub queries: u64,
+    pub devices: u64,
+    /// What decided: the list (or quick rule, schedule) that blocks or had blocked it, the
+    /// route change, or the new answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatedDevice {
+    pub client: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub newly_blocked: u64,
+    pub newly_allowed: u64,
+    pub changed_route: u64,
+    pub changed_answer: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatedGroup {
+    pub group: String,
+    pub newly_blocked: u64,
+    pub newly_allowed: u64,
+    pub changed_route: u64,
+    pub changed_answer: u64,
+}
+
+/// `POST /api/v1/simulate`.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SimulateRequest {
+    /// The candidate shared configuration, as JSON: the shape a Git commit's shared TOML
+    /// becomes (node-local sections are ignored; this node's own apply).
+    #[schema(value_type = Object)]
+    pub config: serde_json::Value,
+    /// How far back: `30m`, `24h`, `7d` (at most 7 days). Default `[simulate] default_window`.
+    #[serde(default)]
+    pub window: Option<String>,
+    /// The end of the window (RFC 3339 or relative, e.g. `-1h`); default now.
+    #[serde(default)]
+    pub until: Option<String>,
 }
 
 /// A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3).

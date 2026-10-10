@@ -8,6 +8,7 @@
   import { ago, duration } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import SimulationCard from '../lib/components/SimulationCard.svelte';
 
   let plans = $state<S['Plan'][]>([]);
   let error = $state<unknown>(null);
@@ -52,7 +53,7 @@
     discarded: ['discarded', ''],
     expired: ['expired', ''],
   };
-  type Preview = { impact?: string; warnings?: string[]; before?: unknown; after?: unknown };
+  type Preview = { impact?: string; warnings?: string[]; before?: unknown; after?: unknown; simulation?: S['Simulation'] | null };
   const preview = (p: S['Plan']) => (p.preview ?? {}) as Preview;
 </script>
 
@@ -90,6 +91,8 @@
       </dl>
       {#if pv.impact}<p class="small"><b>What it does:</b> {pv.impact}</p>{/if}
       {#each pv.warnings ?? [] as w (w)}<p class="small warn-text">{w}</p>{/each}
+      <!-- REQ: OBS-024 — what the plan would have done to the logged queries, when the agent asked. -->
+      {#if pv.simulation}<SimulationCard result={pv.simulation} />{/if}
       <details class="small">
         <summary>Before and after</summary>
         <div class="diff">

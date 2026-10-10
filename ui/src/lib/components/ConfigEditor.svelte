@@ -28,6 +28,7 @@
   import ErrorNote from './ErrorNote.svelte';
   import KeepInGit from './KeepInGit.svelte';
   import HelpButton from './HelpButton.svelte';
+  import SimulationCard from './SimulationCard.svelte';
 
   let {
     kind,
@@ -42,8 +43,8 @@
     formAction,
     singleton = false,
   }: {
-    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions';
-    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions';
+    kind: 'upstream' | 'upstream_group' | 'list' | 'group' | 'alert_destination' | 'alert_rule' | 'schedule' | 'ratelimit' | 'exclusions' | 'simulate';
+    path: 'upstreams' | 'upstream-groups' | 'lists' | 'groups' | 'alerts/destinations' | 'alerts/rules' | 'schedules' | 'ratelimit' | 'exclusions' | 'simulate-settings';
     title: string;
     noun: string;
     fields: Field[];
@@ -178,6 +179,12 @@
       busy = false;
     }
   }
+  // REQ: OBS-024 — kinds whose changes move decisions can be replayed over the query log.
+  const replayable = $derived(['upstream', 'upstream_group', 'list', 'group', 'schedule'].includes(kind));
+  async function simulateDraft(): Promise<S['Simulation'] | null | undefined> {
+    if (!editing) return null;
+    return (await api.putEntry(path, editing.name.trim(), body(), true, 'true')).simulation;
+  }
   const lines = (v: unknown) => (Array.isArray(v) ? v.join('\n') : '');
   const toLines = (s: string) => s.split('\n').map((x) => x.trim()).filter(Boolean);
 </script>
@@ -294,6 +301,7 @@
           <div class="preview" data-testid="entry-preview">
             <p><b>What this will do:</b> {preview.impact || 'Changes the configuration as shown.'}</p>
             {#each preview.warnings as w (w)}<p class="small warn-text">{w}</p>{/each}
+            {#if replayable}<SimulationCard run={simulateDraft} />{/if}
           </div>
           <div class="row">
             <button type="button" class="primary" disabled={busy} onclick={apply}>Apply</button>
