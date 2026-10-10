@@ -128,7 +128,7 @@ sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>
   -v telltale-data:/var/lib/telltale \
   ghcr.io/paimonsoror/telltale:latest
 docker exec telltale telltale auth setup-token</code></pre>
-      <p class="muted">amd64, arm64, and arm/v7; about 11 MiB compressed, web UI included; runs as a non-root user. Published ports can hide each device's own address behind Docker's (the UI warns if they do): on a home network, <code>--network host</code> (or the Pi Compose bundle) makes sure each device shows up as itself. A starter config is in <a href="#configure">step 2</a>.</p>
+      <p class="muted">amd64, arm64, and arm/v7; about 13 MiB compressed, web UI included; runs as a non-root user. Published ports can hide each device's own address behind Docker's (the UI warns if they do): on a home network, <code>--network host</code> (or the Pi Compose bundle) makes sure each device shows up as itself. A starter config is in <a href="#configure">step 2</a>.</p>
     </div>
 
     <div class="panel" id="k8s"><h3>Kubernetes with Helm</h3>

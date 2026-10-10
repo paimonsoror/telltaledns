@@ -37,7 +37,7 @@ dig @127.0.0.1 -p 5300 example.com
 Defaults without `[[listen]]`: UDP and TCP port 53 on `0.0.0.0` and `[::]`, with one worker thread per available CPU (container CPU limits are respected). Ports below 1024 need root or `CAP_NET_BIND_SERVICE`. DoT, DoH, DoQ, and DoH3 listeners are described in "[Encrypted DNS for your devices](#encrypted-dns-for-your-devices-dot-doh-and-doq)".
 
 ## Container image
-`ghcr.io/paimonsoror/telltale:latest` is the newest stable release (also `:X.Y.Z`, `:X.Y`, and `:X`; `:edge` is built from every commit on `main`), for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 11 MiB compressed, with no shell. It runs as user `65532:65532`.
+`ghcr.io/paimonsoror/telltale:latest` is the newest stable release (also `:X.Y.Z`, `:X.Y`, and `:X`; `:edge` is built from every commit on `main`), for `linux/amd64`, `linux/arm64` (Raspberry Pi 3/4/5 with a 64-bit OS), and `linux/arm/v7` (32-bit Pi OS). It contains one static binary, CA certificates, and time-zone data, about 13 MiB compressed, with no shell. It runs as user `65532:65532`.
 ```sh
 docker run -d --name telltale --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \

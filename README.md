@@ -28,14 +28,14 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Run anywhere:** the same artifact on a Pi, in a cluster, or both at once.
 
 ## What it does
-- **Every answer explained.** The query log ties each query to a named device, times every stage, and says why it was answered that way. Names come from your router, from what devices announce over mDNS, or from the UI.
-- **Your rules, per device.** Blocklists, groups for each network or VLAN, schedules, safe search, blocked services, rewrites, and quick rules.
+- **Every answer explained.** The query log ties each query to a named device, times every stage, and says why it was answered that way. Names come from your router, from what devices announce over mDNS, or from the UI, and TelltaleDNS recognizes what each device is (a Roku player, a camera, a thermostat) from its maker and the names it asks for.
+- **Your rules, per device.** Blocklists, groups for each network or VLAN, schedules, safe search, blocked services, rewrites, and quick rules. Before you save a change, see what it would have done to yesterday's real traffic.
 - **Encrypted both ways.** DoT, DoH, and DoQ for your devices and to your upstreams, DNSSEC validation, and full recursion when you'd rather not forward at all.
 - **Watch it work.** A dashboard for the whole cluster, one node, or one site; device anomalies and alerts; Prometheus metrics, OpenTelemetry, dnstap, and event sinks for your SIEM.
-- **One cluster, many places.** A Pi and Kubernetes nodes share one config and one management plane. A witness lets a replica take over automatically, and the config can live in Git.
+- **One cluster, many places.** A Pi and Kubernetes nodes share one config and one management plane. A witness lets a replica take over automatically, and the config can live in Git. Changes can reach a few canary nodes first and roll back by themselves if those start failing, and maintenance mode takes a node out of service without dropped queries or false alarms.
 - **Private by design.** Privacy levels decide how much of each query is kept, from everything to counters only, and every change lands in an audit log.
 - **Ready for agents.** A documented REST API with OpenAPI, `telltale ctl` for the shell, and MCP tools with plans and approval for AI agents.
-- **Small.** One static binary in an image of about 11 MiB, for amd64, arm64, and 32-bit Pi OS, with signed releases.
+- **Small.** One static binary in an image of about 13 MiB, for amd64, arm64, and 32-bit Pi OS, with signed releases.
 
 ## Quick start
 On a Raspberry Pi or any Linux host with Docker:

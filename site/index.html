@@ -118,10 +118,14 @@
       <tr><th scope="row">"Why was this blocked?" down to the list and line</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Per-question timing and percentiles, per device</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Per-network rules: each VLAN or device group gets its own lists, schedules, safe search, and upstream servers: <a href="groups.html">see how</a></th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Try a change against yesterday's real traffic before you save it: what it would have blocked, allowed, or rerouted, by device</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Knows what each device is (a Roku player, a camera, a thermostat) from its maker and the names it asks for, and suggests a name and a group</th><td class="us p">◐</td></tr>
       <tr><th scope="row">Encrypted DNS both ways (DoT / DoH), and DNSSEC validation</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Keeps answering when upstreams fail (serve-stale)</th><td class="us y">✓</td></tr>
       <tr><th scope="row">A small footprint: about 50 MB on a Pi 4 with 2.7 million blocked names</th><td class="us y">✓</td></tr>
       <tr><th scope="row">One cluster across a Pi and Kubernetes, managed from any node</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Changes reach a few canary nodes first, and the cluster goes back to the last good version by itself if they start failing</th><td class="us y">✓</td></tr>
+      <tr><th scope="row">Planned maintenance: take a node out of service for a while, with no dropped queries and no false alarms</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Prometheus metrics and a Grafana dashboard built in</th><td class="us y">✓</td></tr>
       <tr><th scope="row">Safe AI-agent access (scoped tokens or SSO; MCP changes as plans you can approve): <a href="agents.html">see how</a></th><td class="us y">✓</td></tr>
       <tr><th scope="row">Easy to try: imports a Pi-hole or Technitium setup</th><td class="us y">✓</td></tr>
