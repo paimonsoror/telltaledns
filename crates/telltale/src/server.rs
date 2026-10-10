@@ -7,7 +7,6 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -847,8 +846,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OBS-004, `spec/06` §3 — rollups on disk, fed once a minute off the query path.
     let (rollups, _rollup_writer) = crate::rollups::start(&cfg, &pipeline);
 
-    // REQ: OBS-005, OPS-006 — metrics and health probes.
-    let ready = Arc::new(AtomicBool::new(false));
+    // REQ: OBS-005, OPS-006 — metrics and health probes. An ephemeral resolver pod is ready
+    // only once it has the cluster's configuration too, so it never serves unfiltered (CLU-009).
+    let readiness = Arc::new(crate::readiness::Readiness::new(cfg.cluster.ephemeral));
     let stats = listeners.stats();
     let (reload_tx, mut reload_rx) =
         tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<bool>>(8);
@@ -863,6 +863,14 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     }
     // REQ: CLU-001, CLU-004 — the cluster channel runs beside DNS and never gates it.
     let cluster = crate::cluster::start(&cfg, &http_stopped);
+    // REQ: OPS-010 — a maintenance window from before a restart takes effect before the node
+    // first reports ready: the operator or the clock, not a reboot, says when it's back.
+    let maintenance = Arc::new(crate::maintenance::Maintenance::open(
+        std::path::Path::new(cfg.node.data_dir.as_str()),
+        Arc::clone(&readiness),
+        cluster.clone(),
+        crate::maintenance::now_ms(),
+    ));
     let sources = Arc::new(http::Sources {
         metrics: Arc::clone(&pipeline.metrics),
         cache: Arc::clone(&cache),
@@ -871,7 +879,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         tcp: ArcSwap::from_pointee(stats.tcp),
         doh: ArcSwap::from_pointee(stats.doh),
         doq: ArcSwap::from_pointee(stats.doq),
-        ready: Arc::clone(&ready),
+        readiness: Arc::clone(&readiness),
+        maintenance,
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
         lists: ArcSwapOption::empty(),
@@ -911,6 +920,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         traces,
     });
     http::serve_peers(&sources);
+    // REQ: OPS-010 — the maintenance window ends by itself.
+    crate::maintenance::spawn_expiry(Arc::clone(&sources), http_stopped.clone());
     // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.
     crate::probes::spawn(Arc::clone(&sources), http_stopped.clone());
     // REQ: CLU-003 — the Git config source polls on the primary (ADR-049).
@@ -992,20 +1003,21 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     start_http(&cfg, &sources, &http_stopped).await?;
     let neighbors =
         neighbor_refresh.map(|every| spawn_neighbor_refresh(Arc::clone(&pipeline), every));
-    // Every listener is bound: ready for traffic (OPS-006). An ephemeral resolver pod waits
-    // for the cluster's configuration too, so it never serves unfiltered (CLU-009).
-    match &sources.cluster {
-        Some(c) if cfg.cluster.ephemeral => {
-            let (c, ready) = (Arc::clone(c), Arc::clone(&ready));
-            tokio::spawn(async move {
-                while c.sync_status().applied_ms == 0 {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-                info!("cluster configuration applied: ready");
-                ready.store(true, Ordering::Release);
-            });
-        }
-        _ => ready.store(true, Ordering::Release),
+    // Every listener is bound: ready for traffic (OPS-006), unless in maintenance (OPS-010).
+    // An ephemeral resolver pod waits for the cluster's configuration too, so it never serves
+    // unfiltered (CLU-009).
+    readiness.set_bound();
+    if let Some(c) = &sources.cluster
+        && cfg.cluster.ephemeral
+    {
+        let (c, readiness) = (Arc::clone(c), Arc::clone(&readiness));
+        tokio::spawn(async move {
+            while c.sync_status().applied_ms == 0 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            info!("cluster configuration applied: ready");
+            readiness.set_synced();
+        });
     }
 
     // REQ: FLT-004 — lists download in the background once DNS is up (rule 5: DNS never
@@ -1056,7 +1068,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
 
     // REQ: OPS-007 — not ready first (load balancers stop sending), stop taking new TCP
     // connections, let in-flight upstream lookups finish (bounded), then stop UDP workers.
-    ready.store(false, Ordering::Release);
+    readiness.set_stopping();
     // REQ: CLU-009 — a resolver pod leaves the cluster now rather than showing as down until
     // it expires (2 s at most; if the primary can't be reached, expiry still cleans up).
     // Before the stop signal: it closes the stream to the primary that the leave goes over.

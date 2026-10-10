@@ -321,6 +321,19 @@ ts("Temperature and disk", 12, 12, 7,
     (f'min by (instance) (telltale_data_filesystem_bytes{{{SEL}, kind="free"}} / telltale_data_filesystem_bytes{{{SEL}, kind="total"}} * 100)', "data disk free % {{instance}}")],
    "none", "CPU temperature (a Pi throttles near 80 °C) and free space where the data directory is.", fill=0)
 advance(7)
+# REQ: OPS-010 (T13.4) — when each node was in maintenance (not ready on purpose, still answering).
+panels.append({
+    "type": "state-timeline", "title": "Maintenance", "id": nid(), "datasource": DS,
+    "description": "When each node was in maintenance: it reported not ready (balancers sent it no new queries), kept answering, and its alerts were paused.",
+    "gridPos": place(24, 4, 0),
+    "targets": targets((f'max by (instance) (telltale_node_maintenance{{{SEL}}})', "{{instance}}")),
+    "options": {"showValue": "never", "mergeValues": True, "rowHeight": 0.8},
+    "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {
+        "0": {"text": "in service", "color": "green"}, "1": {"text": "maintenance", "color": "orange"}}}],
+        "color": {"mode": "thresholds"},
+        "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": None}]}}, "overrides": []},
+})
+advance(4)
 
 dashboard = {
     "__inputs": [],

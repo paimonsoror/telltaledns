@@ -77,8 +77,10 @@
           <tr><th scope="row"><code>disk_full</code></th><td>a node's data disk fills up</td></tr>
           <tr><th scope="row"><code>plan_pending</code></th><td>an AI agent's change waits for your approval</td></tr>
           <tr><th scope="row"><code>update_available</code></th><td>a newer TelltaleDNS build is out</td></tr>
+          <tr><th scope="row"><code>maintenance</code></th><td>a node goes into maintenance, and when it's back</td></tr>
         </tbody>
       </table></div>
+      <p class="muted">A node in maintenance (planned work: a Pi's SD card, a move, an upgrade) is left out of the other rules and the health icon until its window ends, so a planned stop never pages you. It keeps answering whatever still reaches it.</p>
     </div>
     <div>
       <p class="muted"><b>Destinations:</b> email (any provider's SMTP: Gmail with an app password works, no mail server of your own), <a href="https://ntfy.sh">ntfy</a> and Gotify push to your phone, Slack-compatible channels (Slack, Mattermost, Discord), or any webhook.</p>

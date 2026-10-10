@@ -573,6 +573,14 @@ impl Backend for ApiBackend {
                 }
             }),
             cluster: self.src.cluster.as_deref().map(crate::cluster::info),
+            // REQ: OPS-010 — the web UI's banner when this node is in maintenance.
+            maintenance: {
+                let now = crate::maintenance::now_ms();
+                self.src
+                    .maintenance
+                    .current(now)
+                    .map(|w| crate::maintenance::api_window(&w.cluster_window(), now, None))
+            },
         }
     }
 
@@ -1380,7 +1388,8 @@ impl Backend for ApiBackend {
                 });
         let probes = self.src.probes.results();
         let mut reasons = crate::health::local_reasons(&crate::health::Local {
-            serving: self.src.ready.load(std::sync::atomic::Ordering::Acquire),
+            // REQ: OPS-010 — a node in maintenance still serves.
+            serving: self.src.readiness.serving(),
             upstreams: &upstreams,
             recent: &recent,
             lists: lists.as_deref(),
@@ -1388,16 +1397,41 @@ impl Backend for ApiBackend {
             probes: &probes,
             cert_warn_days: self.src.config.load().probe.cert_warn_days,
         });
+        // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
+        // cluster, the federated health does it from every node's heartbeats).
+        let mut maintenance = Vec::new();
+        if self.src.cluster.is_none()
+            && let Some(w) = self.src.maintenance.current(crate::maintenance::now_ms())
+        {
+            reasons.clear();
+            maintenance.push(crate::maintenance::api_window(
+                &w.cluster_window(),
+                crate::maintenance::now_ms(),
+                Some(crate::maintenance::label(&self.src)),
+            ));
+        }
         // REQ: OBS-016 (ADR-105) — in a cluster the objectives cover every node, so the
         // federated health adds them once; a standalone node adds its own.
         if self.src.cluster.is_none() {
             reasons.extend(crate::health::slo_reasons(self, now));
         }
-        crate::health::summarize(
+        let mut h = crate::health::summarize(
             reasons,
             Vec::new(),
             format_us(now.saturating_mul(1_000_000)),
-        )
+        );
+        h.maintenance = maintenance;
+        h
+    }
+
+    // REQ: OPS-010 (ADR-118) — this node's own maintenance (in a cluster, the federated
+    // backend sends requests for other nodes to them).
+    fn maintenance(
+        &self,
+        node: &str,
+        w: telltale_api::MaintenanceWrite,
+    ) -> telltale_api::BoxFuture<Result<telltale_api::model::MaintenanceResult, Problem>> {
+        crate::maintenance::local_backend_call(Arc::clone(&self.src), node, w)
     }
 
     // REQ: OPS-008 (T7.19) — this node's DHCP leases.

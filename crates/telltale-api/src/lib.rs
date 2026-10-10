@@ -16,6 +16,7 @@ pub mod blocking_api;
 pub mod cache_api;
 pub mod config_api;
 pub mod federation;
+pub mod maintenance_api;
 pub mod mcp;
 pub mod model;
 pub mod plans;
@@ -263,6 +264,7 @@ pub trait Backend: Send + Sync + 'static {
             reasons: Vec::new(),
             checked_at: String::new(),
             missing_nodes: Vec::new(),
+            maintenance: Vec::new(),
         }
     }
     /// REQ: API-010 (T8.2, T8.3) — devices named by the routers' DHCP and by mDNS.
@@ -402,6 +404,41 @@ pub trait Backend: Send + Sync + 'static {
             ))
         })
     }
+    /// REQ: OPS-010 (ADR-118) — starts or ends maintenance on `node` (`local`, or a cluster
+    /// node's ID, site, or pod name). It's the node's own state, so a cluster sends it to that
+    /// node, not to the primary; an unreachable node is `node_unreachable`.
+    fn maintenance(
+        &self,
+        node: &str,
+        w: MaintenanceWrite,
+    ) -> BoxFuture<Result<model::MaintenanceResult, Problem>> {
+        let _ = (node, w);
+        Box::pin(async {
+            Err(Problem::unavailable(
+                "maintenance isn't available on this node",
+            ))
+        })
+    }
+}
+
+/// REQ: OPS-010 — a maintenance start or end, as the API checked it (and as it crosses the
+/// cluster channel to the node it's for).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum MaintenanceWrite {
+    Start {
+        /// Seconds; `None` takes the node's default.
+        for_secs: Option<u32>,
+        /// The longest allowed for whoever asked (a day; two hours for agents).
+        max_secs: u32,
+        reason: String,
+        handover: bool,
+        /// Who: the actor's name.
+        by: String,
+    },
+    End {
+        by: String,
+    },
 }
 
 pub type Shared = Arc<dyn Backend>;
@@ -596,6 +633,11 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
             blocking_api::write_routes(Arc::clone(&backend), Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_operator)),
         )
+        // REQ: OPS-010 — maintenance needs operator (agents: ops:maintenance).
+        .merge(
+            maintenance_api::routes(Arc::clone(&backend), Arc::clone(&auth))
+                .route_layer(from_fn(auth::routes::require_operator)),
+        )
         .merge(
             auth::routes::admin(Arc::clone(&auth))
                 .route_layer(from_fn(auth::routes::require_admin)),
@@ -656,7 +698,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
+        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -674,7 +716,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::SloStatus, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,

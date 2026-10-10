@@ -10,7 +10,9 @@
   export type Node = S['ClusterNode'];
   export type Health = 'ok' | 'warn' | 'bad';
 
-  export const health = (n: Node): Health => (!n.up ? 'bad' : !n.ready || n.configLag > 0 ? 'warn' : 'ok');
+  // REQ: OPS-010 — a node in maintenance is down or not ready on purpose: drawn hatched, not red.
+  export const health = (n: Node): Health =>
+    n.maintenance ? 'ok' : !n.up ? 'bad' : !n.ready || n.configLag > 0 ? 'warn' : 'ok';
   const worst = (hs: Health[]): Health => (hs.includes('bad') ? 'bad' : hs.includes('warn') ? 'warn' : 'ok');
   export const worstOf = (ns: Node[]): Health => worst(ns.map(health));
 
@@ -199,6 +201,7 @@
     [
       `${n.pod ?? n.nodeId} (${n.site}, ${role(n)})`,
       n.kubeNode ? `on Kubernetes node ${n.kubeNode}` : '',
+      n.maintenance ? `in maintenance (${n.maintenance.reason})` : '',
       n.up ? (n.ready ? 'up, serving' : 'up, not ready') : 'down',
       n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
       `${n.qps} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
@@ -217,6 +220,12 @@
 
 <div class="topo" data-testid="cluster-topology">
   <svg width={L.w} height={L.h} viewBox={`0 0 ${L.w} ${L.h}`} role="group" aria-label="Cluster topology">
+    <defs>
+      <!-- REQ: OPS-010 — nodes in maintenance are hatched. -->
+      <pattern id="maint-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <line x1="0" y1="0" x2="0" y2="6" class="hatch" />
+      </pattern>
+    </defs>
     <!-- Site boxes, then the links over them, then the nodes and pods on top. -->
     {#each L.sites as s (s.name)}
       <g data-testid="topology-site">
@@ -236,6 +245,7 @@
           <g
             class="chip {health(c.node)}"
             class:me={c.node.thisNode}
+            class:maint={!!c.node.maintenance}
             role="button"
             tabindex="0"
             aria-label={describe(c.node)}
@@ -264,6 +274,7 @@
             {#if n}
               <g
                 class="pod {p.more ? worstOf(p.more) : health(n)}"
+                class:maint={!p.more && !!n.maintenance}
                 role="button"
                 tabindex="0"
                 aria-label={p.more ? `${p.more.length} more pods on ${g.label}` : describe(n)}
@@ -283,7 +294,8 @@
   </svg>
   <p class="legend muted small">
     <span class="legend-badge">PRIMARY</span> publishes the configuration; replicas follow it ·
-    <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down ·
+    <span class="key ok"></span> serving, in sync <span class="key warn"></span> not ready or behind <span class="key bad"></span> down
+    {#if nodes.some((n) => n.maintenance)}<span class="key maint"></span> in maintenance{/if} ·
     line thickness = share of queries{#if L.links.some((l) => l.label)}{' · times are round trips from this node'}{/if}
   </p>
 </div>
@@ -354,6 +366,22 @@
   }
   .chip.me rect {
     stroke-width: 2.5;
+  }
+  .chip.maint > rect:first-of-type,
+  .pod.maint rect {
+    fill: url(#maint-hatch);
+    stroke: var(--muted);
+    stroke-dasharray: 2 2;
+  }
+  .hatch {
+    stroke: var(--warn);
+    stroke-width: 1.5;
+    opacity: 0.35;
+  }
+  .key.maint {
+    border-color: var(--muted);
+    border-style: dotted;
+    background: repeating-linear-gradient(45deg, transparent 0 2px, color-mix(in srgb, var(--warn) 40%, transparent) 2px 4px);
   }
   .chip:focus-visible rect,
   .pod:focus-visible rect,

@@ -1687,6 +1687,70 @@ telltale cluster status
   The Helm chart's PrometheusRule alerts on a peer down for over a minute, configuration behind
   for over 30 s, failing syncs, and a certificate within 14 days of expiry.
 
+## Taking a node down for maintenance
+Swapping a Pi's SD card, moving a box, or upgrading a node by hand: put the node in maintenance
+first. For a bounded time (an hour by default, a day at most) it:
+
+- **reports not ready:** `/readyz` answers 503 with `{"ready":false,"reason":"maintenance"}`, so
+  load balancers and Kubernetes stop sending it new queries;
+- **keeps answering** every query that still arrives (a router's secondary DNS entry, a device
+  with the address typed in): no listener closes;
+- **is left out** of alerts (`node_down`, `sync_lag`, `probe_failing`, `cert_expiring`,
+  `disk_full`, and its share of `servfail_rate`), the health level, and the Cluster page's
+  checks; an alert about it that was firing resolves with "(maintenance)";
+- **isn't elected** primary (it still votes);
+- **stays in maintenance across a restart:** the window is in `<data_dir>/maintenance.json`,
+  so a node rebooted inside it comes back not ready until the window ends or someone ends it.
+
+Everything else carries on: the cache, lists, replication, the query log, probes (they keep
+measuring), the API and UI. The Cluster page, `cluster_status`, and the health panel show the node,
+its window, and its real figures the whole time.
+
+```sh
+telltale ctl maintenance start --for 30m --reason "SD card swap"           # this node
+telltale ctl maintenance start --for 2h --reason "kernel upgrade" --node pi   # another node
+telltale ctl maintenance status
+telltale ctl maintenance end --node pi
+```
+
+Or on the Cluster page: a node's **Maintenance…** (how long, why) and **End maintenance**.
+Over the API it's `POST /api/v1/nodes/{id}/maintenance` with `{"forSecs": 1800, "reason": "…"}`
+and `DELETE` to end it (`id` is `local`, or a node's ID, site, or pod name). Maintenance is the
+node's own state, not configuration: any node passes the request to the node it's for (a node
+that's down answers 503 `node_unreachable`), it works in a GitOps-managed cluster, and it's
+audit-logged as `node.maintenance.start` and `.end` on that node. AI agents use
+`start_maintenance` and `end_maintenance` (`ops:maintenance`, at most 2 hours). Starting again
+replaces the window. `[node] maintenance_default_secs` sets the default length.
+
+**The primary.** Under automatic failover with another eligible node online, maintenance on the
+primary hands the role over first: the primary stops renewing its lease, another node is elected
+within the lease window (configuration changes pause for about 30 s, as in any failover), and the
+old primary follows for the rest of the window. The form shows this as a checked box
+("hand the primary role to another node first"; `handover: false` over the API keeps the role).
+In manual failover, or with no other eligible node online, the primary stays primary and keeps
+publishing; the answer says so. Promote another node first if you're taking it offline.
+
+**Kubernetes.** One readiness probe serves every Service that selects a pod. A resolver pod in
+maintenance leaves the DNS Service, which is the point. The controller pod in maintenance also
+leaves the API Service: use another node's UI or `kubectl port-forward`. A StatefulSet rollout
+waits for readiness, so a pod in maintenance holds a rollout until its window ends. The chart's
+startup probe asks `/readyz?startup=1`, which leaves maintenance out, so a pod restarted inside
+its window isn't killed for it. For routine controller work, `kubectl drain` and rollouts remain
+the usual path; maintenance mode is for the Pi and individual pods.
+
+**Docker Compose.** The healthcheck uses `/readyz`, so the container shows as unhealthy during
+maintenance (Compose doesn't restart it for that).
+
+**Alerts and metrics.** An alert rule with `when = "maintenance"` tells a destination when a node
+enters maintenance and when it leaves (not in the defaults). `/metrics` has
+`telltale_node_maintenance` (0/1), `telltale_node_maintenance_until_seconds`, and
+`telltale_node_maintenance_total`, plus `telltale_cluster_peer_maintenance_until_seconds{node,site}`
+for peers. The Helm chart's node alerts leave out a node whose last reported window is still open
+(also when it stopped reporting), and the Grafana dashboard has a **Maintenance** timeline.
+
+A node that's really failing during its window stays quiet until the window ends: keep windows
+short.
+
 ## Monitoring
 **The dashboard across restarts and upgrades.**
 - Charts over time come from `<data_dir>/rollups.db`, kept by minute (7 days), hour (400 days)
@@ -1706,7 +1770,7 @@ An HTTP listener (default `0.0.0.0:9153`, set with `[telemetry.metrics] listen`)
 | `/metrics` | Prometheus scrape |
 | `/livez` | the process is alive (Kubernetes liveness) |
 | `/healthz` | the process is healthy |
-| `/readyz` | 200 once every DNS listener is bound, 503 while starting or shutting down (Kubernetes readiness) |
+| `/readyz` | 200 once every DNS listener is bound, 503 while starting, shutting down, or in [maintenance](#taking-a-node-down-for-maintenance), with the reason as JSON (Kubernetes readiness); `?startup=1` leaves maintenance out (the startup probe) |
 
 This listener needs no sign-in and answers only clients inside `[access] allowed_networks`. The same `/metrics` is on the API port for signed-in users (a viewer token, or HTTP Basic for scrapers that can't send one).
 
@@ -2027,7 +2091,9 @@ Rules watch:
 | `slo_burn` | a [service-level objective](#service-level-objectives) spends its error budget fast (14.4× over 1 hour and 5 minutes, or 6× over 6 hours and 30 minutes) | objective |
 | `probe_failing` | a [listener check](#listener-checks) (or an extra target) got no answer twice in a row, on any node | node and target |
 | `cert_expiring` | a DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on any node | node and listener |
+| `maintenance` | a node is in [maintenance](#taking-a-node-down-for-maintenance) (resolves when it leaves; use `for_secs = 0` to hear at once) | node |
 
+- **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
 - A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, and pending plans go out once each.
 - In a cluster, the primary checks the rules against the whole cluster's data and sends the alerts, so you get one message, not one per node.
 - Formats: `webhook` posts JSON (`rule`, `status` = `firing` or `resolved`, `subject`, `summary`, `node`, `time`); `ntfy` posts the text with a title and priority (a token from `token_file` as a Bearer token); `gotify` posts to `<url>/message` with the application token from `token_file`; `slack` posts `{"text": ...}`.
@@ -2077,7 +2143,7 @@ The icon at the bottom of the menu says how TelltaleDNS is doing, for every node
 | triangle with "!" (amber) | degraded | DNS answers, but something needs a look: one upstream isn't answering while its group still has others; a cluster node is unreachable, not serving, or behind on configuration for a minute; a list fails to download, or [hasn't changed in 30 days](#lists-that-stopped-changing); a device was rate-limited in the last 5 minutes; SERVFAIL for 5% or more of the last 5 minutes' queries; a data disk is over 90% full; a [service-level objective](#service-level-objectives) burns its error budget fast; a [listener check](#listener-checks) fails twice in a row; a listener's certificate expires within 14 days |
 | octagon with "×" (red) | severe | DNS is failing for some devices: no upstream in a group answers, no node serves DNS (its listeners aren't bound, or none answers its own check), SERVFAIL for 25% or more, or a listener's certificate has expired |
 
-Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.
+Click it for every reason, its node, and a link to the page to look at. On a phone, where the menu is hidden, a dot on the menu button shows when the level isn't healthy. Device anomalies don't change the level; they have their own badge. A node in [maintenance](#taking-a-node-down-for-maintenance) is left out of the level (its conditions, and its being unreachable) and listed instead ("1 node in maintenance until 14:00 (SD card swap)"); a node in maintenance that still answers counts as serving. The same answer is at `GET /api/v1/system/health` and in the MCP tool `health`. Each condition is judged over a window it already has (the upstream's circuit breaker, the last 5 minutes, the cluster heartbeat), so one failed lookup doesn't change the icon.
 
 The UI is part of the binary (about 100 KiB compressed). The page is served with a strict Content Security Policy and can't be framed.
 
@@ -2145,6 +2211,7 @@ telltale ctl block tiktok.com --group kids --for 120 --note "homework time"
 telltale ctl allow cdn.example.com --device living-room-tv
 telltale ctl rules                           # quick rules; `ctl unrule <id>` removes one
 telltale ctl pause --minutes 10              # `ctl resume` to undo
+telltale ctl maintenance start --for 30m --reason "SD card swap"   # `ctl maintenance end` to undo
 telltale ctl flush --name example.com --subtree
 telltale ctl lists                           # with unique names and hits
 telltale ctl plans                           # agents' pending changes; `ctl approve <id>` / `ctl reject <id>`
@@ -2166,7 +2233,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
 | `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
-| `ops:pause`, `ops:cache`, `ops:anomalies` | pause blocking; flush the cache; acknowledge device anomalies |
+| `ops:pause`, `ops:cache`, `ops:anomalies`, `ops:maintenance` | pause blocking; flush the cache; acknowledge device anomalies; start and end [node maintenance](#taking-a-node-down-for-maintenance) (at most 2 hours) |
 | `cluster:admin` | promote a node to primary |
 
 The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows.
@@ -2208,7 +2275,8 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `acknowledge_anomalies` | marks findings as seen on every node, or takes it back with `undo` (needs `ops:anomalies`; changes at once, audited) |
 | `new_domains` | domains devices contacted for the first time, with DGA scores |
 | `vqlog` | any count, top list, percentile, or time series over the query log, in one query (needs `querylog:read`; below) |
-| `cluster_status` | members, roles, sync, versions, checks |
+| `cluster_status` | members, roles, sync, versions, checks, each node's maintenance window |
+| `start_maintenance`, `end_maintenance` | put a node in [maintenance](#taking-a-node-down-for-maintenance) for up to 2 hours (not ready, still answering, alerts paused), or end it (needs `ops:maintenance`; changes at once, audited) |
 | `get_config` | one configuration section (no secrets) |
 
 ### Analytics in one query (vqlog)
@@ -2283,7 +2351,7 @@ Resources read the same REST routes with the agent's token, so scopes apply: a p
 | `plan_update_upstreams` | change or add an upstream server or upstream group | `config:write:upstreams` (+ `config:read`) |
 | `apply_plan`, `discard_plan`, `list_plans` | make the planned change; drop a plan; list yours | the plan's scope |
 
-Three low-risk operations act at once, without a plan, and are audited like any change: `flush_cache` (`ops:cache`), `pause_blocking` for 1 to 60 minutes and `resume_blocking` (`ops:pause`). Two checks change nothing but reach out from the node, so they're audited too and need the scope that would save the entry: `check_upstream` (`config:write:upstreams`) and `check_list` (`config:write:lists`) try a draft before a plan adds it. Every write tool needs a `reason`.
+A few low-risk operations act at once, without a plan, and are audited like any change: `flush_cache` (`ops:cache`), `pause_blocking` for 1 to 60 minutes and `resume_blocking` (`ops:pause`), `acknowledge_anomalies` (`ops:anomalies`), and `start_maintenance` for up to 2 hours and `end_maintenance` (`ops:maintenance`; the reason is shown with the window). Two checks change nothing but reach out from the node, so they're audited too and need the scope that would save the entry: `check_upstream` (`config:write:upstreams`) and `check_list` (`config:write:lists`) try a draft before a plan adds it. Every write tool needs a `reason`.
 
 **How the tools behave:**
 - **Cluster-wide by default.** `get_overview`, `top_items`, `search_queries`, `latency_breakdown`, and `get_client_profile` take `scope` (`cluster`, `site:<name>`, `node:<name>`, `node:local`), and every result has `missingNodes`: the nodes in scope that didn't answer within 2 seconds, so a partial answer is never mistaken for a whole one. Upstream health and anomalies are the connected node's own.
@@ -2404,6 +2472,8 @@ Edit the config file, then send `SIGHUP` (`kill -HUP <pid>`, or `docker kill -s 
 2. TCP listeners stop accepting and finish the queries already received.
 3. Upstream lookups still in flight get up to 3 seconds to complete and reply.
 4. UDP workers stop.
+
+For planned downtime longer than a restart, [put the node in maintenance](#taking-a-node-down-for-maintenance) first: balancers move away early, and no alert fires while it's off.
 
 In Kubernetes, pair this with a short `preStop` sleep so endpoints are removed before the drain begins (the Helm chart will set this).
 

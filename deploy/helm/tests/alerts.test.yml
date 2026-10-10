@@ -154,3 +154,63 @@ tests:
           - exp_labels: { severity: warning, job: telltale-metrics, instance: pi, target: "tls://127.0.0.1:853", proto: dot }
             exp_annotations:
               summary: "The certificate of tls://127.0.0.1:853 on pi expires in under 14 days; DoT/DoH/DoQ clients stop connecting when it does."
+
+  # REQ: OPS-010 (T13.4) — a node in maintenance stays quiet, even once it stops reporting (its
+  # last window, until 3600 s, is still open); others alert as usual; when the window ends, it
+  # alerts again. The same for a peer the cluster reports down.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="telltale-metrics",instance="pi"}'
+        values: "0x90"
+      - series: 'telltale_node_maintenance_until_seconds{job="telltale-metrics",instance="pi"}'
+        values: "3600x4 _x86"
+      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="free"}'
+        values: "5x90"
+      - series: 'telltale_data_filesystem_bytes{job="telltale-metrics",instance="pi",kind="total"}'
+        values: "100x90"
+      - series: 'up{job="telltale-metrics",instance="k3s"}'
+        values: "0x90"
+      - series: 'telltale_node_maintenance_until_seconds{job="telltale-metrics",instance="k3s"}'
+        values: "0x90"
+      - series: 'telltale_cluster_peer_up{job="telltale-metrics",instance="k3s",node="b2",site="pi"}'
+        values: "0x90"
+      - series: 'telltale_cluster_peer_maintenance_until_seconds{job="telltale-metrics",instance="k3s",node="b2",site="pi"}'
+        values: "3600x90"
+      - series: 'telltale_cluster_peer_up{job="telltale-metrics",instance="k3s",node="c3",site="lab"}'
+        values: "0x90"
+      - series: 'telltale_cluster_peer_maintenance_until_seconds{job="telltale-metrics",instance="k3s",node="c3",site="lab"}'
+        values: "0x90"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TelltaleDNSDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: telltale-metrics, instance: k3s }
+            exp_annotations:
+              summary: TelltaleDNS k3s is not being scraped (down or unreachable).
+      - eval_time: 15m
+        alertname: TelltaleDNSDataDiskLow
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TelltaleDNSClusterPeerDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: c3, site: lab }
+            exp_annotations:
+              summary: Cluster node c3 (lab) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
+      - eval_time: 70m
+        alertname: TelltaleDNSDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: telltale-metrics, instance: k3s }
+            exp_annotations:
+              summary: TelltaleDNS k3s is not being scraped (down or unreachable).
+          - exp_labels: { severity: critical, job: telltale-metrics, instance: pi }
+            exp_annotations:
+              summary: TelltaleDNS pi is not being scraped (down or unreachable).
+      - eval_time: 70m
+        alertname: TelltaleDNSClusterPeerDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: b2, site: pi }
+            exp_annotations:
+              summary: Cluster node b2 (pi) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: k3s, node: c3, site: lab }
+            exp_annotations:
+              summary: Cluster node c3 (lab) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.

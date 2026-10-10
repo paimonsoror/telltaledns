@@ -172,6 +172,10 @@ pub struct NodeConfig {
     /// so load balancers and Kubernetes Services stop sending queries first (the Helm charts
     /// set 5). 0 stops as soon as in-flight lookups finish. At most 60.
     pub drain_delay_secs: u32,
+    /// REQ: OPS-010 (T13.4) — how long maintenance lasts when a request doesn't say, in
+    /// seconds: 60 to 86400 (a day). Maintenance itself is started from the Cluster page,
+    /// `telltale ctl maintenance start`, or the API; it's the node's state, not configuration.
+    pub maintenance_default_secs: u32,
 }
 
 impl Default for NodeConfig {
@@ -182,6 +186,7 @@ impl Default for NodeConfig {
             workers: 0,
             data_dir: SafeString::from("/var/lib/telltale"),
             drain_delay_secs: 0,
+            maintenance_default_secs: 3600,
         }
     }
 }
@@ -983,6 +988,9 @@ pub enum AlertWhen {
     /// A DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on
     /// any node (one alert per node and listener).
     CertExpiring,
+    /// REQ: OPS-010 (T13.4) — a node is in maintenance (one alert per node, sent when it
+    /// enters and resolved when it leaves; set `for_secs = 0` to hear at once).
+    Maintenance,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

@@ -101,9 +101,11 @@ spec:
               containerPort: {{ .Values.service.metrics.port }}
               protocol: TCP
           # Ready once joined and synced (it never serves unfiltered); joining retries for
-          # two minutes, then the pod exits and Kubernetes restarts it.
+          # two minutes, then the pod exits and Kubernetes restarts it. REQ: OPS-010 — the
+          # startup probe leaves maintenance out (`startup=1`), so a pod restarted inside its
+          # window isn't killed; readiness keeps it out of the Service until the window ends.
           startupProbe:
-            httpGet: { path: /readyz, port: metrics }
+            httpGet: { path: "/readyz?startup=1", port: metrics }
             periodSeconds: 2
             failureThreshold: 150
           readinessProbe:

@@ -229,7 +229,8 @@ jobs:
   # release, DNS on port 53, upgrade in place, tampered releases refused).
   native:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The cluster e2e's maintenance steps (T13.4) add about six minutes.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.0
@@ -252,11 +253,13 @@ jobs:
       - name: install.sh + systemd unit
         run: sudo bash deploy/systemd/e2e.sh target/bench-fast/telltale
       # REQ: CLU-003, CLU-004 (T5.2/T5.3 AC) — a primary and a replica as real processes:
-      # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms.
+      # replication, propagation, 100% answers while the primary is killed, cold start ≤ 500 ms;
+      # OPS-010 (T13.4): maintenance on the replica from the primary, restarts, a stopped node.
       - name: Cluster (two processes)
         run: bash deploy/cluster/e2e.sh target/bench-fast/telltale
       # REQ: CLU-005 (T5.4b AC) — automatic failover with a witness: the replica is elected
       # within 30 s of the primary's death with 100% of DNS answered; the old primary follows.
+      # OPS-010 (T13.4): a node in maintenance isn't elected; the primary hands over.
       - name: Cluster automatic failover (primary, replica, witness)
         run: bash deploy/cluster/failover-e2e.sh target/bench-fast/telltale
       # REQ: CLU-001 (T5.4c AC) — rotate the cluster CA under DNS load, every phase gated on

@@ -139,6 +139,16 @@ pub struct Heartbeat {
     pub cache_entries: Option<u64>,
     #[prost(uint32, optional, tag = "19")]
     pub cache_hit_permille: Option<u32>,
+    /// REQ: OPS-010 (T13.4) — when its maintenance window ends (Unix ms, its clock); 0 when it
+    /// isn't in maintenance, and from older nodes. The reason, who started it, and when.
+    #[prost(uint64, tag = "20")]
+    pub maintenance_until_ms: u64,
+    #[prost(string, tag = "21")]
+    pub maintenance_reason: String,
+    #[prost(string, tag = "22")]
+    pub maintenance_by: String,
+    #[prost(uint64, tag = "23")]
+    pub maintenance_since_ms: u64,
 }
 
 /// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and
@@ -363,6 +373,30 @@ mod tests {
         };
         let back = Heartbeat::decode(&new.encode_to_vec()[..]).unwrap();
         assert_eq!(back, new);
+    }
+
+    /// REQ: OPS-010, CLU-010 (T13.4) — the maintenance fields are optional both ways: an older
+    /// node's heartbeat decodes as "not in maintenance", and they survive a round trip.
+    #[test]
+    fn ops_010_maintenance_fields_are_optional_both_ways() {
+        let old = Heartbeat {
+            qps: 3,
+            ..Heartbeat::default()
+        }
+        .encode_to_vec();
+        let hb = Heartbeat::decode(&old[..]).unwrap();
+        assert_eq!(
+            (hb.maintenance_until_ms, hb.maintenance_reason.as_str()),
+            (0, "")
+        );
+        let new = Heartbeat {
+            maintenance_until_ms: 1_760_025_600_000,
+            maintenance_since_ms: 1_760_022_000_000,
+            maintenance_reason: "SD card swap".into(),
+            maintenance_by: "alice via pi".into(),
+            ..Heartbeat::default()
+        };
+        assert_eq!(Heartbeat::decode(&new.encode_to_vec()[..]).unwrap(), new);
     }
 
     #[test]

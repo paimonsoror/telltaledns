@@ -1203,6 +1203,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/nodes/{id}/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start maintenance on a node.
+         * @description For `forSecs` (60 to 86,400; agents at most 7,200; default the node's
+         *     `[node] maintenance_default_secs`, 3,600) the node answers `/readyz` with 503 so load
+         *     balancers and Kubernetes stop sending it new queries, while every DNS listener keeps
+         *     answering whatever still arrives. Its alerts and health conditions are left out, and it
+         *     doesn't stand in elections, until the window ends (by itself, or with DELETE). The window
+         *     survives a restart. Starting again replaces the window. `id` is `local` (the node answering)
+         *     or a cluster node's ID, site, or pod name: the request goes to that node over the cluster
+         *     channel. On the primary under automatic failover, `handover` (default true) hands the primary
+         *     role to another eligible node first (configuration changes pause for about 30 s); otherwise
+         *     the primary keeps the role and the answer's `note` says to promote another node first. It
+         *     changes no configuration, so a GitOps-managed cluster takes it too. Needs the operator role
+         *     (agents: the `ops:maintenance` scope); audit-logged as `node.maintenance.start`.
+         */
+        post: operations["start"];
+        /**
+         * End maintenance on a node.
+         * @description The node is ready again at once (if it's otherwise ready), and alerts and the health level
+         *     cover it again: conditions that hold count from now, so an alert with `for_secs` waits its
+         *     usual time. Nothing happens if it wasn't in maintenance. `id` as for starting. Needs the
+         *     operator role (agents: `ops:maintenance`); audit-logged as `node.maintenance.end`.
+         */
+        delete: operations["end"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plans": {
         parameters: {
             query?: never;
@@ -1986,6 +2024,8 @@ export interface components {
              */
             evaluating: boolean;
             firing: components["schemas"]["FiringAlert"][];
+            /** @description REQ: OPS-010 — nodes whose alerts are paused for maintenance, until when. */
+            maintenance: components["schemas"]["NodeMaintenance"][];
         };
         /** @description REQ: OBS-014 — an acknowledgement: someone looked at the finding. */
         AnomalyAckInfo: {
@@ -2703,6 +2743,7 @@ export interface components {
             lastSeenSecondsAgo: number;
             /** @description `self`, `inbound` (it connected to this node), or `outbound`. */
             link: string;
+            maintenance?: components["schemas"]["NodeMaintenance"] | null;
             nodeId: string;
             pod?: string | null;
             /**
@@ -2836,7 +2877,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -3171,6 +3212,11 @@ export interface components {
              * @example degraded
              */
             level: string;
+            /**
+             * @description REQ: OPS-010 — nodes in maintenance: their conditions are left out of `reasons` and the
+             *     level until the window ends (a node in maintenance still answers DNS).
+             */
+            maintenance?: components["schemas"]["NodeMaintenance"][];
             /** @description Cluster nodes that didn't answer (their own conditions aren't included). */
             missingNodes?: string[];
             /** @description Every condition found, the most serious first. Empty when healthy. */
@@ -4211,6 +4257,44 @@ export interface components {
             /** @description Send the browser here to also sign out at the provider. */
             logoutUrl?: string | null;
         };
+        /** @description `POST /api/v1/nodes/{id}/maintenance`. */
+        MaintenanceRequest: {
+            /**
+             * Format: int32
+             * @description How long, in seconds: 60 to 86,400 (agents at most 7,200). Default: the node's
+             *     `[node] maintenance_default_secs` (3,600).
+             * @example 3600
+             */
+            forSecs?: number | null;
+            /**
+             * @description For the primary under automatic failover: hand the primary role to another eligible
+             *     node first (about 30 s without configuration changes). Default true; ignored on other
+             *     nodes.
+             */
+            handover?: boolean | null;
+            /**
+             * @description Why, in a few words (1 to 200 characters, one line). Shown on the Cluster page, in the
+             *     health panel, and in the audit log.
+             * @example SD card swap
+             */
+            reason?: string | null;
+        };
+        /** @description A node's maintenance after a start or end. */
+        MaintenanceResult: {
+            /** @description Whether it's in maintenance now. */
+            active: boolean;
+            /**
+             * @description Starting on the primary: `started` (another node is being elected; the old primary
+             *     follows), `unavailable` (manual failover, or no other eligible node reachable: it stays
+             *     the primary), or `declined` (`handover: false`). `not_needed` on other nodes.
+             */
+            handover?: string | null;
+            /** @description The node (its pod, site, or ID). */
+            node: string;
+            /** @description What to know, in one sentence (e.g. promote another node first). */
+            note?: string | null;
+            window?: components["schemas"]["NodeMaintenance"] | null;
+        };
         /** @description Evidence that client IPs appear masked. */
         MaskedClients: {
             /**
@@ -4280,6 +4364,28 @@ export interface components {
             info: components["schemas"]["TokenInfo"];
             /** @description The token, shown only now: send as `Authorization: Bearer <token>`. */
             token: string;
+        };
+        /**
+         * @description REQ: OPS-010 (ADR-118) — a node's maintenance window: it reports not ready (balancers stop
+         *     sending it new queries), keeps answering, and is left out of alerts, the health level, and
+         *     elections until `until`.
+         */
+        NodeMaintenance: {
+            /**
+             * @description Who started it: a user, `<user> via <site>` from another node, or an agent.
+             * @example alice via pi
+             */
+            by: string;
+            /** @description The node (its pod, site, or ID), in lists. */
+            node?: string | null;
+            /** @example SD card swap */
+            reason: string;
+            /** Format: int64 */
+            secondsLeft: number;
+            /** @description When it started (RFC 3339). */
+            since: string;
+            /** @description When it ends (RFC 3339). */
+            until: string;
         };
         /** @description A "Sign in with ..." button. */
         OidcButton: {
@@ -4829,6 +4935,7 @@ export interface components {
             filterSnapshot?: number | null;
             /** @description DNS listeners, as `proto://addr`. */
             listeners: string[];
+            maintenance?: components["schemas"]["NodeMaintenance"] | null;
             /** @description Node name. */
             node: string;
             /** @description Whether the per-query log is being written. */
@@ -7205,6 +7312,101 @@ export interface operations {
             };
             /** @description Something still uses it: problem+json says what. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `local`, or a node's ID, site, or pod name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MaintenanceRequest"];
+            };
+        };
+        responses: {
+            /** @description The node's window, and what happened to the primary role. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceResult"];
+                };
+            };
+            /** @description No such node (`node_unknown`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No reason, or a window too short or too long (`maintenance_invalid`, `maintenance_too_long`; agents at most 2 h). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node isn't reachable over the cluster channel (`node_unreachable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    end: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `local`, or a node's ID, site, or pod name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The node, no longer in maintenance. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceResult"];
+                };
+            };
+            /** @description No such node (`node_unknown`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node isn't reachable over the cluster channel (`node_unreachable`). */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

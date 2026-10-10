@@ -263,6 +263,27 @@ async fn apply_ack(
     }
 }
 
+/// An answer to a peer's request, with the problem's code kept (REQ: OPS-010 reuses it).
+pub(crate) fn encode_answer<T: Serialize>(r: Result<T, Problem>) -> Result<Vec<u8>, String> {
+    let a = match r {
+        Ok(v) => Answer::Ok(serde_json::to_value(v).map_err(|e| e.to_string())?),
+        Err(p) => Answer::Err(p.into()),
+    };
+    serde_json::to_vec(&a).map_err(|e| e.to_string())
+}
+
+/// A peer's answer, decoded (its problem as the same code).
+pub(crate) fn decode_answer<T: serde::de::DeserializeOwned>(reply: &[u8]) -> Result<T, Problem> {
+    match serde_json::from_slice::<Answer>(reply) {
+        Ok(Answer::Ok(v)) => serde_json::from_value(v)
+            .map_err(|e| Problem::internal(format!("unreadable answer from the node: {e}"))),
+        Ok(Answer::Err(p)) => Err(p.into()),
+        Err(e) => Err(Problem::internal(format!(
+            "unreadable answer from the node: {e}"
+        ))),
+    }
+}
+
 fn verb(kind: &str, deleting: bool) -> String {
     format!("{kind}.{}", if deleting { "delete" } else { "put" })
 }

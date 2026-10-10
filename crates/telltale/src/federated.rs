@@ -239,6 +239,18 @@ pub(crate) fn rpc_handler(
             if kind == crate::forward::KIND {
                 return crate::forward::handle(src, local, cluster, peer, body).await;
             }
+            if kind == crate::maintenance::KIND_SET || kind == crate::maintenance::KIND_CLEAR {
+                // REQ: OPS-010 — another node asks this node to start or end maintenance (a
+                // user acted there). An ephemeral member serves no UI: nothing comes through it.
+                if ephemeral {
+                    return Err("an ephemeral member can't change this node's state".into());
+                }
+                return tokio::task::spawn_blocking(move || {
+                    crate::maintenance::handle(&src, &cluster, &peer, &body)
+                })
+                .await
+                .map_err(|e| format!("maintenance worker failed: {e}"))?;
+            }
             if kind == crate::ship::KIND {
                 // REQ: CLU-007 — a node in ship mode delivering its query log.
                 return tokio::task::spawn_blocking(move || {
@@ -532,6 +544,25 @@ impl Federated {
             cluster,
             missing: Mutex::new(Vec::new()),
             only: None,
+        }
+    }
+
+    /// REQ: OPS-010 — the same reads without the nodes `ids` names (the alert task leaves
+    /// nodes in maintenance out of cluster-wide shares like SERVFAIL).
+    pub(crate) fn excluding(&self, ids: &std::collections::HashSet<String>) -> Self {
+        let me = !ids.contains(&self.cluster.identity.meta.node_id);
+        let peers = self
+            .cluster
+            .members()
+            .into_iter()
+            .map(|m| m.node_id)
+            .filter(|p| !ids.contains(p))
+            .collect();
+        Self {
+            local: Arc::clone(&self.local),
+            cluster: Arc::clone(&self.cluster),
+            missing: Mutex::new(Vec::new()),
+            only: Some(Only { me, peers }),
         }
     }
 
@@ -1164,16 +1195,69 @@ impl Backend for Federated {
                 r
             }));
         }
-        let missing = self.missing_nodes();
+        let mut missing = self.missing_nodes();
         crate::health::soften_not_serving(&mut reasons, reporting);
-        reasons.extend(crate::health::cluster_reasons(&self.local.cluster()));
+        let view = self.local.cluster();
+        reasons.extend(crate::health::cluster_reasons(&view));
+        // REQ: OPS-010 (ADR-118) — nodes in maintenance: their conditions are left out (a
+        // node that serves still counted as serving above) and they're listed instead.
+        let maintenance = crate::health::exclude_maintenance(&mut reasons, &mut missing, &view);
         // REQ: OBS-016 (ADR-105) — an objective spending its budget fast, over every node.
         reasons.extend(crate::health::slo_reasons(self, now));
-        crate::health::summarize(
+        let mut h = crate::health::summarize(
             reasons,
             missing,
             telltale_api::time::format_us(now.saturating_mul(1_000_000)),
-        )
+        );
+        h.maintenance = maintenance;
+        h
+    }
+    // REQ: OPS-010 (ADR-118) — maintenance is the node's own state: a request for another
+    // node goes to that node over the cluster channel (not to the primary).
+    fn maintenance(
+        &self,
+        node: &str,
+        w: telltale_api::MaintenanceWrite,
+    ) -> BoxFuture<Result<telltale_api::model::MaintenanceResult, Problem>> {
+        use telltale_api::problem::Code;
+        if node == "local" {
+            return self.local.maintenance("local", w);
+        }
+        match self.resolve_node(node) {
+            Ok(None) => self.local.maintenance("local", w),
+            Ok(Some(peer)) => {
+                let cluster = Arc::clone(&self.cluster);
+                let label = self.label_of(&peer);
+                Box::pin(crate::maintenance::send(cluster, peer, label, w))
+            }
+            // A member of the registry this node hasn't heard from since it started.
+            Err(_)
+                if self
+                    .cluster
+                    .identity
+                    .registry()
+                    .iter()
+                    .any(|n| n.node_id == node) =>
+            {
+                let node = node.to_owned();
+                Box::pin(async move {
+                    Err(Problem::new(
+                        Code::NodeUnreachable,
+                        format!("{node} isn't reachable over the cluster channel"),
+                    )
+                    .hint(
+                        "Maintenance is the node's own state, so the node must be up to take it.",
+                    ))
+                })
+            }
+            Err(_) => {
+                let node = node.to_owned();
+                Box::pin(async move {
+                    Err(Problem::new(Code::NodeUnknown, format!("no cluster node `{node}`"))
+                        .hint("Use `local`, or a node's ID, site, or pod name from the Cluster page (or cluster_status)."))
+                })
+            }
+        }
     }
     // REQ: OBS-010 (T9.6) — alerts are evaluated here (the primary) or nowhere: this node's.
     fn alerts_status(&self) -> telltale_api::model::AlertsStatus {

@@ -788,6 +788,36 @@ fn obs_022_exclusions_are_validated() {
     }
 }
 
+/// REQ: OPS-010 (T13.4) — maintenance lasts an hour unless a request says otherwise; the
+/// default is a minute to a day; `maintenance` is an alert condition.
+#[test]
+fn ops_010_maintenance_default_and_alert_rule() {
+    let load = |toml: &str| {
+        telltale_config::Loader::new()
+            .toml_str("t.toml", toml)
+            .env(Vec::<(String, String)>::new())
+            .load()
+    };
+    assert_eq!(load("").unwrap().config.node.maintenance_default_secs, 3600);
+    let cfg = load(
+        "[node]\nmaintenance_default_secs = 7200\n[[alerts.destination]]\nname = \"phone\"\ntype = \"ntfy\"\nurl = \"https://ntfy.sh/my-dns\"\n[[alerts.rule]]\nname = \"maint\"\nwhen = \"maintenance\"\nfor_secs = 0\nto = [\"phone\"]\n",
+    )
+    .unwrap()
+    .config;
+    assert_eq!(cfg.node.maintenance_default_secs, 7200);
+    assert_eq!(
+        cfg.alerts.rule[0].when,
+        telltale_config::AlertWhen::Maintenance
+    );
+    for bad in [30, 86_401] {
+        let e = load(&format!("[node]\nmaintenance_default_secs = {bad}\n"))
+            .err()
+            .map(|e| format!("{e:?}"))
+            .unwrap_or_default();
+        assert!(e.contains("maintenance_default_secs"), "{bad}: {e}");
+    }
+}
+
 /// REQ: OBS-023 (T12.3) — lists go stale after 30 days unchanged by default; per list too.
 #[test]
 fn obs_023_stale_after_days() {

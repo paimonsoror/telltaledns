@@ -941,8 +941,20 @@ fn clu_005_only_voters_can_fence_the_primary() {
         "nor by claiming to be eligible"
     );
     assert!(primary.is_primary());
-    // An eligible node announcing epoch 2 (it was promoted): fenced.
+    // REQ: CLU-005 — an old primary's key (it came back before it learned the newer epoch)
+    // is refused without ending the stream: the frame is ignored, nothing is stored.
     let mut peer = Some(pi.clone());
+    primary
+        .on_frame(&mut peer, hello(&pi, 0, true), "inbound", &echo)
+        .unwrap();
+    let key = Frame {
+        body: Some(Body::KeyShare(crate::wire::KeyShare {
+            ca_key_pem: "not a key".into(),
+            next_ca_key_pem: String::new(),
+        })),
+    };
+    assert_eq!(primary.on_frame(&mut peer, key, "inbound", &echo), Ok(()));
+    // An eligible node announcing epoch 2 (it was promoted): fenced.
     primary
         .on_frame(&mut peer, hello(&pi, 2, false), "inbound", &echo)
         .unwrap();

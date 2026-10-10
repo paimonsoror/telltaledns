@@ -17,6 +17,10 @@
 //! - **Pre-vote:** a node that lost contact first asks whether it *would* win, without
 //!   changing any ballot. A node cut off from the cluster therefore never inflates epochs and
 //!   doesn't depose a healthy primary when the partition heals.
+//! - **Maintenance (OPS-010, ADR-118):** a node in maintenance doesn't stand ([`Elector::standing`]
+//!   is false) but still votes, so a planned event never weakens the quorum. A primary that
+//!   hands over ([`Elector::stepping_down`]) stops renewing: its lease runs out and another node
+//!   is elected the usual way.
 
 use std::collections::BTreeSet;
 
@@ -170,6 +174,12 @@ pub struct Elector {
     pub max_epoch: u64,
     /// This node's newest applied version.
     pub applied: Version,
+    /// REQ: OPS-010 — whether this eligible node stands for election now: false while it's in
+    /// maintenance. It keeps voting either way.
+    pub standing: bool,
+    /// REQ: OPS-010 — a primary handing over (maintenance): it stops renewing its lease, so
+    /// another node is elected once the lease runs out.
+    pub stepping_down: bool,
     next_round: u64,
     /// No new election before this (backoff with jitter).
     next_try_ms: u64,
@@ -185,9 +195,16 @@ impl Elector {
             ballot,
             phase: Phase::Follower,
             applied: (0, 0),
+            standing: true,
+            stepping_down: false,
             next_round: 1,
             next_try_ms: 0,
         }
+    }
+
+    /// Whether this node may become primary now: eligible and not in maintenance.
+    fn may_stand(&self) -> bool {
+        self.eligible && self.standing
     }
 
     fn majority(&self) -> usize {
@@ -265,7 +282,8 @@ impl Elector {
                 lease_until_ms,
                 ..
             } => {
-                if now_ms.saturating_sub(round_started_ms) >= RENEW_MS {
+                // REQ: OPS-010 — a primary handing over lets its lease run out.
+                if !self.stepping_down && now_ms.saturating_sub(round_started_ms) >= RENEW_MS {
                     let round = self.round();
                     let ask = Ask {
                         epoch,
@@ -290,13 +308,13 @@ impl Elector {
                 }
             }
             Phase::PreCandidate { started_ms, .. } | Phase::Candidate { started_ms, .. }
-                if now_ms.saturating_sub(started_ms) >= ROUND_MS =>
+                if !self.may_stand() || now_ms.saturating_sub(started_ms) >= ROUND_MS =>
             {
                 self.phase = Phase::Follower;
                 self.next_try_ms = now_ms + jitter_ms;
             }
             Phase::Follower
-                if self.eligible
+                if self.may_stand()
                     && now_ms >= self.next_try_ms
                     && !self.ballot.lease_held_by_other(&self.id, now_ms) =>
             {
@@ -397,6 +415,16 @@ impl Elector {
     /// Moves a candidate on when a majority granted.
     fn check_won(&mut self, now_ms: u64, out: &mut Vec<Out>) {
         let majority = self.majority();
+        // REQ: OPS-010 — maintenance started mid-election: stand down instead of winning.
+        if !self.may_stand()
+            && matches!(
+                self.phase,
+                Phase::PreCandidate { .. } | Phase::Candidate { .. }
+            )
+        {
+            self.phase = Phase::Follower;
+            return;
+        }
         match self.phase.clone() {
             Phase::PreCandidate { epoch, grants, .. } if grants.len() >= majority => {
                 let round = self.round();
@@ -570,5 +598,157 @@ mod tests {
         let ev = deliver(&mut a, outs, &mut [&mut b, &mut w], 47_000);
         assert!(ev.contains(&Out::StepDown { epoch: 1 }), "{ev:?}");
         assert_eq!(a.phase, Phase::Follower);
+    }
+
+    /// Delivers what `from` sends, and what the replies make it send, synchronously: the
+    /// sender's events, then the peers' (by peer).
+    fn exchange(
+        from: &mut Elector,
+        outs: Vec<Out>,
+        peers: &mut [&mut Elector],
+        now: u64,
+    ) -> (Vec<Out>, Vec<(String, Out)>) {
+        let (mut mine, mut theirs) = (Vec::new(), Vec::new());
+        let mut queue: std::collections::VecDeque<Out> = outs.into();
+        while let Some(o) = queue.pop_front() {
+            match o {
+                Out::Send { to, ask } => {
+                    if let Some(p) = peers.iter_mut().find(|p| p.id == to) {
+                        let (r, outs) = p.on_ask(&ask, now);
+                        theirs.extend(outs.into_iter().map(|o| (to.clone(), o)));
+                        queue.extend(from.on_reply(&to, &r, now));
+                    }
+                }
+                other => mine.push(other),
+            }
+        }
+        (mine, theirs)
+    }
+
+    /// Elects `a` among `voters` at time 0 and renews until 25 s (the others wait).
+    fn elect_a(voters: &[&str]) -> Vec<Elector> {
+        let ids: Vec<String> = voters.iter().map(|v| (*v).to_owned()).collect();
+        let mut nodes: Vec<Elector> = ids
+            .iter()
+            .map(|id| Elector::new(id, ids.clone(), *id != "w", Ballot::default()))
+            .collect();
+        for n in nodes.iter_mut().skip(1) {
+            n.next_try_ms = 1_000_000;
+        }
+        let (a, rest) = nodes.split_first_mut().unwrap();
+        let mut peers: Vec<&mut Elector> = rest.iter_mut().collect();
+        let outs = a.tick(0, 0);
+        let (ev, _) = exchange(a, outs, &mut peers, 0);
+        assert!(ev.contains(&Out::Elected { epoch: 1 }), "{ev:?}");
+        for t in (5_000..=25_000).step_by(5_000) {
+            let outs = a.tick(t, 0);
+            exchange(a, outs, &mut peers, t);
+        }
+        for n in nodes.iter_mut().skip(1) {
+            n.next_try_ms = 0;
+        }
+        nodes
+    }
+
+    // REQ: OPS-010 (ADR-118) — a node in maintenance never stands but still votes: with the
+    // primary gone and the only other eligible node in maintenance nobody is elected; the
+    // maintenance node's vote still elects a third node; and once maintenance ends it stands.
+    #[test]
+    fn ops_010_a_node_in_maintenance_votes_but_never_stands() {
+        let mut nodes = elect_a(&["a", "b", "w"]);
+        let (_a, rest) = nodes.split_first_mut().unwrap();
+        let (b, w) = rest.split_at_mut(1);
+        let (b, w) = (&mut b[0], &mut w[0]);
+        b.standing = false;
+        // a died at 25 s; its lease ran out at 40 s.
+        for t in (30_000..=120_000).step_by(250) {
+            let outs = b.tick(t, 0);
+            assert!(
+                outs.iter().all(|o| !matches!(o, Out::Send { .. })),
+                "b asked for votes at {t} while in maintenance: {outs:?}"
+            );
+            let (ev, _) = exchange(b, outs, &mut [&mut *w], t);
+            assert!(ev.is_empty(), "{ev:?}");
+        }
+        assert_eq!(b.phase, Phase::Follower);
+        // Maintenance ends: b stands and wins.
+        b.standing = true;
+        let outs = b.tick(121_000, 0);
+        let (ev, _) = exchange(b, outs, &mut [&mut *w], 121_000);
+        assert!(ev.contains(&Out::Elected { epoch: 2 }), "{ev:?}");
+
+        // Three eligible nodes: c is elected with b's vote while b is in maintenance.
+        let mut nodes = elect_a(&["a", "b", "c"]);
+        let (_a, rest) = nodes.split_first_mut().unwrap();
+        let (b, c) = rest.split_at_mut(1);
+        let (b, c) = (&mut b[0], &mut c[0]);
+        b.standing = false;
+        let mut elected = None;
+        for t in (30_000..=60_000).step_by(250) {
+            let outs = b.tick(t, 0);
+            let (ev, _) = exchange(b, outs, &mut [&mut *c], t);
+            assert!(ev.is_empty(), "{ev:?}");
+            let outs = c.tick(t, 0);
+            let (ev, _) = exchange(c, outs, &mut [&mut *b], t);
+            if ev.contains(&Out::Elected { epoch: 2 }) {
+                elected = Some(t);
+                break;
+            }
+        }
+        assert!(elected.is_some(), "c wasn't elected with b's vote");
+        assert_eq!(b.ballot.candidate, "c", "b voted");
+        // A candidate that enters maintenance mid-election stands down instead of winning.
+        let mut nodes = elect_a(&["a", "b", "w"]);
+        let (_a, rest) = nodes.split_first_mut().unwrap();
+        let b = &mut rest[0];
+        let _outs = b.tick(41_000, 0);
+        let Phase::PreCandidate { round, .. } = b.phase else {
+            panic!("expected a pre-vote, got {:?}", b.phase)
+        };
+        b.standing = false;
+        let r = Reply {
+            round,
+            granted: true,
+            epoch: 1,
+        };
+        b.on_reply("w", &r, 41_100);
+        assert_eq!(b.phase, Phase::Follower);
+    }
+
+    // REQ: OPS-010 (ADR-118) — a primary handing over stops renewing: its lease ends, the
+    // other eligible node is elected within the lease window, never while the old primary can
+    // still write, and the old primary steps down and doesn't stand again.
+    #[test]
+    fn ops_010_a_primary_hands_over() {
+        let mut nodes = elect_a(&["a", "b", "w"]);
+        let (a, rest) = nodes.split_first_mut().unwrap();
+        let (b, w) = rest.split_at_mut(1);
+        let (b, w) = (&mut b[0], &mut w[0]);
+        a.stepping_down = true;
+        a.standing = false;
+        let (mut elected, mut stepped_down) = (None, false);
+        for t in (30_000..=90_000).step_by(250) {
+            let outs = a.tick(t, 0);
+            let (ev, theirs) = exchange(a, outs, &mut [&mut *b, &mut *w], t);
+            assert!(!ev.iter().any(|o| matches!(o, Out::Elected { .. })));
+            assert!(theirs.is_empty() || elected.is_some(), "{theirs:?}");
+            let outs = b.tick(t, 0);
+            let (ev, theirs) = exchange(b, outs, &mut [&mut *a, &mut *w], t);
+            if ev.contains(&Out::Elected { epoch: 2 }) {
+                elected = Some(t);
+            }
+            stepped_down |= theirs
+                .iter()
+                .any(|(who, o)| who == "a" && *o == Out::StepDown { epoch: 1 });
+            assert!(!(a.writable(t) && b.writable(t)), "two writers at {t} ms");
+        }
+        let at = elected.expect("b was elected");
+        assert!(
+            at <= 25_000 + LEASE_MS + ROUND_MS,
+            "elected at {at} ms, after the lease window"
+        );
+        assert!(stepped_down, "a stepped down");
+        assert_eq!(a.phase, Phase::Follower);
+        assert!(b.writable(90_000));
     }
 }

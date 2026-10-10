@@ -42,6 +42,8 @@ pub struct SystemInfo {
     pub build: BuildInfo,
     /// Whether a newer build exists on this build's channel (ADR-046).
     pub update: UpdateStatus,
+    /// REQ: OPS-010 — this node's maintenance window, while it's in maintenance.
+    pub maintenance: Option<NodeMaintenance>,
 }
 
 /// The build identity (REQ: OPS-004, ADR-046): the same on every architecture of one commit.
@@ -974,6 +976,8 @@ pub struct AlertsStatus {
     pub evaluating: bool,
     pub firing: Vec<FiringAlert>,
     pub deliveries: Vec<AlertDelivery>,
+    /// REQ: OPS-010 — nodes whose alerts are paused for maintenance, until when.
+    pub maintenance: Vec<NodeMaintenance>,
 }
 
 /// REQ: OBS-010 (T9.5) — a device seen for the first time (internal: alerts).
@@ -1903,6 +1907,73 @@ pub struct Health {
     /// Cluster nodes that didn't answer (their own conditions aren't included).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_nodes: Vec<String>,
+    /// REQ: OPS-010 — nodes in maintenance: their conditions are left out of `reasons` and the
+    /// level until the window ends (a node in maintenance still answers DNS).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub maintenance: Vec<NodeMaintenance>,
+}
+
+/// REQ: OPS-010 (ADR-118) — a node's maintenance window: it reports not ready (balancers stop
+/// sending it new queries), keeps answering, and is left out of alerts, the health level, and
+/// elections until `until`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeMaintenance {
+    /// The node (its pod, site, or ID), in lists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// When it ends (RFC 3339).
+    pub until: String,
+    /// When it started (RFC 3339).
+    pub since: String,
+    #[schema(example = "SD card swap")]
+    pub reason: String,
+    /// Who started it: a user, `<user> via <site>` from another node, or an agent.
+    #[schema(example = "alice via pi")]
+    pub by: String,
+    pub seconds_left: u64,
+}
+
+/// `POST /api/v1/nodes/{id}/maintenance`.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaintenanceRequest {
+    /// How long, in seconds: 60 to 86,400 (agents at most 7,200). Default: the node's
+    /// `[node] maintenance_default_secs` (3,600).
+    #[serde(default)]
+    #[schema(example = 3600)]
+    pub for_secs: Option<u32>,
+    /// Why, in a few words (1 to 200 characters, one line). Shown on the Cluster page, in the
+    /// health panel, and in the audit log.
+    #[serde(default)]
+    #[schema(example = "SD card swap")]
+    pub reason: Option<String>,
+    /// For the primary under automatic failover: hand the primary role to another eligible
+    /// node first (about 30 s without configuration changes). Default true; ignored on other
+    /// nodes.
+    #[serde(default)]
+    pub handover: Option<bool>,
+}
+
+/// A node's maintenance after a start or end.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceResult {
+    /// The node (its pod, site, or ID).
+    pub node: String,
+    /// Whether it's in maintenance now.
+    pub active: bool,
+    /// The window, while active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<NodeMaintenance>,
+    /// Starting on the primary: `started` (another node is being elected; the old primary
+    /// follows), `unavailable` (manual failover, or no other eligible node reachable: it stays
+    /// the primary), or `declined` (`handover: false`). `not_needed` on other nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<String>,
+    /// What to know, in one sentence (e.g. promote another node first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// REQ: OBS-015 — one condition behind [`Health`].
@@ -2195,6 +2266,9 @@ pub struct ClusterNode {
     /// Its share of the queries the nodes that are up answered over the last minute, percent
     /// (absent when there were none).
     pub query_share_percent: Option<f64>,
+    /// REQ: OPS-010 — its maintenance window, while it's in maintenance (older nodes never
+    /// report one).
+    pub maintenance: Option<NodeMaintenance>,
 }
 
 /// A cluster event (joins, connections, published and applied versions, failures).

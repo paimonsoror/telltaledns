@@ -68,6 +68,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "ops:anomalies",
         "acknowledge device anomalies (and take it back)",
     ),
+    (
+        "ops:maintenance",
+        "start and end node maintenance (at most two hours)",
+    ),
     ("cluster:admin", "promote a node to primary"),
 ];
 
@@ -214,6 +218,10 @@ pub fn required(method: &Method, path: &str) -> Need {
         if under("/api/v1/exclusions") {
             return Need::Scope("config:write:exclusions");
         }
+        // REQ: OPS-010 — ending maintenance (starting it is a POST).
+        if *method == Method::DELETE && maintenance_path(p) {
+            return Need::Scope("ops:maintenance");
+        }
     }
     if *method == Method::POST
         && let Some(need) = post_need(p)
@@ -223,9 +231,18 @@ pub fn required(method: &Method, path: &str) -> Need {
     Need::Forbidden
 }
 
+/// REQ: OPS-010 — `/api/v1/nodes/{id}/maintenance`.
+fn maintenance_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/nodes/")
+        .and_then(|r| r.strip_suffix("/maintenance"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 /// What a `POST` to `p` needs: tests, MCP, and the immediate operations.
 fn post_need(p: &str) -> Option<Need> {
     Some(match p {
+        // REQ: OPS-010 — maintenance is an immediate op (agents at most two hours).
+        _ if maintenance_path(p) => Need::Scope("ops:maintenance"),
         _ if p.starts_with("/api/v1/alerts/destinations/") && p.ends_with("/test") => {
             Need::Scope("config:write:alerts")
         }
@@ -539,6 +556,36 @@ mod tests {
         );
         assert_eq!(
             implied_role(&parse_scopes(&["ops:anomalies".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OPS-010, AGT-004 — starting and ending maintenance need `ops:maintenance` (an
+    /// operator scope); other paths under `/nodes` stay forbidden.
+    #[test]
+    fn ops_010_maintenance_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        for m in [Method::POST, Method::DELETE] {
+            assert_eq!(
+                required(&m, "/api/v1/nodes/local/maintenance"),
+                Scope("ops:maintenance"),
+                "{m}"
+            );
+            assert_eq!(
+                required(&m, "/api/v1/nodes/pi/maintenance"),
+                Scope("ops:maintenance")
+            );
+        }
+        for (m, p) in [
+            (Method::PUT, "/api/v1/nodes/pi/maintenance"),
+            (Method::POST, "/api/v1/nodes//maintenance"),
+            (Method::POST, "/api/v1/nodes/a/b/maintenance"),
+            (Method::DELETE, "/api/v1/nodes/pi"),
+        ] {
+            assert_eq!(required(&m, p), Forbidden, "{m} {p}");
+        }
+        assert_eq!(
+            implied_role(&parse_scopes(&["ops:maintenance".into()]).unwrap()),
             Role::Operator
         );
     }

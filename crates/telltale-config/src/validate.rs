@@ -53,6 +53,13 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     alerts(cfg, &mut r);
     slo(cfg, &mut r);
     probes(cfg, &mut r);
+    // REQ: OPS-010 (T13.4) — a minute to a day, like the API's bounds.
+    if !(60..=86_400).contains(&cfg.node.maintenance_default_secs) {
+        r.err(
+            "node.maintenance_default_secs",
+            "from 60 to 86400 seconds (a minute to a day)",
+        );
+    }
     upstream_check(cfg, &mut r);
     sinks(cfg, &mut r);
     routers(cfg, &mut r);

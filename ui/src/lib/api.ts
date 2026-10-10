@@ -167,6 +167,10 @@ export const api = {
   cluster: () => get<S['ClusterView']>('/cluster'),
   promoteCluster: (emergency = false, password = '', totp = '') =>
     post<S['ClusterView']>('/cluster/promote', { emergency, password, ...(totp ? { totp } : {}) }),
+  // REQ: OPS-010 — maintenance on a node (`local` or a node ID): not ready, still answering.
+  startMaintenance: (node: string, body: S['MaintenanceRequest']) =>
+    post<S['MaintenanceResult']>(`/nodes/${encodeURIComponent(node)}/maintenance`, body),
+  endMaintenance: (node: string) => call<S['MaintenanceResult']>('DELETE', `/nodes/${encodeURIComponent(node)}/maintenance`),
   localNames: () => get<S['Items_LocalName']>('/records'),
   forwards: () => get<S['Items_ForwardInfo']>('/forwards'),
   rules: () => get<S['Items_RuleInfo']>('/rules'),

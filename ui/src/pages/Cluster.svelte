@@ -9,22 +9,60 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import HostCard from '../lib/components/HostCard.svelte';
+  import Icon from '../lib/components/Icon.svelte';
   import Topology, { type Node } from '../lib/components/Topology.svelte';
+  import MaintenanceForm from '../lib/components/MaintenanceForm.svelte';
+  import { refreshHealth } from '../lib/health.svelte';
   import { tick } from 'svelte';
 
   let view = $state<S['ClusterView'] | null>(null);
+  let info = $state<S['SystemInfo'] | null>(null);
   let error = $state<unknown>(null);
 
-  $effect(() =>
-    poll(async () => {
-      try {
-        view = await api.cluster();
-        error = null;
-      } catch (e) {
-        error = e;
-      }
-    }, 5000),
-  );
+  async function load() {
+    try {
+      view = await api.cluster();
+      // A standalone node's own maintenance window comes from its system information.
+      if (!view.enabled) info = await api.info();
+      error = null;
+    } catch (e) {
+      error = e;
+    }
+  }
+  $effect(() => poll(load, 5000));
+
+  // REQ: OPS-010 (ADR-118) — maintenance per node: a form, an end button, the result's note.
+  let maintFor = $state<string | null>(null);
+  let maintBusy = $state(false);
+  let maintError = $state<unknown>(null);
+  let maintNote = $state<string | null>(null);
+  const apiNode = (n: Node) => (n.thisNode ? 'local' : n.nodeId);
+  // The primary hands over only under automatic failover with another eligible node online.
+  const canHandover = (n: Node) =>
+    !!view?.failover?.active &&
+    (view?.nodes.some((o) => o.nodeId !== n.nodeId && o.eligible && !o.witness && o.up && !o.maintenance) ?? false);
+  async function changed(note?: string | null) {
+    maintFor = null;
+    maintNote = note ?? null;
+    await load();
+    void refreshHealth();
+    window.dispatchEvent(new Event('telltale:maintenance-changed'));
+  }
+  async function endMaintenance(node: string) {
+    maintBusy = true;
+    maintError = null;
+    try {
+      const r = await api.endMaintenance(node);
+      await changed(r.note);
+    } catch (e) {
+      maintError = e;
+    } finally {
+      maintBusy = false;
+    }
+  }
+  // This node's own window (standalone too).
+  const mine = $derived(view?.enabled ? view.nodes.find((n) => n.thisNode)?.maintenance : info?.maintenance);
+  const until = (m: S['NodeMaintenance']) => `${logDate(m.until)} ${logTime(m.until)}`;
 
   const kinds: Record<string, string> = {
     joined: 'Joined',
@@ -40,11 +78,17 @@
     voted: 'Voted',
     cert_issued: 'Certificate',
     ca_rotation: 'CA rotation',
+    maintenance: 'Maintenance',
+    maintenance_ended: 'Back in service',
+    handover: 'Maintenance handover',
+    handover_failed: 'Handover failed',
+    lease_released: 'Lease released',
+    stepped_down: 'Stepped down',
   };
   const kindClass = (k: string) =>
-    k === 'disconnected' || k === 'sync_failed' || k === 'rejected'
+    k === 'disconnected' || k === 'sync_failed' || k === 'rejected' || k === 'handover_failed'
       ? 'bad'
-      : k === 'restarted'
+      : k === 'restarted' || k === 'maintenance' || k === 'handover'
         ? 'warn'
         : k === 'published' || k === 'applied'
           ? 'ok'
@@ -127,6 +171,19 @@
     {/if}
   </div>
   <ErrorNote {error} />
+  {#if mine}
+    <!-- REQ: OPS-010 — the node serving this page is in maintenance. -->
+    <div class="notice warn maint-banner" role="status" data-testid="maintenance-banner">
+      <strong>This node is in maintenance</strong> until {until(mine)} ({mine.reason}, by {mine.by}): it reports not ready, so
+      load balancers send it no new queries, and it keeps answering what still arrives. Its alerts and health conditions are
+      paused.<HelpButton id="maintenance" />
+      {#if can('operator')}
+        <button onclick={() => endMaintenance('local')} disabled={maintBusy} data-testid="maintenance-end-banner">End maintenance</button>
+      {/if}
+    </div>
+  {/if}
+  {#if maintNote}<p class="notice small" data-testid="maintenance-note">{maintNote}</p>{/if}
+  <ErrorNote error={maintError} />
 
   {#if view && !view.enabled}
     <section class="card" data-testid="cluster-standalone">
@@ -141,6 +198,18 @@ telltale cluster token create        # then, on the other node:
 telltale cluster join tt_join_…</pre>
       <p class="muted small">Run these as the user TelltaleDNS runs as, then restart it. See the help for what's shared and what stays per node.</p>
     </section>
+    {#if can('operator') && !mine}
+      <!-- REQ: OPS-010 — a standalone node can be put in maintenance too (readiness, banner, alerts). -->
+      <section class="card">
+        <h2>Maintenance<HelpButton id="maintenance" /></h2>
+        {#if maintFor === 'local'}
+          <MaintenanceForm node="local" label="this node" onclose={() => (maintFor = null)} ondone={(r) => changed(r.note)} />
+        {:else}
+          <p class="small muted">Taking this machine down for a while? Maintenance makes it report not ready (so a load balancer moves away) and pauses its alerts, while it keeps answering DNS.</p>
+          <button onclick={() => (maintFor = 'local')} data-testid="maintenance-open">Maintenance…</button>
+        {/if}
+      </section>
+    {/if}
     {#if view.host}
       <!-- REQ: CLU-008 (T6.11) — a standalone node still shows its machine. -->
       <section class="machines">
@@ -308,6 +377,22 @@ telltale cluster join tt_join_…</pre>
                     {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
                   </div>
                   {#if n.pod}<div class="muted small" data-testid="cluster-node-pod">pod <span class="mono">{n.pod}</span>{#if n.kubeNode}{' on '}<span class="mono">{n.kubeNode}</span>{/if}</div>{/if}
+                  <!-- REQ: OPS-010 — the window, and the actions for operators. -->
+                  {#if n.maintenance}
+                    <div class="small" data-testid="cluster-node-maintenance">
+                      <span class="badge warn" title={`by ${n.maintenance.by}`}><Icon name="wrench" size={12} /> maintenance</span>
+                      {duration(n.maintenance.secondsLeft)} left · {n.maintenance.reason}
+                    </div>
+                  {/if}
+                  {#if can('operator') && !n.witness}
+                    <div class="small">
+                      {#if n.maintenance}
+                        <button class="link small" onclick={() => endMaintenance(apiNode(n))} disabled={maintBusy} data-testid="maintenance-end">End maintenance</button>
+                      {:else if maintFor !== n.nodeId}
+                        <button class="link small" onclick={() => (maintFor = n.nodeId)} data-testid="maintenance-open">Maintenance…</button>
+                      {/if}
+                    </div>
+                  {/if}
                 </td>
                 <td>
                   <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
@@ -338,6 +423,20 @@ telltale cluster join tt_join_…</pre>
                   {#if n.certExpiresAt}<div class="muted">cert until {logDate(n.certExpiresAt)}</div>{/if}
                 </td>
               </tr>
+              {#if maintFor === n.nodeId}
+                <tr class="maint-row">
+                  <td colspan="6">
+                    <MaintenanceForm
+                      node={apiNode(n)}
+                      label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
+                      primary={n.role === 'primary'}
+                      canHandover={canHandover(n)}
+                      onclose={() => (maintFor = null)}
+                      ondone={(r) => changed(r.note)}
+                    />
+                  </td>
+                </tr>
+              {/if}
             {/snippet}
             {#each fixed as n (n.nodeId)}{@render row(n)}{/each}
             {#each podSites as [site, pods] (site)}
@@ -488,6 +587,16 @@ telltale cluster join tt_join_…</pre>
     display: grid;
     gap: var(--gap);
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
+  .maint-banner {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: var(--gap);
+  }
+  .maint-row td {
+    background: color-mix(in srgb, var(--warn) 6%, transparent);
   }
   pre {
     overflow-x: auto;

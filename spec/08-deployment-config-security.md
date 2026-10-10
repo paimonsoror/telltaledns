@@ -36,7 +36,7 @@ Per-client analytics are worthless if every query appears to come from a node IP
 
 ### 3.3 Config, secrets, probes
 - `values.yaml → config:` renders a ConfigMap (`telltale.toml`) and enables GitOps mode if `gitops: true`. Secrets (admin bootstrap password hash, cluster join token, OIDC client secret, upstream tokens) come from existing Secrets referenced by name (`existingSecret`), so Sealed Secrets/External Secrets/SOPS work.
-- Probes: `startupProbe /readyz` (a fresh pod becomes ready only after the snapshot is applied and listeners are bound), `readinessProbe /readyz`, `livenessProbe /livez`. Resolver pods with no snapshot and no reachable controller stay unready (they never serve unfiltered DNS), unless `failOpen: true`.
+- Probes: `startupProbe /readyz?startup=1` (a fresh pod becomes ready only after the snapshot is applied and listeners are bound; maintenance doesn't count, OPS-010), `readinessProbe /readyz`, `livenessProbe /livez`. Resolver pods with no snapshot and no reachable controller stay unready (they never serve unfiltered DNS), unless `failOpen: true`.
 - `ServiceMonitor` + `PrometheusRule` (default alerts) + Grafana dashboard ConfigMap (sidecar label) are optional.
 - NetworkPolicy: allow 53/udp+tcp from configured CIDRs; 8443 cluster port between TelltaleDNS pods and from external cluster members (configurable CIDR, e.g., the Pi); egress to upstreams.
 - Resources (defaults): resolver requests 50m/48Mi, limits 1 CPU/128Mi; controller requests 100m/96Mi, limits 2 CPU/512Mi (list compile). `GOMAXPROCS`-equivalent: worker threads default to `min(cpu limit, cores)`, read from the cgroup quota.
@@ -122,7 +122,7 @@ DHCPv4 server (static leases, options 3/6/15/42/119, lease file), disabled by de
 - **A primary:** with automatic failover and another eligible node or quorum reachable, `handover = true` (default) makes it stop renewing its lease and decline candidacy, so a replica is elected within the lease window and it follows for the rest of the window; otherwise it stays primary and keeps publishing, and the UI/CLI say to promote another node first if it's going offline.
 - **Elsewhere:** alert rules skip the node and its firing alerts resolve "(maintenance)"; the health level ignores its reasons and lists it under `maintenance`; Cluster-page checks skip it; alert rule `maintenance` (once on entry, resolved on exit).
 - **Surfaces:** `POST`/`DELETE /api/v1/nodes/{id}/maintenance` (operator; an RPC to the target node, not via the primary), `telltale ctl maintenance start --for 2h --reason "..." [--node]` / `end`, Cluster page per-node action and banner, MCP `start_maintenance`/`end_maintenance` (`ops:maintenance`, agents ≤ 2 h), audit `node.maintenance.start|end`, `telltale_node_maintenance`, `telltale_node_maintenance_until_seconds`.
-- **Kubernetes:** one readiness probe per pod serves every Service, so a controller pod in maintenance also leaves the API Service; use another node's UI or a port-forward. Design: `docs/design/maintenance-mode.md`.
+- **Kubernetes:** one readiness probe per pod serves every Service, so a controller pod in maintenance also leaves the API Service; use another node's UI or a port-forward. The startup probe asks `/readyz?startup=1`, which leaves maintenance out, so a pod restarted inside its window isn't killed (ADR-118, amended). Design: `docs/design/maintenance-mode.md`.
 
 ## 8. Backup / migration (API-007)
 - `telltale ctl backup create [--include-qlog]` → a `.ttbk` (tar.zst + manifest + signature). Restore onto a new primary.

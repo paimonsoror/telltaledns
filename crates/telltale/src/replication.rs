@@ -1092,7 +1092,9 @@ async fn serving_loop(
                     .map_or(0, |p| p.p90),
             )
         };
-        let ready = sources.ready.load(std::sync::atomic::Ordering::Acquire);
+        // REQ: OPS-010 — heartbeats say whether it *serves* DNS: a node in maintenance does
+        // (it only asks balancers to stop sending), and carries its window separately.
+        let ready = sources.readiness.serving();
         let uptime = sources.started.elapsed().as_secs();
         let host = sources.host.latest();
         let c = sources.cache.stats();

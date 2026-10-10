@@ -5,7 +5,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -39,8 +39,11 @@ pub(crate) struct Sources {
     pub(crate) doh: ArcSwap<Vec<Arc<DohStats>>>,
     /// REQ: DNS-004 (T7.7) — DoQ listeners' counters.
     pub(crate) doq: ArcSwap<Vec<Arc<telltale_net::DoqStats>>>,
-    /// Set once every listener is bound; cleared at the start of shutdown.
-    pub(crate) ready: Arc<AtomicBool>,
+    /// REQ: OPS-006, OPS-010 — why `/readyz` says what it says: listeners bound, the
+    /// cluster's configuration applied (resolver pods), not shutting down, not in maintenance.
+    pub(crate) readiness: Arc<crate::readiness::Readiness>,
+    /// REQ: OPS-010 — this node's maintenance window.
+    pub(crate) maintenance: Arc<crate::maintenance::Maintenance>,
     pub(crate) started: Instant,
     pub(crate) allowed: Vec<Cidr>,
     /// The list fetcher and compiler, when this node handles lists.
@@ -184,12 +187,39 @@ async fn only_allowed(
     }
 }
 
-async fn readyz(State(src): State<Arc<Sources>>) -> impl IntoResponse {
-    if src.ready.load(Ordering::Acquire) {
-        (StatusCode::OK, "ready\n")
+/// `/readyz?startup=1`: the Kubernetes startup probe's view.
+#[derive(Debug, serde::Deserialize)]
+struct ReadyQuery {
+    #[serde(default)]
+    startup: Option<String>,
+}
+
+/// REQ: OPS-006, OPS-010 — 200 when ready for traffic, 503 with the reason otherwise
+/// (`{"ready":false,"reason":"maintenance"}`, handy in `kubectl describe`). With `startup=1`
+/// maintenance doesn't count: a pod restarted inside its window has started, and the
+/// startup probe mustn't kill it for being in maintenance (ADR-118, amended).
+async fn readyz(
+    State(src): State<Arc<Sources>>,
+    axum::extract::Query(q): axum::extract::Query<ReadyQuery>,
+) -> Response {
+    let r = &src.readiness;
+    let startup = q
+        .startup
+        .as_deref()
+        .is_some_and(|v| v != "0" && v != "false");
+    let ok = if startup { r.started() } else { r.ready() };
+    let reason = (!ok).then(|| r.reason()).flatten();
+    let body = match reason {
+        None if ok => "{\"ready\":true}\n".to_owned(),
+        None => "{\"ready\":false}\n".to_owned(),
+        Some(why) => format!("{{\"ready\":false,\"reason\":\"{why}\"}}\n"),
+    };
+    let status = if ok {
+        StatusCode::OK
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
-    }
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 async fn metrics(State(src): State<Arc<Sources>>, headers: header::HeaderMap) -> Response {
@@ -353,6 +383,64 @@ fn election_metrics(c: &telltale_cluster::net::Cluster, w: &mut PromWriter) {
     }
 }
 
+/// REQ: OPS-010 — this node's maintenance: whether it's in it, until when, how many windows
+/// were started since this process did.
+fn render_maintenance(src: &Sources, w: &mut PromWriter) {
+    let now = crate::maintenance::now_ms();
+    let current = src.maintenance.current(now);
+    w.family(
+        "telltale_node_maintenance",
+        "gauge",
+        "1 while this node is in maintenance (not ready for new traffic; still answering).",
+    )
+    .sample(
+        "telltale_node_maintenance",
+        &[],
+        u8::from(current.is_some()),
+    );
+    w.family(
+        "telltale_node_maintenance_until_seconds",
+        "gauge",
+        "When this node's maintenance window ends (Unix seconds; 0 when it isn't in maintenance).",
+    )
+    .sample(
+        "telltale_node_maintenance_until_seconds",
+        &[],
+        current.map_or(0, |m| m.until_ms / 1000),
+    );
+    w.family(
+        "telltale_node_maintenance_total",
+        "counter",
+        "Maintenance windows started on this node since the process started.",
+    )
+    .sample(
+        "telltale_node_maintenance_total",
+        &[],
+        src.maintenance.starts(),
+    );
+}
+
+/// REQ: OPS-010 — peers' maintenance windows (kept while they're silent), so the chart's
+/// peer-down alert can stay quiet for a node stopped during its window.
+fn peer_maintenance_metrics(
+    peers: &[telltale_cluster::net::Member],
+    now_ms: u64,
+    w: &mut PromWriter,
+) {
+    w.family(
+        "telltale_cluster_peer_maintenance_until_seconds",
+        "gauge",
+        "When the peer's maintenance window ends (Unix seconds; 0 when it isn't in maintenance).",
+    );
+    for p in peers {
+        w.sample(
+            "telltale_cluster_peer_maintenance_until_seconds",
+            &[("node", &p.node_id), ("site", &p.site)],
+            p.in_maintenance(now_ms).map_or(0, |m| m.until_ms / 1000),
+        );
+    }
+}
+
 fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
     if let Some(c) = &src.cluster {
         let now = std::time::SystemTime::now()
@@ -400,6 +488,7 @@ fn cluster_metrics(src: &Sources, w: &mut PromWriter) {
             }
         }
         peer_detail_metrics(&peers, w);
+        peer_maintenance_metrics(&peers, now, w);
         w.family(
             "telltale_cluster_peer_config_lag",
             "gauge",
@@ -538,6 +627,7 @@ pub(crate) fn render(src: &Sources) -> String {
         u8::from(src.masked_clients().is_some()),
     );
     cluster_metrics(src, &mut w);
+    render_maintenance(src, &mut w);
     render_slo(&mut w, &src.config.load().slo);
     render_probes(&mut w, &src.probes);
     if let Some(f) = src.pipeline.filter.load_full() {
@@ -1616,7 +1706,21 @@ mod tests {
             Duration::from_micros(80),
         );
         let cache = Arc::new(Cache::new(CachePolicy::default()));
+        let readiness = Arc::new(crate::readiness::Readiness::ready_now());
+        let dir = std::env::temp_dir().join(format!(
+            "telltale-http-{}-{}",
+            std::process::id(),
+            crate::maintenance::now_ms()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
         Sources {
+            maintenance: Arc::new(crate::maintenance::Maintenance::open(
+                &dir,
+                Arc::clone(&readiness),
+                None,
+                0,
+            )),
+            readiness,
             metrics,
             cache: Arc::clone(&cache),
             pipeline: crate::pipeline::Pipeline::new(
@@ -1629,7 +1733,6 @@ mod tests {
             tcp: ArcSwap::from_pointee(Vec::new()),
             doh: ArcSwap::from_pointee(Vec::new()),
             doq: ArcSwap::from_pointee(Vec::new()),
-            ready: Arc::new(AtomicBool::new(true)),
             started: Instant::now(),
             lists: ArcSwapOption::empty(),
             qlog: None,
@@ -1656,6 +1759,61 @@ mod tests {
             shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
             traces: Arc::default(),
         }
+    }
+
+    /// REQ: OPS-010, OPS-006 — `/readyz` is 503 with the reason during maintenance (and the
+    /// startup view isn't), 200 again after; the maintenance gauges follow.
+    #[tokio::test]
+    async fn ops_010_readyz_reasons_and_metrics() {
+        let src = Arc::new(sources());
+        let ask = |src: &Arc<Sources>, startup: Option<&str>| {
+            let src = Arc::clone(src);
+            let q = ReadyQuery {
+                startup: startup.map(ToOwned::to_owned),
+            };
+            async move {
+                let r = readyz(State(src), axum::extract::Query(q)).await;
+                let status = r.status().as_u16();
+                let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, String::from_utf8(body.to_vec()).unwrap())
+            }
+        };
+        assert_eq!(ask(&src, None).await, (200, "{\"ready\":true}\n".into()));
+        let now = crate::maintenance::now_ms();
+        src.maintenance
+            .start(crate::maintenance::Window {
+                until_ms: now + 60_000,
+                since_ms: now,
+                reason: "SD card swap".into(),
+                by: "alice".into(),
+                handover: false,
+            })
+            .unwrap();
+        assert_eq!(
+            ask(&src, None).await,
+            (503, "{\"ready\":false,\"reason\":\"maintenance\"}\n".into())
+        );
+        assert_eq!(
+            ask(&src, Some("1")).await.0,
+            200,
+            "the startup probe passes"
+        );
+        let text = render(&src);
+        assert!(text.contains("telltale_node_maintenance 1"), "{text}");
+        assert!(text.contains("telltale_node_maintenance_total 1"));
+        src.maintenance.end().unwrap();
+        assert_eq!(ask(&src, None).await.0, 200);
+        assert!(render(&src).contains("telltale_node_maintenance 0"));
+        src.readiness.set_stopping();
+        assert_eq!(
+            ask(&src, Some("1")).await,
+            (
+                503,
+                "{\"ready\":false,\"reason\":\"shutting_down\"}\n".into()
+            )
+        );
     }
 
     /// REQ: OBS-017 (T11.6) — `/metrics` answers OpenMetrics (ending in `# EOF`) to a scraper

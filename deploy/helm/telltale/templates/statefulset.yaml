@@ -135,8 +135,11 @@ spec:
               protocol: TCP
             {{- end }}
           # REQ: OPS-006 — ready once every listener is bound; lists load in the background.
+          # REQ: OPS-010 — the startup probe leaves maintenance out (`startup=1`): a pod restarted
+          # inside its window has started and mustn't be killed; readiness keeps it out of the
+          # Services until the window ends.
           startupProbe:
-            httpGet: { path: /readyz, port: metrics }
+            httpGet: { path: "/readyz?startup=1", port: metrics }
             periodSeconds: 2
             failureThreshold: 60
           readinessProbe:

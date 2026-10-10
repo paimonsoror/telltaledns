@@ -11,6 +11,9 @@
 //! - **orphaned writes are always surfaced:** after everything heals, every write is in the
 //!   final history or was reported as orphaned when its node adopted a newer history;
 //! - **liveness:** once healed, a writable primary exists within 60 s.
+//! - **maintenance (OPS-010):** nodes enter and leave maintenance at random (it survives their
+//!   restarts); a node in maintenance is never elected, and a primary that enters it hands
+//!   over: it can't write past one lease from when it started stepping down.
 //!
 //! `TELLTALE_SIM_SCHEDULES` sets the number of schedules (default: 10,000 in release builds,
 //! which CI runs; 200 in debug builds) and `TELLTALE_SIM_SEED` the first seed. A failure
@@ -18,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use telltale_cluster::election::{Ask, Ballot, Elector, Out, Reply};
+use telltale_cluster::election::{Ask, Ballot, Elector, LEASE_MS, Out, Reply};
 
 /// xorshift64*: deterministic per seed.
 struct Rng(u64);
@@ -62,6 +65,10 @@ struct Node {
     history: Vec<Write>,
     history_epoch: u64,
     next_write_ms: u64,
+    /// In maintenance (persisted: survives restarts).
+    maint: bool,
+    /// When this primary started handing over, on its clock.
+    stepping_since: Option<u64>,
 }
 
 impl Node {
@@ -115,6 +122,8 @@ impl Sim {
                     history: Vec::new(),
                     history_epoch: 0,
                     next_write_ms: 0,
+                    maint: false,
+                    stepping_since: None,
                 }
             })
             .collect();
@@ -160,6 +169,10 @@ impl Sim {
                 }
                 Out::Elected { epoch } => {
                     let me = self.ids[i].clone();
+                    assert!(
+                        !self.nodes[i].maint,
+                        "{me} was elected in epoch {epoch} while in maintenance"
+                    );
                     if let Some(prev) = self.winners.insert(epoch, me.clone()) {
                         assert_eq!(prev, me, "two primaries elected in epoch {epoch}");
                     }
@@ -258,7 +271,22 @@ impl Sim {
                         node.el = Elector::new(&self.ids[i], self.ids.clone(), eligible, ballot);
                         node.el.applied = applied;
                         node.el.max_epoch = node.el.max_epoch.max(node.history_epoch);
+                        // OPS-010 — the maintenance window is on disk; the role isn't.
+                        node.el.standing = !node.maint;
+                        node.stepping_since = None;
                     }
+                }
+            }
+            // OPS-010 — nodes enter and leave maintenance; a primary entering hands over.
+            for i in 0..n {
+                if self.nodes[i].up && self.rng.chance(0.002) {
+                    let node = &mut self.nodes[i];
+                    let now = node.now(real);
+                    node.maint = !node.maint;
+                    node.el.standing = !node.maint;
+                    let handover = node.maint && node.el.leading().is_some();
+                    node.el.stepping_down = handover;
+                    node.stepping_since = handover.then_some(now);
                 }
             }
         }
@@ -276,6 +304,15 @@ impl Sim {
             };
             let outs = self.nodes[i].el.tick(now, jitter);
             self.handle(real, i, outs);
+            // OPS-010 — a primary handing over writes for at most one lease from then on.
+            if let Some(since) = self.nodes[i].stepping_since {
+                assert!(
+                    !self.nodes[i].el.writable(now) || now < since + LEASE_MS,
+                    "{} still writes {} ms after it started handing over",
+                    self.ids[i],
+                    now.saturating_sub(since)
+                );
+            }
             // A writable primary writes and replicates.
             if self.nodes[i].el.writable(now) && now >= self.nodes[i].next_write_ms {
                 let epoch = self.nodes[i].el.leading().unwrap_or(0);
@@ -311,6 +348,12 @@ impl Sim {
         }
         self.drop = 0.0;
         for i in 0..self.nodes.len() {
+            // Maintenance ends too (a node in maintenance never stands, so liveness needs it).
+            let node = &mut self.nodes[i];
+            node.maint = false;
+            node.el.standing = true;
+            node.el.stepping_down = false;
+            node.stepping_since = None;
             if !self.nodes[i].up {
                 self.nodes[i].up = true;
                 let ballot = self.nodes[i].el.ballot.clone();

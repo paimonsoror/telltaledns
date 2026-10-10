@@ -517,6 +517,16 @@
       "docs": "listener-checks"
     },
     {
+      "id": "maintenance",
+      "title": "Maintenance mode",
+      "term": "Node maintenance",
+      "summary": "A timeboxed flag on one node (an hour by default, a day at most) for planned work: it reports not ready, so load balancers and Kubernetes stop sending it new queries, but every listener keeps answering whatever still arrives. Alerts and the health level leave it out, and it isn't elected primary, until the window ends or someone ends it. The window survives a restart.",
+      "when": "Before swapping a Pi's SD card, moving a box, or upgrading a node by hand: start maintenance with a reason, do the work, end it (or let it run out).",
+      "example": "Maintenance on the Pi for 30 minutes, \"SD card swap\": the router's secondary DNS entry still gets answers, no node_down alert fires while it's off, and the health icon stays green with \"1 node in maintenance\".",
+      "caution": "In Kubernetes one readiness probe serves every Service that selects the pod, so a controller pod in maintenance also leaves the API Service (use another node's UI or a port-forward), and a StatefulSet rollout waits for it. On the primary under automatic failover, maintenance hands the primary role to another node first (about 30 s without configuration changes); in manual mode it stays the primary, so promote another node first if you're taking it offline. A node that's really failing during its window stays quiet until the window ends.",
+      "docs": "taking-a-node-down-for-maintenance"
+    },
+    {
       "id": "slo",
       "title": "Service level",
       "term": "Service-level objectives (SLOs) and error budgets",

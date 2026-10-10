@@ -32,6 +32,10 @@ First admin:
 {{- else }}
   kubectl -n {{ .Release.Namespace }} exec {{ include "telltale.fullname" . }}-0 -- /usr/local/bin/telltale auth setup-token -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml
 {{- end }}
+
+Maintenance: a pod in maintenance (Cluster page, or `telltale ctl maintenance start`) reports
+not ready, so it leaves every Service that selects it, and keeps answering what still arrives.
+See "Taking a node down for maintenance" in docs/running.md.
 {{- if include "telltale.scaled" . }}
 {{- if or (eq .Values.service.api.type "LoadBalancer") (eq .Values.cluster.service.type "LoadBalancer") }}
 

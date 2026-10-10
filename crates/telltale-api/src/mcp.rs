@@ -411,7 +411,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "cluster_status",
-            description: "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), and recent events. On a standalone node it says so and still shows its machine.",
+            description: "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), each node's maintenance window (until, reason, who), and recent events. On a standalone node it says so and still shows its machine.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("cluster".into(), "/api/v1/cluster".into())]),
         },
@@ -1195,6 +1195,61 @@ pub fn write_tools() -> Vec<WriteTool> {
                     path: "/api/v1/blocking/resume".into(),
                     summary: "Resume blocking".into(),
                     body: Some(Value::Object(pick(a, &[("group", "group")]))),
+                    merge: None,
+                })
+            },
+        },
+        // REQ: OPS-010 (ADR-118)
+        WriteTool {
+            name: "start_maintenance",
+            description: "Changes at once (audited, no plan). Puts a node in maintenance for up to 2 hours: it reports not ready, so load balancers and Kubernetes stop sending it new queries, but it keeps answering every query that still arrives; its alerts and health conditions are left out, and it isn't elected primary, until the window ends (or end_maintenance). The primary under automatic failover first hands its role to another eligible node; otherwise the result's note says to promote another node first. Your reason is shown with the window. Needs the ops:maintenance scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node: its ID, site, or pod name from cluster_status, or local (the node you're connected to)."},
+                "forSecs": {"type": "integer", "minimum": 60, "maximum": 7200, "description": "How long, in seconds (default 3600)."},
+                "reason": reason_schema()
+            }, "required": ["node", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: true,
+            write: |a| {
+                let node = need(a, "node")?;
+                let why = need(a, "reason")?;
+                let mut body = pick(a, &[("forSecs", "forSecs")]);
+                body.insert("reason".into(), Value::String(why));
+                Ok(Write {
+                    method: "POST",
+                    path: format!("/api/v1/nodes/{}/maintenance", enc(&node)),
+                    summary: format!(
+                        "Put {node} in maintenance{}",
+                        a.get("forSecs")
+                            .and_then(Value::as_u64)
+                            .map(|s| format!(" for {} minutes", s.div_ceil(60)))
+                            .unwrap_or_default()
+                    ),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
+        WriteTool {
+            name: "end_maintenance",
+            description: "Changes at once (audited, no plan). Ends a node's maintenance: it's ready for traffic again, and alerts and the health level cover it again. Needs the ops:maintenance scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "node": {"type": "string", "description": "The node: its ID, site, or pod name, or local."},
+                "reason": reason_schema()
+            }, "required": ["node", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let node = need(a, "node")?;
+                Ok(Write {
+                    method: "DELETE",
+                    path: format!("/api/v1/nodes/{}/maintenance", enc(&node)),
+                    summary: format!("End maintenance on {node}"),
+                    body: None,
                     merge: None,
                 })
             },

@@ -264,7 +264,8 @@ pub(crate) fn spawn(src: Arc<crate::http::Sources>, mut stop: tokio::sync::watch
             let cfg = src.config.load_full();
             if !cfg.probe.enabled {
                 src.probes.clear();
-            } else if src.ready.load(std::sync::atomic::Ordering::Acquire) {
+            } else if src.readiness.serving() {
+                // REQ: OPS-010 — probes keep measuring during maintenance.
                 src.probes.round(&cfg).await;
             }
             let wait = Duration::from_secs(u64::from(cfg.probe.interval_secs.max(5)));

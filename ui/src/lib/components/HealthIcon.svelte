@@ -83,6 +83,13 @@
           {/each}
         </ul>
       {/if}
+      {#if h?.maintenance?.length}
+        <!-- REQ: OPS-010 — nodes in maintenance are left out of the level; say so. -->
+        <p class="small" data-testid="health-maintenance">
+          {h.maintenance.length} node{h.maintenance.length === 1 ? '' : 's'} in maintenance:
+          {#each h.maintenance as m, i (i)}{i ? '; ' : ''}<strong>{m.node}</strong> until {dateTime(Date.parse(m.until) / 1000)} ({m.reason}){/each}
+        </p>
+      {/if}
       {#if h && h.missingNodes && h.missingNodes.length > 0}
         <p class="small muted">Didn't answer: {h.missingNodes.join(', ')}</p>
       {/if}

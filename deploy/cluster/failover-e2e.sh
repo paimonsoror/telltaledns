@@ -6,6 +6,12 @@
 #      steady query load throughout;
 #   3. the old primary comes back, sees the newer epoch, and follows (it never publishes in
 #      its old epoch again).
+# REQ: OPS-010 (T13.4, ADR-118) — maintenance and elections:
+#   4. with the only other eligible node in maintenance (asked on the primary, done on that
+#      node), killing the primary elects nobody until maintenance ends, then that node;
+#   5. maintenance on the primary hands over: the replica is elected within the lease window,
+#      DNS on the old primary answers 100% throughout, and the old primary follows;
+#   6. with handover = false the primary stays primary, and the answer says to promote first.
 # Usage: deploy/cluster/failover-e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -120,6 +126,26 @@ for _ in $(seq 40); do [ -f "$E/r/cluster/ca.key" ] && break; sleep 0.25; done
 [ -f "$E/r/cluster/ca.key" ] || fail "the eligible replica never received the cluster key"
 echo "ok (epoch $(metric 29101 telltale_cluster_epoch))"
 
+# An admin, made on the primary; users reach every node (T9.1), for the maintenance steps.
+field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
+curl -sf -c "$E/pjar" -H 'content-type: application/json' \
+  -d "{\"setupToken\":\"$(cat "$E/p/setup-token")\",\"username\":\"admin\",\"password\":\"e2e-password-123\"}" \
+  http://127.0.0.1:28101/api/v1/auth/setup >/dev/null || fail "couldn't set up the admin"
+login() { # api-port jar -> CSRF token (retries while users replicate)
+  for _ in $(seq 60); do
+    t=$(curl -sf -c "$2" -H 'content-type: application/json' -d '{"username":"admin","password":"e2e-password-123"}' \
+      "http://127.0.0.1:$1/api/v1/auth/login" 2>/dev/null | field 'd["csrfToken"]' 2>/dev/null) && [ -n "$t" ] && { echo "$t"; return 0; }
+    sleep 0.5
+  done
+  return 1
+}
+maint() { # api-port jar csrf method node [json] -> HTTP status; the body in m.json
+  curl -s -o "$E/m.json" -w '%{http_code}' --max-time 20 -b "$2" -X "$4" -H "x-csrf-token: $3" \
+    -H 'content-type: application/json' ${6:+-d "$6"} "http://127.0.0.1:$1/api/v1/nodes/$5/maintenance"
+}
+# A node's ID (requests name a node by its ID, site, or pod).
+node_id() { "$B" cluster status -c "$E/$1.toml" | awk '$1 == "node" {print $2; exit}'; }
+
 echo "== 2. kill the primary: the replica is elected, DNS never stops"
 python3 "$E/q.py" load 25402 a.fo.test 40 50 > "$E/load.txt" & LOAD=$!
 sleep 2
@@ -142,5 +168,64 @@ wait_metric 29101 telltale_cluster_primary 0 30 || fail "the old primary didn't 
 wait_metric 29101 telltale_cluster_epoch "$epoch" 30 || fail "the old primary didn't adopt epoch $epoch"
 [ "$(metric 29102 telltale_cluster_lease_held)" = 1 ] || fail "the new primary lost its lease when the old one returned"
 [ "$(q 25401 a.fo.test)" = 10.0.0.1 ] || fail "the old primary doesn't answer after rejoining"
+echo "ok"
+
+echo "== 4. a node in maintenance isn't elected (OPS-010)"
+sleep 6   # p just restarted: let its streams to r settle (a heartbeat or so)
+RCSRF=$(login 28102 "$E/rjar") || fail "the admin can't sign in on the new primary"
+P_ID=$(node_id p)
+code=$(maint 28102 "$E/rjar" "$RCSRF" POST "$P_ID" '{"forSecs":600,"reason":"e2e: keep p out"}')
+[ "$code" = 200 ] || fail "maintenance for p through the primary answered $code: $(cat "$E/m.json")"
+grep -q '"handover":"not_needed"' "$E/m.json" || fail "a replica needs no handover: $(cat "$E/m.json")"
+[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:29101/readyz)" = 503 ] || fail "p is still ready in maintenance"
+kill -9 "$R_PID"; wait "$R_PID" 2>/dev/null || true; R_PID=
+for _ in $(seq 40); do
+  [ "$(metric 29101 telltale_cluster_lease_held)" = 0 ] || fail "p was elected while in maintenance"
+  [ "$(q 25401 a.fo.test)" = 10.0.0.1 ] || fail "p stopped answering DNS"
+  sleep 1
+done
+PCSRF=$(login 28101 "$E/pjar") || fail "the admin can't sign in on p"
+code=$(maint 28101 "$E/pjar" "$PCSRF" DELETE local)
+[ "$code" = 200 ] || fail "ending p's maintenance answered $code: $(cat "$E/m.json")"
+t0=$(date +%s)
+wait_metric 29101 telltale_cluster_lease_held 1 40 || fail "p wasn't elected after its maintenance ended"
+echo "ok (nobody elected for 40 s; p elected $(( $(date +%s) - t0 )) s after its maintenance ended)"
+
+echo "== 5. maintenance on the primary hands over (OPS-010)"
+"$B" run -c "$E/r.toml" > "$E/r2.log" 2>&1 & R_PID=$!
+wait_metric 29102 telltale_cluster_primary 0 30 || fail "r didn't follow after restarting"
+for _ in $(seq 60); do [ "$(metric 29102 telltale_cluster_failover_auto)" = 1 ] && break; sleep 0.5; done
+for _ in $(seq 60); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:29102/readyz)" = 200 ] && break; sleep 0.5; done
+sleep 6   # a heartbeat or two: p sees r connected and eligible
+python3 "$E/q.py" load 25401 a.fo.test 40 50 > "$E/load2.txt" & LOAD=$!
+sleep 2
+t0=$(date +%s)
+code=$(maint 28101 "$E/pjar" "$PCSRF" POST local '{"forSecs":600,"reason":"e2e: hand over"}')
+[ "$code" = 200 ] || fail "maintenance on the primary answered $code: $(cat "$E/m.json")"
+grep -q '"handover":"started"' "$E/m.json" || fail "the primary didn't start a handover: $(cat "$E/m.json")"
+wait_metric 29102 telltale_cluster_lease_held 1 40 || fail "r wasn't elected after the handover started"
+took=$(( $(date +%s) - t0 ))
+[ "$took" -le 30 ] || fail "the handover took $took s (more than the lease window and a round)"
+wait_metric 29101 telltale_cluster_primary 0 30 || fail "the old primary didn't follow"
+wait "$LOAD"; LOAD=
+read -r ok sent < "$E/load2.txt"
+[ "$ok" = "$sent" ] || fail "DNS on the old primary dropped answers during the handover: $ok of $sent"
+code=$(maint 28101 "$E/pjar" "$PCSRF" DELETE local)
+[ "$code" = 200 ] || fail "ending the old primary's maintenance answered $code"
+[ "$(metric 29102 telltale_cluster_lease_held)" = 1 ] || fail "r lost its lease when p's maintenance ended"
+echo "ok (r elected after ${took} s; $ok of $sent queries to p answered)"
+
+echo "== 6. handover = false: the primary stays primary (OPS-010)"
+RCSRF=$(login 28102 "$E/rjar") || fail "the admin can't sign in on r"
+code=$(maint 28102 "$E/rjar" "$RCSRF" POST local '{"forSecs":120,"reason":"e2e: stay","handover":false}')
+[ "$code" = 200 ] || fail "maintenance with handover=false answered $code"
+grep -q '"handover":"declined"' "$E/m.json" && grep -q 'promote another node first' "$E/m.json" \
+  || fail "no note to promote first: $(cat "$E/m.json")"
+for _ in $(seq 20); do
+  [ "$(metric 29102 telltale_cluster_lease_held)" = 1 ] || fail "the primary lost its lease with handover=false"
+  sleep 1
+done
+code=$(maint 28102 "$E/rjar" "$RCSRF" DELETE local)
+[ "$code" = 200 ] || fail "ending r's maintenance answered $code"
 echo "ok"
 echo PASS

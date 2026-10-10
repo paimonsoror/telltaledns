@@ -108,8 +108,15 @@
 
   $effect(() => {
     if (session.user) {
-      // Refreshed every minute: the masked-client-IP banner (OPS-003) can come and go.
-      return poll(() => api.info().then((i) => (info = i)), 60_000);
+      // Refreshed every minute: the masked-client-IP banner (OPS-003) can come and go, and at
+      // once when maintenance starts or ends (OPS-010).
+      const stop = poll(() => api.info().then((i) => (info = i)), 60_000);
+      const changed = () => void api.info().then((i) => (info = i)).catch(() => {});
+      window.addEventListener('telltale:maintenance-changed', changed);
+      return () => {
+        stop();
+        window.removeEventListener('telltale:maintenance-changed', changed);
+      };
     }
   });
 
@@ -251,6 +258,13 @@
           infrastructure (a Kubernetes node, a Docker bridge, or a router forwarding DNS) rather than devices.
           Per-device statistics and rules see those addresses instead of your devices.
           <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#seeing-real-client-ips" target="_blank" rel="noreferrer">How to fix it</a><HelpButton id="masked-clients" />
+        </div>
+      {/if}
+      {#if info?.maintenance && current.path !== '/cluster'}
+        <!-- REQ: OPS-010 — the node serving this UI is in maintenance (the Cluster page has its own, with actions). -->
+        <div class="notice warn banner" data-testid="maintenance-app-banner">
+          <strong>This node is in maintenance</strong> ({info.maintenance.reason}): it reports not ready and keeps answering DNS;
+          its alerts are paused. <a href="#/cluster">Cluster</a><HelpButton id="maintenance" />
         </div>
       {/if}
       {#key current.path}

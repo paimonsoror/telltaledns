@@ -35,8 +35,11 @@ spec:
   groups:
     - name: telltale
       rules:
+        {{- /* REQ: OPS-010 (ADR-118) — a node in maintenance (its last reported window still
+        open, so a node stopped during it stays quiet) is left out of the node rules. */}}
+        {{- $maint := printf "unless on(instance) (last_over_time(telltale_node_maintenance_until_seconds{job=\"%s-metrics\"}[1d]) > time())" (include "telltale.fullname" .) }}
         - alert: TelltaleDNSDown
-          expr: up{job="{{ include "telltale.fullname" . }}-metrics"} == 0
+          expr: up{job="{{ include "telltale.fullname" . }}-metrics"} == 0 {{ $maint }}
           for: 2m
           labels: { severity: critical }
           annotations:
@@ -51,6 +54,7 @@ spec:
           expr: |
             sum by (instance) (rate(telltale_responses_total{job="{{ include "telltale.fullname" . }}-metrics", rcode="SERVFAIL"}[5m]))
               / sum by (instance) (rate(telltale_responses_total{job="{{ include "telltale.fullname" . }}-metrics"}[5m])) > 0.05
+              {{ $maint }}
           for: 10m
           labels: { severity: warning }
           annotations:
@@ -80,19 +84,19 @@ spec:
             summary: A device on {{ "{{" }} $labels.instance {{ "}}" }} behaves unusually ({{ "{{" }} $labels.kind {{ "}}" }}); see Anomalies in the web UI for the evidence.
         # REQ: CLU-008 — cluster health (only emitted by clustered nodes).
         - alert: TelltaleDNSClusterPeerDown
-          expr: telltale_cluster_peer_up{job="{{ include "telltale.fullname" . }}-metrics"} == 0
+          expr: telltale_cluster_peer_up{job="{{ include "telltale.fullname" . }}-metrics"} == 0 unless on(node) (max by (node) (last_over_time(telltale_cluster_peer_maintenance_until_seconds{job="{{ include "telltale.fullname" . }}-metrics"}[1d])) > time())
           for: 1m
           labels: { severity: warning }
           annotations:
             summary: Cluster node {{ "{{" }} $labels.node {{ "}}" }} ({{ "{{" }} $labels.site {{ "}}" }}) hasn't been heard from for over a minute; DNS on every node keeps working. See Cluster in the web UI.
         - alert: TelltaleDNSClusterConfigBehind
-          expr: telltale_cluster_behind_seconds{job="{{ include "telltale.fullname" . }}-metrics"} > 30
+          expr: telltale_cluster_behind_seconds{job="{{ include "telltale.fullname" . }}-metrics"} > 30 {{ $maint }}
           for: 1m
           labels: { severity: warning }
           annotations:
             summary: "{{ "{{" }} $labels.instance {{ "}}" }} is serving an older configuration than the primary (behind {{ "{{" }} $value {{ "}}" }} s); see Cluster → events."
         - alert: TelltaleDNSClusterSyncFailing
-          expr: telltale_cluster_sync_error{job="{{ include "telltale.fullname" . }}-metrics"} == 1
+          expr: telltale_cluster_sync_error{job="{{ include "telltale.fullname" . }}-metrics"} == 1 {{ $maint }}
           for: 5m
           labels: { severity: warning }
           annotations:
@@ -105,13 +109,13 @@ spec:
             summary: The cluster certificate on {{ "{{" }} $labels.instance {{ "}}" }} expires in under 14 days.
         # REQ: OBS-020 (ADR-107) — the nodes' probes of their own listeners.
         - alert: TelltaleDNSListenerNotAnswering
-          expr: telltale_probe_success{job="{{ include "telltale.fullname" . }}-metrics"} == 0
+          expr: telltale_probe_success{job="{{ include "telltale.fullname" . }}-metrics"} == 0 {{ $maint }}
           for: 2m
           labels: { severity: critical }
           annotations:
             summary: "{{ "{{" }} $labels.instance {{ "}}" }} can't get an answer from {{ "{{" }} $labels.target {{ "}}" }} ({{ "{{" }} $labels.proto {{ "}}" }}) through its own probe; see Settings → System → Listener checks."
         - alert: TelltaleDNSListenerCertExpiring
-          expr: telltale_listener_cert_expiry_timestamp_seconds{job="{{ include "telltale.fullname" . }}-metrics"} - time() < 14 * 86400
+          expr: telltale_listener_cert_expiry_timestamp_seconds{job="{{ include "telltale.fullname" . }}-metrics"} - time() < 14 * 86400 {{ $maint }}
           for: 1h
           labels: { severity: warning }
           annotations:
@@ -131,7 +135,7 @@ spec:
             summary: "The Git configuration source has been unreachable for 15 minutes; every node keeps serving the last commit."
         # REQ: CLU-008 (T6.11) — the machine a node runs on. Same thresholds as the Cluster page.
         - alert: TelltaleDNSDataDiskLow
-          expr: telltale_data_filesystem_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="free"} / ignoring(kind) telltale_data_filesystem_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="total"} < 0.10
+          expr: telltale_data_filesystem_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="free"} / ignoring(kind) telltale_data_filesystem_bytes{job="{{ include "telltale.fullname" . }}-metrics",kind="total"} < 0.10 {{ $maint }}
           for: 10m
           labels: { severity: warning }
           annotations:

@@ -65,6 +65,9 @@ pub(crate) enum CtlCommand {
         #[arg(long)]
         group: Option<String>,
     },
+    /// Node maintenance (OPS-010): not ready for new traffic, still answering every query.
+    #[command(subcommand)]
+    Maintenance(MaintenanceCmd),
     /// Flush the cache (everything, or one name).
     Flush {
         #[arg(long)]
@@ -120,6 +123,71 @@ pub(crate) enum CtlCommand {
     Delete {
         path: String,
     },
+}
+
+/// REQ: OPS-010 — `telltale ctl maintenance`.
+#[derive(Debug, Subcommand)]
+pub(crate) enum MaintenanceCmd {
+    /// Put a node in maintenance: /readyz answers 503 (balancers and Kubernetes stop sending
+    /// it new queries), every listener keeps answering, alerts and the health level leave it
+    /// out until the window ends. Starting again replaces the window.
+    Start {
+        /// How long: `90s`, `30m`, `2h`, `1d`, or seconds (default: the node's
+        /// `[node] maintenance_default_secs`, an hour).
+        #[arg(long = "for", value_parser = parse_duration)]
+        for_secs: Option<u32>,
+        /// Why (shown on the Cluster page and in the audit log).
+        #[arg(long)]
+        reason: String,
+        /// The node: `local` (the one `--url` points at), or a node's ID, site, or pod name.
+        #[arg(long, default_value = "local")]
+        node: String,
+        /// On the primary under automatic failover: keep the primary role instead of handing it
+        /// to another node first.
+        #[arg(long)]
+        no_handover: bool,
+    },
+    /// End a node's maintenance now.
+    End {
+        #[arg(long, default_value = "local")]
+        node: String,
+    },
+    /// Which nodes are in maintenance, until when, and why.
+    Status,
+}
+
+/// A value safe in one path segment (node names are IDs, sites, or pod names).
+fn path_segment(v: &str) -> String {
+    let mut out = String::new();
+    for b in v.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+/// `90s`, `30m`, `2h`, `1d`, or plain seconds.
+pub(crate) fn parse_duration(s: &str) -> Result<u32, String> {
+    let s = s.trim();
+    let (num, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => s.split_at(i),
+        None => (s, "s"),
+    };
+    let n: u32 = num
+        .parse()
+        .map_err(|_| format!("`{s}`: a number with s, m, h, or d (e.g. 2h)"))?;
+    let mult = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return Err(format!("`{s}`: the unit is s, m, h, or d (e.g. 30m)")),
+    };
+    n.checked_mul(mult)
+        .ok_or_else(|| format!("`{s}` is too long"))
 }
 
 /// What a quick rule applies to.
@@ -477,6 +545,73 @@ pub(crate) async fn run(
             .await?,
             Some(Box::new(|_: &Value| "blocking resumed\n".to_owned())),
         ),
+        // REQ: OPS-010
+        CtlCommand::Maintenance(MaintenanceCmd::Start {
+            for_secs,
+            reason,
+            node,
+            no_handover,
+        }) => (
+            api.call(
+                http::Method::POST,
+                &format!("nodes/{}/maintenance", path_segment(&node)),
+                Some(&json!({"forSecs": for_secs, "reason": reason, "handover": !no_handover})),
+            )
+            .await?,
+            Some(Box::new(|v: &Value| {
+                let w = &v["window"];
+                let mut out = format!(
+                    "{} is in maintenance until {} ({}): not ready for new traffic, still answering\n",
+                    s(v, "node"),
+                    s(w, "until"),
+                    s(w, "reason")
+                );
+                match s(v, "handover").as_str() {
+                    "started" => out.push_str("handing the primary role to another node (configuration changes pause for about 30 s)\n"),
+                    _ if !s(v, "note").is_empty() => {
+                        let _ = writeln!(out, "note: {}", s(v, "note"));
+                    }
+                    _ => {}
+                }
+                out
+            })),
+        ),
+        CtlCommand::Maintenance(MaintenanceCmd::End { node }) => (
+            api.call(
+                http::Method::DELETE,
+                &format!("nodes/{}/maintenance", path_segment(&node)),
+                None,
+            )
+            .await?,
+            Some(Box::new(|v: &Value| {
+                let note = s(v, "note");
+                if note.is_empty() {
+                    format!(
+                        "{}: maintenance ended; ready for traffic again\n",
+                        s(v, "node")
+                    )
+                } else {
+                    format!("{}: {note}\n", s(v, "node"))
+                }
+            })),
+        ),
+        CtlCommand::Maintenance(MaintenanceCmd::Status) => (
+            api.get("system/health").await?,
+            Some(Box::new(|v: &Value| {
+                let rows: Vec<Vec<String>> = v["maintenance"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|m| vec![s(m, "node"), s(m, "until"), s(m, "reason"), s(m, "by")])
+                    .collect();
+                if rows.is_empty() {
+                    "no node is in maintenance\n".to_owned()
+                } else {
+                    table(&["NODE", "UNTIL", "REASON", "BY"], &rows)
+                }
+            })),
+        ),
         CtlCommand::Flush { name, subtree } => (
             api.call(
                 http::Method::POST,
@@ -659,5 +794,18 @@ mod tests {
             api.url("/api/v1/stats/top?kind=blocked"),
             "http://127.0.0.1:8053/api/v1/stats/top?kind=blocked"
         );
+    }
+
+    /// REQ: OPS-010 — `--for` takes seconds or a unit; node names go into the path safely.
+    #[test]
+    fn ops_010_ctl_durations_and_node_paths() {
+        assert_eq!(parse_duration("2h"), Ok(7200));
+        assert_eq!(parse_duration("30m"), Ok(1800));
+        assert_eq!(parse_duration("90s"), Ok(90));
+        assert_eq!(parse_duration("1d"), Ok(86_400));
+        assert_eq!(parse_duration("600"), Ok(600));
+        assert!(parse_duration("2w").is_err() && parse_duration("h").is_err());
+        assert_eq!(path_segment("telltale-0"), "telltale-0");
+        assert_eq!(path_segment("a/b c"), "a%2Fb%20c");
     }
 }

@@ -11,18 +11,24 @@
 # (T5.7): a change made on the replica's API is forwarded to the primary, reaches both
 # nodes, and the primary's audit log names the user and the entry node; (T9.1): users and
 # tokens made on the primary work on the replica, and changing them there is refused; (T5.8): the
-# replica's query log, in ship mode, ends up on the primary and is still searchable.
+# replica's query log, in ship mode, ends up on the primary and is still searchable; (T13.4,
+# OPS-010): maintenance on the replica, started from the primary, makes it not ready while DNS
+# keeps answering, survives its restart, keeps node_down quiet while it's stopped, and is
+# audited; a timed-out request isn't applied later; the primary in manual mode stays primary.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
 B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B")
 E=$(mktemp -d)
-P_PID= R_PID=
+P_PID= R_PID= H_PID=
 cleanup() {
+  # A stopped replica (the maintenance step) must be woken to exit.
+  [ -n "$R_PID" ] && kill -CONT "$R_PID" 2>/dev/null || true
   # Wait for both to exit: the listeners use SO_REUSEPORT, so a node still draining would
   # share its ports with the next run's (flaked locally when runs followed each other).
   [ -n "$P_PID" ] && kill "$P_PID" 2>/dev/null && wait "$P_PID" 2>/dev/null || true
   [ -n "$R_PID" ] && kill "$R_PID" 2>/dev/null && wait "$R_PID" 2>/dev/null || true
+  [ -n "$H_PID" ] && kill "$H_PID" 2>/dev/null && wait "$H_PID" 2>/dev/null || true
   [ "${KEEP:-}" = 1 ] || rm -rf "$E"
 }
 trap cleanup EXIT
@@ -71,6 +77,56 @@ EOF
 mkdir -p "$E/p" "$E/r"
 node_config p 25301 28001 29001 28441 a.p.test '||ads.p.test^' > "$E/p.toml"
 node_config r 25302 28002 29002 28442 own.r.test '||ads.r.test^' > "$E/r.toml"
+# REQ: OPS-010 — the primary evaluates alerts: node_down and maintenance, to a local webhook
+# that appends each alert as a line of JSON to alerts.jsonl.
+cat >> "$E/p.toml" <<EOF
+[alerts]
+interval_secs = 5
+[[alerts.destination]]
+name = "hook"
+type = "webhook"
+url = "http://127.0.0.1:28998/alert"
+[[alerts.rule]]
+name = "down"
+when = "node_down"
+for_secs = 0
+to = ["hook"]
+[[alerts.rule]]
+name = "maint"
+when = "maintenance"
+for_secs = 0
+to = ["hook"]
+EOF
+cat > "$E/hook.py" <<'PY'
+import http.server, sys
+out = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("content-length", 0)))
+        with open(out, "ab") as f:
+            f.write(body.replace(b"\n", b" ") + b"\n")
+        self.send_response(204)
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(("127.0.0.1", 28998), H).serve_forever()
+PY
+: > "$E/alerts.jsonl"
+python3 "$E/hook.py" "$E/alerts.jsonl" & H_PID=$!
+# alert <rule> <status> <subject>: whether the webhook received it.
+alert() { python3 - "$E/alerts.jsonl" "$1" "$2" "$3" <<'PY'
+import json, sys
+path, rule, status, subject = sys.argv[1:]
+for line in open(path):
+    try:
+        a = json.loads(line)
+    except ValueError:
+        continue
+    if a.get("rule") == rule and a.get("status") == status and a.get("subject") == subject:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
 # The replica ships its query log to the primary (CLU-007).
 cat >> "$E/r.toml" <<EOF
 [telemetry]
@@ -128,7 +184,14 @@ q() { python3 "$E/q.py" one "$@"; }
 "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 T=$("$B" cluster token create --ttl 10m --eligible -c "$E/p.toml" 2>/dev/null)
-"$B" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28442 -c "$E/r.toml" >/dev/null
+# Retries until the primary's cluster port is up (a loaded machine can take longer to start).
+joined=""
+for _ in $(seq 40); do
+  "$B" cluster join "$T" --site r --eligible --advertise https://127.0.0.1:28442 -c "$E/r.toml" >/dev/null 2>"$E/join.err" \
+    && { joined=1; break; }
+  sleep 0.5
+done
+[ -n "$joined" ] || fail "the replica couldn't join: $(cat "$E/join.err")"
 "$B" run -c "$E/r.toml" > "$E/r.log" 2>&1 & R_PID=$!
 
 echo "== 1. the replica follows the primary"
@@ -281,6 +344,116 @@ for _ in $(seq 90); do
 done
 [ "${minutes:-0}" -gt 0 ] || fail "the replica's per-minute counts never reached the primary"
 echo "ok ($shipped parts and $minutes minutes received)"
+
+# REQ: OPS-010 (T13.4) — maintenance is the node's own state: asked on the primary, done on the
+# replica. Not ready at once, DNS answered throughout (enter, 30 s, exit), audited there.
+echo "== maintenance on the replica, started from the primary (OPS-010)"
+mreq() { # method node [json] -> HTTP status; the body in m.json
+  curl -s -o "$E/m.json" -w '%{http_code}' --max-time 20 -b "$E/jar" -X "$1" -H "x-csrf-token: $PCSRF" \
+    -H 'content-type: application/json' ${3:+-d "$3"} "$API/api/v1/nodes/$2/maintenance"
+}
+readyz() { curl -s -o "$E/rz.json" -w '%{http_code}' "http://127.0.0.1:$1/readyz"; }
+until_ms() { python3 -c "import json;print(json.load(open('$E/r/maintenance.json'))['until_ms'])"; }
+python3 "$E/q.py" load 25302 a.p.test 38 100 > "$E/mload.txt" & MLOAD=$!
+sleep 2
+code=$(mreq POST r '{"forSecs":600,"reason":"e2e SD card swap"}')
+[ "$code" = 200 ] || fail "starting maintenance for the replica through the primary answered $code: $(cat "$E/m.json")"
+grep -q '"handover":"not_needed"' "$E/m.json" || fail "a replica's maintenance needs no handover: $(cat "$E/m.json")"
+[ -f "$E/r/maintenance.json" ] || fail "the replica didn't write its maintenance file"
+code=$(readyz 29002)
+{ [ "$code" = 503 ] && grep -q '"reason":"maintenance"' "$E/rz.json"; } || fail "the replica's /readyz answered $code: $(cat "$E/rz.json")"
+[ "$(readyz 29001)" = 200 ] || fail "the primary stopped being ready"
+for _ in $(seq 40); do alert maint firing r && break; sleep 0.5; done
+alert maint firing r || fail "the maintenance alert didn't fire for the replica"
+curl -sf -b "$E/rjar" "$RAPI/api/v1/audit?action=node.maintenance.start" | grep -q 'e2e SD card swap' \
+  || fail "the replica's audit log doesn't record the maintenance it was asked for"
+get '/api/v1/audit?action=node.maintenance.start' | grep -q '"r"' || fail "the primary's audit log doesn't name the replica"
+sleep 30
+code=$(mreq DELETE r)
+[ "$code" = 200 ] || fail "ending the replica's maintenance answered $code: $(cat "$E/m.json")"
+[ ! -f "$E/r/maintenance.json" ] || fail "the replica kept its maintenance file"
+[ "$(readyz 29002)" = 200 ] || fail "the replica isn't ready after maintenance"
+wait "$MLOAD"
+read -r ok sent < "$E/mload.txt"
+[ "$ok" = "$sent" ] || fail "DNS dropped answers across maintenance: $ok of $sent"
+for _ in $(seq 40); do alert maint resolved r && break; sleep 0.5; done
+alert maint resolved r || fail "the maintenance alert didn't resolve"
+echo "ok ($ok of $sent queries answered across enter, 30 s, and exit)"
+
+echo "== maintenance survives a restart; a stopped node in maintenance stays quiet (OPS-010)"
+code=$(mreq POST r '{"forSecs":900,"reason":"e2e restart"}')
+[ "$code" = 200 ] || fail "starting maintenance again answered $code"
+u1=$(until_ms)
+kill "$R_PID"; wait "$R_PID" 2>/dev/null || true
+"$B" run -c "$E/r.toml" > "$E/r_m.log" 2>&1 & R_PID=$!
+for _ in $(seq 50); do [ "$(q 25302 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+[ "$(q 25302 a.p.test)" = 10.0.0.1 ] || fail "the replica doesn't answer DNS after restarting in maintenance"
+code=$(readyz 29002)
+{ [ "$code" = 503 ] && grep -q maintenance "$E/rz.json"; } || fail "the restarted replica is ready inside its window ($code)"
+[ "$(until_ms)" = "$u1" ] || fail "the window changed across the restart"
+[ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:29002/readyz?startup=1')" = 200 ] \
+  || fail "the startup probe fails inside the window"
+inmaint() { get '/api/v1/cluster' | field 'next((n["maintenance"] is not None) and n["connected"] for n in d["nodes"] if n["site"] == "r")'; }
+for _ in $(seq 120); do [ "$(inmaint)" = True ] && break; sleep 0.5; done
+[ "$(inmaint)" = True ] || fail "the primary doesn't see the replica in maintenance after its restart"
+level=$(get '/api/v1/system/health' | field 'd["level"]')
+kill -STOP "$R_PID"
+sleep 45
+get '/api/v1/cluster' | field 'next(n["connected"] for n in d["nodes"] if n["site"] == "r")' | grep -q False \
+  || fail "the stopped replica still shows as connected after 45 s"
+alert down firing r && fail "node_down fired for a replica in maintenance"
+get '/api/v1/alerts' | field '[f["rule"] for f in d["firing"] if f["subject"] == "r"]' | grep -q down \
+  && fail "node_down is listed as firing for a replica in maintenance"
+get '/api/v1/system/health' > "$E/health.json"
+python3 - "$E/health.json" "$level" <<'PY' || fail "health during maintenance: $(cat "$E/health.json")"
+import json, sys
+h = json.load(open(sys.argv[1]))
+assert [m["node"] for m in h.get("maintenance", [])] == ["r"], h.get("maintenance")
+assert not [x for x in h["reasons"] if x.get("node") == "r"], h["reasons"]
+assert h["level"] == sys.argv[2], (h["level"], sys.argv[2])
+assert "r" not in h.get("missingNodes", []), h.get("missingNodes")
+PY
+kill -CONT "$R_PID"
+# Reconnecting can wait out a dial backoff (up to 30 s).
+for _ in $(seq 120); do [ "$(inmaint)" = True ] && break; sleep 0.5; done
+[ "$(inmaint)" = True ] || fail "the replica didn't reconnect after SIGCONT"
+code=$(mreq DELETE r)
+[ "$code" = 200 ] || fail "ending maintenance after the stop answered $code: $(cat "$E/m.json")"
+echo "ok (same window after a restart; no node_down while stopped; health $level with r under maintenance)"
+
+echo "== out of maintenance a stop raises node_down; a timed-out request isn't applied later"
+kill -STOP "$R_PID"
+code=$(mreq POST r '{"forSecs":600,"reason":"too late"}')
+[ "$code" = 503 ] || fail "maintenance for a stopped node answered $code, not 503"
+grep -q node_unreachable "$E/m.json" || fail "not node_unreachable: $(cat "$E/m.json")"
+for _ in $(seq 90); do alert down firing r && break; sleep 1; done
+alert down firing r || fail "node_down didn't fire for the stopped replica out of maintenance"
+sleep 10   # both attempts of the timed-out request are now over 30 s old
+kill -CONT "$R_PID"
+for _ in $(seq 30); do [ "$(readyz 29002)" = 200 ] && break; sleep 0.2; done
+sleep 2
+[ ! -f "$E/r/maintenance.json" ] || fail "a request the primary gave up on was applied when the replica resumed"
+[ "$(readyz 29002)" = 200 ] || fail "the resumed replica isn't ready"
+echo "ok"
+
+echo "== the primary in manual failover stays primary, with a note (OPS-010)"
+code=$(mreq POST local '{"forSecs":120,"reason":"e2e primary"}')
+[ "$code" = 200 ] || fail "maintenance on the primary answered $code"
+grep -q '"handover":"unavailable"' "$E/m.json" && grep -q 'promote another node first' "$E/m.json" \
+  || fail "the primary's maintenance in manual mode lacks the note: $(cat "$E/m.json")"
+[ "$(readyz 29001)" = 503 ] || fail "the primary in maintenance is still ready"
+"$B" cluster status -c "$E/p.toml" | grep -q 'role       primary' || fail "the primary stepped down in manual mode"
+code=$(mreq DELETE local)
+[ "$code" = 200 ] || fail "ending the primary's maintenance answered $code"
+code=$(curl -s -o "$E/m.json" -w '%{http_code}' -b "$E/jar" -X POST -H "x-csrf-token: $PCSRF" \
+  -H 'content-type: application/json' -d '{"forSecs":90000,"reason":"x"}' "$API/api/v1/nodes/local/maintenance")
+[ "$code" = 422 ] || fail "a 25-hour window answered $code"
+code=$(curl -s -o "$E/m.json" -w '%{http_code}' -b "$E/jar" -X POST -H "x-csrf-token: $PCSRF" \
+  -H 'content-type: application/json' -d '{"forSecs":600}' "$API/api/v1/nodes/local/maintenance")
+[ "$code" = 422 ] || fail "a window without a reason answered $code"
+code=$(mreq POST nowhere '{"forSecs":600,"reason":"x"}')
+[ "$code" = 404 ] || fail "an unknown node answered $code"
+echo "ok"
 
 # The cluster's settings travel too: a new authority on the primary reaches the replica.
 "$B" cluster set-authority gitops -c "$E/p.toml" >/dev/null

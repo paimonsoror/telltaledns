@@ -365,7 +365,41 @@ pub(crate) fn summarize(
         reasons,
         checked_at,
         missing_nodes,
+        maintenance: Vec::new(),
     }
+}
+
+/// REQ: OPS-010 (ADR-118) — leaves out the conditions of nodes in maintenance (by the label
+/// reasons carry: pod, site, or ID) and lists those nodes instead. `missing` drops them too:
+/// a node stopped during its window is expected to be silent.
+pub(crate) fn exclude_maintenance(
+    reasons: &mut Vec<HealthReason>,
+    missing: &mut Vec<String>,
+    view: &ClusterView,
+) -> Vec<telltale_api::model::NodeMaintenance> {
+    let mut out = Vec::new();
+    let mut names: HashSet<String> = HashSet::new();
+    for n in &view.nodes {
+        if let Some(m) = &n.maintenance {
+            let name = node_name(n);
+            names.insert(name.clone());
+            // Probe and federated labels may use the site or the ID where a pod has none.
+            names.insert(n.node_id.clone());
+            if !n.site.is_empty() && n.pod.is_none() {
+                names.insert(n.site.clone());
+            }
+            let mut m = m.clone();
+            m.node = Some(name);
+            out.push(m);
+        }
+    }
+    if names.is_empty() {
+        return out;
+    }
+    reasons.retain(|r| r.node.as_ref().is_none_or(|n| !names.contains(n)));
+    missing.retain(|n| !names.contains(n));
+    out.sort_by(|a, b| a.node.cmp(&b.node));
+    out
 }
 
 #[cfg(test)]
@@ -550,6 +584,74 @@ mod tests {
             String::new(),
         );
         assert_eq!(h.level, "healthy", "too few queries to judge");
+    }
+
+    // REQ: OPS-010 (ADR-118) — a node in maintenance that went silent: its `node_down` and
+    // its own reasons are left out, it isn't "missing", and it's listed under `maintenance`;
+    // the level stays healthy. Another node's reasons still count.
+    #[test]
+    fn ops_010_health_leaves_out_nodes_in_maintenance() {
+        use telltale_api::model::{ClusterNode, NodeMaintenance};
+        let node = |id: &str, site: &str| ClusterNode {
+            node_id: id.into(),
+            site: site.into(),
+            ..ClusterNode::default()
+        };
+        let mut me = node("a1", "k8s");
+        me.this_node = true;
+        me.connected = true;
+        let mut pi = node("b2", "pi");
+        pi.last_seen_seconds_ago = 40;
+        pi.maintenance = Some(NodeMaintenance {
+            until: "2026-10-09T14:00:00Z".into(),
+            reason: "SD card swap".into(),
+            by: "alice".into(),
+            seconds_left: 600,
+            ..NodeMaintenance::default()
+        });
+        let view = ClusterView {
+            enabled: true,
+            cluster_id: None,
+            name: None,
+            this_node: Some("a1".into()),
+            newest_config_seq: 1,
+            healthy: true,
+            checks: Vec::new(),
+            nodes: vec![me, pi],
+            events: Vec::new(),
+            authority: None,
+            conflicts: Vec::new(),
+            failover: None,
+            source: None,
+            host: None,
+        };
+        let mut reasons = cluster_reasons(&view);
+        assert_eq!(reasons.len(), 1, "node_down for pi");
+        let mut probe = reason(DEGRADED, "probe_failing", "x".into(), "#/");
+        probe.node = Some("pi".into());
+        reasons.push(probe);
+        let mut other = reason(DEGRADED, "disk_full", "y".into(), "#/");
+        other.node = Some("k8s".into());
+        let mut missing = vec!["pi".to_owned()];
+        let m = exclude_maintenance(&mut reasons, &mut missing, &view);
+        assert!(
+            reasons.is_empty() && missing.is_empty(),
+            "{reasons:?} {missing:?}"
+        );
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            (m[0].node.as_deref(), m[0].reason.as_str()),
+            (Some("pi"), "SD card swap")
+        );
+        let mut h = summarize(reasons, missing, String::new());
+        h.maintenance = m;
+        assert_eq!(h.level, "healthy");
+        let mut with_other = vec![other];
+        exclude_maintenance(&mut with_other, &mut Vec::new(), &view);
+        assert_eq!(
+            summarize(with_other, vec![], String::new()).level,
+            "degraded"
+        );
     }
 
     // REQ: OBS-015 — a node not serving is severe alone, degraded when others serve.

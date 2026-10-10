@@ -19,6 +19,89 @@ use tracing::{info, warn};
 /// What a rule sees right now: `(subject, summary)` pairs (one per upstream, node, list, ...).
 pub(crate) type Observed = Vec<(String, String)>;
 
+/// REQ: OPS-010 (ADR-118) — the nodes in maintenance at this evaluation: their conditions are
+/// left out, and an alert about one that was firing resolves with "(maintenance)".
+#[derive(Default)]
+pub(crate) struct Paused {
+    /// Node IDs.
+    ids: HashSet<String>,
+    /// How conditions name them: pod, site, or ID.
+    labels: HashSet<String>,
+    /// This node (standalone or the evaluating cluster node) is in maintenance.
+    me: bool,
+    /// The windows, labelled (the `maintenance` rule and the Alerts page).
+    pub(crate) windows: Vec<telltale_api::model::NodeMaintenance>,
+    /// The same reads without the nodes in maintenance (cluster-wide shares such as
+    /// SERVFAIL), when there are any and this is a cluster.
+    without: Option<telltale_api::Shared>,
+}
+
+impl std::fmt::Debug for Paused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Paused")
+            .field("ids", &self.ids)
+            .field("me", &self.me)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Paused {
+    /// From the cluster view (or, standalone, this node's own window).
+    pub(crate) fn new(
+        view: &telltale_api::model::ClusterView,
+        local: Option<telltale_api::model::NodeMaintenance>,
+        standalone_label: &str,
+    ) -> Self {
+        let mut p = Self::default();
+        if view.enabled {
+            for n in &view.nodes {
+                let Some(m) = &n.maintenance else { continue };
+                let label = n.pod.clone().filter(|x| !x.is_empty()).unwrap_or_else(|| {
+                    if n.site.is_empty() {
+                        n.node_id.clone()
+                    } else {
+                        n.site.clone()
+                    }
+                });
+                p.ids.insert(n.node_id.clone());
+                p.labels.insert(label.clone());
+                p.labels.insert(n.node_id.clone());
+                if !n.site.is_empty() {
+                    p.labels.insert(n.site.clone());
+                }
+                p.me |= n.this_node;
+                let mut m = m.clone();
+                m.node = Some(label);
+                p.windows.push(m);
+            }
+        } else if let Some(mut m) = local {
+            p.me = true;
+            p.labels.insert("this node".to_owned());
+            m.node = Some(standalone_label.to_owned());
+            p.windows.push(m);
+        }
+        p
+    }
+
+    fn node(n: &telltale_api::model::ClusterNode) -> bool {
+        n.maintenance.is_some()
+    }
+
+    /// Whether `label` (a probe's or reason's node) is in maintenance.
+    fn label(&self, label: &str) -> bool {
+        self.labels.contains(label)
+    }
+
+    /// Whether an alert subject is about a node in maintenance: the node itself, or
+    /// `<node>|<target>`.
+    fn covers(&self, subject: &str) -> bool {
+        self.label(subject)
+            || subject
+                .split_once('|')
+                .is_some_and(|(node, _)| self.label(node))
+    }
+}
+
 /// One alert to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Notice {
@@ -57,11 +140,24 @@ fn one_off(w: AlertWhen) -> bool {
 impl Engine {
     /// One evaluation at `now` (Unix seconds): `observed[i]` is what rule `i` sees. Returns
     /// the alerts that start and clear. Pure, so it's tested without timers or HTTP.
+    #[cfg(test)]
     pub(crate) fn step(
         &mut self,
         now: u64,
         rules: &[AlertRule],
         observed: &[Observed],
+    ) -> Vec<Notice> {
+        self.step_with(now, rules, observed, &Paused::default())
+    }
+
+    /// [`Engine::step`], with `paused` naming the nodes in maintenance: an alert about one of
+    /// them that stops being seen resolves with "(maintenance)" (OPS-010).
+    pub(crate) fn step_with(
+        &mut self,
+        now: u64,
+        rules: &[AlertRule],
+        observed: &[Observed],
+        paused: &Paused,
     ) -> Vec<Notice> {
         let mut out = Vec::new();
         for (i, (rule, seen)) in rules.iter().zip(observed).enumerate() {
@@ -114,6 +210,12 @@ impl Engine {
                 .collect();
             for key in cleared {
                 if let Some(summary) = self.firing.remove(&key) {
+                    // REQ: OPS-010 — not fixed: its node went into maintenance.
+                    let summary = if rule.when != AlertWhen::Maintenance && paused.covers(&key.1) {
+                        format!("{summary} (maintenance)")
+                    } else {
+                        summary
+                    };
                     out.push(Notice {
                         rule: i,
                         subject: key.1,
@@ -182,7 +284,13 @@ fn record_delivery(sources: &crate::http::Sources, destination: &str, r: &Result
 /// What `rule` sees now, read from `b` (blocking: run it on a blocking thread). `pending`:
 /// agents' plans waiting for approval on this node, as `(id, summary)`.
 #[allow(clippy::too_many_lines)] // one arm per condition
-fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, String)]) -> Observed {
+fn observe(
+    b: &dyn Backend,
+    rule: &AlertRule,
+    now: u64,
+    pending: &[(String, String)],
+    m: &Paused,
+) -> Observed {
     let node_label = |n: &telltale_api::model::ClusterNode| {
         if let Some(pod) = n.pod.as_ref().filter(|p| !p.is_empty()) {
             pod.clone()
@@ -194,11 +302,12 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
     };
     match rule.when {
         // REQ: OBS-010 (T9.5) — the new conditions.
+        // REQ: OPS-010 — nodes in maintenance are left out of every per-node condition.
         AlertWhen::SyncLag => b
             .cluster()
             .nodes
             .into_iter()
-            .filter(|n| !n.this_node && n.connected && n.config_lag > 0)
+            .filter(|n| !n.this_node && n.connected && n.config_lag > 0 && !Paused::node(n))
             .map(|n| {
                 let s = format!(
                     "{} is {} configuration version(s) behind the primary{}",
@@ -230,9 +339,12 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
             let mut hosts: Vec<(String, telltale_api::model::HostReport)> = c
                 .nodes
                 .iter()
+                .filter(|n| !Paused::node(n))
                 .filter_map(|n| n.host.clone().map(|h| (node_label(n), h)))
                 .collect();
             if hosts.is_empty()
+                && !c.enabled
+                && !m.me
                 && let Some(h) = c.host.clone()
             {
                 hosts.push(("this node".to_owned(), h));
@@ -281,7 +393,7 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
             let c = b.cluster();
             c.nodes
                 .into_iter()
-                .filter(|n| !n.this_node && !n.ephemeral && !n.connected)
+                .filter(|n| !n.this_node && !n.ephemeral && !n.connected && !Paused::node(n))
                 .map(|n| {
                     let name = if n.site.is_empty() {
                         n.node_id.clone()
@@ -342,6 +454,12 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
             })
             .collect(),
         AlertWhen::ServfailRate => {
+            // REQ: OPS-010 — the share of the nodes not in maintenance (a standalone node in
+            // maintenance has none).
+            if m.me && m.without.is_none() {
+                return Vec::new();
+            }
+            let b = m.without.as_deref().unwrap_or(b);
             let buckets = b.timeseries(Step::Minute, now.saturating_sub(300), now);
             let total: u64 = buckets.iter().map(|x| u64::from(x.total)).sum();
             let servfail: u64 = buckets
@@ -375,6 +493,10 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
             })
             .map(|p| {
                 let node = p.node.clone().unwrap_or_else(|| "this node".to_owned());
+                (node, p)
+            })
+            .filter(|(node, _)| !m.label(node))
+            .map(|(node, p)| {
                 (
                     format!("{node}|{}", p.target),
                     format!(
@@ -394,8 +516,8 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
                     let left = p.cert_days_left?;
                     #[allow(clippy::cast_precision_loss)] // days
                     let soon = (left as f64) < days;
-                    soon.then(|| {
-                        let node = p.node.clone().unwrap_or_else(|| "this node".to_owned());
+                    let node = p.node.clone().unwrap_or_else(|| "this node".to_owned());
+                    (soon && !m.label(&node)).then(|| {
                         let when = if left < 0 {
                             format!("expired {} day(s) ago", -left)
                         } else {
@@ -425,6 +547,21 @@ fn observe(b: &dyn Backend, rule: &AlertRule, now: u64, pending: &[(String, Stri
                 .map(|(name, _, summary)| (name, summary))
                 .collect()
         }
+        // REQ: OPS-010 — once when a node enters maintenance, resolved when it leaves.
+        AlertWhen::Maintenance => m
+            .windows
+            .iter()
+            .map(|w| {
+                let node = w.node.clone().unwrap_or_else(|| "this node".to_owned());
+                let s = format!(
+                    "{node} is in maintenance until {} ({}), started by {}; it keeps answering DNS",
+                    time_text(now + w.seconds_left),
+                    w.reason,
+                    w.by
+                );
+                (node, s)
+            })
+            .collect(),
         AlertWhen::UpdateAvailable => {
             let u = b.system_info().update;
             match (u.state.as_str(), u.latest) {
@@ -616,12 +753,15 @@ fn publish_status(
     rules: &[AlertRule],
     cfg: &Config,
     primary: bool,
+    paused: &Paused,
 ) {
     let mut s = sources
         .alerts
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     s.evaluating = primary;
+    // REQ: OPS-010 — the Alerts page says whose alerts are paused, until when.
+    s.maintenance.clone_from(&paused.windows);
     s.firing = if s.evaluating {
         engine.firing_now(rules)
     } else {
@@ -637,6 +777,49 @@ fn publish_status(
         .retain(|x| names.contains(&x.destination.as_str()));
 }
 
+/// REQ: OBS-010 (T9.5) — plans waiting for approval on this node, as `(id, summary)`.
+fn pending_plans(sources: &crate::http::Sources) -> Vec<(String, String)> {
+    sources
+        .auth
+        .get()
+        .map(|a| {
+            a.plans()
+                .list(None)
+                .into_iter()
+                .filter(|p| p.state == "pending")
+                .map(|p| (p.id, format!("{} (by {})", p.summary, p.requested_by)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// REQ: OPS-010 — which nodes are in maintenance now (from heartbeats, or this node's own
+/// window when standalone), and the reads without them.
+async fn paused_now(
+    sources: &Arc<crate::http::Sources>,
+    backend: &telltale_api::Shared,
+    federated: Option<&Arc<crate::federated::Federated>>,
+) -> Arc<Paused> {
+    let (b, fed, src) = (Arc::clone(backend), federated.cloned(), Arc::clone(sources));
+    let paused = tokio::task::spawn_blocking(move || {
+        let now = crate::maintenance::now_ms();
+        let mut paused = Paused::new(
+            &b.cluster(),
+            src.maintenance
+                .current(now)
+                .map(|w| crate::maintenance::api_window(&w.cluster_window(), now, None)),
+            &crate::maintenance::label(&src),
+        );
+        if let Some(fed) = fed.filter(|_| !paused.ids.is_empty()) {
+            paused.without = Some(Arc::new(fed.excluding(&paused.ids)));
+        }
+        paused
+    })
+    .await
+    .unwrap_or_default();
+    Arc::new(paused)
+}
+
 /// The alert task: every `interval_secs`, evaluate (on the primary or a standalone node) and
 /// send what started or cleared.
 pub(crate) async fn run(
@@ -646,8 +829,14 @@ pub(crate) async fn run(
     let local: telltale_api::Shared = Arc::new(crate::api_backend::ApiBackend {
         src: Arc::clone(&sources),
     });
-    let backend: telltale_api::Shared = match &sources.cluster {
-        Some(c) => Arc::new(crate::federated::Federated::new(local, Arc::clone(c))),
+    let federated = sources.cluster.as_ref().map(|c| {
+        Arc::new(crate::federated::Federated::new(
+            local.clone(),
+            Arc::clone(c),
+        ))
+    });
+    let backend: telltale_api::Shared = match &federated {
+        Some(f) => Arc::clone(f) as telltale_api::Shared,
         None => local,
     };
     let client = match telltale_filter::fetch::Client::new(
@@ -678,32 +867,22 @@ pub(crate) async fn run(
             rules_for = Some(rules.clone());
         }
         let primary = sources.cluster.as_ref().is_none_or(|c| c.is_primary());
+        let paused = paused_now(&sources, &backend, federated.as_ref()).await;
         if primary && !rules.is_empty() {
             let now = crate::pipeline::unix_now();
             let b = Arc::clone(&backend);
             let rs = rules.clone();
-            // REQ: OBS-010 (T9.5) — plans waiting for approval on this node.
-            let pending: Vec<(String, String)> = sources
-                .auth
-                .get()
-                .map(|a| {
-                    a.plans()
-                        .list(None)
-                        .into_iter()
-                        .filter(|p| p.state == "pending")
-                        .map(|p| (p.id, format!("{} (by {})", p.summary, p.requested_by)))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let in_maintenance = Arc::clone(&paused);
+            let pending = pending_plans(&sources);
             let observed = tokio::task::spawn_blocking(move || {
                 rs.iter()
-                    .map(|r| observe(b.as_ref(), r, now, &pending))
+                    .map(|r| observe(b.as_ref(), r, now, &pending, &in_maintenance))
                     .collect::<Vec<_>>()
             })
             .await
             .unwrap_or_default();
             let node = crate::http::node_name(&cfg);
-            for n in engine.step(now, &rules, &observed) {
+            for n in engine.step_with(now, &rules, &observed, &paused) {
                 let rule = &rules[n.rule];
                 info!(rule = %rule.name, subject = %n.subject, firing = n.firing, "alert");
                 for to in &rule.to {
@@ -733,7 +912,7 @@ pub(crate) async fn run(
                 }
             }
         }
-        publish_status(&sources, &engine, &rules, &cfg, primary);
+        publish_status(&sources, &engine, &rules, &cfg, primary, &paused);
         tokio::select! {
             _ = stop.changed() => return,
             () = tokio::time::sleep(interval) => {}
@@ -839,6 +1018,204 @@ mod tests {
             e.step(2, &rules, &[seen(&["finding-0"])]).len(),
             1,
             "the oldest was forgotten"
+        );
+    }
+
+    /// A read model with a cluster view and probes, nothing else.
+    struct Stub {
+        view: telltale_api::model::ClusterView,
+        probes: Vec<telltale_api::model::ProbeResult>,
+    }
+
+    impl Backend for Stub {
+        fn system_info(&self) -> telltale_api::model::SystemInfo {
+            unreachable!("not read by these rules")
+        }
+        fn cluster(&self) -> telltale_api::model::ClusterView {
+            self.view.clone()
+        }
+        fn probes(&self) -> Vec<telltale_api::model::ProbeResult> {
+            self.probes.clone()
+        }
+        fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<telltale_api::model::TimeBucket> {
+            Vec::new()
+        }
+        fn top(
+            &self,
+            _: telltale_api::model::TopKind,
+            _: telltale_api::model::Hour,
+            _: usize,
+            _: Option<std::net::IpAddr>,
+        ) -> Vec<telltale_api::model::TopItem> {
+            Vec::new()
+        }
+        fn latency(
+            &self,
+            _: telltale_api::model::LatencyBy,
+            _: telltale_api::model::Hour,
+        ) -> Vec<telltale_api::model::LatencyRow> {
+            Vec::new()
+        }
+        fn queries(
+            &self,
+            _: &telltale_api::model::QueryParams,
+            _: u64,
+            _: u64,
+            _: usize,
+        ) -> Result<telltale_api::model::QueryPage, telltale_api::problem::Problem> {
+            Err(telltale_api::problem::Problem::unavailable("stub"))
+        }
+        fn explain(
+            &self,
+            _: &telltale_api::model::ExplainParams,
+        ) -> Result<telltale_api::model::Explanation, telltale_api::problem::Problem> {
+            Err(telltale_api::problem::Problem::unavailable("stub"))
+        }
+        fn lists(&self) -> Vec<telltale_api::model::ListInfo> {
+            Vec::new()
+        }
+        fn groups(&self) -> Vec<telltale_api::model::GroupInfo> {
+            Vec::new()
+        }
+        fn clients(&self) -> Vec<telltale_api::model::ClientInfo> {
+            Vec::new()
+        }
+        fn upstreams(&self) -> Vec<telltale_api::model::UpstreamInfo> {
+            Vec::new()
+        }
+    }
+
+    /// REQ: OPS-010 (ADR-118) — a node in maintenance raises no `node_down` or probe alert;
+    /// one that was firing resolves with "(maintenance)"; the `maintenance` rule fires while
+    /// it lasts; after the window, `for_secs` counts from zero again.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario, step by step
+    fn ops_010_alerts_skip_nodes_in_maintenance() {
+        use telltale_api::model::{ClusterNode, ClusterView, NodeMaintenance, ProbeResult};
+        let node = |id: &str, connected: bool| ClusterNode {
+            node_id: id.into(),
+            site: id.into(),
+            connected,
+            up: connected,
+            ..ClusterNode::default()
+        };
+        let mut me = node("pi", true);
+        me.this_node = true;
+        let view = |maint: bool| {
+            let mut away = node("pi2", false);
+            if maint {
+                away.maintenance = Some(NodeMaintenance {
+                    until: "2026-10-09T14:00:00Z".into(),
+                    reason: "SD card swap".into(),
+                    by: "alice".into(),
+                    seconds_left: 1800,
+                    ..NodeMaintenance::default()
+                });
+            }
+            ClusterView {
+                enabled: true,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 0,
+                healthy: true,
+                checks: Vec::new(),
+                nodes: vec![me.clone(), away, node("k3s", false)],
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                host: None,
+            }
+        };
+        let probe = |who: &str| ProbeResult {
+            node: Some(who.into()),
+            target: "udp://127.0.0.1:53".into(),
+            listener: true,
+            consecutive_failures: 3,
+            ..ProbeResult::default()
+        };
+        let stub = |maint: bool| Stub {
+            view: view(maint),
+            probes: vec![probe("pi2"), probe("k3s")],
+        };
+        let rules = vec![
+            rule(AlertWhen::NodeDown, 60),
+            rule(AlertWhen::ProbeFailing, 0),
+            rule(AlertWhen::Maintenance, 0),
+        ];
+        let seen = |backend: &Stub, paused: &Paused| -> Vec<Observed> {
+            rules
+                .iter()
+                .map(|r| observe(backend, r, 1000, &[], paused))
+                .collect()
+        };
+        let subjects = |o: &Observed| o.iter().map(|(x, _)| x.clone()).collect::<Vec<_>>();
+        // Before maintenance: both nodes are down and failing their probes.
+        let before = stub(false);
+        let quiet = Paused::new(&before.view, None, "pi");
+        let observed = seen(&before, &quiet);
+        assert_eq!(subjects(&observed[0]), ["pi2", "k3s"]);
+        assert_eq!(
+            subjects(&observed[1]),
+            ["pi2|udp://127.0.0.1:53", "k3s|udp://127.0.0.1:53"]
+        );
+        assert_eq!(observed[2], Observed::new());
+        let mut engine = Engine::default();
+        engine.step_with(0, &rules, &observed, &quiet);
+        assert_eq!(
+            engine.step_with(60, &rules, &observed, &quiet).len(),
+            2,
+            "both node_down alerts fire"
+        );
+        // pi2 enters maintenance.
+        let during = stub(true);
+        let paused = Paused::new(&during.view, None, "pi");
+        let observed = seen(&during, &paused);
+        assert_eq!(subjects(&observed[0]), ["k3s"]);
+        assert_eq!(subjects(&observed[1]), ["k3s|udp://127.0.0.1:53"]);
+        assert_eq!(subjects(&observed[2]), ["pi2"]);
+        assert!(
+            observed[2][0].1.contains("SD card swap"),
+            "{}",
+            observed[2][0].1
+        );
+        let notices = engine.step_with(90, &rules, &observed, &paused);
+        let resolved: Vec<&Notice> = notices.iter().filter(|x| !x.firing).collect();
+        assert_eq!(
+            resolved.len(),
+            2,
+            "node_down and the probe, both pi2's: {resolved:?}"
+        );
+        assert!(
+            resolved
+                .iter()
+                .all(|x| x.subject.starts_with("pi2") && x.summary.ends_with("(maintenance)")),
+            "{resolved:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|x| x.firing && x.rule == 2 && x.subject == "pi2")
+        );
+        // Maintenance ends with pi2 still down: node_down counts its 60 s from now.
+        let after = stub(false);
+        let observed = seen(&after, &quiet);
+        let notices = engine.step_with(120, &rules, &observed, &quiet);
+        assert!(
+            notices.iter().any(|x| !x.firing && x.rule == 2),
+            "the maintenance alert resolves"
+        );
+        assert!(
+            !notices.iter().any(|x| x.firing && x.rule == 0),
+            "not before for_secs"
+        );
+        let notices = engine.step_with(180, &rules, &observed, &quiet);
+        assert!(
+            notices
+                .iter()
+                .any(|x| x.firing && x.rule == 0 && x.subject == "pi2")
         );
     }
 

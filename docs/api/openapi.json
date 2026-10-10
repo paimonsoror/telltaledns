@@ -2696,6 +2696,130 @@
         }
       }
     },
+    "/api/v1/nodes/{id}/maintenance": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Start maintenance on a node.",
+        "description": "For `forSecs` (60 to 86,400; agents at most 7,200; default the node's\n`[node] maintenance_default_secs`, 3,600) the node answers `/readyz` with 503 so load\nbalancers and Kubernetes stop sending it new queries, while every DNS listener keeps\nanswering whatever still arrives. Its alerts and health conditions are left out, and it\ndoesn't stand in elections, until the window ends (by itself, or with DELETE). The window\nsurvives a restart. Starting again replaces the window. `id` is `local` (the node answering)\nor a cluster node's ID, site, or pod name: the request goes to that node over the cluster\nchannel. On the primary under automatic failover, `handover` (default true) hands the primary\nrole to another eligible node first (configuration changes pause for about 30 s); otherwise\nthe primary keeps the role and the answer's `note` says to promote another node first. It\nchanges no configuration, so a GitOps-managed cluster takes it too. Needs the operator role\n(agents: the `ops:maintenance` scope); audit-logged as `node.maintenance.start`.",
+        "operationId": "start",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The node's window, and what happened to the primary role.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such node (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No reason, or a window too short or too long (`maintenance_invalid`, `maintenance_too_long`; agents at most 2 h).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node isn't reachable over the cluster channel (`node_unreachable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "system"
+        ],
+        "summary": "End maintenance on a node.",
+        "description": "The node is ready again at once (if it's otherwise ready), and alerts and the health level\ncover it again: conditions that hold count from now, so an alert with `for_secs` waits its\nusual time. Nothing happens if it wasn't in maintenance. `id` as for starting. Needs the\noperator role (agents: `ops:maintenance`); audit-logged as `node.maintenance.end`.",
+        "operationId": "end",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "`local`, or a node's ID, site, or pod name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The node, no longer in maintenance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such node (`node_unknown`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The node isn't reachable over the cluster channel (`node_unreachable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/plans": {
       "get": {
         "tags": [
@@ -4950,7 +5074,8 @@
         "required": [
           "evaluating",
           "firing",
-          "deliveries"
+          "deliveries",
+          "maintenance"
         ],
         "properties": {
           "deliveries": {
@@ -4968,6 +5093,13 @@
             "items": {
               "$ref": "#/components/schemas/FiringAlert"
             }
+          },
+          "maintenance": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeMaintenance"
+            },
+            "description": "REQ: OPS-010 — nodes whose alerts are paused for maintenance, until when."
           }
         }
       },
@@ -6639,6 +6771,17 @@
             "type": "string",
             "description": "`self`, `inbound` (it connected to this node), or `outbound`."
           },
+          "maintenance": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeMaintenance",
+                "description": "REQ: OPS-010 — its maintenance window, while it's in maintenance (older nodes never\nreport one)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "nodeId": {
             "type": "string"
           },
@@ -6991,7 +7134,11 @@
           "version_conflict",
           "invalid_config",
           "rate_limited",
-          "gitops_managed"
+          "gitops_managed",
+          "maintenance_too_long",
+          "maintenance_invalid",
+          "node_unreachable",
+          "node_unknown"
         ]
       },
       "ConfigChange": {
@@ -7804,6 +7951,13 @@
             "type": "string",
             "description": "`healthy`, `degraded` (something needs a look, DNS answers), or `severe` (DNS is failing\nor about to).",
             "example": "degraded"
+          },
+          "maintenance": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeMaintenance"
+            },
+            "description": "REQ: OPS-010 — nodes in maintenance: their conditions are left out of `reasons` and the\nlevel until the window ends (a node in maintenance still answers DNS)."
           },
           "missingNodes": {
             "type": "array",
@@ -10588,6 +10742,81 @@
           }
         }
       },
+      "MaintenanceRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/nodes/{id}/maintenance`.",
+        "properties": {
+          "forSecs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How long, in seconds: 60 to 86,400 (agents at most 7,200). Default: the node's\n`[node] maintenance_default_secs` (3,600).",
+            "example": 3600,
+            "minimum": 0
+          },
+          "handover": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "For the primary under automatic failover: hand the primary role to another eligible\nnode first (about 30 s without configuration changes). Default true; ignored on other\nnodes."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, in a few words (1 to 200 characters, one line). Shown on the Cluster page, in the\nhealth panel, and in the audit log.",
+            "example": "SD card swap"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MaintenanceResult": {
+        "type": "object",
+        "description": "A node's maintenance after a start or end.",
+        "required": [
+          "node",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Whether it's in maintenance now."
+          },
+          "handover": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Starting on the primary: `started` (another node is being elected; the old primary\nfollows), `unavailable` (manual failover, or no other eligible node reachable: it stays\nthe primary), or `declined` (`handover: false`). `not_needed` on other nodes."
+          },
+          "node": {
+            "type": "string",
+            "description": "The node (its pod, site, or ID)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What to know, in one sentence (e.g. promote another node first)."
+          },
+          "window": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeMaintenance",
+                "description": "The window, while active."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "MaskedClients": {
         "type": "object",
         "description": "Evidence that client IPs appear masked.",
@@ -10745,6 +10974,48 @@
           "token": {
             "type": "string",
             "description": "The token, shown only now: send as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "NodeMaintenance": {
+        "type": "object",
+        "description": "REQ: OPS-010 (ADR-118) — a node's maintenance window: it reports not ready (balancers stop\nsending it new queries), keeps answering, and is left out of alerts, the health level, and\nelections until `until`.",
+        "required": [
+          "until",
+          "since",
+          "reason",
+          "by",
+          "secondsLeft"
+        ],
+        "properties": {
+          "by": {
+            "type": "string",
+            "description": "Who started it: a user, `<user> via <site>` from another node, or an agent.",
+            "example": "alice via pi"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node (its pod, site, or ID), in lists."
+          },
+          "reason": {
+            "type": "string",
+            "example": "SD card swap"
+          },
+          "secondsLeft": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "since": {
+            "type": "string",
+            "description": "When it started (RFC 3339)."
+          },
+          "until": {
+            "type": "string",
+            "description": "When it ends (RFC 3339)."
           }
         }
       },
@@ -11997,6 +12268,17 @@
               "type": "string"
             },
             "description": "DNS listeners, as `proto://addr`."
+          },
+          "maintenance": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeMaintenance",
+                "description": "REQ: OPS-010 — this node's maintenance window, while it's in maintenance."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "node": {
             "type": "string",

@@ -40,7 +40,7 @@
   ];
   const conditions = [
     'upstream_down', 'node_down', 'sync_lag', 'list_failing', 'list_stale', 'servfail_rate', 'anomaly', 'new_device',
-    'disk_full', 'plan_pending', 'update_available',
+    'disk_full', 'plan_pending', 'update_available', 'maintenance',
   ];
   const ruleFields = $derived<Field[]>([
     { key: 'when', label: 'When', type: 'select', options: conditions, initial: 'upstream_down' },
@@ -81,6 +81,12 @@
         </table>
       </div>
     {/if}
+    {#each status?.maintenance ?? [] as m (m.node)}
+      <!-- REQ: OPS-010 — alerts about a node in maintenance are paused. -->
+      <p class="small muted" data-testid="alerts-maintenance">
+        Alerts for <strong>{m.node}</strong> are paused during maintenance until {dateTime(Date.parse(m.until) / 1000)} ({m.reason}).
+      </p>
+    {/each}
     {#if status?.deliveries.length}
       <h3 class="small muted">Last delivery per destination</h3>
       <div class="table-wrap">

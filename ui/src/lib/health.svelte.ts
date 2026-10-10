@@ -11,3 +11,12 @@ export function watchHealth(): () => void {
     health.value = await api.health();
   }, 30_000);
 }
+
+/** Reads it again now (after a change that moves it, such as maintenance; OPS-010). */
+export async function refreshHealth(): Promise<void> {
+  try {
+    health.value = await api.health();
+  } catch {
+    // The next poll tries again.
+  }
+}

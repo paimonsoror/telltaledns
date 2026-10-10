@@ -246,6 +246,7 @@
       "default": {
         "data_dir": "/var/lib/telltale",
         "drain_delay_secs": 0,
+        "maintenance_default_secs": 3600,
         "name": "",
         "role": "all",
         "workers": 0
@@ -691,6 +692,11 @@
           "description": "A DoT/DoH/DoQ listener's certificate expires within `threshold` days (default 14), on\nany node (one alert per node and listener).",
           "type": "string",
           "const": "cert_expiring"
+        },
+        {
+          "description": "REQ: OPS-010 (T13.4) — a node is in maintenance (one alert per node, sent when it\nenters and resolved when it leaves; set `for_secs = 0` to hear at once).",
+          "type": "string",
+          "const": "maintenance"
         }
       ]
     },
@@ -2064,6 +2070,13 @@
           "type": "integer",
           "format": "uint32",
           "default": 0,
+          "minimum": 0
+        },
+        "maintenance_default_secs": {
+          "description": "REQ: OPS-010 (T13.4) — how long maintenance lasts when a request doesn't say, in\nseconds: 60 to 86400 (a day). Maintenance itself is started from the Cluster page,\n`telltale ctl maintenance start`, or the API; it's the node's state, not configuration.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 3600,
           "minimum": 0
         },
         "name": {

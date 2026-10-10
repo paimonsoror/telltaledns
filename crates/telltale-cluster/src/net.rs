@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -56,6 +56,11 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The wall clock in Unix ms (maintenance windows and handover timing are on it).
+pub(crate) fn wall_ms() -> u64 {
+    now_ms()
 }
 
 fn certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
@@ -367,9 +372,35 @@ pub struct Member {
     pub restarts: u32,
     pub cache_entries: Option<u64>,
     pub cache_hit_permille: Option<u32>,
+    /// REQ: OPS-010 — its maintenance window, from its heartbeats (kept while it's silent, so a
+    /// node stopped during its window stays in maintenance until the window ends).
+    pub maintenance: Option<MaintenanceWindow>,
+}
+
+/// REQ: OPS-010 (ADR-118) — a node's maintenance window, as heartbeats carry it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaintenanceWindow {
+    /// When it ends and when it started (Unix ms, the node's clock).
+    pub until_ms: u64,
+    pub since_ms: u64,
+    pub reason: String,
+    /// `alice`, `alice via pi`, or an agent.
+    pub by: String,
+}
+
+impl MaintenanceWindow {
+    /// Whether the window is still open at `now_ms`.
+    pub fn active(&self, now_ms: u64) -> bool {
+        now_ms < self.until_ms
+    }
 }
 
 impl Member {
+    /// REQ: OPS-010 — its maintenance window, while it's open.
+    pub fn in_maintenance(&self, now_ms: u64) -> Option<&MaintenanceWindow> {
+        self.maintenance.as_ref().filter(|w| w.active(now_ms))
+    }
+
     /// Up when heard from within three heartbeats.
     pub fn up(&self, now_ms: u64) -> bool {
         now_ms.saturating_sub(self.last_seen_ms)
@@ -397,7 +428,13 @@ pub struct LocalState {
     pub started_ms: u64,
     pub cache_entries: Option<u64>,
     pub cache_hit_permille: Option<u32>,
+    /// REQ: OPS-010 — this node's maintenance window (heartbeats carry it).
+    pub maintenance: Option<MaintenanceWindow>,
 }
+
+/// REQ: OPS-010 — a handover that hasn't produced a new primary after this long is given up:
+/// the primary renews again (four lease windows: a replica that could win would have).
+pub const HANDOVER_GIVE_UP_MS: u64 = 60_000;
 
 /// Host samples kept per peer: one hour at the collector's 15 s interval (T6.11).
 pub const HOST_HISTORY: usize = 240;
@@ -511,6 +548,8 @@ pub struct Cluster {
     started_ms: u64,
     /// Each peer's recent host samples, oldest first (T6.11).
     host_history: Mutex<HashMap<String, VecDeque<crate::wire::HostStats>>>,
+    /// REQ: OPS-010 — when this primary started handing over (Unix ms; 0: it isn't).
+    handover_since_ms: AtomicU64,
 }
 
 /// What this node has applied from the primary (replica) or published (primary).
@@ -566,7 +605,74 @@ impl Cluster {
             cert_gen: AtomicU64::new(0),
             bootstrap: std::sync::OnceLock::new(),
             started_ms: now_ms(),
+            handover_since_ms: AtomicU64::new(0),
         })
+    }
+
+    /// REQ: OPS-010 (ADR-118) — starts (`Some`) or ends (`None`) this node's maintenance: the
+    /// next heartbeat (sent at once) carries it, elections leave the node out as a candidate,
+    /// and with `handover` a primary stops renewing its lease so another node is elected.
+    pub fn set_maintenance(&self, w: Option<MaintenanceWindow>, handover: bool) {
+        let me = self.identity.meta.node_id.clone();
+        let detail = w.as_ref().map(|w| {
+            format!(
+                "for {} min ({}), by {}",
+                w.until_ms.saturating_sub(w.since_ms).div_ceil(60_000),
+                w.reason,
+                w.by
+            )
+        });
+        let starting = handover && w.is_some();
+        self.handover_since_ms
+            .store(if starting { now_ms() } else { 0 }, Ordering::Release);
+        {
+            let mut l = self.local.lock().unwrap_or_else(PoisonError::into_inner);
+            l.maintenance = w;
+        }
+        self.local_changed.send_modify(|n| *n += 1);
+        match detail {
+            Some(d) => self.event("maintenance", &me, d),
+            None => self.event("maintenance_ended", &me, "back in service"),
+        }
+        if starting {
+            self.event(
+                "handover",
+                &me,
+                "maintenance: this primary stops renewing its lease so another node is elected",
+            );
+        }
+    }
+
+    /// REQ: OPS-010 — whether this node is in maintenance now.
+    pub fn in_maintenance(&self) -> bool {
+        self.local
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .maintenance
+            .as_ref()
+            .is_some_and(|w| w.active(now_ms()))
+    }
+
+    /// REQ: OPS-010 — whether this primary is handing over (it stops renewing its lease).
+    pub fn stepping_down(&self) -> bool {
+        self.handover_since_ms.load(Ordering::Acquire) != 0
+    }
+
+    /// REQ: OPS-010 — a handover running past [`HANDOVER_GIVE_UP_MS`] without a new primary
+    /// is given up (the node renews again); returns whether it was.
+    pub(crate) fn give_up_handover(&self, now: u64) -> bool {
+        let since = self.handover_since_ms.load(Ordering::Acquire);
+        if since == 0 || now.saturating_sub(since) < HANDOVER_GIVE_UP_MS {
+            return false;
+        }
+        self.handover_since_ms.store(0, Ordering::Release);
+        warn!("cluster: no other node took over within 60 s; this primary keeps the role");
+        self.event(
+            "handover_failed",
+            &self.identity.meta.node_id.clone(),
+            "no other node was elected within 60 s; this node stays the primary (promote another node first)",
+        );
+        true
     }
 
     /// The key-share frame for `peer`, when this node is the primary, holds the key, and the
@@ -642,7 +748,17 @@ impl Cluster {
 
     pub(crate) fn set_lease_ok(&self, ok: bool) {
         let was = self.lease_ok.swap(ok, std::sync::atomic::Ordering::AcqRel);
-        if was && !ok && self.is_primary() {
+        if was && !ok && self.is_primary() && self.stepping_down() {
+            // REQ: OPS-010 — expected: the lease ran out on purpose.
+            info!(
+                "cluster: handing over for maintenance: publishing stopped; another node is elected within seconds"
+            );
+            self.event(
+                "lease_released",
+                &self.identity.meta.node_id.clone(),
+                "handing over for maintenance",
+            );
+        } else if was && !ok && self.is_primary() {
             warn!(
                 "cluster: this primary's lease lapsed; publishing paused until a majority renews it"
             );
@@ -1334,6 +1450,18 @@ impl Cluster {
                 started_ms: l.started_ms,
                 cache_entries: l.cache_entries,
                 cache_hit_permille: l.cache_hit_permille,
+                maintenance_until_ms: l.maintenance.as_ref().map_or(0, |w| w.until_ms),
+                maintenance_since_ms: l.maintenance.as_ref().map_or(0, |w| w.since_ms),
+                maintenance_reason: l
+                    .maintenance
+                    .as_ref()
+                    .map(|w| w.reason.clone())
+                    .unwrap_or_default(),
+                maintenance_by: l
+                    .maintenance
+                    .as_ref()
+                    .map(|w| w.by.clone())
+                    .unwrap_or_default(),
             })),
         }
     }
@@ -1412,6 +1540,7 @@ impl Cluster {
                         restarts: prev.as_ref().map_or(0, |p| p.restarts),
                         cache_entries: prev.as_ref().and_then(|p| p.cache_entries),
                         cache_hit_permille: prev.as_ref().and_then(|p| p.cache_hit_permille),
+                        maintenance: prev.as_ref().and_then(|p| p.maintenance.clone()),
                     },
                 );
                 drop(members);
@@ -1424,7 +1553,7 @@ impl Cluster {
                 }
                 return Ok(());
             }
-            Some(Body::Heartbeat(hb)) => {
+            Some(Body::Heartbeat(mut hb)) => {
                 let id = peer.as_ref().ok_or("heartbeat before Hello")?;
                 *echo.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some((hb.ts_ms, tokio::time::Instant::now()));
@@ -1441,7 +1570,32 @@ impl Cluster {
                     )
                     .max(hb.applied_seq);
                 let mut restarted = false;
+                let mut maintenance_changed = None;
                 if let Some(m) = members.get_mut(id) {
+                    // REQ: OPS-010 — its maintenance window (an older node sends none).
+                    let window = (hb.maintenance_until_ms > 0).then(|| MaintenanceWindow {
+                        until_ms: hb.maintenance_until_ms,
+                        since_ms: hb.maintenance_since_ms,
+                        reason: std::mem::take(&mut hb.maintenance_reason),
+                        by: std::mem::take(&mut hb.maintenance_by),
+                    });
+                    if window.as_ref().map(|w| w.until_ms)
+                        != m.maintenance.as_ref().map(|w| w.until_ms)
+                        && (window.is_some() || m.in_maintenance(now).is_some())
+                    {
+                        maintenance_changed = Some(window.as_ref().map_or_else(
+                            || "back in service".to_owned(),
+                            |w| {
+                                format!(
+                                    "for {} min ({}), by {}",
+                                    w.until_ms.saturating_sub(w.since_ms).div_ceil(60_000),
+                                    w.reason,
+                                    w.by
+                                )
+                            },
+                        ));
+                    }
+                    m.maintenance = window;
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
                         m.trust_fp.clone_from(&hb.trust_fp);
@@ -1491,6 +1645,14 @@ impl Cluster {
                 if restarted {
                     self.event("restarted", &id, "its process started again");
                 }
+                if let Some(detail) = maintenance_changed {
+                    let kind = if detail == "back in service" {
+                        "maintenance_ended"
+                    } else {
+                        "maintenance"
+                    };
+                    self.event(kind, &id, detail);
+                }
                 self.observe_epoch(hb.epoch, &id);
                 return Ok(());
             }
@@ -1523,7 +1685,12 @@ impl Cluster {
                     .is_some_and(|m| m.primary && m.epoch >= self.role().1);
                 drop(members);
                 if !from_primary {
-                    return Err("a cluster key from a node that isn't the primary".into());
+                    // Refused, but the stream stays up: an old primary that comes back sends
+                    // its key before it learns the newer epoch. Ending the read side here left
+                    // its writer on a stream nobody read, and its RPC answers were lost
+                    // (found by the T13.4 failover e2e).
+                    warn!(from = %id, "cluster: ignoring a cluster key from a node that isn't the primary");
+                    return Ok(());
                 }
                 if !k.next_ca_key_pem.is_empty()
                     && let Err(e) = self.identity.store_ca_key(&k.next_ca_key_pem)

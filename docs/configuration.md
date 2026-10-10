@@ -54,7 +54,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 ## Sections
 | Section | Purpose | Reference |
 |---|---|---|
-| `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory | `spec/02` |
+| `[node]` | role (`all`/`resolver`/`controller`), name, worker threads, data directory, `drain_delay_secs`, `maintenance_default_secs` (how long maintenance lasts when a request doesn't say; maintenance itself is node state, started from the Cluster page, `telltale ctl maintenance`, or the API) | `spec/02`, OPS-010 |
 | `[cluster]` | cluster name, site label, primary eligibility | `spec/12` |
 | `[[listen]]` | `udp`, `tcp`, `dot`, `doh`, `doh3` (DoH over HTTP/3), and `doq` listeners; `tls` cert/key for the encrypted ones (reloaded on change), DoH `path`, `proxy_protocol` (v2) on TCP-based listeners. Default: UDP + TCP on port 53, IPv4 and IPv6 | `spec/03` §1, DNS-002/003/020 |
 | `[[upstream]]` | upstream resolvers; the URL scheme picks the protocol | `spec/04` |

@@ -273,6 +273,35 @@ test('obs_020 listener checks', async () => {
   expect(log.items).toEqual([]);
 });
 
+// REQ: OPS-010 — maintenance from the Cluster page (the e2e server runs on its own): /readyz
+// turns 503 with the reason while DNS keeps answering, the banners and the health note show,
+// and ending it makes the node ready again.
+test('ops_010 maintenance from the Cluster page', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/cluster');
+  await page.getByTestId('maintenance-open').first().click();
+  const form = page.getByTestId('maintenance-form');
+  await form.getByLabel('30 min').check();
+  await form.getByTestId('maintenance-reason').fill('e2e SD card swap');
+  await form.getByTestId('maintenance-start').click();
+  const banner = page.getByTestId('maintenance-banner');
+  await expect(banner).toContainText('e2e SD card swap');
+  const ready = await page.request.get('/readyz');
+  expect(ready.status()).toBe(503);
+  expect(await ready.json()).toEqual({ ready: false, reason: 'maintenance' });
+  expect((await page.request.get('/readyz?startup=1')).status()).toBe(200);
+  expect(await query('nas.e2e.test')).toBe(0);
+  await page.getByTestId('health-icon').click();
+  await expect(page.getByTestId('health-maintenance')).toContainText('e2e SD card swap');
+  await page.keyboard.press('Escape');
+  await page.goto('/#/');
+  await expect(page.getByTestId('maintenance-app-banner')).toContainText('e2e SD card swap');
+  await page.goto('/#/cluster');
+  await page.getByTestId('maintenance-end-banner').click();
+  await expect(banner).toHaveCount(0);
+  expect((await page.request.get('/readyz')).status()).toBe(200);
+});
+
 // REQ: OBS-019 — the Upstreams page's Answer quality: second opinions off on the e2e server
 // (it says how to turn them on), then a stubbed filtering upstream with its EDE and a
 // disagreement.

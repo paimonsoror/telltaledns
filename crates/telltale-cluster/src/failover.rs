@@ -167,6 +167,13 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
     };
     let local = cluster.local_state();
     el.applied = (local.epoch, local.applied_seq);
+    // REQ: OPS-010 (ADR-118) — in maintenance this node votes but doesn't stand; a primary
+    // handing over stops renewing, unless no one took over within the give-up time.
+    el.standing = !cluster.in_maintenance();
+    if el.leading().is_some() {
+        cluster.give_up_handover(crate::net::wall_ms());
+    }
+    el.stepping_down = cluster.stepping_down();
     // ADR-051 — only voters' epochs count (see `Cluster::may_announce_epoch`).
     let seen = cluster
         .members()
@@ -230,7 +237,11 @@ fn dispatch(
                 cluster.event(
                     "stepped_down",
                     &id.meta.node_id,
-                    format!("a newer epoch than {epoch} exists"),
+                    if cluster.stepping_down() {
+                        format!("handed over for maintenance: a newer epoch than {epoch} exists")
+                    } else {
+                        format!("a newer epoch than {epoch} exists")
+                    },
                 );
             }
             Out::Persist => {}

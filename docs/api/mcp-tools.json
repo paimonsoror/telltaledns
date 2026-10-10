@@ -486,7 +486,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), and recent events. On a standalone node it says so and still shows its machine.",
+    "description": "Read-only. The cluster as this node sees it: members, roles, epochs, sync lag, versions, health checks, each node's machine (memory, CPU, disk, temperature, with the last hour and warnings), each node's maintenance window (until, reason, who), and recent events. On a standalone node it says so and still shows its machine.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},
@@ -1377,6 +1377,68 @@
       "type": "object"
     },
     "name": "resume_blocking"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan). Puts a node in maintenance for up to 2 hours: it reports not ready, so load balancers and Kubernetes stop sending it new queries, but it keeps answering every query that still arrives; its alerts and health conditions are left out, and it isn't elected primary, until the window ends (or end_maintenance). The primary under automatic failover first hands its role to another eligible node; otherwise the result's note says to promote another node first. Your reason is shown with the window. Needs the ops:maintenance scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "forSecs": {
+          "description": "How long, in seconds (default 3600).",
+          "maximum": 7200,
+          "minimum": 60,
+          "type": "integer"
+        },
+        "node": {
+          "description": "The node: its ID, site, or pod name from cluster_status, or local (the node you're connected to).",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "start_maintenance"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan). Ends a node's maintenance: it's ready for traffic again, and alerts and the health level cover it again. Needs the ops:maintenance scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "description": "The node: its ID, site, or pod name, or local.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "end_maintenance"
   },
   {
     "annotations": {

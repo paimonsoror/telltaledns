@@ -59,6 +59,7 @@ impl Backend for Fake {
                 error: None,
                 how: "Run: sudo telltale self-update --channel edge --restart.".into(),
             },
+            maintenance: None,
         }
     }
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
@@ -1050,7 +1051,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    assert_eq!(paths.len(), 81);
+    // 82 with OPS-010's /nodes/{id}/maintenance.
+    assert_eq!(paths.len(), 82);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -1709,6 +1711,63 @@ async fn agt_009_list_check_samples_are_for_operators() {
         !text.contains("hunter2") && text.contains("2 line(s)") && text.contains("not a rule"),
         "{v}"
     );
+}
+
+// REQ: OPS-010, AGT-004 — maintenance requests over HTTP: a day at most and a reason required
+// (422 each), agents (`ops:maintenance`) at most two hours, with the cap in the hint.
+#[tokio::test]
+async fn ops_010_maintenance_requests_over_http() {
+    let (app, _) = app();
+    let post = |token: &str, body: &str| {
+        Request::post("/api/v1/nodes/local/maintenance")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "SD card swap")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, post(&app.bearer, r#"{"forSecs":86401,"reason":"x"}"#)).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("maintenance_too_long")
+        ),
+        "{v}"
+    );
+    let (s, _, v) = send(&app, post(&app.bearer, r#"{"forSecs":600}"#)).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("maintenance_invalid")
+        ),
+        "{v}"
+    );
+    let req = Request::post("/api/v1/tokens")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"maint","kind":"agent","scopes":["ops:maintenance"]}"#,
+        ))
+        .unwrap();
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let agent = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(
+        &app,
+        post(&agent, r#"{"forSecs":10800,"reason":"kernel upgrade"}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("2 hours"), "{v}");
+    // Within the cap the request reaches the backend (this test backend has no maintenance).
+    let (s, _, v) = send(
+        &app,
+        post(&agent, r#"{"forSecs":3600,"reason":"kernel upgrade"}"#),
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }
 
 // REQ: AGT-005 — a change made through MCP is audited with the agent's address: the REST

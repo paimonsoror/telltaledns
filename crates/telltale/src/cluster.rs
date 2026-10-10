@@ -328,7 +328,11 @@ const BALANCE_MIN_QPS: u64 = 5;
 fn balance_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model::ClusterCheck {
     let mut sites: std::collections::BTreeMap<&str, Vec<&telltale_api::model::ClusterNode>> =
         std::collections::BTreeMap::new();
-    for n in nodes.iter().filter(|n| n.up && n.ready && n.pod.is_some()) {
+    // REQ: OPS-010 — a pod in maintenance gets no new traffic on purpose.
+    for n in nodes
+        .iter()
+        .filter(|n| n.up && n.ready && n.pod.is_some() && n.maintenance.is_none())
+    {
         sites.entry(n.site.as_str()).or_default().push(n);
     }
     let mut problems = Vec::new();
@@ -436,6 +440,11 @@ pub(crate) fn view(
         cache_entries: local.cache_entries,
         cache_hit_percent: local.cache_hit_permille.map(|p| f64::from(p) / 10.0),
         query_share_percent: None,
+        maintenance: local
+            .maintenance
+            .as_ref()
+            .filter(|w| w.active(now))
+            .map(|w| crate::maintenance::api_window(w, now, None)),
     }];
     let mut peers = c.members();
     peers.sort_by(|a, b| (&a.site, &a.node_id).cmp(&(&b.site, &b.node_id)));
@@ -479,6 +488,9 @@ pub(crate) fn view(
             cache_entries: p.cache_entries,
             cache_hit_percent: p.cache_hit_permille.map(|p| f64::from(p) / 10.0),
             query_share_percent: None,
+            maintenance: p
+                .in_maintenance(now)
+                .map(|w| crate::maintenance::api_window(w, now, None)),
         });
     }
     query_shares(&mut nodes);
@@ -551,8 +563,10 @@ fn events_view(c: &Cluster) -> Vec<telltale_api::model::ClusterEvent> {
 /// REQ: CLU-010 — mixed versions work (within one protocol version) but are meant to be
 /// brief: an upgrade in progress.
 fn versions_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::model::ClusterCheck {
+    // REQ: OPS-010 — a node in maintenance may be the one being upgraded.
     let mut versions: Vec<String> = nodes
         .iter()
+        .filter(|n| n.maintenance.is_none())
         .map(|n| format!("{} (protocol {})", n.version, n.protocol))
         .collect();
     versions.sort();
@@ -642,19 +656,18 @@ fn health_checks(
         summary,
         fix: (!ok).then(|| fix.to_owned()),
     };
-    let down: Vec<&str> = nodes
-        .iter()
+    // REQ: OPS-010 — nodes in maintenance are expected to be down, behind, or not serving.
+    let counted = || nodes.iter().filter(|n| n.maintenance.is_none());
+    let down: Vec<&str> = counted()
         .filter(|n| !n.up)
         .map(|n| n.node_id.as_str())
         .collect();
     let primary_up = nodes.iter().any(|n| n.role == "primary" && n.up);
-    let lagging: Vec<&str> = nodes
-        .iter()
+    let lagging: Vec<&str> = counted()
         .filter(|n| n.up && n.behind_seconds.is_some_and(|s| s > LAG_WARN_SECS))
         .map(|n| n.node_id.as_str())
         .collect();
-    let not_serving: Vec<&str> = nodes
-        .iter()
+    let not_serving: Vec<&str> = counted()
         .filter(|n| n.up && !n.ready)
         .map(|n| n.node_id.as_str())
         .collect();
@@ -1445,6 +1458,35 @@ mod tests {
             qps,
             ..Default::default()
         }
+    }
+
+    /// REQ: OPS-010 — the Cluster page's checks leave nodes in maintenance out: down, behind,
+    /// not serving, another version, or quiet in a site's split.
+    #[test]
+    fn ops_010_cluster_checks_skip_nodes_in_maintenance() {
+        let window = telltale_api::model::NodeMaintenance {
+            until: "2026-10-09T14:00:00Z".into(),
+            reason: "SD card swap".into(),
+            ..Default::default()
+        };
+        let mut primary = pod("home", "pi", 50);
+        primary.role = "primary".into();
+        let mut away = pod("home", "pi2", 0);
+        away.up = false;
+        away.ready = false;
+        away.version = "0.3.1".into();
+        away.behind_seconds = Some(600);
+        let failing = |nodes: &[telltale_api::model::ClusterNode]| -> Vec<String> {
+            let mut checks = health_checks(nodes, false, 7, None, 300);
+            checks.push(versions_check(nodes));
+            checks.push(balance_check(nodes));
+            checks.into_iter().filter(|c| !c.ok).map(|c| c.id).collect()
+        };
+        let nodes = [primary.clone(), away.clone()];
+        assert_eq!(failing(&nodes), ["peers_up", "versions"]);
+        away.maintenance = Some(window);
+        let nodes = [primary, away];
+        assert_eq!(failing(&nodes), Vec::<String>::new());
     }
 
     /// REQ: CLU-008 (T6.14) — shares add up over the nodes that are up; a site's pods are

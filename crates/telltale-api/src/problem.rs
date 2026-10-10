@@ -39,6 +39,14 @@ pub enum Code {
     RateLimited,
     /// The cluster's configuration comes from Git (ADR-048): change it there.
     GitopsManaged,
+    /// REQ: OPS-010 — a maintenance window longer than allowed (a day; two hours for agents).
+    MaintenanceTooLong,
+    /// REQ: OPS-010 — a maintenance request without a usable reason, or shorter than a minute.
+    MaintenanceInvalid,
+    /// REQ: OPS-010 — the node a request is for isn't reachable over the cluster channel.
+    NodeUnreachable,
+    /// REQ: OPS-010 — no cluster node by that ID, site, or pod name.
+    NodeUnknown,
 }
 
 impl Code {
@@ -58,6 +66,10 @@ impl Code {
             Self::VersionConflict => "https://telltaledns.dev/problems/version_conflict",
             Self::InvalidConfig => "https://telltaledns.dev/problems/invalid_config",
             Self::GitopsManaged => "https://telltaledns.dev/problems/gitops_managed",
+            Self::MaintenanceTooLong => "https://telltaledns.dev/problems/maintenance_too_long",
+            Self::MaintenanceInvalid => "https://telltaledns.dev/problems/maintenance_invalid",
+            Self::NodeUnreachable => "https://telltaledns.dev/problems/node_unreachable",
+            Self::NodeUnknown => "https://telltaledns.dev/problems/node_unknown",
         }
     }
 
@@ -77,21 +89,27 @@ impl Code {
             Self::VersionConflict => "Configuration changed",
             Self::InvalidConfig => "Invalid configuration",
             Self::GitopsManaged => "Managed in Git",
+            Self::MaintenanceTooLong => "Maintenance window too long",
+            Self::MaintenanceInvalid => "Invalid maintenance request",
+            Self::NodeUnreachable => "Node unreachable",
+            Self::NodeUnknown => "Unknown node",
         }
     }
 
     const fn status(self) -> StatusCode {
         match self {
             Self::InvalidParameter | Self::UnsupportedScope => StatusCode::BAD_REQUEST,
-            Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::NotFound | Self::NodeUnknown => StatusCode::NOT_FOUND,
+            Self::Unavailable | Self::NodeUnreachable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized | Self::TotpRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::CsrfRejected => StatusCode::FORBIDDEN,
             Self::Conflict | Self::GitopsManaged => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
-            Self::InvalidConfig => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::InvalidConfig | Self::MaintenanceTooLong | Self::MaintenanceInvalid => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
         }
     }
 }
