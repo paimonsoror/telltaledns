@@ -25,6 +25,7 @@ mod gitsource;
 mod health;
 mod host;
 mod http;
+mod identify;
 mod import;
 mod lists;
 mod maintenance;

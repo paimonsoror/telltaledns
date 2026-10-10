@@ -24,6 +24,12 @@
   let groups = $state<S['GroupInfo'][]>([]);
   let newName = $state('');
   let chosen = $state<string[]>([]);
+  // REQ: OBS-025 — what it looks like (pre-fills the name, pre-selects a suggested group) and
+  // what it was set to be ('' = let TelltaleDNS guess).
+  let identity = $state<S['DeviceIdentity'] | null>(null);
+  let kind = $state('');
+  const article = (p: string) => (/^[aeiou]/i.test(p) ? 'an' : 'a');
+  const kinds = ['phone', 'tablet', 'laptop', 'desktop', 'tv', 'streaming', 'speaker', 'console', 'camera', 'doorbell', 'plug', 'bulb', 'thermostat', 'hub', 'vacuum', 'printer', 'nas', 'network', 'appliance', 'wearable', 'car', 'other', 'unknown'];
   let busy = $state(false);
   // The form appears only once its data is in, so a slow load can't wipe what was typed.
   let loading = $state(false);
@@ -52,12 +58,24 @@
     loading = true;
     try {
       // REQ: API-010 (T8.6) — suggest the name the device gave DHCP, the router, or mDNS.
-      const [c, g, leases] = await Promise.all([api.clients(), api.groups(), api.dhcpLeases().catch(() => null)]);
+      const [c, g, leases, id] = await Promise.all([
+        api.clients(),
+        api.groups(),
+        api.dhcpLeases().catch(() => null),
+        api.identity(ip).catch(() => null),
+      ]);
       groups = g.items;
       existing = c.items.find((x) => x.match.includes(ip)) ?? null;
+      identity = id;
       const suggested = leases?.items.find((l) => l.ip === ip)?.hostname;
-      newName = existing?.name ?? name ?? suggested ?? '';
+      // A guess only pre-fills the form (owner, 2026-10-09): it never becomes a name by itself.
+      const guess = id?.available && id.level !== 'unknown' ? (id.product ?? undefined) : undefined;
+      newName = existing?.name ?? name ?? suggested ?? guess ?? '';
       chosen = existing ? [...existing.groups] : ['default'];
+      if (mode === 'groups' && id?.suggestedGroup && !chosen.includes(id.suggestedGroup)) {
+        chosen = [id.suggestedGroup, ...chosen.filter((x) => x !== 'default')];
+      }
+      kind = existing?.kind ?? '';
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -96,6 +114,7 @@
         name: n,
         match: existing ? existing.match : [ip],
         groups: chosen.length ? chosen : ['default'],
+        kind: kind || undefined,
       });
       done =
         r.recentQueries > 0
@@ -153,6 +172,19 @@
           <input name="device-name" bind:value={newName} placeholder="Living room TV" maxlength="64" required />
         </label>
         <HelpButton id="device-name" />
+        {#if identity?.available && identity.level !== 'unknown' && identity.product && identity.source !== 'override'}
+          <p class="muted small" data-testid="identity-suggestion">
+            Looks like {article(identity.product)} {identity.product} ({identity.level}).
+            {#if identity.suggestedGroup}The {identity.suggestedGroup} group asks for this kind of device.{/if}
+          </p>
+        {/if}
+        <label>
+          What it is
+          <select bind:value={kind} aria-label="What it is">
+            <option value="">Let TelltaleDNS guess</option>
+            {#each kinds as k (k)}<option value={k}>{k === 'unknown' ? 'unknown (stop guessing)' : k}</option>{/each}
+          </select>
+        </label>
         <fieldset>
           <legend>Groups <span class="muted small">(first one's settings apply)</span><HelpButton id="device-groups" /></legend>
           {#each groups as g (g.name)}

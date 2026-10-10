@@ -537,6 +537,16 @@
       "docs": "trying-a-change-against-yesterdays-traffic"
     },
     {
+      "id": "identify",
+      "title": "What is this device?",
+      "term": "Device identification",
+      "summary": "A guess at what each address is, from three things TelltaleDNS already sees: the maker of its network card (the MAC address's registered vendor), the name it announces (to your router or over mDNS), and the domains it talks to. They're scored against a catalog of common home devices that ships with TelltaleDNS: \"Looks like a Roku player (likely)\". Likely and possibly say how sure; unknown shows the maker alone.",
+      "when": "A new address shows up and you want to name it, or put it in the right group: the guess fills in the naming form, and a group that asks for that kind of device (device_classes) is suggested.",
+      "example": "192.168.2.77 talks to ring.com and has a Ring MAC address: \"Looks like a Ring camera or doorbell (likely)\", and the IOT group, which asks for cameras, is suggested. Nothing moves until you add it.",
+      "caution": "It's a guess: it never names a device, moves it, or changes how its queries are answered. Phones use private Wi-Fi addresses, so their maker is unknown; behind a router or proxy that hides addresses, many devices look like one. Wrong? Name the device and set \"What it is\" ([[client]] kind), which wins. Off at query-log privacy level 1 and above.",
+      "docs": "what-is-this-device"
+    },
+    {
       "id": "slo",
       "title": "Service level",
       "term": "Service-level objectives (SLOs) and error budgets",

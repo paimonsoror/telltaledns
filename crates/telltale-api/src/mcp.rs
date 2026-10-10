@@ -238,6 +238,23 @@ pub fn tools() -> Vec<Tool> {
                 Ok(vec![("devices".into(), "/api/v1/clients".into())])
             },
         },
+        // REQ: OBS-025 (T13.3)
+        Tool {
+            name: "identify_device",
+            description: "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's IP, or its name."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                Ok(vec![(
+                    "identity".into(),
+                    format!("/api/v1/clients/{}/identity", enc(&c)),
+                )])
+            },
+        },
         Tool {
             name: "latency_breakdown",
             description: "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes.",
@@ -624,6 +641,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                 "client": {"type": "string", "description": "The device's name (new or existing), or an IP."},
                 "groups": {"type": "array", "items": {"type": "string"}, "description": "Its groups, highest priority first."},
                 "match": {"type": "array", "items": {"type": "string"}, "description": "How to recognize it (default: what it has now, or the IP given as client)."},
+                "kind": {"type": "string", "description": "What kind of device it is (camera, tv, streaming, plug, ... or unknown to stop guessing): wins over identify_device's guess."},
                 "reason": reason_schema()
             }, "required": ["client", "groups", "reason"], "additionalProperties": false})
             },
@@ -635,7 +653,10 @@ pub fn write_tools() -> Vec<WriteTool> {
                 if groups.is_empty() {
                     return Err("`groups` is required (at least one)".into());
                 }
-                let body = pick(a, &[("groups", "groups"), ("match", "match")]);
+                let body = pick(
+                    a,
+                    &[("groups", "groups"), ("match", "match"), ("kind", "kind")],
+                );
                 Ok(Write {
                     method: "PUT",
                     path: format!("/api/v1/clients/{}", enc(&client)),
@@ -2128,6 +2149,18 @@ impl Mcp {
                     })
             };
             out.insert("device".into(), found.unwrap_or(Value::Null));
+            // REQ: OBS-025 — what it looks like.
+            let (ok, body) = self
+                .get(
+                    &format!("/api/v1/clients/{}/identity", enc(&c)),
+                    auth,
+                    client,
+                )
+                .await;
+            out.insert(
+                "identity".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
             if let Some(ip) = ip {
                 let from = s(&args, "window").unwrap_or_else(|| "-24h".into());
                 for (key, extra) in [

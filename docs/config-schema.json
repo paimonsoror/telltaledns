@@ -194,6 +194,15 @@
         "$ref": "#/$defs/GroupConfig"
       }
     },
+    "identify": {
+      "description": "REQ: OBS-025 (T13.3) — what kind of device each address is, guessed from its MAC\nvendor, the names it announces, and the domains it talks to.",
+      "$ref": "#/$defs/IdentifyConfig",
+      "default": {
+        "enabled": true,
+        "max_clients": 1024,
+        "signatures_file": ""
+      }
+    },
     "list": {
       "description": "Filter lists: blocklists and allowlists from URLs, files, or inline rules (`spec/05`).",
       "type": "array",
@@ -1051,6 +1060,17 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
           }
         },
+        "kind": {
+          "description": "REQ: OBS-025 (T13.3) — what kind of device it is (`camera`, `tv`, ...), which wins\nover any guess; `unknown` stops the guessing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeviceClass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "match": {
           "description": "How to recognize it: an IP (`192.168.1.20`), a CIDR (`10.0.5.0/24`), a MAC\n(`aa:bb:cc:dd:ee:ff`), or a client ID from DoH/DoT (`id:kids-tablet`).",
           "type": "array",
@@ -1232,6 +1252,43 @@
       "additionalProperties": false,
       "required": [
         "advertise"
+      ]
+    },
+    "DeviceClass": {
+      "description": "REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed\nlist, so metrics stay small).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "phone",
+            "tablet",
+            "laptop",
+            "desktop",
+            "tv",
+            "streaming",
+            "speaker",
+            "console",
+            "camera",
+            "doorbell",
+            "plug",
+            "bulb",
+            "thermostat",
+            "hub",
+            "vacuum",
+            "printer",
+            "nas",
+            "network",
+            "appliance",
+            "wearable",
+            "car",
+            "other"
+          ]
+        },
+        {
+          "description": "Unknown, or (as a device's `kind`) \"stop guessing\".",
+          "type": "string",
+          "const": "unknown"
+        }
       ]
     },
     "DnsConfig": {
@@ -1728,6 +1785,13 @@
           ],
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "device_classes": {
+          "description": "REQ: OBS-025 (T13.3) — kinds of device that belong in this group (`camera`, `plug`,\n...): a device identified as one of them, and not in this group yet, gets this group\nsuggested. Nothing moves on its own. A kind can be claimed by one group only.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeviceClass"
+          }
+        },
         "dns64": {
           "description": "REQ: DNS-016 (T7.21) — DNS64 (RFC 6147): IPv6-only devices behind NAT64 get AAAA\nanswers made from A records when a name has no AAAA.",
           "type": "boolean"
@@ -1856,6 +1920,31 @@
           "const": "auto"
         }
       ]
+    },
+    "IdentifyConfig": {
+      "description": "REQ: OBS-025 (T13.3, ADR-117) — device identification. Shared by the whole cluster.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Off: no guesses (devices you named keep their names; `kind` still shows).",
+          "type": "boolean",
+          "default": true
+        },
+        "max_clients": {
+          "description": "Most devices one node identifies (the most recently seen, over the last day).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1024,
+          "minimum": 0
+        },
+        "signatures_file": {
+          "description": "More signatures, in the shape of the shipped catalog (`[[device]]` tables). One with a\nshipped `id` replaces it; `enabled = false` on it removes it.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
     },
     "ListKind": {
       "description": "Whether a list's rules block or allow (`spec/05` §1). Exception rules (@@) allow regardless.",

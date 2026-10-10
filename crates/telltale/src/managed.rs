@@ -415,6 +415,7 @@ mod tests {
                 .iter()
                 .map(|g| SafeString::new(*g).unwrap())
                 .collect(),
+            kind: None,
         }
     }
 

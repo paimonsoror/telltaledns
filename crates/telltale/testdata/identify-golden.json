@@ -1,0 +1,224 @@
+[
+  {
+    "device": "roku",
+    "guess": {
+      "product_id": "roku-player",
+      "product": "Roku player",
+      "class": "streaming",
+      "level": "likely",
+      "score": 0.7552632,
+      "vendor": "Roku",
+      "mac_prefix": "D0:4D:2C",
+      "domains": [
+        [
+          "roku.com",
+          1.0
+        ],
+        [
+          "rokutime.com",
+          0.6
+        ]
+      ],
+      "matched_name": null,
+      "runner_up": null
+    }
+  },
+  {
+    "device": "apple-tv",
+    "guess": {
+      "product_id": "apple-appletv",
+      "product": "Apple TV",
+      "class": "streaming",
+      "level": "likely",
+      "score": 1.0,
+      "vendor": "Apple",
+      "mac_prefix": "F0:EE:7A",
+      "domains": [
+        [
+          "apple.com",
+          0.4
+        ],
+        [
+          "icloud.com",
+          0.3
+        ],
+        [
+          "mzstatic.com",
+          0.3
+        ]
+      ],
+      "matched_name": "Apple-TV",
+      "runner_up": null
+    }
+  },
+  {
+    "device": "ring-camera",
+    "guess": {
+      "product_id": "ring-camera",
+      "product": "Ring camera or doorbell",
+      "class": "camera",
+      "level": "likely",
+      "score": 0.75,
+      "vendor": "Ring",
+      "mac_prefix": "54:E0:19",
+      "domains": [
+        [
+          "ring.com",
+          1.0
+        ]
+      ],
+      "matched_name": null,
+      "runner_up": null
+    }
+  },
+  {
+    "device": "sonos",
+    "guess": {
+      "product_id": "sonos-speaker",
+      "product": "Sonos speaker",
+      "class": "speaker",
+      "level": "likely",
+      "score": 1.0,
+      "vendor": "Sonos",
+      "mac_prefix": "78:28:CA",
+      "domains": [
+        [
+          "sonos.com",
+          1.0
+        ]
+      ],
+      "matched_name": "Sonos-Kitchen",
+      "runner_up": null
+    }
+  },
+  {
+    "device": "kasa-plug",
+    "guess": {
+      "product_id": "kasa-plug",
+      "product": "TP-Link Kasa plug or switch",
+      "class": "plug",
+      "level": "likely",
+      "score": 0.8615385,
+      "vendor": "TP-LINK",
+      "mac_prefix": "34:F7:16",
+      "domains": [
+        [
+          "tplinkcloud.com",
+          1.0
+        ]
+      ],
+      "matched_name": "HS103",
+      "runner_up": null
+    }
+  },
+  {
+    "device": "iphone",
+    "guess": {
+      "product_id": "apple-iphone",
+      "product": "iPhone",
+      "class": "phone",
+      "level": "likely",
+      "score": 0.75,
+      "vendor": null,
+      "mac_prefix": null,
+      "domains": [
+        [
+          "apple.com",
+          0.4
+        ],
+        [
+          "icloud.com",
+          0.3
+        ],
+        [
+          "mzstatic.com",
+          0.3
+        ]
+      ],
+      "matched_name": "Pauls-iPhone",
+      "runner_up": null
+    }
+  },
+  {
+    "device": "windows-laptop",
+    "guess": {
+      "product_id": "windows-pc",
+      "product": "Windows PC",
+      "class": "laptop",
+      "level": "likely",
+      "score": 0.69000006,
+      "vendor": "Intel Corporate",
+      "mac_prefix": "E4:C7:67",
+      "domains": [
+        [
+          "microsoft.com",
+          0.2
+        ],
+        [
+          "msftconnecttest.com",
+          0.4
+        ],
+        [
+          "windowsupdate.com",
+          0.3
+        ]
+      ],
+      "matched_name": "DESKTOP-4F2K9Q1",
+      "runner_up": null
+    }
+  },
+  {
+    "device": "unknown-espressif",
+    "guess": {
+      "product_id": null,
+      "product": null,
+      "class": "unknown",
+      "level": "unknown",
+      "score": 0.0,
+      "vendor": "Espressif",
+      "mac_prefix": "D4:8A:FC",
+      "domains": [],
+      "matched_name": null,
+      "runner_up": null
+    }
+  },
+  {
+    "device": "roku-no-mac",
+    "guess": {
+      "product_id": "roku-player",
+      "product": "Roku player",
+      "class": "streaming",
+      "level": "possibly",
+      "score": 0.5052632,
+      "vendor": null,
+      "mac_prefix": null,
+      "domains": [
+        [
+          "roku.com",
+          1.0
+        ],
+        [
+          "rokutime.com",
+          0.6
+        ]
+      ],
+      "matched_name": null,
+      "runner_up": null
+    }
+  },
+  {
+    "device": "roku-no-domains",
+    "guess": {
+      "product_id": null,
+      "product": null,
+      "class": "unknown",
+      "level": "unknown",
+      "score": 0.25,
+      "vendor": "Roku",
+      "mac_prefix": "D0:4D:2C",
+      "domains": [],
+      "matched_name": null,
+      "runner_up": null
+    }
+  }
+]

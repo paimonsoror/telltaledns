@@ -1436,6 +1436,42 @@ test('obs_024 simulate a quick rule, and the simulation settings', async () => {
   await expect(row).toContainText('config file');
 });
 
+// REQ: OBS-025 (T13.3) — a "device" (its own loopback address) that asks Roku's names shows
+// as a Roku player on Clients, with the evidence, and the naming form suggests the name.
+test('obs_025 a device that talks to roku.com looks like a Roku player', async () => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const roku = '127.0.0.77';
+  // Their upstream is unreachable in this test: the answers don't matter, the questions do.
+  await Promise.all(
+    ['api.roku.com', 'time.rokutime.com', 'ads.ravm.tv', 'scribe.roku.com'].map((n) => query(n, 1, 15354, roku).catch(() => -1)),
+  );
+  // Identities refresh when asked for and over 15 s old (the first right away).
+  await page.goto('/#/clients');
+  const row = page.getByRole('row').filter({ hasText: roku });
+  await expect
+    .poll(
+      async () => {
+        await page.reload();
+        const line = await row.getByTestId('identity-line').first().innerText({ timeout: 1_000 }).catch(() => '');
+        // On failure, the API's answer shows what went wrong.
+        const api = await (await page.request.get(`/api/v1/clients/${roku}/identity`)).text();
+        return `${line} | ${api}`;
+      },
+      { timeout: 90_000, intervals: [2_000] },
+    )
+    .toContain('Looks like a Roku player');
+  await row.getByTestId('identity-line').first().getByRole('button', { name: 'Why?' }).click();
+  await expect(row).toContainText('roku.com');
+  await row.getByRole('button', { name: roku }).first().click();
+  await page.getByRole('menuitem', { name: 'Name this device…' }).click();
+  await expect(page.getByRole('textbox', { name: 'device-name' }).or(page.locator('input[name="device-name"]'))).toHaveValue(
+    'Roku player',
+  );
+  await expect(page.getByTestId('identity-suggestion')).toContainText('Roku player');
+  await page.keyboard.press('Escape');
+});
+
 // REQ: OBS-018 — a list in shadow mode never blocks: its name is answered (by the stub
 // upstream) and counted under "Would have blocked"; the list carries a shadow badge.
 // Last, because it caches a name (the cache test counts what's cached).

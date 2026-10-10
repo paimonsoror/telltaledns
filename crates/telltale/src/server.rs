@@ -903,6 +903,9 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         doq: ArcSwap::from_pointee(stats.doq),
         readiness: Arc::clone(&readiness),
         maintenance,
+        identify: Arc::new(crate::identify::Identifier::open(std::path::Path::new(
+            cfg.node.data_dir.as_str(),
+        ))),
         started: std::time::Instant::now(),
         allowed: cfg.access.allowed_networks.clone(),
         lists: ArcSwapOption::empty(),
@@ -942,6 +945,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         traces,
     });
     http::serve_peers(&sources);
+    // REQ: OBS-025 — device identification, on a thread of its own.
+    sources.identify.spawn(Arc::clone(&sources));
     // REQ: OPS-010 — the maintenance window ends by itself.
     crate::maintenance::spawn_expiry(Arc::clone(&sources), http_stopped.clone());
     // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.
@@ -1091,6 +1096,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OPS-007 — not ready first (load balancers stop sending), stop taking new TCP
     // connections, let in-flight upstream lookups finish (bounded), then stop UDP workers.
     readiness.set_stopping();
+    // REQ: OBS-025 — keep the device identities across the restart.
+    sources.identify.save();
     // REQ: CLU-009 — a resolver pod leaves the cluster now rather than showing as down until
     // it expires (2 s at most; if the primary can't be reached, expiry still cleans up).
     // Before the stop signal: it closes the stream to the primary that the leave goes over.

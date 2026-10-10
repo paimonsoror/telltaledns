@@ -63,13 +63,14 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[[record]]` | local records (A, AAAA, CNAME, PTR, TXT, MX, SRV; `*.` wildcards) | `docs/running.md` |
 | `[local]` | hosts files to import, automatic PTRs, default TTL for local records | `docs/running.md` |
 | `[[list]]` | filter lists: a `url`, a local `path`, or inline `rules`; `kind` (`block`/`allow`), `match` (`subtree`/`exact`), `mode` (`enforce`/`shadow`: counted, never blocks), per-list refresh, size limit, and `stale_after_days` | `docs/running.md` |
-| `[[group]]` | client groups: which lists apply, priority, answer filtering, DNS64, `filter_aaaa` (no IPv6 addresses) | `docs/running.md`, FLT-016 |
-| `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`), groups | `docs/running.md` |
+| `[[group]]` | client groups: which lists apply, priority, answer filtering, DNS64, `filter_aaaa` (no IPv6 addresses), `device_classes` (kinds of device suggested for the group) | `docs/running.md`, FLT-016, OBS-025 |
+| `[[client]]` | known devices: name, how to recognize them (IP, CIDR, MAC, `id:`), groups, `kind` (what it is, over any guess) | `docs/running.md`, OBS-025 |
 | `[clients]` | neighbor table on/off and refresh interval; which forwarders' EDNS MAC to trust; `infrastructure` networks for the masked-client-IP check | FLT-006, OPS-003 |
 | `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory; `stale_after_days` (when an unchanged URL list counts as stale) | `spec/05` §3.4, OBS-023 |
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
 | `[exclusions]` | names and devices kept out of the query log, analytics, and exports (still answered and counted in metrics), with an on/off toggle; also in Settings → System | OBS-022 |
+| `[identify]` | device identification: `enabled`, `max_clients` (devices one node identifies, 1 to 65,536), `signatures_file` (more signatures in the catalog's shape); shared across a cluster | OBS-025, `docs/running.md` |
 | `[simulate]` | change simulation over the query log: `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs` (1 to 300), `max_rows` (at least 1,000), `default_window` (at most `7d`); shared across a cluster; also in Settings → System | OBS-024, `docs/running.md` |
 | `[dns]` | the advertised EDNS UDP size; `nsid` (answer RFC 5001 NSID with this node's name) | DNS-005, DNS-021 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |

@@ -844,6 +844,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What each device looks like (OBS-025).
+         * @description One row per device seen in the last day (every node's, in a cluster: the most confident
+         *     guess per device): the product (`Roku player`), its class (`streaming`), how sure
+         *     (`likely` from a score of 0.6, `possibly` from 0.35, else `unknown` with the MAC vendor
+         *     alone), the vendor, and `suggestedGroup` when a group's `device_classes` asks for it. A
+         *     device's `[[client]] kind` wins (`source: override`). Guessed from the MAC vendor, the names
+         *     the device announces, and the domains it talks to; it never changes how a query is
+         *     answered. Empty at query-log privacy level 1 and above, or with `[identify] enabled = false`.
+         */
+        get: operations["identities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/clients/{id}/identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What one device looks like, and why (OBS-025).
+         * @description `id` is the device's address, or a named device's name (its first address). The answer
+         *     carries the evidence: the signature's domains the device talked to and their weights, the
+         *     MAC prefix and vendor, the announced name that matched, every name and domain seen, and a
+         *     runner-up within 0.1 ("could also be …"). `available: false` with `reason`: `disabled`,
+         *     `privacy_level`, or `not_seen` (no queries from it in the last day).
+         */
+        get: operations["identity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients/{name}": {
         parameters: {
             query?: never;
@@ -2623,6 +2673,12 @@ export interface components {
              * @example network
              */
             groupsFrom?: string;
+            identity?: components["schemas"]["DeviceIdentity"] | null;
+            /**
+             * @description REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.
+             * @example camera
+             */
+            kind?: string | null;
             /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
             match: string[];
             name: string;
@@ -2637,6 +2693,12 @@ export interface components {
         ClientInput: {
             /** @description Groups, highest priority first (default `["default"]`). */
             groups?: string[];
+            /**
+             * @description REQ: OBS-025 — what kind of device it is (`camera`, `tv`, `unknown` to stop guessing);
+             *     wins over identification.
+             * @example camera
+             */
+            kind?: string | null;
             /**
              * @description How to recognize it: IPs, CIDRs, MACs (`aa:bb:cc:dd:ee:ff`), or `id:<client-id>`.
              * @example [
@@ -3020,6 +3082,51 @@ export interface components {
             password: string;
             role: components["schemas"]["Role"];
             username: string;
+        };
+        /**
+         * @description REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,
+         *     the names it announces, and the domains it talks to, or what it was set to be.
+         */
+        DeviceIdentity: {
+            /** @description False when identification is off or not allowed (`reason`). */
+            available: boolean;
+            /**
+             * @description `phone`, `tv`, `streaming`, `camera`, ... or `unknown`.
+             * @example streaming
+             */
+            class: string;
+            /** @description The device's address (or client ID), as the query log shows it. */
+            client: string;
+            /** @description When it was worked out (RFC 3339). */
+            computedAt?: string | null;
+            evidence?: components["schemas"]["IdentityEvidence"] | null;
+            /**
+             * @description `likely`, `possibly`, or `unknown`.
+             * @example likely
+             */
+            level: string;
+            /** @description The node that worked it out (in a cluster). */
+            node?: string | null;
+            /** @description The product (`Roku player`), when it's at least `possibly`. */
+            product?: string | null;
+            /** @description The signature's ID (`roku-player`). */
+            productId?: string | null;
+            /** @description `disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day). */
+            reason?: string | null;
+            /**
+             * Format: float
+             * @description 0 to 1.
+             */
+            score: number;
+            /**
+             * @description `inferred`, or `override` (`[[client]] kind`).
+             * @example inferred
+             */
+            source: string;
+            /** @description The group whose `device_classes` lists this class, when the device isn't in it. */
+            suggestedGroup?: string | null;
+            /** @description The MAC's registered vendor. */
+            vendor?: string | null;
         };
         /** @description A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3). */
         DhcpLease: {
@@ -3440,6 +3547,26 @@ export interface components {
          * @enum {string}
          */
         Hour: "current" | "previous";
+        /** @description REQ: OBS-025 — the evidence behind an identity. */
+        IdentityEvidence: {
+            /** @description The signature's domains the device talked to, with their weights. */
+            domains: components["schemas"]["MatchedDomain"][];
+            /** @description The MAC's registry prefix (`D0:4D:2C`). */
+            macPrefix?: string | null;
+            /** @description The announced name that matched the signature. */
+            matchedName?: string | null;
+            /** @description Every name the device announced (DHCP, mDNS). */
+            names: string[];
+            runnerUp?: components["schemas"]["IdentityRunnerUp"] | null;
+            /** @description The registrable domains it talked to (at most 24). */
+            seenDomains: string[];
+        };
+        IdentityRunnerUp: {
+            product: string;
+            productId: string;
+            /** Format: float */
+            score: number;
+        };
         /** @description A list wrapper used by every collection endpoint. */
         Items_AnomalyFinding: {
             items: {
@@ -3571,6 +3698,12 @@ export interface components {
                  * @example network
                  */
                 groupsFrom?: string;
+                identity?: components["schemas"]["DeviceIdentity"] | null;
+                /**
+                 * @description REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.
+                 * @example camera
+                 */
+                kind?: string | null;
                 /** @description IPs, CIDRs, MACs, or `id:<client-id>` this device is recognized by. */
                 match: string[];
                 name: string;
@@ -3600,6 +3733,52 @@ export interface components {
                  *     the files' entry of that name), or `hidden` (the files' entry is left out).
                  */
                 source: string;
+            }[];
+            /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
+            missingNodes?: string[];
+        };
+        /** @description A list wrapper used by every collection endpoint. */
+        Items_DeviceIdentity: {
+            items: {
+                /** @description False when identification is off or not allowed (`reason`). */
+                available: boolean;
+                /**
+                 * @description `phone`, `tv`, `streaming`, `camera`, ... or `unknown`.
+                 * @example streaming
+                 */
+                class: string;
+                /** @description The device's address (or client ID), as the query log shows it. */
+                client: string;
+                /** @description When it was worked out (RFC 3339). */
+                computedAt?: string | null;
+                evidence?: components["schemas"]["IdentityEvidence"] | null;
+                /**
+                 * @description `likely`, `possibly`, or `unknown`.
+                 * @example likely
+                 */
+                level: string;
+                /** @description The node that worked it out (in a cluster). */
+                node?: string | null;
+                /** @description The product (`Roku player`), when it's at least `possibly`. */
+                product?: string | null;
+                /** @description The signature's ID (`roku-player`). */
+                productId?: string | null;
+                /** @description `disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day). */
+                reason?: string | null;
+                /**
+                 * Format: float
+                 * @description 0 to 1.
+                 */
+                score: number;
+                /**
+                 * @description `inferred`, or `override` (`[[client]] kind`).
+                 * @example inferred
+                 */
+                source: string;
+                /** @description The group whose `device_classes` lists this class, when the device isn't in it. */
+                suggestedGroup?: string | null;
+                /** @description The MAC's registered vendor. */
+                vendor?: string | null;
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
@@ -4376,6 +4555,11 @@ export interface components {
             sources: string[];
             /** @description Start of that window (RFC 3339). */
             windowStart: string;
+        };
+        MatchedDomain: {
+            name: string;
+            /** Format: float */
+            weight: number;
         };
         /** @description The signed-in user. */
         Me: {
@@ -6767,6 +6951,58 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_ClientInfo"];
+                };
+            };
+        };
+    };
+    identities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The identities, by device. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Items_DeviceIdentity"];
+                };
+            };
+        };
+    };
+    identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description An address, or a named device's name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The identity and its evidence. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceIdentity"];
+                };
+            };
+            /** @description No named device by that name, and not an address. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

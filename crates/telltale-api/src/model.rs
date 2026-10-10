@@ -775,6 +775,96 @@ pub struct ClientInfo {
     #[serde(default)]
     #[schema(example = "network")]
     pub groups_from: String,
+    /// REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "camera")]
+    pub kind: Option<String>,
+    /// REQ: OBS-025 — what it looks like (the identity of the first of its addresses that was
+    /// seen), without the evidence (`GET /api/v1/clients/{id}/identity` has it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<DeviceIdentity>,
+}
+
+/// REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,
+/// the names it announces, and the domains it talks to, or what it was set to be.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceIdentity {
+    /// The device's address (or client ID), as the query log shows it.
+    pub client: String,
+    /// False when identification is off or not allowed (`reason`).
+    pub available: bool,
+    /// `disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The product (`Roku player`), when it's at least `possibly`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
+    /// The signature's ID (`roku-player`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<String>,
+    /// `phone`, `tv`, `streaming`, `camera`, ... or `unknown`.
+    #[schema(example = "streaming")]
+    pub class: String,
+    /// `likely`, `possibly`, or `unknown`.
+    #[schema(example = "likely")]
+    pub level: String,
+    /// 0 to 1.
+    pub score: f32,
+    /// The MAC's registered vendor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// The group whose `device_classes` lists this class, when the device isn't in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_group: Option<String>,
+    /// `inferred`, or `override` (`[[client]] kind`).
+    #[schema(example = "inferred")]
+    pub source: String,
+    /// When it was worked out (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_at: Option<String>,
+    /// The node that worked it out (in a cluster).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// Why (only from `GET /api/v1/clients/{id}/identity`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<IdentityEvidence>,
+}
+
+/// REQ: OBS-025 — the evidence behind an identity.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityEvidence {
+    /// The signature's domains the device talked to, with their weights.
+    pub domains: Vec<MatchedDomain>,
+    /// The MAC's registry prefix (`D0:4D:2C`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac_prefix: Option<String>,
+    /// The announced name that matched the signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_name: Option<String>,
+    /// Every name the device announced (DHCP, mDNS).
+    pub names: Vec<String>,
+    /// The registrable domains it talked to (at most 24).
+    pub seen_domains: Vec<String>,
+    /// The next best guess, when it's within 0.1: "could also be …".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_up: Option<IdentityRunnerUp>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchedDomain {
+    pub name: String,
+    pub weight: f32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityRunnerUp {
+    pub product: String,
+    pub product_id: String,
+    pub score: f32,
 }
 
 /// A device to create, rename, or change (`PUT /api/v1/clients/{name}`, API-010).
@@ -791,6 +881,11 @@ pub struct ClientInput {
     /// Groups, highest priority first (default `["default"]`).
     #[serde(default)]
     pub groups: Vec<String>,
+    /// REQ: OBS-025 — what kind of device it is (`camera`, `tv`, `unknown` to stop guessing);
+    /// wins over identification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "camera")]
+    pub kind: Option<String>,
 }
 
 /// What a device change did, or would do with `dryRun=true` (AGT-002).

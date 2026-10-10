@@ -1734,6 +1734,71 @@
         }
       }
     },
+    "/api/v1/clients/identities": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "What each device looks like (OBS-025).",
+        "description": "One row per device seen in the last day (every node's, in a cluster: the most confident\nguess per device): the product (`Roku player`), its class (`streaming`), how sure\n(`likely` from a score of 0.6, `possibly` from 0.35, else `unknown` with the MAC vendor\nalone), the vendor, and `suggestedGroup` when a group's `device_classes` asks for it. A\ndevice's `[[client]] kind` wins (`source: override`). Guessed from the MAC vendor, the names\nthe device announces, and the domains it talks to; it never changes how a query is\nanswered. Empty at query-log privacy level 1 and above, or with `[identify] enabled = false`.",
+        "operationId": "identities",
+        "responses": {
+          "200": {
+            "description": "The identities, by device.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Items_DeviceIdentity"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/clients/{id}/identity": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "What one device looks like, and why (OBS-025).",
+        "description": "`id` is the device's address, or a named device's name (its first address). The answer\ncarries the evidence: the signature's domains the device talked to and their weights, the\nMAC prefix and vendor, the announced name that matched, every name and domain seen, and a\nrunner-up within 0.1 (\"could also be …\"). `available: false` with `reason`: `disabled`,\n`privacy_level`, or `not_seen` (no queries from it in the last day).",
+        "operationId": "identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "An address, or a named device's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The identity and its evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceIdentity"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No named device by that name, and not an address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{name}": {
       "put": {
         "tags": [
@@ -7032,6 +7097,25 @@
             "description": "Where `effectiveGroups` comes from: `device`, `network`, or `default`.",
             "example": "network"
           },
+          "identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceIdentity",
+                "description": "REQ: OBS-025 — what it looks like (the identity of the first of its addresses that was\nseen), without the evidence (`GET /api/v1/clients/{id}/identity` has it)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.",
+            "example": "camera"
+          },
           "match": {
             "type": "array",
             "items": {
@@ -7062,6 +7146,14 @@
               "type": "string"
             },
             "description": "Groups, highest priority first (default `[\"default\"]`)."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-025 — what kind of device it is (`camera`, `tv`, `unknown` to stop guessing);\nwins over identification.",
+            "example": "camera"
           },
           "match": {
             "type": "array",
@@ -8002,6 +8094,108 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "DeviceIdentity": {
+        "type": "object",
+        "description": "REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,\nthe names it announces, and the domains it talks to, or what it was set to be.",
+        "required": [
+          "client",
+          "available",
+          "class",
+          "level",
+          "score",
+          "source"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "False when identification is off or not allowed (`reason`)."
+          },
+          "class": {
+            "type": "string",
+            "description": "`phone`, `tv`, `streaming`, `camera`, ... or `unknown`.",
+            "example": "streaming"
+          },
+          "client": {
+            "type": "string",
+            "description": "The device's address (or client ID), as the query log shows it."
+          },
+          "computedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was worked out (RFC 3339)."
+          },
+          "evidence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IdentityEvidence",
+                "description": "Why (only from `GET /api/v1/clients/{id}/identity`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level": {
+            "type": "string",
+            "description": "`likely`, `possibly`, or `unknown`.",
+            "example": "likely"
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that worked it out (in a cluster)."
+          },
+          "product": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The product (`Roku player`), when it's at least `possibly`."
+          },
+          "productId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The signature's ID (`roku-player`)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day)."
+          },
+          "score": {
+            "type": "number",
+            "format": "float",
+            "description": "0 to 1."
+          },
+          "source": {
+            "type": "string",
+            "description": "`inferred`, or `override` (`[[client]] kind`).",
+            "example": "inferred"
+          },
+          "suggestedGroup": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The group whose `device_classes` lists this class, when the device isn't in it."
+          },
+          "vendor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MAC's registered vendor."
           }
         }
       },
@@ -9053,6 +9247,83 @@
           "previous"
         ]
       },
+      "IdentityEvidence": {
+        "type": "object",
+        "description": "REQ: OBS-025 — the evidence behind an identity.",
+        "required": [
+          "domains",
+          "names",
+          "seenDomains"
+        ],
+        "properties": {
+          "domains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MatchedDomain"
+            },
+            "description": "The signature's domains the device talked to, with their weights."
+          },
+          "macPrefix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The MAC's registry prefix (`D0:4D:2C`)."
+          },
+          "matchedName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The announced name that matched the signature."
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every name the device announced (DHCP, mDNS)."
+          },
+          "runnerUp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IdentityRunnerUp",
+                "description": "The next best guess, when it's within 0.1: \"could also be …\"."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seenDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The registrable domains it talked to (at most 24)."
+          }
+        }
+      },
+      "IdentityRunnerUp": {
+        "type": "object",
+        "required": [
+          "product",
+          "productId",
+          "score"
+        ],
+        "properties": {
+          "product": {
+            "type": "string"
+          },
+          "productId": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
       "Items_AnomalyFinding": {
         "type": "object",
         "description": "A list wrapper used by every collection endpoint.",
@@ -9442,6 +9713,25 @@
                   "description": "Where `effectiveGroups` comes from: `device`, `network`, or `default`.",
                   "example": "network"
                 },
+                "identity": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/DeviceIdentity",
+                      "description": "REQ: OBS-025 — what it looks like (the identity of the first of its addresses that was\nseen), without the evidence (`GET /api/v1/clients/{id}/identity` has it)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: OBS-025 — what kind of device it is, as set (`[[client]] kind`), if set.",
+                  "example": "camera"
+                },
                 "match": {
                   "type": "array",
                   "items": {
@@ -9504,6 +9794,127 @@
                 "source": {
                   "type": "string",
                   "description": "`file` (the config files), `added` (made through the UI or API), `override` (replaces\nthe files' entry of that name), or `hidden` (the files' entry is left out)."
+                }
+              }
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "Items_DeviceIdentity": {
+        "type": "object",
+        "description": "A list wrapper used by every collection endpoint.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: OBS-025 (T13.3, ADR-117) — what a device looks like: a guess from its MAC vendor,\nthe names it announces, and the domains it talks to, or what it was set to be.",
+              "required": [
+                "client",
+                "available",
+                "class",
+                "level",
+                "score",
+                "source"
+              ],
+              "properties": {
+                "available": {
+                  "type": "boolean",
+                  "description": "False when identification is off or not allowed (`reason`)."
+                },
+                "class": {
+                  "type": "string",
+                  "description": "`phone`, `tv`, `streaming`, `camera`, ... or `unknown`.",
+                  "example": "streaming"
+                },
+                "client": {
+                  "type": "string",
+                  "description": "The device's address (or client ID), as the query log shows it."
+                },
+                "computedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "When it was worked out (RFC 3339)."
+                },
+                "evidence": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/IdentityEvidence",
+                      "description": "Why (only from `GET /api/v1/clients/{id}/identity`)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "level": {
+                  "type": "string",
+                  "description": "`likely`, `possibly`, or `unknown`.",
+                  "example": "likely"
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node that worked it out (in a cluster)."
+                },
+                "product": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The product (`Roku player`), when it's at least `possibly`."
+                },
+                "productId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The signature's ID (`roku-player`)."
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`disabled`, `privacy_level`, or `not_seen` (no queries from it in the last day)."
+                },
+                "score": {
+                  "type": "number",
+                  "format": "float",
+                  "description": "0 to 1."
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`inferred`, or `override` (`[[client]] kind`).",
+                  "example": "inferred"
+                },
+                "suggestedGroup": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The group whose `device_classes` lists this class, when the device isn't in it."
+                },
+                "vendor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The MAC's registered vendor."
                 }
               }
             }
@@ -11537,6 +11948,22 @@
           "windowStart": {
             "type": "string",
             "description": "Start of that window (RFC 3339)."
+          }
+        }
+      },
+      "MatchedDomain": {
+        "type": "object",
+        "required": [
+          "name",
+          "weight"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number",
+            "format": "float"
           }
         }
       },

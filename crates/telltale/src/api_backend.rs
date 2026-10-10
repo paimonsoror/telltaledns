@@ -1198,6 +1198,14 @@ impl Backend for ApiBackend {
         let managed = managed_names(&self.src);
         let state = self.src.pipeline.current();
         let clients = &state.policy.clients;
+        // REQ: OBS-025 — what each named device looks like (its first address seen).
+        let identities: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> =
+            self.src
+                .identify
+                .list()
+                .into_iter()
+                .map(|i| (i.client.clone(), i))
+                .collect();
         self.src
             .config
             .load()
@@ -1209,9 +1217,43 @@ impl Backend for ApiBackend {
                 let (effective, from) = effective_groups(clients, c);
                 info.effective_groups = effective;
                 from.clone_into(&mut info.groups_from);
+                info.identity = device_addresses(c)
+                    .into_iter()
+                    .find_map(|a| identities.get(&a).cloned());
                 info
             })
             .collect()
+    }
+
+    // REQ: OBS-025 (T13.3)
+    fn identities(&self) -> Vec<telltale_api::model::DeviceIdentity> {
+        self.src.identify.list()
+    }
+
+    fn identity(&self, client: &str) -> Result<telltale_api::model::DeviceIdentity, Problem> {
+        if client.parse::<IpAddr>().is_ok() {
+            return Ok(self.src.identify.get(client));
+        }
+        let cfg = self.src.config.load();
+        let c = cfg
+            .client
+            .iter()
+            .find(|c| c.name.as_str().eq_ignore_ascii_case(client))
+            .ok_or_else(|| {
+                Problem::not_found(format!(
+                    "`{client}` is neither an address nor a named device"
+                ))
+                .hint("Give a device's IP address, or the name it has on the Clients page.")
+            })?;
+        let snap = self.src.identify.snapshot();
+        let addrs = device_addresses(c);
+        let addr = addrs
+            .iter()
+            .find(|a| snap.by_client.contains_key(*a))
+            .or(addrs.first())
+            .cloned()
+            .unwrap_or_else(|| client.to_owned());
+        Ok(self.src.identify.get(&addr))
     }
 
     fn config_version(&self) -> u64 {
@@ -1227,6 +1269,8 @@ impl Backend for ApiBackend {
         let Some(a) = &self.src.anomalies else {
             return Vec::new();
         };
+        // REQ: OBS-025 — findings say what the device looks like, when that's known.
+        let snap = self.src.identify.snapshot();
         let mut items: Vec<telltale_api::model::AnomalyFinding> = a
             .findings()
             .into_iter()
@@ -1234,6 +1278,14 @@ impl Backend for ApiBackend {
             .map(|f| {
                 let client = telltale_telemetry::agg::client_text(f.client);
                 let kind = f.kind.label();
+                let detail = match snap
+                    .by_client
+                    .get(&client)
+                    .and_then(crate::identify::looks_like)
+                {
+                    Some(l) => format!("{} The device {l}.", f.detail),
+                    None => f.detail,
+                };
                 telltale_api::model::AnomalyFinding {
                     // REQ: OBS-014 — the same ID on every node that finds it.
                     id: telltale_api::model::anomaly_id(
@@ -1253,7 +1305,7 @@ impl Backend for ApiBackend {
                     baseline: f.baseline,
                     spread: f.spread,
                     threshold: f.threshold,
-                    detail: f.detail,
+                    detail,
                     nodes: Vec::new(),
                     acknowledged: None,
                 }
@@ -2370,7 +2422,32 @@ fn client_info(c: &telltale_config::ClientConfig, managed: &[String]) -> ClientI
         },
         effective_groups: c.groups.iter().map(ToString::to_string).collect(),
         groups_from: "device".to_owned(),
+        kind: c.kind.map(|k| k.as_str().to_owned()),
+        identity: None,
     }
+}
+
+/// REQ: OBS-025 — the single addresses a named device is matched by, as the query log shows
+/// them (`192.168.1.20`, `10.0.0.5/32`; not networks, MACs, or client IDs).
+fn device_addresses(c: &telltale_config::ClientConfig) -> Vec<String> {
+    c.match_keys
+        .iter()
+        .filter_map(|k| {
+            let k = k.as_str().trim();
+            let k = k
+                .strip_suffix("/32")
+                .or_else(|| k.strip_suffix("/128"))
+                .unwrap_or(k);
+            k.parse::<IpAddr>().ok()
+        })
+        .map(|ip| {
+            let o = match ip {
+                IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+                IpAddr::V6(v6) => v6.octets(),
+            };
+            telltale_telemetry::agg::client_text(o)
+        })
+        .collect()
 }
 
 /// The groups that apply to a configured device and where they come from (ADR-050): its
@@ -2535,8 +2612,8 @@ fn plan_client(
             } else {
                 input.groups.clone()
             };
-            let json =
-                serde_json::json!({ "name": name, "match": input.matches, "groups": groups });
+            // REQ: OBS-025 — `kind` overrides identification (a class name, or `unknown`).
+            let json = serde_json::json!({ "name": name, "match": input.matches, "groups": groups, "kind": input.kind });
             let c: telltale_config::ClientConfig = serde_json::from_value(json)
                 .map_err(|e| Problem::new(Code::InvalidConfig, format!("device: {e}")))?;
             Some(c)

@@ -1051,9 +1051,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["openapi"], "3.1.0");
     let paths = v["paths"].as_object().unwrap();
-    // 84 with OPS-010's /nodes/{id}/maintenance and OBS-024's /simulate and
-    // /simulate-settings/default.
-    assert_eq!(paths.len(), 84);
+    // 86 with OPS-010's /nodes/{id}/maintenance, OBS-024's /simulate and
+    // /simulate-settings/default, and OBS-025's /clients/identities and /clients/{id}/identity.
+    assert_eq!(paths.len(), 86);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -1842,6 +1842,23 @@ async fn obs_024_simulation_requests_over_http() {
     let both = agent("querylog:read,config:read", None).await;
     let (s, _, v) = send(&app, sim(&both)).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "no reason needed: {v}");
+}
+
+// REQ: OBS-025 — the identity routes answer (this backend identifies nothing).
+#[tokio::test]
+async fn obs_025_identity_routes() {
+    let (app, _) = app();
+    let get = |path: &str| {
+        Request::get(path)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, get("/api/v1/clients/identities")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"], serde_json::json!([]));
+    let (s, _, v) = send(&app, get("/api/v1/clients/192.168.1.20/identity")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }
 
 // REQ: OBS-024 — `simulate` and `simulateUntil` as the backend takes them.

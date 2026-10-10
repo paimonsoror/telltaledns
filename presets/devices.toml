@@ -1,0 +1,542 @@
+# TelltaleDNS device signatures (REQ: OBS-025, ADR-117).
+#
+# Clean room: written from vendors' public documentation (firewall allowlists, support pages)
+# and our own observations; no fingerprint database from another project is used. Each
+# signature says what a kind of device looks like to a DNS server:
+#   vendors            words matched against the MAC vendor (whole words, any case)
+#   vendor_required    the vendor must match for the signature to count at all
+#   hostname_patterns  globs (* and ?) matched against the names it announces (DHCP, mDNS)
+#   domains            registrable domains it talks to, with weights relative to each other
+# Score = 0.60 x matched domain weight / total + 0.25 x vendor + 0.15 x name; a known vendor
+# that doesn't match halves it. `likely` from 0.60, `possibly` from 0.35.
+# Classes: phone tablet laptop desktop tv streaming speaker console camera doorbell plug bulb
+# thermostat hub vacuum printer nas network appliance wearable car other.
+# Add or replace signatures locally with `[identify] signatures_file` (same shape).
+
+# --- Apple: the domains are shared; the name a device announces tells them apart.
+[[device]]
+id = "apple-appletv"
+name = "Apple TV"
+class = "streaming"
+vendors = ["Apple"]
+hostname_patterns = ["*Apple-TV*", "AppleTV*", "*Apple TV*"]
+domains = [
+  { name = "apple.com", weight = 0.4 },
+  { name = "icloud.com", weight = 0.3 },
+  { name = "mzstatic.com", weight = 0.3 },
+]
+
+[[device]]
+id = "apple-homepod"
+name = "HomePod"
+class = "speaker"
+vendors = ["Apple"]
+hostname_patterns = ["*HomePod*"]
+domains = [
+  { name = "apple.com", weight = 0.4 },
+  { name = "icloud.com", weight = 0.3 },
+  { name = "mzstatic.com", weight = 0.3 },
+]
+
+[[device]]
+id = "apple-ipad"
+name = "iPad"
+class = "tablet"
+vendors = ["Apple"]
+hostname_patterns = ["*iPad*"]
+domains = [
+  { name = "apple.com", weight = 0.4 },
+  { name = "icloud.com", weight = 0.3 },
+  { name = "mzstatic.com", weight = 0.3 },
+]
+
+[[device]]
+id = "apple-iphone"
+name = "iPhone"
+class = "phone"
+vendors = ["Apple"]
+hostname_patterns = ["*iPhone*"]
+domains = [
+  { name = "apple.com", weight = 0.4 },
+  { name = "icloud.com", weight = 0.3 },
+  { name = "mzstatic.com", weight = 0.3 },
+]
+
+[[device]]
+id = "apple-mac"
+name = "Mac"
+class = "laptop"
+vendors = ["Apple"]
+hostname_patterns = ["*MacBook*", "*iMac*", "*Mac-mini*", "*Mac-Studio*"]
+domains = [
+  { name = "apple.com", weight = 0.4 },
+  { name = "icloud.com", weight = 0.3 },
+  { name = "mzstatic.com", weight = 0.3 },
+]
+
+[[device]]
+id = "apple-watch"
+name = "Apple Watch"
+class = "wearable"
+vendors = ["Apple"]
+hostname_patterns = ["*Apple-Watch*", "*Watch"]
+domains = [
+  { name = "apple.com", weight = 0.4 },
+  { name = "icloud.com", weight = 0.3 },
+  { name = "mzstatic.com", weight = 0.3 },
+]
+
+# --- Google
+[[device]]
+id = "google-chromecast"
+name = "Chromecast"
+class = "streaming"
+vendors = ["Google"]
+hostname_patterns = ["Chromecast*", "*Google-TV*"]
+domains = [
+  { name = "googlevideo.com", weight = 0.4 },
+  { name = "gstatic.com", weight = 0.3 },
+  { name = "googleapis.com", weight = 0.3 },
+]
+
+[[device]]
+id = "google-nest-cam"
+name = "Nest camera"
+class = "camera"
+vendors = ["Nest Labs", "Google"]
+hostname_patterns = ["Nest-Cam*", "*Nest-Doorbell*"]
+domains = [
+  { name = "dropcam.com", weight = 0.6 },
+  { name = "nest.com", weight = 0.4 },
+]
+
+[[device]]
+id = "google-nest-hub"
+name = "Google Nest Hub or speaker"
+class = "speaker"
+vendors = ["Google"]
+hostname_patterns = ["*Nest-Hub*", "*Nest-Mini*", "*Google-Home*", "*Nest-Audio*"]
+domains = [
+  { name = "gstatic.com", weight = 0.3 },
+  { name = "googleapis.com", weight = 0.3 },
+  { name = "google.com", weight = 0.2 },
+  { name = "nest.com", weight = 0.2 },
+]
+
+[[device]]
+id = "google-nest-thermostat"
+name = "Nest thermostat"
+class = "thermostat"
+vendors = ["Nest Labs", "Google"]
+hostname_patterns = ["*Nest*Thermostat*", "*Thermostat*"]
+domains = [
+  { name = "nest.com", weight = 0.8 },
+  { name = "google.com", weight = 0.2 },
+]
+
+[[device]]
+id = "google-pixel"
+name = "Pixel phone"
+class = "phone"
+vendors = ["Google"]
+vendor_required = true
+hostname_patterns = ["Pixel*", "*-Pixel*"]
+domains = [
+  { name = "android.com", weight = 0.4 },
+  { name = "gstatic.com", weight = 0.2 },
+  { name = "googleapis.com", weight = 0.2 },
+  { name = "3gppnetwork.org", weight = 0.2 },
+]
+
+[[device]]
+id = "android-phone"
+name = "Android phone"
+class = "phone"
+hostname_patterns = ["android-*", "Android*", "Galaxy-*", "*Galaxy*"]
+domains = [
+  { name = "android.com", weight = 0.4 },
+  { name = "gstatic.com", weight = 0.2 },
+  { name = "googleapis.com", weight = 0.2 },
+  { name = "3gppnetwork.org", weight = 0.2 },
+]
+
+# --- Amazon
+[[device]]
+id = "amazon-echo"
+name = "Amazon Echo"
+class = "speaker"
+vendors = ["Amazon"]
+hostname_patterns = ["Echo*", "amazon-*"]
+domains = [
+  { name = "amazonalexa.com", weight = 0.6 },
+  { name = "amazon.com", weight = 0.2 },
+  { name = "a2z.com", weight = 0.2 },
+]
+
+[[device]]
+id = "amazon-fire-tv"
+name = "Fire TV"
+class = "streaming"
+vendors = ["Amazon"]
+hostname_patterns = ["*Fire*TV*", "AFT*", "amazon-*"]
+domains = [
+  { name = "primevideo.com", weight = 0.4 },
+  { name = "amazonvideo.com", weight = 0.3 },
+  { name = "amazon.com", weight = 0.2 },
+  { name = "media-amazon.com", weight = 0.1 },
+]
+
+[[device]]
+id = "amazon-kindle"
+name = "Kindle"
+class = "tablet"
+vendors = ["Amazon"]
+hostname_patterns = ["Kindle*", "*-Kindle*"]
+domains = [
+  { name = "amazon.com", weight = 0.5 },
+  { name = "amazonaws.com", weight = 0.2 },
+  { name = "media-amazon.com", weight = 0.3 },
+]
+
+[[device]]
+id = "ring-camera"
+name = "Ring camera or doorbell"
+class = "camera"
+vendors = ["Ring", "Amazon"]
+hostname_patterns = ["Ring*", "*RingDoorbell*", "*Ring-*"]
+domains = [
+  { name = "ring.com", weight = 1.0 },
+  { name = "amazonaws.com", weight = 0.2 },
+]
+
+# --- TVs and streaming
+[[device]]
+id = "roku-player"
+name = "Roku player"
+class = "streaming"
+vendors = ["Roku"]
+hostname_patterns = ["Roku*", "*-Roku*"]
+domains = [
+  { name = "roku.com", weight = 1.0 },
+  { name = "rokutime.com", weight = 0.6 },
+  { name = "ravm.tv", weight = 0.3 },
+]
+
+[[device]]
+id = "samsung-tv"
+name = "Samsung TV"
+class = "tv"
+vendors = ["Samsung"]
+hostname_patterns = ["Samsung*TV*", "*Samsung-Smart*", "*Tizen*"]
+domains = [
+  { name = "samsungcloudsolution.com", weight = 0.5 },
+  { name = "samsungotn.net", weight = 0.3 },
+  { name = "samsungcloud.tv", weight = 0.2 },
+]
+
+[[device]]
+id = "lg-tv"
+name = "LG TV"
+class = "tv"
+vendors = ["LG Electronics", "LG Innotek"]
+hostname_patterns = ["LGwebOSTV*", "*LG*TV*", "webOS*"]
+domains = [
+  { name = "lgtvsdp.com", weight = 0.6 },
+  { name = "lgsmartad.com", weight = 0.2 },
+  { name = "lge.com", weight = 0.2 },
+]
+
+[[device]]
+id = "sony-bravia"
+name = "Sony Bravia TV"
+class = "tv"
+vendors = ["Sony"]
+hostname_patterns = ["BRAVIA*", "*Bravia*"]
+domains = [
+  { name = "sony.net", weight = 0.5 },
+  { name = "sony.com", weight = 0.3 },
+  { name = "googleapis.com", weight = 0.2 },
+]
+
+# --- Speakers, hubs, lights
+[[device]]
+id = "sonos-speaker"
+name = "Sonos speaker"
+class = "speaker"
+vendors = ["Sonos"]
+hostname_patterns = ["Sonos*", "*-Sonos*"]
+domains = [
+  { name = "sonos.com", weight = 1.0 },
+]
+
+[[device]]
+id = "philips-hue"
+name = "Philips Hue bridge"
+class = "hub"
+vendors = ["Signify", "Philips Lighting"]
+hostname_patterns = ["Philips-hue*", "*hue-bridge*"]
+domains = [
+  { name = "meethue.com", weight = 1.0 },
+]
+
+[[device]]
+id = "kasa-plug"
+name = "TP-Link Kasa plug or switch"
+class = "plug"
+vendors = ["TP-LINK", "TP-Link"]
+hostname_patterns = ["HS1*", "HS2*", "KP1*", "KP4*", "EP1*", "ES2*", "Kasa*"]
+domains = [
+  { name = "tplinkcloud.com", weight = 1.0 },
+  { name = "tp-link.com", weight = 0.3 },
+]
+
+[[device]]
+id = "tapo-camera"
+name = "TP-Link Tapo camera"
+class = "camera"
+vendors = ["TP-LINK", "TP-Link"]
+hostname_patterns = ["Tapo*", "C1??*", "C2??*"]
+domains = [
+  { name = "tplinknbu.com", weight = 0.6 },
+  { name = "tplinkcloud.com", weight = 0.4 },
+]
+
+[[device]]
+id = "wyze-camera"
+name = "Wyze camera"
+class = "camera"
+vendors = ["Wyze"]
+hostname_patterns = ["WYZE*", "Wyze*"]
+domains = [
+  { name = "wyzecam.com", weight = 0.7 },
+  { name = "wyze.com", weight = 0.3 },
+]
+
+[[device]]
+id = "ecobee-thermostat"
+name = "ecobee thermostat"
+class = "thermostat"
+vendors = ["ecobee"]
+hostname_patterns = ["ecobee*"]
+domains = [
+  { name = "ecobee.com", weight = 1.0 },
+]
+
+# --- Consoles and headsets
+[[device]]
+id = "microsoft-xbox"
+name = "Xbox"
+class = "console"
+vendors = ["Microsoft"]
+hostname_patterns = ["XBOX*", "Xbox*"]
+domains = [
+  { name = "xboxlive.com", weight = 0.7 },
+  { name = "xbox.com", weight = 0.3 },
+]
+
+[[device]]
+id = "nintendo-switch"
+name = "Nintendo Switch"
+class = "console"
+vendors = ["Nintendo"]
+hostname_patterns = ["Nintendo*", "*-Switch"]
+domains = [
+  { name = "nintendo.net", weight = 0.7 },
+  { name = "nintendo.com", weight = 0.3 },
+]
+
+[[device]]
+id = "sony-playstation"
+name = "PlayStation"
+class = "console"
+vendors = ["Sony Interactive Entertainment", "Sony"]
+hostname_patterns = ["PS4*", "PS5*", "*PlayStation*"]
+domains = [
+  { name = "playstation.net", weight = 0.6 },
+  { name = "playstation.com", weight = 0.25 },
+  { name = "sonyentertainmentnetwork.com", weight = 0.15 },
+]
+
+[[device]]
+id = "meta-quest"
+name = "Meta Quest headset"
+class = "console"
+vendors = ["Meta", "Oculus", "Facebook"]
+hostname_patterns = ["Quest*", "Oculus*"]
+domains = [
+  { name = "oculus.com", weight = 0.7 },
+  { name = "oculuscdn.com", weight = 0.3 },
+]
+
+[[device]]
+id = "steam-deck"
+name = "Steam Deck"
+class = "console"
+vendors = ["Valve"]
+hostname_patterns = ["steamdeck*"]
+domains = [
+  { name = "steampowered.com", weight = 0.5 },
+  { name = "steamcontent.com", weight = 0.3 },
+  { name = "steamserver.net", weight = 0.2 },
+]
+
+# --- Computers and phones
+[[device]]
+id = "windows-pc"
+name = "Windows PC"
+class = "laptop"
+hostname_patterns = ["DESKTOP-*", "LAPTOP-*"]
+domains = [
+  { name = "msftconnecttest.com", weight = 0.4 },
+  { name = "windowsupdate.com", weight = 0.3 },
+  { name = "microsoft.com", weight = 0.2 },
+  { name = "live.com", weight = 0.1 },
+]
+
+[[device]]
+id = "samsung-phone"
+name = "Samsung Galaxy phone"
+class = "phone"
+vendors = ["Samsung"]
+vendor_required = true
+hostname_patterns = ["Galaxy*", "*Galaxy*", "SM-*"]
+domains = [
+  { name = "samsungapps.com", weight = 0.3 },
+  { name = "samsung.com", weight = 0.2 },
+  { name = "android.com", weight = 0.3 },
+  { name = "3gppnetwork.org", weight = 0.2 },
+]
+
+# --- Printers and storage
+[[device]]
+id = "hp-printer"
+name = "HP printer"
+class = "printer"
+vendors = ["Hewlett Packard", "HP"]
+hostname_patterns = ["HP*", "NPI*"]
+domains = [
+  { name = "hpeprint.com", weight = 0.5 },
+  { name = "hpsmart.com", weight = 0.3 },
+  { name = "hp.com", weight = 0.2 },
+]
+
+[[device]]
+id = "brother-printer"
+name = "Brother printer"
+class = "printer"
+vendors = ["Brother"]
+hostname_patterns = ["BRN*", "BRW*", "Brother*"]
+domains = [
+  { name = "brother.com", weight = 1.0 },
+]
+
+[[device]]
+id = "canon-printer"
+name = "Canon printer"
+class = "printer"
+vendors = ["Canon"]
+hostname_patterns = ["Canon*"]
+domains = [
+  { name = "c-ij.com", weight = 0.5 },
+  { name = "canon.com", weight = 0.5 },
+]
+
+[[device]]
+id = "epson-printer"
+name = "Epson printer"
+class = "printer"
+vendors = ["Seiko Epson", "Epson"]
+hostname_patterns = ["EPSON*"]
+domains = [
+  { name = "epsonconnect.com", weight = 0.5 },
+  { name = "epson.com", weight = 0.5 },
+]
+
+[[device]]
+id = "synology-nas"
+name = "Synology NAS"
+class = "nas"
+vendors = ["Synology"]
+hostname_patterns = ["DS*", "Synology*", "*DiskStation*"]
+domains = [
+  { name = "synology.com", weight = 0.7 },
+  { name = "quickconnect.to", weight = 0.3 },
+]
+
+[[device]]
+id = "qnap-nas"
+name = "QNAP NAS"
+class = "nas"
+vendors = ["QNAP"]
+hostname_patterns = ["QNAP*", "NAS*"]
+domains = [
+  { name = "qnap.com", weight = 0.7 },
+  { name = "myqnapcloud.com", weight = 0.3 },
+]
+
+# --- Network gear
+[[device]]
+id = "ubiquiti-device"
+name = "Ubiquiti UniFi device"
+class = "network"
+vendors = ["Ubiquiti"]
+hostname_patterns = ["U6*", "U7*", "UAP*", "USW*", "UDM*", "UniFi*", "UCK*"]
+domains = [
+  { name = "ui.com", weight = 0.7 },
+  { name = "ubnt.com", weight = 0.3 },
+]
+
+[[device]]
+id = "eero-router"
+name = "eero router"
+class = "network"
+vendors = ["eero"]
+hostname_patterns = ["eero*"]
+domains = [
+  { name = "eero.com", weight = 1.0 },
+]
+
+# --- Around the house
+[[device]]
+id = "roborock-vacuum"
+name = "Roborock vacuum"
+class = "vacuum"
+vendors = ["Roborock", "Xiaomi"]
+hostname_patterns = ["roborock*"]
+domains = [
+  { name = "roborock.com", weight = 0.8 },
+  { name = "mi.com", weight = 0.2 },
+]
+
+[[device]]
+id = "irobot-roomba"
+name = "iRobot Roomba"
+class = "vacuum"
+vendors = ["iRobot"]
+hostname_patterns = ["Roomba*", "iRobot*"]
+domains = [
+  { name = "irobot.com", weight = 0.6 },
+  { name = "irobotapi.com", weight = 0.4 },
+]
+
+[[device]]
+id = "peloton"
+name = "Peloton bike or tread"
+class = "appliance"
+vendors = ["Peloton"]
+hostname_patterns = ["Peloton*"]
+domains = [
+  { name = "onepeloton.com", weight = 1.0 },
+]
+
+[[device]]
+id = "tesla-car"
+name = "Tesla"
+class = "car"
+vendors = ["Tesla"]
+hostname_patterns = ["Tesla*"]
+domains = [
+  { name = "tesla.com", weight = 0.4 },
+  { name = "teslamotors.com", weight = 0.4 },
+  { name = "tesla.services", weight = 0.2 },
+]

@@ -183,6 +183,14 @@ pub fn required(method: &Method, path: &str) -> Need {
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
+            // REQ: OBS-025 — what kind of device each address is.
+            _ if p == "/api/v1/clients/identities"
+                || p.strip_prefix("/api/v1/clients/")
+                    .and_then(|r| r.strip_suffix("/identity"))
+                    .is_some_and(|id| !id.is_empty() && !id.contains('/')) =>
+            {
+                return Need::Scope("analytics:read");
+            }
             _ => {}
         }
     }
@@ -599,6 +607,26 @@ mod tests {
         assert_eq!(
             implied_role(&parse_scopes(&["ops:maintenance".into()]).unwrap()),
             Role::Operator
+        );
+    }
+
+    /// REQ: OBS-025 — identities are analytics.
+    #[test]
+    fn obs_025_identity_routes_need_analytics() {
+        for p in [
+            "/api/v1/clients/identities",
+            "/api/v1/clients/192.168.1.20/identity",
+            "/api/v1/clients/living-room-tv/identity",
+        ] {
+            assert_eq!(
+                required(&Method::GET, p),
+                Need::Scope("analytics:read"),
+                "{p}"
+            );
+        }
+        assert_eq!(
+            required(&Method::GET, "/api/v1/clients/a/b/identity"),
+            Need::Forbidden
         );
     }
 

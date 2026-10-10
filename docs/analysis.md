@@ -2,7 +2,7 @@
 
 *Prepared 2026-10-02, revised 2026-10-05. Versions considered: Pi-hole Core v6.4.x / FTL v6.6–6.7 / Web v6.5–6.6 (2026), Technitium DNS Server v14 (Nov 2025) and v15 (Apr 2026).*
 
-TelltaleDNS stands on the shoulders of these two projects. Both did the hard work of making self-hosted DNS something people actually run at home, and each made design choices that fit its goals well. These notes record what we learned from them while designing TelltaleDNS. Each section ends in what we took away; the spec in `/spec` turns those into requirements. We studied their public documentation and data formats, never their code (TelltaleDNS is a clean-room project under Apache-2.0 OR MIT).
+TelltaleDNS stands on the shoulders of these two projects. Both did the hard work of making self-hosted DNS something people actually run at home, and each made design choices that fit its goals well. These notes record what we learned from them while designing TelltaleDNS. Each section ends in what we took away; the spec in `/spec` turns those into requirements. We studied their public documentation and data formats, never their code (TelltaleDNS is a clean-room project under Apache-2.0 OR MIT). The MAC vendor table that ships with TelltaleDNS (`presets/oui.bin`, for device identification) is built by `presets/build-oui.py` from the IEEE Registration Authority's public MA-L and MA-M registry exports; no other project's vendor file is used.
 
 ---
 

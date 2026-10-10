@@ -319,20 +319,31 @@ fn observe(
                 (node_label(&n), s)
             })
             .collect(),
-        AlertWhen::NewDevice => b
-            .new_devices(now.saturating_sub(3600))
-            .into_iter()
-            .map(|d| {
-                let who = d
-                    .client_name
-                    .clone()
-                    .map_or_else(|| d.client.clone(), |n| format!("{n} ({})", d.client));
-                (
-                    d.client.clone(),
-                    format!("a new device started using DNS: {who}"),
-                )
-            })
-            .collect(),
+        AlertWhen::NewDevice => {
+            // REQ: OBS-025 — say what it looks like, when that's known.
+            let ids: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> = b
+                .identities()
+                .into_iter()
+                .map(|i| (i.client.clone(), i))
+                .collect();
+            b.new_devices(now.saturating_sub(3600))
+                .into_iter()
+                .map(|d| {
+                    let who = d
+                        .client_name
+                        .clone()
+                        .map_or_else(|| d.client.clone(), |n| format!("{n} ({})", d.client));
+                    let like = ids
+                        .get(&d.client)
+                        .and_then(crate::identify::looks_like)
+                        .map_or_else(String::new, |l| format!(", which {l}"));
+                    (
+                        d.client.clone(),
+                        format!("a new device started using DNS: {who}{like}"),
+                    )
+                })
+                .collect()
+        }
         AlertWhen::DiskFull => {
             let limit = rule.threshold.unwrap_or(90.0);
             let c = b.cluster();

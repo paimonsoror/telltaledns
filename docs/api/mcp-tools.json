@@ -217,6 +217,29 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "client": {
+          "description": "The device's IP, or its name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "type": "object"
+    },
+    "name": "identify_device"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes.",
     "inputSchema": {
       "additionalProperties": false,
@@ -724,6 +747,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "kind": {
+          "description": "What kind of device it is (camera, tv, streaming, plug, ... or unknown to stop guessing): wins over identify_device's guess.",
+          "type": "string"
         },
         "match": {
           "description": "How to recognize it (default: what it has now, or the IP given as client).",

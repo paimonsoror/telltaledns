@@ -8,6 +8,7 @@
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import IdentityLine from '../lib/components/IdentityLine.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -21,6 +22,8 @@
   let found = $state<S['DhcpLease'][]>([]);
   const sourceText: Record<string, string> = { router: 'router', mdns: 'mDNS' };
   const named = (ip: string) => configured.some((c) => c.match.includes(ip));
+  // REQ: OBS-025 — what each device looks like, by address.
+  let identities = $state<Record<string, S['DeviceIdentity']>>({});
   let error = $state<unknown>(null);
   const canEdit = $derived(session.user?.role === 'admin' || session.user?.role === 'operator');
 
@@ -36,6 +39,10 @@
       .dhcpLeases()
       .then((l) => (found = l.items))
       .catch(() => (found = []));
+    api
+      .identities()
+      .then((r) => (identities = Object.fromEntries(r.items.map((i) => [i.client, i]))))
+      .catch(() => (identities = {}));
   }
 
   $effect(load);
@@ -66,7 +73,7 @@
               {#each seen as c (c.key)}
                 <tr>
                   <td class="mono"><ClientChip ip={c.key} onchanged={load} /></td>
-                  <td>{c.name ?? ''}</td>
+                  <td>{c.name ?? ''}<IdentityLine identity={identities[c.key]} /></td>
                   <td class="small">
                     {#each c.groups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                   </td>
@@ -90,7 +97,7 @@
             <tbody>
               {#each configured as c (c.name)}
                 <tr>
-                  <td><strong>{c.name}</strong></td>
+                  <td><strong>{c.name}</strong><IdentityLine identity={c.identity} /></td>
                   <td class="mono small">{c.match.join(', ')}</td>
                   <td class="small">
                     <!-- REQ: FLT-005 — the groups that apply, and where they come from (ADR-050). -->

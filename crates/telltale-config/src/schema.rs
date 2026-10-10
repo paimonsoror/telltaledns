@@ -67,6 +67,9 @@ pub struct Config {
     pub exclusions: ExclusionsConfig,
     /// REQ: OBS-024 (T13.1) — change simulation over the query log.
     pub simulate: SimulateConfig,
+    /// REQ: OBS-025 (T13.3) — what kind of device each address is, guessed from its MAC
+    /// vendor, the names it announces, and the domains it talks to.
+    pub identify: IdentifyConfig,
     /// REQ: DNS-005 — settings of the DNS answers themselves.
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
@@ -131,6 +134,7 @@ impl Default for Config {
             ratelimit: RateLimitConfig::default(),
             exclusions: ExclusionsConfig::default(),
             simulate: SimulateConfig::default(),
+            identify: IdentifyConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
@@ -721,6 +725,128 @@ pub struct GroupConfig {
     /// `default`). A `[[route]]` for a domain, or one that names the group, still wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstreams: Option<SafeString>,
+    /// REQ: OBS-025 (T13.3) — kinds of device that belong in this group (`camera`, `plug`,
+    /// ...): a device identified as one of them, and not in this group yet, gets this group
+    /// suggested. Nothing moves on its own. A kind can be claimed by one group only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_classes: Vec<DeviceClass>,
+}
+
+/// REQ: OBS-025 (T13.3, ADR-117) — the kinds of device identification tells apart (a fixed
+/// list, so metrics stay small).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceClass {
+    Phone,
+    Tablet,
+    Laptop,
+    Desktop,
+    Tv,
+    Streaming,
+    Speaker,
+    Console,
+    Camera,
+    Doorbell,
+    Plug,
+    Bulb,
+    Thermostat,
+    Hub,
+    Vacuum,
+    Printer,
+    Nas,
+    Network,
+    Appliance,
+    Wearable,
+    Car,
+    Other,
+    /// Unknown, or (as a device's `kind`) "stop guessing".
+    Unknown,
+}
+
+impl DeviceClass {
+    pub const ALL: [Self; 23] = [
+        Self::Phone,
+        Self::Tablet,
+        Self::Laptop,
+        Self::Desktop,
+        Self::Tv,
+        Self::Streaming,
+        Self::Speaker,
+        Self::Console,
+        Self::Camera,
+        Self::Doorbell,
+        Self::Plug,
+        Self::Bulb,
+        Self::Thermostat,
+        Self::Hub,
+        Self::Vacuum,
+        Self::Printer,
+        Self::Nas,
+        Self::Network,
+        Self::Appliance,
+        Self::Wearable,
+        Self::Car,
+        Self::Other,
+        Self::Unknown,
+    ];
+
+    /// The snake-case name (`streaming`), as in the configuration and metrics.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Phone => "phone",
+            Self::Tablet => "tablet",
+            Self::Laptop => "laptop",
+            Self::Desktop => "desktop",
+            Self::Tv => "tv",
+            Self::Streaming => "streaming",
+            Self::Speaker => "speaker",
+            Self::Console => "console",
+            Self::Camera => "camera",
+            Self::Doorbell => "doorbell",
+            Self::Plug => "plug",
+            Self::Bulb => "bulb",
+            Self::Thermostat => "thermostat",
+            Self::Hub => "hub",
+            Self::Vacuum => "vacuum",
+            Self::Printer => "printer",
+            Self::Nas => "nas",
+            Self::Network => "network",
+            Self::Appliance => "appliance",
+            Self::Wearable => "wearable",
+            Self::Car => "car",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == s.trim())
+    }
+}
+
+/// REQ: OBS-025 (T13.3, ADR-117) — device identification. Shared by the whole cluster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct IdentifyConfig {
+    /// Off: no guesses (devices you named keep their names; `kind` still shows).
+    pub enabled: bool,
+    /// Most devices one node identifies (the most recently seen, over the last day).
+    pub max_clients: u32,
+    /// More signatures, in the shape of the shipped catalog (`[[device]]` tables). One with a
+    /// shipped `id` replaces it; `enabled = false` on it removes it.
+    pub signatures_file: SafeString,
+}
+
+impl Default for IdentifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_clients: 1024,
+            signatures_file: SafeString::default(),
+        }
+    }
 }
 
 /// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.
@@ -1061,6 +1187,10 @@ pub struct ClientConfig {
     /// `default` (ADR-050).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<SafeString>,
+    /// REQ: OBS-025 (T13.3) — what kind of device it is (`camera`, `tv`, ...), which wins
+    /// over any guess; `unknown` stops the guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<DeviceClass>,
 }
 
 /// REQ: FLT-005, FLT-006 (T6.12, ADR-067) — a quick rule: allow or block a domain and its

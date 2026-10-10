@@ -58,6 +58,12 @@ enum Read {
     NewDevices {
         since_s: u64,
     },
+    /// REQ: OBS-025 — what each device looks like (older peers don't know it).
+    Identities,
+    /// REQ: OBS-025 — one device, with the evidence.
+    Identity {
+        client: String,
+    },
     /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
     LatencyHist {
         by: LatencyBy,
@@ -158,6 +164,8 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Latency { by, hour } => serde_json::to_vec(&b.latency(by, hour)),
         Read::LatencyHist { by, hour } => serde_json::to_vec(&b.latency_hists(by, hour)),
         Read::NewDevices { since_s } => serde_json::to_vec(&b.new_devices(since_s)),
+        Read::Identities => serde_json::to_vec(&b.identities()),
+        Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
         Read::TailOpen { params } => serde_json::to_vec(&tail_open(b, &params).map_err(text)?),
         Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
         Read::TailClose { id } => {
@@ -1137,8 +1145,70 @@ impl Backend for Federated {
     fn groups(&self) -> Vec<GroupInfo> {
         self.local.groups()
     }
+    // REQ: OBS-025 — each named device with the cluster's most confident identity.
     fn clients(&self) -> Vec<ClientInfo> {
-        self.local.clients()
+        let mut rows = self.local.clients();
+        let merged: std::collections::HashMap<String, telltale_api::model::DeviceIdentity> = self
+            .identities()
+            .into_iter()
+            .map(|i| (i.client.clone(), i))
+            .collect();
+        for r in &mut rows {
+            let better = r.matches.iter().find_map(|m| {
+                let m = m
+                    .strip_suffix("/32")
+                    .or_else(|| m.strip_suffix("/128"))
+                    .unwrap_or(m);
+                merged.get(m).cloned()
+            });
+            if better.is_some() {
+                r.identity = better;
+            }
+        }
+        rows
+    }
+    // REQ: OBS-025 — every node identifies the devices it sees; one per device, the most
+    // confident (`identify::merge`), labelled with its node.
+    fn identities(&self) -> Vec<telltale_api::model::DeviceIdentity> {
+        let mut all = Vec::new();
+        if self.with_me() {
+            let me = self.own_label();
+            all.extend(self.local.identities().into_iter().map(|mut i| {
+                i.node = Some(me.clone());
+                i
+            }));
+        }
+        for (label, v) in
+            self.everyone_labelled::<Vec<telltale_api::model::DeviceIdentity>>(|| Read::Identities)
+        {
+            all.extend(v.into_iter().map(|mut i| {
+                i.node = Some(label.clone());
+                i
+            }));
+        }
+        crate::identify::merge(all)
+    }
+    fn identity(&self, client: &str) -> Result<telltale_api::model::DeviceIdentity, Problem> {
+        let mut local = self.local.identity(client)?;
+        local.node = Some(self.own_label());
+        let key = local.client.clone();
+        let mut all = vec![local];
+        for (label, v) in
+            self.everyone_labelled::<Option<telltale_api::model::DeviceIdentity>>(|| {
+                Read::Identity {
+                    client: key.clone(),
+                }
+            })
+        {
+            all.extend(v.map(|mut i| {
+                i.node = Some(label);
+                i
+            }));
+        }
+        Ok(crate::identify::merge(all)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| crate::identify::unavailable(&key, "not_seen")))
     }
     fn upstreams(&self) -> Vec<UpstreamInfo> {
         self.local.upstreams()

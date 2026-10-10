@@ -14,6 +14,7 @@
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import SloCard from '../lib/components/SloCard.svelte';
+  import DevicesByType from '../lib/components/DevicesByType.svelte';
   import { currentMode } from '../lib/mode.svelte';
 
   const ranges = [
@@ -316,6 +317,8 @@
   {#if advanced && (groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default'))}
     <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} />
   {/if}
+  <!-- REQ: OBS-025 — devices by what they look like (Advanced view). -->
+  {#if advanced}<DevicesByType />{/if}
 
   {#if advanced}
   <div class="grid-2">

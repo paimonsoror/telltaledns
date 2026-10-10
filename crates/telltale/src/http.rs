@@ -44,6 +44,8 @@ pub(crate) struct Sources {
     pub(crate) readiness: Arc<crate::readiness::Readiness>,
     /// REQ: OPS-010 — this node's maintenance window.
     pub(crate) maintenance: Arc<crate::maintenance::Maintenance>,
+    /// REQ: OBS-025 — what kind of device each address is.
+    pub(crate) identify: Arc<crate::identify::Identifier>,
     pub(crate) started: Instant,
     pub(crate) allowed: Vec<Cidr>,
     /// The list fetcher and compiler, when this node handles lists.
@@ -629,6 +631,7 @@ pub(crate) fn render(src: &Sources) -> String {
     cluster_metrics(src, &mut w);
     render_maintenance(src, &mut w);
     crate::simulate::render(&mut w);
+    src.identify.render(&mut w);
     render_slo(&mut w, &src.config.load().slo);
     render_probes(&mut w, &src.probes);
     render_filter_index(src, &mut w);
@@ -1719,6 +1722,7 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&dir);
         Sources {
+            identify: Arc::new(crate::identify::Identifier::open(&dir)),
             maintenance: Arc::new(crate::maintenance::Maintenance::open(
                 &dir,
                 Arc::clone(&readiness),

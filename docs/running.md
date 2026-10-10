@@ -1101,6 +1101,42 @@ curl -X PUT 'https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=tr
 ```
 Without `dryRun` the change is saved, applied, and audited. `GET /api/v1/clients` returns the config version as `ETag`; send it back as `If-Match` to refuse the write if someone changed the config meanwhile (412). An `Idempotency-Key` header makes retries safe: the same key replays the first answer for 24 hours. To rename, send the new `name` in the body; `DELETE /api/v1/clients/{name}` forgets a device.
 
+### What is this device?
+TelltaleDNS guesses what each address is, so a new one isn't just a number. It uses what it already sees:
+- the maker of the device's network card: its MAC address's vendor in the IEEE registry (from the neighbor table or your router);
+- the name the device announces (to your router's DHCP, or over mDNS);
+- the domains it talks to (a Roku asks `roku.com`, a Sonos speaker `sonos.com`).
+
+These are scored against a catalog of common home devices that ships with TelltaleDNS (phones, TVs and streamers, speakers, cameras, plugs, consoles, printers, NAS boxes, network gear, and more). The Clients page then says, under the device: "Looks like a **Roku player** (likely) · Roku". **Likely** and **possibly** say how sure it is; when nothing fits, only the maker is shown. **Why?** lists the evidence: the domains that matched, the vendor and MAC prefix, the name, and a close second guess if there is one.
+
+- **Naming:** "Name this device…" fills in the guess ("Roku player") when the device hasn't told your router a name, so you only add "living room". A guess never becomes a name by itself.
+- **Groups:** give a group the kinds of device that belong in it, and devices of that kind that aren't in it yet get it suggested ("iot suggested"); "Add to group…" pre-selects it. Nothing moves on its own.
+  ```toml
+  [[group]]
+  name = "iot"
+  device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "vacuum"]
+  ```
+  A kind belongs to one group at most.
+- **Wrong guess?** Name the device and set **What it is** (`[[client]] kind = "camera"`, or `"unknown"` to stop guessing). That always wins and shows as set rather than guessed.
+- **More devices:** `[identify] signatures_file = "/etc/telltale/devices.toml"` adds signatures in the catalog's own shape (`presets/devices.toml` in the source): an `id` the catalog uses replaces that signature, and `enabled = false` on it removes it.
+  ```toml
+  [[device]]
+  id = "our-bike"
+  name = "Exercise bike"
+  class = "appliance"
+  vendors = ["Acme Fitness"]          # words in the MAC vendor
+  hostname_patterns = ["BIKE-*"]      # globs on the names it announces
+  domains = [{ name = "acmefit.example", weight = 1.0 }]
+  ```
+
+How it works: every 10 minutes, on a thread of its own at background priority, each node scores the devices it saw in the last day (`[identify] max_clients`, 1,024 by default), from what it already keeps in memory; for a device it doesn't hold, it reads the query log (a few devices per pass). The score is 60% domains, 25% maker, 15% name: **likely** from 0.6, **possibly** from 0.35. Results are kept in `<data_dir>/devices.json` across restarts. In a cluster each node identifies the devices it sees, and the most confident guess per device is shown. It never changes how a query is answered.
+
+Limits: phones use private Wi-Fi addresses, so their maker is unknown and the domains and name decide. Behind a router or proxy that hides client addresses, many devices look like one. It's off at query-log privacy level 1 and above, where names are hashed, and with `[identify] enabled = false`.
+
+Through the API: `identity` on each device of `GET /api/v1/clients`, `GET /api/v1/clients/identities` for every device seen, and `GET /api/v1/clients/{address or name}/identity` with the evidence. Agents: `identify_device`, and `identity` in `get_client_profile`. New-device alerts and anomaly findings say what the device looks like. Metrics: `telltale_devices_by_class{class}`.
+
+The MAC vendor table is built from the IEEE Registration Authority's public registry by `presets/build-oui.py`.
+
 ## Quick rules
 A quick rule allows or blocks a site, and everything under it, for one device, a group, or everyone. It can last for a while or until you remove it. Some uses:
 - unblock a game's server on one phone for an evening;

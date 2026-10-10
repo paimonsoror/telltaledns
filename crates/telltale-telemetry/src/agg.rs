@@ -628,9 +628,28 @@ impl Aggregates {
 
     /// A client's heaviest domains this hour (if it's among the recently seen clients).
     pub fn top_client_domains(&self, client: [u8; 16], n: usize) -> Vec<Top<String>> {
-        self.current
-            .per_client
-            .get(&client)
+        self.top_client_domains_in(HourSel::Current, client, n)
+    }
+
+    /// REQ: OBS-025 — the clients whose heaviest domains the selected hour keeps.
+    pub fn clients_with_domains(&self, sel: HourSel) -> Vec<[u8; 16]> {
+        let mut v: Vec<[u8; 16]> = self
+            .hour(sel)
+            .map(|h| h.per_client.keys().copied().collect())
+            .unwrap_or_default();
+        v.sort_unstable();
+        v
+    }
+
+    /// REQ: OBS-025 — a client's heaviest domains in the selected hour.
+    pub fn top_client_domains_in(
+        &self,
+        sel: HourSel,
+        client: [u8; 16],
+        n: usize,
+    ) -> Vec<Top<String>> {
+        self.hour(sel)
+            .and_then(|h| h.per_client.get(&client))
             .map(|(_, t)| {
                 t.top(n)
                     .into_iter()

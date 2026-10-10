@@ -164,6 +164,9 @@ export const api = {
   // REQ: API-002 (T9.12) — pre-save checks of a draft.
   checkUpstream: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/upstream', body),
   checkList: (body: Record<string, unknown>) => post<S['CheckResult']>('/checks/list', body),
+  // REQ: OBS-025 (T13.3) — what each device looks like.
+  identities: () => get<S['Items_DeviceIdentity']>('/clients/identities'),
+  identity: (id: string) => get<S['DeviceIdentity']>(`/clients/${encodeURIComponent(id)}/identity`),
   // REQ: OBS-024 (T13.1) — what a whole shared configuration would have done.
   simulate: (body: S['SimulateRequest']) => post<S['Simulation']>('/simulate', body),
   cluster: () => get<S['ClusterView']>('/cluster'),

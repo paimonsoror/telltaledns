@@ -68,6 +68,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     otlp(cfg, &mut r);
     exclusions(cfg, &mut r);
     simulate(cfg, &mut r);
+    identify(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
     cluster(cfg, &mut r);
@@ -314,6 +315,35 @@ fn simulate(cfg: &Config, r: &mut Report<'_>) {
                 &*s.default_window
             ),
         ),
+    }
+}
+
+// REQ: OBS-025 (T13.3) — a device kind belongs to one group at most; bounded device counts.
+fn identify(cfg: &Config, r: &mut Report<'_>) {
+    if !(1..=65_536).contains(&cfg.identify.max_clients) {
+        r.err("identify.max_clients", "from 1 to 65536");
+    }
+    let mut owner: std::collections::BTreeMap<crate::DeviceClass, &str> =
+        std::collections::BTreeMap::new();
+    for (i, g) in cfg.group.iter().enumerate() {
+        for c in &g.device_classes {
+            if *c == crate::DeviceClass::Unknown {
+                r.err(
+                    format!("group[{i}].device_classes"),
+                    "`unknown` can't be suggested for a group",
+                );
+            } else if let Some(other) = owner.insert(*c, g.name.as_str())
+                && other != g.name.as_str()
+            {
+                r.err(
+                    format!("group[{i}].device_classes"),
+                    format!(
+                        "`{}` is claimed by group `{other}` too: a kind of device can belong to one group",
+                        c.as_str()
+                    ),
+                );
+            }
+        }
     }
 }
 
