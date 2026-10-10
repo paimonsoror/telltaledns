@@ -116,6 +116,14 @@ services:
 
 DHCPv4 server (static leases, options 3/6/15/42/119, lease file), disabled by default. In clusters, DHCP runs on exactly one designated node (no DHCP failover protocol in v1; documented). Leases feed client naming cluster-wide.
 
+## 9. Node maintenance mode (OPS-010, ADR-118)
+- **State, not config:** `<data_dir>/maintenance.json { until_ms, reason, by }`; default 1 h, at most 24 h; read at start, so a reboot inside the window comes back not ready. Allowed under GitOps.
+- **On the node:** `/readyz` → 503 (the shutdown `ready` flag); heartbeats carry `maintenance_until` (optional field, N−1 ignores it); no candidacy in elections. Every listener keeps answering; replication, lists, probes, and the API continue.
+- **A primary:** with automatic failover and another eligible node or quorum reachable, `handover = true` (default) makes it stop renewing its lease and decline candidacy, so a replica is elected within the lease window and it follows for the rest of the window; otherwise it stays primary and keeps publishing, and the UI/CLI say to promote another node first if it's going offline.
+- **Elsewhere:** alert rules skip the node and its firing alerts resolve "(maintenance)"; the health level ignores its reasons and lists it under `maintenance`; Cluster-page checks skip it; alert rule `maintenance` (once on entry, resolved on exit).
+- **Surfaces:** `POST`/`DELETE /api/v1/nodes/{id}/maintenance` (operator; an RPC to the target node, not via the primary), `telltale ctl maintenance start --for 2h --reason "..." [--node]` / `end`, Cluster page per-node action and banner, MCP `start_maintenance`/`end_maintenance` (`ops:maintenance`, agents ≤ 2 h), audit `node.maintenance.start|end`, `telltale_node_maintenance`, `telltale_node_maintenance_until_seconds`.
+- **Kubernetes:** one readiness probe per pod serves every Service, so a controller pod in maintenance also leaves the API Service; use another node's UI or a port-forward. Design: `docs/design/maintenance-mode.md`.
+
 ## 8. Backup / migration (API-007)
 - `telltale ctl backup create [--include-qlog]` → a `.ttbk` (tar.zst + manifest + signature). Restore onto a new primary.
 - **Importers:**

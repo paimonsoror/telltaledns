@@ -39,6 +39,14 @@ telltale cluster join vgl_join_… --advertise https://telltale-ctl.k8s.lan:8443
 - **Node-local overrides (CLU-006):** `node.toml` (or the `telltale.node.*` Helm values) is merged *after* the cluster config and is never replicated. Allowed keys are listen addrs, cache size, qlog retention, worker count, `site`, and local-only records. Attempts to override non-allowed keys are rejected at startup with a clear error.
 - **GitOps mode:** the primary loads the config from a file/ConfigMap and produces changes from the diff. API writes are rejected (`409 gitops_managed`) except for operational actions (pause blocking, flush cache).
 
+### 4.1 Staged rollouts and pins (CLU-013, ADR-116)
+- **Heads:** the primary keeps a `stable` head and, during a rollout, a `canary` head. Canary manifests are sent only to canary peers; a peer that asks for the latest version gets the head for its set. Older nodes (no `rollout` support) are non-canary and never see a canary version.
+- **Canaries:** `[cluster.rollout] canaries` = node IDs, `site:<name>`, or `ephemeral`; **default empty = no rollouts** (off until set). A shared one-of section edited in Settings → Cluster → *Staged rollouts* (`PUT /api/v1/cluster/rollout-settings`, ADR-111 pattern; GitOps shows the TOML). The primary applies its own configuration at once (as today) and is counted as a canary for the guard.
+- **Stages:** `canary` → (bake `bake_secs`, default 300, under the guard) → `all`. Guard inputs come from heartbeats: apply error, not ready, listener probes failing (fail at once); at the end of the bake, SERVFAIL share above `max(before + 2 points, servfail_pct)` with ≥ 50 answers, or a fast SLO burn on a canary. Too little traffic passes unless `require_traffic`. `POST /api/v1/cluster/rollout/promote|abort` for operators.
+- **Pins:** a failed guard, or `POST /api/v1/cluster/versions/{epoch}.{seq}/pin`, makes the primary publish that version's blobs as the stable head (a **new** `seq`; versions never go backwards), apply them to itself, and refuse configuration writes with `409 cluster_pinned` and the diff. `pinned` travels in the manifest (a new primary stays pinned). `DELETE /api/v1/cluster/pin` resumes from the current source. Git polling continues while pinned and publishes nothing.
+- **History:** the last `history` (20) manifests in `<cluster dir>/versions.json`, their blobs protected; `GET /api/v1/cluster/versions`.
+- Alerts `rollout_failed`, `cluster_pinned`; health `cluster_pinned` (degraded); timeline events; `telltale_cluster_rollout_stage`, `telltale_cluster_pinned`; MCP `rollout_status`, `plan_pin_version`, `plan_unpin`. Design: `docs/design/staged-rollouts.md`.
+
 ## 5. Primary election, failover, and fencing (CLU-005)
 **Epoch** = a monotonically increasing u64, persisted. Every change and snapshot carries the epoch of the primary that created it.
 

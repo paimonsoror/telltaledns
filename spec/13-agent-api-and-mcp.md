@@ -47,13 +47,16 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `probe_status` | Every node's synthetic probes of its own listeners (and extra targets): answering, latency, failures in a row, certificate days left (OBS-020) |
 | `cache_advice` | Per node: hit rate, memory, the estimated extra hits a 25/50/100% larger cache would serve, peak use, and grow/shrink/ok advice (OBS-021) |
 | `slo_status` | The service-level objectives: target, SLI and error budget left over the window, burn rates over 5m–3d, and whether the budget burns fast enough to warn (OBS-016) |
-| `cluster_status` | Members, roles, epochs, lag, versions, primary reachability |
+| `simulate_change` | What a change *would have done* to the logged queries over a window (default 24 h): newly blocked and newly allowed, by device and name, changed routes, with the rows read and whether the result is partial. Takes the same change kinds as the plan tools (block/allow a domain, add a list, assign a device, update a group) without creating a plan (OBS-024) |
+| `identify_device` | What a device looks like: class and product (likely / possibly / unknown) with the evidence (MAC vendor, announced name, the domains it talks to), the suggested group, and any explicit override (OBS-025) |
+| `rollout_status` | The current rollout (version, stage, canaries and what each runs, bake time left, guard readings), whether the cluster is pinned and to which version and why, and the kept versions with provenance and outcome (CLU-013) |
+| `cluster_status` | Members, roles, epochs, lag, versions, primary reachability; each node's maintenance window when set (OPS-010) |
 | `get_config` | Config section (secrets redacted) + current version |
 | `test_resolution` | Resolve a name through a given upstream/group *without* caching or logging, to diagnose |
 
 ### 3.2 Write (P1, plan/apply)
-`plan_block_domain`, `plan_allow_domain`, `plan_add_list`, `plan_update_group`, `plan_assign_client`, `plan_rename_client` (API-010), `plan_update_upstreams`, `plan_set_schedule`, `plan_set_ratelimit`, `plan_set_exclusions` (OBS-022) → `apply_plan`, `discard_plan`.
-Immediate low-risk ops (scope-gated, still audited, no plan): `pause_blocking` (max 60 min for agents), `resume_blocking`, `flush_cache`, `acknowledge_anomalies` (`ops:anomalies`; `undo` takes it back; OBS-014). Pre-save checks (T9.12; change nothing, need the entry's write scope): `check_upstream`, `check_list`.
+`plan_block_domain`, `plan_allow_domain`, `plan_add_list`, `plan_update_group`, `plan_assign_client`, `plan_rename_client` (API-010), `plan_update_upstreams`, `plan_set_schedule`, `plan_set_ratelimit`, `plan_set_exclusions` (OBS-022), `plan_pin_version` / `plan_unpin` (CLU-013; `cluster:admin`) → `apply_plan`, `discard_plan`. Plans that change filtering or policy carry an `impact` (OBS-024) when the agent passes `simulate` (a window, e.g. `"24h"`) or `[simulate] plans_by_default` is on, and the node could simulate within its budget; they say so when it couldn't.
+Immediate low-risk ops (scope-gated, still audited, no plan): `pause_blocking` (max 60 min for agents), `resume_blocking`, `flush_cache`, `acknowledge_anomalies` (`ops:anomalies`; `undo` takes it back; OBS-014), `start_maintenance` / `end_maintenance` (`ops:maintenance`; agents at most 2 h, a reason required; OPS-010). Pre-save checks (T9.12; change nothing, need the entry's write scope): `check_upstream`, `check_list`.
 `cluster_promote` is excluded from agents unless `cluster:admin` scope **and** human approval are both configured.
 
 ### 3.3 Example interaction
