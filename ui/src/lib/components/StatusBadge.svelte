@@ -10,6 +10,8 @@
     servfail: 'bad',
     SERVFAIL: 'bad',
     cached: 'ok',
+    // DNS-007: answered from the cache at once while refreshed in the background.
+    refreshed: 'ok',
     stale: 'warn',
     ok: 'ok',
     closed: 'ok',

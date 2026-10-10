@@ -73,7 +73,7 @@
     <div class="table-wrap">
       <table class="compact">
         <thead>
-          <tr><th>Node</th><th class="num">Entries</th><th class="num">Memory</th><th class="num">Hit rate</th><th class="num">Stale served</th><th class="num">Prefetches</th><th class="num">Evictions</th></tr>
+          <tr><th>Node</th><th class="num">Entries</th><th class="num">Memory</th><th class="num" title="Answered from the cache: fresh, or refreshed in the background">From cache</th><th class="num">Stale served</th><th class="num">Prefetches</th><th class="num">Evictions</th></tr>
         </thead>
         <tbody>
           {#each stats as s, i (s.node ?? i)}
@@ -81,7 +81,7 @@
               <td>{s.node ?? 'this node'}</td>
               <td class="num">{num(s.entries)}</td>
               <td class="num">{bytes(s.bytes)}</td>
-              <td class="num">{pct(s.hitPercent)}</td>
+              <td class="num">{pct(s.answeredPercent ?? s.hitPercent)}</td>
               <td class="num">{num(s.staleServed)}</td>
               <td class="num">{num(s.prefetches)}</td>
               <td class="num">{num(s.evictions)}</td>

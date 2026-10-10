@@ -2593,6 +2593,13 @@ export interface components {
         };
         /** @description REQ: DNS-006 (T6.13) — one node's cache counters. */
         CacheNodeStats: {
+            /**
+             * Format: double
+             * @description REQ: DNS-007 — lookups answered from the cache, fresh or from an expired entry
+             *     (refreshed in the background, or stale), percent: what the dashboard's cache tile shows.
+             *     Absent before any lookup, and from older nodes.
+             */
+            answeredPercent?: number | null;
             /** Format: int64 */
             bytes: number;
             /** Format: int64 */
@@ -2603,7 +2610,7 @@ export interface components {
             history?: components["schemas"]["CachePoint"][];
             /**
              * Format: double
-             * @description hits / (hits + misses), percent; absent before any lookup.
+             * @description hits / (hits + misses), percent; absent before any lookup. Fresh entries only.
              */
             hitPercent?: number | null;
             /** Format: int64 */
@@ -2626,6 +2633,12 @@ export interface components {
         };
         /** @description REQ: OBS-003 (T6.15) — 15 s of one node's cache. */
         CachePoint: {
+            /**
+             * Format: double
+             * @description REQ: DNS-007 — lookups answered from the cache (fresh, refreshed, or stale) in the
+             *     interval, percent; absent without lookups, and from older nodes.
+             */
+            answeredPercent?: number | null;
             /** @description End of the interval (RFC 3339). */
             at: string;
             /** Format: int64 */
@@ -2691,6 +2704,13 @@ export interface components {
              * @description How long SERVFAIL is cached, RFC 9520.
              */
             servfailTtlSeconds: number;
+            /**
+             * Format: int32
+             * @description REQ: DNS-007 — how long an expired answer waits for the upstream before it's given
+             *     (`[cache] stale_answer_client_timeout_ms`): 0 answers at once and refreshes in the
+             *     background. Absent from older nodes.
+             */
+            staleAnswerWaitMs?: number | null;
             /**
              * Format: int32
              * @description How long expired answers are kept for that.
@@ -3920,6 +3940,13 @@ export interface components {
         /** @description A list wrapper used by every collection endpoint. */
         Items_CacheNodeStats: {
             items: {
+                /**
+                 * Format: double
+                 * @description REQ: DNS-007 — lookups answered from the cache, fresh or from an expired entry
+                 *     (refreshed in the background, or stale), percent: what the dashboard's cache tile shows.
+                 *     Absent before any lookup, and from older nodes.
+                 */
+                answeredPercent?: number | null;
                 /** Format: int64 */
                 bytes: number;
                 /** Format: int64 */
@@ -3930,7 +3957,7 @@ export interface components {
                 history?: components["schemas"]["CachePoint"][];
                 /**
                  * Format: double
-                 * @description hits / (hits + misses), percent; absent before any lookup.
+                 * @description hits / (hits + misses), percent; absent before any lookup. Fresh entries only.
                  */
                 hitPercent?: number | null;
                 /** Format: int64 */
@@ -5634,7 +5661,7 @@ export interface components {
             cacheHitPercent: number;
             /**
              * Format: int64
-             * @description Answered from cache (fresh or stale).
+             * @description Answered from cache (fresh, refreshed in the background, or stale).
              */
             cached: number;
             /** Format: int64 */
@@ -5649,6 +5676,12 @@ export interface components {
             nxdomain: number;
             /** Format: int64 */
             queries: number;
+            /**
+             * Format: int64
+             * @description REQ: DNS-007 — of `cached`, answers whose entry had expired and was answered at once
+             *     while it was refreshed in the background (`[cache] stale_answer_client_timeout_ms = 0`).
+             */
+            refreshed?: number;
             /** Format: int64 */
             servfail: number;
             /** Format: int64 */

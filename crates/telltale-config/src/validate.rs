@@ -434,6 +434,7 @@ fn sinks(cfg: &Config, r: &mut Report<'_>) {
         "cached",
         "forwarded",
         "stale",
+        "refreshed",
         "local",
         "special",
         "blocked",

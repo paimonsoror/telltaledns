@@ -246,8 +246,12 @@ pub struct Summary {
     pub blocked: u64,
     /// Blocked share of all queries, 0–100.
     pub blocked_percent: f64,
-    /// Answered from cache (fresh or stale).
+    /// Answered from cache (fresh, refreshed in the background, or stale).
     pub cached: u64,
+    /// REQ: DNS-007 — of `cached`, answers whose entry had expired and was answered at once
+    /// while it was refreshed in the background (`[cache] stale_answer_client_timeout_ms = 0`).
+    #[serde(default)]
+    pub refreshed: u64,
     /// Cache share of answered queries that weren't blocked or local, 0–100.
     pub cache_hit_percent: f64,
     pub forwarded: u64,
@@ -1149,8 +1153,13 @@ pub struct CacheNodeStats {
     pub bytes: u64,
     pub hits: u64,
     pub misses: u64,
-    /// hits / (hits + misses), percent; absent before any lookup.
+    /// hits / (hits + misses), percent; absent before any lookup. Fresh entries only.
     pub hit_percent: Option<f64>,
+    /// REQ: DNS-007 — lookups answered from the cache, fresh or from an expired entry
+    /// (refreshed in the background, or stale), percent: what the dashboard's cache tile shows.
+    /// Absent before any lookup, and from older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_percent: Option<f64>,
     pub stale_served: u64,
     pub prefetches: u64,
     pub evictions: u64,
@@ -1223,6 +1232,11 @@ pub struct CacheSettings {
     pub serve_stale: bool,
     /// How long expired answers are kept for that.
     pub stale_max_age_seconds: u32,
+    /// REQ: DNS-007 — how long an expired answer waits for the upstream before it's given
+    /// (`[cache] stale_answer_client_timeout_ms`): 0 answers at once and refreshes in the
+    /// background. Absent from older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_answer_wait_ms: Option<u32>,
     /// Refresh popular answers before they expire.
     pub prefetch: bool,
     /// Prefetch below this share of the TTL left.
@@ -1253,6 +1267,10 @@ pub struct CachePoint {
     pub at: String,
     /// Hits per lookup in the interval, percent; absent without lookups.
     pub hit_percent: Option<f64>,
+    /// REQ: DNS-007 — lookups answered from the cache (fresh, refreshed, or stale) in the
+    /// interval, percent; absent without lookups, and from older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_percent: Option<f64>,
     pub lookups: u64,
     pub stale_served: u64,
     pub prefetches: u64,

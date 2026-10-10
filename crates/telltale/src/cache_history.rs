@@ -99,9 +99,16 @@ impl CacheHistory {
                 #[allow(clippy::cast_precision_loss)] // a percentage for display
                 let hit_percent =
                     (lookups > 0).then(|| (hits as f64 * 1000.0 / lookups as f64).round() / 10.0);
+                let stale = d(a.stale_served, b.stale_served);
+                // REQ: DNS-007 — fresh hits and expired entries answered (refreshed or stale).
+                #[allow(clippy::cast_precision_loss)]
+                let answered_percent = (lookups > 0).then(|| {
+                    ((hits + stale).min(lookups) as f64 * 1000.0 / lookups as f64).round() / 10.0
+                });
                 CachePoint {
                     at: telltale_api::time::format_us(b.ts_ms.saturating_mul(1000)),
                     hit_percent,
+                    answered_percent,
                     lookups,
                     stale_served: d(a.stale_served, b.stale_served),
                     prefetches: d(a.prefetches, b.prefetches),
@@ -159,5 +166,20 @@ mod tests {
             h.record(s(60_000 + i * 15_000, 0, 0, 0));
         }
         assert_eq!(h.points().len(), KEEP - 1);
+    }
+
+    /// REQ: DNS-007 — an expired entry answered at once (refreshed, or stale) is a miss to the
+    /// cache's counters but an answer from the cache: `answered_percent` counts both.
+    #[test]
+    fn dns_007_answered_percent_counts_refreshed_answers() {
+        let h = CacheHistory::new(None);
+        h.record(s(0, 0, 0, 10));
+        let mut b = s(15_000, 20, 80, 10); // 20 fresh hits, 80 misses...
+        b.stale_served = 40; // ...of which 40 were answered from expired entries
+        h.record(b);
+        let p = h.points();
+        assert_eq!(p[0].hit_percent, Some(20.0));
+        assert_eq!(p[0].answered_percent, Some(60.0));
+        assert_eq!(h.points().len(), 1);
     }
 }

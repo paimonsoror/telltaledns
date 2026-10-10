@@ -1176,7 +1176,8 @@ async fn stats_summary(
         let st = |k: &str| u64::from(bucket.by_status.get(k).copied().unwrap_or(0));
         s.queries += u64::from(bucket.total);
         s.blocked += st("blocked");
-        s.cached += st("cached") + st("stale");
+        s.cached += st("cached") + st("stale") + st("refreshed");
+        s.refreshed += st("refreshed");
         s.forwarded += st("forwarded");
         s.servfail += st("servfail");
         s.nxdomain += u64::from(bucket.by_rcode.get("NXDOMAIN").copied().unwrap_or(0));

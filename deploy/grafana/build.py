@@ -90,7 +90,9 @@ def ts(title, x, w, h, exprs, unit, desc, stack=False, fill=10, overrides=None):
 
 def status_colors():
     colors = {"blocked": "red", "cached": "green", "forwarded": "blue", "local": "purple",
-              "stale": "orange", "servfail": "dark-red", "refused": "dark-orange"}
+              "stale": "orange", "servfail": "dark-red", "refused": "dark-orange",
+              # DNS-007: answered from the cache at once while refreshed in the background.
+              "refreshed": "light-green"}
     return [{"matcher": {"id": "byName", "options": k},
              "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": v}}]}
             for k, v in colors.items()]
@@ -114,10 +116,23 @@ stat("Blocked", 4, 4,
      f'sum(rate(telltale_queries_total{{{SEL}, status="blocked"}}[5m])) / '
      f'sum(rate(telltale_queries_total{{{SEL}}}[5m]))', "percentunit",
      "Share of queries blocked by filter lists.", decimals=1)
-stat("Cache hits", 8, 4,
-     f'sum(rate(telltale_cache_hits_total{{{SEL}}}[5m])) / '
-     f'(sum(rate(telltale_cache_hits_total{{{SEL}}}[5m])) + sum(rate(telltale_cache_misses_total{{{SEL}}}[5m])))',
-     "percentunit", "Fresh cache hits over all cache lookups.", decimals=1)
+# REQ: DNS-007 — the same number as the web UI's cache tile: fresh hits plus expired answers
+# given from the cache (refreshed in the background, or stale), over all cache lookups. A stale
+# answer is a miss to the cache's own counters.
+def answered(w):
+    return (f'(sum(rate(telltale_cache_hits_total{{{SEL}}}[{w}])) + sum(rate(telltale_cache_stale_served_total{{{SEL}}}[{w}]))) / '
+            f'(sum(rate(telltale_cache_hits_total{{{SEL}}}[{w}])) + sum(rate(telltale_cache_misses_total{{{SEL}}}[{w}])))')
+
+
+def fresh(w):
+    return (f'sum(rate(telltale_cache_hits_total{{{SEL}}}[{w}])) / '
+            f'(sum(rate(telltale_cache_hits_total{{{SEL}}}[{w}])) + sum(rate(telltale_cache_misses_total{{{SEL}}}[{w}])))')
+
+
+stat("Answered from cache", 8, 4, answered("5m"),
+     "percentunit", "Cache lookups answered from the cache: fresh hits, plus expired answers given at once while "
+     "they were refreshed in the background ([cache] stale_answer_client_timeout_ms = 0) or kept answering "
+     "while upstreams failed. The web UI's cache tile shows the same number.", decimals=1)
 stat("Upstream p95", 12, 4,
      q(0.95, "telltale_upstream_duration_seconds", "job").replace("$__rate_interval", "5m"), "s",
      "95th percentile upstream exchange time, all upstreams.",
@@ -251,14 +266,20 @@ advance(8)
 
 # ---- Cache
 row("Cache")
-ts("Cache activity", 0, 12, 7,
+ts("Answered from cache", 0, 8, 7,
+   [(answered("$__rate_interval"), "answered from cache"),
+    (fresh("$__rate_interval"), "fresh hits only")],
+   "percentunit", "The gap between the lines is answers given from an expired entry while it was refreshed "
+   "in the background (or while upstreams failed): with [cache] stale_answer_client_timeout_ms = 0 it shows "
+   "how much the cache gains from answering at once.", fill=10)
+ts("Cache activity", 8, 8, 7,
    [(f'sum(rate(telltale_cache_hits_total{{{SEL}}}[$__rate_interval]))', "hits"),
     (f'sum(rate(telltale_cache_misses_total{{{SEL}}}[$__rate_interval]))', "misses"),
     (f'sum(rate(telltale_cache_stale_served_total{{{SEL}}}[$__rate_interval]))', "stale served"),
     (f'sum(rate(telltale_cache_prefetch_total{{{SEL}}}[$__rate_interval]))', "prefetches"),
     (f'sum(rate(telltale_cache_evictions_total{{{SEL}}}[$__rate_interval]))', "evictions")],
    "reqps", "Cache lookups and maintenance per second.", fill=0)
-ts("Cache size", 12, 12, 7,
+ts("Cache size", 16, 8, 7,
    [(f'sum(telltale_cache_bytes{{{SEL}}})', "bytes")],
    "bytes", "Approximate cache memory.", fill=20,
    overrides=[])

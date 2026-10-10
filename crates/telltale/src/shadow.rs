@@ -330,7 +330,7 @@ impl Sink for ShadowSink {
                     self.shared.note_block(e, name.as_wire(), list);
                 }
             }
-            Status::Cached | Status::Forwarded | Status::Stale => {
+            Status::Cached | Status::Forwarded | Status::Stale | Status::Refreshed => {
                 self.shared.note_resolved(e, name.as_wire());
                 if f.shadow_group_masks.is_empty() || e.rule.is_some_and(|r| r.allow) {
                     return;

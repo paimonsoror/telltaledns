@@ -72,14 +72,15 @@
         }
         return { label: label(s), color: colors[i % colors.length], values: values as number[] };
       });
-    return { times, hit: series((p) => p.hitPercent), lookups: series((p) => p.lookups) };
+    // DNS-007: answered from the cache (fresh or refreshed); fresh hits alone from older nodes.
+    return { times, hit: series((p) => p.answeredPercent ?? p.hitPercent), lookups: series((p) => p.lookups) };
   });
 
   const lastHour = (s: Stats, k: 'staleServed' | 'prefetches' | 'evictions' | 'lookups') =>
     (s.history ?? []).reduce((t, p) => t + p[k], 0);
-  const hitLastHour = (s: Stats) => {
+  const hitLastHour = (s: Stats, fresh = false) => {
     const looked = lastHour(s, 'lookups');
-    const hits = (s.history ?? []).reduce((t, p) => t + ((p.hitPercent ?? 0) / 100) * p.lookups, 0);
+    const hits = (s.history ?? []).reduce((t, p) => t + (((fresh ? p.hitPercent : (p.answeredPercent ?? p.hitPercent)) ?? 0) / 100) * p.lookups, 0);
     return looked > 0 ? (hits * 100) / looked : null;
   };
   const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
@@ -172,10 +173,13 @@
       <section class="card node" data-testid="cache-node">
         <h2>{label(s)}</h2>
         <dl class="facts">
-          <dt>Hit rate</dt>
-          <dd>
+          <dt>Answered from the cache</dt>
+          <dd data-testid="cache-answered">
             <strong>{pct(hitLastHour(s))}</strong> <span class="muted small">last hour</span>
-            <span class="muted small">· {pct(s.hitPercent)} since start</span>
+            <span class="muted small">· {pct(s.answeredPercent ?? s.hitPercent)} since start</span>
+            {#if s.answeredPercent != null && s.hitPercent != null && s.answeredPercent - s.hitPercent >= 0.1}
+              <div class="muted small">{pct(hitLastHour(s, true))} fresh last hour; the rest had just expired and was answered at once while it was refreshed (or kept answering while upstreams failed).</div>
+            {/if}
           </dd>
           <dt>Holds</dt>
           <dd>{plural(s.entries, 'answer', 'answers')} · {bytes(s.bytes)}{#if s.settings}{` of ${bytes(s.settings.maxBytes)}`}{/if}</dd>
@@ -220,7 +224,12 @@
             <dl class="facts small" data-testid="cache-settings">
               <dt>Memory</dt><dd>{bytes(c.maxBytes)}{#if c.maxEntries}{`, at most ${num(c.maxEntries)} answers`}{/if}</dd>
               <dt>TTL</dt><dd>{duration(c.minTtlSeconds)} to {duration(c.maxTtlSeconds)}; negative answers up to {duration(c.negativeTtlMaxSeconds)}; SERVFAIL {duration(c.servfailTtlSeconds)}</dd>
-              <dt>Serve stale</dt><dd>{c.serveStale ? `on, for up to ${duration(c.staleMaxAgeSeconds)} after expiry` : 'off'}</dd>
+              <dt>Serve stale</dt>
+              <dd>
+                {#if !c.serveStale}off
+                {:else if c.staleAnswerWaitMs === 0}answered at once and refreshed in the background, for up to {duration(c.staleMaxAgeSeconds)} after expiry
+                {:else}when upstreams don't answer{c.staleAnswerWaitMs != null ? ` within ${(c.staleAnswerWaitMs / 1000).toFixed(1)} s` : ''}, for up to {duration(c.staleMaxAgeSeconds)} after expiry{/if}
+              </dd>
               <dt>Prefetch</dt><dd>{c.prefetch ? `on, with under ${c.prefetchThresholdPercent}% of the TTL left, after ${c.prefetchMinHits} hits` : 'off'}</dd>
               <dt>Across restarts</dt><dd>{c.persist ? 'kept' : 'not kept'}</dd>
             </dl>
@@ -232,7 +241,7 @@
   </section>
 
   {#if charts.times.length > 1}
-    <Chart title="Hit rate, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} />
+    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} />
     <Chart title="Lookups per 15 s" times={charts.times} series={charts.lookups} height={160} />
   {:else if stats.length}
     <p class="muted small">The charts fill in over the first minutes (a sample every 15 s).</p>

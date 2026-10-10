@@ -259,6 +259,31 @@ test('obs_016 service level card', async () => {
   await expect(card).toHaveCount(0);
 });
 
+// REQ: DNS-007 (ADR-119) — the cache tile is one number for everyone (fresh, refreshed, and
+// stale answers from the cache); the Advanced view splits it into fresh and refreshed.
+test('dns_007 cache tile: one number, split in the Advanced view', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.route('**/api/v1/stats/summary*', (route) =>
+    route.fulfill({
+      json: {
+        fromUnixSeconds: 0, toUnixSeconds: 1, queries: 1500, blocked: 500, blockedPercent: 33.3, cached: 600,
+        refreshed: 200, cacheHitPercent: 60, forwarded: 400, nxdomain: 3, servfail: 1, activeClients: 4, latency: [],
+      },
+    }),
+  );
+  await page.goto('/#/');
+  await page.reload(); // the page may already show the dashboard (a hash change doesn't reload)
+  const tile = page.locator('.kpi').filter({ hasText: 'Cache hits' });
+  await expect(tile).toContainText('60.0%');
+  await expect(tile).toContainText('600 answers');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await expect(tile).toContainText('60.0%');
+  await expect(tile).toContainText(/40\.0% fresh · 20\.0% refreshed/);
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(tile).toContainText('600 answers');
+  await page.unroute('**/api/v1/stats/summary*');
+});
+
 // REQ: OBS-020 — Settings → System lists the listener probes: the e2e server's UDP listener
 // answers its own probe (every 5 s there), and probe queries stay out of the query log.
 test('obs_020 listener checks', async () => {
@@ -910,7 +935,9 @@ test('dns_006 cache page', async () => {
   await page.goto('/#/cache');
   const node = page.getByTestId('cache-node');
   await expect(node).toHaveCount(1);
-  await expect(node).toContainText('Hit rate');
+  // DNS-007 (ADR-119): fresh answers and those refreshed in the background, as one number.
+  await expect(node.getByTestId('cache-answered')).toContainText('last hour');
+  await expect(node).toContainText('Answered from the cache');
   await expect(node.getByTestId('cache-warm')).toContainText('cold (keeping the cache across restarts is off)');
   // REQ: OBS-021 — a fresh server has too few lookups to judge the size.
   await expect(node.getByTestId('cache-sizing')).toContainText('learning');

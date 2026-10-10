@@ -75,7 +75,7 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[simulate]` | change simulation over the query log: `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs` (1 to 300), `max_rows` (at least 1,000), `default_window` (at most `7d`); shared across a cluster; also in Settings → System | OBS-024, `docs/running.md` |
 | `[dns]` | the advertised EDNS UDP size; `nsid` (answer RFC 5001 NSID with this node's name) | DNS-005, DNS-021 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
-| `[cache]` | memory budget, TTL clamps, serve-stale, prefetch | `spec/03` §4 |
+| `[cache]` | memory budget, TTL clamps, serve-stale (`stale_answer_client_timeout_ms = 0` answers an expired name at once and refreshes it in the background: status `refreshed`), prefetch; per node | `spec/03` §4, `docs/running.md` |
 | `[telemetry]` | telemetry mode, query-log retention and privacy, Prometheus endpoint (`[telemetry.metrics]`, with `exemplars` for OpenMetrics), OTLP export of metrics and traces (`[telemetry.otlp]`: `traces_sample_every`, `traces_slow_ms`), device anomaly detection (`[telemetry.anomaly]`) | `spec/06`, OBS-013, OBS-017 |
 | `[upstream_check]` | second opinions: one forwarded question in `sample_every` asked again of another upstream and compared (off by default) | `spec/04` §9, OBS-019 |
 | `[probe]` | synthetic probes of every listener and extra targets: interval, timeout, certificate warning days | `spec/06` §9, OBS-020 |

@@ -45,9 +45,10 @@
   const advanced = $derived(currentMode() === 'advanced');
   // What each "Where time goes" row means (path/transport, or a wait stage).
   const paths: Record<string, string> = {
-    cache: 'Answered from the cache: a repeat question, no upstream asked. Usually well under a millisecond.',
+    cache:
+      'Answered from the cache: a repeat question, no upstream asked. Includes answers whose cached copy had just expired and was given at once while it was refreshed in the background. Usually well under a millisecond.',
     upstream:
-      'Not in the cache: asked an upstream resolver and waited for it. Also counts stale answers served because the upstream was slow, and SERVFAIL. Usually the slowest path.',
+      'Not in the cache: asked an upstream resolver and waited for it. Also counts stale answers served because the upstream was slow or failing, and SERVFAIL. Usually the slowest path.',
     local: 'Answered from names on your network (local records), without asking anyone.',
     synthesized:
       "Answered without looking anything up: blocked names, refused or rate-limited queries, malformed ones, and special names (like Firefox's DNS-over-HTTPS canary).",
@@ -180,11 +181,15 @@
     return poll(load, range.step === 'second' ? 5000 : 15000);
   });
 
-  // Queries over time, stacked by status (minor statuses folded into "other").
-  const main = ['blocked', 'cached', 'forwarded', 'local'] as const;
+  // Queries over time, stacked by status (minor statuses folded into "other"). DNS-007: answers
+  // refreshed in the background count as cached; the Advanced view shows them on their own.
+  const main = $derived(
+    advanced ? (['blocked', 'cached', 'refreshed', 'forwarded', 'local'] as const) : (['blocked', 'cached', 'forwarded', 'local'] as const),
+  );
   const colors: Record<string, string> = {
     blocked: '--s-blocked',
     cached: '--s-cached',
+    refreshed: '--s-refreshed',
     forwarded: '--s-forwarded',
     local: '--s-local',
     other: '--s-other',
@@ -195,7 +200,8 @@
     for (const b of buckets) {
       let rest = b.total;
       main.forEach((k, i) => {
-        const v = (b.byStatus[k] ?? 0) + (k === 'cached' ? (b.byStatus['stale'] ?? 0) : 0);
+        const extra = k === 'cached' ? (b.byStatus['stale'] ?? 0) + (advanced ? 0 : (b.byStatus['refreshed'] ?? 0)) : 0;
+        const v = (b.byStatus[k] ?? 0) + extra;
         series[i].values.push(v);
         rest -= v;
       });
@@ -239,7 +245,17 @@
   const share = (b: S['TimeBucket'], k: string) => (b.total ? ((b.byStatus[k] ?? 0) / b.total) * 100 : 0);
   const sparkTotal = $derived(buckets.map((b) => b.total));
   const sparkBlocked = $derived(buckets.map((b) => share(b, 'blocked')));
-  const sparkCached = $derived(buckets.map((b) => share(b, 'cached') + share(b, 'stale')));
+  const sparkCached = $derived(buckets.map((b) => share(b, 'cached') + share(b, 'stale') + share(b, 'refreshed')));
+  // DNS-007 — of the answers that weren't blocked or local, the share given from an expired
+  // cached copy while it was refreshed (the Advanced view's split of the cache tile).
+  const refreshedPercent = $derived(
+    summary && summary.cached + summary.forwarded > 0 ? ((summary.refreshed ?? 0) * 100) / (summary.cached + summary.forwarded) : null,
+  );
+  const cacheSub = $derived(
+    advanced && refreshedPercent != null && (summary?.refreshed ?? 0) > 0
+      ? `${pct((summary?.cacheHitPercent ?? 0) - refreshedPercent)} fresh · ${pct(refreshedPercent)} refreshed`
+      : `${short(summary?.cached)} answers`,
+  );
   const sparkFailures = $derived(buckets.map((b) => b.upstreamFailures));
 
   // T6.8 — the same statuses as the chart, as totals over the range.
@@ -293,7 +309,7 @@
     <!-- More blocking or more queries isn't good or bad, so those changes stay neutral. -->
     <Kpi label="Queries" value={short(summary?.queries)} sub={`last ${range.label}${scope ? ` · ${scopeLabel}` : ''}`} delta={change(summary?.queries, previous?.queries)} spark={sparkTotal} sparkColor="--s-forwarded" />
     <Kpi label="Blocked" value={pct(summary?.blockedPercent)} sub={`${short(summary?.blocked)} queries`} tone="bad" delta={change(summary?.blockedPercent, previous?.blockedPercent)} spark={sparkBlocked} sparkColor="--s-blocked" ring={summary?.blockedPercent} />
-    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={`${short(summary?.cached)} answers`} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
+    <Kpi label="Cache hits" value={pct(summary?.cacheHitPercent)} sub={cacheSub} tone="ok" delta={change(summary?.cacheHitPercent, previous?.cacheHitPercent)} good="up" spark={sparkCached} sparkColor="--s-cached" ring={summary?.cacheHitPercent} />
     <Kpi label="Upstream p90" value={ms(upstreamP90?.p90Ms)} sub={cacheP50 ? `cache p50 ${ms(cacheP50.p50Ms)}` : 'this hour'} delta={change(upstreamP90?.p90Ms, prevP90?.p90Ms)} good="down" />
     <Kpi label="Active clients" value={num(summary?.activeClients)} sub="this hour" delta={change(summary?.activeClients, previous?.activeClients)} />
     <Kpi label="NXDOMAIN / SERVFAIL" value={`${short(summary?.nxdomain)} / ${short(summary?.servfail)}`} sub={`last ${range.label}`} delta={change(summary?.servfail, previous?.servfail)} good="down" spark={sparkFailures} sparkColor="--s-blocked" />

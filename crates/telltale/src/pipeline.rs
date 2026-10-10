@@ -1858,7 +1858,10 @@ impl Pipeline {
         mut bytes: Vec<u8>,
         status: Status,
     ) -> (Vec<u8>, Status, Option<Rule>) {
-        if !matches!(status, Status::Forwarded | Status::Stale) {
+        if !matches!(
+            status,
+            Status::Forwarded | Status::Stale | Status::Refreshed
+        ) {
             return (bytes, status, None);
         }
         let Ok(q) = parse_query(req) else {
@@ -1997,9 +2000,16 @@ impl Pipeline {
         } else {
             self.settings.budget + Duration::from_millis(100)
         };
-        let answer = match tokio::time::timeout(wait, task).await {
-            Ok(Ok(Some(a))) => Some(a),
-            _ => None,
+        // REQ: DNS-007 — a zero wait answers from the expired entry at once (the spawned
+        // resolution carries on and refreshes it); a zero-length timer would still let an
+        // answer that lands within its tick win.
+        let answer = if stale_ok && wait.is_zero() {
+            None
+        } else {
+            match tokio::time::timeout(wait, task).await {
+                Ok(Ok(Some(a))) => Some(a),
+                _ => None,
+            }
         };
         let fallen = |r: Option<(Vec<u8>, Status)>| r.map(|(b, s)| (b, s, 0));
         match answer {
@@ -2039,6 +2049,26 @@ impl Pipeline {
                     )),
                 }
             }
+            // REQ: DNS-007 — with a zero wait, an expired entry is answered at once and the
+            // resolution above refreshes it: a cache answer (`refreshed`), not a failure.
+            None if stale_ok && self.settings.stale_answer_timeout.is_zero() => self
+                .fallback(
+                    &q,
+                    key,
+                    stale_ok,
+                    ede::NO_REACHABLE_AUTHORITY,
+                    "no upstream answered",
+                    &mut full(),
+                    transport,
+                )
+                .map(|(b, s)| {
+                    let s = if s == Status::Stale {
+                        Status::Refreshed
+                    } else {
+                        s
+                    };
+                    (b, s, 0)
+                }),
             None => fallen(self.fallback(
                 &q,
                 key,
@@ -3978,6 +4008,120 @@ groups = ["kids"]
         assert_eq!(forwarded[0].status, Status::Forwarded);
         assert_ne!(id, 0);
         assert_eq!(forwarded[0].upstream, id, "the upstream that answered");
+    }
+
+    /// REQ: DNS-007 — with `stale_answer_client_timeout_ms = 0`, an expired entry is answered
+    /// at once (`refreshed`, EDE 3, the stale TTL) while the upstream refreshes it, and the next
+    /// question is a fresh cache hit with the new answer. With the default wait and a working
+    /// upstream, the same question is simply forwarded.
+    #[tokio::test]
+    async fn dns_007_refreshed_answers_come_from_the_cache_at_once() {
+        use telltale_telemetry::event::Record;
+        // (answered without waiting, the answer)
+        async fn ask(p: &Arc<Pipeline>, meta: &RequestMeta) -> (bool, Vec<u8>) {
+            let mut out = [0u8; 4096];
+            let req = query("www.example.org", rtype::A, true);
+            match Handler(Arc::clone(p)).handle(&req, meta, &mut out) {
+                Response::Ready(len) => (true, out[..len].to_vec()),
+                Response::Deferred(f) => (false, f.await.unwrap_or_default()),
+                Response::Drop => (false, Vec::new()),
+            }
+        }
+        // EDE (option 15), two bytes long: info code 3 (Stale Answer), no text.
+        const EDE_STALE: [u8; 6] = [0, 15, 0, 2, 0, 3];
+
+        let up = fake_upstream(false).await;
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                format!(
+                    "[[upstream]]\nname = \"u\"\nurl = \"udp://{up}\"\n[[upstream_group]]\nname = \"default\"\nmembers = [\"u\"]\n"
+                ),
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let build = |wait: Duration| {
+            Pipeline::new(
+                Settings {
+                    stale_answer_timeout: wait,
+                    ..Settings::default()
+                },
+                Arc::new(Cache::new(CachePolicy::default())),
+                Arc::new(Router::from_config(&cfg).unwrap()),
+                Policy {
+                    clients: Arc::new(ClientTable::from_config(&cfg)),
+                    ..Policy::open()
+                },
+            )
+        };
+        // An answer for www.example.org that expired 100 s ago (TTL 300, cached 400 s ago).
+        let expire = |p: &Arc<Pipeline>| {
+            let req = query("www.example.org", rtype::A, false);
+            let q = parse_query(&req).unwrap();
+            let mut out = [0u8; 512];
+            let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+            b.answer_a(300, Ipv4Addr::new(198, 51, 100, 1)).unwrap();
+            let len = b.finish(None).unwrap();
+            let view = p
+                .current()
+                .router
+                .select(&Question::from_query(&q), &["default"])
+                .unwrap()
+                .view;
+            let then = Instant::now()
+                .checked_sub(Duration::from_secs(400))
+                .unwrap();
+            p.cache
+                .insert(&p.key(&q, view), &q, &out[..len], then)
+                .unwrap();
+        };
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let statuses = |p: &Arc<Pipeline>| {
+            let mut v = Vec::new();
+            p.telemetry.drainer().drain(|r| {
+                if let Record::Query(e, _) = r {
+                    v.push(e.status);
+                }
+            });
+            v
+        };
+        let p = build(Duration::ZERO);
+        expire(&p);
+        let (_, first) = ask(&p, &meta).await;
+        assert!(
+            contains(&first, &[198, 51, 100, 1]),
+            "the expired answer, at once"
+        );
+        assert!(contains(&first, &EDE_STALE), "EDE 3 (Stale Answer)");
+        assert_eq!(statuses(&p), vec![Status::Refreshed]);
+        assert_eq!(Status::Refreshed.path(), telltale_telemetry::Path::Cache);
+        // The refresh lands in the background: the next question is a fresh hit.
+        let mut fresh = Vec::new();
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (ready, r) = ask(&p, &meta).await;
+            if ready && contains(&r, &[192, 0, 2, 7]) {
+                fresh = r;
+                break;
+            }
+        }
+        assert!(!fresh.is_empty(), "the refreshed answer is cached");
+        assert!(!contains(&fresh, &EDE_STALE));
+        assert!(p.cache.stats().hits >= 1, "a fresh hit");
+
+        // The default wait with an upstream that answers: forwarded, never refreshed.
+        let p = build(Settings::default().stale_answer_timeout);
+        expire(&p);
+        let (_, r) = ask(&p, &meta).await;
+        assert!(contains(&r, &[192, 0, 2, 7]));
+        assert_eq!(statuses(&p), vec![Status::Forwarded]);
     }
 
     /// REQ: OBS-018 (T11.5) — a list in shadow mode is compiled but never blocks; the shadow

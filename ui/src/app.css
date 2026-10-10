@@ -16,6 +16,7 @@
   --info: #3b6fb6;
   --focus: #3b82f6;
   --s-cached: #1f8f74;
+  --s-refreshed: #6fbfa9;
   --s-forwarded: #3b6fb6;
   --s-blocked: #c2413a;
   --s-local: #8a63c7;
@@ -56,6 +57,7 @@
     --bad: #ef7067;
     --info: #78a5e6;
     --s-cached: #3cc49f;
+    --s-refreshed: #2a8a70;
     --s-forwarded: #78a5e6;
     --s-blocked: #ef7067;
     --s-local: #b494ea;
@@ -91,6 +93,7 @@
   --bad: #ef7067;
   --info: #78a5e6;
   --s-cached: #3cc49f;
+  --s-refreshed: #2a8a70;
   --s-forwarded: #78a5e6;
   --s-blocked: #ef7067;
   --s-local: #b494ea;

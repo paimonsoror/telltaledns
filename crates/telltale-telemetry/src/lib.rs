@@ -60,10 +60,15 @@ pub enum Status {
     ServFail,
     /// Not answered at all (runt, QR=1, loop, rate-limit drop).
     Dropped,
+    /// REQ: DNS-007 — an expired answer served at once from the cache while it's refreshed in
+    /// the background (RFC 8767 with a zero client response timer,
+    /// `[cache] stale_answer_client_timeout_ms = 0`): a cache answer, unlike [`Status::Stale`],
+    /// which says the upstreams failed or were slow. Last, so stored values keep their meaning.
+    Refreshed,
 }
 
 impl Status {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Cached,
         Self::Forwarded,
         Self::Stale,
@@ -75,6 +80,7 @@ impl Status {
         Self::Malformed,
         Self::ServFail,
         Self::Dropped,
+        Self::Refreshed,
     ];
     pub const fn label(self) -> &'static str {
         match self {
@@ -89,6 +95,7 @@ impl Status {
             Self::Malformed => "malformed",
             Self::ServFail => "servfail",
             Self::Dropped => "dropped",
+            Self::Refreshed => "refreshed",
         }
     }
     pub fn from_u8(v: u8) -> Option<Self> {
@@ -97,7 +104,7 @@ impl Status {
     /// Latency path this status belongs to (the histogram `path` label).
     pub const fn path(self) -> Path {
         match self {
-            Self::Cached => Path::Cache,
+            Self::Cached | Self::Refreshed => Path::Cache,
             Self::Forwarded | Self::Stale | Self::ServFail => Path::Upstream,
             Self::Local => Path::Local,
             _ => Path::Synthesized,

@@ -546,6 +546,15 @@ flowchart LR
 - **Cache:** answers are cached for their TTL (clamped by `[cache] min_ttl`/`max_ttl`). Negative answers are cached when the upstream includes an SOA. SERVFAIL is cached for 5 seconds. Hot entries are refreshed in the background just before they expire.
 - **Upstreams:** if an upstream is slow, the next one is tried *in parallel* rather than after a timeout, and the first good answer wins. An upstream that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. A SERVFAIL or REFUSED answer counts toward "more than half the time" but not toward "3 in a row", so a client retrying one broken domain can't bench a healthy upstream. Identical concurrent questions share one upstream request.
 - **Serve-stale:** if upstreams don't answer within 1.8 s (`[cache] stale_answer_client_timeout_ms`) and an expired answer is still in the cache (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer"), while the refresh continues in the background.
+- **Answering recently expired names at once:** devices keep answers themselves, so most repeat questions reach the resolver just after the answer expired, and a plain cache misses them. With `stale_answer_client_timeout_ms = 0` an expired answer is given at once (TTL 30, EDE 3) while it's refreshed in the background, the way Pi-hole's cache optimizer works by default. `stale_max_age` bounds how old it may be (an hour matches Pi-hole), and `min_ttl` keeps short-lived answers a little longer (Technitium's default is 10 s):
+  ```toml
+  [cache]
+  min_ttl = 10
+  stale_answer_client_timeout_ms = 0   # answer an expired name at once, refresh it in the background
+  stale_max_age = 3600
+  ```
+  These answers have the status `refreshed`, so `stale` keeps meaning "upstreams failed or were slow". The trade-off is that a name whose address changed within the hour is answered once with the old address (for 30 s) while the new one is fetched. `[cache]` is per node: set it on every node of a cluster.
+- **What the dashboard counts:** the **Cache hits** tile is every answer given from the cache: fresh, `refreshed`, or `stale`, out of the answers that weren't blocked or local. In the Advanced view its second line splits it ("41% fresh · 22% refreshed") and the status chart shows `refreshed` on its own. The Cache page's "Answered from the cache" is the same number per node, with the fresh share beside it. Prometheus counts a refreshed or stale answer as a cache miss plus one `telltale_cache_stale_served_total`; the Grafana dashboard's **Answered from cache** panel shows both lines.
 - **Privacy:** queries to upstreams carry a fresh random ID and source port, and none of the client's EDNS options (no client subnet, cookies, or MAC addresses are forwarded).
 - **Loop protection:** outbound queries carry a random per-process tag. If one comes back to us (an upstream that forwards to TelltaleDNS), it's dropped and an error is logged instead of looping forever.
 
@@ -1985,7 +1994,7 @@ Main metrics:
 
 | Metric | What it tells you |
 |---|---|
-| `telltale_queries_total{proto,status}` | queries by outcome: `cached`, `forwarded`, `stale`, `local`, `special`, `blocked`, `refused`, `rate_limited`, `malformed`, `servfail`, `dropped` |
+| `telltale_queries_total{proto,status}` | queries by outcome: `cached`, `refreshed` (an expired answer given at once while it's refreshed), `forwarded`, `stale`, `local`, `special`, `blocked`, `refused`, `rate_limited`, `malformed`, `servfail`, `dropped` |
 | `telltale_query_duration_seconds{path}` | latency histogram per path (`cache`, `upstream`, `local`, `synthesized`) |
 | `telltale_stage_duration_seconds{stage}` | time spent waiting for upstreams, per query that waited (`stage="upstream"`) |
 | `telltale_responses_total{rcode}`, `telltale_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |

@@ -1841,6 +1841,12 @@ impl Backend for ApiBackend {
         #[allow(clippy::cast_precision_loss)] // a percentage for display
         let hit_percent =
             (looked > 0).then(|| (s.hits as f64 / looked as f64 * 1000.0).round() / 10.0);
+        // REQ: DNS-007 — an expired entry answered (refreshed or stale) counts as a miss in the
+        // cache's own counters; answered from the cache all the same.
+        #[allow(clippy::cast_precision_loss)]
+        let answered_percent = (looked > 0).then(|| {
+            ((s.hits + s.stale_served).min(looked) as f64 / looked as f64 * 1000.0).round() / 10.0
+        });
         vec![telltale_api::model::CacheNodeStats {
             node: None,
             entries: s.entries as u64,
@@ -1848,6 +1854,7 @@ impl Backend for ApiBackend {
             hits: s.hits,
             misses: s.misses,
             hit_percent,
+            answered_percent,
             stale_served: s.stale_served,
             prefetches: s.prefetches,
             evictions: s.evictions,
@@ -4110,6 +4117,7 @@ fn cache_settings(c: &telltale_config::CacheConfig) -> telltale_api::model::Cach
         servfail_ttl_seconds: c.servfail_ttl,
         serve_stale: c.serve_stale,
         stale_max_age_seconds: c.stale_max_age,
+        stale_answer_wait_ms: Some(c.stale_answer_client_timeout_ms),
         prefetch: c.prefetch,
         prefetch_threshold_percent: c.prefetch_threshold_pct,
         prefetch_min_hits: c.prefetch_min_hits,

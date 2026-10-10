@@ -14,7 +14,7 @@
   import CacheCard from '../lib/components/CacheCard.svelte';
   import { can } from '../lib/session.svelte';
 
-  const STATUSES = ['blocked', 'cached', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
+  const STATUSES = ['blocked', 'cached', 'refreshed', 'forwarded', 'local', 'stale', 'special', 'refused', 'servfail', 'rate_limited'];
   const RANGES = [
     { v: '-15m', l: '15 min' },
     { v: '-1h', l: '1 h' },

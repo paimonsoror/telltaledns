@@ -7016,6 +7016,14 @@
           "uncacheable"
         ],
         "properties": {
+          "answeredPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "REQ: DNS-007 — lookups answered from the cache, fresh or from an expired entry\n(refreshed in the background, or stale), percent: what the dashboard's cache tile shows.\nAbsent before any lookup, and from older nodes."
+          },
           "bytes": {
             "type": "integer",
             "format": "int64",
@@ -7044,7 +7052,7 @@
               "null"
             ],
             "format": "double",
-            "description": "hits / (hits + misses), percent; absent before any lookup."
+            "description": "hits / (hits + misses), percent; absent before any lookup. Fresh entries only."
           },
           "hits": {
             "type": "integer",
@@ -7131,6 +7139,14 @@
           "bytes"
         ],
         "properties": {
+          "answeredPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "REQ: DNS-007 — lookups answered from the cache (fresh, refreshed, or stale) in the\ninterval, percent; absent without lookups, and from older nodes."
+          },
           "at": {
             "type": "string",
             "description": "End of the interval (RFC 3339)."
@@ -7252,6 +7268,15 @@
             "type": "integer",
             "format": "int32",
             "description": "How long SERVFAIL is cached, RFC 9520.",
+            "minimum": 0
+          },
+          "staleAnswerWaitMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "REQ: DNS-007 — how long an expired answer waits for the upstream before it's given\n(`[cache] stale_answer_client_timeout_ms`): 0 answers at once and refreshes in the\nbackground. Absent from older nodes.",
             "minimum": 0
           },
           "staleMaxAgeSeconds": {
@@ -10305,6 +10330,14 @@
                 "uncacheable"
               ],
               "properties": {
+                "answeredPercent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double",
+                  "description": "REQ: DNS-007 — lookups answered from the cache, fresh or from an expired entry\n(refreshed in the background, or stale), percent: what the dashboard's cache tile shows.\nAbsent before any lookup, and from older nodes."
+                },
                 "bytes": {
                   "type": "integer",
                   "format": "int64",
@@ -10333,7 +10366,7 @@
                     "null"
                   ],
                   "format": "double",
-                  "description": "hits / (hits + misses), percent; absent before any lookup."
+                  "description": "hits / (hits + misses), percent; absent before any lookup. Fresh entries only."
                 },
                 "hits": {
                   "type": "integer",
@@ -14524,7 +14557,7 @@
           "cached": {
             "type": "integer",
             "format": "int64",
-            "description": "Answered from cache (fresh or stale).",
+            "description": "Answered from cache (fresh, refreshed in the background, or stale).",
             "minimum": 0
           },
           "forwarded": {
@@ -14559,6 +14592,12 @@
           "queries": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "refreshed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "REQ: DNS-007 — of `cached`, answers whose entry had expired and was answered at once\nwhile it was refreshed in the background (`[cache] stale_answer_client_timeout_ms = 0`).",
             "minimum": 0
           },
           "servfail": {

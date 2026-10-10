@@ -233,13 +233,13 @@
     },
     {
       "type": "stat",
-      "title": "Cache hits",
+      "title": "Answered from cache",
       "id": 4,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Fresh cache hits over all cache lookups.",
+      "description": "Cache lookups answered from the cache: fresh hits, plus expired answers given at once while they were refreshed in the background ([cache] stale_answer_client_timeout_ms = 0) or kept answering while upstreams failed. The web UI's cache tile shows the same number.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -252,7 +252,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[5m])) / (sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[5m])) + sum(rate(telltale_cache_misses_total{job=~\"$job\", instance=~\"$instance\"}[5m])))",
+          "expr": "(sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[5m])) + sum(rate(telltale_cache_stale_served_total{job=~\"$job\", instance=~\"$instance\"}[5m]))) / (sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[5m])) + sum(rate(telltale_cache_misses_total{job=~\"$job\", instance=~\"$instance\"}[5m])))",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -636,6 +636,21 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "dark-orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "refreshed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-green"
                 }
               }
             ]
@@ -1697,8 +1712,74 @@
     },
     {
       "type": "timeseries",
-      "title": "Cache activity",
+      "title": "Answered from cache",
       "id": 29,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The gap between the lines is answers given from an expired entry while it was refreshed in the background (or while upstreams failed): with [cache] stale_answer_client_timeout_ms = 0 it shows how much the cache gains from answering at once.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 58
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) + sum(rate(telltale_cache_stale_served_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval]))) / (sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) + sum(rate(telltale_cache_misses_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "answered from cache",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) / (sum(rate(telltale_cache_hits_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])) + sum(rate(telltale_cache_misses_total{job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "fresh hits only",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache activity",
+      "id": 30,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1706,8 +1787,8 @@
       "description": "Cache lookups and maintenance per second.",
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 0,
+        "w": 8,
+        "x": 8,
         "y": 58
       },
       "targets": [
@@ -1791,7 +1872,7 @@
     {
       "type": "timeseries",
       "title": "Cache size",
-      "id": 30,
+      "id": 31,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1799,8 +1880,8 @@
       "description": "Approximate cache memory.",
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 58
       },
       "targets": [
@@ -1848,7 +1929,7 @@
     {
       "type": "row",
       "title": "Clients",
-      "id": 31,
+      "id": 32,
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1861,7 +1942,7 @@
     {
       "type": "timeseries",
       "title": "Top clients",
-      "id": 32,
+      "id": 33,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1918,7 +1999,7 @@
     {
       "type": "row",
       "title": "Transports",
-      "id": 33,
+      "id": 34,
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1931,7 +2012,7 @@
     {
       "type": "timeseries",
       "title": "Queries by transport",
-      "id": 34,
+      "id": 35,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1988,7 +2069,7 @@
     {
       "type": "timeseries",
       "title": "Encrypted DNS problems",
-      "id": 35,
+      "id": 36,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2081,7 +2162,7 @@
     {
       "type": "row",
       "title": "TelltaleDNS",
-      "id": 36,
+      "id": 37,
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -2094,7 +2175,7 @@
     {
       "type": "stat",
       "title": "Uptime",
-      "id": 37,
+      "id": 38,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2153,7 +2234,7 @@
     {
       "type": "stat",
       "title": "Restarts",
-      "id": 38,
+      "id": 39,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2217,7 +2298,7 @@
     {
       "type": "stat",
       "title": "After a crash or a kill",
-      "id": 39,
+      "id": 40,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2281,7 +2362,7 @@
     {
       "type": "stat",
       "title": "OOM kills",
-      "id": 40,
+      "id": 41,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2345,7 +2426,7 @@
     {
       "type": "timeseries",
       "title": "Telemetry and query log",
-      "id": 41,
+      "id": 42,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2429,7 +2510,7 @@
     {
       "type": "timeseries",
       "title": "Memory",
-      "id": 42,
+      "id": 43,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2495,7 +2576,7 @@
     {
       "type": "timeseries",
       "title": "Machine",
-      "id": 43,
+      "id": 44,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2552,7 +2633,7 @@
     {
       "type": "timeseries",
       "title": "Temperature and disk",
-      "id": 44,
+      "id": 45,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2618,7 +2699,7 @@
     {
       "type": "state-timeline",
       "title": "Maintenance",
-      "id": 45,
+      "id": 46,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
