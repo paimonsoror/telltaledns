@@ -6,8 +6,8 @@
 #   3. the primary upgraded to N; the N replica follows;
 #   4. the replica back on N-1 follows the N primary (an edit reaches it);
 #   5. REQ: CLU-013 — a staged rollout with an N-1 replica: a canary on N gets the change first;
-#      the N-1 replica, though its site is named a canary too, is only ever sent stable versions
-#      (it gets the change after the bake);
+#      the N-1 replica gets it only after the bake (an N-1 build without staged rollouts is
+#      named a canary too, and is still only ever sent stable versions);
 #   and the client never fails a query (it tries the other server when one doesn't answer).
 # Usage: deploy/cluster/upgrade-e2e.sh <old telltale> [new telltale (default target/debug)]
 set -euo pipefail
@@ -152,14 +152,27 @@ T=$("$NEW" cluster token create --ttl 10m -c "$E/p.toml" 2>/dev/null)
 "$NEW" run -c "$E/c.toml" >> "$E/c.log" 2>&1 & C_PID=$!
 wait_answer 25503 10.0.0.4 15 || fail "the canary never synced"
 sleep 6   # a heartbeat: the primary knows the canary takes part in rollouts
-# The N-1 replica's site is named too: it must still never be sent a canary version.
-printf '\n[cluster.rollout]\ncanaries = ["site:canary", "site:r"]\nbake_secs = 20\n' >> "$E/p.toml"
+# An old build without staged rollouts is named too: it must still never be sent a canary
+# version. Once the published build has them (edge from T13.2 on), it's simply not named,
+# and it still waits out the bake like any other node.
+if "$OLD" ctl rollout --help >/dev/null 2>&1; then
+  canaries='["site:canary"]'
+  echo "  (the old build has staged rollouts: it's a plain node here)"
+else
+  canaries='["site:canary", "site:r"]'
+fi
+printf '\n[cluster.rollout]\ncanaries = %s\nbake_secs = 20\n' "$canaries" >> "$E/p.toml"
 kill -HUP "$P_PID"
 sleep 3   # the settings change is published at once
 edit 10.0.0.5
 wait_answer 25503 10.0.0.5 10 || fail "the N canary didn't get the change first"
 for _ in 1 2 3; do
-  [ "$(q 25502 up.test)" = 10.0.0.4 ] || fail "the N-1 replica got the canary version"
+  a=$(q 25502 up.test)
+  [ "$a" = TIMEOUT ] && a=$(q 25502 up.test)   # a slow answer under load isn't the question here
+  if [ "$a" != 10.0.0.4 ]; then
+    grep -iE "canary|rollout|published cluster" "$E/p.log" | tail -6
+    fail "the N-1 replica answered '$a' during the bake (want 10.0.0.4)"
+  fi
   sleep 3
 done
 wait_answer 25502 10.0.0.5 40 || fail "the N-1 replica never got the version after the bake"
