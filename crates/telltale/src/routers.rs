@@ -281,10 +281,18 @@ pub(crate) async fn run(
             } else {
                 telltale_filter::fetch::Client::new(Arc::clone(&resolver), &[])
             };
-            let client = client.inspect_err(
-                |e| warn!(router = %r.name, error = %e, "router integration: TLS settings"),
-            );
-            let Ok(client) = client else { continue };
+            // Like a failed poll, a TLS setting that can't load (a node without the CA file, ADR-120)
+            // is logged once until it works.
+            let client = match client {
+                Ok(c) => c,
+                Err(e) => {
+                    if !failing.get(r.name.as_str()).copied().unwrap_or(false) {
+                        warn!(router = %r.name, error = %e, "router integration: TLS settings");
+                    }
+                    failing.insert(r.name.to_string(), true);
+                    continue;
+                }
+            };
             // REQ: T8.2 — a console whose certificate names something other than `url`'s host.
             let client = client.with_server_name(
                 r.tls_server_name
