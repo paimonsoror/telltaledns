@@ -285,6 +285,12 @@ pub(crate) async fn run(
                 |e| warn!(router = %r.name, error = %e, "router integration: TLS settings"),
             );
             let Ok(client) = client else { continue };
+            // REQ: T8.2 — a console whose certificate names something other than `url`'s host.
+            let client = client.with_server_name(
+                r.tls_server_name
+                    .as_ref()
+                    .map(telltale_config::SafeString::as_str),
+            );
             let result = match r.kind {
                 RouterKind::Unifi => poll_unifi(&client, r).await,
                 RouterKind::Opnsense => poll_opnsense(&client, r).await,

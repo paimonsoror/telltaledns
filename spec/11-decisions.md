@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-120 — Router integrations verify self-signed consoles by the name in their certificate (Proposed)
+**Context:** a UniFi console's own certificate is self-signed and names `unifi.local` (plus `localhost` and loopback), never the address it's reached at. The documented `tls_ca` setup therefore always failed ("certificate not valid for name 192.168.3.1", checked against the owner's console on 2026-10-11), leaving `tls_insecure_skip_verify` as the only working option. With verification off, anything on the network could pose as the console and receive the API key.
+**Decision:**
+- `[[router]] tls_server_name`: the name the certificate is checked against (and sent as SNI) instead of the URL's host. With the console's certificate as `tls_ca`, only that certificate is trusted, and it's verified.
+- Validation: a host name; only for `https://` URLs; an error together with `tls_insecure_skip_verify` (it would do nothing). The `tls_insecure_skip_verify` warning points at the alternative.
+- Implemented as `fetch::Client::with_server_name`, which applies to every request that client makes; each router gets its own client.
+**Consequences:**
+- When the console renews its certificate (the owner's expires 2027-04-13), the saved copy no longer matches. Polls fail and are logged once, and names stay as last read. DNS is never affected. Save the new certificate.
+- `[[router]]` is shared configuration, so every node needs the key and certificate files at the same paths. Helm resolver pods don't mount `secretMounts`: each logs one warning, and the controller (which serves the UI) reads the router.
+
 ## ADR-119 — Expired answers given at once are `refreshed`, a cache answer; `stale` keeps meaning failure (Proposed)
 **Context:** the 2026-10-10 live review found a steady-state cache hit rate of about 6%: most repeat questions arrive just after their answer expired (devices cache too). The owner chose Pi-hole's behavior, an expired answer given at once while it's refreshed (RFC 8767 with a zero client response timer, `[cache] stale_answer_client_timeout_ms = 0`), with Technitium's 10 s TTL floor. Those answers were `stale`, the status that also says "upstreams failed or were slow", and counted on the upstream latency path, so the change would hide upstream trouble and make upstream latency look faster than it is. The owner asked that general users see one cache number and advanced users the split.
 **Decision:**

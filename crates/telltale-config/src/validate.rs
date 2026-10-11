@@ -264,7 +264,31 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
             r.err(format!("{p}.interval_secs"), "at least 30 seconds");
         }
         if x.tls_insecure_skip_verify {
-            r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca)"));
+            r.warn(format!("{p}.tls_insecure_skip_verify: the router's certificate isn't checked (prefer tls_ca, with tls_server_name if the certificate doesn't name the address)"));
+        }
+        if let Some(n) = &x.tls_server_name {
+            let host_name = !n.is_empty()
+                && n.len() <= 253
+                && n.split('.').all(|l| {
+                    !l.is_empty()
+                        && l.len() <= 63
+                        && !l.starts_with('-')
+                        && !l.ends_with('-')
+                        && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                });
+            if !host_name {
+                r.err(
+                    format!("{p}.tls_server_name"),
+                    "a host name, e.g. unifi.local",
+                );
+            } else if !x.url.starts_with("https://") {
+                r.err(format!("{p}.tls_server_name"), "only for an https:// url");
+            } else if x.tls_insecure_skip_verify {
+                r.err(
+                    format!("{p}.tls_server_name"),
+                    "has no effect with tls_insecure_skip_verify (the certificate isn't checked)",
+                );
+            }
         }
     }
 }

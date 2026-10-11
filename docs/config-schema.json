@@ -2829,6 +2829,14 @@
           "description": "Skip certificate verification (dangerous; logs a warning).",
           "type": "boolean"
         },
+        "tls_server_name": {
+          "description": "The name the console's certificate is checked against, when `url` uses another (its\naddress). A UniFi console's own certificate names `unifi.local`: with that here and the\ncertificate as `tls_ca`, it's verified.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
         "type": {
           "description": "`unifi` (UniFi OS consoles and the Network application) or `opnsense`.",
           "$ref": "#/$defs/RouterKind"

@@ -108,6 +108,9 @@ pub struct Client {
     user_agent: String,
     /// Whether link-local and cloud-metadata addresses may be fetched ([`Client::allow_link_local`]).
     link_local: bool,
+    /// The name the server's certificate is checked against, instead of the URL's host
+    /// ([`Client::with_server_name`]).
+    server_name: Option<String>,
 }
 
 /// REQ: API-002, AGT-009 (review 06 q5) — addresses no list or integration needs and a
@@ -151,6 +154,7 @@ impl Client {
                 env!("CARGO_PKG_VERSION")
             ),
             link_local: false,
+            server_name: None,
         })
     }
 
@@ -160,6 +164,23 @@ impl Client {
     pub fn allow_link_local(mut self, allow: bool) -> Self {
         self.link_local = allow;
         self
+    }
+
+    /// REQ: T8.2 — checks the server's certificate against `name` instead of the URL's host
+    /// (also sent as SNI), for every request this client makes. A UniFi console's
+    /// self-signed certificate names `unifi.local`, never its address: with this and the
+    /// certificate as `tls_ca`, it's verified while connecting by address.
+    #[must_use]
+    pub fn with_server_name(mut self, name: Option<&str>) -> Self {
+        self.server_name = name.map(str::to_owned);
+        self
+    }
+
+    /// The TLS name for a connection to `bare_host`.
+    fn tls_name(&self, bare_host: &str) -> Result<ServerName<'static>, HttpError> {
+        let name = self.server_name.as_deref().unwrap_or(bare_host);
+        ServerName::try_from(name.to_owned())
+            .map_err(|e| HttpError::fatal(format!("invalid TLS name {name}: {e}")))
     }
 
     /// A client that also trusts the certificates in the PEM file at `path` (a self-signed
@@ -193,6 +214,7 @@ impl Client {
                 env!("CARGO_PKG_VERSION")
             ),
             link_local: false,
+            server_name: None,
         })
     }
 
@@ -267,8 +289,7 @@ impl Client {
             .map_err(|e| HttpError::fatal(format!("bad request: {e}")))?;
 
         let resp = if https {
-            let name = ServerName::try_from(bare_host.to_owned())
-                .map_err(|e| HttpError::fatal(format!("invalid TLS name {bare_host}: {e}")))?;
+            let name = self.tls_name(bare_host)?;
             let tls = self
                 .tls
                 .connect(name, tcp)
@@ -371,8 +392,7 @@ impl Client {
             .body(http_body_util::Full::new(Bytes::from(body)))
             .map_err(|e| HttpError::fatal(format!("bad request: {e}")))?;
         let resp = if https {
-            let name = ServerName::try_from(bare_host.to_owned())
-                .map_err(|e| HttpError::fatal(format!("invalid TLS name {bare_host}: {e}")))?;
+            let name = self.tls_name(bare_host)?;
             let tls = self
                 .tls
                 .connect(name, tcp)

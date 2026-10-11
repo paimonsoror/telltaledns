@@ -1076,3 +1076,48 @@ fn flt_003_max_regexes_setting() {
     let errs = load_str("[filter]\nmax_regexes = 100001\n").unwrap_err();
     assert!(paths(&errs).contains(&"filter.max_regexes"));
 }
+
+/// REQ: T8.2 — `[[router]]`: the credentials each kind needs, and `tls_server_name` (a host
+/// name, only for https, and not with verification off).
+#[test]
+fn t8_2_routers_are_validated() {
+    const UNIFI: &str = "[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\napi_key_file = \"/k\"\n";
+    let ok = load_str(&format!(
+        "{UNIFI}tls_ca = \"/ca.pem\"\ntls_server_name = \"unifi.local\"\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        ok.config.router[0]
+            .tls_server_name
+            .as_ref()
+            .map(telltale_config::SafeString::as_str),
+        Some("unifi.local")
+    );
+    assert!(
+        !ok.warnings.iter().any(|w| w.contains("router")),
+        "{:?}",
+        ok.warnings
+    );
+
+    let errs =
+        load_str("[[router]]\nname = \"udm\"\ntype = \"unifi\"\nurl = \"https://192.168.1.1\"\n")
+            .unwrap_err();
+    assert_eq!(paths(&errs), ["router[0]"]);
+    let errs = load_str(&format!("{UNIFI}tls_server_name = \"not a name\"\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["router[0].tls_server_name"]);
+    let errs = load_str(&format!(
+        "{UNIFI}tls_insecure_skip_verify = true\ntls_server_name = \"unifi.local\"\n"
+    ))
+    .unwrap_err();
+    assert_eq!(paths(&errs), ["router[0].tls_server_name"]);
+    let http = UNIFI.replace("https://", "http://");
+    let errs = load_str(&format!("{http}tls_server_name = \"unifi.local\"\n")).unwrap_err();
+    assert_eq!(paths(&errs), ["router[0].tls_server_name"]);
+    // Verification off still loads, with a warning that points at the alternative.
+    let off = load_str(&format!("{UNIFI}tls_insecure_skip_verify = true\n")).unwrap();
+    assert!(
+        off.warnings.iter().any(|w| w.contains("tls_server_name")),
+        "{:?}",
+        off.warnings
+    );
+}

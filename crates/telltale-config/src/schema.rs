@@ -1004,6 +1004,11 @@ pub struct RouterConfig {
     /// A PEM file with the console's certificate (or its CA), for self-signed consoles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_ca: Option<SafeString>,
+    /// The name the console's certificate is checked against, when `url` uses another (its
+    /// address). A UniFi console's own certificate names `unifi.local`: with that here and the
+    /// certificate as `tls_ca`, it's verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<SafeString>,
     /// Skip certificate verification (dangerous; logs a warning).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tls_insecure_skip_verify: bool,

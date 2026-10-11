@@ -724,6 +724,28 @@ async fn flt_004_client_tls_options() {
     assert!(e.contains("nope.pem"), "{e}");
 }
 
+/// REQ: T8.2 — a console reached by address whose certificate names something else (a UniFi
+/// console's `unifi.local`): its certificate as the CA doesn't match the address, and does
+/// with the name it holds as `tls_server_name`. A different name still fails.
+#[tokio::test]
+async fn t8_2_client_tls_server_name() {
+    let (acceptor, pem) = tls_pem();
+    let srv = serve(handler(|_, _| ok("hello")), Some(acceptor)).await;
+    let url = srv.url("https", "127.0.0.1", "/x");
+    let get = || http::Request::get(url.clone()).body(Vec::new()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, &pem).unwrap();
+    let with_ca = || Client::with_ca_file(Arc::new(Loopback), ca.to_str().unwrap()).unwrap();
+
+    let e = with_ca().request(get(), 1024).await.unwrap_err();
+    assert!(e.message.contains("TLS"), "{}", e.message);
+    let named = with_ca().with_server_name(Some("lists.test"));
+    assert_eq!(named.request(get(), 1024).await.unwrap().body(), b"hello");
+    let wrong = with_ca().with_server_name(Some("other.test"));
+    assert!(wrong.request(get(), 1024).await.is_err());
+}
+
 /// REQ: FLT-004 — the system resolver finds loopback for `localhost`.
 #[tokio::test]
 async fn flt_004_system_resolver() {
