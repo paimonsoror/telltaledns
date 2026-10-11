@@ -257,6 +257,7 @@ impl<H: QueryHandler> Worker<H> {
             let (sent, failed) = b.flush(fd);
             st.replied.fetch_add(sent as u64, Ordering::Relaxed);
             st.send_errors.fetch_add(failed as u64, Ordering::Relaxed);
+            self.handler.sent();
         }
     }
 
@@ -291,6 +292,7 @@ impl<H: QueryHandler> Worker<H> {
                 Response::Deferred(fut) => self.defer(fut, peer, None),
                 Response::Drop => {}
             }
+            self.handler.sent();
         }
     }
 }

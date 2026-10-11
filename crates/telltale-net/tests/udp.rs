@@ -169,3 +169,53 @@ fn dns_001_handler_can_drop() {
     assert!(c.recv_from(&mut buf).is_err(), "no reply expected");
     listener.shutdown();
 }
+
+/// Counts `sent` calls; `sent` is slow, like background work started after the replies.
+struct AfterSend {
+    sent: std::sync::atomic::AtomicU64,
+}
+
+impl telltale_net::QueryHandler for AfterSend {
+    fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response {
+        echo(req, meta, out)
+    }
+
+    fn sent(&self) {
+        std::thread::sleep(Duration::from_millis(400));
+        self.sent.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// REQ: DNS-007, DNS-008 — the worker calls `sent` once a batch's answers are out, so work
+/// started there (a cache refresh) never delays them.
+#[test]
+fn dns_007_sent_runs_after_the_answers_leave() {
+    let rt = rt();
+    let h = Arc::new(AfterSend {
+        sent: std::sync::atomic::AtomicU64::new(0),
+    });
+    let listener = UdpListener::spawn(
+        &UdpConfig::new("127.0.0.1:0".parse().unwrap(), 1),
+        &h,
+        rt.handle(),
+    )
+    .unwrap();
+    let c = client();
+    let start = std::time::Instant::now();
+    c.send_to(&[0, 7, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0], listener.local_addr())
+        .unwrap();
+    let mut buf = [0u8; 64];
+    let (n, _) = c.recv_from(&mut buf).unwrap();
+    assert_eq!(n, 12);
+    assert!(
+        start.elapsed() < Duration::from_millis(300),
+        "the answer didn't wait for sent: {:?}",
+        start.elapsed()
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while h.sent.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(h.sent.load(Ordering::Relaxed) >= 1, "sent was called");
+    listener.shutdown();
+}

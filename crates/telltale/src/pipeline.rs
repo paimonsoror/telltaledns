@@ -451,6 +451,41 @@ impl FilterState {
 thread_local! {
     /// Per-thread regex caches for the matcher (allocated on first use and after swaps).
     static FILTER_SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+    /// REQ: DNS-007, DNS-008 — cache refreshes a UDP worker thread queued while answering,
+    /// started by `Handler::sent` once the batch's answers are out.
+    static REFRESHES: RefCell<Vec<Refresh>> = const { RefCell::new(Vec::new()) };
+}
+
+/// More than this queued on one thread (a caller that never calls `sent`): start at once.
+const MAX_QUEUED_REFRESHES: usize = 256;
+
+/// One background cache refresh (a prefetch, or an expired entry just answered).
+struct Refresh {
+    pipe: Arc<Pipeline>,
+    req: Vec<u8>,
+    key: CacheKey,
+    view: u16,
+    permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Refresh {
+    fn start(self) {
+        let Self {
+            pipe,
+            req,
+            key,
+            view,
+            permit,
+        } = self;
+        // The UDP worker threads have no ambient runtime: spawn on the handle captured at
+        // construction, never `tokio::spawn` (it panics).
+        let Some(rt) = pipe.rt.clone() else {
+            return;
+        };
+        rt.spawn(async move {
+            let _ = pipe.resolve_shared(req, key, view, permit).await;
+        });
+    }
 }
 
 /// The part of the pipeline that a config reload replaces (OPS-009).
@@ -1556,6 +1591,38 @@ impl Pipeline {
                 }
                 Response::Ready(self.finish(&q, out, len, meta.transport))
             }
+            // REQ: DNS-007 (ADR-119) — with a zero wait, an expired entry is answered here, like a
+            // hit (TTL `stale_answer_ttl`, EDE 3), and refreshed in the background the way a
+            // prefetch is, after the answer is sent (RFC 8767 §5 with a zero client response
+            // timer). Deferring it cost a task, a full-size buffer, and a second parse per
+            // answer. DNS64 clients, and an entry gone since the lookup above, take the deferred
+            // path.
+            Lookup::Expired if dns64.is_none() && self.settings.stale_answer_timeout.is_zero() => {
+                let edns = response_edns(
+                    &q,
+                    self.settings.edns_payload,
+                    Some((ede::STALE_ANSWER, "")),
+                );
+                let stale = Client::from_query(&q, edns);
+                let Some(len) = self.cache.get_stale(&key, &q.qname, &stale, start, out) else {
+                    return self.defer(req, meta, key, sel.view, true, start, *oc, who, None);
+                };
+                // Overloaded (no permit for the refresh): still answered, as `stale`.
+                oc.status = if self.prefetch(req, key, sel.view) {
+                    Status::Refreshed
+                } else {
+                    Status::Stale
+                };
+                let len = match self.cname_block(&q, who, out, len) {
+                    Some((blocked, rule)) => {
+                        oc.status = Status::Blocked;
+                        oc.rule = Some(rule);
+                        blocked
+                    }
+                    None => len,
+                };
+                Response::Ready(self.finish(&q, out, len, meta.transport))
+            }
             Lookup::Expired => self.defer(req, meta, key, sel.view, true, start, *oc, who, dns64),
             Lookup::Miss => self.defer(req, meta, key, sel.view, false, start, *oc, who, dns64),
         }
@@ -2050,7 +2117,9 @@ impl Pipeline {
                 }
             }
             // REQ: DNS-007 — with a zero wait, an expired entry is answered at once and the
-            // resolution above refreshes it: a cache answer (`refreshed`), not a failure.
+            // resolution above refreshes it: a cache answer (`refreshed`), not a failure. Most
+            // are answered synchronously (`resolve_or_defer`); DNS64 clients, and an entry
+            // evicted between the two lookups, land here.
             None if stale_ok && self.settings.stale_answer_timeout.is_zero() => self
                 .fallback(
                     &q,
@@ -2252,21 +2321,41 @@ impl Pipeline {
         Some((std::mem::take(out), status))
     }
 
-    /// Refreshes a hot entry in the background before it expires (DNS-008).
-    fn prefetch(self: &Arc<Self>, req: &[u8], key: CacheKey, view: u16) {
+    /// Refreshes a hot entry in the background before it expires (DNS-008), or an expired one
+    /// just answered (DNS-007). False if it couldn't start (overloaded, or no runtime).
+    fn prefetch(self: &Arc<Self>, req: &[u8], key: CacheKey, view: u16) -> bool {
+        if self.rt.is_none() {
+            return false;
+        }
         let Ok(permit) = Arc::clone(&self.inflight).try_acquire_owned() else {
-            return;
+            return false;
         };
-        // The cache-hit path runs on dedicated UDP worker threads with no ambient runtime:
-        // spawn on the handle captured at construction, never `tokio::spawn` (it panics).
-        let Some(rt) = &self.rt else {
-            return;
+        let refresh = Refresh {
+            pipe: Arc::clone(self),
+            req: req.to_vec(),
+            key,
+            view,
+            permit,
         };
-        let this = Arc::clone(self);
-        let req = req.to_vec();
-        rt.spawn(async move {
-            let _ = this.resolve_shared(req, key, view, permit).await;
-        });
+        // REQ: DNS-007 — on a UDP worker thread (no ambient runtime), the refresh starts after
+        // this batch's answers are sent (`Handler::sent`). Starting it wakes a runtime worker;
+        // first, on an idle node, that cost each refreshed answer 50–400 µs (2026-10-11 review:
+        // p50 78 µs and p99 ~450 µs live, vs 25 and 50 µs for a fresh hit).
+        if tokio::runtime::Handle::try_current().is_err() {
+            let full = REFRESHES.with(move |q| match q.try_borrow_mut() {
+                Ok(mut q) if q.len() < MAX_QUEUED_REFRESHES => {
+                    q.push(refresh);
+                    None
+                }
+                _ => Some(refresh),
+            });
+            if let Some(refresh) = full {
+                refresh.start();
+            }
+            return true;
+        }
+        refresh.start();
+        true
     }
 }
 
@@ -2537,6 +2626,17 @@ impl QueryHandler for Handler {
             Response::Deferred(_) => {}
         }
         resp
+    }
+
+    /// REQ: DNS-007, DNS-008 — the batch's answers are out: start the refreshes it queued.
+    fn sent(&self) {
+        REFRESHES.with(|q| {
+            if let Ok(mut q) = q.try_borrow_mut() {
+                for r in q.drain(..) {
+                    r.start();
+                }
+            }
+        });
     }
 }
 
@@ -4094,13 +4194,12 @@ groups = ["kids"]
         };
         let p = build(Duration::ZERO);
         expire(&p);
-        let (_, first) = ask(&p, &meta).await;
-        assert!(
-            contains(&first, &[198, 51, 100, 1]),
-            "the expired answer, at once"
-        );
+        let (ready, first) = ask(&p, &meta).await;
+        assert!(ready, "answered on the synchronous path, like a hit");
+        assert!(contains(&first, &[198, 51, 100, 1]), "the expired answer");
         assert!(contains(&first, &EDE_STALE), "EDE 3 (Stale Answer)");
         assert_eq!(statuses(&p), vec![Status::Refreshed]);
+        assert_eq!(p.cache.stats().stale_served, 1, "counted as a stale serve");
         assert_eq!(Status::Refreshed.path(), telltale_telemetry::Path::Cache);
         // The refresh lands in the background: the next question is a fresh hit.
         let mut fresh = Vec::new();
@@ -4122,6 +4221,127 @@ groups = ["kids"]
         let (_, r) = ask(&p, &meta).await;
         assert!(contains(&r, &[192, 0, 2, 7]));
         assert_eq!(statuses(&p), vec![Status::Forwarded]);
+    }
+
+    /// A pipeline with a zero stale wait, `max_inflight` permits, upstream `up`, and an answer
+    /// for www.example.org (198.51.100.1) that expired 100 s ago (TTL 300, cached 400 s ago).
+    fn expired_pipeline(up: &str, max_inflight: usize) -> Arc<Pipeline> {
+        let cfg: telltale_config::Config = telltale_config::Loader::new()
+            .toml_str(
+                "t.toml",
+                format!(
+                    "[[upstream]]
+name = \"u\"
+url = \"udp://{up}\"
+[[upstream_group]]
+name = \"default\"
+members = [\"u\"]
+"
+                ),
+            )
+            .env(Vec::<(String, String)>::new())
+            .load()
+            .unwrap()
+            .config;
+        let p = Pipeline::new(
+            Settings {
+                stale_answer_timeout: Duration::ZERO,
+                max_inflight,
+                ..Settings::default()
+            },
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(Router::from_config(&cfg).unwrap()),
+            Policy {
+                clients: Arc::new(ClientTable::from_config(&cfg)),
+                ..Policy::open()
+            },
+        );
+        let plain = query("www.example.org", rtype::A, false);
+        let q = parse_query(&plain).unwrap();
+        let mut out = [0u8; 512];
+        let mut b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
+        b.answer_a(300, Ipv4Addr::new(198, 51, 100, 1)).unwrap();
+        let len = b.finish(None).unwrap();
+        let view = p
+            .current()
+            .router
+            .select(&Question::from_query(&q), &["default"])
+            .unwrap()
+            .view;
+        let key = p.key(&q, view);
+        let then = Instant::now()
+            .checked_sub(Duration::from_secs(400))
+            .unwrap();
+        p.cache.insert(&key, &q, &out[..len], then).unwrap();
+        p
+    }
+
+    fn query_statuses(p: &Arc<Pipeline>) -> Vec<Status> {
+        let mut v = Vec::new();
+        p.telemetry.drainer().drain(|r| {
+            if let telltale_telemetry::event::Record::Query(e, _) = r {
+                v.push(e.status);
+            }
+        });
+        v
+    }
+
+    /// REQ: DNS-007 (ADR-119) — with a zero wait and no permit left for the refresh
+    /// (overloaded), an expired entry is still answered at once, as `stale`.
+    #[tokio::test]
+    async fn dns_007_overloaded_expired_answers_are_stale() {
+        let p = expired_pipeline("127.0.0.1:9", 1);
+        // Every permit taken: the refresh can't start.
+        let _held = Arc::clone(&p.inflight).try_acquire_owned().unwrap();
+        let req = query("www.example.org", rtype::A, true);
+        let mut out = [0u8; 4096];
+        let Response::Ready(len) = Handler(Arc::clone(&p)).handle(&req, &meta(), &mut out) else {
+            panic!("answered at once");
+        };
+        assert!(
+            contains(&out[..len], &[198, 51, 100, 1]),
+            "the expired answer"
+        );
+        assert_eq!(query_statuses(&p), vec![Status::Stale]);
+    }
+
+    /// REQ: DNS-007, DNS-008 — on a UDP worker thread (no ambient runtime) the refresh of an
+    /// expired entry waits until the answers are sent (`sent`), then lands in the cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dns_007_refresh_starts_after_the_answer_is_sent() {
+        let up = fake_upstream(false).await;
+        let p = expired_pipeline(&up.to_string(), 64);
+        let h = Handler(Arc::clone(&p));
+        // A plain thread, like a UDP worker: no runtime context.
+        let (answered, queued, after) = std::thread::spawn(move || {
+            let req = query("www.example.org", rtype::A, true);
+            let mut out = [0u8; 4096];
+            let answered = match h.handle(&req, &meta(), &mut out) {
+                Response::Ready(len) => contains(&out[..len], &[198, 51, 100, 1]),
+                _ => false,
+            };
+            let queued = REFRESHES.with(|q| q.borrow().len());
+            h.sent();
+            (answered, queued, REFRESHES.with(|q| q.borrow().len()))
+        })
+        .join()
+        .unwrap();
+        assert!(answered, "the expired answer, at once");
+        assert_eq!((queued, after), (1, 0), "queued until sent, then started");
+        assert_eq!(query_statuses(&p), vec![Status::Refreshed]);
+        let req = query("www.example.org", rtype::A, true);
+        let mut fresh = false;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut out = [0u8; 4096];
+            if let Response::Ready(len) = Handler(Arc::clone(&p)).handle(&req, &meta(), &mut out)
+                && contains(&out[..len], &[192, 0, 2, 7])
+            {
+                fresh = true;
+                break;
+            }
+        }
+        assert!(fresh, "the refresh landed: a fresh hit with the new answer");
     }
 
     /// REQ: OBS-018 (T11.5) — a list in shadow mode is compiled but never blocks; the shadow

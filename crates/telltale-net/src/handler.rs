@@ -103,6 +103,11 @@ impl std::fmt::Debug for Response {
 /// block; put waiting work in a [`Response::Deferred`] future.
 pub trait QueryHandler: Send + Sync + 'static {
     fn handle(&self, req: &[u8], meta: &RequestMeta, out: &mut [u8]) -> Response;
+
+    /// REQ: DNS-007, DNS-008 — called on a UDP worker thread once the answers `handle` gave
+    /// it are sent (after each batch). Background work `handle` queued on this thread (a cache
+    /// refresh) starts here, after the answer has left, instead of before it.
+    fn sent(&self) {}
 }
 
 impl<F> QueryHandler for F
