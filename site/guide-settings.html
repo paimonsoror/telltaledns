@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose how you manage settings — TelltaleDNS</title>
+<meta name="description" content="Manage TelltaleDNS settings with the web UI, a config file, Git (Helm, Argo CD, Flux), or the API: what each style is good for, how the layers stack, and which settings a cluster shares.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-settings">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Choose how you manage settings</h1>
+  <p class="lede">You can change TelltaleDNS from the web UI, a config file, Git, or the API. Pick the style that fits how you run it; they work together, and your config file is never rewritten.</p>
+  <ul class="onpage">
+    <li><a href="#ways">Four ways to change a setting</a></li>
+    <li><a href="#styles">Pick a style</a></li>
+    <li><a href="#layers">How the layers stack</a></li>
+    <li><a href="#shared">Shared or per node</a></li>
+    <li><a href="#where">Where each setting lives</a></li>
+  </ul>
+</section>
+
+<section id="ways">
+  <h2>Four ways to change a setting</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Web UI</h3>
+      <p>Upstreams, lists, groups, devices, local names, alerts, and more have a page with an editor. <b>Check</b> previews a change and warns you; nothing is saved until <b>Apply</b>.</p>
+    </div>
+    <div class="card">
+      <h3>Config file</h3>
+      <p><code>telltale.toml</code>, plus more files if you like. Check it with <code>telltale config check</code>, then apply it with a reload. Every key is in the <a href="config.html">configuration reference</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Git</h3>
+      <p>Keep the file in a repository: Helm values with Argo CD or Flux, or a cluster that reads its shared settings straight from a repository.</p>
+    </div>
+    <div class="card">
+      <h3>API, CLI, and AI agents</h3>
+      <p>Everything the UI changes, the API changes too (<code>?dryRun=true</code> previews). <code>telltale ctl</code> wraps it for the shell, and <a href="agents.html">AI agents</a> propose plans that a person approves.</p>
+    </div>
+  </div>
+</section>
+
+<section id="styles">
+  <h2>Pick a style</h2>
+  <p class="muted">Most people use the first one. The others suit infrastructure that's managed as code.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Configuration style">
+      <button role="tab" type="button">Web UI on a config file</button>
+      <button role="tab" type="button">Config file only</button>
+      <button role="tab" type="button">Git, per node</button>
+      <button role="tab" type="button">Git, for the whole cluster</button>
+    </div>
+
+    <div class="panel" id="style-ui"><h3>Web UI on a config file (the default)</h3>
+      <p><b>Good for:</b> a Raspberry Pi or a home server you look after in the browser.</p>
+      <ol class="guide">
+        <li>The install's config file holds the basics: where to listen and which upstreams to ask. Leave it as it is.</li>
+        <li>Add and change everything else on its page in the web UI: upstreams, lists, groups and schedules, devices, local names, quick rules, and alerts.</li>
+        <li>Each change shows what it will do first. Changes are stored in <code>state.db</code> next to users and the audit log, and they're included in backups.</li>
+      </ol>
+      <p>Each editor's <b>Manage</b> table says where every entry comes from:</p>
+      <div class="table-wrap"><table class="std wrap">
+        <thead><tr><th>Badge</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>config file</td><td>Defined in your file. <b>Edit</b> makes an override; <b>Remove</b> hides it.</td></tr>
+          <tr><td>added here</td><td>Made in the UI or API. <b>Remove</b> deletes it.</td></tr>
+          <tr><td>overrides the file</td><td>The UI's version replaces the file's entry of the same name. <b>Revert to the file</b> brings the file's back.</td></tr>
+          <tr><td>hidden</td><td>The file's entry is left out. <b>Revert to the file</b> brings it back.</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="panel" id="style-file"><h3>Config file only</h3>
+      <p><b>Good for:</b> Ansible, Puppet, or a dotfiles repository, where every change is a reviewed diff.</p>
+      <ol class="guide">
+        <li>Edit <code>telltale.toml</code>. Split it if you like: later files override earlier ones (<code>telltale run -c base.toml -c site.toml</code>).</li>
+        <li>Check it: <code>telltale config check base.toml site.toml</code> reports every problem at once with its key path. <code>--print</code> shows the effective configuration.</li>
+        <li>Apply it without a restart: <code>systemctl reload telltale</code>, or <code>docker kill -s HUP telltale</code>. A file that doesn't validate is refused and the previous configuration keeps serving.</li>
+      </ol>
+<pre><code>telltale config check /etc/telltale/telltale.toml   # "config OK", or every error with its path
+sudo systemctl reload telltale                       # applied with no dropped queries</code></pre>
+      <div class="callout"><p>Upstreams, groups, routes, local names, access, rate limits, special names, and listeners apply at once. <code>[cache]</code>, <code>[telemetry]</code>, and <code>[node]</code> wait for a restart (the log names them).</p></div>
+      <p class="muted">To keep the file the only source, give everyone else the <b>viewer</b> role: viewers see everything but change nothing.</p>
+    </div>
+
+    <div class="panel" id="style-git-node"><h3>Git, per node (Helm, Argo CD, Flux)</h3>
+      <p><b>Good for:</b> Kubernetes, where Argo CD or Flux applies the Helm values from your repository.</p>
+      <ol class="guide">
+        <li>Put your settings under <code>config:</code> in the Helm values. The chart writes them after its own (listeners, data directory, ports).</li>
+        <li>Tell TelltaleDNS the file comes from Git, so the UI can help you keep the repository in step:</li>
+      </ol>
+<pre><code>config: |
+  [cluster]
+  config_source = "gitops"
+
+  [[upstream]]
+  name = "quad9"
+  url = "tls://9.9.9.9"
+  tls_server_name = "dns.quad9.net"</code></pre>
+      <p><b>Changes in the UI still work, at once.</b> After <b>Apply</b>, the UI shows the TOML to add to your repository (under <code>config:</code>) with a <b>Copy</b> button. Once Git has it, <b>Revert to the file</b> removes the UI's copy, so the next rebuild from Git doesn't lose anything. The API returns the same text as <code>keepInGit</code>.</p>
+      <p class="muted">The <a href="guide-kubernetes.html">Kubernetes guide</a> covers the rest of the chart.</p>
+    </div>
+
+    <div class="panel" id="style-git-cluster"><h3>Git, for the whole cluster</h3>
+      <p><b>Good for:</b> "nothing changes unless it's in Git", across every node.</p>
+      <p><b>Option 1: the cluster reads one file from a repository.</b> The primary fetches the shared settings, checks them, and hands them to every node, so every node serves the same commit:</p>
+<pre><code># On every node that may become primary:
+[cluster.git]
+repo = "https://github.com/me/homelab"
+ref = "main"
+path = "telltale/shared.toml"
+# require_signed = true                 # only SSH-signed commits...
+# allowed_signers_file = "/etc/telltale/allowed_signers"
+# webhook_secret_file = "/etc/telltale/git-hook"   # push webhook: applied in seconds</code></pre>
+      <ul>
+        <li>A commit is used only if it validates and descends from the one in use; anything else is refused, and the cluster stays on the last good commit.</li>
+        <li>If the repository is unreachable, every node keeps serving the last commit. DNS never waits for Git.</li>
+      </ul>
+      <p><b>Option 2: only Git-managed nodes may publish.</b> On the primary: <code>telltale cluster set-authority gitops</code> (or <code>telltale cluster init --config-authority gitops</code>), then restart. Only nodes with <code>[cluster] config_source = "gitops"</code> may publish the cluster's configuration. Any other node can only take over as an <i>emergency</i> primary, which keeps the last version until a Git-managed node is back.</p>
+      <div class="callout warn"><p>In both cases the UI and API stop changing shared settings: they answer <b>409 <code>gitops_managed</code></b>, and every change goes through your repository.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="layers">
+  <h2>How the layers stack</h2>
+  <p class="muted">From lowest to highest; a higher layer wins.</p>
+  <ol class="steps">
+    <li class="step"><b>Built-in defaults.</b> Every key is optional.</li>
+    <li class="step"><b>Config files</b>, in the order given. Tables merge key by key; lists such as <code>[[listen]]</code> replace the earlier one entirely.</li>
+    <li class="step"><b>Environment variables</b> <code>TELLTALE_&lt;SECTION&gt;_&lt;KEY&gt;</code>, such as <code>TELLTALE_CACHE_MAX_TTL=3600</code>. Handy in containers.</li>
+    <li class="step"><b>Command-line flags.</b></li>
+    <li class="step"><b>The web UI and API</b>, entry by entry: they add an upstream, list, or group, or override or hide one of the file's by name.</li>
+    <li class="step"><b>In a cluster, the primary.</b> Its shared settings replace the shared sections of every other node's own files.</li>
+  </ol>
+  <p class="muted"><code>telltale config check telltale.toml --print</code> shows layers 1 to 4 merged. The UI's entries are listed with their source by <code>GET /api/v1/config/entries</code>.</p>
+</section>
+
+<section id="shared">
+  <h2>Shared or per node</h2>
+  <p>In a <a href="guide-cluster.html">cluster</a>, the primary shares most settings with every node, including what was added in its UI. A few sections describe the machine itself, so each node keeps its own:</p>
+  <div class="two">
+    <div class="card">
+      <h3>Shared by the cluster</h3>
+      <p>Upstreams and routes, local names and zones, lists, groups and schedules, devices, quick rules, access and rate limits, special names, what's kept out of the log, change simulation, alerts, and the staged-rollout settings. Users and API tokens are the primary's too.</p>
+    </div>
+    <div class="card">
+      <h3>Each node's own</h3>
+      <p><code>[node]</code>, <code>[[listen]]</code>, <code>[cluster]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, and <code>[cache]</code>, from that node's file. A <code>[[record]]</code> with <code>node_only = true</code> stays on its node too.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <p><b>Change shared settings in one place.</b> Use any node's UI or API: a change made on another node goes to the primary, which applies it and sends it to every node within seconds. For files, edit the primary's.</p>
+    <p><b>Set per-node sections on every node.</b> A <code>[cache]</code> change, for example, has to go into each node's own file.</p>
+    <p>If a node's own file still sets shared sections, the primary's replace them, and the Cluster page's <b>node_settings</b> check says so until they're removed.</p>
+  </div>
+</section>
+
+<section id="where">
+  <h2>Where each setting lives</h2>
+  <p class="muted">The same setting, three ways. API paths take <code>PUT</code> to save, <code>DELETE</code> to remove, and <code>?dryRun=true</code> to preview.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Setting</th><th>Web UI</th><th>Config file</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td>Upstream servers and groups</td><td>Upstreams</td><td><code>[[upstream]]</code>, <code>[[upstream_group]]</code></td><td><code>/api/v1/upstreams/{name}</code>, <code>/api/v1/upstream-groups/{name}</code></td></tr>
+      <tr><td>Blocklists</td><td>Lists</td><td><code>[[list]]</code></td><td><code>/api/v1/lists/{name}</code></td></tr>
+      <tr><td>Groups</td><td>Groups</td><td><code>[[group]]</code></td><td><code>/api/v1/groups/{name}</code></td></tr>
+      <tr><td>Schedules</td><td>Groups → Schedules</td><td><code>[[schedule]]</code></td><td><code>/api/v1/schedules/{name}</code></td></tr>
+      <tr><td>Devices</td><td>Click any address → Name this device…</td><td><code>[[client]]</code></td><td><code>/api/v1/clients/{name}</code></td></tr>
+      <tr><td>Local names</td><td>Names on my network</td><td><code>[[record]]</code>, <code>[[zone]]</code></td><td><code>/api/v1/records/{name}</code></td></tr>
+      <tr><td>A domain sent to another server</td><td>Names on my network → Send a domain to another server</td><td><code>[[route]]</code></td><td><code>/api/v1/forwards/{domain}</code></td></tr>
+      <tr><td>Quick block and allow rules</td><td>Quick rules</td><td><code>[[rule]]</code></td><td><code>/api/v1/rules/{id}</code></td></tr>
+      <tr><td>Rate limit</td><td>Settings → Query handling</td><td><code>[ratelimit]</code></td><td><code>/api/v1/ratelimit/default</code></td></tr>
+      <tr><td>Kept out of the log</td><td>Settings → Query handling</td><td><code>[exclusions]</code></td><td><code>/api/v1/exclusions/default</code></td></tr>
+      <tr><td>Change simulation</td><td>Settings → Query handling</td><td><code>[simulate]</code></td><td><code>/api/v1/simulate-settings/default</code></td></tr>
+      <tr><td>Alerts</td><td>Alerts</td><td><code>[[alerts.destination]]</code>, <code>[[alerts.rule]]</code></td><td><code>/api/v1/alerts/destinations/{name}</code>, <code>/api/v1/alerts/rules/{name}</code></td></tr>
+      <tr><td>Staged rollouts</td><td>Settings → Cluster</td><td><code>[cluster.rollout]</code></td><td><code>/api/v1/cluster/rollout-settings/default</code></td></tr>
+      <tr><td>Listeners, the API, sign-in, telemetry, cache, the node</td><td>(config file only)</td><td><code>[[listen]]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, <code>[cache]</code>, <code>[node]</code></td><td>(config file only)</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">Every change through the UI or API is checked first, refused if it would leave the configuration invalid, and recorded in the audit log with who made it. The full API is described at <code>/api/v1/openapi.json</code> on every node.</p>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guides.html">← All guides</a>
+    <a class="btn primary" href="guide-cluster.html">Next: Build a cluster →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guides — TelltaleDNS</title>
+<meta name="description" content="Step-by-step guides for TelltaleDNS: choose how you manage settings (web UI, config file, Git, API), build a cluster, run on Kubernetes, and more.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guides">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guides</p>
+  <h1>Do something with TelltaleDNS</h1>
+  <p class="lede">Each guide starts from what you want to do and walks you through it, with the web UI, the config file, Git, and the API side by side wherever more than one works.</p>
+  <p class="muted">New here? <a href="start.html">Get started</a> installs TelltaleDNS and points your network at it. Every setting is in the <a href="config.html">configuration reference</a>.</p>
+</section>
+
+<section id="setup">
+  <h2>Set it up your way</h2>
+  <div class="grid">
+    <a class="card" href="guide-settings.html">
+      <h3>Choose how you manage settings</h3>
+      <p>The web UI, a config file, Git (Helm, Argo CD, Flux), or the API: what each is good for, how they stack, and which settings a cluster shares.</p>
+      <span class="more">Read the guide →</span>
+    </a>
+    <a class="card" href="guide-cluster.html">
+      <h3>Build a cluster</h3>
+      <p>Two or more nodes on one configuration: create it, join nodes, fail over by hand or automatically, and upgrade without dropping a query.</p>
+      <span class="more">Read the guide →</span>
+    </a>
+    <a class="card" href="guide-kubernetes.html">
+      <h3>Run on Kubernetes</h3>
+      <p>The Helm chart: one pod or many, real client addresses, one IP for DNS and the UI, secrets, monitoring, and a Pi in the same cluster.</p>
+      <span class="more">Read the guide →</span>
+    </a>
+  </div>
+</section>
+
+<section id="more">
+  <h2>More topics</h2>
+  <p class="muted">These guides are on the way. Until then, each link opens the matching part of the detailed documentation.</p>
+  <div class="grid">
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#filter-lists">
+      <h3>Block, allow, and explain</h3>
+      <p>Lists, quick rules, schedules, trying a list first, and "Why was it blocked?"</p>
+      <span class="more">In the docs →</span>
+    </a>
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#groups-and-devices">
+      <h3>Groups, devices, and VLANs</h3>
+      <p>A group per network, upstreams per group, names from your router or mDNS, and what each device is.</p>
+      <span class="more">In the docs →</span>
+    </a>
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">
+      <h3>Encrypted DNS and upstreams</h3>
+      <p>DoT, DoH, and DoQ for your devices, encrypted upstreams, routing a domain elsewhere, and DNSSEC.</p>
+      <span class="more">In the docs →</span>
+    </a>
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#rolling-a-change-out-in-stages">
+      <h3>Change things safely</h3>
+      <p>Try a change against yesterday's traffic, roll it out in stages, pin back, and take a node down for maintenance.</p>
+      <span class="more">In the docs →</span>
+    </a>
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#monitoring">
+      <h3>Monitoring and alerts</h3>
+      <p>Prometheus, Grafana, service-level objectives, alert destinations, and OpenTelemetry.</p>
+      <span class="more">In the docs →</span>
+    </a>
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in">
+      <h3>Users and sign-in</h3>
+      <p>Local users, two-factor sign-in, single sign-on (OIDC), API tokens, and <code>telltale ctl</code>.</p>
+      <span class="more">In the docs →</span>
+    </a>
+    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#versions-and-updates">
+      <h3>Upgrades, backups, and moving in</h3>
+      <p>Update channels, backups and restoring on a new machine, and bringing your setup from Pi-hole or Technitium.</p>
+      <span class="more">In the docs →</span>
+    </a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

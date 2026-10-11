@@ -205,6 +205,7 @@ strategy = "fastest"</code></pre>
     </div>
     <div>
       <p class="muted">Upstreams, blocklists, groups, schedules, and alerts can be added or changed later on their pages in the web UI, with a preview before anything is applied. Your config file is never rewritten. Every key is in the <a href="config.html">configuration reference</a>.</p>
+      <p class="muted">Prefer a config file only, or Git? <a href="guide-settings.html">Choose how you manage settings</a>.</p>
     </div>
   </div>
 </section>
@@ -267,6 +268,10 @@ strategy = "fastest"</code></pre>
     <li><b>Git as the source.</b> Optionally, the shared configuration can come from a Git repository or a GitOps tool (<code>config_source = "gitops"</code>).</li>
     <li><b>Maintenance.</b> Rolling upgrades work across one version step (N and N−1), and <code>telltale cluster rotate-ca</code> replaces the cluster's certificate authority without downtime.</li>
   </ul>
+  <div class="cta">
+    <a class="btn primary" href="guide-cluster.html">Guide: Build a cluster</a>
+    <a class="btn" href="guide-kubernetes.html">Guide: Run on Kubernetes</a>
+  </div>
 </section>
 
 <section id="pihole">

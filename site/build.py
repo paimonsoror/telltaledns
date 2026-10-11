@@ -23,7 +23,10 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "tour.html", "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html"]
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "tour.html",
+         # ADR-122 — the Guides menu.
+         "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html",
+         "config.html", "helm-values.html", "glossary.html", "performance.html", "standards.html", "decisions.html", "nerds.html"]
 STATUS_ORDER = {"supported": 0, "partial": 1, "planned": 2}
 
 

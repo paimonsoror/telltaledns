@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-122 — The site's navigation by what the reader wants, and a Guides section (Proposed)
+**Context:** the project site's header had grown to eight top-level links plus a Reference menu, one link per feature page, and it had no task guides. How to set things up (configuration styles, clustering, Kubernetes, and more) lived only in `docs/running.md`, a 2,700-line file on GitHub (owner, 2026-10-11).
+**Decision:**
+- The header is **Get started** plus three menus: **Features** (what it does: Overview, Tour, How it works, Groups and VLANs, Monitoring and alerts, AI agents, Performance), **Guides** (how to do something), and **Reference** (unchanged). The logo goes to the Overview. One menu is open at a time; Escape or a click elsewhere closes it. Below 760px everything folds into ☰. It's built on `<details>`, so it works without JavaScript.
+- **Guides** start from a task, show each configuration style side by side where more than one works (web UI, config file, Git, API), and link into the configuration reference and `docs/running.md` for detail rather than copying it. The build's link check covers them.
+- **Phase 1:** a guides page and three guides: *Choose how you manage settings* (the four styles, how the layers stack, shared vs per-node settings, and where each setting lives), *Build a cluster*, and *Run on Kubernetes*. **Phase 2:** block, allow, and explain; groups, devices, and VLANs; encrypted DNS and upstreams; changing things safely; monitoring and alerts; users and sign-in; upgrades, backups, and moving in. Until then the guides page links each of those to its section of the docs.
+**Consequences:** guides are hand-written HTML and can drift from the code. Each one states only what the docs or the code say, and the docs stay the detailed source. Feature pages keep their URLs, so existing links still work.
+
 ## ADR-121 — Long pages get tabs; a tab never hides trouble (Proposed)
 **Context:** the Cluster page had grown to about ten panels, Settings → System to eight (node housekeeping mixed with how queries are handled), and Clients to three tables, one of them a router's whole client list (57 rows on the owner's network). The owner asked for tabs as a quality-of-life change (2026-10-11).
 **Decision:**

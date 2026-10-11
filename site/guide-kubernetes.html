@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run on Kubernetes — TelltaleDNS</title>
+<meta name="description" content="Run TelltaleDNS on Kubernetes with the Helm chart: one pod or many, real client addresses, one IP for DNS and the web UI, configuration and secrets with Argo CD or Flux, monitoring, and a Raspberry Pi in the same cluster.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-kubernetes">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Run on Kubernetes</h1>
+  <p class="lede">The Helm chart runs TelltaleDNS on any Kubernetes from 1.26, on amd64 and arm64. This guide takes you from one pod to a scaled setup with a Raspberry Pi in the same cluster.</p>
+  <ul class="onpage">
+    <li><a href="#size">One pod or many</a></li>
+    <li><a href="#install">Install</a></li>
+    <li><a href="#clients">Real client addresses</a></li>
+    <li><a href="#ip">One IP for DNS and the UI</a></li>
+    <li><a href="#config">Configuration and secrets</a></li>
+    <li><a href="#scaled">More pods</a></li>
+    <li><a href="#pi">A Pi in the same cluster</a></li>
+    <li><a href="#extras">Monitoring and encrypted DNS</a></li>
+  </ul>
+</section>
+
+<section id="size">
+  <h2>One pod or many</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th></th><th><code>mode: allInOne</code> (the default)</th><th><code>mode: scaled</code></th></tr></thead>
+    <tbody>
+      <tr><td>What runs</td><td>One StatefulSet pod with a volume for lists, the query log, and users.</td><td>That pod becomes the <b>controller</b>, plus <b>resolver pods</b> that hold no state and join it by themselves.</td></tr>
+      <tr><td>Good for</td><td>A home network: one pod answers tens of thousands of queries a second.</td><td>Availability: a pod can restart or move while the others keep answering.</td></tr>
+      <tr><td>Where you manage it</td><td colspan="2">The controller serves the web UI and API, keeps the volume, and publishes the configuration. Resolver pods take its configuration and compiled lists, and ship their query log to it.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout warn"><p><b>Don't raise the replica count of the StatefulSet.</b> Every copy would share one identity, one <code>state.db</code>, and one query log; the second pod refuses to start. Use <code>mode: scaled</code> for more pods.</p></div>
+</section>
+
+<section id="install">
+  <h2>Install</h2>
+  <ol class="steps">
+    <li class="step"><b>Get the chart's values</b>, every option commented. Keep only what you change in your own file. The chart's schema rejects a mistyped value with its path.
+<pre><code>helm show values oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; &gt; values.yaml</code></pre></li>
+    <li class="step"><b>Install it</b> with your file (give the DNS Service a fixed address in it: <a href="#clients">below</a>):
+<pre><code>helm install telltale oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; \
+  -n telltale --create-namespace -f my-values.yaml
+kubectl -n telltale get svc telltale-dns     # EXTERNAL-IP: hand this out in DHCP</code></pre></li>
+    <li class="step"><b>Create your admin</b>: open the web UI and use the setup token from the install notes, or create the first admin from a Secret with <code>auth.bootstrapAdmin.existingSecret</code> (keys <code>username</code>, and <code>password</code> or <code>password-hash</code>).</li>
+  </ol>
+  <p class="muted">Every value, with its default, is on the <a href="helm-values.html">Helm values</a> page. Use a release version, or an <code>edge</code> build that follows main.</p>
+</section>
+
+<section id="clients">
+  <h2>Real client addresses</h2>
+  <p>Per-device statistics, groups, and rules need each query's real sender. The chart's DNS Service is a LoadBalancer with <code>externalTrafficPolicy: Local</code>, which keeps it; give it a fixed IP with your load balancer's annotation:</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Load balancer">
+      <button role="tab" type="button">MetalLB</button>
+      <button role="tab" type="button">Cilium</button>
+      <button role="tab" type="button">kube-vip</button>
+    </div>
+    <div class="panel" id="lb-metallb"><h3>MetalLB</h3>
+<pre><code>service:
+  dns:
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: 192.168.1.53</code></pre></div>
+    <div class="panel" id="lb-cilium"><h3>Cilium</h3>
+<pre><code>service:
+  dns:
+    annotations:
+      io.cilium/lb-ipam-ips: 192.168.1.53</code></pre></div>
+    <div class="panel" id="lb-kubevip"><h3>kube-vip</h3>
+<pre><code>service:
+  dns:
+    annotations:
+      kube-vip.io/loadbalancerIPs: 192.168.1.53</code></pre></div>
+  </div>
+  <ul>
+    <li><b>Or answer on the node itself:</b> <code>hostNetwork: true</code> binds port 53 of the node (no LoadBalancer, and MAC addresses are visible). On Ubuntu nodes, turn off systemd-resolved's stub listener first.</li>
+    <li>If every query seems to come from a few addresses, the web UI says <b>Client IPs appear masked</b>. The usual cause is <code>externalTrafficPolicy: Cluster</code>.</li>
+  </ul>
+</section>
+
+<section id="ip">
+  <h2>One IP for DNS, the web UI, and the cluster port</h2>
+  <p>With <code>externalTrafficPolicy: Local</code>, two Services can share an IP only if they select the same pods. In <code>mode: scaled</code> the DNS Service also selects the resolver pods, so don't give the API Service the DNS Service's IP with a sharing key: DNS would stop on that address. Let the DNS Service carry the other ports instead:</p>
+<pre><code>service:
+  dns:
+    alsoServe:
+      api: true        # the web UI and API on the DNS address (only the controller has them)
+      cluster: true    # the cluster port, for a node outside Kubernetes</code></pre>
+  <p class="muted">Or keep the web UI on an ingress: <code>ingress.enabled: true</code> with <code>ingress.host</code>, and add your ingress's network to <code>[api] trusted_proxies</code> under <code>config:</code> so the audit log sees real addresses.</p>
+</section>
+
+<section id="config">
+  <h2>Configuration and secrets</h2>
+  <ul>
+    <li><b>Your settings go under <code>config:</code></b>, written after the chart's own (listeners, data directory, ports): upstreams, lists, groups, sign-in, everything in the <a href="config.html">configuration reference</a>.</li>
+    <li><b>With Argo CD or Flux,</b> add <code>[cluster] config_source = "gitops"</code>. Changes in the web UI then show the TOML to commit: see <a href="guide-settings.html#style-git-node">Git, per node</a>.</li>
+    <li><b>Secrets as files:</b> <code>secretMounts</code> mounts Secrets at <code>/etc/telltale-secrets/&lt;name&gt;</code>, for settings that take a file, such as an OIDC <code>client_secret_file</code> or a router's <code>api_key_file</code>.</li>
+    <li><b>With Argo CD,</b> which can't keep a generated Secret stable, create the resolver pods' join Secret yourself and set <code>cluster.bootstrapSecret.existingSecret</code> (at least 32 random characters).</li>
+  </ul>
+<pre><code>secretMounts:
+  - name: oidc
+    secretName: telltale-oidc
+config: |
+  [cluster]
+  config_source = "gitops"
+
+  [api]
+  trusted_proxies = ["10.0.0.0/8"]
+
+  [auth.oidc]
+  public_url = "https://dns.example.com"
+
+  [[auth.oidc.provider]]
+  id = "authentik"
+  issuer = "https://auth.example.com/application/o/telltale/"
+  client_id = "..."
+  client_secret_file = "/etc/telltale-secrets/oidc/client_secret"</code></pre>
+</section>
+
+<section id="scaled">
+  <h2>More pods</h2>
+<pre><code>mode: scaled
+resolvers:
+  replicas: 3</code></pre>
+  <ul>
+    <li><b>Spread them:</b> with <code>externalTrafficPolicy: Local</code>, each Kubernetes node sends queries only to its own pods. Use <code>resolvers.affinity</code> (podAntiAffinity on <code>app.kubernetes.io/component: resolver</code>) to put them on different nodes. The Cluster page's <b>Load balance</b> check flags a pod taking more than twice its share.</li>
+    <li><b>Each pod has its own cache and rate limits.</b> A new pod starts cold, and a client spread over three pods can send three times the per-client limit.</li>
+    <li><b>Rollouts don't lose lookups:</b> on shutdown a pod reports not ready, then keeps answering for <code>drainDelaySeconds</code> (5) while the Service moves away. A pod that shuts down leaves the cluster's node list at once; one that crashes expires after <code>resolvers.ephemeralTtlSeconds</code>.</li>
+    <li><b>Resolver pods are trusted less than the controller:</b> they never get the cluster's signing key, can't be promoted, and can't change anything on other nodes. Make changes on the controller.</li>
+    <li><b>One Kubernetes node is still one machine.</b> For protection against that node going down, run pods on several nodes, or add a Pi as a second DNS server (next).</li>
+  </ul>
+</section>
+
+<section id="pi">
+  <h2>A Pi in the same cluster</h2>
+  <p>A node outside Kubernetes joins the controller like any <a href="guide-cluster.html">cluster</a> member, and makes a good second DNS server for DHCP.</p>
+  <ol class="steps">
+    <li class="step"><b>Expose the cluster port</b> (9443 in the chart): <code>service.dns.alsoServe.cluster: true</code>, or <code>cluster.service.type: LoadBalancer</code>. List that address in <code>cluster.advertise</code>, e.g. <code>["https://192.168.1.53:9443"]</code>.</li>
+    <li class="step"><b>Make a join token inside the controller pod</b>, naming that URL:
+<pre><code>kubectl -n telltale exec sts/telltale -- telltale cluster token create --url https://192.168.1.53:9443 \
+  -c /etc/telltale/00-chart.toml -c /etc/telltale/10-values.toml -c /etc/telltale/20-controller.toml</code></pre></li>
+    <li class="step"><b>Join from the Pi</b>, then restart it: <code>telltale cluster join tt_join_... --site home-pi</code>.</li>
+    <li class="step"><b>Optional: staged rollouts.</b> <code>cluster.rollout.canaries: [ephemeral]</code> gives each change to the resolver pods (and the controller) first, and to the Pi after a five-minute bake, pinning the cluster back if the pods start failing.</li>
+  </ol>
+  <div class="callout"><p>The Pi keeps its own <code>[cache]</code>, listeners, and sign-in settings in its own file: see <a href="guide-settings.html#shared">Shared or per node</a>.</p></div>
+</section>
+
+<section id="extras">
+  <h2>Monitoring and encrypted DNS</h2>
+  <ul>
+    <li><b>Prometheus and Grafana:</b> <code>serviceMonitor.enabled</code> scrapes the controller and every resolver pod, <code>prometheusRule.enabled</code> adds alert rules (down, all upstreams down, SERVFAIL rate, stale lists, masked client IPs, cluster health), and <code>grafanaDashboard.enabled</code> ships the dashboard for Grafana's sidecar.</li>
+    <li><b>Who may ask:</b> <code>networkPolicy.enabled</code> limits who may query (<code>dnsFrom</code>), reach the UI (<code>apiFrom</code>), and scrape (<code>metricsFrom</code>).</li>
+    <li><b>Encrypted DNS for your devices:</b> <code>encrypted.dot.enabled</code> (853) and <code>encrypted.doh.enabled</code> (443) add DoT and DoH to the DNS Service, with the certificate from <code>encrypted.tls.secretName</code> or a cert-manager issuer (<code>encrypted.tls.certManager.issuerRef</code>). It's reloaded when renewed.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-cluster.html">← Build a cluster</a>
+    <a class="btn primary" href="guides.html">All guides</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

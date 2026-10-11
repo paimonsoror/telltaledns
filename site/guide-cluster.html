@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build a cluster — TelltaleDNS</title>
+<meta name="description" content="Run two or more TelltaleDNS nodes on one configuration: create the cluster, join nodes, fail over by hand or automatically with a witness, upgrade one node at a time, and keep an eye on it.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-cluster">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Build a cluster</h1>
+  <p class="lede">Two or more nodes on one configuration. Every node answers DNS on its own, you change settings in one place, and every node's dashboard shows the whole cluster.</p>
+  <ul class="onpage">
+    <li><a href="#roles">The roles</a></li>
+    <li><a href="#create">Create it</a></li>
+    <li><a href="#shares">What it shares</a></li>
+    <li><a href="#failover">When the primary goes down</a></li>
+    <li><a href="#upgrade">Upgrade and maintenance</a></li>
+    <li><a href="#watch">Keep an eye on it</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ul>
+  <div class="callout"><p><b>Why bother?</b> Give your router's DHCP two DNS servers, and devices keep resolving while one node restarts, upgrades, or loses its SD card. <b>DNS never depends on the cluster:</b> a node answers the same whether its peers are up or not.</p></div>
+</section>
+
+<section id="roles">
+  <h2>The roles</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Role</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><b>Primary</b></td><td>Created the cluster and holds its certificate authority. Publishes the configuration and the compiled blocklists; every version is signed.</td></tr>
+      <tr><td><b>Replica</b></td><td>Follows the primary and answers DNS from the last version it received, even after a restart with the primary down. Joined with an <i>eligible</i> token, it can be promoted to primary; with a plain token, it only follows.</td></tr>
+      <tr><td><b>Witness</b></td><td>A tiny vote-only process (on a NAS, router, or small VM) that lets two nodes fail over automatically. It answers no DNS.</td></tr>
+      <tr><td><b>Resolver pod</b></td><td>On Kubernetes with <code>mode: scaled</code>: joins by itself, holds no state, and can't be promoted. See <a href="guide-kubernetes.html">Run on Kubernetes</a>.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="create">
+  <h2>Create it</h2>
+  <p class="muted">Run these as the user TelltaleDNS runs as: <code>sudo -u telltale</code> for a native install, or <code>docker compose exec telltale</code> with Compose.</p>
+  <ol class="steps">
+    <li class="step"><b>Create the cluster on the first node.</b> List every URL other nodes might use to reach it.
+<pre><code>telltale cluster init --name home --advertise https://192.168.3.2:8443 --site home-pi</code></pre></li>
+    <li class="step"><b>Make a join token on it.</b> <code>--eligible</code> lets the new node be promoted later; leave it out for a node that should only follow. Treat the token like a password; it's reusable until it expires.
+<pre><code>telltale cluster token create --ttl 1h --eligible</code></pre></li>
+    <li class="step"><b>Join from the second node.</b> Give an eligible node its own <code>--advertise</code> URL, so it can be reached if it's ever promoted.
+<pre><code>telltale cluster join tt_join_... --site office --advertise https://192.168.3.3:8443</code></pre></li>
+    <li class="step"><b>Restart TelltaleDNS on both nodes</b>, then check: <code>telltale cluster status</code>, or the web UI's <b>Cluster</b> page (both nodes up on <b>Nodes</b>; every check passing on <b>Health</b>).</li>
+    <li class="step"><b>Hand out both nodes in DHCP</b> as the first and second DNS server.</li>
+  </ol>
+  <div class="callout">
+    <p><b>The cluster port</b> is <code>[cluster] listen</code> (default <code>0.0.0.0:8443</code>). Only the first node's port must be reachable: joining nodes connect out to it, so they can sit behind NAT. If you also serve DoH on 8443, move one of them (<code>telltale config check</code> warns about the clash).</p>
+    <p><b>Trust:</b> the token carries the fingerprint of the cluster's certificate authority, so a node can't be tricked into joining another server. The link between nodes is mutually authenticated TLS.</p>
+  </div>
+  <p class="muted">A Pi joining a Kubernetes cluster works the same way, with the token made inside the controller pod: see <a href="guide-kubernetes.html#pi">Run on Kubernetes</a>.</p>
+</section>
+
+<section id="shares">
+  <h2>What it shares</h2>
+  <ul>
+    <li><b>Settings:</b> upstreams, lists, groups, devices, local names, rules, and the rest reach every node within seconds, including what was added in the web UI. Each node keeps its own listeners, API, sign-in, telemetry, and cache settings. <a href="guide-settings.html#shared">What's shared and what isn't</a>.</li>
+    <li><b>Change it anywhere:</b> a change in any node's UI or API goes to the primary, which applies it for everyone. For config <i>files</i>, edit the primary's.</li>
+    <li><b>Blocklists:</b> only the primary downloads and compiles them; the others fetch just the parts that changed.</li>
+    <li><b>Accounts:</b> users and API tokens are the primary's, so the same sign-in works on every node.</li>
+    <li><b>One view:</b> every node's dashboard, top lists, query log, and live view cover the whole cluster, and each query-log row names the node that answered. <b>Showing</b> on the dashboard narrows it to one node or site.</li>
+  </ul>
+</section>
+
+<section id="failover">
+  <h2>When the primary goes down</h2>
+  <p class="muted">DNS keeps answering on every node either way. Only configuration changes wait until there's a primary again.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Failover">
+      <button role="tab" type="button">Manual (two nodes)</button>
+      <button role="tab" type="button">Automatic (with a witness)</button>
+    </div>
+    <div class="panel" id="manual"><h3>Manual failover</h3>
+      <ol class="guide">
+        <li>On an eligible node, open the <b>Cluster</b> page and choose <b>Promote this node…</b>. It asks for your password again (and your authenticator code, if you use two-factor sign-in). Or stop the node, run <code>telltale cluster promote</code>, and start it.</li>
+        <li>The node continues from the last version it applied, and every node follows it.</li>
+        <li>If the old primary comes back, it steps down by itself. Anything it changed in the meantime is listed under <b>Conflicts</b> (Cluster → Health), so you can make those changes again.</li>
+      </ol>
+      <p class="muted">Promotion is refused while the primary is up, so a mistake can't split the cluster.</p>
+    </div>
+    <div class="panel" id="automatic"><h3>Automatic failover</h3>
+      <p>Two nodes can't tell "the other node is down" from "the link between us is down", so automatic failover needs a third vote: a witness, or a third eligible node.</p>
+<pre><code># On the primary: a token for the witness
+telltale cluster token create --witness
+
+# On the witness host (a config with [node] data_dir and [cluster] listen is enough)
+telltale cluster join tt_join_... --witness --advertise https://witness.lan:8443 -c witness.toml
+telltale cluster witness -c witness.toml        # run it as a service
+
+# On the primary, then restart it
+telltale cluster set-failover auto</code></pre>
+      <ul>
+        <li>The primary holds a 15-second lease with a majority of voters. If it disappears, an eligible node is elected in a new epoch, typically within 15 to 25 seconds.</li>
+        <li>There are never two primaries writing: a primary that loses its majority stops taking changes before anyone else can be elected. Clock jumps (a Pi setting its time after boot) don't matter.</li>
+        <li>With fewer than three voters, <code>auto</code> acts as manual, and the Cluster page says so. <code>telltale cluster set-failover manual</code> switches back.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="muted">If the cluster's configuration comes from Git, a node that isn't Git-managed can only take over as an emergency primary: see <a href="guide-settings.html#style-git-cluster">Git, for the whole cluster</a>.</p>
+</section>
+
+<section id="upgrade">
+  <h2>Upgrade and maintenance</h2>
+  <ul>
+    <li><b>Upgrade one node at a time: the replicas first, then the primary.</b> Versions one cluster protocol apart work together, so a half-upgraded cluster is fine, and the Cluster page's <b>versions</b> check lists the mix until you're done.</li>
+    <li><b>Taking a node down for longer than a restart?</b> Put it in maintenance first: <b>Maintenance…</b> on its row (Cluster → Nodes), or <code>telltale ctl maintenance start --for 30m --reason "SD card swap"</code>. It reports not ready so load balancers move away, its alerts pause, and it keeps answering what still arrives.</li>
+    <li><b>Roll configuration changes out in stages</b> if you like: name canary nodes in <b>Settings → Cluster</b>, and a change reaches them first and everyone else after a bake, pinning back by itself if the canaries start failing. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#rolling-a-change-out-in-stages">Staged rollouts in the docs</a>.</li>
+  </ul>
+</section>
+
+<section id="watch">
+  <h2>Keep an eye on it</h2>
+  <ul>
+    <li><b>The Cluster page:</b> the summary on top, then <b>Nodes</b> (topology and every node's state), <b>Health</b> (checks with what to do when one fails), <b>Rollouts</b>, and <b>Events</b>. A tab with something wrong shows a count.</li>
+    <li><b>The health icon</b> at the bottom of the menu turns amber when a node is unreachable or behind on configuration for a minute.</li>
+    <li><b>Metrics</b> on every node: <code>telltale_cluster_peer_up</code>, <code>telltale_cluster_peer_config_lag</code>, <code>telltale_cluster_behind_seconds</code>, and <code>telltale_cluster_cert_expiry_timestamp_seconds</code>. The Helm chart's alert rules cover a peer down, configuration behind, failing syncs, and expiring certificates.</li>
+    <li><b>Certificates renew themselves:</b> each node's lasts 90 days and is renewed with 30 left. To replace the cluster's certificate authority, run <code>telltale cluster rotate-ca</code> on the primary; DNS keeps answering while it runs.</li>
+  </ul>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td>A node is <b>behind</b> on configuration</td><td>Look at Cluster → Health for its sync error. A node older than the primary keeps serving its last version once the primary uses settings it doesn't know: upgrade it.</td></tr>
+      <tr><td>The <b>node_settings</b> check fails</td><td>That node's own file still sets shared sections (upstreams, lists, groups…). The primary's are used; remove them from the node's file.</td></tr>
+      <tr><td>The second node can't join</td><td>Make sure it can reach the first node's cluster port (8443 by default) at one of the <code>--advertise</code> URLs, and that the token hasn't expired (<code>telltale cluster token list</code>).</td></tr>
+      <tr><td>Changes are refused with <b>503</b></td><td>There's no primary right now: promote one, or wait for automatic failover. DNS isn't affected.</td></tr>
+      <tr><td>A node can't connect after a CA rotation</td><td>It was away for the whole rotation: join it again with a new token.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-settings.html">← Choose how you manage settings</a>
+    <a class="btn primary" href="guide-kubernetes.html">Next: Run on Kubernetes →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

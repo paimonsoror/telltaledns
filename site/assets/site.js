@@ -20,19 +20,28 @@
       });
     }
     // T6.10 — the header menu ships open (desktop shows it inline). On narrow screens it
-    // starts closed behind ☰; the Reference menu closes on Escape or a click elsewhere.
+    // starts closed behind ☰. ADR-122 — one header menu open at a time; a menu closes on
+    // Escape or a click elsewhere.
     var menu = document.querySelector(".top .menu");
     if (menu) {
-      var narrow = matchMedia("(max-width: 1120px)");
+      var narrow = matchMedia("(max-width: 760px)");
       var fit = function () { menu.open = !narrow.matches; };
       fit();
       if (narrow.addEventListener) narrow.addEventListener("change", fit);
     }
-    var sub = document.querySelector(".top .sub");
-    if (sub) {
-      document.addEventListener("click", function (e) { if (sub.open && !sub.contains(e.target)) sub.open = false; });
+    var subs = document.querySelectorAll(".top .sub");
+    subs.forEach(function (sub) {
+      sub.addEventListener("toggle", function () {
+        if (sub.open) subs.forEach(function (o) { if (o !== sub) o.open = false; });
+      });
+    });
+    if (subs.length) {
+      document.addEventListener("click", function (e) {
+        subs.forEach(function (sub) { if (sub.open && !sub.contains(e.target)) sub.open = false; });
+      });
       document.addEventListener("keydown", function (e) {
-        if (e.key === "Escape" && sub.open) { sub.open = false; sub.querySelector("summary").focus(); }
+        if (e.key !== "Escape") return;
+        subs.forEach(function (sub) { if (sub.open) { sub.open = false; sub.querySelector("summary").focus(); } });
       });
     }
     // A filter box over table rows (Helm values): rows that don't match, and sections left
