@@ -1291,6 +1291,19 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-121 — Long pages get tabs; a tab never hides trouble (Proposed)
+**Context:** the Cluster page had grown to about ten panels, Settings → System to eight (node housekeeping mixed with how queries are handled), and Clients to three tables, one of them a router's whole client list (57 rows on the owner's network). The owner asked for tabs as a quality-of-life change (2026-10-11).
+**Decision:**
+- One component (`Tabs`, `TabPanel`) for every tabbed page. The tab is in the address (`?tab=`), so links, reloads, and Back keep it. WAI-ARIA tabs: `role=tablist/tab/tabpanel`, the open tab alone in the Tab order, arrow keys, Home, and End. On a phone, the tab bar scrolls sideways.
+- **A tab never hides trouble.** A tab shows a count or a word, and in warning colours when something needs attention: failing checks and conflicts (Health), a version baking or a pin (Rollouts), failures in the last hour (Events). A pin stays loud on every tab (ADR-116): a note above the tabs links to the full banner. Health conditions link to the right tab (`cluster_pinned` and `rollout_stuck` go to `#/cluster?tab=rollouts`).
+- **Pages:**
+  - **Cluster:** the summary stays above the tabs. The tabs are **Nodes** (topology, the node table, Maintenance…), **Health** (checks, conflicts, machines), **Rollouts**, and **Events**.
+  - **Settings:** a new **Query handling** tab (Cache, Rate limit, Kept out of the log, Change simulation), apart from **System** (information, listener checks, version and updates, backup).
+  - **Clients:** **Seen this hour** · **Devices** · **Discovered**, each with its size.
+- Only the open tab renders, so a closed tab loads and polls nothing new.
+- Pages of two or three short panels (Dashboard, Alerts, Upstreams, Lists, Local DNS, Cache, Rules) stay as they are. Groups (groups, schedules) is the next candidate once these have been used for a while.
+**Consequences:** UI paths in the docs change ("Settings → Query handling → Rate limit"). Earlier ADRs and design notes keep the paths of their time. No API or MCP change.
+
 ## ADR-120 — Router integrations verify self-signed consoles by the name in their certificate (Proposed)
 **Context:** a UniFi console's own certificate is self-signed and names `unifi.local` (plus `localhost` and loopback), never the address it's reached at. The documented `tls_ca` setup therefore always failed ("certificate not valid for name 192.168.3.1", checked against the owner's console on 2026-10-11), leaving `tls_insecure_skip_verify` as the only working option. With verification off, anything on the network could pose as the console and receive the API key.
 **Decision:**

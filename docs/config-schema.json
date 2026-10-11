@@ -3091,7 +3091,7 @@
       "additionalProperties": false
     },
     "SimulateConfig": {
-      "description": "REQ: OBS-024 (T13.1, ADR-115) — change simulation: what a configuration change would have\ndone to the queries in the query log (newly blocked, newly allowed, changed routes and\nanswers), asked for with `simulate=` on a dry run, `POST /api/v1/simulate`, or by agents.\nShared by the whole cluster; also in Settings → System → Change simulation.",
+      "description": "REQ: OBS-024 (T13.1, ADR-115) — change simulation: what a configuration change would have\ndone to the queries in the query log (newly blocked, newly allowed, changed routes and\nanswers), asked for with `simulate=` on a dry run, `POST /api/v1/simulate`, or by agents.\nShared by the whole cluster; also in Settings → Query handling → Change simulation.",
       "type": "object",
       "properties": {
         "default_window": {

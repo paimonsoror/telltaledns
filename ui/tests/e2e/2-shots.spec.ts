@@ -68,7 +68,9 @@ for (const theme of ['light', 'dark'] as const) {
       ['local-dns', '/#/local-dns'],
       ['alerts', '/#/alerts'],
       ['cluster', '/#/cluster'],
+      ['clients-discovered', '/#/clients?tab=discovered'],
       ['settings-system', '/#/settings?tab=system'],
+      ['settings-queries', '/#/settings?tab=queries'],
     ]) {
       await page.goto(path);
       await page.waitForTimeout(600);

@@ -70,9 +70,9 @@ Byte sizes accept an integer number of bytes or a string with a unit: `"32MiB"`,
 | `[filter]` | list refresh interval, download concurrency, timeout, retries, size limit; compile threads and memory; `stale_after_days` (when an unchanged URL list counts as stale) | `spec/05` §3.4, OBS-023 |
 | `[access]` | networks allowed to query (everyone else is refused) | `spec/08` §6 |
 | `[ratelimit]` | per-client query budget, action, exemptions, IPv4/IPv6 grouping | DNS-014 |
-| `[exclusions]` | names and devices kept out of the query log, analytics, and exports (still answered and counted in metrics), with an on/off toggle; also in Settings → System | OBS-022 |
+| `[exclusions]` | names and devices kept out of the query log, analytics, and exports (still answered and counted in metrics), with an on/off toggle; also in Settings → Query handling | OBS-022 |
 | `[identify]` | device identification: `enabled`, `max_clients` (devices one node identifies, 1 to 65,536), `signatures_file` (more signatures in the catalog's shape); shared across a cluster | OBS-025, `docs/running.md` |
-| `[simulate]` | change simulation over the query log: `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs` (1 to 300), `max_rows` (at least 1,000), `default_window` (at most `7d`); shared across a cluster; also in Settings → System | OBS-024, `docs/running.md` |
+| `[simulate]` | change simulation over the query log: `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask), `max_secs` (1 to 300), `max_rows` (at least 1,000), `default_window` (at most `7d`); shared across a cluster; also in Settings → Query handling | OBS-024, `docs/running.md` |
 | `[dns]` | the advertised EDNS UDP size; `nsid` (answer RFC 5001 NSID with this node's name) | DNS-005, DNS-021 |
 | `[special]` | localhost, Firefox canary, CHAOS, private reverse lookups | ADR-014 |
 | `[cache]` | memory budget, TTL clamps, serve-stale (`stale_answer_client_timeout_ms = 0` answers an expired name at once and refreshes it in the background: status `refreshed`), prefetch; per node | `spec/03` §4, `docs/running.md` |

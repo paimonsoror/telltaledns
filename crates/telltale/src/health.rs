@@ -265,7 +265,7 @@ fn rollout_reasons(view: &ClusterView) -> Vec<HealthReason> {
                 "the cluster is pinned to version {} since {} by {}: {}; configuration changes wait until it's unpinned",
                 p.to, p.since, p.by, p.reason
             ),
-            "#/cluster",
+            "#/cluster?tab=rollouts",
         ));
     }
     if let Some(s) = r
@@ -279,7 +279,7 @@ fn rollout_reasons(view: &ClusterView) -> Vec<HealthReason> {
                 "no canary node has been online for {} minutes, so configuration changes reach every node without a staged rollout",
                 s / 60
             ),
-            "#/cluster",
+            "#/cluster?tab=rollouts",
         ));
     }
     out

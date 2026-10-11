@@ -1607,7 +1607,7 @@ impl ExclusionsConfig {
 /// REQ: OBS-024 (T13.1, ADR-115) — change simulation: what a configuration change would have
 /// done to the queries in the query log (newly blocked, newly allowed, changed routes and
 /// answers), asked for with `simulate=` on a dry run, `POST /api/v1/simulate`, or by agents.
-/// Shared by the whole cluster; also in Settings → System → Change simulation.
+/// Shared by the whole cluster; also in Settings → Query handling → Change simulation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct SimulateConfig {

@@ -960,8 +960,10 @@ test('dns_006 cache page', async () => {
   await expect(card.getByTestId('cache-entries')).toContainText('NOERROR');
   // The API: top entries need a known sort.
   expect((await page.request.get('/api/v1/cache/entries?sort=nope')).status()).toBe(400);
-  await page.goto('/#/settings?tab=system');
+  // ADR-121 — the Cache link is under Settings → Query handling, updates under System.
+  await page.goto('/#/settings?tab=queries');
   await expect(page.getByRole('link', { name: 'Cache page' })).toHaveAttribute('href', '#/cache');
+  await page.goto('/#/settings?tab=system');
   // REQ: OPS-004 — "Check now" (admins): a local build isn't compared with releases, so the
   // status stays "newer" and nothing is fetched.
   const check = page.waitForResponse('**/api/v1/system/update-check');
@@ -1221,7 +1223,7 @@ test('t8_6 discovered devices, group settings, and zones', async () => {
   const sock = createSocket('udp4');
   await new Promise<void>((done) => sock.send(msg, 15353, '127.0.0.1', () => done()));
   sock.close();
-  await page.goto('/#/clients');
+  await page.goto('/#/clients?tab=discovered');
   const found = page.getByTestId('discovered');
   await expect(async () => {
     await page.reload();
@@ -1352,7 +1354,7 @@ test('flt_010 schedules are edited from the UI', async () => {
 // (checked first, then applied) and reverted to the config file's.
 test('dns_014 the rate limit is adjusted from the UI and reverted', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto('/#/settings?tab=system');
+  await page.goto('/#/settings?tab=queries');
   const editor = page.getByTestId('editor-ratelimit');
   const row = editor.getByTestId('entry-row');
   await expect(row).toContainText('config file');
@@ -1401,7 +1403,7 @@ test('ups_007 a group picks its upstream group from the UI', async () => {
 // its names get cached (the cache test counts what's cached).
 test('obs_022 exclusions from Settings', async () => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto('/#/settings?tab=system');
+  await page.goto('/#/settings?tab=queries');
   const editor = page.getByTestId('editor-exclusions');
   const row = editor.getByTestId('entry-row');
   await expect(row).toContainText('nothing excluded');
@@ -1450,7 +1452,7 @@ test('obs_024 simulate a quick rule, and the simulation settings', async () => {
   // Only a preview: DNS still answers it.
   expect(await query('sim.cache.e2e.test')).toBe(0);
 
-  await page.goto('/#/settings?tab=system');
+  await page.goto('/#/settings?tab=queries');
   const editor = page.getByTestId('editor-simulate');
   const row = editor.getByTestId('entry-row');
   await expect(row).toContainText('simulate when asked');
@@ -1529,7 +1531,9 @@ test('clu_013 the cluster page shows the pin, the versions, and the bake', async
       node({ nodeId: 'bbbb2222', site: 'canary-box', configSeq: baking ? 12 : 11 }),
       node({ nodeId: 'cccc3333', site: 'pi', configSeq: 11 }),
     ],
-    ...(baking ? { rollout: { stage: 'canary', version: '1.12', canaries: ['bbbb2222'] } } : {}),
+    rollout: baking
+      ? { stage: 'canary', version: '1.12', canaries: ['bbbb2222'] }
+      : { stage: 'pinned', pinned: { to: '1.10', since: '2026-10-10T12:00:00Z', by: 'the guard', reason: 'SERVFAIL 28.0% on the canaries' } },
   });
   const pinned = {
     fromPrimary: true, canaries: ['site:canary-box'], bakeSecs: 300, stable: '1.11', stage: 'pinned', nodes: [],
@@ -1564,7 +1568,13 @@ test('clu_013 the cluster page shows the pin, the versions, and the bake', async
       json: { done: dry ? 'would pin the cluster to version 1.9' : 'pinned to version 1.9 (published as 13)', dryRun: dry, changes: ['list: changed'], diff: [], configVersion: 7 },
     });
   });
+  // ADR-121 — a pin shows on every tab, and the Rollouts tab says so; the full banner is there.
   await page.goto('/#/cluster');
+  await expect(page.getByTestId('pin-note')).toContainText('pinned to version 1.10');
+  await expect(page.getByTestId('tab-rollouts')).toContainText('pinned');
+  await page.getByTestId('tab-rollouts').click();
+  await expect(page).toHaveURL(/#\/cluster\?tab=rollouts$/);
+  await expect(page.getByTestId('pin-note')).toHaveCount(0);
   const banner = page.getByTestId('pin-banner');
   await expect(banner).toContainText('pinned to version 1.10');
   await expect(banner).toContainText('the guard');
@@ -1594,6 +1604,14 @@ test('clu_013 the cluster page shows the pin, the versions, and the bake', async
   await expect(bake.getByTestId('rollout-promote')).toBeVisible();
   await expect(bake.getByTestId('rollout-abort')).toContainText('pin to 1.11');
   await expect(page.getByTestId('pin-banner')).toHaveCount(0);
+  await expect(page.getByTestId('tab-rollouts')).toContainText('baking');
+  // Arrow keys move between tabs (WAI-ARIA): left from Rollouts is Health, then Nodes.
+  await page.getByTestId('tab-rollouts').focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByTestId('tab-health')).toBeFocused();
+  await expect(page.getByTestId('tab-health')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Home');
+  await expect(page).toHaveURL(/tab=nodes$/);
   await expect(page.getByTestId('cluster-topology').locator('.chip.canary')).toHaveCount(2); // the canary and the primary
   await expect(page.locator('#node-id-bbbb2222, #node-bbbb2222').getByTestId('cluster-node-canary')).toBeVisible();
   for (const p of ['**/api/v1/cluster', '**/api/v1/cluster/rollout', '**/api/v1/cluster/versions', '**/api/v1/cluster/versions/*/pin**'])

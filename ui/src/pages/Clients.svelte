@@ -9,6 +9,8 @@
   import ClientChip from '../lib/components/ClientChip.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import IdentityLine from '../lib/components/IdentityLine.svelte';
+  import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
+  import TabPanel from '../lib/components/TabPanel.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -47,6 +49,14 @@
 
   $effect(load);
 
+  // REQ: API-005 (ADR-121) — one table per tab, each with its size.
+  const tabs = $derived<TabItem[]>([
+    { id: 'seen', label: 'Seen this hour', count: seen.length },
+    { id: 'devices', label: 'Devices', count: configured.length },
+    { id: 'discovered', label: 'Discovered', count: found.length },
+  ]);
+  const tab = $derived(activeTab(tabs));
+
   async function remove(name: string) {
     try {
       await api.deleteClient(name);
@@ -60,7 +70,9 @@
 <div class="page">
   <h1>Clients<HelpButton id="devices" /></h1>
   <ErrorNote {error} />
-  <div class="grid-2">
+  <Tabs {tabs} active={tab} label="Clients" />
+  <TabPanel active={tab}>
+  {#if tab === 'seen'}
     <section class="card">
       <h2>Seen this hour</h2>
       {#if seen.length === 0}
@@ -86,6 +98,7 @@
         </div>
       {/if}
     </section>
+  {:else if tab === 'devices'}
     <section class="card">
       <h2>Devices</h2>
       {#if configured.length === 0}
@@ -121,33 +134,35 @@
         </div>
       {/if}
     </section>
-  </div>
-  <section class="card" data-testid="discovered">
-    <h2>Discovered on your network</h2>
-    <p class="muted small">
-      Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
-      themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
-      one, change it, or put the device in a group.
-    </p>
-    {#if found.length === 0}
-      <p class="empty">Nothing discovered yet. Connect your router (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
-    {:else}
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
-          <tbody>
-            {#each found as l (l.ip)}
-              <tr>
-                <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
-                <td>{l.hostname ?? ''}</td>
-                <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
-                <td class="mono small">{l.mac}</td>
-                <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-  </section>
+  {:else}
+    <section class="card" data-testid="discovered">
+      <h2>Discovered on your network</h2>
+      <p class="muted small">
+        Names your router's DHCP knows (<code>[[router]]</code>: UniFi, OPNsense), or that devices announced
+        themselves over mDNS (<code>[clients] mdns</code>). Unnamed devices already show these names; click an address to keep
+        one, change it, or put the device in a group.
+      </p>
+      {#if found.length === 0}
+        <p class="empty">Nothing discovered yet. Connect your router (<code>[[router]]</code>) or set <code>[clients] mdns = true</code>.</p>
+      {:else}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Address</th><th>Name it gave</th><th>From</th><th>MAC</th><th>In TelltaleDNS</th></tr></thead>
+            <tbody>
+              {#each found as l (l.ip)}
+                <tr>
+                  <td class="mono"><ClientChip ip={l.ip} onchanged={load} /></td>
+                  <td>{l.hostname ?? ''}</td>
+                  <td><span class="badge info">{sourceText[l.source] ?? l.source}</span></td>
+                  <td class="mono small">{l.mac}</td>
+                  <td class="small">{#if named(l.ip)}<strong>{l.clientName}</strong>{:else}<span class="muted">not named yet</span>{/if}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    </section>
+  {/if}
+  </TabPanel>
 </div>

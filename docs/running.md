@@ -1099,7 +1099,7 @@ mdns = true
 - Listen only: TelltaleDNS never sends mDNS. It shares port 5353 with avahi or the system's responder.
 - It has to hear the LAN: a native install, the Pi bundle, or a pod with host networking. In a bridge or pod network nothing arrives.
 - Names you give devices win, then the routers' DHCP leases, then mDNS. Names are lowercase, as mDNS compares them. At most 4096 devices are remembered (until a restart).
-- `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered on your network** shows every device found by a router or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
+- `GET /api/v1/dhcp/leases` lists them with `source = mdns` (no MAC), and **Clients → Discovered** shows every device found by a router or mDNS. Naming one from there (or from any address in the UI) suggests the name it gave.
 - Changing it needs a restart.
 
 ### Naming devices in the UI
@@ -1260,7 +1260,7 @@ How it works, and its limits:
 - **Privacy:** at query-log privacy level 1 names are stored hashed, so a change that depends on names can't be replayed (`"available": false, "reason": "privacy_level"`). Moving a device between groups still can: its queries count as unchanged when the new groups decide alike, else as undetermined. At level 2 and above nothing can be replayed.
 - DNS answering never waits for a simulation, and a simulation never asks an upstream or touches the cache. It's about decisions: it can't count names nobody asked, and it doesn't predict latency or what an upstream would answer.
 
-Settings: `[simulate]` (Settings → System → Change simulation in the UI): `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask, see [Plans and approval](#plans-and-approval)), `max_secs` (1 to 300, default 20), `max_rows` (at least 1,000, default 2,000,000), and `default_window` (default `24h`, at most `7d`). Metrics: `telltale_simulations_total{outcome}`, `telltale_simulation_duration_seconds`, `telltale_simulation_rows_total`.
+Settings: `[simulate]` (Settings → Query handling → Change simulation in the UI): `enabled`, `plans_by_default` (agents' plans simulate even when they don't ask, see [Plans and approval](#plans-and-approval)), `max_secs` (1 to 300, default 20), `max_rows` (at least 1,000, default 2,000,000), and `default_window` (default `24h`, at most `7d`). Metrics: `telltale_simulations_total{outcome}`, `telltale_simulation_duration_seconds`, `telltale_simulation_rows_total`.
 
 ## Who can query, and how often
 ```toml
@@ -1279,7 +1279,7 @@ TelltaleDNS is never an open resolver by default. If you widen `allowed_networks
 
 `[ratelimit]` applies on reload, with no restart. The default of 1,000 queries a minute per address suits homes where each device has its own address. A router or proxy that forwards for a whole network shows up as one address, and would be refused above about 17 queries a second: add it to `exempt`, or raise `queries`.
 
-- **Adjust it in the UI:** **Settings → System → Rate limit** shows the limit in effect (from the config file, or changed here) and edits it: queries per window, the window, what a limited client gets (`refused` or `drop`), the addresses never limited, and in the Advanced view how clients are grouped (`ipv4_prefix`, `ipv6_prefix`). **Check** shows what the change does first. **Revert to the file** goes back to `[ratelimit]` in the configuration. A change replaces the whole section, so fields left out take the defaults, not the file's values, and the list of exempt addresses is replaced too (keep `127.0.0.0/8` and `::1/128`).
+- **Adjust it in the UI:** **Settings → Query handling → Rate limit** shows the limit in effect (from the config file, or changed here) and edits it: queries per window, the window, what a limited client gets (`refused` or `drop`), the addresses never limited, and in the Advanced view how clients are grouped (`ipv4_prefix`, `ipv6_prefix`). **Check** shows what the change does first. **Revert to the file** goes back to `[ratelimit]` in the configuration. A change replaces the whole section, so fields left out take the defaults, not the file's values, and the list of exempt addresses is replaced too (keep `127.0.0.0/8` and `::1/128`).
 - **Through the API:** `PUT /api/v1/ratelimit/default` with the same fields as `[ratelimit]` (add `?dryRun=true` to preview), and `DELETE` to revert; `GET /api/v1/config/entries?kind=ratelimit` shows the limit in effect and its source. Agents need `config:write:ratelimit`, and AI agents can plan a change with the MCP tool `plan_set_ratelimit`. On a node whose configuration comes from Git, the response says what to add to the repository.
 
 ### The advertised UDP size
@@ -1760,7 +1760,12 @@ telltale cluster status
     what to do when one fails;
   - a timeline of joins, connections, published and applied versions, and failures.
 
-  The page refreshes every 5 seconds.
+  The cluster's summary stays at the top; the rest is in tabs: **Nodes** (the topology and the
+  node table, with Maintenance…), **Health** (checks, conflicts, machines), **Rollouts**
+  (staged rollouts and versions), and **Events**. A tab with something wrong says so (failing
+  checks and conflicts, a version baking or a pin, failures in the last hour), and a pin shows
+  on every tab. The tab is in the address (`#/cluster?tab=health`), so it can be linked. The
+  page refreshes every 5 seconds.
 - **Metrics:**
   - `telltale_cluster_peers{state}`;
   - per peer: `telltale_cluster_peer_up`, `telltale_cluster_peer_rtt_seconds` and
@@ -2155,7 +2160,7 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
 - Their queries are still answered as usual and still counted in Prometheus (`telltale_queries_total`), but left out of the query log, the live view, the dashboard and top lists, device pages, anomalies, the event sinks, OTLP traces, and exemplars. `telltale_queries_excluded_total` counts them.
 - The dashboard's totals leave them out, so they'll be lower than Prometheus's.
 - From the next query on, on every node of a cluster (`[exclusions]` is shared). Queries logged before stay (and the top lists rebuilt after a restart skip them too).
-- In the UI: **Settings → System → Kept out of the log**, with a toggle, checked before it's applied, and *Revert to the file*. Under a Git-managed configuration, change `[exclusions]` in Git; the UI shows the TOML to commit. API: `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions`.
+- In the UI: **Settings → Query handling → Kept out of the log**, with a toggle, checked before it's applied, and *Revert to the file*. Under a Git-managed configuration, change `[exclusions]` in Git; the UI shows the TOML to commit. API: `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions`.
 
 ### OpenTelemetry (OTLP)
 Push the metrics to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) instead of, or as well as, having Prometheus scrape them:
@@ -2585,7 +2590,7 @@ A `plan_*` tool asks the node what the change would do (the same dry run as `?dr
 - **`apply_plan`** makes the change exactly as planned, on every node. If anything in the configuration changed since the plan was made, the plan is **stale** and nothing happens; the agent plans again. Applying twice changes nothing more.
 - **Approval:** with `[agents] require_approval = true`, a plan waits for a person. Operators see **N agent changes to review** in the header and approve or reject on the **Agent changes** page (or `POST /api/v1/plans/{id}/approve` and `/reject`). Agent tokens can't approve anything, their own plans included. Approvals and rejections are audited.
 - **Who did it:** the change is audited as the agent, with its owner, its MCP client, and the plan's reason. The approval is a separate audit entry under the operator's name.
-- **What it would have done:** a plan tool takes `simulate` (`"24h"`, up to `"7d"`): the preview then carries `simulation`, the change replayed over the query log (see [Trying a change against yesterday's traffic](#trying-a-change-against-yesterdays-traffic)). Plans don't simulate unless the agent asks, because a simulation costs CPU on every node; an operator can make every plan simulate with `[simulate] plans_by_default = true` (Settings → System → Change simulation). No agent tool can turn that on. If the node is busy with another simulation, the plan is made without it and its `note` says so. `simulate_change` previews a change's simulation without making a plan. Simulating needs the `querylog:read` scope too.
+- **What it would have done:** a plan tool takes `simulate` (`"24h"`, up to `"7d"`): the preview then carries `simulation`, the change replayed over the query log (see [Trying a change against yesterday's traffic](#trying-a-change-against-yesterdays-traffic)). Plans don't simulate unless the agent asks, because a simulation costs CPU on every node; an operator can make every plan simulate with `[simulate] plans_by_default = true` (Settings → Query handling → Change simulation). No agent tool can turn that on. If the node is busy with another simulation, the plan is made without it and its `note` says so. `simulate_change` previews a change's simulation without making a plan. Simulating needs the `querylog:read` scope too.
 - `GET /api/v1/plans` lists plans for the last day (an agent token sees only its own).
 - Plans live in the memory of the node that made them: a restart drops open plans (the agent just plans again). In a cluster, point agents at the node whose UI you use (normally the primary).
 

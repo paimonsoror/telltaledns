@@ -3,19 +3,23 @@
   // and system information.
   import { api, type S } from '../lib/api';
   import { can, session, refreshSession } from '../lib/session.svelte';
-  import { route, navigate } from '../lib/router.svelte';
   import { ago, dateTime, duration } from '../lib/format';
   import { poll } from '../lib/poll';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
+  import TabPanel from '../lib/components/TabPanel.svelte';
 
-  const tabs = $derived(
+  const tabs = $derived<TabItem[]>(
     [
       { id: 'account', label: 'Account' },
       { id: 'tokens', label: 'API tokens' },
       ...(can('admin') ? [{ id: 'users', label: 'Users' }, { id: 'audit', label: 'Audit log' }] : []),
       { id: 'system', label: 'System' },
+      // REQ: API-005 (ADR-121) — how queries are handled (cache, rate limit, what's kept out of
+      // the log, simulation), apart from the node's own housekeeping.
+      { id: 'queries', label: 'Query handling' },
       // REQ: CLU-013 — staged rollouts are an admin's.
       ...(can('admin') ? [{ id: 'cluster', label: 'Cluster' }] : []),
     ],
@@ -92,10 +96,7 @@
     const secs = Number(v.bake_secs ?? 300);
     return `Changes reach ${named} (and the primary) first, and the rest after ${secs >= 120 ? `${Math.round(secs / 60)} minutes` : `${secs} s`} if nothing fails.`;
   };
-  const tab = $derived.by(() => {
-    const t = route.params.get('tab');
-    return tabs.some((x) => x.id === t) ? (t as string) : 'account';
-  });
+  const tab = $derived(activeTab(tabs));
 
   // ---- account
   let current = $state('');
@@ -387,12 +388,9 @@
 
 <div class="page">
   <h1>Settings</h1>
-  <div class="seg tabs" role="tablist">
-    {#each tabs as t (t.id)}
-      <button role="tab" aria-selected={tab === t.id} onclick={() => navigate('/settings', { tab: t.id })}>{t.label}</button>
-    {/each}
-  </div>
+  <Tabs {tabs} active={tab} label="Settings" />
 
+  <TabPanel active={tab}>
   {#if tab === 'account' && session.user}
     <div class="grid-2">
       <section class="card">
@@ -770,6 +768,22 @@
         <p class="small">{info.update.how}</p>
       </section>
     {/if}
+    {#if can('admin')}
+      <!-- REQ: API-007 (T6.7) -->
+      <section class="card">
+        <h2>Backup<HelpButton id="backup" /></h2>
+        <p>
+          One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
+          statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
+        </p>
+        <p><a class="button" href="/api/v1/backup" download>Download a backup</a></p>
+        <p class="muted small">
+          It holds password hashes, so keep it private. The query log isn't included; for that, run
+          <code>telltale backup create --include-qlog</code> on the server.
+        </p>
+      </section>
+    {/if}
+  {:else if tab === 'queries'}
     <!-- REQ: DNS-006 (T6.15) — the cache has its own page now. -->
     <section class="card">
       <h2>Cache</h2>
@@ -804,22 +818,8 @@
       A simulation replays the query log with and without a change and shows what would have been answered differently. It never
       touches DNS answers and runs at background priority; at query-log privacy level 1 or above names can't be replayed.
     </p>
-    {#if can('admin')}
-      <!-- REQ: API-007 (T6.7) -->
-      <section class="card">
-        <h2>Backup<HelpButton id="backup" /></h2>
-        <p>
-          One file with your settings, users and API tokens, the devices and names you added here, the audit log, and
-          statistics history. Restore it on a new machine with <code>telltale backup restore FILE</code>.
-        </p>
-        <p><a class="button" href="/api/v1/backup" download>Download a backup</a></p>
-        <p class="muted small">
-          It holds password hashes, so keep it private. The query log isn't included; for that, run
-          <code>telltale backup create --include-qlog</code> on the server.
-        </p>
-      </section>
-    {/if}
   {/if}
+  </TabPanel>
 </div>
 
 <style>
@@ -834,14 +834,6 @@
     border: 1px solid var(--border, #ddd);
     border-radius: 8px;
     padding: 0.75rem 1rem;
-  }
-  .tabs button[aria-selected='true'] {
-    background: var(--accent);
-    color: var(--accent-text);
-  }
-  .tabs {
-    justify-self: start;
-    flex-wrap: wrap;
   }
   .stack-card {
     display: grid;

@@ -13,6 +13,8 @@
   import Topology, { type Node } from '../lib/components/Topology.svelte';
   import MaintenanceForm from '../lib/components/MaintenanceForm.svelte';
   import RolloutPanel from '../lib/components/RolloutPanel.svelte';
+  import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
+  import TabPanel from '../lib/components/TabPanel.svelte';
   import { refreshHealth } from '../lib/health.svelte';
   import { tick } from 'svelte';
 
@@ -144,6 +146,25 @@
       me?.configSource === 'gitops'
   );
   const primaryUp = $derived(upPrimaries.length > 0 && !takeover);
+
+  // REQ: API-005 (ADR-121) — the page in tabs, the summary above them. A tab with something
+  // wrong says so: failing checks and conflicts, a pin or a version baking, problem events in
+  // the last hour.
+  const problemKinds = new Set(['disconnected', 'sync_failed', 'rejected', 'handover_failed', 'rollout_failed']);
+  const recentProblems = $derived.by(() => {
+    const since = Date.now() - 3600_000;
+    return (view?.events ?? []).filter((e) => problemKinds.has(e.kind) && Date.parse(e.at) >= since).length;
+  });
+  const problems = $derived(failing.length + (view?.conflicts.length ?? 0));
+  const stage = $derived(view?.rollout?.stage ?? 'none');
+  const stageWord: Record<string, string> = { canary: 'baking', waiting: 'waiting', pinned: 'pinned' };
+  const tabs = $derived<TabItem[]>([
+    { id: 'nodes', label: 'Nodes', count: view?.nodes.length ?? null },
+    { id: 'health', label: 'Health', count: problems || null, alert: problems > 0 },
+    { id: 'rollouts', label: 'Rollouts', count: stageWord[stage] ?? null, alert: stage === 'pinned' },
+    { id: 'events', label: 'Events', count: recentProblems || null, alert: recentProblems > 0 },
+  ]);
+  const tab = $derived(activeTab(tabs));
 
   // REQ: CLU-005 — manual failover (ADR-051): only when the primary is gone.
   let confirming = $state(false);
@@ -320,195 +341,209 @@ telltale cluster join tt_join_…</pre>
       {/if}
     </section>
 
-    <!-- REQ: CLU-013 — the pin, the version baking, and the kept versions. -->
-    <RolloutPanel nodes={view.nodes} onchanged={load} />
+    <!-- REQ: CLU-013 (ADR-116) — a pin stays loud on every tab; the full banner (what it holds
+         back, Unpin) is on Rollouts. -->
+    {#if view.rollout?.pinned && tab !== 'rollouts'}
+      {@const p = view.rollout.pinned}
+      <div class="notice warn" role="status" data-testid="pin-note">
+        <strong>The cluster is pinned to version {p.to}</strong> by {p.by}: {p.reason}. Configuration changes wait until it's
+        unpinned. <a href="#/cluster?tab=rollouts">Rollouts</a>
+      </div>
+    {/if}
+    <Tabs {tabs} active={tab} label="Cluster" />
+    <TabPanel active={tab}>
+    {#if tab === 'nodes'}
+      <!-- REQ: CLU-008 (T6.14) — the cluster at a glance. -->
+      <section class="card">
+        <h2>Topology<HelpButton id="cluster-topology" /></h2>
+        <Topology nodes={view.nodes} onselect={select} {canaries} />
+      </section>
 
-    <!-- REQ: CLU-008 (T6.14) — the cluster at a glance. -->
-    <section class="card">
-      <h2>Topology<HelpButton id="cluster-topology" /></h2>
-      <Topology nodes={view.nodes} onselect={select} {canaries} />
-    </section>
-
-    {#if view.conflicts.length}
-      <section class="card" data-testid="cluster-conflicts">
-        <h2>Conflicts</h2>
-        <p class="muted small">
-          Versions this node published after another node took over as primary. They were never applied anywhere; to keep a
-          change, make it again where the configuration comes from now.
-        </p>
-        <ul class="conflicts">
-          {#each view.conflicts as k (k.epoch * 1e9 + k.seq)}
-            <li>
-              <strong>Version {num(k.seq)}</strong> <span class="muted small">(epoch {k.epoch}, published {logDate(k.publishedAt)} {logTime(k.publishedAt)})</span>
-              <div class="small">Changed: <span class="mono">{k.changed.join(', ') || '—'}</span></div>
+      <section class="card">
+        <h2>Nodes</h2>
+        <div class="table-wrap">
+          <table class="nodes">
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Status</th>
+                <th>Configuration</th>
+                <th>Serving DNS</th>
+                <th>Version</th>
+                <th>Uptime</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#snippet row(n: NonNullable<typeof view>['nodes'][number])}
+                <tr data-testid="cluster-node" id={`node-${n.nodeId}`} class:selected={selected === n.nodeId}>
+                  <td>
+                    <strong>{n.site}</strong>
+                    <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.witness ? 'witness' : n.role}</span>
+                    {#if n.ephemeral}<span class="muted small">pod</span>{/if}
+                    {#if n.thisNode}<span class="muted small">this node</span>{/if}
+                    <div class="mono muted small" title={n.nodeId}>
+                      {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
+                    </div>
+                    {#if n.pod}<div class="muted small" data-testid="cluster-node-pod">pod <span class="mono">{n.pod}</span>{#if n.kubeNode}{' on '}<span class="mono">{n.kubeNode}</span>{/if}</div>{/if}
+                    <!-- REQ: OPS-010 — the window, and the actions for operators. -->
+                    {#if n.maintenance}
+                      <div class="small" data-testid="cluster-node-maintenance">
+                        <span class="badge warn" title={`by ${n.maintenance.by}`}><Icon name="wrench" size={12} /> maintenance</span>
+                        {duration(n.maintenance.secondsLeft)} left · {n.maintenance.reason}
+                      </div>
+                    {/if}
+                    {#if can('operator') && !n.witness}
+                      <div class="small">
+                        {#if n.maintenance}
+                          <button class="link small" onclick={() => endMaintenance(apiNode(n))} disabled={maintBusy} data-testid="maintenance-end">End maintenance</button>
+                        {:else if maintFor !== n.nodeId}
+                          <button class="link small" onclick={() => (maintFor = n.nodeId)} data-testid="maintenance-open">Maintenance…</button>
+                        {/if}
+                      </div>
+                    {/if}
+                  </td>
+                  <td>
+                    <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
+                    <div class="muted small">
+                      {#if n.thisNode}—{:else}{n.link}{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
+                    </div>
+                  </td>
+                  <td>
+                    version {num(n.configSeq)}
+                    {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
+                    {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
+                    <div class="small {n.configLag ? 'warn-text' : 'muted'}">
+                      {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
+                    </div>
+                  </td>
+                  <td>
+                    <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
+                    <div class="muted small">
+                      {num(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
+                    </div>
+                    {#if n.cacheEntries != null}
+                      <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
+                    {/if}
+                  </td>
+                  <td class="small">{n.version}</td>
+                  <td class="small">
+                    {duration(n.uptimeSeconds)}
+                    {#if n.restarts}<div class="warn-text">{n.restarts} restart{n.restarts === 1 ? '' : 's'}</div>{/if}
+                    {#if n.certExpiresAt}<div class="muted">cert until {logDate(n.certExpiresAt)}</div>{/if}
+                  </td>
+                </tr>
+                {#if maintFor === n.nodeId}
+                  <tr class="maint-row">
+                    <td colspan="6">
+                      <MaintenanceForm
+                        node={apiNode(n)}
+                        label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
+                        primary={n.role === 'primary'}
+                        canHandover={canHandover(n)}
+                        onclose={() => (maintFor = null)}
+                        ondone={(r) => changed(r.note)}
+                      />
+                    </td>
+                  </tr>
+                {/if}
+              {/snippet}
+              {#each fixed as n (n.nodeId)}{@render row(n)}{/each}
+              {#each podSites as [site, pods] (site)}
+                <tr class="pods" data-testid="cluster-pods">
+                  <td colspan="6">
+                    <button class="link" onclick={() => toggleSite(site)} aria-expanded={openSites.includes(site)}>
+                      {openSites.includes(site) ? '▾' : '▸'} <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
+                    </button>
+                    <span class="muted small">
+                      {pods.filter((p) => p.up).length} up · {pods.filter((p) => p.ready).length} ready ·
+                      {num(pods.reduce((t, p) => t + p.qps, 0))} q/s · {pods.filter((p) => p.configLag > 0).length} behind
+                      {#if avg(pods.map((p) => p.cacheHitPercent)) != null}· cache {pct(avg(pods.map((p) => p.cacheHitPercent)) ?? 0)} hits on average (each pod has its own){/if}
+                    </span>
+                  </td>
+                </tr>
+                {#if openSites.includes(site)}{#each pods as n (n.nodeId)}{@render row(n)}{/each}{/if}
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#if view.nodes.length === 1}
+          <p class="muted small">No other node has connected yet. On another node: <span class="mono">telltale cluster join</span> with a token from <span class="mono">telltale cluster token create</span>.</p>
+        {/if}
+      </section>
+    {:else if tab === 'health'}
+      <section class="card">
+        <h2>Checks</h2>
+        <ul class="checks">
+          {#each view.checks as c (c.id)}
+            <li class:fail={!c.ok} data-testid="cluster-check">
+              <span class="mark" aria-hidden="true">{c.ok ? '✓' : '✗'}</span>
+              <div>
+                <div>{c.summary}</div>
+                {#if c.fix}<div class="muted small">{c.fix}</div>{/if}
+              </div>
             </li>
           {/each}
         </ul>
       </section>
-    {/if}
 
-    <section class="card">
-      <h2>Checks</h2>
-      <ul class="checks">
-        {#each view.checks as c (c.id)}
-          <li class:fail={!c.ok} data-testid="cluster-check">
-            <span class="mark" aria-hidden="true">{c.ok ? '✓' : '✗'}</span>
-            <div>
-              <div>{c.summary}</div>
-              {#if c.fix}<div class="muted small">{c.fix}</div>{/if}
-            </div>
-          </li>
-        {/each}
-      </ul>
-    </section>
-
-    <section class="card">
-      <h2>Nodes</h2>
-      <div class="table-wrap">
-        <table class="nodes">
-          <thead>
-            <tr>
-              <th>Node</th>
-              <th>Status</th>
-              <th>Configuration</th>
-              <th>Serving DNS</th>
-              <th>Version</th>
-              <th>Uptime</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#snippet row(n: NonNullable<typeof view>['nodes'][number])}
-              <tr data-testid="cluster-node" id={`node-${n.nodeId}`} class:selected={selected === n.nodeId}>
-                <td>
-                  <strong>{n.site}</strong>
-                  <span class="badge {n.role === 'primary' ? 'ok' : n.role.includes('emergency') ? 'warn' : ''}">{n.witness ? 'witness' : n.role}</span>
-                  {#if n.ephemeral}<span class="muted small">pod</span>{/if}
-                  {#if n.thisNode}<span class="muted small">this node</span>{/if}
-                  <div class="mono muted small" title={n.nodeId}>
-                    {shortId(n.nodeId)}{#if n.configSource}{' · '}{n.configSource === 'gitops' ? 'Git-managed' : 'local file'}{/if}
-                  </div>
-                  {#if n.pod}<div class="muted small" data-testid="cluster-node-pod">pod <span class="mono">{n.pod}</span>{#if n.kubeNode}{' on '}<span class="mono">{n.kubeNode}</span>{/if}</div>{/if}
-                  <!-- REQ: OPS-010 — the window, and the actions for operators. -->
-                  {#if n.maintenance}
-                    <div class="small" data-testid="cluster-node-maintenance">
-                      <span class="badge warn" title={`by ${n.maintenance.by}`}><Icon name="wrench" size={12} /> maintenance</span>
-                      {duration(n.maintenance.secondsLeft)} left · {n.maintenance.reason}
-                    </div>
-                  {/if}
-                  {#if can('operator') && !n.witness}
-                    <div class="small">
-                      {#if n.maintenance}
-                        <button class="link small" onclick={() => endMaintenance(apiNode(n))} disabled={maintBusy} data-testid="maintenance-end">End maintenance</button>
-                      {:else if maintFor !== n.nodeId}
-                        <button class="link small" onclick={() => (maintFor = n.nodeId)} data-testid="maintenance-open">Maintenance…</button>
-                      {/if}
-                    </div>
-                  {/if}
-                </td>
-                <td>
-                  <span class="badge {n.up ? 'ok' : 'bad'}">{n.up ? 'up' : 'down'}</span>
-                  <div class="muted small">
-                    {#if n.thisNode}—{:else}{n.link}{#if n.rttMs != null}{' · '}{ms(n.rttMs)} RTT{/if}{#if !n.up}{' · '}seen {duration(n.lastSeenSecondsAgo)} ago{/if}{/if}
-                  </div>
-                </td>
-                <td>
-                  version {num(n.configSeq)}
-                  {#if canaries.includes(n.nodeId) || (n.thisNode && n.role === 'primary' && canaries.length)}<span class="badge warn" data-testid="cluster-node-canary">canary</span>{/if}
-                  {#if n.sourceCommit}<span class="mono muted small" title={n.sourceCommit}> · {n.sourceCommit.slice(0, 7)}</span>{/if}
-                  <div class="small {n.configLag ? 'warn-text' : 'muted'}">
-                    {#if n.configLag}{n.configLag} behind{#if n.behindSeconds != null} for {duration(n.behindSeconds)}{/if}{:else}in sync{/if}
-                  </div>
-                </td>
-                <td>
-                  <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
-                  <div class="muted small">
-                    {num(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
-                  </div>
-                  {#if n.cacheEntries != null}
-                    <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
-                  {/if}
-                </td>
-                <td class="small">{n.version}</td>
-                <td class="small">
-                  {duration(n.uptimeSeconds)}
-                  {#if n.restarts}<div class="warn-text">{n.restarts} restart{n.restarts === 1 ? '' : 's'}</div>{/if}
-                  {#if n.certExpiresAt}<div class="muted">cert until {logDate(n.certExpiresAt)}</div>{/if}
-                </td>
-              </tr>
-              {#if maintFor === n.nodeId}
-                <tr class="maint-row">
-                  <td colspan="6">
-                    <MaintenanceForm
-                      node={apiNode(n)}
-                      label={n.thisNode ? 'this node' : (n.pod ?? n.site)}
-                      primary={n.role === 'primary'}
-                      canHandover={canHandover(n)}
-                      onclose={() => (maintFor = null)}
-                      ondone={(r) => changed(r.note)}
-                    />
-                  </td>
-                </tr>
-              {/if}
-            {/snippet}
-            {#each fixed as n (n.nodeId)}{@render row(n)}{/each}
-            {#each podSites as [site, pods] (site)}
-              <tr class="pods" data-testid="cluster-pods">
-                <td colspan="6">
-                  <button class="link" onclick={() => toggleSite(site)} aria-expanded={openSites.includes(site)}>
-                    {openSites.includes(site) ? '▾' : '▸'} <strong>{site}</strong>: {pods.length} resolver pod{pods.length === 1 ? '' : 's'}
-                  </button>
-                  <span class="muted small">
-                    {pods.filter((p) => p.up).length} up · {pods.filter((p) => p.ready).length} ready ·
-                    {num(pods.reduce((t, p) => t + p.qps, 0))} q/s · {pods.filter((p) => p.configLag > 0).length} behind
-                    {#if avg(pods.map((p) => p.cacheHitPercent)) != null}· cache {pct(avg(pods.map((p) => p.cacheHitPercent)) ?? 0)} hits on average (each pod has its own){/if}
-                  </span>
-                </td>
-              </tr>
-              {#if openSites.includes(site)}{#each pods as n (n.nodeId)}{@render row(n)}{/each}{/if}
+      {#if view.conflicts.length}
+        <section class="card" data-testid="cluster-conflicts">
+          <h2>Conflicts</h2>
+          <p class="muted small">
+            Versions this node published after another node took over as primary. They were never applied anywhere; to keep a
+            change, make it again where the configuration comes from now.
+          </p>
+          <ul class="conflicts">
+            {#each view.conflicts as k (k.epoch * 1e9 + k.seq)}
+              <li>
+                <strong>Version {num(k.seq)}</strong> <span class="muted small">(epoch {k.epoch}, published {logDate(k.publishedAt)} {logTime(k.publishedAt)})</span>
+                <div class="small">Changed: <span class="mono">{k.changed.join(', ') || '—'}</span></div>
+              </li>
             {/each}
-          </tbody>
-        </table>
-      </div>
-      {#if view.nodes.length === 1}
-        <p class="muted small">No other node has connected yet. On another node: <span class="mono">telltale cluster join</span> with a token from <span class="mono">telltale cluster token create</span>.</p>
+          </ul>
+        </section>
       {/if}
-    </section>
 
-    <!-- REQ: CLU-008 (T6.11) — the machines nodes run on (pods only when their site is open). -->
-    {@const machines = view.nodes.filter((n) => n.host && (!n.ephemeral || openSites.includes(n.site)))}
-    {#if machines.length}
-      <section class="machines" data-testid="cluster-machines">
-        <h2>Machines<HelpButton id="host-resources" /></h2>
-        <div class="host-grid">
-          {#each machines as n (n.nodeId)}
-            {#if n.host}<div class="host-slot" class:selected={selected === n.nodeId}><HostCard title={n.site} sub={`${n.thisNode ? 'this node' : n.role} · ${n.pod ?? shortId(n.nodeId)}`} host={n.host} /></div>{/if}
-          {/each}
-        </div>
+      <!-- REQ: CLU-008 (T6.11) — the machines nodes run on (pods only when their site is open). -->
+      {@const machines = view.nodes.filter((n) => n.host && (!n.ephemeral || openSites.includes(n.site)))}
+      {#if machines.length}
+        <section class="machines" data-testid="cluster-machines">
+          <h2>Machines<HelpButton id="host-resources" /></h2>
+          <div class="host-grid">
+            {#each machines as n (n.nodeId)}
+              {#if n.host}<div class="host-slot" class:selected={selected === n.nodeId}><HostCard title={n.site} sub={`${n.thisNode ? 'this node' : n.role} · ${n.pod ?? shortId(n.nodeId)}`} host={n.host} /></div>{/if}
+            {/each}
+          </div>
+        </section>
+      {/if}
+    {:else if tab === 'rollouts'}
+      <!-- REQ: CLU-013 — the pin, the version baking, and the kept versions. -->
+      <RolloutPanel nodes={view.nodes} onchanged={load} />
+    {:else}
+      <section class="card">
+        <h2>Events</h2>
+        {#if podSites.length || churn.restarted}
+          <p class="muted small" data-testid="cluster-churn">
+            Last hour: {churn.joined} joined · {churn.expired} pod{churn.expired === 1 ? '' : 's'} gone · {churn.restarted} restart{churn.restarted === 1 ? '' : 's'}
+          </p>
+        {/if}
+        {#if view.events.length === 0}
+          <p class="empty">Nothing yet.</p>
+        {:else}
+          <ol class="events">
+            {#each view.events as e, i (i)}
+              <li>
+                <span class="mono small muted">{logDate(e.at)} {logTime(e.at)}</span>
+                <span class="badge {kindClass(e.kind)}">{kinds[e.kind] ?? e.kind}</span>
+                <span class="mono small">{view.nodes.find((n) => n.nodeId === e.nodeId)?.site ?? shortId(e.nodeId)}</span>
+                <span class="small">{e.detail}</span>
+              </li>
+            {/each}
+          </ol>
+        {/if}
       </section>
     {/if}
-
-    <section class="card">
-      <h2>Events</h2>
-      {#if podSites.length || churn.restarted}
-        <p class="muted small" data-testid="cluster-churn">
-          Last hour: {churn.joined} joined · {churn.expired} pod{churn.expired === 1 ? '' : 's'} gone · {churn.restarted} restart{churn.restarted === 1 ? '' : 's'}
-        </p>
-      {/if}
-      {#if view.events.length === 0}
-        <p class="empty">Nothing yet.</p>
-      {:else}
-        <ol class="events">
-          {#each view.events as e, i (i)}
-            <li>
-              <span class="mono small muted">{logDate(e.at)} {logTime(e.at)}</span>
-              <span class="badge {kindClass(e.kind)}">{kinds[e.kind] ?? e.kind}</span>
-              <span class="mono small">{view.nodes.find((n) => n.nodeId === e.nodeId)?.site ?? shortId(e.nodeId)}</span>
-              <span class="small">{e.detail}</span>
-            </li>
-          {/each}
-        </ol>
-      {/if}
-    </section>
+    </TabPanel>
   {/if}
 </div>
 

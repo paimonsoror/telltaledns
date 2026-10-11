@@ -43,7 +43,7 @@
   ] as const;
 
   const reasons: Record<string, string> = {
-    disabled: 'Simulation is off on this cluster (Settings → System → Change simulation).',
+    disabled: 'Simulation is off on this cluster (Settings → Query handling → Change simulation).',
     privacy_level:
       "The query log keeps names hashed or hidden at this node's privacy level, so this change can't be replayed. Moving a device between groups with the same lists still can be.",
     no_query_log: 'The query log is off on this node, so there is nothing to replay.',
