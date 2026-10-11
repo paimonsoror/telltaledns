@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Block, allow, and explain — TelltaleDNS</title>
+<meta name="description" content="Add blocklists, choose how blocked names are answered, make quick block and allow rules, set bedtime schedules, blocked services, and safe search, try a list in shadow mode, and find out why a name was blocked.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-blocking">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Block, allow, and explain</h1>
+  <p class="lede">Add the blocklists you trust, make quick exceptions for one device or a whole group, set rules by the time of day, and when something is blocked, see exactly which rule did it.</p>
+  <ul class="onpage">
+    <li><a href="#add">Add a blocklist</a></li>
+    <li><a href="#formats">List formats</a></li>
+    <li><a href="#answers">How blocked names are answered</a></li>
+    <li><a href="#quick">Quick block and allow rules</a></li>
+    <li><a href="#schedules">Bedtime and other schedules</a></li>
+    <li><a href="#services">Blocked services and safe search</a></li>
+    <li><a href="#shadow">Try a list first</a></li>
+    <li><a href="#explain">Find out why</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ul>
+  <div class="callout"><p><b>Which devices get which lists</b> is decided by groups: a group without <code>lists</code> uses every list. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</p></div>
+</section>
+
+<section id="add">
+  <h2>Add a blocklist</h2>
+  <p class="muted">A list can be a URL, a local file, or rules you type in. Downloads run in the background: DNS answers while they run, and a failed download never affects answers.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Add a blocklist">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+
+    <div class="panel" id="add-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open the <b>Lists</b> page and, under <b>Manage lists</b>, choose <b>Add list</b>.</li>
+        <li>Give it a name, then fill in <b>Download from</b> (a URL) or <b>Rules</b> (one per line). <b>Kind</b> is <b>block</b> or <b>allow</b>.</li>
+        <li><b>Test it</b> downloads and parses the draft from this node: how many rules, and the first lines it can't use.</li>
+        <li><b>Check</b> shows what the change will do and any warnings (such as a list no group uses). Nothing is saved until <b>Apply</b>.</li>
+      </ol>
+    </div>
+
+    <div class="panel" id="add-file"><h3>Config file</h3>
+<pre><code>[[list]]
+name = "hagezi-pro"                     # lowercase letters, digits, - and _
+url = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
+
+[[list]]
+name = "family-allow"
+kind = "allow"                          # block (default) or allow
+match = "exact"                         # subtree (default) or exact
+path = "/etc/telltale/allow.txt"        # a local file, re-read on every refresh
+
+[[list]]
+name = "manual"
+rules = ["||ads.example.com^", "@@||cdn.example.com^"]</code></pre>
+      <ul>
+        <li>Adding, removing, or editing lists applies on reload (<code>SIGHUP</code>). <code>[filter]</code> changes need a restart.</li>
+        <li>Lists refresh every 24 hours by default (<code>[filter] refresh_secs</code>). To refresh every list now, send <code>SIGUSR1</code> (<code>docker kill -s USR1 telltale</code>), like <code>pihole -g</code> in Pi-hole.</li>
+        <li><code>telltale lists fetch -c telltale.toml</code> fetches outside the server, and <code>telltale lists check -c telltale.toml</code> shows which lines were skipped and why.</li>
+      </ul>
+    </div>
+
+    <div class="panel" id="add-api"><h3>API / CLI</h3>
+      <p><code>PUT /api/v1/lists/{name}</code> takes the same fields as <code>[[list]]</code>; add <code>?dryRun=true</code> to preview. <code>POST /api/v1/checks/list</code> tests a draft without saving it.</p>
+<pre><code>telltale ctl put lists/hagezi-pro --data '{"url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"}'
+telltale ctl lists                      # with unique names and hits</code></pre>
+    </div>
+  </div>
+  <div class="callout"><p><b>A failed refresh never loses a list.</b> The last good copy stays in use, and a failing list is retried after 5 minutes, then 10, 20, and so on up to hourly. Downloads that can't be a list (an empty body, a captive portal's HTML page, mostly invalid lines) are refused.</p></div>
+  <p class="muted">Every <code>[[list]]</code> and <code>[filter]</code> key is in the <a href="config.html">configuration reference</a>; compiling and memory sizing are in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#compiling">detailed docs</a>.</p>
+</section>
+
+<section id="formats">
+  <h2>List formats</h2>
+  <p>Every common format works, and formats can be mixed in one list:</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Line</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>0.0.0.0 ads.example.com</code></td><td>Hosts file: block the name (<code>localhost</code> and similar lines are skipped)</td></tr>
+      <tr><td><code>ads.example.com</code></td><td>The name and everything below it (only the name with <code>match = "exact"</code>)</td></tr>
+      <tr><td><code>*.example.com</code> or <code>.example.com</code></td><td>Everything below <code>example.com</code>, but not <code>example.com</code> itself</td></tr>
+      <tr><td><code>||ads.example.com^</code></td><td>AdBlock: the name and everything below it</td></tr>
+      <tr><td><code>@@||cdn.example.com^</code></td><td>Exception: allow, even in a blocklist</td></tr>
+      <tr><td><code>||ads.example.com^$important</code></td><td>Wins over ordinary allow rules</td></tr>
+      <tr><td><code>||example.com^$client=192.168.1.0/24|'Kids tablet'</code></td><td>Only for these clients (<code>~</code> excludes)</td></tr>
+      <tr><td><code>||nas.example^$dnsrewrite=192.168.1.20</code></td><td>Answer with this address instead</td></tr>
+      <tr><td><code>/^ad[0-9]+\./</code> or <code>(^|\.)doubleclick\.net$</code></td><td>AdBlock regex, or Pi-hole regex</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">Rules that only make sense in a browser (cosmetic <code>##</code> rules, URL paths, <code>$third-party</code>) are counted as <i>unsupported</i> and skipped, not treated as errors. The <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#list-syntax">full syntax table</a> has every modifier.</p>
+</section>
+
+<section id="answers">
+  <h2>How blocked names are answered</h2>
+  <p>A query is checked against the filter after local records and before the cache, so a blocked name never reaches an upstream. The answer is set per group (the device's highest-priority group decides):</p>
+<pre><code>[[group]]
+name = "kids"
+block_mode = "null_ip"      # default: A → 0.0.0.0, AAAA → ::, other types → no records
+                            # or "nxdomain", "nodata", "refused", "custom_ip"
+block_ips = ["192.168.1.2", "fd00::2"]   # for "custom_ip", e.g. a "blocked" page
+block_ttl = 60              # how long clients may cache the block
+ede = "filtered"            # "blocked" (EDE 15, default) or "filtered" (EDE 17: parental controls)
+ede_text = true             # name the list in the EDE text (false hides list names)</code></pre>
+  <p><code>null_ip</code> is the default, as in Pi-hole and Technitium: apps treat it as unreachable and give up quickly, while NXDOMAIN makes some apps retry or fall back to another resolver. In the UI, the blocked-answer mode is on the group's editor in the Advanced view.</p>
+  <p><b>CNAMEs are checked too:</b> if an answer leads through a CNAME to a blocked name, the client gets its block answer. When rules disagree, the most important one wins:</p>
+  <ol class="guide">
+    <li>Important allow (<code>@@||cdn.example.com^$important</code>)</li>
+    <li>Important block (<code>||ads.example.com^$important</code>)</li>
+    <li>Allow (allowlists and <code>@@</code> rules)</li>
+    <li>Block</li>
+  </ol>
+</section>
+
+<section id="quick">
+  <h2>Quick block and allow rules</h2>
+  <p>A quick rule allows or blocks a site, and everything under it, for one device, a group, or everyone, for a while or until you remove it. Unblock a game's server on one phone for an evening, or allow something a list blocks by mistake while you report it.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Quick rules">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+
+    <div class="panel" id="quick-ui"><h3>Web UI</h3>
+      <ul>
+        <li>In the <b>query log</b>, press <b>Why?</b> on a query and use <b>Make a quick rule</b>. The site, the device, and its group are filled in.</li>
+        <li>Or open the <b>Quick rules</b> page (Filtering &amp; DNS). It also lists the rules in effect with a countdown, who made each, and a Remove button.</li>
+      </ul>
+    </div>
+
+    <div class="panel" id="quick-file"><h3>Config file</h3>
+<pre><code>[[rule]]
+id = "kids-videos"
+action = "block"                 # or "allow"
+domain = "videos.example.com"    # and its subdomains
+groups = ["kids"]                # or devices = ["Mom phone", "192.168.1.40"]; neither = everyone
+expires = "2026-10-06T07:00:00Z" # optional (RFC 3339)
+note = "school night"</code></pre>
+      <p class="muted">Useful with GitOps. The API can't remove rules defined in a file.</p>
+    </div>
+
+    <div class="panel" id="quick-api"><h3>API / CLI</h3>
+<pre><code>telltale ctl block tiktok.com --group kids --for 120 --note "homework time"   # 120 minutes
+telltale ctl allow cdn.example.com --device living-room-tv
+telltale ctl rules                     # what's in effect; `ctl unrule &lt;id&gt;` removes one</code></pre>
+      <p><code>block</code> and <code>allow</code> take <code>--dry-run</code>. Over HTTP, <code>PUT /api/v1/rules/{id}</code> takes <code>action</code>, <code>domain</code>, <code>devices</code> or <code>groups</code>, <code>forMinutes</code>, and <code>note</code>; <code>DELETE /api/v1/rules/{id}</code> removes one. Agent tokens need <code>config:write:rules</code>.</p>
+    </div>
+  </div>
+  <ul>
+    <li>Quick rules decide <b>before any list</b>, on the next query; nothing is recompiled. They also decide CNAME targets.</li>
+    <li>A rule for the <b>device</b> beats one for its <b>group</b>, which beats one for <b>everyone</b>. Within those, the more specific site wins, then allow over block.</li>
+    <li>A rule with an end time stops at that moment on every node. The query log shows <b>quick allow</b> or <b>quick block</b> with the rule's note.</li>
+  </ul>
+  <p class="muted">Quick rules aren't parental controls: there's no screen time and no content categories. Before saving, <b>What would this have done?</b> replays recent queries with the change.</p>
+</section>
+
+<section id="schedules">
+  <h2>Bedtime and other schedules</h2>
+  <p>A schedule changes a group's filtering by time of day and day of week. <code>block_all</code> blocks every name; <code>block_services</code> and <code>enable_lists</code> add services or lists only during the windows.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Schedules">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+
+    <div class="panel" id="sched-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Groups → Schedules</b> and add a schedule. Write windows one per line, like <code>weekdays 21:00-07:00</code>.</li>
+        <li>In the group's editor, pick the schedules it follows.</li>
+        <li>The Groups page shows which schedules are <b>on now</b>.</li>
+      </ol>
+    </div>
+
+    <div class="panel" id="sched-file"><h3>Config file</h3>
+<pre><code>[[group]]
+name = "kids"
+networks = ["192.168.20.0/24"]
+schedules = ["bedtime", "school-hours"]
+
+[[schedule]]
+name = "bedtime"
+action = "block_all"
+tz = "Europe/Berlin"                        # default: the system's time zone
+window = [
+  { days = ["sun", "mon", "tue", "wed", "thu"], start = "21:00", end = "07:00" },
+  { days = ["fri", "sat"], start = "22:30", end = "08:00" },
+]
+
+[[schedule]]
+name = "school-hours"
+action = "block_services"                   # or "enable_lists" with `lists = [...]`
+services = ["tiktok", "youtube", "roblox"]
+window = [{ days = ["weekdays"], start = "08:00", end = "15:00" }]</code></pre>
+    </div>
+
+    <div class="panel" id="sched-api"><h3>API / CLI</h3>
+      <p><code>PUT</code> or <code>DELETE /api/v1/schedules/{name}</code>, with the same fields as <code>[[schedule]]</code>. Agent tokens need <code>config:write:groups</code>; AI agents can plan one with the MCP tool <code>plan_set_schedule</code>.</p>
+    </div>
+  </div>
+  <ul>
+    <li>An end at or before the start runs past midnight: <code>21:00</code>–<code>07:00</code> on Sunday covers Sunday night into Monday morning.</li>
+    <li>During <code>block_all</code>, quick allow rules still win (a homework site can stay reachable), and local names still answer.</li>
+    <li>Schedules are checked every 15 seconds. Pausing a group's blocking pauses its schedules too.</li>
+  </ul>
+</section>
+
+<section id="services">
+  <h2>Blocked services and safe search</h2>
+  <div class="two">
+    <div class="card">
+      <h3>Blocked services</h3>
+      <p>Block a whole service for a group without finding its domains: <code>blocked_services = ["tiktok", "roblox", "fortnite"]</code> on the <code>[[group]]</code>, or <b>Groups → Manage groups → Edit → Blocked services</b>. <code>telltale services list</code> (or <code>GET /api/v1/services</code>) shows every service and its domains. The query log names the service. To block one extra domain of a service, add a quick rule.</p>
+    </div>
+    <div class="card">
+      <h3>Safe search</h3>
+      <p><code>safe_search = true</code> on a group makes Google, Bing, DuckDuckGo, Yandex, and Pixabay answer with their own safe-search service. <code>youtube_restrict</code> is <code>"strict"</code>, <code>"moderate"</code>, or <code>"off"</code>. In the UI: <b>Groups → Manage groups → Edit → Safe search</b>.</p>
+    </div>
+  </div>
+  <p class="muted">Both apply only to the group's devices. The service catalog and safe-search table are part of the binary and change with updates.</p>
+</section>
+
+<section id="shadow">
+  <h2>Try a list first</h2>
+  <p>Not sure a list is safe for your network? Add it in <b>shadow mode</b>: it's downloaded and checked like any other, but never blocks.</p>
+<pre><code>[[list]]
+name = "hagezi-ultimate"
+url = "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/ultimate.txt"
+mode = "shadow"          # enforce (the default) or shadow</code></pre>
+  <ol class="steps">
+    <li class="step"><b>Add it in shadow mode</b>: <b>Mode</b> → <b>shadow</b> on the Lists page, or <code>mode = "shadow"</code> in the file.</li>
+    <li class="step"><b>Watch Would have blocked</b> on the Lists page: per shadow list, how many queries it would have blocked, from how many devices, the names most often, and the last one.</li>
+    <li class="step"><b>Turn it on</b> when those are names you want gone: change <code>mode</code> to <code>enforce</code>, or edit the list on the Lists page.</li>
+  </ol>
+  <ul>
+    <li>The same page shows <b>Likely over-blocking</b>: blocked names that someone seems to want, with the lists that blocked them. They're candidates for an allowlist, or a sign a list is too aggressive.</li>
+    <li>Counting runs off the query path and respects groups and allow lists. Counts start again at each restart.</li>
+    <li>The API has <code>GET /api/v1/analytics/shadow-lists</code> and <code>GET /api/v1/analytics/overblocking</code>.</li>
+  </ul>
+</section>
+
+<section id="explain">
+  <h2>Find out why</h2>
+  <p>Explain shows what happens to a name for a given device: who the device is recognized as and its groups, every matching rule in every list with its file line, which rule decides, and where the query would be forwarded. It follows the same steps as the server, including quick rules, a schedule that blocks everything, rewrites, and safe search.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Explain">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+
+    <div class="panel" id="explain-ui"><h3>Web UI</h3>
+      <ul>
+        <li>In the <b>query log</b>, press <b>Why?</b> on any query. From there, <b>Make a quick rule</b> fixes it.</li>
+        <li>The <b>Explain</b> page answers for any name and any device.</li>
+      </ul>
+    </div>
+
+    <div class="panel" id="explain-api"><h3>API / CLI</h3>
+<pre><code>telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
+# client   tablet (identified by ip); groups: kids
+# outcome  ALLOWED: allowed by list family-allow; resolved normally
+# rules    snapshot 1, in precedence order (* decides, - list not used by this client, ~ shadow list)
+#   * allow  family-allow         doubleclick.net (and subdomains)
+#              family-allow:1  @@||doubleclick.net^
+#   - block  stevenblack          ad.doubleclick.net (and subdomains)
+#              stevenblack:7102  0.0.0.0 ad.doubleclick.net</code></pre>
+      <ul>
+        <li><code>-t AAAA</code> for another query type, <code>--mac</code> or <code>--client-id</code> for a device recognized that way, <code>--json</code> for scripts.</li>
+        <li>It reads the config and data directory, so it works whether or not the server is running.</li>
+        <li>Over HTTP: <code>GET /api/v1/explain?name=ads.example.com&amp;client=192.168.1.20</code>.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="muted">Explain covers the query name only. To see why a CNAME target was blocked, explain the target name. More in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#why-was-it-blocked-explain">detailed docs</a>.</p>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td>A site is blocked that shouldn't be</td><td>Press <b>Why?</b> in the query log to see which list and line blocked it, then <b>Make a quick rule</b> to allow it. For a lasting fix, add it to an allow list, or drop a list that keeps over-blocking.</td></tr>
+      <tr><td>A device still reaches a blocked site</td><td>Devices keep answers they already have for a few minutes. Mobile data, a VPN, a hard-coded DNS server, or a browser's own encrypted DNS go around TelltaleDNS: have your router block outgoing DNS (ports 53 and 853) to anything but TelltaleDNS.</td></tr>
+      <tr><td>A rule for one device doesn't apply</td><td>Check who Explain says the device is. Give it a fixed address (a DHCP reservation), or turn off its private Wi-Fi address for your network.</td></tr>
+      <tr><td>Nothing is blocked for a group</td><td>Its blocking may be paused: a paused group gets no blocks from lists, quick rules, or schedules. Pauses resume on their own.</td></tr>
+      <tr><td>A list says <i>unchanged for N days</i></td><td>Its content hasn't changed in 30 days; its maintainer may have stopped. Replace it, or set <code>stale_after_days = 0</code> on a list that rarely changes on purpose.</td></tr>
+      <tr><td>The Lists page says "N regex rules left out"</td><td>A snapshot keeps up to 1,000 regex rules (<code>[filter] max_regexes</code>). Prefer plain domain rules where a list offers both.</td></tr>
+      <tr><td>The process is killed while lists compile</td><td>Compiling briefly needs much more memory than serving. Leave at least 256 MiB in a container limit for list sets over about 1M names.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-upgrades.html">← Upgrades, backups, and moving in</a>
+    <a class="btn primary" href="guide-devices.html">Next: Groups, devices, and VLANs →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guides — TelltaleDNS</title>
-<meta name="description" content="Step-by-step guides for TelltaleDNS: choose how you manage settings (web UI, config file, Git, API), build a cluster, run on Kubernetes, and more.">
+<meta name="description" content="Step-by-step guides for TelltaleDNS: manage settings your way, build a cluster, run on Kubernetes, upgrade and back up, block and allow, groups and devices, encrypted DNS, safe changes, monitoring, and sign-in.">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -17,7 +17,7 @@
   <p class="eyebrow">Guides</p>
   <h1>Do something with TelltaleDNS</h1>
   <p class="lede">Each guide starts from what you want to do and walks you through it, with the web UI, the config file, Git, and the API side by side wherever more than one works.</p>
-  <p class="muted">New here? <a href="start.html">Get started</a> installs TelltaleDNS and points your network at it. Every setting is in the <a href="config.html">configuration reference</a>.</p>
+  <p class="muted">New here? <a href="start.html">Get started</a> installs TelltaleDNS and points your network at it. Every setting is in the <a href="config.html">configuration reference</a>, and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md">detailed documentation</a> goes deeper on everything here.</p>
 </section>
 
 <section id="setup">
@@ -38,47 +38,46 @@
       <p>The Helm chart: one pod or many, real client addresses, one IP for DNS and the UI, secrets, monitoring, and a Pi in the same cluster.</p>
       <span class="more">Read the guide →</span>
     </a>
+    <a class="card" href="guide-upgrades.html">
+      <h3>Upgrades, backups, and moving in</h3>
+      <p>Update channels and upgrading each kind of install, backups and restoring on a new machine, and bringing your setup from Pi-hole or Technitium.</p>
+      <span class="more">Read the guide →</span>
+    </a>
   </div>
 </section>
 
-<section id="more">
-  <h2>More topics</h2>
-  <p class="muted">These guides are on the way. Until then, each link opens the matching part of the detailed documentation.</p>
+<section id="daily">
+  <h2>Day to day</h2>
   <div class="grid">
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#filter-lists">
+    <a class="card" href="guide-blocking.html">
       <h3>Block, allow, and explain</h3>
-      <p>Lists, quick rules, schedules, trying a list first, and "Why was it blocked?"</p>
-      <span class="more">In the docs →</span>
+      <p>Blocklists, quick rules, schedules, blocked services and safe search, trying a list first, and finding out why a name was blocked.</p>
+      <span class="more">Read the guide →</span>
     </a>
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#groups-and-devices">
+    <a class="card" href="guide-devices.html">
       <h3>Groups, devices, and VLANs</h3>
-      <p>A group per network, upstreams per group, names from your router or mDNS, and what each device is.</p>
-      <span class="more">In the docs →</span>
+      <p>A group per network, upstreams per group, naming devices, names from your router or mDNS, what each device is, and local names.</p>
+      <span class="more">Read the guide →</span>
     </a>
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">
+    <a class="card" href="guide-encrypted.html">
       <h3>Encrypted DNS and upstreams</h3>
-      <p>DoT, DoH, and DoQ for your devices, encrypted upstreams, routing a domain elsewhere, and DNSSEC.</p>
-      <span class="more">In the docs →</span>
+      <p>Choose and encrypt your upstreams, offer DoT, DoH, and DoQ to your devices, send a domain elsewhere, resolve on your own, and DNSSEC.</p>
+      <span class="more">Read the guide →</span>
     </a>
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#rolling-a-change-out-in-stages">
+    <a class="card" href="guide-changes.html">
       <h3>Change things safely</h3>
-      <p>Try a change against yesterday's traffic, roll it out in stages, pin back, and take a node down for maintenance.</p>
-      <span class="more">In the docs →</span>
+      <p>Preview a change, try it against yesterday's traffic, roll it out in stages, pin back, and take a node down for maintenance.</p>
+      <span class="more">Read the guide →</span>
     </a>
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#monitoring">
+    <a class="card" href="guide-monitoring.html">
       <h3>Monitoring and alerts</h3>
-      <p>Prometheus, Grafana, service-level objectives, alert destinations, and OpenTelemetry.</p>
-      <span class="more">In the docs →</span>
+      <p>Prometheus and Grafana, service-level objectives, alerts where you'll see them, query events and traces, and device anomalies.</p>
+      <span class="more">Read the guide →</span>
     </a>
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in">
+    <a class="card" href="guide-users.html">
       <h3>Users and sign-in</h3>
-      <p>Local users, two-factor sign-in, single sign-on (OIDC), API tokens, and <code>telltale ctl</code>.</p>
-      <span class="more">In the docs →</span>
-    </a>
-    <a class="card soon" href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#versions-and-updates">
-      <h3>Upgrades, backups, and moving in</h3>
-      <p>Update channels, backups and restoring on a new machine, and bringing your setup from Pi-hole or Technitium.</p>
-      <span class="more">In the docs →</span>
+      <p>The first admin, roles, two-factor sign-in, single sign-on with OIDC, API tokens and <code>telltale ctl</code>, and tokens for AI agents.</p>
+      <span class="more">Read the guide →</span>
     </a>
   </div>
 </section>

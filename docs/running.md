@@ -235,7 +235,7 @@ the chart's schema rejects a mistyped value with its path.
 - **Secrets**: `auth.bootstrapAdmin.existingSecret` creates the first admin (keys `username` and `password` or `password-hash`); `secretMounts` mounts Secrets at `/etc/telltale-secrets/<name>` (for example an OIDC `client_secret_file`).
 - **Monitoring**: `serviceMonitor.enabled`, `prometheusRule.enabled` (down, all upstreams down, SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies), and `grafanaDashboard.enabled` (a ConfigMap for the Grafana sidecar).
 - **`networkPolicy.enabled`** limits who may query (`dnsFrom`), reach the UI (`apiFrom`), and scrape (`metricsFrom`).
-- **Encrypted DNS**: `encrypted.dot.enabled` (853) and `encrypted.doh.enabled` (443) add DoT and DoH to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
+- **Encrypted DNS**: `encrypted.dot.enabled` (853), `encrypted.doh.enabled` (443, plus `encrypted.doh.http3`), and `encrypted.doq.enabled` add DoT, DoH, and DoQ to the DNS Service; the certificate comes from `encrypted.tls.secretName` or a cert-manager `Certificate` (`encrypted.tls.certManager.issuerRef` and `dnsNames`; add a wildcard for client IDs) and is reloaded when renewed. `encrypted.proxyProtocol` accepts PROXY protocol v2 on TCP, DoT, and DoH.
 - **One replica or many.** `mode: allInOne` (the default) is one StatefulSet with a volume for lists, the query log, and users. **`mode: scaled`** adds resolver pods:
   ```sh
   helm install telltale deploy/helm/telltale -n telltale --set mode=scaled --set resolvers.replicas=3
@@ -378,7 +378,7 @@ tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
   max_connections = 2048
   max_connections_per_address = 64
   ```
-- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_rejected_total` and `telltale_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` now enforce like `tcp`, `dot`, and `doh`), `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
+- Metrics: queries are counted per transport (`telltale_queries_total{proto="dot"|"doh"|"doq"}`), plus `telltale_doq_connections_total`, `telltale_doq_rejected_total` and `telltale_doh_rejected_total` (connections refused at the 1,024 cap, which `doq` and `doh3` enforce like `tcp`, `dot`, and `doh`), `telltale_doq_protocol_errors_total`, `telltale_doh_requests_total`, `telltale_doh_bad_requests_total`, `telltale_tls_handshake_failures_total`, and `telltale_proxy_protocol_rejected_total`.
 - In Kubernetes, enable `encrypted.dot` / `encrypted.doh` (plus `encrypted.doh.http3`) / `encrypted.doq` in the chart with a certificate from an existing Secret or cert-manager (`encrypted.tls.certManager`); the ports join the DNS LoadBalancer, so client addresses survive (`externalTrafficPolicy: Local`).
 
 ## Recursive resolution (no forwarder)
@@ -742,7 +742,7 @@ ede_text = true             # name the list in the EDE text (set false to hide l
 
 **CNAME inspection:** if an answer leads through a CNAME to a blocked name (`www.microsoft.com` → `…edgekey.net` → `….akamaiedge.net`), the answer is replaced with the client's block answer, with EDE text `CNAME target blocked by list …`. This also applies to answers served from the cache, which is shared by every group, so one group's policy never leaks into another's.
 
-**Pause:** blocking can be paused for everyone or for one group, for a set time, and resumes on its own. The control is part of the API (milestone M3); the metric `telltale_filter_paused_until_seconds{group}` shows active pauses.
+**Pause:** blocking can be paused for everyone or for one group, for a set time, and resumes on its own. Pause and resume through the API or `telltale ctl pause --minutes 10` (`ctl resume`); the metric `telltale_filter_paused_until_seconds{group}` shows active pauses.
 When rules disagree, the most important one wins:
 
 | Wins | Rule | Example |
@@ -813,7 +813,7 @@ groups = ["kids"]
 name = "Office"
 match = ["10.0.5.0/24"]                  # no groups: its network's group, else "default"
 ```
-- A device in several groups gets every list of all of them. Other settings, such as block mode (T2.6), come from its highest-priority group.
+- A device in several groups gets every list of all of them. Other settings, such as block mode, come from its highest-priority group.
 - **How a query's device is recognized,** first match wins: client ID (`id:…`, from the DoH URL path `/dns-query/<id>` or the DoT/DoH server name `<id>.dns.example.com`) → MAC address, from a trusted router's EDNS option or from the kernel neighbor table → exact IP → the most specific CIDR → `default`.
 - **MAC addresses** survive DHCP changes and IPv6 privacy addresses, which makes them the most dependable key for a home network. TelltaleDNS reads the kernel's neighbor table (ARP and IPv6 NDP) every 60 s (`[clients] neighbor_refresh_secs`). That only sees real devices with host networking (as on a Pi). In a container's bridge network, every query appears to come from the gateway.
 - If your router forwards queries with dnsmasq's `add-mac`, trust it explicitly. Any device could send that option and impersonate another, so it's ignored by default:
@@ -1086,7 +1086,8 @@ api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API
 api_secret_file = "/etc/telltale/opn-secret"
 ```
 - UniFi: the connected clients, named by the alias you gave them in UniFi, else their host name. OPNsense: the DHCP leases (Dnsmasq, Kea, or ISC, whichever is running).
-- A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.- Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
+- A self-signed console: save its certificate (`openssl s_client -connect 192.168.1.1:443 </dev/null | openssl x509 > udm.pem`) as `tls_ca`. Its certificate names `unifi.local`, not the address you reach it at, so set `tls_server_name` to the name in it (`openssl x509 -in udm.pem -noout -ext subjectAltName` shows it): the console is then verified, and only that certificate is trusted. `tls_insecure_skip_verify = true` also works, but then anything on your network could pose as the console and receive the API key.
+- Read every `interval_secs` (300); a router that doesn't answer is asked again after 15 seconds and keeps its last list meanwhile.
 - Names you give devices in TelltaleDNS win; then the routers'. `GET /api/v1/dhcp/leases` lists them (`source = router`).
 - Credentials stay in files, out of the configuration. Changes to `[[router]]` need a restart.
 
@@ -1222,7 +1223,7 @@ telltale explain ad.doubleclick.net --client 192.168.1.50 -c telltale.toml
 #              stevenblack:7102  0.0.0.0 ad.doubleclick.net
 # route    upstream group default (default)
 ```
-- Options: `-t AAAA` for another query type, `--mac aa:bb:cc:dd:ee:ff` or `--client-id` to explain for a device recognized that way, and `--json` for the same data as JSON (the format the API's `GET /api/v1/explain` will return).
+- Options: `-t AAAA` for another query type, `--mac aa:bb:cc:dd:ee:ff` or `--client-id` to explain for a device recognized that way, and `--json` for the same data as JSON (the format the API's `GET /api/v1/explain` returns).
 - `-` marks rules from lists the device's groups don't use, so you can see what another group would get. `!` after `allow`/`block` marks `$important` rules.
 - It reads the config and the data directory (the newest compiled snapshot and the stored lists), so it works whether or not the server is running. A server that hasn't loaded the newest snapshot yet may still be using the previous one.
 - Line numbers come from the stored copy of each list. If a list was downloaded again after the snapshot was compiled, the output says so.
@@ -2112,7 +2113,7 @@ Are your upstreams telling the truth? The **Upstreams** page's **Answer quality*
 - Cost: on the path to an upstream only (never for cached or blocked answers): one look for an EDE in each upstream answer and a counter per DNSSEC verdict.
 
 ### Query events
-Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics; the query log and the API for reading them come in later releases.
+Besides counters, every query also produces a detailed **event**: the time, the client and its group, the name and type, the outcome, the response code, which list and rule blocked or allowed it, and the timings. Every upstream exchange produces one too. Events feed the query log, top lists, and per-client analytics, which the web UI and the API (`GET /api/v1/queries`, `/api/v1/stats/...`) read.
 - Each thread writes events into its own buffer without waiting or locking, and a background thread collects them every 25 ms. If a buffer ever fills, events are dropped and counted, and DNS answers are never held back. Counters and the metrics above never drop.
 - `[telemetry] ring_slots` sets the buffer size per thread, in events of about 128 bytes (default `4096`, 512 KiB). That's about 170 ms of a fully loaded worker. Raise it if `telltale_telemetry_dropped_total` ever grows.
 - Collected so far, in memory: per-second counts for the last 15 minutes and per-minute counts for the last 48 hours; for the current and previous hour, the top domains, blocked domains, NXDOMAIN names, clients, and each recent client's top domains; and latency percentiles by path, query type, client, and upstream.
@@ -2138,7 +2139,7 @@ fsync = false                # true: sync every write (slower on SD cards)
 - `privacy_level = 1` stores each name as a hash, so identical names still group together but can't be read back; `2` also drops client addresses; `3` keeps no per-query log at all (counters, top lists, and graphs still work).
 - What the levels cover: everything TelltaleDNS keeps or shows, as on Pi-hole. The query log, the live tail, [event sinks](#event-sinks), the dashboard's top lists, a device's page, and the hourly top lists kept in `rollups.db` all show hashed names at 1 and above, and no client addresses at 2 and above (every query then counts as one client). Anomaly detection and new-device alerts are off at 1 and above: their findings name domains and devices. The masked-client warning is off at 2 and above. Counts, graphs, and latency keep working at every level.
 - What level 1 protects against: the hash is keyed with a random key kept in `<data_dir>/privacy.key` (in a cluster, the primary's, which every node adopts so logs group the same everywhere). Someone holding the log but not the key can't check whether a name they suspect was queried. Anyone with the key and the log can; keep the data directory private, or use level 3.
-- Search it from the command line (the API comes later):
+- Search it in the web UI's **Query log**, through the API (`GET /api/v1/queries`), or from the command line:
   ```sh
   telltale qlog search doubleclick -c telltale.toml                  # names containing "doubleclick"
   telltale qlog search --client 192.168.1.50 --status blocked --since 3600

@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Change things safely — TelltaleDNS</title>
+<meta name="description" content="Preview a TelltaleDNS change before it's saved, replay it against yesterday's traffic, reload without a restart, roll it out to canary nodes first, pin the cluster back to an earlier version, take a node out for maintenance, and approve AI agents' changes.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-changes">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Change things safely</h1>
+  <p class="lede">A ladder of safety nets, from small to large: see what a change will do before you save it, replay it over yesterday's queries, send it to a few nodes first, and go back to an earlier version if it goes wrong.</p>
+  <ul class="onpage">
+    <li><a href="#preview">Preview a change before it's saved</a></li>
+    <li><a href="#simulate">Try it against yesterday's traffic</a></li>
+    <li><a href="#reload">Apply file changes without a restart</a></li>
+    <li><a href="#rollout">Roll it out to canary nodes first</a></li>
+    <li><a href="#pin">Pin the cluster to an earlier version</a></li>
+    <li><a href="#maintenance">Take a node out for maintenance</a></li>
+    <li><a href="#agents">Changes made by AI agents</a></li>
+    <li><a href="#when">What to use when</a></li>
+  </ul>
+  <div class="callout"><p><b>DNS keeps answering through all of it.</b> A check, a simulation, a rollout, or a pin never makes a query wait.</p></div>
+</section>
+
+<section id="preview">
+  <h2>Preview a change before it's saved</h2>
+  <p class="muted">Every change is checked first. A change that would leave the configuration invalid is refused with the reason.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Preview a change">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="preview-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Make the change in an editor, such as the <b>Manage</b> table at the end of the Upstreams, Lists, or Groups page.</li>
+        <li>Choose <b>Check</b>. It shows what the change will do and any warnings: an upstream group that would lose its last member, or a list no group uses.</li>
+        <li>For upstreams and lists, <b>Test it</b> also tries the draft from this node. An upstream is asked for the root's NS records: you see the answer and the time, or the error (a bad URL, a TLS name that doesn't match, a timeout). A list is downloaded and parsed: you see how many rules it has, and the first lines it can't use.</li>
+        <li>Nothing is saved until you choose <b>Apply</b>.</li>
+      </ol>
+      <p class="muted">Operators and admins can make changes. Every change is audited and reaches every node in a cluster. Your config files are never rewritten.</p>
+    </div>
+    <div class="panel" id="preview-file"><h3>Config file</h3>
+      <p>Check the file before you load it. Every problem is reported at once, with its exact key path. Unknown keys are always errors, so a typo is never silently ignored.</p>
+<pre><code>telltale config check telltale.toml               # "config OK" or a list of errors
+telltale config check telltale.toml node.toml     # later files override earlier ones
+telltale config check telltale.toml --print       # show the effective config (defaults + files + env)</code></pre>
+      <p class="muted">The <a href="config.html">configuration reference</a> lists every key.</p>
+    </div>
+    <div class="panel" id="preview-api"><h3>API / CLI</h3>
+      <p>Add <code>?dryRun=true</code> to a <code>PUT</code> or <code>DELETE</code>, for example on <code>/api/v1/upstreams/{name}</code>, <code>/api/v1/upstream-groups/{name}</code>, <code>/api/v1/lists/{name}</code>, or <code>/api/v1/groups/{name}</code>. The body has the same fields as the TOML section.</p>
+      <p><b>Test it</b> is <code>POST /api/v1/checks/upstream</code> and <code>POST /api/v1/checks/list</code>, with the same body as saving. AI agents use the MCP tools <code>check_upstream</code> and <code>check_list</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="simulate">
+  <h2>Try it against yesterday's traffic</h2>
+  <p>A simulation decides the queries already in the query log again, with the change and without it, and reports only the differences. You see four counts (newly blocked, newly allowed, a changed route, a changed answer), the names behind each with the list or rule that decided, and the devices and groups.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Simulate a change">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="simulate-ui"><h3>Web UI</h3>
+      <p>Look for <b>What would this have done?</b> on the quick-rule form, in the device drawer (<b>Add to group…</b>), and in the checked preview of a list, group, upstream, or schedule. A name in the result links to the query log. Nothing is saved until you save the change.</p>
+      <p>The settings are under <b>Settings → Query handling → Change simulation</b>.</p>
+    </div>
+    <div class="panel" id="simulate-file"><h3>Config file</h3>
+<pre><code>[simulate]
+enabled = true
+default_window = "24h"     # at most 7d
+max_secs = 20              # 1 to 300
+max_rows = 2000000         # at least 1,000
+plans_by_default = false   # true: agents' plans simulate even when they don't ask</code></pre>
+      <p class="muted">The values shown are the defaults. The section is shared across a cluster. See the <a href="config.html">configuration reference</a>.</p>
+    </div>
+    <div class="panel" id="simulate-api"><h3>API / CLI</h3>
+      <p>Add <code>simulate</code> to any dry run. The value is a window, or <code>true</code> for the default one. The response gains <code>simulation</code>:</p>
+<pre><code>curl -X PUT 'https://dns.example.com/api/v1/rules/kids-tiktok?dryRun=true&amp;simulate=24h' \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"block","domain":"tiktok.com","groups":["kids"]}'</code></pre>
+      <p><code>simulateUntil</code> moves the end of the window back (<code>-24h</code>, or an RFC 3339 time).</p>
+      <p>To test a whole configuration, such as a Git commit before you push it, use <code>POST /api/v1/simulate</code>, or let <code>telltale config simulate</code> read the TOML for you. Node-local sections in the file are ignored.</p>
+<pre><code>TELLTALE_TOKEN=... telltale config simulate shared.toml --window 24h --url https://dns.example.com:8053</code></pre>
+    </div>
+  </div>
+  <div class="callout">
+    <p><b>What it can't tell you.</b> A simulation is about decisions. It never asks an upstream or touches the cache, it can't count names nobody asked, and it doesn't predict latency or what an upstream would answer.</p>
+    <p><b>Limits.</b> One simulation runs at a time per node (another gets <code>409 simulation_busy</code>; retry in a few seconds). Past <code>max_rows</code> or <code>max_secs</code> the answer says <code>partial</code>. The window is at most 7 days. At query-log privacy level 1, a change that depends on names can't be replayed; at level 2 and above, nothing can.</p>
+  </div>
+  <p class="muted">In a cluster every node replays its own log and the counts are added up. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#trying-a-change-against-yesterdays-traffic">Trying a change against yesterday's traffic</a>.</p>
+</section>
+
+<section id="reload">
+  <h2>Apply file changes without a restart</h2>
+  <p>Edit the config file, then send <code>SIGHUP</code>:</p>
+<pre><code>sudo systemctl reload telltale      # native install
+docker kill -s HUP telltale         # Docker
+kill -HUP &lt;pid&gt;                     # anything else</code></pre>
+  <ul>
+    <li><b>The whole file is validated first.</b> If anything is wrong, the errors are logged and the previous configuration keeps serving.</li>
+    <li><b>Applied at once, with no dropped queries:</b> upstreams, groups, routes, local records and hosts files, <code>[access]</code>, <code>[ratelimit]</code>, <code>[special]</code>, and <code>[[listen]]</code> (new listeners are bound before removed ones are closed).</li>
+    <li><b>Applied at the next restart:</b> <code>[cache]</code>, <code>[telemetry]</code>, and <code>[node]</code>. A warning names them. The cache is kept across reloads, so warm answers aren't lost.</li>
+    <li>Upstream health starts fresh after a reload and is learned again within a few queries.</li>
+  </ul>
+  <p class="muted">Run <code>telltale config check</code> before you reload, so you see every problem at once.</p>
+</section>
+
+<section id="rollout">
+  <h2>Roll it out to canary nodes first</h2>
+  <p>In a <a href="guide-cluster.html">cluster</a>, a change normally reaches every node within seconds. With <b>canary nodes</b> set, it reaches them (and the primary) first. Every other node gets it only after a <b>bake</b> of 5 minutes, and only if nothing went wrong meanwhile. If something did, the cluster is pinned to the version before the change, and the other nodes never see the bad version.</p>
+  <p class="muted">Off until you set it: with no canaries, changes reach every node at once.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Staged rollouts">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="rollout-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Settings → Cluster → Staged rollouts</b> and pick the canaries: any of the cluster's nodes, a whole site, or "resolver pods".</li>
+        <li>While a version bakes, the <b>Cluster</b> page's <b>Rollouts</b> tab shows which nodes run it and which stay on the version before.</li>
+        <li>Choose <b>Promote now</b> to give it to everyone without waiting, or <b>Abort</b> to pin to the version before it. Both need an admin.</li>
+      </ol>
+    </div>
+    <div class="panel" id="rollout-file"><h3>Config file</h3>
+<pre><code>[cluster.rollout]
+canaries = ["ephemeral"]   # node IDs, "site:&lt;name&gt;", or "ephemeral" (the Kubernetes resolver pods)
+bake_secs = 300            # at least 5
+servfail_pct = 5
+require_traffic = false    # true: keep baking until the canaries answered 50 queries, then judge
+max_bake_secs = 3600
+fail_on_disconnect = true  # a canary gone for a minute after applying fails the change
+history = 20               # versions the primary keeps for pinning back to</code></pre>
+      <p>The section is shared, so every node knows the canaries. A change to it is published at once and never staged itself, so a bad canary list can always be fixed. With the Helm chart, use <code>cluster.rollout</code> (see <a href="helm-values.html">Helm values</a>).</p>
+    </div>
+    <div class="panel" id="rollout-api"><h3>API / CLI</h3>
+<pre><code>telltale ctl rollout status     # the version baking, the canaries and what each runs, the time left, the guard
+telltale ctl rollout promote
+telltale ctl rollout abort</code></pre>
+      <p>Over the API: <code>GET /api/v1/cluster/rollout</code>, and <code>POST /api/v1/cluster/rollout/promote</code> or <code>/abort</code> (admin; audited). The settings are <code>PUT</code>/<code>DELETE /api/v1/cluster/rollout-settings/default</code>. AI agents read <code>rollout_status</code>.</p>
+    </div>
+  </div>
+  <h3>The guard</h3>
+  <p>Every 5 seconds the primary looks at what each canary reports. A version fails at once if a canary can't apply it, isn't ready for 15 seconds after applying it, fails its listener checks, or (with <code>fail_on_disconnect</code>) is gone for a minute. It also fails when the SERVFAIL share of the canaries and the primary goes over <code>servfail_pct</code> and over the share before the change by more than 2 points, judged once there are 50 answers. Latency isn't judged.</p>
+  <p>A pass gives the version to every node. A fail pins the cluster to the version before, fires the <code>rollout_failed</code> alert, and records the reason and the readings.</p>
+  <div class="callout">
+    <p><b>Good to know.</b> A newer change during a bake replaces the one baking, and the bake starts over. Users, tokens, and the member list wait for the bake to end. If no canary is online, a change goes to every node at once ("rollout skipped: no canary online").</p>
+  </div>
+  <p class="muted">The full rules: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#rolling-a-change-out-in-stages">Rolling a change out in stages</a>.</p>
+</section>
+
+<section id="pin">
+  <h2>Pin the cluster to an earlier version</h2>
+  <p>A pin makes every node serve an older version again: its shared configuration and its filter snapshot. The guard pins by itself when a rollout fails; an admin can pin any kept version (the primary keeps the last 20 by default).</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Pin a version">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="pin-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open the <b>Cluster</b> page's <b>Rollouts</b> tab. The <b>Versions</b> table lists the kept versions: when, what made each, its outcome, and the guard's readings.</li>
+        <li>Choose <b>Pin…</b> on a version, give a reason, and look over the preview of what changes on every node.</li>
+        <li>When you're done, choose <b>Unpin</b> on the pin banner.</li>
+      </ol>
+    </div>
+    <div class="panel" id="pin-api"><h3>API / CLI</h3>
+<pre><code>telltale ctl versions                                           # newest first; * = what every node runs
+telltale ctl pin 3.124 --reason "the new list blocks the bank" --dry-run
+telltale ctl pin 3.124 --reason "the new list blocks the bank"
+telltale ctl unpin</code></pre>
+      <p>Over the API: <code>GET /api/v1/cluster/versions</code>, <code>POST /api/v1/cluster/versions/{epoch}.{seq}/pin</code> with <code>{"reason": "…"}</code> (<code>?dryRun=true</code> shows the diff), and <code>DELETE /api/v1/cluster/pin</code>. All need an admin and are audited.</p>
+    </div>
+  </div>
+  <ul>
+    <li><b>While pinned, changes wait.</b> Changes from the UI, the API, and agents' plans answer 409 <code>cluster_pinned</code>, with a diff of what the pin holds back. A dry run still works.</li>
+    <li><b>It's loud:</b> a banner on the Cluster page, the health condition <code>cluster_pinned</code>, and the <code>cluster_pinned</code> alert.</li>
+    <li><b>It survives failover.</b> A replica promoted to primary keeps the pin.</li>
+  </ul>
+  <div class="callout warn"><p><b>A pin doesn't undo the change for you.</b> It doesn't rewrite your files, the entries made in the UI, or Git. Undo the bad change there (the diff says what it was), then unpin. Unpinning publishes the current configuration again, through a staged rollout when canaries are set.</p></div>
+</section>
+
+<section id="maintenance">
+  <h2>Take a node out for maintenance</h2>
+  <p>Swapping a Pi's SD card, moving a box, or upgrading a node by hand? Put the node in maintenance first. For a bounded time (an hour by default, a day at most) it:</p>
+  <ul>
+    <li><b>reports not ready</b> (<code>/readyz</code> answers 503), so load balancers and Kubernetes stop sending it new queries;</li>
+    <li><b>keeps answering</b> every query that still arrives: no listener closes;</li>
+    <li><b>is left out</b> of alerts, the health level, and the Cluster page's checks;</li>
+    <li><b>isn't elected</b> primary (it still votes), and <b>stays in maintenance across a restart</b>.</li>
+  </ul>
+  <div class="tabs">
+    <div role="tablist" aria-label="Maintenance">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="maint-ui"><h3>Web UI</h3>
+      <p>On the <b>Cluster</b> page's <b>Nodes</b> tab, choose <b>Maintenance…</b> on the node's row, and say how long and why. <b>End maintenance</b> ends it early.</p>
+    </div>
+    <div class="panel" id="maint-api"><h3>API / CLI</h3>
+<pre><code>telltale ctl maintenance start --for 30m --reason "SD card swap"           # this node
+telltale ctl maintenance start --for 2h --reason "kernel upgrade" --node pi   # another node
+telltale ctl maintenance status
+telltale ctl maintenance end --node pi</code></pre>
+      <p>Over the API: <code>POST /api/v1/nodes/{id}/maintenance</code> with <code>{"forSecs": 1800, "reason": "…"}</code>, and <code>DELETE</code> to end it. <code>id</code> is <code>local</code>, or a node's ID, site, or pod name. Any node passes the request on to the node it's for.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <p><b>Maintenance on the primary.</b> Under automatic failover with another eligible node online, the primary hands its role over first (configuration changes pause for about 30 seconds). In manual failover, or with no other eligible node online, the primary stays primary: <a href="guide-cluster.html#failover">promote another node first</a> if you're taking it offline.</p>
+  </div>
+  <p class="muted">A node that's really failing during its window stays quiet until the window ends, so keep windows short. More: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#taking-a-node-down-for-maintenance">Taking a node down for maintenance</a>.</p>
+</section>
+
+<section id="agents">
+  <h2>Changes made by AI agents</h2>
+  <p>An <a href="agents.html">AI agent</a> doesn't change settings directly. A <code>plan_*</code> tool runs the same dry run as <code>?dryRun=true</code> and keeps the answer as a plan for 10 minutes. The agent gets a preview: before and after, how many recent queries it affects, and any warnings.</p>
+  <ol class="steps">
+    <li class="step"><b>Require approval.</b> With <code>[agents] require_approval = true</code>, every plan waits for a person.</li>
+    <li class="step"><b>Review it.</b> The header shows <b>N agent changes to review</b>. Approve or reject each on the <b>Agent changes</b> page (or <code>POST /api/v1/plans/{id}/approve</code> and <code>/reject</code>). Agent tokens can't approve anything, their own plans included.</li>
+    <li class="step"><b>It's applied as planned.</b> If the configuration changed since the plan was made, the plan is stale and nothing happens; the agent plans again.</li>
+  </ol>
+  <ul>
+    <li>A plan tool takes <code>simulate</code> (<code>"24h"</code>, up to <code>"7d"</code>) to include a <a href="#simulate">simulation</a> in the preview. To make every plan simulate, set <code>[simulate] plans_by_default = true</code> (Settings → Query handling → Change simulation). No agent tool can turn that on.</li>
+    <li>The change is audited as the agent, with its owner and the plan's reason; the approval is a separate entry under your name.</li>
+    <li>Plans live in the memory of the node that made them. In a cluster, point agents at the node whose UI you use (normally the primary).</li>
+  </ul>
+</section>
+
+<section id="when">
+  <h2>What to use when</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>You want to…</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td>Catch a mistake in a form or a file</td><td><b>Check</b> in the UI, <code>?dryRun=true</code>, or <code>telltale config check</code></td></tr>
+      <tr><td>Make sure an upstream or a list works</td><td><b>Test it</b></td></tr>
+      <tr><td>Know who a block or allow rule would affect</td><td><b>What would this have done?</b>, or <code>simulate</code> on a dry run</td></tr>
+      <tr><td>Test a Git commit before you push it</td><td><code>telltale config simulate</code></td></tr>
+      <tr><td>Load an edited config file</td><td>A reload (<code>SIGHUP</code>); a restart for <code>[cache]</code>, <code>[telemetry]</code>, <code>[node]</code></td></tr>
+      <tr><td>Limit the damage of a bad change in a cluster</td><td>Staged rollouts with canary nodes</td></tr>
+      <tr><td>Go back after a bad change</td><td>Pin to an earlier version, fix the change, unpin</td></tr>
+      <tr><td>Work on a node without alerts or traffic</td><td>Maintenance</td></tr>
+      <tr><td>Let an AI agent suggest changes</td><td>Plans with <code>[agents] require_approval = true</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-encrypted.html">← Encrypted DNS and upstreams</a>
+    <a class="btn primary" href="guide-monitoring.html">Next: Monitoring and alerts →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

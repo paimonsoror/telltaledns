@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upgrades, backups, and moving in — TelltaleDNS</title>
+<meta name="description" content="Check which TelltaleDNS build you run, upgrade a Pi, Docker, or Kubernetes install and a cluster, back up and restore on a new machine, and bring your Pi-hole or Technitium setup with you.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-upgrades">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Upgrades, backups, and moving in</h1>
+  <p class="lede">Keep TelltaleDNS current, keep a copy of everything you set up, move it to a new machine, and bring your settings over from Pi-hole or Technitium.</p>
+  <ul class="onpage">
+    <li><a href="#version">Your version and channel</a></li>
+    <li><a href="#checks">Update checks</a></li>
+    <li><a href="#upgrade">Upgrade</a></li>
+    <li><a href="#cluster">Upgrade a cluster</a></li>
+    <li><a href="#backup">Back up</a></li>
+    <li><a href="#restore">Restore on a new machine</a></li>
+    <li><a href="#movein">Move in from Pi-hole or Technitium</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ul>
+  <div class="callout"><p><b>Read the release notes first.</b> Releases before 1.0 can still change configuration keys and APIs, and each release's notes call out every such change. They're on the <a href="https://github.com/paimonsoror/telltaledns/releases">releases page</a>.</p></div>
+</section>
+
+<section id="version">
+  <h2>Your version and channel</h2>
+  <p>Every build says exactly what it is, the same way on every architecture:</p>
+<pre><code>$ telltale --version
+telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge, aarch64-unknown-linux-musl)</code></pre>
+  <ul>
+    <li><b>Releases</b> are <code>0.1.0</code>. Builds of <code>main</code> (the <b>edge</b> channel) are <code>0.1.0-edge.&lt;run&gt;</code>. A local build is <code>dev</code> with its commit.</li>
+    <li><b>Where else it shows:</b> the web UI's sidebar, <b>Settings → System → Version and updates</b> (with how the node was installed: <code>native</code>, <code>container</code>, or <code>helm</code>), <code>GET /api/v1/system/info</code> (<code>build</code> and <code>update</code>), the metric <code>telltale_build_info{version,commit,channel,target}</code>, and the <b>Cluster</b> page for every node.</li>
+  </ul>
+  <p>Each install type picks its channel its own way:</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Install</th><th>Releases</th><th>Edge (builds of <code>main</code>)</th></tr></thead>
+    <tbody>
+      <tr><td>Native (<code>install.sh</code>)</td><td><code>sudo sh install.sh</code> (the latest release)</td><td><code>sudo sh install.sh --edge</code>, or <code>self-update --channel edge</code></td></tr>
+      <tr><td>Container image</td><td><code>:latest</code> (the newest stable release), or <code>:X.Y.Z</code>, <code>:X.Y</code>, <code>:X</code></td><td><code>:edge</code>, built from every commit on <code>main</code></td></tr>
+      <tr><td>Helm chart</td><td>a release version</td><td><code>0.1.0-edge.&lt;n&gt;</code> chart versions, which follow <code>main</code></td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">The edge channel publishes several builds a day.</p>
+</section>
+
+<section id="checks">
+  <h2>Update checks</h2>
+  <p>Each node checks for a newer build of its channel by itself. <b>Nothing is installed:</b> TelltaleDNS never updates itself from the UI.</p>
+  <ul>
+    <li><b>When:</b> a minute after the node starts, then every 24 hours (an hour after a failed check).</li>
+    <li><b>How:</b> the node reads its channel's <code>releases.json</code>, which is published with every release and signed with the release key. An index whose signature doesn't verify is ignored.</li>
+    <li><b>The result</b> is <code>up_to_date</code>, <code>available</code>, <code>newer</code> (a dev build), or <code>unknown</code> (not checked yet, or failing).</li>
+    <li><b>Where it shows:</b> an <b>update</b> pill next to the version in the sidebar, the <b>Version and updates</b> panel (with the step for your install), each node's version on the <b>Cluster</b> page, and <code>telltale_update_available</code> (1 when an update exists).</li>
+  </ul>
+  <p><b>To look now</b>, an admin clicks <b>Check now</b> under <b>Settings → System → Version and updates</b> (or <code>POST /api/v1/system/update-check</code>). Clicks less than a minute apart show the last result without fetching again.</p>
+  <div class="callout"><p><b>Air-gapped?</b> <code>[updates] check = false</code> means nothing leaves the node. <code>[updates] index_url</code> points at a mirror, which is still verified with the built-in key. See the <a href="config.html">configuration reference</a>.</p></div>
+</section>
+
+<section id="upgrade">
+  <h2>Upgrade</h2>
+  <p class="muted">The <b>Version and updates</b> panel shows the step for your install. Here are all three.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Install type">
+      <button role="tab" type="button">Raspberry Pi / Linux</button>
+      <button role="tab" type="button">Docker</button>
+      <button role="tab" type="button">Kubernetes</button>
+    </div>
+
+    <div class="panel" id="up-native"><h3>Raspberry Pi / Linux (native)</h3>
+      <p>For an install made with <code>install.sh</code>:</p>
+<pre><code>sudo telltale self-update --check                 # only look
+sudo telltale self-update --restart               # upgrade and restart
+sudo telltale self-update --channel edge --restart  # builds from main</code></pre>
+      <ul>
+        <li>It verifies the signature with the release key built into the binary and checks the binary's SHA-256, test-runs the download, swaps it in atomically, and keeps the previous binary as <code>telltale.old</code>.</li>
+        <li><b>Or re-run the installer:</b> <code>sudo sh install.sh</code> upgrades the binary in place. When <code>/etc/telltale/telltale.toml</code> already exists it asks no questions and only upgrades; your config is kept.</li>
+      </ul>
+    </div>
+
+    <div class="panel" id="up-docker"><h3>Docker</h3>
+      <p>With Docker Compose (the recommended way on a Pi), in the folder with <code>compose.yaml</code>:</p>
+<pre><code>docker compose pull &amp;&amp; docker compose up -d</code></pre>
+      <p><code>telltale self-update</code> refuses to run in a container: pull a new image instead. Your data lives in the <code>/var/lib/telltale</code> volume, the only path the container writes to.</p>
+    </div>
+
+    <div class="panel" id="up-k8s"><h3>Kubernetes</h3>
+      <p>Run <code>helm upgrade</code> with the new chart version and the same values file you installed with, or bump the chart version in your GitOps values (Argo CD, Flux):</p>
+<pre><code>helm upgrade telltale oci://ghcr.io/paimonsoror/charts/telltale --version &lt;version&gt; \
+  -n telltale -f my-values.yaml</code></pre>
+      <p class="muted">The chart is published with every release, plus <code>0.1.0-edge.&lt;n&gt;</code> builds that follow <code>main</code>. The chart's join secret for resolver pods is kept across upgrades. Every value is on <a href="helm-values.html">Helm values</a>; the rest of the chart is in <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="cluster">
+  <h2>Upgrade a cluster</h2>
+  <ol class="steps">
+    <li class="step"><b>Upgrade one node at a time, the replicas first.</b> DNS keeps answering throughout if your clients have two DNS servers (each node is one).</li>
+    <li class="step"><b>Upgrade the primary last.</b></li>
+    <li class="step"><b>Check the Cluster page.</b> Its <b>versions</b> check lists the mix of versions until the last node is upgraded.</li>
+  </ol>
+  <ul>
+    <li><b>A half-upgraded cluster is fine.</b> Versions one cluster protocol apart work together (N and N−1, either way round).</li>
+    <li><b>A replica older than its primary keeps working</b>, unless the primary starts using settings the older version doesn't know. Then the replica keeps serving its last version, and its sync status says to upgrade it.</li>
+  </ul>
+  <p class="muted">More in <a href="guide-cluster.html#upgrade">Build a cluster</a> and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+</section>
+
+<section id="backup">
+  <h2>Back up</h2>
+  <p>A backup is one file. Make one before a big change, and whenever you'd hate to set things up again.</p>
+  <ul>
+    <li><b>In the web UI:</b> an admin clicks <b>Settings → System → Download a backup</b>.</li>
+    <li><b>Through the API:</b> <code>GET /api/v1/backup</code>.</li>
+    <li><b>On the server</b>, safe while TelltaleDNS runs:</li>
+  </ul>
+<pre><code>telltale backup create -o pi.ttbk                 # settings, users, history
+telltale backup create --include-qlog -o pi.ttbk  # also the query log (can be large)
+telltale backup show pi.ttbk                      # check it and list what's in it</code></pre>
+  <p class="muted">Downloads from the UI and API leave out the query log; use the command for that. Each download is recorded in the audit log as <code>backup.create</code>.</p>
+  <div class="two">
+    <div class="card">
+      <h3>In a backup</h3>
+      <p>The config files the node was started with; users (password hashes, two-factor secrets) and API tokens; devices, names, and forwarded domains made in the UI; the audit log, statistics history, and anomaly baselines; and the query log, with <code>--include-qlog</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Left out</h3>
+      <p>Sign-in sessions (everyone signs in again); downloaded lists, compiled snapshots, and the cache, which are rebuilt; and the cluster identity and its CA key.</p>
+    </div>
+  </div>
+  <div class="callout warn"><p><b>Keep it private.</b> It holds password hashes and API tokens. The file is zstd-compressed tar with a manifest of BLAKE3 checksums, written owner-only (<code>0600</code>).</p></div>
+</section>
+
+<section id="restore">
+  <h2>Restore on a new machine</h2>
+  <ol class="steps">
+    <li class="step"><b>Install TelltaleDNS on the new machine</b> (see <a href="start.html#install">Get started</a>), and copy the backup file to it.</li>
+    <li class="step"><b>Stop TelltaleDNS there.</b> Restore refuses while TelltaleDNS runs on that data directory, because it can't take the directory's lock.</li>
+    <li class="step"><b>Restore:</b>
+<pre><code>telltale backup restore pi.ttbk</code></pre>
+      Every file is checked before anything is written, so a damaged or truncated backup changes nothing. Existing files are only replaced with <code>--force</code> (the installer writes a starter config, so a fresh install already has one).</li>
+    <li class="step"><b>Start TelltaleDNS</b> and sign in again. Lists are downloaded and compiled again.</li>
+    <li class="step"><b>Point your router's DHCP DNS setting</b> at the new machine.</li>
+  </ol>
+  <ul>
+    <li><b>Where files go:</b> data goes back to the directory it came from, or <code>--data-dir</code>; config files go back where they were, or <code>--config-dir</code>.</li>
+    <li><b>A different data directory?</b> The restored config still names the old one. Restore says so; set <code>data_dir</code> (or add a small file that does).</li>
+    <li><b>Running it as root is fine:</b> files are given the data directory's owner, so the <code>telltale</code> service user can read them.</li>
+    <li><b>A cluster member</b> starts on its own after a restore: run <code>telltale cluster init</code>, or join it again (<a href="guide-cluster.html#create">Build a cluster</a>).</li>
+  </ul>
+  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#backups-and-moving-to-a-new-machine">Backups and moving to a new machine</a>.</p>
+</section>
+
+<section id="movein">
+  <h2>Move in from Pi-hole or Technitium</h2>
+  <p>Pi-hole and Technitium DNS Server are the projects that inspired TelltaleDNS, and the importers bring the setup you built there along with you. Each one writes a TelltaleDNS config file and checks that it loads before writing it. The short version is on <a href="start.html#pihole">Get started</a>.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Move in from">
+      <button role="tab" type="button">From Pi-hole</button>
+      <button role="tab" type="button">From Technitium</button>
+    </div>
+
+    <div class="panel" id="from-pihole"><h3>From Pi-hole</h3>
+<pre><code>telltale import pihole PATH -o pihole.toml</code></pre>
+      <p><code>PATH</code> is a Teleporter export (<b>Settings → Teleporter → Export</b>: a <code>.zip</code> from Pi-hole v6, a <code>.tar.gz</code> from v5), a <code>gravity.db</code>, or a copy of <code>/etc/pihole</code>.</p>
+      <p><b>What comes over:</b> upstream DNS servers, conditional forwarding, local DNS and CNAME records, adlists (switched-off ones stay with <code>enabled = false</code>), allowed and denied domains (exact and regex), groups, clients (IP, CIDR, MAC), DHCP reservations as named devices, and the DNSSEC, rate-limit, and blocking-mode settings.</p>
+      <p><b>What doesn't:</b> query history, the admin password, and API tokens. The header of <code>pihole.toml</code> lists, by setting name, everything else with no equivalent, such as clients matched by host name or network interface (add their IP or MAC instead), the DHCP server, and Pi-hole-only settings.</p>
+      <ol class="guide">
+        <li><b>On a fresh install</b>, use the file as is next to your node settings: <code>telltale run -c telltale.toml -c pihole.toml</code>.</li>
+        <li><b>Into an existing setup</b>, merge it by hand: both files define the <code>default</code> upstream group and group.</li>
+        <li><b>An upstream on the Pi-hole machine itself</b> (<code>127.0.0.1#5335</code>, usually unbound) is flagged: keep that resolver running next to TelltaleDNS.</li>
+      </ol>
+      <p class="muted">Every row of the mapping: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#moving-from-pi-hole">Moving from Pi-hole</a>.</p>
+    </div>
+
+    <div class="panel" id="from-technitium"><h3>From Technitium</h3>
+      <p>The importer reads a running Technitium DNS Server through its API. First create an API token in Technitium (<b>Administration → Sessions → Create Token</b>).</p>
+<pre><code>TECHNITIUM_TOKEN=… telltale import technitium http://192.168.1.2:5380 -o technitium.toml</code></pre>
+      <p>Pass the token in <code>TECHNITIUM_TOKEN</code> or in a file with <code>--token-file</code>. It's never a command-line argument, so it doesn't show up in <code>ps</code>, and it never appears in the output.</p>
+      <p><b>What comes over:</b> forwarders, primary zones as local records, forwarder zones (conditional forwarding), block list URLs and blocked and allowed zones, the blocking type, Advanced Blocking app groups, the blocking bypass list, DHCP reservations as named devices, and the DNSSEC, rate-limit, and cache-saving settings.</p>
+      <p><b>What doesn't:</b> the header lists it, including secondary and stub zones, forwarders given only by name, the DHCP server, and encrypted listeners (set those up in <a href="guide-encrypted.html">Encrypted DNS</a>).</p>
+      <p class="muted">Technitium's backup files use a private binary format, so the importer reads the documented API instead. Every row of the mapping: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#moving-from-technitium">Moving from Technitium</a>.</p>
+    </div>
+  </div>
+  <p><b>Zone files from any DNS server</b> (Technitium's <b>Zones → Export Zone</b>, BIND, PowerDNS) become <code>[[record]]</code> entries for your config:</p>
+<pre><code>telltale import zone exported.zone &gt; records.toml</code></pre>
+  <p class="muted">The header lists anything with no local equivalent; SOA and NS aren't needed. Names under the zone that you don't import still resolve normally, so a split-horizon domain keeps working. Keep your old server running until TelltaleDNS answers the way you expect, then point your router at TelltaleDNS.</p>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td>The update status is <code>unknown</code></td><td>The node hasn't checked yet, or the check is failing; a failed check is retried after an hour. On a network with no internet access, set <code>[updates] index_url</code> to a mirror, or <code>[updates] check = false</code>.</td></tr>
+      <tr><td><code>telltale self-update</code> refuses to run</td><td>It doesn't run in containers. Pull a new image instead: <code>docker compose pull &amp;&amp; docker compose up -d</code>.</td></tr>
+      <tr><td>A replica's sync status says to upgrade it</td><td>The primary uses settings the replica's version doesn't know. The replica keeps serving its last version; upgrade it.</td></tr>
+      <tr><td><code>backup restore</code> refuses to start</td><td>TelltaleDNS is running on that data directory. Stop the service first.</td></tr>
+      <tr><td><code>backup restore</code> won't replace existing files</td><td>Add <code>--force</code> if you mean to overwrite them.</td></tr>
+      <tr><td>The restored node uses the wrong data directory</td><td>You restored into a different one: set <code>data_dir</code> in the config (or add a small file that does).</td></tr>
+      <tr><td>A restored cluster member runs on its own</td><td>The cluster identity isn't in a backup. Run <code>telltale cluster init</code>, or join it again.</td></tr>
+      <tr><td>"Address already in use" on port 53 after moving from Pi-hole</td><td>Pi-hole or another resolver on the same machine must be stopped first. See <a href="start.html#trouble">Get started</a>.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-kubernetes.html">← Run on Kubernetes</a>
+    <a class="btn primary" href="guide-blocking.html">Next: Block, allow, and explain →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

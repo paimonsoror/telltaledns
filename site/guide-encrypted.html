@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encrypted DNS and upstreams — TelltaleDNS</title>
+<meta name="description" content="Choose the servers TelltaleDNS asks, encrypt those lookups with DoT, DoH, DoQ, or DNSCrypt, offer encrypted DNS to your devices, send a domain to another server, resolve without a forwarder, and turn on DNSSEC validation.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-encrypted">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Encrypted DNS and upstreams</h1>
+  <p class="lede">Pick the servers TelltaleDNS asks, keep those lookups private on the way out, and let your phones and laptops reach TelltaleDNS over an encrypted connection too.</p>
+  <ul class="onpage">
+    <li><a href="#choose">Choose your upstreams</a></li>
+    <li><a href="#encrypt-upstreams">Encrypt lookups to your upstreams</a></li>
+    <li><a href="#devices">Offer encrypted DNS to your devices</a></li>
+    <li><a href="#routes">Send a domain to another server</a></li>
+    <li><a href="#recursive">Resolve without a forwarder</a></li>
+    <li><a href="#dnssec">Check DNSSEC signatures</a></li>
+    <li><a href="#failures">When an upstream fails</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ul>
+  <div class="callout"><p><b>Words used here:</b> an <b>upstream</b> is a server TelltaleDNS asks when it doesn't have the answer. An <b>upstream group</b> is a named set of upstreams with a strategy. Queries that match no route use the group named <code>default</code>.</p></div>
+</section>
+
+<section id="choose">
+  <h2>Choose your upstreams</h2>
+  <p>Start from a preset instead of looking up addresses. The catalog covers every Pi-hole preset plus the common encrypted resolvers, and a nightly job checks that every entry still answers.</p>
+<pre><code>telltale presets list                                   # Cloudflare, Google, Quad9, AdGuard, Mullvad, Control D, NextDNS, ...
+telltale presets show quad9 --proto tls,https --group default &gt;&gt; telltale.toml
+telltale presets show nextdns --param profile=abc123    # templated presets need your account ID</code></pre>
+  <p><code>show</code> prints explicit <code>[[upstream]]</code> entries plus a <code>fastest</code> group. Your config always lists exactly what's used and never depends on the catalog.</p>
+  <p>A group's <code>strategy</code> is one of <code>failover</code>, <code>round_robin</code>, <code>weighted</code>, <code>fastest</code>, or <code>parallel</code>.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Ways to change upstreams">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="choose-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open the <b>Upstreams</b> page. It holds both servers and upstream groups.</li>
+        <li>Add or edit an entry. Simple view shows the common fields; switch to Advanced for timeouts and TLS names.</li>
+        <li><b>Test it</b> asks the draft upstream for the root's NS records from this node, and shows the answer and the time, or the error (a bad URL, a TLS name that doesn't match, a timeout).</li>
+        <li><b>Check</b> shows what the change will do and any warnings, such as a group that would lose its last member. Nothing is saved until <b>Apply</b>.</li>
+      </ol>
+      <p class="muted">The <b>Manage</b> table at the bottom says where each entry comes from: the config file, added here, or an override. See <a href="guide-settings.html#style-ui">Web UI on a config file</a>.</p>
+    </div>
+    <div class="panel" id="choose-file"><h3>Config file</h3>
+<pre><code>[[upstream]]
+name = "cloudflare"
+url = "udp://1.1.1.1"
+
+[[upstream]]
+name = "quad9"
+url = "udp://9.9.9.9"
+
+[[upstream_group]]
+name = "default"          # queries that match no route use this group
+members = ["cloudflare", "quad9"]
+strategy = "fastest"      # failover | round_robin | weighted | fastest | parallel</code></pre>
+      <p class="muted">Check it with <code>telltale config check</code>, then reload. Upstreams and groups apply at once. Every key is in the <a href="config.html">configuration reference</a>.</p>
+    </div>
+    <div class="panel" id="choose-api"><h3>API</h3>
+      <p><code>PUT</code> or <code>DELETE</code> on <code>/api/v1/upstreams/{name}</code> and <code>/api/v1/upstream-groups/{name}</code>, with <code>?dryRun=true</code> to preview. The body has the same fields as the TOML section. <code>POST /api/v1/checks/upstream</code> tests a draft, like <b>Test it</b>.</p>
+<pre><code>PUT /api/v1/upstreams/quad9-dot?dryRun=true
+{"url": "tls://9.9.9.9", "tls_server_name": "dns.quad9.net"}</code></pre>
+    </div>
+  </div>
+</section>
+
+<section id="encrypt-upstreams">
+  <h2>Encrypt lookups to your upstreams</h2>
+  <p>Change an upstream's URL scheme to encrypt the lookups TelltaleDNS sends it. Certificates are checked against the built-in Mozilla root set, so you need no CA files, even in a minimal container.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Upstream protocol">
+      <button role="tab" type="button">DoT</button>
+      <button role="tab" type="button">DoH</button>
+      <button role="tab" type="button">DoQ</button>
+      <button role="tab" type="button">DNSCrypt</button>
+    </div>
+    <div class="panel" id="up-dot"><h3>DNS over TLS</h3>
+<pre><code>[[upstream]]
+name = "cloudflare-dot"
+url = "tls://1.1.1.1"                       # DNS over TLS, port 853
+tls_server_name = "cloudflare-dns.com"      # name on the certificate</code></pre>
+      <p>Many queries share one connection (<code>pool_size</code>, default 4), closed after <code>idle_timeout_ms</code> (default 30 s).</p>
+    </div>
+    <div class="panel" id="up-doh"><h3>DNS over HTTPS</h3>
+<pre><code>[[upstream]]
+name = "quad9-doh"
+url = "https://dns.quad9.net/dns-query"     # DNS over HTTPS (HTTP/2)
+bootstrap = ["9.9.9.9", "149.112.112.112"]  # how to look up dns.quad9.net itself
+
+[[upstream]]
+name = "google-h3"
+url = "h3://8.8.8.8/dns-query"              # DoH over HTTP/3 (or https:// with http_version = "3")
+tls_server_name = "dns.google"</code></pre>
+      <p>Every query shares one HTTP/2 connection. <code>doh_method = "get"</code> sends <code>GET</code> requests instead of POST, for providers or HTTP caches that prefer it.</p>
+    </div>
+    <div class="panel" id="up-doq"><h3>DNS over QUIC</h3>
+<pre><code>[[upstream]]
+name = "adguard-doq"
+url = "quic://94.140.14.14"                 # DNS over QUIC, port 853
+tls_server_name = "dns.adguard-dns.com"</code></pre>
+      <p>One QUIC connection per upstream with a stream per query. It reconnects when the connection closes and never uses 0-RTT.</p>
+    </div>
+    <div class="panel" id="up-dnscrypt"><h3>DNSCrypt and DNS stamps</h3>
+      <p>Paste an <code>sdns://</code> stamp (for example from the public list at dnscrypt.info) as the URL:</p>
+<pre><code>[[upstream]]
+name = "adguard-dnscrypt"
+url = "sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20"
+# relay = "sdns://gQ8yMDMuMC4xMTMuNzo0NDM"   # Anonymized DNSCrypt: queries go through a relay</code></pre>
+      <ul>
+        <li>A DNSCrypt stamp becomes a DNSCrypt v2 upstream. A DoH, DoT, or DoQ stamp becomes the matching <code>https://</code>, <code>tls://</code>, or <code>quic://</code> upstream, with no bootstrap lookup needed.</li>
+        <li>With a <code>relay</code>, the relay sees your address but can't read the queries, and the resolver sees only the relay's address. Pick a relay run by someone other than the resolver.</li>
+      </ul>
+    </div>
+  </div>
+  <ul>
+    <li><b>Hostname upstreams</b> are looked up through <code>bootstrap</code> servers, or the system resolvers from <code>/etc/resolv.conf</code> when <code>bootstrap</code> is empty. Never through TelltaleDNS itself. To skip the lookup, put the IP in the URL and set <code>tls_server_name</code>.</li>
+    <li><code>tls_insecure_skip_verify = true</code> turns certificate checks off and logs a warning. Don't use it on untrusted networks.</li>
+  </ul>
+  <div class="grid">
+    <div class="card">
+      <h3>Client subnet (ECS)</h3>
+      <p>Your devices' subnets are never sent. <code>ecs = "203.0.113.0/24"</code> sends a subnet you choose, for better CDN answers; <code>ecs = "client"</code> suits clients on public addresses. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#client-subnet-ecs">Details</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Through a proxy (Tor)</h3>
+      <p><code>proxy = "socks5://127.0.0.1:9050"</code> sends an upstream's traffic through SOCKS5 or HTTP, so the resolver never sees your address. Use <code>tcp://</code> or <code>tls://</code> with Tor. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#through-a-proxy-tor">Details</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Pinning and client certificates</h3>
+      <p><code>tls_ca</code>, <code>tls_client_cert</code>, <code>tls_client_key</code>, and <code>spki_pins</code> for an office server with its own CA, mTLS, or a pinned key. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#pinning-and-client-certificates">Details</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Plugin upstreams</h3>
+      <p><code>unix://</code> or <code>exec://</code>: anything that speaks DNS over a Unix socket can be an upstream. A dead plugin is a failing upstream like any other. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#plugin-upstreams">Details</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section id="devices">
+  <h2>Offer encrypted DNS to your devices</h2>
+  <p>Phones, laptops, and browsers can reach TelltaleDNS over DNS over TLS (Android's "Private DNS"), DNS over HTTPS (browsers, iOS and macOS profiles), or DNS over QUIC, so nobody on the network path can read or change their lookups.</p>
+  <ol class="steps">
+    <li class="step"><b>Get a certificate</b> for the name devices will use, such as <code>dns.example.com</code> from Let's Encrypt (DNS-01 works for internal names): a PEM chain (leaf first) and its key. Both files are re-read within 10 seconds of changing, so renewals need no restart.</li>
+    <li class="step"><b>Add a listener</b> for each protocol you want, as shown below. DoT uses TCP 853 and DoQ uses UDP 853, so both fit.</li>
+    <li class="step"><b>Point a device at it:</b> <code>dns.example.com</code> as Android's Private DNS, or <code>https://dns.example.com/dns-query</code> for DoH.</li>
+  </ol>
+      <div class="tabs">
+        <div role="tablist" aria-label="Device protocol">
+          <button role="tab" type="button">DoT</button>
+          <button role="tab" type="button">DoH</button>
+          <button role="tab" type="button">DoQ</button>
+          <button role="tab" type="button">Kubernetes</button>
+        </div>
+        <div class="panel" id="listen-dot"><h3>DoT listener</h3>
+<pre><code>[[listen]]
+proto = "dot"
+addr = "0.0.0.0:853"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }</code></pre>
+        </div>
+        <div class="panel" id="listen-doh"><h3>DoH listener</h3>
+<pre><code>[[listen]]
+proto = "doh"
+addr = "0.0.0.0:443"
+path = "/dns-query"                     # default; /dns-query/&lt;client-id&gt; also works
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }
+
+[[listen]]
+proto = "doh3"                          # DoH over HTTP/3: UDP 443 next to the TCP one
+addr = "0.0.0.0:443"
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }</code></pre>
+          <p class="muted">DoH speaks HTTP/2 and HTTP/1.1. With a <code>doh3</code> listener, HTTP/2 answers advertise HTTP/3 so browsers and apps that support it switch.</p>
+        </div>
+        <div class="panel" id="listen-doq"><h3>DoQ listener</h3>
+<pre><code>[[listen]]
+proto = "doq"
+addr = "0.0.0.0:853"                    # UDP 853 (DoT uses TCP 853: both fit)
+tls = { cert = "/etc/telltale/tls.crt", key = "/etc/telltale/tls.key" }</code></pre>
+        </div>
+        <div class="panel" id="listen-k8s"><h3>Kubernetes (Helm values)</h3>
+<pre><code>encrypted:
+  dot:
+    enabled: true
+  doh:
+    enabled: true
+    http3: true
+  doq:
+    enabled: true
+  tls:
+    certManager:
+      enabled: true
+      issuerRef:
+        name: letsencrypt
+      dnsNames: [dns.example.com, "*.dns.example.com"]</code></pre>
+          <p class="muted">Or use an existing Secret with <code>encrypted.tls.secretName</code>. The ports join the DNS LoadBalancer, so client addresses survive. See <a href="helm-values.html">Helm values</a>.</p>
+        </div>
+      </div>
+  <ul>
+    <li><b>Devices can identify themselves.</b> With a wildcard certificate (<code>dns.example.com</code> and <code>*.dns.example.com</code>), a device set to <code>kids-tablet.dns.example.com</code>, or to the URL <code>https://dns.example.com/dns-query/kids-tablet</code>, gets the client ID <code>kids-tablet</code>. <code>[[client]] match = ["id:kids-tablet"]</code> recognizes it wherever it is, even on mobile data. The path wins over the name. See <a href="guide-devices.html">Groups, devices, and VLANs</a>.</li>
+    <li><b>Behind a load balancer:</b> <code>proxy_protocol = true</code> on a <code>tcp</code>, <code>dot</code>, or <code>doh</code> listener reads the client's address from a PROXY protocol v2 header. Every connection must then start with one, so only turn it on when the balancer sends it.</li>
+    <li><b>Connection limits</b> per listener: <code>max_connections</code> (default 1,024) and <code>max_connections_per_address</code> (default 32, <code>0</code> = no limit).</li>
+  </ul>
+  <p class="muted">Metrics, timeouts, and HTTP details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#encrypted-dns-for-your-devices-dot-doh-and-doq">Encrypted DNS for your devices in the docs</a>.</p>
+</section>
+
+<section id="routes">
+  <h2>Send a domain to another server</h2>
+  <p>Some names only exist on another server: your work network over a VPN, your router's own names, another lab. Send everything under that domain there (conditional forwarding). Your local names still answer first.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Ways to send a domain">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="routes-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Names on my network</b> and choose <b>Send a domain to another server</b>.</li>
+        <li>Enter the <b>Domain</b> (such as <code>corp.example</code>) and the <b>Server address</b> (such as <code>10.0.0.53</code>). Separate several servers with spaces; they're tried in order. For an encrypted server, use <code>tls://10.0.0.53</code>.</li>
+        <li><b>Save</b>.</li>
+      </ol>
+      <p class="muted">Domains sent this way are left out of DNSSEC validation automatically (see <a href="#dnssec">below</a>).</p>
+    </div>
+    <div class="panel" id="routes-file"><h3>Config file</h3>
+<pre><code>[[upstream]]
+name = "home-router"
+url = "udp://192.168.1.1"
+
+[[upstream_group]]
+name = "lan"
+members = ["home-router"]
+
+[[route]]
+match_suffix = ["home.arpa", "168.192.in-addr.arpa"]   # local names and reverse lookups
+upstream_group = "lan"</code></pre>
+      <p>The longest matching suffix wins. Routes can also match <code>match_qtype = ["PTR"]</code>. Add <code>dnssec_nta = true</code> to a route whose zone isn't signed.</p>
+    </div>
+    <div class="panel" id="routes-api"><h3>API</h3>
+<pre><code>PUT /api/v1/forwards/corp.example?dryRun=true
+{"servers": ["10.0.0.53"]}</code></pre>
+      <p>Servers are addresses (plain DNS) or <code>udp://</code>, <code>tcp://</code>, <code>tls://</code>, or <code>https://</code> URLs, tried in order. Domains routed in the config files are read-only here (409). Agents use the MCP tool <code>plan_forward_domain</code> with the <code>config:write:forwards</code> scope.</p>
+    </div>
+  </div>
+</section>
+
+<section id="recursive">
+  <h2>Resolve without a forwarder</h2>
+  <p>TelltaleDNS can resolve names itself, from the root servers down, like <code>unbound</code> next to a Pi-hole, so no public resolver sees your lookups:</p>
+<pre><code>[[upstream]]
+name = "recursive"
+url = "recursive://"
+
+[[upstream_group]]
+name = "default"
+members = ["recursive"]
+
+# Optional (these are the defaults):
+# [upstream.recursive]
+# qname_minimization = true    # each server sees only as much of the name as it needs (RFC 9156)
+# case_randomization = false   # 0x20: random letter case, checked in answers (spoofing defense)
+# ipv6 = false                 # also ask servers over IPv6 (needs an IPv6 route)</code></pre>
+  <ul>
+    <li><b>Private by default:</b> the root servers see only <code>com</code>, the <code>com</code> servers only <code>example.com</code>, and only <code>example.com</code>'s own servers see <code>www.example.com</code>.</li>
+    <li><b>Worth turning on:</b> <code>case_randomization</code> (off by default) asks with a random mix of upper and lower case and accepts only answers that echo it, which adds about one bit per letter to what an off-path spoofer must guess.</li>
+    <li><b>Fast after the first time:</b> a first lookup in a new zone takes a few round trips (about 30 to 400 ms); after that, one.</li>
+    <li><b>Mix it in:</b> it's an upstream like any other. Use <code>strategy = "failover"</code> with a public resolver as the fallback, or route only some domains through it.</li>
+  </ul>
+  <p class="muted">Limits, root priming, and safety details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#recursive-resolution-no-forwarder">Recursive resolution in the docs</a>.</p>
+</section>
+
+<section id="dnssec">
+  <h2>Check DNSSEC signatures</h2>
+  <p>TelltaleDNS can check DNSSEC signatures on answers itself instead of trusting the upstream. It's off by default.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th><code>[dnssec] mode</code></th><th>A signed but broken answer (forged, expired, tampered)</th></tr></thead>
+    <tbody>
+      <tr><td><code>off</code> (default)</td><td>Not checked.</td></tr>
+      <tr><td><code>permissive</code></td><td>Answered anyway, counted, and logged at INFO (<code>DNSSEC: bogus answer served (permissive mode)</code>). Good for trying validation out.</td></tr>
+      <tr><td><code>validate</code></td><td>SERVFAIL with Extended DNS Error 6 (DNSSEC Bogus), or 7, 8, or 10 when the signatures show why.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">In both checking modes, valid answers carry AD for clients that ask, and unsigned answers are served as usual without it.</p>
+  <ol class="steps">
+    <li class="step"><b>Try it in <code>permissive</code> mode first</b> and read the log for a while. Only names that are really broken (like <code>dnssec-failed.org</code>) should show up.</li>
+    <li class="step"><b>Exempt internal zones that aren't signed</b>, then switch to <code>validate</code>:
+<pre><code>[dnssec]
+mode = "validate"            # off (default) | validate | permissive
+negative_trust_anchors = ["corp.example"]   # internal zones that aren't signed</code></pre></li>
+  </ol>
+  <ul>
+    <li>A client that sets CD (checking disabled) gets the unvalidated answer.</li>
+    <li>It works on cache misses only, and a validated answer is cached with its AD bit.</li>
+    <li>The root's 2017 and 2024 keys are built in, so the root key rollover needs nothing from you.</li>
+  </ul>
+  <p class="muted">NSEC proofs, unsigned-zone handling, and trust anchors: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dnssec-validation">DNSSEC validation in the docs</a>.</p>
+</section>
+
+<section id="failures">
+  <h2>When an upstream fails</h2>
+  <ul>
+    <li><b>Slow upstreams are hedged.</b> If an upstream is slow, the next one is tried in parallel rather than after a timeout, and the first good answer wins.</li>
+    <li><b>Failing upstreams are benched.</b> One that fails 3 times in a row (or more than half the time) is benched for 10 seconds, doubling up to 5 minutes, then probed again. A SERVFAIL or REFUSED answer counts toward "more than half the time" but not "3 in a row", so one broken domain can't bench a healthy upstream.</li>
+    <li><b>Stale answers keep you going.</b> If upstreams don't answer within 1.8 s and an expired answer is still cached (up to a day old by default), it's served with TTL 30 and Extended DNS Error 3 ("Stale Answer") while the refresh continues.</li>
+    <li><b>All failed:</b> the client gets SERVFAIL with Extended DNS Error 22, and the SERVFAIL is cached for 5 seconds.</li>
+  </ul>
+  <p class="muted">The <b>Upstreams</b> page's <b>Answer quality</b> card shows each upstream's DNSSEC verdicts and the error codes it attached. More in <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#how-a-query-is-answered">How a query is answered</a> and <a href="how-it-works.html">How it works</a>.</p>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td><b>Test it</b> reports a TLS name that doesn't match</td><td>Set <code>tls_server_name</code> to the name on the server's certificate.</td></tr>
+      <tr><td>"no certificate in the server's chain matches the stamp's hashes"</td><td>The provider changed CAs before its stamp was updated. Take the newer stamp, or use the plain <code>https://</code> or <code>tls://</code> URL.</td></tr>
+      <tr><td>SERVFAIL with EDE 7 or 8 on many names</td><td>Signatures look expired or not yet valid: check the clock first.</td></tr>
+      <tr><td>An internal domain fails in <code>validate</code> mode</td><td>Add it to <code>negative_trust_anchors</code>, or set <code>dnssec_nta = true</code> on its route.</td></tr>
+      <tr><td>A Tor or HTTP proxy upstream doesn't answer</td><td>They don't carry UDP: use <code>tcp://</code> or <code>tls://</code>.</td></tr>
+      <tr><td>Encrypted connections refused behind a load balancer</td><td>If the balancer hides client addresses, every client looks like the balancer: raise <code>max_connections_per_address</code> or set it to <code>0</code>, or use <code>proxy_protocol</code> if the balancer sends it.</td></tr>
+      <tr><td>A renewed certificate isn't used</td><td>A broken renewal keeps the old certificate and logs a warning. Check the log and the new files.</td></tr>
+      <tr><td>The log reports a loop</td><td>An upstream forwards back to TelltaleDNS. Point it somewhere else.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-devices.html">← Groups, devices, and VLANs</a>
+    <a class="btn primary" href="guide-changes.html">Next: Change things safely →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

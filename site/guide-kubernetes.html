@@ -159,14 +159,14 @@ resolvers:
   <ul>
     <li><b>Prometheus and Grafana:</b> <code>serviceMonitor.enabled</code> scrapes the controller and every resolver pod, <code>prometheusRule.enabled</code> adds alert rules (down, all upstreams down, SERVFAIL rate, stale lists, masked client IPs, cluster health), and <code>grafanaDashboard.enabled</code> ships the dashboard for Grafana's sidecar.</li>
     <li><b>Who may ask:</b> <code>networkPolicy.enabled</code> limits who may query (<code>dnsFrom</code>), reach the UI (<code>apiFrom</code>), and scrape (<code>metricsFrom</code>).</li>
-    <li><b>Encrypted DNS for your devices:</b> <code>encrypted.dot.enabled</code> (853) and <code>encrypted.doh.enabled</code> (443) add DoT and DoH to the DNS Service, with the certificate from <code>encrypted.tls.secretName</code> or a cert-manager issuer (<code>encrypted.tls.certManager.issuerRef</code>). It's reloaded when renewed.</li>
+    <li><b>Encrypted DNS for your devices:</b> <code>encrypted.dot.enabled</code> (853), <code>encrypted.doh.enabled</code> (443, plus <code>encrypted.doh.http3</code>), and <code>encrypted.doq.enabled</code> add DoT, DoH, and DoQ to the DNS Service, with the certificate from <code>encrypted.tls.secretName</code> or a cert-manager issuer (<code>encrypted.tls.certManager.issuerRef</code>). It's reloaded when renewed.</li>
   </ul>
 </section>
 
 <section>
   <div class="guide-nav">
     <a class="btn" href="guide-cluster.html">← Build a cluster</a>
-    <a class="btn primary" href="guides.html">All guides</a>
+    <a class="btn primary" href="guide-upgrades.html">Next: Upgrades, backups, and moving in →</a>
   </div>
 </section>
 

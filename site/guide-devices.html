@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Groups, devices, and VLANs — TelltaleDNS</title>
+<meta name="description" content="Give each VLAN or device its own lists and upstream servers, name devices by hand or from your router and mDNS, add names on your network, and make sure TelltaleDNS sees every device's real address.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-devices">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Groups, devices, and VLANs</h1>
+  <p class="lede">A group decides which lists, upstream servers, and answer settings apply to a set of devices. Give each network its own group, name the devices on it, and every chart and log line shows who asked.</p>
+  <ul class="onpage">
+    <li><a href="#find">How a device finds its group</a></li>
+    <li><a href="#vlans">A group per VLAN</a></li>
+    <li><a href="#name">Name your devices</a></li>
+    <li><a href="#router">Names from your router and mDNS</a></li>
+    <li><a href="#identify">What is this device?</a></li>
+    <li><a href="#local">Names on your network</a></li>
+    <li><a href="#answers">Per-group answers</a></li>
+    <li><a href="#reach">Real addresses, access, and rate limits</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ul>
+  <p class="muted">For what groups show on the dashboard and the <b>Groups</b> page, see <a href="groups.html">Groups and VLANs</a>.</p>
+</section>
+
+<section id="find">
+  <h2>How a device finds its group</h2>
+  <p>Each query's device is recognized first, then given its groups. The first match wins:</p>
+  <ol class="steps">
+    <li class="step"><b>Client ID</b> (<code>id:…</code>), from the DoH URL path <code>/dns-query/&lt;id&gt;</code> or the DoT/DoH server name <code>&lt;id&gt;.dns.example.com</code>.</li>
+    <li class="step"><b>MAC address</b>, from a trusted router's EDNS option or from the kernel's neighbor table (ARP and IPv6 NDP, read every 60 s).</li>
+    <li class="step"><b>Exact IP address.</b></li>
+    <li class="step"><b>The most specific CIDR.</b></li>
+    <li class="step"><b><code>default</code></b>, for every device that matched nothing.</li>
+  </ol>
+  <ul>
+    <li><b>By network:</b> a device on a group's network belongs to that group, with no per-device setup. The most specific network wins.</li>
+    <li><b>By device:</b> a <code>[[client]]</code> entry with its own <code>groups</code> wins over the network. Naming a device without giving it groups keeps it in its network's group.</li>
+    <li><b>In several groups,</b> a device gets every list of all of them. Other settings, such as the blocked answer, come from its highest-priority group.</li>
+  </ul>
+  <div class="callout"><p><b>MAC addresses</b> survive DHCP changes and IPv6 privacy addresses, so they're the most dependable key at home. The neighbor table only sees real devices with host networking (as on a Pi). In a container's bridge network, every query appears to come from the gateway.</p></div>
+</section>
+
+<section id="vlans">
+  <h2>A group per VLAN</h2>
+  <p class="muted">Give each VLAN a group that owns its network. Filtering doesn't change until you give a group <code>lists</code>: a group without them uses every list, like <code>default</code>.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Set up a group">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="vlans-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Groups → Manage groups</b>, and add a group (or <b>Edit</b> one).</li>
+        <li>Under <b>Networks</b>, enter its networks, one per line (<code>192.168.20.0/24</code>).</li>
+        <li>Tick its <b>Lists</b>, and pick its <b>Upstream servers</b>. <i>(default)</i> means the <code>default</code> upstream group.</li>
+        <li>In the Advanced view, set its <b>Priority</b> and <b>Color</b> if you like. <b>Check</b> shows what the change does; nothing is saved until <b>Apply</b>.</li>
+      </ol>
+    </div>
+    <div class="panel" id="vlans-file"><h3>Config file</h3>
+      <p>Make the upstream groups first, from presets or by hand:</p>
+<pre><code>telltale presets show cloudflare-family --proto tls --group family &gt;&gt; telltale.toml
+telltale presets show quad9 --proto tls,https --group privacy &gt;&gt; telltale.toml</code></pre>
+      <p>Then one group per VLAN (shortened from the docs' example):</p>
+<pre><code>[[group]]
+name = "Trust"                    # laptops and phones
+networks = ["192.168.10.0/24"]
+lists = ["hagezi-pro"]
+upstreams = "privacy"
+
+[[group]]
+name = "Kids"
+networks = ["192.168.20.0/24"]
+lists = ["hagezi-pro", "family-extra"]
+upstreams = "family"
+priority = 10
+
+[[group]]
+name = "IoT"                      # TVs, plugs, cameras
+networks = ["192.168.30.0/24"]
+lists = ["hagezi-pro", "smart-tv"]
+rebinding_protection = true
+
+[[group]]
+name = "Guest"
+networks = ["192.168.40.0/24"]
+lists = ["hagezi-light"]
+block_mode = "nxdomain"</code></pre>
+      <p>IoT has no <code>upstreams</code>, so it uses <code>default</code>. Apply it with a reload (<code>SIGHUP</code>).</p>
+    </div>
+    <div class="panel" id="vlans-api"><h3>API</h3>
+      <p><code>PUT</code> or <code>DELETE</code> on <code>/api/v1/groups/{name}</code>, with <code>?dryRun=true</code> to preview. The body has the same fields as the <code>[[group]]</code> section (<code>networks</code>, <code>lists</code>, <code>upstreams</code>, and so on).</p>
+    </div>
+  </div>
+  <ul>
+    <li><b>A network belongs to one group:</b> the same CIDR in two groups is a configuration error. Nested networks are fine.</li>
+    <li><b>Which upstream answers,</b> most specific first: a <code>[[route]]</code> for a domain (such as <code>home.arpa</code> to your router, for every group), a <code>[[route]]</code> with <code>match_group</code>, the group's <code>upstreams</code>, then <code>default</code>.</li>
+    <li><b>Caching is per upstream group,</b> so a family resolver's answers are never served to another group.</li>
+    <li><b>Blocked services, safe search, and schedules</b> are group settings too: see <a href="guide-blocking.html">Block, allow, and explain</a>.</li>
+    <li><b>See the effect:</b> filter the query log by <b>Group</b>, or look at the group's card on the <b>Groups</b> page. In a cluster, every node attributes devices the same way.</li>
+  </ul>
+  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#groups-for-your-networks-vlans">Groups for your networks</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#upstream-servers-per-group">Upstream servers per group</a> in the docs.</p>
+</section>
+
+<section id="name">
+  <h2>Name your devices</h2>
+  <p class="muted">A name shows everywhere at once, including on past queries: names are looked up when data is read, so renaming relabels history.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Name a device">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="name-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Click a device's address anywhere: the dashboard's top clients, the query log, the live view, or <b>Clients</b>.</li>
+        <li>Choose <b>Name this device…</b>, or <b>Add to group…</b> to put it in a group.</li>
+      </ol>
+      <p>Operators and admins can name devices; viewers see the names. A device defined in a config file is read-only here.</p>
+    </div>
+    <div class="panel" id="name-file"><h3>Config file</h3>
+<pre><code>[[client]]
+name = "Kids tablet"
+match = ["aa:bb:cc:dd:ee:01", "192.168.1.50", "id:kids-tablet"]
+groups = ["kids"]
+
+[[client]]
+name = "Office"
+match = ["10.0.5.0/24"]       # no groups: its network's group, else "default"</code></pre>
+      <p>File entries win over names given in the UI, and the UI can't reuse their names. Changes apply on reload (<code>SIGHUP</code>).</p>
+    </div>
+    <div class="panel" id="name-api"><h3>API</h3>
+<pre><code>curl -X PUT 'https://dns.example.com/api/v1/clients/Living%20room%20TV?dryRun=true' \
+  -H "authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"match": ["192.168.1.42"], "groups": ["default"]}'</code></pre>
+      <ul>
+        <li>Without <code>dryRun</code> the change is saved, applied, and audited.</li>
+        <li>Send <code>GET /api/v1/clients</code>'s <code>ETag</code> back as <code>If-Match</code> to refuse the write if the config changed meanwhile (412). An <code>Idempotency-Key</code> header makes retries safe.</li>
+        <li>Send a new <code>name</code> in the body to rename; <code>DELETE /api/v1/clients/{name}</code> forgets a device.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="router">
+  <h2>Names from your router and mDNS</h2>
+  <p>Your router's DHCP hands out addresses; TelltaleDNS can read its client list, so devices show up by name without any typing.</p>
+<pre><code>[[router]]
+name = "udm"
+type = "unifi"                         # UniFi OS consoles and the Network application
+url = "https://192.168.1.1"
+api_key_file = "/etc/telltale/unifi-key"   # UniFi Network 9+ (Settings → Control Plane → Integrations)
+tls_ca = "/etc/telltale/udm.pem"       # the console's own certificate (self-signed)
+tls_server_name = "unifi.local"        # the name in it
+
+[[router]]
+name = "firewall"
+type = "opnsense"
+url = "https://opnsense.lan"
+api_key_file = "/etc/telltale/opn-key"     # System → Access → Users → API keys
+api_secret_file = "/etc/telltale/opn-secret"</code></pre>
+  <ul>
+    <li><b>UniFi</b> gives the connected clients, named by their UniFi alias, else their host name. <b>OPNsense</b> gives its DHCP leases (Dnsmasq, Kea, or ISC).</li>
+    <li><b>A self-signed UniFi console:</b> save its certificate as <code>tls_ca</code> (<code>openssl s_client -connect 192.168.1.1:443 &lt;/dev/null | openssl x509 &gt; udm.pem</code>). It names <code>unifi.local</code>, not the address you reach it at, so set <code>tls_server_name</code> to that name. The console is then verified, and only that certificate is trusted.</li>
+    <li>Credentials stay in files. Routers are read every <code>interval_secs</code> (300). Changes to <code>[[router]]</code> need a restart.</li>
+  </ul>
+  <p><b>mDNS:</b> phones, speakers, printers, and NAS boxes announce names like <code>Kitchen-HomePod.local</code>. To use them for devices you haven't named:</p>
+<pre><code>[clients]
+mdns = true</code></pre>
+  <ul>
+    <li>Listen only: TelltaleDNS never sends mDNS, and it shares port 5353 with avahi. It needs to hear the LAN: a native install, the Pi bundle, or a pod with host networking. Changing it needs a restart.</li>
+    <li><b>Which name wins:</b> the name you gave, then the router's, then mDNS.</li>
+    <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
+  </ul>
+  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense">Names from your router</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>
+</section>
+
+<section id="identify">
+  <h2>What is this device?</h2>
+  <p>TelltaleDNS guesses what each address is from what it already sees: the maker of its network card (from the MAC address), the name it announces, and the domains it talks to. The <b>Clients</b> page then says, under the device: "Looks like a <b>Roku player</b> (likely) · Roku". <b>Why?</b> lists the evidence.</p>
+  <ul>
+    <li><b>Naming:</b> <b>Name this device…</b> fills in the guess when the device hasn't told your router a name. A guess never becomes a name by itself.</li>
+    <li><b>Suggested groups:</b> give a group the kinds of device that belong in it, and matching devices get it suggested. Nothing moves on its own.</li>
+  </ul>
+<pre><code>[[group]]
+name = "iot"
+device_classes = ["camera", "doorbell", "plug", "bulb", "hub", "thermostat", "vacuum"]</code></pre>
+  <ul>
+    <li><b>Wrong guess?</b> Name the device and set <b>What it is</b> (<code>[[client]] kind = "camera"</code>, or <code>"unknown"</code> to stop guessing).</li>
+    <li>It never changes how a query is answered. It's off at query-log privacy level 1 and above, and with <code>[identify] enabled = false</code>. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#what-is-this-device">How it works</a>.</li>
+  </ul>
+</section>
+
+<section id="local">
+  <h2>Names on your network</h2>
+  <p class="muted">Local names are answered by TelltaleDNS itself, before the cache and the upstreams.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Local names">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="local-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Names on my network</b>. It lists every local name, grouped by domain.</li>
+        <li>For a first device, run <b>Set up my home domain</b> (home.arpa by default). Add, edit, or remove names: A, AAAA, and CNAME in Simple, every type in Advanced.</li>
+        <li>To send a domain to your router or another server, use <b>Send a domain to another server</b>.</li>
+      </ol>
+      <p>Each change is previewed in a sentence and a diagram before it's saved, and every name has a <b>Test</b> link to Explain. Names from the config files are read-only.</p>
+    </div>
+    <div class="panel" id="local-file"><h3>Config file</h3>
+<pre><code>[[record]]
+name = "nas.home.arpa"
+type = "A"                      # A, AAAA, CNAME, PTR, TXT, MX, SRV
+value = "192.168.1.10"
+
+[local]
+hosts_files = ["/etc/telltale/hosts"]   # "IP name [alias...]" lines
+auto_ptr = true                          # reverse lookups for every A/AAAA (default)</code></pre>
+      <p>A <code>[[zone]]</code> makes TelltaleDNS the authority for a whole domain: names it doesn't have get NXDOMAIN. With <code>groups</code>, only those groups see it (split horizon):</p>
+<pre><code>[[zone]]
+name = "corp.example.com"
+groups = ["office"]
+[[zone.record]]
+name = "intranet.corp.example.com"
+type = "A"
+value = "10.10.0.5"</code></pre>
+    </div>
+    <div class="panel" id="local-api"><h3>API</h3>
+      <ul>
+        <li><code>GET /api/v1/records</code>, and <code>PUT</code>/<code>DELETE /api/v1/records/{name}</code> with <code>{"records": [{"type": "A", "value": "192.168.1.10"}]}</code>.</li>
+        <li><code>GET /api/v1/forwards</code>, and <code>PUT</code>/<code>DELETE /api/v1/forwards/{domain}</code> with <code>{"servers": ["10.0.0.53"]}</code>.</li>
+        <li>All take <code>?dryRun=true</code>, <code>If-Match</code>, and <code>Idempotency-Key</code>, like devices.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#local-records">Local records</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#local-zones">Local zones</a>.</p>
+</section>
+
+<section id="answers">
+  <h2>Per-group answers</h2>
+  <p class="muted">These are set on a group. In the UI, the last three are in the group's editor, in the Advanced view.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#rewrites"><code>[[group.rewrite]]</code></a></td><td>Answers a name differently for the group (an address, or a CNAME to another name), such as a split-horizon name or a test server. Blocks still win; for a name everyone should get, use a local record.</td></tr>
+      <tr><td><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dns64"><code>dns64 = true</code></a></td><td>For IPv6-only devices behind NAT64: names without an IPv6 address get one made from their IPv4 address (prefix <code>64:ff9b::/96</code> by default).</td></tr>
+      <tr><td><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#no-ipv6-addresses-for-a-group"><code>filter_aaaa = true</code></a> (<b>No IPv6 addresses</b>)</td><td>For a network whose IPv6 is broken: AAAA questions get an empty answer, so devices use IPv4 at once. Your local records still answer AAAA. Not with <code>dns64</code>.</td></tr>
+      <tr><td><a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#rebinding-protection"><code>rebinding_protection = true</code></a></td><td>Blocks public names that answer with private, loopback, link-local, or CGNAT addresses (DNS rebinding). <code>rebinding_allow</code> lists names that may (<code>plex.direct</code>); <code>block_answer_ips</code> refuses answers in networks you list, for any name. Local records and routed domains are never affected.</td></tr>
+    </tbody>
+  </table></div>
+<pre><code>[[group]]
+name = "guest"
+networks = ["192.168.50.0/24"]
+filter_aaaa = true</code></pre>
+</section>
+
+<section id="reach">
+  <h2>Real addresses, access, and rate limits</h2>
+  <p>Per-device statistics, groups, and rules need each query's real sender. Route your VLANs to TelltaleDNS rather than through a forwarder that rewrites addresses. When most recent queries come from a few <i>infrastructure</i> addresses (loopback, gateways, node addresses), the UI shows a <b>Client IPs appear masked</b> banner.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td>Kubernetes with <code>externalTrafficPolicy: Cluster</code></td><td>Use <code>Local</code> (the chart's default) or <code>hostNetwork: true</code>.</td></tr>
+      <tr><td>Docker with a userland proxy (IPv6 or <code>127.0.0.1</code> port publishing)</td><td>Run with <code>network_mode: host</code>, or publish on the LAN address.</td></tr>
+      <tr><td>A router that forwards DNS for its clients</td><td>Hand out TelltaleDNS's address in DHCP instead. If you can't, enable the router's EDNS MAC option (dnsmasq <code>add-mac</code>) and trust it, as below.</td></tr>
+    </tbody>
+  </table></div>
+<pre><code>[clients]
+trust_edns_mac_from = ["192.168.1.1/32"]   # ignored by default: any device could send it
+infrastructure = ["10.42.0.0/16"]          # e.g. your cluster's pod network</code></pre>
+  <p><b>Who may query:</b> by default, private ranges, CGNAT/Tailscale (<code>100.64/10</code>), link-local, and loopback; everyone else gets REFUSED. TelltaleDNS is never an open resolver by default.</p>
+<pre><code>[access]
+allowed_networks = ["192.168.0.0/16", "fd00::/8", "127.0.0.0/8"]
+
+[ratelimit]
+queries = 1000          # per client per window
+window_secs = 60
+action = "refused"      # or "drop"
+exempt = ["127.0.0.0/8", "::1/128"]</code></pre>
+  <ul>
+    <li>A router or proxy that forwards for a whole network looks like one address and is refused above about 17 queries a second: add it to <code>exempt</code>, or raise <code>queries</code>.</li>
+    <li>Change the rate limit in <b>Settings → Query handling → Rate limit</b>, or with <code>PUT /api/v1/ratelimit/default</code>. A change replaces the whole section, so keep <code>127.0.0.0/8</code> and <code>::1/128</code> in the exempt list. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#who-can-query-and-how-often">Details</a>.</li>
+  </ul>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td>Every query comes from one address, or <b>Client IPs appear masked</b></td><td>Something rewrites the sender: see <a href="#reach">the causes above</a>. With Docker's bridge network, every query appears to come from the gateway.</td></tr>
+      <tr><td>A device isn't in its VLAN's group</td><td>Check that it reaches TelltaleDNS with its own address, and that no <code>[[client]]</code> entry gives it other <code>groups</code> (those win over the network).</td></tr>
+      <tr><td>The config is refused: a network in two groups</td><td>A CIDR can belong to one group only. Nested networks are fine.</td></tr>
+      <tr><td>You can't edit a device in the UI</td><td>It's defined in a config file; files win. Change it there.</td></tr>
+      <tr><td>Router or mDNS names don't appear</td><td>Restart after changing <code>[[router]]</code> or <code>mdns</code>. mDNS needs host networking. For a self-signed UniFi console, set <code>tls_ca</code> and <code>tls_server_name</code>.</td></tr>
+      <tr><td>A phone shows no maker</td><td>Phones use private Wi-Fi addresses, so the maker is unknown; the domains and name decide the guess.</td></tr>
+      <tr><td>Queries through your router are refused</td><td>It's over the rate limit as one address: add it to <code>[ratelimit] exempt</code> or raise <code>queries</code>.</td></tr>
+      <tr><td>Rebinding protection blocks a service you use</td><td>Add its domain to the group's <code>rebinding_allow</code>.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-blocking.html">← Block, allow, and explain</a>
+    <a class="btn primary" href="guide-encrypted.html">Next: Encrypted DNS and upstreams →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

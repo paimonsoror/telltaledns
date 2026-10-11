@@ -2275,8 +2275,8 @@ impl Default for ApiConfig {
 }
 
 /// Sign-in settings (API-003, `spec/08` §6). Users, sessions, and tokens live in
-/// `<data_dir>/state.db`. The first admin comes from the one-time setup token (in the log
-/// and `<data_dir>/setup-token`) or from `TELLTALE_BOOTSTRAP_ADMIN_USER` with
+/// `<data_dir>/state.db`. The first admin comes from the one-time setup token (in
+/// `<data_dir>/setup-token`; the log names the file) or from `TELLTALE_BOOTSTRAP_ADMIN_USER` with
 /// `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD` or `TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]

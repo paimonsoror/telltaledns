@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Users and sign-in — TelltaleDNS</title>
+<meta name="description" content="Create the first admin, add people with the right role, turn on two-factor sign-in, sign in with Keycloak or Authentik over OpenID Connect, and give scripts and AI agents their own tokens.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-users">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Users and sign-in</h1>
+  <p class="lede">There is no default password. You create the first admin with a one-time setup token, then add people with a role each, and give scripts and AI agents tokens of their own.</p>
+  <ul class="onpage">
+    <li><a href="#first-admin">Create the first admin</a></li>
+    <li><a href="#people">Add people and pick roles</a></li>
+    <li><a href="#two-factor">Turn on two-factor sign-in</a></li>
+    <li><a href="#sso">Single sign-on with OpenID Connect</a></li>
+    <li><a href="#tokens">Tokens for scripts, tools, and agents</a></li>
+    <li><a href="#security">Sessions, lockouts, and proxies</a></li>
+    <li><a href="#cluster">Users in a cluster</a></li>
+    <li><a href="#trouble">Troubleshooting</a></li>
+  </ul>
+  <div class="callout"><p><b>DNS never waits for sign-in.</b> Users, sessions, and tokens live in <code>&lt;data_dir&gt;/state.db</code>. If it can't be opened, the API stays off and DNS keeps answering.</p></div>
+</section>
+
+<section id="first-admin">
+  <h2>Create the first admin</h2>
+  <p>On first start the server creates a one-time <b>setup token</b> and saves it in <code>&lt;data_dir&gt;/setup-token</code>, readable by its owner only. The log says where the file is, never the token itself. Print it with:</p>
+<pre><code>telltale auth setup-token</code></pre>
+  <p class="muted">On a native install, run it as the service user: <code>sudo -u telltale telltale auth setup-token -c /etc/telltale/telltale.toml</code>.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="First admin">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+      <button role="tab" type="button">From a secret</button>
+    </div>
+    <div class="panel" id="first-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <code>http://&lt;server&gt;:8053/</code>. On first start it shows <b>Welcome to TelltaleDNS</b>.</li>
+        <li>Paste the <b>Setup token</b>, choose an <b>Admin username</b>, and enter a password twice (at least 10 characters).</li>
+        <li>Choose <b>Create admin and sign in</b>. The token file is then deleted.</li>
+      </ol>
+    </div>
+    <div class="panel" id="first-api"><h3>API / CLI</h3>
+<pre><code>curl -s -c jar -H 'content-type: application/json' \
+  -d '{"setupToken":"&lt;token&gt;","username":"admin","password":"a long passphrase"}' \
+  http://dns.example.com:8053/api/v1/auth/setup</code></pre>
+      <p>That creates the first admin and signs them in; the token file is then deleted. Passwords need at least 10 characters.</p>
+    </div>
+    <div class="panel" id="first-secret"><h3>From a secret (Kubernetes, Ansible)</h3>
+      <p>For a deployment that must come up configured, set these environment variables instead. They're read only while no user exists:</p>
+<pre><code>TELLTALE_BOOTSTRAP_ADMIN_USER=admin
+TELLTALE_BOOTSTRAP_ADMIN_PASSWORD_HASH='$argon2id$v=19$...'   # from: echo 'a long passphrase' | telltale auth hash-password
+# or TELLTALE_BOOTSTRAP_ADMIN_PASSWORD=...</code></pre>
+      <p>With the Helm chart, create a Secret with the keys <code>username</code> and <code>password</code> or <code>password-hash</code>, and name it in the values:</p>
+<pre><code>auth:
+  bootstrapAdmin:
+    existingSecret: telltale-admin</code></pre>
+      <p class="muted">The <a href="guide-kubernetes.html">Kubernetes guide</a> and <a href="helm-values.html">Helm values</a> cover the rest of the chart.</p>
+    </div>
+  </div>
+  <p class="muted">The Linux installer's guided setup asks about this too: a setup token for the web UI (the default), or a username and password now. In a <a href="#cluster">cluster</a>, only the primary has a setup token; the other nodes take their users from it.</p>
+</section>
+
+<section id="people">
+  <h2>Add people and pick roles</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Role</th><th>What it can do</th></tr></thead>
+    <tbody>
+      <tr><td><b>viewer</b></td><td>Sees dashboards and the query log.</td></tr>
+      <tr><td><b>operator</b></td><td>Everything a viewer can, plus pause blocking, flush the cache, and manage lists, clients, and groups.</td></tr>
+      <tr><td><b>admin</b></td><td>Everything, including users, the audit log, and security settings.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tabs">
+    <div role="tablist" aria-label="Add a user">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="people-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>As an admin, open <b>Settings → Users</b>.</li>
+        <li>Under <b>Add a user</b>, enter a username, a password (10 or more characters), and a role, then choose <b>Add</b>. Leave <b>HTTP Basic</b> unticked unless a tool needs it (<a href="#basic">below</a>).</li>
+        <li>In the table, change someone's role from the drop-down, turn an account off with <b>Active · disable</b>, reset their two-factor sign-in with <b>Reset</b>, or <b>Delete</b> it.</li>
+      </ol>
+    </div>
+    <div class="panel" id="people-api"><h3>API / CLI</h3>
+      <p>Admins manage users at <code>/api/v1/users</code> (here with an <code>admin</code>-scope token). <code>role</code> is <code>viewer</code>, <code>operator</code>, or <code>admin</code>:</p>
+<pre><code>curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"username":"ana","password":"a long passphrase","role":"operator"}' \
+  http://dns.example.com:8053/api/v1/users</code></pre>
+      <p class="muted">Deleting a user also deletes their sessions and tokens.</p>
+    </div>
+  </div>
+  <div class="callout"><p><b>The last admin can't be removed or demoted.</b> Keep at least two admins, or set up <a href="#sso">break-glass access</a>, so you can't lock yourself out.</p></div>
+  <p class="muted">Each person changes their own password under <b>Settings → Account</b>. Changing it signs out their other sessions.</p>
+</section>
+
+<section id="two-factor">
+  <h2>Turn on two-factor sign-in</h2>
+  <p>After the password, TelltaleDNS asks for a 6-digit code from an authenticator app. Anyone who can change settings should turn it on.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Two-factor sign-in">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+      <button role="tab" type="button">Config file</button>
+    </div>
+    <div class="panel" id="totp-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Settings → Account</b> and choose <b>Set up two-factor sign-in</b>.</li>
+        <li>Add the account to your authenticator app: on a phone, open the link in the app, or type in the key shown.</li>
+        <li>Enter the 6-digit code the app shows and choose <b>Turn on</b>.</li>
+        <li><b>Save the ten recovery codes now.</b> Each works once if you lose your phone, and they aren't shown again.</li>
+      </ol>
+      <p class="muted">To turn it off, enter your password and choose <b>Turn off two-factor</b>. When signing in without your phone, choose <b>Use a recovery code instead</b>.</p>
+    </div>
+    <div class="panel" id="totp-api"><h3>API / CLI</h3>
+      <ol class="guide">
+        <li><code>POST /api/v1/auth/totp/setup</code> returns a secret and an <code>otpauth://</code> URL for an authenticator app.</li>
+        <li><code>POST /api/v1/auth/totp/enable</code> with a current code turns it on and returns ten single-use recovery codes.</li>
+      </ol>
+    </div>
+    <div class="panel" id="totp-config"><h3>Config file</h3>
+      <p>Require two-factor sign-in for a role:</p>
+<pre><code>[auth]
+totp_required_roles = ["admin"]</code></pre>
+    </div>
+  </div>
+  <div class="callout warn"><p><b>Lost both the phone and the recovery codes?</b> An admin resets it for you: <b>Settings → Users</b>, then <b>Reset</b> in the <b>Two-factor</b> column.</p></div>
+</section>
+
+<section id="sso">
+  <h2>Single sign-on with OpenID Connect</h2>
+  <p>Sign in with Keycloak, Authentik, or another OpenID Connect provider. Each provider gets a "Sign in with ..." button. People are created in TelltaleDNS the first time they sign in, and their role comes from their groups at every sign-in.</p>
+  <ol class="steps">
+    <li class="step"><b>Add the provider to the config file.</b>
+<pre><code>[auth.oidc]
+public_url = "https://dns.example.com"     # where people open the UI
+
+[[auth.oidc.provider]]
+id = "authentik"                           # used in URLs
+name = "Authentik"                         # the button label
+issuer = "https://auth.example.com/application/o/telltale/"
+client_id = "telltale"
+client_secret_file = "/run/secrets/oidc"   # or client_secret = "..."
+groups_claim = "groups"                    # Keycloak realm roles: "realm_access.roles"
+
+[[auth.oidc.provider.role]]
+group = "dns-admins"
+role = "admin"
+
+[[auth.oidc.provider.role]]
+group = "family"
+role = "viewer"</code></pre></li>
+    <li class="step"><b>Create a confidential client at the provider</b> with the redirect URI <code>&lt;public_url&gt;/api/v1/auth/oidc/&lt;id&gt;/callback</code> (here <code>https://dns.example.com/api/v1/auth/oidc/authentik/callback</code>), and allow <code>&lt;public_url&gt;/</code> after sign-out.</li>
+    <li class="step"><b>Make sure the ID token carries the groups</b> (see the tabs below).</li>
+    <li class="step"><b>Restart TelltaleDNS.</b> Changes to <code>[auth.oidc]</code> need a restart.</li>
+  </ol>
+  <div class="tabs">
+    <div role="tablist" aria-label="Identity provider">
+      <button role="tab" type="button">Authentik</button>
+      <button role="tab" type="button">Keycloak</button>
+    </div>
+    <div class="panel" id="sso-authentik"><h3>Authentik</h3>
+      <p>Authentik's <code>profile</code> scope includes <code>groups</code>, so <code>groups_claim = "groups"</code> works as shown. After sign-out, Authentik shows its own "logged out" page.</p>
+    </div>
+    <div class="panel" id="sso-keycloak"><h3>Keycloak</h3>
+      <p>Add a "Group Membership" mapper (full group path off) to the client. To map realm roles instead, set <code>groups_claim = "realm_access.roles"</code>. On sign-out, Keycloak asks "Do you want to log out?".</p>
+    </div>
+  </div>
+  <ul>
+    <li><b>Roles:</b> someone in several mapped groups gets the highest role. Someone in none can't sign in unless you set <code>default_role</code>. <code>require_verified_email = true</code> refuses addresses the provider hasn't verified.</li>
+    <li><b>Usernames</b> come from <code>preferred_username</code> (or <code>username_claim</code>). A provider account is never attached to an existing local user: if the name is taken, the new account is called <code>name@provider</code>.</li>
+    <li><b>Signing out</b> also signs out at the provider. Provider accounts have no TelltaleDNS password, but they can still create API tokens.</li>
+    <li><b>Sessions are local:</b> the provider is only contacted while signing in. If a provider can't be set up (for example, its secret file is missing), it's logged and password sign-in keeps working.</li>
+    <li><b>On Kubernetes,</b> mount the client secret with <code>secretMounts</code> (at <code>/etc/telltale-secrets/&lt;name&gt;</code>) and point <code>client_secret_file</code> at it. Put <code>[auth.oidc]</code> under <code>config:</code> in the values.</li>
+  </ul>
+  <div class="callout">
+    <p><b>Break-glass admin.</b> <code>disable_local_login = true</code> in <code>[auth.oidc]</code> turns off password sign-in and HTTP Basic, except for admins signing in from <code>allowed_admin_networks</code> (private networks by default). Keep a local admin account: it's your way in when the provider is down.</p>
+  </div>
+  <p class="muted">Every <code>[auth.oidc]</code> key is in the <a href="config.html">configuration reference</a>.</p>
+</section>
+
+<section id="tokens">
+  <h2>Tokens for scripts, tools, and agents</h2>
+  <p>Give each tool its own token with the smallest scope instead of your password. A token is shown once, only its hash is stored, and it never has more rights than its owner's role.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Scope</th><th>Acts as</th></tr></thead>
+    <tbody>
+      <tr><td><code>read</code></td><td>viewer: dashboards, Grafana, a Homepage widget</td></tr>
+      <tr><td><code>write</code></td><td>operator: a script that names devices</td></tr>
+      <tr><td><code>admin</code></td><td>admin. It can create users, so keep these rare and short-lived.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tabs">
+    <div role="tablist" aria-label="Create a token">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">API / CLI</button>
+    </div>
+    <div class="panel" id="tokens-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Settings → API tokens</b>.</li>
+        <li>Give the token a name (for example <code>grafana</code>), pick <b>for my scripts</b>, a scope, and when it expires.</li>
+        <li>Choose <b>Create token</b> and copy it now; it won't be shown again. <b>Revoke</b> it from the same table at any time.</li>
+      </ol>
+    </div>
+    <div class="panel" id="tokens-api"><h3>API / CLI</h3>
+      <p>From a signed-in session (cookie jar <code>jar</code>), sending the CSRF token that sign-in returned:</p>
+<pre><code>curl -s -b jar -H "X-CSRF-Token: $CSRF" -H 'content-type: application/json' \
+  -d '{"name": "grafana", "scope": "read"}' \
+  http://dns.example.com:8053/api/v1/tokens</code></pre>
+      <p>It returns <code>tt_&lt;id&gt;_&lt;secret&gt;</code> once. Send it as <code>Authorization: Bearer ...</code>.</p>
+    </div>
+  </div>
+
+  <h3>Use it with <code>telltale ctl</code></h3>
+  <p>The same API from a terminal:</p>
+<pre><code>export TELLTALE_TOKEN=tt_...                 # or --token-file /path/to/token
+telltale ctl status                          # version, uptime, the last day's numbers
+telltale ctl top blocked --limit 20
+telltale ctl queries --status blocked --from -1h</code></pre>
+  <p class="muted">It talks to the node in <code>[api] listen</code> from your config, or the one you give with <code>--url http://dns.example.com:8053</code>. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#from-the-shell-telltale-ctl">Every <code>ctl</code> command in the docs</a>.</p>
+
+  <h3 id="agents">Agent tokens for AI assistants</h3>
+  <p>Give an AI assistant an <b>agent token</b> instead of your own account: <b>Settings → API tokens</b>, pick <b>for an AI agent</b>, and tick what it may do. The default is read-only, without the query log. Agents can't touch users, tokens, passwords, backups, or the audit log, must give a reason for every change, and all stop at once with <code>[agents] enabled = false</code>. See <a href="agents.html">AI agents</a>.</p>
+
+  <h3 id="basic">HTTP Basic for scrapers</h3>
+  <p>For scrapers and widgets that can't send a token. It's off for each user until an admin ticks <b>HTTP Basic</b> for them in <b>Settings → Users</b> (<code>allowBasicApi</code> in the API). It's refused over plain HTTP unless you set:</p>
+<pre><code>[auth]
+allow_insecure_basic = true   # default false; on plain HTTP anyone on the path can read the password</code></pre>
+  <p class="muted">Verified credentials are cached for a minute. The Prometheus listener on <code>:9153</code> needs no sign-in (it's limited to <code>allowed_networks</code>); <code>/metrics</code> on the API port needs a viewer token or Basic.</p>
+
+  <div class="callout"><p><b>A leaked token?</b> Revoke it without disabling its owner: an admin opens <b>Settings → Users → Tokens</b> for that user and chooses <b>Revoke</b> (<code>DELETE /api/v1/users/{id}/tokens/{tokenId}</code>, audited as <code>token.revoke</code>).</p></div>
+</section>
+
+<section id="security">
+  <h2>Sessions, lockouts, and proxies</h2>
+  <ul>
+    <li><b>Sessions</b> end after 7 days, or after a day unused. Signing in to the web UI sets an <code>HttpOnly; SameSite=Strict</code> cookie (<code>Secure</code> over HTTPS).</li>
+    <li><b>Lockout:</b> after 5 failed sign-ins for a username or from an address, through the sign-in form or HTTP Basic alike, each further attempt waits 30 s, doubling up to 15 minutes (HTTP 429). A successful sign-in clears the count.</li>
+    <li><b>Busy:</b> at most four password checks run at once. Beyond that a sign-in is answered 503 with <code>Retry-After: 1</code>, which doesn't count as a failed sign-in, and DNS keeps answering.</li>
+    <li><b>Audit log:</b> every sign-in, lockout, and change to users, passwords, two-factor sign-in, and tokens is recorded. Admins see it under <b>Settings → Audit log</b>.</li>
+  </ul>
+<pre><code>[auth]
+totp_required_roles = ["admin"]
+session_ttl_hours = 168
+session_idle_hours = 24
+allow_insecure_basic = false</code></pre>
+  <div class="callout warn"><p><b>Behind a reverse proxy or ingress,</b> list the proxies, or everyone looks like the proxy and one person's failed sign-ins lock out everyone. The same list lets HTTP Basic work and marks the cookie <code>Secure</code> behind a TLS-terminating proxy. A proxy on the same host (<code>127.0.0.1</code>) always counts.</p></div>
+<pre><code>[api]
+trusted_proxies = ["10.0.0.0/8"]   # e.g. the Kubernetes pod network your ingress runs in</code></pre>
+</section>
+
+<section id="cluster">
+  <h2>Users in a cluster</h2>
+  <p><b>Users and tokens are the primary's, everywhere.</b> Users (passwords, roles, two-factor settings, recovery codes) and API and agent tokens are made and changed on the primary, and every node takes them within seconds. You sign in to any node with the same account, and a token works against any node. Only hashes travel, over the cluster's encrypted channel.</p>
+  <ul>
+    <li>On a replica, changing a user, a password, two-factor settings, or a token is refused with a pointer to the primary.</li>
+    <li>Sessions stay per node: signing in to a second node is a second sign-in (with SSO, a silent redirect).</li>
+    <li>Users that exist only on a replica (an admin made before it joined) keep working there. If the primary has a user of the same name, the primary's account and password take over on every node.</li>
+    <li>A promoted replica becomes the place to manage users, with everything it had synced.</li>
+    <li><code>[auth]</code> and <code>[api]</code> are per node: set them in each node's own file. <a href="guide-settings.html#shared">Shared or per node</a>.</li>
+  </ul>
+  <p class="muted">More in <a href="guide-cluster.html">Build a cluster</a> and the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#clusters">cluster docs</a>.</p>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+    <tbody>
+      <tr><td>You can't find the setup token</td><td>Run <code>telltale auth setup-token</code> as the service user. The log only says which file holds it. It's gone once the first admin exists, and replicas never have one.</td></tr>
+      <tr><td>Sign-in answers <b>429</b></td><td>Too many failed sign-ins for that username or address. Wait (up to 15 minutes); a successful sign-in clears the count. Behind a proxy, set <code>[api] trusted_proxies</code> so one person can't lock out everyone.</td></tr>
+      <tr><td>Sign-in answers <b>503</b></td><td>Four password checks are already running. Try again in a second; it isn't counted as a failure.</td></tr>
+      <tr><td>Lost your authenticator app</td><td>Choose <b>Use a recovery code instead</b>. Without recovery codes, an admin resets two-factor sign-in in <b>Settings → Users</b>.</td></tr>
+      <tr><td>Changing a user or token is refused on a node</td><td>It's a replica: make the change on the primary.</td></tr>
+      <tr><td>Someone can't sign in with SSO</td><td>Their groups match no rule: add a <code>[[auth.oidc.provider.role]]</code> or set <code>default_role</code>. Check that the ID token carries the groups and that the provider has the redirect URI <code>&lt;public_url&gt;/api/v1/auth/oidc/&lt;id&gt;/callback</code>. Restart after any <code>[auth.oidc]</code> change.</td></tr>
+      <tr><td>The "Sign in with ..." button is missing</td><td>The provider couldn't be set up (for example, its secret file is missing). The log says why, and password sign-in keeps working.</td></tr>
+      <tr><td>HTTP Basic is refused</td><td>Tick <b>HTTP Basic</b> for that user, and use HTTPS (or a trusted proxy that sets <code>X-Forwarded-Proto: https</code>).</td></tr>
+      <tr><td>Every change answers <b>503</b></td><td>The audit log can't be written (a full disk, a broken database). Fix that; DNS keeps answering meanwhile.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">Full detail: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#users-and-sign-in">Users and sign-in in the docs</a>.</p>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-monitoring.html">← Monitoring and alerts</a>
+    <a class="btn primary" href="guides.html">All guides</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

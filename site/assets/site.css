@@ -330,3 +330,5 @@ a.card .more { display: inline-block; margin-top: 10px; font-size: 14.5px; font-
 .std.wrap td, .std.wrap th { white-space: normal; }
 .std td code { white-space: nowrap; }
 .guide-nav { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.sub-head { padding: 8px 10px 2px; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+@media (min-width: 761px) { .sub-list { max-height: calc(100vh - 84px); overflow-y: auto; } }

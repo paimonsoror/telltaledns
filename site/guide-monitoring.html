@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitoring and alerts (guide) — TelltaleDNS</title>
+<meta name="description" content="Set up monitoring for TelltaleDNS: Prometheus scraping and the Grafana dashboard, service-level objectives, alerts by email, phone, chat, or webhook, exports to OpenTelemetry, dnstap, and log pipelines, and keeping noise out of the log.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="guide-monitoring">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section>
+  <p class="eyebrow">Guide</p>
+  <h1>Monitoring and alerts</h1>
+  <p class="lede">Most of what TelltaleDNS can show you works from the first start. This guide covers what to add: Prometheus and Grafana, objectives, alerts that reach you, and exports to the tools you already run. For what each feature does, see <a href="monitoring.html">Monitoring and alerts</a>.</p>
+  <ul class="onpage">
+    <li><a href="#free">What you get without setting anything up</a></li>
+    <li><a href="#prometheus">Scrape metrics and add the Grafana dashboard</a></li>
+    <li><a href="#slo">Set service-level objectives</a></li>
+    <li><a href="#alerts">Get alerts somewhere</a></li>
+    <li><a href="#export">Send events and traces elsewhere</a></li>
+    <li><a href="#exclusions">Keep names and devices out of the log</a></li>
+    <li><a href="#anomalies">Review and acknowledge anomalies</a></li>
+    <li><a href="#probes">Check your listeners</a></li>
+    <li><a href="#which">Which tool for which question</a></li>
+  </ul>
+  <div class="callout"><p><b>Monitoring never slows DNS.</b> A slow disk, a collector that's down, or an unreachable mail server loses detail, never answers.</p></div>
+</section>
+
+<section id="free">
+  <h2>What you get without setting anything up</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Dashboard</h3>
+      <p>Queries, blocks, cache hits, latency, and top lists. History is saved to <code>&lt;data_dir&gt;/rollups.db</code> (per minute for 7 days, per hour for 400 days, per day after that), so it survives restarts and upgrades. The <b>Service level</b> card is in the <b>Advanced</b> view.</p>
+    </div>
+    <div class="card">
+      <h3>Query log</h3>
+      <p>Every query on disk for 30 days (up to 2 GiB). Search it on the <b>Query log</b> page, where <b>Why?</b> explains each decision, or from the shell with <code>telltale qlog search</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Health icon</h3>
+      <p>At the bottom of the menu: a quiet check when healthy, an amber triangle when something needs a look, a red octagon when DNS is failing for some devices. Click it for every reason and a link to the page to look at.</p>
+    </div>
+    <div class="card">
+      <h3>Anomalies</h3>
+      <p>Each device's usual behavior is learned over its first 7 days. The <b>Anomalies</b> page then lists spikes, phone-home patterns, failed-lookup bursts, and generated-looking domains, with the evidence.</p>
+    </div>
+    <div class="card">
+      <h3>The machine</h3>
+      <p>The <b>Cluster</b> page shows a card per node (a standalone node too): memory, CPU, disk, and temperature, with the last hour under each bar and a warning when something looks wrong.</p>
+    </div>
+    <div class="card">
+      <h3>Listener and upstream checks</h3>
+      <p>Each node asks its own listeners a question every 30 seconds. The <b>Upstreams</b> page's <b>Answer quality</b> card shows each upstream's DNSSEC verdicts and the error codes it attaches.</p>
+    </div>
+  </div>
+  <p class="muted">The same health answer is at <code>GET /api/v1/system/health</code>. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#health">Health</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#query-log">Query log</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#host-resources">Host resources</a>.</p>
+</section>
+
+<section id="prometheus">
+  <h2>Scrape metrics and add the Grafana dashboard</h2>
+  <div class="tabs">
+    <div role="tablist" aria-label="Prometheus setup">
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">Helm</button>
+    </div>
+
+    <div class="panel" id="prom-native"><h3>Native, Docker, or a Pi</h3>
+      <ol class="guide">
+        <li>Every node serves <code>/metrics</code> on its metrics listener, <code>0.0.0.0:9153</code> by default. Move it with <code>[telemetry.metrics] listen</code> (a <code>[telemetry]</code> change waits for a restart). The same listener serves <code>/livez</code>, <code>/healthz</code>, and <code>/readyz</code>.</li>
+        <li>It needs no sign-in, and it answers only clients inside <code>[access] allowed_networks</code>, so make sure your Prometheus server's address is in there. The API port also serves <code>/metrics</code> to signed-in users (a viewer token, or HTTP Basic for scrapers that can't send one).</li>
+        <li>Add a scrape job for each node. If you'll load the objective rules (below), name the job <code>telltale-metrics</code>:
+<pre><code># prometheus.yml
+scrape_configs:
+  - job_name: telltale-metrics
+    static_configs:
+      - targets: ["&lt;node&gt;:9153"]</code></pre></li>
+        <li>In Grafana, import <a href="https://github.com/paimonsoror/telltaledns/blob/main/deploy/grafana/telltale-dashboard.json"><code>deploy/grafana/telltale-dashboard.json</code></a>, then pick the Prometheus data source, job, and instance at the top.</li>
+      </ol>    </div>
+
+    <div class="panel" id="prom-helm"><h3>Kubernetes (Helm)</h3>
+      <p>Three values turn on the monitoring pieces:</p>
+<pre><code>serviceMonitor:
+  enabled: true        # Prometheus scrapes the controller and every resolver pod
+prometheusRule:
+  enabled: true        # alert rules, plus the SLO recording rules and burn-rate alerts
+grafanaDashboard:
+  enabled: true        # the dashboard as a ConfigMap, labelled grafana_dashboard: "1"</code></pre>
+      <ul>
+        <li><b>The alert rules</b> cover the server down, all upstreams down, the SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies, the host (<code>TelltaleDNSDataDiskLow</code>, <code>TelltaleDNSMemoryPressure</code>, <code>TelltaleDNSOutOfMemoryKill</code>, <code>TelltaleDNSCpuThrottled</code>, <code>TelltaleDNSRunningHot</code>), and the listeners (<code>TelltaleDNSListenerNotAnswering</code>, <code>TelltaleDNSListenerCertExpiring</code>).</li>
+        <li><b>In <code>mode: scaled</code></b>, the ServiceMonitor also scrapes the resolver pods (through a headless <code>&lt;release&gt;-resolver-metrics</code> Service), so the query, SERVFAIL, and latency metrics cover all the traffic.</li>      </ul>
+      <p class="muted">Every key and default: <a href="helm-values.html">Helm values</a>. The rest of the chart: <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <p><b>From a latency spike to the query behind it.</b> Each bucket of <code>telltale_query_duration_seconds</code> carries an exemplar. Start Prometheus with <code>--enable-feature=exemplar-storage</code>, and the bundled dashboard shows them as dots. In Grafana's Prometheus data source, under <i>Exemplars</i>, add a link with label name <code>trace_id</code> and URL <code>https://&lt;your TelltaleDNS&gt;/#/queries?trace=${__value.raw}</code>. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#exemplars-and-traces">Exemplars and traces</a>.</p>
+  </div>
+  <p class="muted">The main metric names are in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#monitoring">Monitoring docs</a>.</p>
+</section>
+
+<section id="slo">
+  <h2>Set service-level objectives</h2>
+  <p>Two promises, each with an <b>error budget</b> over a window: answers that aren't SERVFAIL, and answers sent within a time limit. They work out of the box with the defaults below. Change them if your network needs different numbers.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Objective settings">
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">Helm</button>
+    </div>
+    <div class="panel" id="slo-file"><h3>Config file</h3>
+<pre><code>[slo]
+enabled = true
+availability_target = 99.9   # percent of answers that aren't SERVFAIL
+latency_target = 99          # percent of answers sent within latency_ms
+latency_ms = 250             # 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, or 5000
+window_days = 30             # 1 to 90</code></pre>
+      <p>For Prometheus without Kubernetes, load <code>deploy/prometheus/telltale-slo-rules.yaml</code> with <code>rule_files</code>. It holds the same recording rules and burn-rate alerts, written for the default targets and a scrape job named <code>telltale-metrics</code>.</p>
+    </div>
+    <div class="panel" id="slo-helm"><h3>Helm</h3>
+      <p>With <code>prometheusRule.enabled</code>, the chart adds the recording rules and burn-rate alerts. Keep <code>prometheusRule.slo</code> equal to the <code>[slo]</code> section the nodes use, since the web UI and API read that one:</p>
+<pre><code>prometheusRule:
+  enabled: true
+  slo:
+    availabilityTarget: 99.9
+    latencyTarget: 99
+    latencyMs: 250</code></pre>
+    </div>
+  </div>
+  <ul>
+    <li><b>When it warns:</b> a <b>fast</b> burn (14.4× over 1 hour and 5 minutes) or a <b>slow</b> burn (6× over 6 hours and 30 minutes) turns the health icon amber and fires <code>slo_burn</code> alert rules. A pair needs at least 50 answers in its short window and 10 bad ones in its long window, so one SERVFAIL on a quiet night stays quiet.</li>
+    <li><b>Where to look:</b> the dashboard's <b>Service level</b> card (Advanced view), the Grafana dashboard's <b>Service level</b> row, <code>GET /api/v1/stats/slo</code>, and the MCP tool <code>slo_status</code>.</li>
+  </ul>
+  <p class="muted">What counts and how burn rates work: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#service-level-objectives">Service-level objectives</a>.</p>
+</section>
+
+<section id="alerts">
+  <h2>Get alerts somewhere</h2>
+  <p>Alerts have two parts: <b>destinations</b> (where messages go: <code>email</code>, <code>ntfy</code>, <code>gotify</code>, <code>slack</code>, or <code>webhook</code>) and <b>rules</b> (what to watch, and which destinations to tell).</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Alert setup">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="alerts-ui"><h3>Web UI</h3>
+      <ol class="guide">
+        <li>Open <b>Alerts</b> (under System). It shows what's firing now and how the last delivery to each destination went.</li>
+        <li>Add a destination. Passwords and tokens stay in files on the node; you give their paths.</li>
+        <li>Press <b>Send test</b> on it. You see the result, including a wrong password or an unreachable server.</li>
+        <li>Add rules that send to it. Each change gets a dry run first; on a Git-managed cluster, the page says what to add to Git.</li>
+      </ol>
+    </div>
+    <div class="panel" id="alerts-file"><h3>Config file</h3>
+<pre><code>[alerts]
+interval_secs = 30                       # how often rules are checked
+
+[[alerts.destination]]
+name = "phone"
+type = "ntfy"                            # webhook | ntfy | gotify | slack | email
+url = "https://ntfy.sh/my-home-dns"
+# token_file = "/run/secrets/ntfy-token" # an access token, kept out of the config
+
+[[alerts.rule]]
+name = "Upstream down"
+when = "upstream_down"                   # an upstream's circuit breaker is open
+for_secs = 60                            # only if it lasts a minute
+to = ["phone"]</code></pre>
+      <p class="muted">Check it with <code>telltale config check</code>, then apply it as in <a href="guide-settings.html#style-file">Config file only</a>.</p>
+    </div>
+    <div class="panel" id="alerts-api"><h3>API</h3>
+      <ul>
+        <li><code>GET /api/v1/alerts</code>: firing alerts and deliveries.</li>
+        <li><code>PUT</code> / <code>DELETE /api/v1/alerts/destinations/{name}</code> and <code>/api/v1/alerts/rules/{name}</code>: the same fields as the configuration, with <code>?dryRun=true</code>, <code>If-Match</code>, and <code>Idempotency-Key</code>.</li>
+        <li><code>POST /api/v1/alerts/destinations/{name}/test</code>: send a test message.</li>
+      </ul>
+      <p class="muted">Agent tokens need <code>config:write:alerts</code>. Only file paths for secrets go through the API.</p>
+    </div>
+  </div>
+  <p><b>Rules worth starting with:</b> <code>upstream_down</code>, <code>servfail_rate</code>, <code>list_failing</code>, <code>disk_full</code>, <code>slo_burn</code>, <code>probe_failing</code>, and <code>cert_expiring</code> if you serve encrypted DNS. In a cluster add <code>node_down</code>, and <code>sync_lag</code> with <code>for_secs</code> around 300 so a normal sync stays quiet. Every condition, and what each sends one alert per, is in the <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#alerts">Alerts docs</a>.</p>
+  <ul>
+    <li>A condition must hold for <code>for_secs</code> (60 by default) before it alerts, and a "Resolved" message follows when it clears. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.</li>
+    <li>In a cluster the primary checks the rules for the whole cluster, so you get one message, not one per node. Nodes in maintenance are left out of per-node rules.</li>
+  </ul>
+  <h3>Email</h3>
+  <p>Any mail account that allows SMTP sign-in works; you don't need your own mail server.</p>
+<pre><code>[[alerts.destination]]
+name = "inbox"
+type = "email"
+url = "smtp://smtp.gmail.com:587"        # STARTTLS; smtps://host:465 for TLS from the start
+from = "you@gmail.com"
+to = ["you@gmail.com"]                   # one or more
+username = "you@gmail.com"
+password_file = "/run/secrets/smtp-password"</code></pre>
+  <ul>
+    <li><b>Gmail:</b> turn on 2-Step Verification, make an app password (Google Account → Security → App passwords), and put it in <code>password_file</code>. Most other providers work the same way with their SMTP host and an app password.</li>
+    <li><b>Encryption is required</b> whenever a password is sent; there's no fallback to plain. For a private mail server, give its CA in <code>tls_ca</code>.</li>
+    <li>The subject starts with <code>[TelltaleDNS]</code>, for easy mail filters. In Kubernetes, keep the password in a Secret mounted as a file, never in values or Git.</li>
+  </ul>
+</section>
+
+<section id="export">
+  <h2>Send events and traces elsewhere</h2>
+  <p class="muted">All of these are config-file settings, read at startup: restart after changing them. Event sinks and traces follow the query log's privacy level (names hashed at 1 and above, no client addresses at 2 and above).</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>You want</th><th>Use</th><th>Goes to</th></tr></thead>
+    <tbody>
+      <tr><td>Metrics pushed instead of (or as well as) scraped</td><td><code>[telemetry.otlp] endpoint</code></td><td>An OTLP/HTTP collector, at <code>&lt;endpoint&gt;/v1/metrics</code></td></tr>
+      <tr><td>Sampled and slow queries as traces</td><td><code>traces_sample_every</code>, <code>traces_slow_ms</code> under <code>[telemetry.otlp]</code></td><td>Tempo, Jaeger, and the like, at <code>&lt;endpoint&gt;/v1/traces</code></td></tr>
+      <tr><td>Every query in your log pipeline</td><td><code>[[telemetry.sink]]</code>, <code>type</code> = <code>file</code>, <code>syslog</code>, or <code>webhook</code></td><td>Loki, Elastic, Splunk, Graylog, a SIEM</td></tr>
+      <tr><td>Query events as OpenTelemetry logs</td><td>A webhook sink with <code>format = "otlp_logs"</code></td><td><code>&lt;collector&gt;/v1/logs</code></td></tr>
+      <tr><td>The DNS messages themselves</td><td><code>[telemetry.dnstap]</code></td><td>A dnstap reader on a Unix socket or TCP</td></tr>
+    </tbody>
+  </table></div>
+<pre><code>[telemetry.otlp]
+endpoint = "http://otel-collector:4318"   # OTLP/HTTP
+interval_secs = 60
+traces_sample_every = 1000                # 1 query in 1,000 (0: none, the default)
+traces_slow_ms = 250                      # and every query that took at least 250 ms (0: none)
+
+[[telemetry.sink]]
+name = "siem"
+type = "syslog"                           # RFC 5424
+address = "udp://192.168.1.20:514"        # or tcp://, or tls://host:6514
+statuses = ["blocked"]                    # only blocks; empty means every event</code></pre>
+  <p class="muted">A destination that's slow or down drops events and counts them (<code>telltale_sink_dropped_total</code>, <code>telltale_dnstap_dropped_total</code>, <code>telltale_traces_total{result="dropped"}</code>). Webhook sinks can keep refused batches on disk with <code>spill_max_bytes</code>. Every option: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#opentelemetry-otlp">OpenTelemetry</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#event-sinks">Event sinks</a>, <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#dnstap">dnstap</a>.</p>
+</section>
+
+<section id="exclusions">
+  <h2>Keep names and devices out of the log</h2>
+  <p>Phones checking their connection, time servers, and a monitoring probe asking every few seconds drown out what matters. Excluded queries are still answered and still counted in Prometheus, but left out of the query log, the live view, the dashboard and top lists, device pages, anomalies, event sinks, OTLP traces, and exemplars.</p>
+  <div class="tabs">
+    <div role="tablist" aria-label="Exclusions">
+      <button role="tab" type="button">Web UI</button>
+      <button role="tab" type="button">Config file</button>
+      <button role="tab" type="button">API</button>
+    </div>
+    <div class="panel" id="excl-ui"><h3>Web UI</h3>
+      <p>Open <b>Settings → Query handling → Kept out of the log</b>. Add names and addresses, use the toggle to turn the lists on or off, and the change is checked before it's applied. <b>Revert to the file</b> brings back the file's version. Under a Git-managed configuration, the UI shows the TOML to commit.</p>
+    </div>
+    <div class="panel" id="excl-file"><h3>Config file</h3>
+<pre><code>[exclusions]
+enabled = true                                           # off keeps the lists, logs everything again
+names = ["connectivitycheck.gstatic.com", "ntp.org"]     # each with its subdomains
+clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks</code></pre>
+    </div>
+    <div class="panel" id="excl-api"><h3>API</h3>
+      <p><code>PUT /api/v1/exclusions/default</code>. AI agents use the MCP tool <code>plan_set_exclusions</code>.</p>
+    </div>
+  </div>
+  <ul>
+    <li>It applies from the next query on, on every node of a cluster (<code>[exclusions]</code> is shared). Queries logged before stay.</li>
+    <li>The dashboard's totals leave excluded queries out, so they'll be lower than Prometheus's. <code>telltale_queries_excluded_total</code> counts them.</li>
+  </ul>
+  <div class="callout"><p><b>Hiding names or devices for privacy instead?</b> Use <code>[telemetry.qlog] privacy_level</code>: <code>1</code> hashes names, <code>2</code> also drops client addresses, <code>3</code> keeps no per-query log. Counts, graphs, and latency keep working, but anomaly detection and new-device alerts are off at 1 and above. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#query-log">Privacy levels</a>.</p></div>
+</section>
+
+<section id="anomalies">
+  <h2>Review and acknowledge anomalies</h2>
+  <ol class="guide">
+    <li>Open the <b>Anomalies</b> page. Each finding shows what was seen, the usual value, the threshold, and the window. In a cluster, <b>Found by</b> names the nodes.</li>
+    <li>Look at the device's queries, and move it to a stricter group if needed. Findings never block anything themselves.</li>
+    <li>Press <b>Acknowledge</b> on the card (or <b>Acknowledge all</b>). It stops counting as new: the sidebar badge and anomaly alerts skip it. <b>Show acknowledged</b> shows it again with who acknowledged it, when, and the note; <b>Undo acknowledge</b> takes it back.</li>
+  </ol>
+  <p class="muted">It needs the operator role and is recorded in the audit log. API: <code>POST /api/v1/analytics/anomalies/acknowledge</code> with the finding's <code>id</code>; MCP: <code>acknowledge_anomalies</code>. An acknowledgement on any node reaches every node within seconds.</p>
+  <p><b>Too noisy, or too quiet?</b> Tune detection, or ignore domains you expect:</p>
+<pre><code>[telemetry.anomaly]
+enabled = true
+learning_days = 7
+sensitivity = "normal"         # low | normal | high
+ignore_domains = ["apple.com"] # never reported (e.g. expected connectivity checks)</code></pre>
+  <p class="muted">To hear about findings, add an alert rule with <code>when = "anomaly"</code>. Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#device-anomalies">Device anomalies</a>.</p>
+</section>
+
+<section id="probes">
+  <h2>Check your listeners</h2>
+  <p>A listener can be bound and still not answer: a stuck TLS stack, a firewall rule, a load balancer in front. So every node asks each of its own listeners a question over that listener's protocol, every 30 seconds, and reads each certificate's expiry.</p>
+  <ul>
+    <li><b>See the results</b> in <b>Settings → System → Listener checks</b>, at <code>GET /api/v1/system/probes</code> (every node), or with the MCP tool <code>probe_status</code>.</li>
+    <li><b>Add your load balancer's address</b> (or another IP) as an extra target:</li>
+  </ul>
+<pre><code>[probe]
+cert_warn_days = 14                     # a certificate expiring sooner degrades the health level
+targets = ["udp://192.168.5.112:53"]     # extra: by IP, e.g. a load balancer's address</code></pre>
+  <ul>
+    <li>Targets take <code>udp://</code>, <code>tcp://</code>, <code>tls://</code>, <code>https://…/dns-query</code>, <code>h3://</code>, and <code>quic://</code> with an IP address. A listener with <code>proxy_protocol = true</code> is skipped.</li>
+    <li>Two failures in a row turn the health icon amber; an expired certificate turns it red. Alert on it with <code>probe_failing</code> and <code>cert_expiring</code> rules.</li>
+    <li>Probe queries stay out of the query log, top lists, device analytics, and event sinks.</li>
+  </ul>
+  <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#listener-checks">Listener checks</a>.</p>
+</section>
+
+<section id="which">
+  <h2>Which tool for which question</h2>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>Question</th><th>Look here</th></tr></thead>
+    <tbody>
+      <tr><td>Is anything wrong right now?</td><td>The health icon; click it for reasons</td></tr>
+      <tr><td>Why was this name blocked (or not)?</td><td><b>Query log</b> → <b>Why?</b>, or the <b>Explain</b> page</td></tr>
+      <tr><td>What did one device ask, and when?</td><td><b>Query log</b> filtered by client, or <code>telltale qlog search --client</code></td></tr>
+      <tr><td>Are we meeting our promises this month?</td><td>The dashboard's <b>Service level</b> card, or the Grafana <b>Service level</b> row</td></tr>
+      <tr><td>Which upstream is slow or failing?</td><td>The <b>Upstreams</b> page, or the Grafana upstream panels</td></tr>
+      <tr><td>Is an upstream filtering or tampering?</td><td><b>Upstreams</b> → <b>Answer quality</b></td></tr>
+      <tr><td>Is a device behaving oddly?</td><td>The <b>Anomalies</b> page</td></tr>
+      <tr><td>Is the disk, memory, or CPU running out?</td><td>The <b>Cluster</b> page's node cards, or <code>telltale_host_*</code> metrics</td></tr>
+      <tr><td>Do encrypted clients still get through?</td><td><b>Settings → System → Listener checks</b></td></tr>
+      <tr><td>What happened over the last months?</td><td>The dashboard's 7- and 30-day views, or Grafana</td></tr>
+      <tr><td>How do I tell someone at 3 a.m.?</td><td><b>Alerts</b>, or Prometheus alert rules</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="guide-changes.html">← Change things safely</a>
+    <a class="btn primary" href="guide-users.html">Next: Users and sign-in →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>
