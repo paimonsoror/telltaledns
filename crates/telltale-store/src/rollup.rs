@@ -249,6 +249,10 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     }
 }
 
+/// Shipped minutes of every node in `[?1, ?2)`, oldest first (by `shipped_minute_start`).
+const SHIPPED_RANGE: &str =
+    "SELECT node, start, data FROM shipped_minute WHERE start >= ?1 AND start < ?2 ORDER BY start";
+
 impl Rollups {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -259,9 +263,13 @@ impl Rollups {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // ADR-124 — temp_store = MEMORY: sorts and temporary tables never need a temp file.
+        // Containers run with a read-only root filesystem and no /tmp, where SQLite would
+        // fail them with "disk I/O error".
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
+             PRAGMA temp_store = MEMORY;
              CREATE TABLE IF NOT EXISTS rollup_minute (start INTEGER PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS rollup_hour (start INTEGER PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS rollup_day (start INTEGER PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID;
@@ -277,7 +285,10 @@ impl Rollups {
              -- REQ: CLU-007 (T9.3) — minutes other nodes (ephemeral pods) shipped here.
              CREATE TABLE IF NOT EXISTS shipped_minute (
                  node TEXT NOT NULL, start INTEGER NOT NULL, data BLOB NOT NULL,
-                 PRIMARY KEY (node, start)) WITHOUT ROWID;",
+                 PRIMARY KEY (node, start)) WITHOUT ROWID;
+             -- ADR-124 — shipped_range reads a time range of every node, in time order:
+             -- by this index, not a scan and sort of all 7 days.
+             CREATE INDEX IF NOT EXISTS shipped_minute_start ON shipped_minute (start);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -354,9 +365,7 @@ impl Rollups {
         exclude: &[String],
     ) -> Result<Vec<(u64, Counts)>> {
         let conn = self.conn();
-        let mut st = conn.prepare_cached(
-            "SELECT node, start, data FROM shipped_minute WHERE start >= ?1 AND start < ?2 ORDER BY start",
-        )?;
+        let mut st = conn.prepare_cached(SHIPPED_RANGE)?;
         let mut by: std::collections::BTreeMap<u64, Counts> = std::collections::BTreeMap::new();
         let rows = st.query_map(params![sql(from_s), sql(to_s)], |r| {
             Ok((
@@ -558,6 +567,32 @@ mod tests {
         c.upstreams = vec![0, 2, 3];
         c.upstream_failures = 1;
         c
+    }
+
+    // REQ: CLU-007, ADR-124 — a cluster chart's shipped minutes are read by the start index,
+    // not a scan and a sort that spills to a temp file once the table is a few MB (which a
+    // read-only root filesystem fails as "disk I/O error"); temporary data stays in memory.
+    #[test]
+    fn clu_007_shipped_range_needs_no_temp_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = Rollups::open(&tmp.path().join("rollups.db")).unwrap();
+        let conn = r.conn();
+        let store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(store, 2, "temp_store = MEMORY");
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {SHIPPED_RANGE}"))
+            .unwrap()
+            .query_map(params![0, 1], |x| x.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|p| p.contains("shipped_minute_start")),
+            "{plan:?}"
+        );
+        assert!(!plan.iter().any(|p| p.contains("TEMP B-TREE")), "{plan:?}");
     }
 
     #[test]

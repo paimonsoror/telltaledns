@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-124 — SQLite never needs a temp file (Proposed)
+**Context:** the image runs with a read-only root filesystem, no shell, and `/var/lib/telltale` as its only writable path (OPS-001, `08` §1). When a sort, a temporary table, or a `VACUUM` outgrows SQLite's memory budget, SQLite looks for a temp directory (`/var/tmp`, `/usr/tmp`, `/tmp`, then the working directory), finds none it can write, and fails the statement with "disk I/O error" (SQLITE_IOERR_GETTEMPPATH) without any file operation failing. On the homelab primary (2026-10-12) a cluster chart's shipped-minutes read did exactly that every 15 s once `shipped_minute` passed about 2 MB: `ORDER BY start` over a table keyed `(node, start)` was a full scan and a spilled sort, so cluster charts silently lost the minutes of nodes that weren't live.
+**Decision:**
+- Every connection to `state.db` and `rollups.db`, and the backup's copies, sets `PRAGMA temp_store = MEMORY`: temporary data stays in memory, whatever the filesystem allows.
+- `shipped_minute` gets an index on `start`, so the range read follows the index in time order: no sort, and it reads only the requested range instead of all 7 days.
+- Rejected: an `emptyDir` at `/tmp` in the chart. It would fix Kubernetes only (not Docker or Compose with a read-only root), and an unbounded disk-backed sort is worse than a bounded one in memory.
+**Consequences:** a large sort or `VACUUM` uses memory instead of a temp file. These databases are small (state.db well under 1 MB, rollups.db a few MB), and the index removes the one sort that grew with the data. The index is created on start, in place, for existing databases.
+
 ## ADR-122 — The site's navigation by what the reader wants, and a Guides section (Proposed)
 **Context:** the project site's header had grown to eight top-level links plus a Reference menu, one link per feature page, and it had no task guides. How to set things up (configuration styles, clustering, Kubernetes, and more) lived only in `docs/running.md`, a 2,700-line file on GitHub (owner, 2026-10-11).
 **Decision:**

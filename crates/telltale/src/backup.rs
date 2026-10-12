@@ -170,10 +170,16 @@ fn sqlite_copy(src: &Path, dst: &Path, strip: &[&str]) -> Result<(), String> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("{}: {e}", src.display()))?;
+    // ADR-124 — VACUUM builds a temporary database: in memory, since a container's root
+    // filesystem is read-only and has no /tmp.
+    db.pragma_update(None, "temp_store", "MEMORY")
+        .map_err(|e| format!("{}: {e}", src.display()))?;
     db.execute("VACUUM INTO ?1", [dst.to_string_lossy()])
         .map_err(|e| format!("{}: {e}", src.display()))?;
     if !strip.is_empty() {
         let copy = rusqlite::Connection::open(dst).map_err(|e| e.to_string())?;
+        copy.pragma_update(None, "temp_store", "MEMORY")
+            .map_err(|e| e.to_string())?;
         for t in strip {
             // A table that isn't there (an older schema) is fine.
             let _ = copy.execute(&format!("DELETE FROM {t}"), []);

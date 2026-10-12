@@ -230,6 +230,8 @@ impl State {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // ADR-124 — no temp files (read-only root filesystems have nowhere to put them).
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -704,6 +706,18 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: OPS-001, ADR-124 — no temp files: the image's root filesystem is read-only.
+    #[test]
+    fn ops_001_state_db_keeps_temporary_data_in_memory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = State::open(&tmp.path().join("state.db")).unwrap();
+        let conn = s.conn.lock().unwrap();
+        let store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(store, 2, "temp_store = MEMORY");
+    }
 
     #[test]
     fn api_003_users_sessions_tokens_round_trip() {
