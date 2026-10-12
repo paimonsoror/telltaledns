@@ -2021,6 +2021,15 @@ Main metrics:
 
 Counters are kept per thread and summed on scrape, so recording never slows a query or allocates memory. The per-upstream, per-list, and per-client series are built by the analytics thread from query events, off the query path.
 
+### Traffic map
+**Monitor → Traffic map** answers "what is the network reaching right now?" in one picture, which suits a wall screen:
+- Each tile is a service, a site, or a name, sized by how often it was looked up this hour (or the last). Blue tiles were answered, red ones were blocked; a stronger colour means busier.
+- **Services** folds names into the services of the [blocked-services](#blocked-services) catalog (all of YouTube's names make one YouTube tile) and shows other names by site. **Sites** folds each name into its base domain (`rr3.googlevideo.com` → `googlevideo.com`). **Names** shows them as devices asked.
+- It refreshes every 5 seconds. The five tiles that grew most since the previous refresh get an amber ring and a `+N`.
+- Point at a tile for the names behind it; select it to open them in the query log.
+- It draws the busiest 100 names (less their blocked queries) and the busiest 100 blocked names, every node of a cluster, from the same approximate top lists as the dashboard, so it adds no work to answering queries. Each hour starts every count again, so the map looks sparse just after the hour.
+- Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
+
 ### Host resources
 Every node samples its machine every 15 seconds (off the DNS path, from `/proc`, `/sys`, and the cgroup files) and shows it on the **Cluster** page, one card per node, with the last hour as a line under each bar. A standalone node shows its own card there too. In a cluster, the samples travel in the nodes' heartbeats, so any node's page shows every machine.
 

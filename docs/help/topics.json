@@ -24,6 +24,16 @@
       "docs": "query-log"
     },
     {
+      "id": "traffic-map",
+      "title": "See what your network is reaching",
+      "term": "Traffic map",
+      "summary": "One tile per service, site, or name, sized by how often it was looked up this hour: blue tiles were answered, red ones were blocked.",
+      "when": "You want one picture of what people on the network are using right now, for example on a wall screen.",
+      "example": "A big blue YouTube tile with a pulsing ring means streaming is the busiest thing on the network and still growing.",
+      "caution": "It shows the busiest 100 names and 100 blocked names, with approximate counts. Phones and apps look up many background names, so busy isn't always the same as used by a person.",
+      "docs": "traffic-map"
+    },
+    {
       "id": "live-view",
       "title": "Watch questions as they happen",
       "term": "Live tail",

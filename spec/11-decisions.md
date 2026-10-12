@@ -1299,6 +1299,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Rejected: an `emptyDir` at `/tmp` in the chart. It would fix Kubernetes only (not Docker or Compose with a read-only root), and an unbounded disk-backed sort is worse than a bounded one in memory.
 **Consequences:** a large sort or `VACUUM` uses memory instead of a temp file. These databases are small (state.db well under 1 MB, rollups.db a few MB), and the index removes the one sort that grew with the data. The index is created on start, in place, for existing databases.
 
+## ADR-123 — The traffic map is a treemap of the existing top lists (Proposed)
+**Context:** the owner asked for a page that shows, at a glance and live, what people on the network are reaching, with allowed and blocked names in different colours, on a branch that could be dropped if it cost performance (2026-10-11). A true heatmap (names × minutes) would need a count per name per minute, which nothing keeps today and which would add work to every query.
+**Decision:**
+- A **Traffic map** page (Monitor section) draws a squarified treemap of `GET /api/v1/stats/top` for `domains` and `blocked` (100 each, this hour or the last, every node). `domains` counts every query, so a name's answered queries are its `domains` count less its `blocked` count, and a remainder within the sketch's error bound is dropped. Tile area is queries; blue is allowed, red is blocked; the shade is the tile against the biggest of its colour (square root, so small tiles stay visible).
+- **Grouping:** *Services* (default) folds names into the blocked-services catalog's services (`GET /api/v1/services`, longest matching suffix) and falls back to the base domain; *Sites* uses the base domain (the last two labels, three under a country code's `co`/`com`/`net`/`org`/... level, a stand-in for the public suffix list the UI doesn't ship); *Names* shows them as asked. The choice is remembered in the browser.
+- **Live:** it refreshes every 5 s; counts growing since the previous refresh are the page's own differences (same hour only), and the five tiles growing fastest get a ring. Selecting a tile opens its names in the query log.
+- Nothing new on the server: no new counters, no new endpoint, one optional `hour` on the UI's existing `top` call.
+**Consequences:** the map covers the busiest 100 names and 100 blocked names only, with Space-Saving's approximate counts; a new hour starts every tile again, so it looks sparse just after the hour. Background lookups (phones, apps, monitors) can dominate it; exclusions (OBS-022) keep them out. A per-minute heatmap stays possible later, behind a benchmark.
+
 ## ADR-122 — The site's navigation by what the reader wants, and a Guides section (Proposed)
 **Context:** the project site's header had grown to eight top-level links plus a Reference menu, one link per feature page, and it had no task guides. How to set things up (configuration styles, clustering, Kubernetes, and more) lived only in `docs/running.md`, a 2,700-line file on GitHub (owner, 2026-10-11).
 **Decision:**

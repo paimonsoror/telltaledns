@@ -34,6 +34,8 @@
   --bad-strong: #a3322c;
   --warn-strong: #8a5a14;
   --on-bad: #ffffff;
+  /* The traffic map: text on its strongest tiles. */
+  --tm-ink: #ffffff;
   --side-hover: rgb(255 255 255 / 7%);
   --card-border: transparent;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
@@ -71,6 +73,7 @@
     --bad-strong: #ef7067;
     --warn-strong: #e0a84e;
     --on-bad: #1b0705;
+    --tm-ink: #0b1a25;
     --side-hover: rgb(255 255 255 / 6%);
     --card-border: #223140;
     color-scheme: dark;
@@ -107,6 +110,7 @@
   --bad-strong: #ef7067;
   --warn-strong: #e0a84e;
   --on-bad: #1b0705;
+  --tm-ink: #0b1a25;
   --side-hover: rgb(255 255 255 / 6%);
   --card-border: #223140;
   color-scheme: dark;

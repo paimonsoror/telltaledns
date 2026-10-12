@@ -42,4 +42,15 @@ for (const theme of ['light', 'dark'] as const) {
     await site.page.screenshot({ path: `${repo}/site/assets/shots/dashboard-${theme}.jpg`, type: 'jpeg', quality: 80 });
     await site.context.close();
   });
+
+  // REQ: OBS-026 — the traffic map, after two refreshes so growing tiles are marked.
+  test(`traffic map ${theme}`, async ({ browser }) => {
+    const site = await capture(browser, theme, 1280, 860, 1);
+    await site.page.goto('/#/traffic');
+    await site.page.getByRole('button', { name: 'Services', exact: true }).click();
+    await site.page.waitForTimeout(11_000);
+    await site.page.mouse.move(0, 0);
+    await site.page.screenshot({ path: `${repo}/site/assets/shots/traffic-${theme}.jpg`, type: 'jpeg', quality: 80 });
+    await site.context.close();
+  });
 }

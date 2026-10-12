@@ -91,6 +91,57 @@ test('dashboard shows traffic and top blocked names', async () => {
   await expect(heading('Upstreams')).toHaveCount(0);
 });
 
+// REQ: OBS-026 — the traffic map: the real queries above (ads.e2e.test blocked, nas.e2e.test
+// answered), then stubbed top lists that fold into one service and grow between refreshes.
+test('obs_026 traffic map', async () => {
+  await page.goto('/#/traffic');
+  await expect(page.getByRole('heading', { name: /^Traffic map/ })).toBeVisible();
+  const tile = (label: string) => page.getByRole('link', { name: new RegExp(`^${label.replace(/\./g, '\\.')}, `) });
+  await page.getByRole('button', { name: 'Names', exact: true }).click();
+  await expect(tile('ads.e2e.test, blocked')).toBeVisible({ timeout: 10_000 });
+  await expect(tile('nas.e2e.test, allowed')).toBeVisible();
+  // The domains list counts blocked queries too: a name that was only blocked isn't also blue.
+  await expect(tile('ads.e2e.test, allowed')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Sites', exact: true }).click();
+  await tile('e2e.test, allowed').hover();
+  await expect(page.locator('.details')).toContainText('nas.e2e.test');
+  await page.getByRole('button', { name: 'Blocked', exact: true }).click();
+  await expect(tile('e2e.test, allowed')).toHaveCount(0);
+  await expect(tile('e2e.test, blocked')).toBeVisible();
+  await page.getByRole('button', { name: 'All', exact: true }).click();
+
+  // Stubbed: YouTube's names make one tile in Services, and its growth (30 a refresh) is marked.
+  let calls = 0;
+  await page.route('**/api/v1/stats/top?*', (route) => {
+    const blocked = new URL(route.request().url()).searchParams.get('kind') === 'blocked';
+    if (!blocked) calls++;
+    const grow = 30 * calls;
+    const item = (key: string, count: number) => ({ key, count, errorBound: 0 });
+    route.fulfill({
+      json: {
+        items: blocked
+          ? [item('ads.tracker.example', 40)]
+          : [item('www.youtube.com', 100 + grow), item('i.ytimg.com', 50), item('ads.tracker.example', 40), item('github.com', 20)],
+      },
+    });
+  });
+  await page.getByRole('button', { name: 'Services', exact: true }).click();
+  await page.reload();
+  const youtube = tile('YouTube, allowed');
+  await youtube.hover();
+  await expect(page.locator('.details')).toContainText('www.youtube.com');
+  await expect(page.locator('.details')).toContainText('i.ytimg.com');
+  await expect(tile('github.com, allowed')).toBeVisible();
+  await expect(tile('tracker.example, blocked')).toHaveAccessibleName(/40 queries/);
+  await expect(tile('tracker.example, allowed')).toHaveCount(0);
+  // From the second refresh (5 s) on, YouTube is growing.
+  await expect(youtube).toHaveClass(/hot/, { timeout: 12_000 });
+  await expect(youtube).toContainText('+30');
+  await youtube.click();
+  await expect(page).toHaveURL(/#\/queries\?name=youtube\.com&match=suffix/);
+  await page.unroute('**/api/v1/stats/top?*');
+});
+
 test('query log finds the blocked query and explains it', async () => {
   await page.goto('/#/queries?name=ads.e2e.test');
   await expect(async () => {
