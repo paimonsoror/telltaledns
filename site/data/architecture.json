@@ -142,7 +142,7 @@
   "pipeline": [
     { "id": "listen", "title": "Receive", "crate": "telltale-net", "summary": "A worker thread reads a batch of UDP packets from its own socket, or a TCP/DoT/DoH task reads one request.", "reqs": ["DNS-001"], "adrs": ["ADR-023"] },
     { "id": "parse", "title": "Parse", "crate": "telltale-proto", "summary": "Header, question and EDNS read in place. Malformed input becomes FORMERR or a drop.", "reqs": ["DNS-019"], "adrs": ["ADR-002"] },
-    { "id": "checks", "title": "Early checks", "crate": "telltale-policy", "summary": "Allowed networks (never an open resolver), the per-client rate limit, our own loop tag, ANY (a tiny RFC 8482 answer), and special-use names like localhost.", "reqs": ["DNS-014", "DNS-019"], "adrs": ["ADR-014"] },
+    { "id": "checks", "title": "Early checks", "crate": "telltale-policy", "summary": "Allowed networks (never an open resolver), the per-client rate limit, our own loop tag, ANY (a tiny RFC 8482 answer), zone transfers (refused), and special-use names like localhost.", "reqs": ["DNS-014", "DNS-019"], "adrs": ["ADR-014"] },
     { "id": "local", "title": "Your names", "crate": "telltale-policy", "summary": "Names on your network are answered right here, before the cache or any upstream.", "reqs": ["DNS-010"], "adrs": ["ADR-041", "ADR-042"] },
     { "id": "identify", "title": "Who's asking", "crate": "telltale-policy", "summary": "The client by address, MAC, or client ID, and its groups.", "reqs": ["FLT-005", "FLT-006"], "adrs": ["ADR-021", "ADR-050"] },
     { "id": "filter", "title": "Block or allow", "crate": "telltale-filter", "summary": "The groups' lists decide; a block is answered immediately and records the list and line.", "reqs": ["FLT-003", "FLT-013"], "adrs": ["ADR-020", "ADR-022"] },

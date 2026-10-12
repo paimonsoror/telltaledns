@@ -1501,6 +1501,17 @@ impl Pipeline {
                 });
             return Err(ready(len.map(|l| self.finish(&q, out, l, meta.transport))));
         }
+        // REQ: DNS-019 (ADR-126) — a resolver serves no zones to transfer: REFUSED here, never
+        // forwarded (an upstream can only fail it, and the zone's name would leave the network).
+        if q.is_zone_transfer() {
+            return Err(self.simple(
+                &q,
+                out,
+                rcode::REFUSED,
+                Some((ede::NOT_SUPPORTED, "zone transfers aren't served")),
+                meta,
+            ));
+        }
         // DNS-019 / RFC 6761 — special names (ADR-014).
         let special = telltale_policy::classify(&q, &st.policy.special);
         match special {
@@ -4616,6 +4627,29 @@ members = [\"u\"]
         };
         let s = summarize(&out[..len]).unwrap();
         assert_eq!((s.rcode, s.answers), (rcode::NOERROR, 1));
+    }
+
+    // REQ: DNS-019 (ADR-126) — AXFR and IXFR are refused here (EDE 21), never forwarded.
+    #[test]
+    fn dns_019_zone_transfers_are_refused_without_upstream() {
+        let p = pipeline();
+        for qtype in [rtype::AXFR, rtype::IXFR] {
+            let mut out = [0u8; 4096];
+            let Response::Ready(len) = Handler(Arc::clone(&p)).handle(
+                &query("cluster-catalog.dnscluster", qtype, true),
+                &meta(),
+                &mut out,
+            ) else {
+                panic!("a zone transfer must be answered immediately");
+            };
+            let s = summarize(&out[..len]).unwrap();
+            assert_eq!((s.rcode, s.answers), (rcode::REFUSED, 0), "{qtype}");
+            let text = b"zone transfers aren't served";
+            assert!(
+                out[..len].windows(text.len()).any(|w| w == text),
+                "EDE 21 says why ({qtype})"
+            );
+        }
     }
 
     #[test]

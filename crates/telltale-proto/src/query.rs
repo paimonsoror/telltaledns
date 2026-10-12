@@ -30,6 +30,11 @@ impl<'a> Query<'a> {
     pub fn is_any(&self) -> bool {
         self.qtype == rtype::ANY
     }
+
+    /// A zone transfer request (AXFR or IXFR). REQ: DNS-019 (ADR-126).
+    pub fn is_zone_transfer(&self) -> bool {
+        self.qtype == rtype::AXFR || self.qtype == rtype::IXFR
+    }
 }
 
 /// Why a query was rejected, and what to do about it.

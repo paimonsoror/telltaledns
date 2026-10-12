@@ -21,6 +21,8 @@ pub mod rtype {
     pub const NSEC3: u16 = 50;
     pub const SVCB: u16 = 64;
     pub const HTTPS: u16 = 65;
+    pub const IXFR: u16 = 251;
+    pub const AXFR: u16 = 252;
     pub const ANY: u16 = 255;
     pub const CAA: u16 = 257;
 
@@ -47,6 +49,8 @@ pub mod rtype {
             "NSEC3" => NSEC3,
             "SVCB" => SVCB,
             "HTTPS" => HTTPS,
+            "IXFR" => IXFR,
+            "AXFR" => AXFR,
             "ANY" => ANY,
             "CAA" => CAA,
             other => other.strip_prefix("TYPE")?.parse().ok()?,
@@ -109,6 +113,7 @@ pub mod ede {
     pub const CENSORED: u16 = 16;
     pub const FILTERED: u16 = 17;
     pub const PROHIBITED: u16 = 18;
+    pub const NOT_SUPPORTED: u16 = 21;
     pub const NO_REACHABLE_AUTHORITY: u16 = 22;
     pub const NETWORK_ERROR: u16 = 23;
 }

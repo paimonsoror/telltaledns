@@ -1279,6 +1279,8 @@ ipv6_prefix = 64        # a device's rotating IPv6 privacy addresses share one b
 ```
 TelltaleDNS is never an open resolver by default. If you widen `allowed_networks` to everything, a warning is logged at startup.
 
+Zone transfer requests (AXFR, IXFR) are answered `REFUSED` (with the extended error "Not Supported") and never forwarded: TelltaleDNS serves no zones to transfer. An old DNS server still trying to sync a zone through TelltaleDNS shows in the query log as `TYPE252` or `TYPE251`, status special.
+
 `[ratelimit]` applies on reload, with no restart. The default of 1,000 queries a minute per address suits homes where each device has its own address. A router or proxy that forwards for a whole network shows up as one address, and would be refused above about 17 queries a second: add it to `exempt`, or raise `queries`.
 
 - **Adjust it in the UI:** **Settings → Query handling → Rate limit** shows the limit in effect (from the config file, or changed here) and edits it: queries per window, the window, what a limited client gets (`refused` or `drop`), the addresses never limited, and in the Advanced view how clients are grouped (`ipv4_prefix`, `ipv6_prefix`). **Check** shows what the change does first. **Revert to the file** goes back to `[ratelimit]` in the configuration. A change replaces the whole section, so fields left out take the defaults, not the file's values, and the list of exempt addresses is replaced too (keep `127.0.0.0/8` and `::1/128`).

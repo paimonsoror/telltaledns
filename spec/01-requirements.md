@@ -25,7 +25,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | DNS-016 | P1 | DNS64 (RFC 6147) per group. |
 | DNS-017 | P0 | Conditional forwarding / per-domain upstream routing, including reverse zones (Pi-hole `rev-server` parity). |
 | DNS-018 | P1 | Local zones: a small authoritative zone loaded from an RFC 1035 zone file or config (split-horizon views per group). |
-| DNS-019 | P0 | Refuse ANY queries (RFC 8482 minimal response) and drop malformed packets cheaply. |
+| DNS-019 | P0 | Refuse ANY queries (RFC 8482 minimal response), refuse zone transfers (AXFR, IXFR) without forwarding, and drop malformed packets cheaply. |
 | DNS-020 | P1 | PROXY protocol v2 on TCP/DoT/DoH listeners, to preserve client IPs behind load balancers. |
 | DNS-021 | P2 | NSID (RFC 5001), off by default: a query that asks for it gets the answering node's name, so a client can tell which node or pod answered behind a shared address (owner request 2026-10-09, from Technitium #1932). |
 

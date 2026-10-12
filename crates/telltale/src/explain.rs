@@ -470,6 +470,13 @@ pub(crate) fn answered_early(
             "ANY queries get the minimal RFC 8482 answer".into(),
         ));
     }
+    // REQ: DNS-019 (ADR-126)
+    if q.is_zone_transfer() {
+        return Err((
+            Outcome::Special,
+            "zone transfers (AXFR, IXFR) aren't served: REFUSED without forwarding".into(),
+        ));
+    }
     let special = telltale_policy::classify(q, &policy.special);
     let text = match special {
         Some(Special::Refused) => "special-use query: REFUSED without forwarding",

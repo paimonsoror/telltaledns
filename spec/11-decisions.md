@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-126 — Zone transfers are refused, never forwarded (Proposed)
+**Context:** AXFR and IXFR had no special handling, so they were forwarded like any query. An upstream resolver can't serve a zone transfer, so each one came back SERVFAIL, was cached, and counted against the availability objective (OBS-016). On the homelab (2026-10-12) the old Technitium's catalog-zone sync (`cluster-catalog.dnscluster`, AXFR every 5 minutes via the Pi) was 288 of 359 SERVFAILs in a day and overspent the 30-day error budget. Each attempt also sent a private zone name to the public upstream.
+**Decision:**
+- AXFR (252) and IXFR (251) get `REFUSED` with EDE 21 (Not Supported, "zone transfers aren't served") from the early checks, after the allowed-networks check and the ANY answer. Status `special`. Nothing is forwarded or cached.
+- REFUSED, not NOTIMP: the opcode is implemented, and this server declines to serve the zone (RFC 5936 §2.2.1). REFUSED isn't SERVFAIL, so the availability objective doesn't count it.
+- Explain says the same.
+**Consequences:** stray zone-transfer attempts cost one integer comparison and a short answer, and stop spending the error budget. TelltaleDNS serves no zones today. If it ever serves its local records as a zone, transfers would need a decision of their own (TSIG, an allow-list).
+
 ## ADR-125 — Every node names a device the same way: device names are shared across the cluster (Proposed)
 **Context:** each node names the clients in its own query-log rows, anomaly findings, and identities, from the client catalog (replicated), then its routers' DHCP clients (`[[router]]`), then mDNS. The last two are node-local. Usually only one node can read the router (the one with its API key mounted), and a pod can't hear the LAN's mDNS. On the homelab (owner report, 2026-10-12) the cluster query log named `192.168.5.2` "k8s" in the primary's rows and showed the bare address in the resolver pods' rows. The top lists hid the gap because their merge keeps any node's name.
 **Decision:**
