@@ -178,6 +178,12 @@ pub trait Backend: Send + Sync + 'static {
         let _ = body;
         Box::pin(async { Err(Problem::unavailable("checks aren't available on this node")) })
     }
+    /// REQ: CLU-002 (ADR-125) — what this node calls the device at `ip` (its configured name,
+    /// else what a router or mDNS knows), for rows a peer sent without one.
+    fn client_name(&self, ip: std::net::IpAddr) -> Option<String> {
+        let _ = ip;
+        None
+    }
     /// REQ: OBS-010 (T9.5) — devices first seen since `since_s` (every node, in a cluster).
     fn new_devices(&self, since_s: u64) -> Vec<model::NewDevice> {
         let _ = since_s;

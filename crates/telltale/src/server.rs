@@ -1019,6 +1019,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
             http_stopped.clone(),
         ));
     }
+    // REQ: CLU-002 (ADR-125) — the device names the other nodes know, so every node names a
+    // client the same way.
+    tokio::spawn(crate::devices::run(
+        Arc::clone(&sources),
+        http_stopped.clone(),
+    ));
     // REQ: CLU-011 (T8.1) — warm the cache from the cluster's hot names.
     tokio::spawn(crate::warm::run(Arc::clone(&sources), http_stopped.clone()));
     // REQ: OPS-004 (ADR-046) — a daily check of the signed release index (off: nothing leaves).

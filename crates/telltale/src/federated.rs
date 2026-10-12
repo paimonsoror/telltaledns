@@ -267,6 +267,10 @@ pub(crate) fn rpc_handler(
                 }
                 return crate::rollout::surface::handle(src, local, cluster, peer, body).await;
             }
+            if kind == crate::devices::KIND {
+                // REQ: CLU-002 (ADR-125) — the device names this node's routers and mDNS know.
+                return crate::devices::own(&src.pipeline);
+            }
             if kind == crate::simulate::KIND {
                 // REQ: OBS-024 — another node simulating a change over the cluster's logs.
                 return crate::simulate::handle(src, body).await;
@@ -309,6 +313,20 @@ pub(crate) fn rpc_handler(
                 .map_err(|e| format!("read worker failed: {e}"))?
         })
     })
+}
+
+/// REQ: CLU-002 (ADR-125) — rows a peer sent without a client name (an older build, or a
+/// node that doesn't know the device yet) get this node's name for it, so one page never
+/// names the same device two ways. A name the row came with stays.
+fn name_rows(rows: &mut [telltale_api::model::QueryRow], name: impl Fn(IpAddr) -> Option<String>) {
+    let mut known: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for r in rows.iter_mut().filter(|r| r.client_name.is_none()) {
+        r.client_name = known
+            .entry(r.client.clone())
+            .or_insert_with(|| r.client.parse().ok().and_then(&name))
+            .clone();
+    }
 }
 
 /// REQ: OBS-014 — every node's findings as one list, newest first: one entry per ID (nodes
@@ -1130,18 +1148,20 @@ impl Backend for Federated {
                 Err(e) => local_error = Some(e),
             }
         }
-        match local_error {
+        let mut page = match local_error {
             // Only this node can say why its own log is unavailable; peers' rows still help.
-            Some(e) if pages.is_empty() => Err(e),
+            Some(e) if pages.is_empty() => return Err(e),
             Some(_) => {
                 self.missing
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .push(self.own_label());
-                Ok(federation::merge_queries(pages, limit, &prev))
+                federation::merge_queries(pages, limit, &prev)
             }
-            None => Ok(federation::merge_queries(pages, limit, &prev)),
-        }
+            None => federation::merge_queries(pages, limit, &prev),
+        };
+        name_rows(&mut page.items, |ip| self.local.client_name(ip));
+        Ok(page)
     }
 
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
@@ -1424,6 +1444,9 @@ impl Backend for Federated {
         opts: telltale_api::SimulateOpts,
     ) -> telltale_api::BoxFuture<Result<telltale_api::model::Simulation, Problem>> {
         self.local.simulate(config, opts)
+    }
+    fn client_name(&self, ip: IpAddr) -> Option<String> {
+        self.local.client_name(ip)
     }
     // REQ: OBS-010 (T9.5) — any node may meet a device first; the earliest sighting wins.
     fn new_devices(&self, since_s: u64) -> Vec<telltale_api::model::NewDevice> {
@@ -1945,5 +1968,61 @@ mod ephemeral_tests {
             "Federated doesn't implement {missing:?}"
         );
         assert!(fed.contains("config_entries"));
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    use telltale_api::model::QueryRow;
+
+    fn row(client: &str, name: Option<&str>) -> QueryRow {
+        QueryRow {
+            time: String::new(),
+            ts_unix_micros: 1,
+            client: client.into(),
+            client_name: name.map(str::to_owned),
+            group: None,
+            name: "example.com".into(),
+            qtype: "A".into(),
+            status: "forwarded".into(),
+            rcode: None,
+            proto: "udp".into(),
+            list: None,
+            rule: None,
+            total_ms: 1.0,
+            upstream_ms: 0.5,
+            response_bytes: 40,
+            answers: 1,
+            node: None,
+        }
+    }
+
+    // REQ: CLU-002 (ADR-125) — a resolver pod's unnamed rows take the name the entry node
+    // knows; named rows and unknown devices stay as they came.
+    #[test]
+    fn clu_002_rows_without_a_name_are_named_here() {
+        let mut rows = vec![
+            row("192.168.5.2", Some("k8s")),
+            row("192.168.5.2", None),
+            row("192.168.5.7", Some("tablet")),
+            row("192.168.5.9", None),
+            row("192.168.5.x", None),
+        ];
+        let asked = std::cell::Cell::new(0);
+        name_rows(&mut rows, |ip| {
+            asked.set(asked.get() + 1);
+            (ip == IpAddr::from([192, 168, 5, 2])).then(|| "k8s".to_owned())
+        });
+        let names: Vec<Option<&str>> = rows.iter().map(|r| r.client_name.as_deref()).collect();
+        assert_eq!(
+            names,
+            [Some("k8s"), Some("k8s"), Some("tablet"), None, None]
+        );
+        assert_eq!(
+            asked.get(),
+            2,
+            "each address is looked up once; text that isn't one, never"
+        );
     }
 }

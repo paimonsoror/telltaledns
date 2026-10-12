@@ -179,6 +179,7 @@ mdns = true</code></pre>
   <ul>
     <li>Listen only: TelltaleDNS never sends mDNS, and it shares port 5353 with avahi. It needs to hear the LAN: a native install, the Pi bundle, or a pod with host networking. Changing it needs a restart.</li>
     <li><b>Which name wins:</b> the name you gave, then the router's, then mDNS.</li>
+    <li><b>In a cluster</b>, one node reading the router (or hearing mDNS) is enough: every node uses the names the others know, so resolver pods name devices the same way the primary does.</li>
     <li><b>Clients → Discovered</b> lists every device a router or mDNS found; naming one from there suggests the name it gave. <code>GET /api/v1/dhcp/leases</code> lists them too.</li>
   </ul>
   <p class="muted">Details: <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-from-your-router-unifi-opnsense">Names from your router</a> and <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#names-devices-announce-mdns">Names devices announce</a>.</p>

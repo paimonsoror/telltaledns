@@ -48,6 +48,13 @@ pub(crate) fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
                     .get(&v4)
                     .and_then(|l| l.hostname.clone())
             })
+            // REQ: CLU-002 (ADR-125) — then what the other nodes' routers and mDNS know.
+            .or_else(|| {
+                let peers = src.pipeline.peer_names.load();
+                [&peers.routers, &peers.mdns]
+                    .into_iter()
+                    .find_map(|t| t.get(&v4).and_then(|l| l.hostname.clone()))
+            })
     })
 }
 
@@ -1636,6 +1643,15 @@ impl Backend for ApiBackend {
                 .await
                 .map(Option::unwrap_or_default)
         })
+    }
+
+    // REQ: CLU-002 (ADR-125)
+    fn client_name(&self, ip: IpAddr) -> Option<String> {
+        let v6 = match ip {
+            IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+            IpAddr::V6(v6) => v6,
+        };
+        device_name(&self.src, v6.octets())
     }
 
     // REQ: OBS-010 (T9.5) — devices this node's anomaly engine met for the first time.

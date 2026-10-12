@@ -2063,4 +2063,30 @@ mod tests {
         );
         assert_eq!(text.matches("ring=\"twin\"").count(), 2, "{text}");
     }
+
+    // REQ: CLU-002 (ADR-125) — a node without the router (a resolver pod) names a device by
+    // what the other nodes' routers know; this node's own sources still come first.
+    #[test]
+    fn clu_002_device_names_fall_back_to_the_peers() {
+        use crate::devices::{Lease, Names};
+        let src = sources();
+        let ip = std::net::Ipv4Addr::new(192, 168, 5, 2);
+        let lease = |name: &str| Lease {
+            mac: String::new(),
+            ip,
+            hostname: Some(name.into()),
+            expires: 0,
+        };
+        let name = || crate::api_backend::device_name(&src, ip.to_ipv6_mapped().octets());
+        assert_eq!(name(), None);
+        src.pipeline.peer_names.store(Arc::new(Names {
+            routers: [(ip, lease("k8s"))].into(),
+            mdns: std::collections::HashMap::new(),
+        }));
+        assert_eq!(name().as_deref(), Some("k8s"));
+        src.pipeline
+            .mdns_names
+            .store(Arc::new([(ip, lease("k8s-local"))].into()));
+        assert_eq!(name().as_deref(), Some("k8s-local"), "own sources first");
+    }
 }

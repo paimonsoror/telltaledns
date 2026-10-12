@@ -413,6 +413,7 @@ impl Identifier {
         let observed = observe(&src.pipeline.telemetry.aggregates(), max);
         let routers = src.pipeline.router_leases.load_full();
         let mdns = src.pipeline.mdns_names.load_full();
+        let peers = src.pipeline.peer_names.load_full();
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
         for (key, (_, domains)) in &observed {
             let s = seen.entry(key.clone()).or_default();
@@ -463,8 +464,11 @@ impl Identifier {
                     IpAddr::V4(v4) => Some(v4),
                     IpAddr::V6(_) => None,
                 };
-                let lease = |l: &crate::devices::Leases| v4.and_then(|a| l.get(&a).cloned());
-                let (r, m) = (lease(&routers), lease(&mdns));
+                // REQ: CLU-002 (ADR-125) — this node's own tables, then the other nodes'.
+                let lease = |own: &crate::devices::Leases, peer: &crate::devices::Leases| {
+                    v4.and_then(|a| own.get(&a).or_else(|| peer.get(&a)).cloned())
+                };
+                let (r, m) = (lease(&routers, &peers.routers), lease(&mdns, &peers.mdns));
                 let mac = src
                     .pipeline
                     .neighbors
