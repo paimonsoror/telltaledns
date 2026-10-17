@@ -5,7 +5,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { query } from './dns';
-import { Loop, Particles, Ticker, dotBudget, lerpBoxes, motionAllowed, parseEvery, parsePanels, type Box } from '../../src/lib/wall';
+import { FrameHub, Loop, PANEL_MIN, Particles, Ticker, chooseLayout, dotBudget, lerpBoxes, motionAllowed, parseEvery, parseLayout, parsePanels, screenClass, screenClassStable, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -2296,7 +2296,7 @@ test('obs_034 device timeline', async () => {
 // and the animation loop stops while the tab is hidden.
 test('obs_035 wall helpers', async () => {
   expect(parsePanels('slo,flow,nope,slo')).toEqual(['slo', 'flow']);
-  expect(parsePanels(null)).toEqual(['map', 'flow', 'slo', 'latency', 'heat']);
+  expect(parsePanels(null)).toEqual(['map', 'flow', 'slo', 'latency', 'heat', 'kpi']);
   expect([parseEvery('5'), parseEvery('1'), parseEvery(null), parseEvery('9999')]).toEqual([5, 5, 20, 600]);
   expect([motionAllowed(null, false), motionAllowed('off', false), motionAllowed(null, true)]).toEqual([true, false, false]);
   const a = new Map<string, Box>([['x', { x: 0, y: 0, w: 10, h: 10 }], ['y', { x: 10, y: 0, w: 5, h: 10 }]]);
@@ -2348,6 +2348,67 @@ test('obs_035 wall helpers', async () => {
   expect(frames).toBe(3);
   loop.stop();
   expect(loop.running).toBe(false);
+
+  // REQ: OBS-035 (T14.15) — layouts for the screen: the class, then slots that each fit their
+  // panel, never overlap, stay inside the area, and fill most of it; a large screen shows all six
+  // at once; a phone rotates one.
+  expect([screenClass(390, 844), screenClass(1080, 1920), screenClass(1920, 1080), screenClass(2560, 1080), screenClass(2560, 1440)]).toEqual(
+    ['compact', 'portrait', 'standard', 'ultrawide', 'large'],
+  );
+  expect(screenClass(2250, 1100)).toBe('standard');
+  expect(screenClassStable(2250, 1100, 'ultrawide')).toBe('ultrawide'); // just under 2.1 × as wide: kept
+  expect(screenClassStable(1800, 1100, 'ultrawide')).toBe('standard');
+  expect(parseLayout('grid')).toBe('grid');
+  expect(parseLayout('nope')).toBe('auto');
+  const all = parsePanels(null);
+  for (const [w, h, slots] of [[390, 760, 1], [1080, 1700, 2], [1840, 900, 3], [2480, 900, 5], [1950, 1300, 3], [3800, 2000, 6]] as const) {
+    const l = chooseLayout(w, h, all);
+    expect(l.slots.length, `${w}x${h}`).toBe(slots);
+    let area = 0;
+    l.slots.forEach((a, i) => {
+      area += a.w * a.h;
+      expect(a.x >= 0 && a.y >= 0 && a.x + a.w <= w + 0.5 && a.y + a.h <= h + 0.5).toBe(true);
+      for (const p of a.panels) if (l.slots.length > 1 && a.panels.length === 1) expect(a.w >= PANEL_MIN[p].w && a.h >= PANEL_MIN[p].h).toBe(true);
+      l.slots.slice(i + 1).forEach((b) => {
+        const overlap = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        expect(overlap, `${w}x${h} slots ${i}`).toBeLessThan(1);
+      });
+    });
+    expect(area / (w * h), `${w}x${h} fill`).toBeGreaterThan(0.99);
+    // Every panel is somewhere.
+    expect(new Set(l.slots.flatMap((x) => x.panels)).size).toBe(all.length);
+  }
+  const large = chooseLayout(2000, 1300, all, 'large');
+  expect(large.slots.length).toBe(6);
+  expect(large.slots.every((x) => x.panels.length === 1)).toBe(true);
+  expect(large.tailSide).toBe(true);
+  // A TV: the map leads, the small panels take the side.
+  const tv = chooseLayout(1840, 900, all);
+  expect(tv.slots[0].panels[0]).toBe('map');
+  expect(tv.slots.slice(1).map((x) => x.panels[0]).sort()).toEqual(['kpi', 'slo']);
+  // Portrait: the big lower slot takes a big panel, not a small one.
+  expect(chooseLayout(1080, 1700, all).slots[1].panels[0]).toBe('flow');
+  expect(chooseLayout(1840, 900, all, 'single').slots.length).toBe(1);
+  // One loop for every panel.
+  const q2 = new Map<number, (t: number) => void>();
+  let n2 = 1;
+  const hub = new FrameHub({ request: (cb) => (q2.set(n2, cb), n2++), cancel: (id) => void q2.delete(id), hidden: () => false });
+  let ca = 0;
+  let cb = 0;
+  const offA = hub.add(() => ca++);
+  const offB = hub.add(() => cb++);
+  const run2 = (t: number) => {
+    const fns = [...q2.values()];
+    q2.clear();
+    for (const fn of fns) fn(t);
+  };
+  run2(16);
+  expect([ca, cb, q2.size]).toEqual([1, 1, 1]);
+  offA();
+  run2(32);
+  expect([ca, cb]).toEqual([1, 2]);
+  offB();
+  expect(hub.running).toBe(false);
 });
 
 // REQ: OBS-035 (ADR-135) — the wall display: no navigation, the panels the URL names in its
@@ -2367,16 +2428,16 @@ test('obs_035 wall', async () => {
   // Rotates after 5 s.
   await expect(page.getByTestId('wall-panel-flow')).toBeVisible({ timeout: 9000 });
   // Every panel renders.
-  await page.goto('/#/wall');
-  for (const id of ['map', 'flow', 'slo', 'latency', 'heat']) {
+  // One at a time (`layout=single`): every panel renders in turn.
+  await page.goto('/#/wall?layout=single');
+  for (const id of ['map', 'flow', 'slo', 'latency', 'heat', 'kpi']) {
     await expect(page.getByTestId(`wall-panel-${id}`)).toBeVisible();
     await expect(page.getByTestId(`wall-${id}`)).toBeAttached();
     await page.keyboard.press('ArrowRight');
   }
   await expect(page.getByTestId('wall-panel-map')).toBeVisible();
   // The latency heatmap's controls are hidden on the wall.
-  await page.keyboard.press('ArrowLeft');
-  await page.keyboard.press('ArrowLeft');
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft');
   await expect(page.getByTestId('wall-latency').locator('.controls')).toHaveCount(0);
   // Space pauses.
   await page.keyboard.press(' ');
@@ -2486,4 +2547,40 @@ test('obs_035 wall display link', async () => {
   await wall.reload();
   await expect(wall.getByTestId('wall')).toHaveCount(0);
   await ctx.close();
+});
+
+// REQ: OBS-035 (T14.15, ADR-141) — the wall fits the screen: one panel on a phone, two stacked on
+// a portrait screen, a hero and two side panels on a TV, five on an ultrawide, all six at once on
+// a large screen (the tail beside them), never a scrollbar.
+test('obs_035 wall layouts', async () => {
+  for (const [w, h, cls, slots] of [
+    [390, 844, 'compact', 1],
+    [1080, 1700, 'portrait', 2],
+    [1920, 1080, 'standard', 3],
+    [2560, 1080, 'ultrawide', 5],
+    [2600, 1440, 'large', 6],
+  ] as const) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto('/#/wall?motion=off');
+    const wall = page.getByTestId('wall');
+    await expect(wall).toHaveAttribute('data-class', cls);
+    await expect(wall).toHaveAttribute('data-slots', String(slots));
+    await expect(page.getByTestId('wall-slot')).toHaveCount(slots);
+    const fits = await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.documentElement.scrollHeight <= innerHeight + 1);
+    expect(fits, `${w}x${h} scrolls`).toBe(true);
+    if (cls === 'large') {
+      await expect(page.locator('[data-testid="wall-slot"][data-rotates="yes"]')).toHaveCount(0);
+      await expect(page.getByTestId('wall-tail')).toHaveAttribute('data-side', 'yes');
+      await expect(page.getByTestId('wall-kpi')).toBeVisible();
+    }
+    if (cls === 'standard') {
+      const side = await page.locator('[data-testid="wall-slot"]').evaluateAll((els) => els.slice(1).map((e) => (e as HTMLElement).dataset.panel).sort());
+      expect(side).toEqual(['kpi', 'slo']);
+    }
+  }
+  // Forced: `layout=single` on a big screen shows one panel.
+  await page.goto('/#/wall?layout=single&motion=off');
+  await expect(page.getByTestId('wall')).toHaveAttribute('data-slots', '1');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
 });

@@ -5,7 +5,7 @@
   import { api, type S } from '../../api';
   import { poll } from '../../poll';
   import { fold, layout, type FlowLink, type FlowNode } from '../../sankey';
-  import { Loop, Particles, browserHost } from '../../wall';
+  import { Particles, frameHub } from '../../wall';
 
   let { motion }: { motion: boolean } = $props();
   let data = $state<S['QueryFlow'] | null>(null);
@@ -34,7 +34,8 @@
     if (placed) particles.plan(placed.links.map((l) => l.count));
   });
 
-  const loop = new Loop((dt) => {
+  // REQ: OBS-035 (T14.15) — on the wall's one animation loop.
+  const frame = (dt: number) => {
     particles.step(dt);
     const paths = svg?.querySelectorAll<SVGPathElement>('path.band');
     if (!paths || !placed) return;
@@ -45,7 +46,17 @@
       const pt = p.getPointAtLength(lens[d.link] * d.t);
       return [{ x: pt.x, y: pt.y, bad: placed.links[d.link]?.failure ?? false }];
     });
-  }, browserHost());
+  };
+  let off: (() => void) | null = null;
+  const loop = {
+    start: () => {
+      off ??= frameHub().add(frame);
+    },
+    stop: () => {
+      off?.();
+      off = null;
+    },
+  };
   $effect(() => {
     if (motion && placed) loop.start();
     else {
@@ -53,12 +64,7 @@
       dots = [];
     }
   });
-  const vis = () => loop.visibility();
-  document.addEventListener('visibilitychange', vis);
-  onDestroy(() => {
-    loop.stop();
-    document.removeEventListener('visibilitychange', vis);
-  });
+  onDestroy(() => loop.stop());
 </script>
 
 <div class="flow" bind:clientWidth={w} bind:clientHeight={h} data-testid="wall-flow">
@@ -69,7 +75,7 @@
       {/each}
       {#each placed.nodes as n (n.id)}
         <rect x={n.x} y={n.y} width={n.w} height={Math.max(1, n.h)} class="node" />
-        {#if n.h > 14}
+        {#if n.h > 14 && w >= 600}
           <text x={n.col < 2 ? n.x + n.w + 6 : n.x - 6} y={n.y + n.h / 2} text-anchor={n.col < 2 ? 'start' : 'end'}>{n.name}</text>
         {/if}
       {/each}

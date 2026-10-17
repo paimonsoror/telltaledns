@@ -146,6 +146,8 @@ pub fn display_allows(method: &axum::http::Method, path: &str) -> bool {
         p,
         "/api/v1/auth/me"
             | "/api/v1/system/info"
+            // REQ: OBS-035 (T14.15) — the wall's "right now" tile shows the health word.
+            | "/api/v1/system/health"
             | "/api/v1/queries/stream"
             | "/api/v1/annotations"
     ) || p

@@ -8,6 +8,10 @@
 
   let slo = $state<S['SloStatus'] | null>(null);
   let spent = $state<S['AttributionRow'][]>([]);
+  // REQ: OBS-035 (T14.15) — the rings fit their slot, from a phone to a corner of a 4K screen.
+  let w = $state(0);
+  let h = $state(0);
+  const ring = $derived(Math.max(70, Math.min(h * 0.58, (w - 40) / 2.3, 420)));
   $effect(() =>
     poll(async () => {
       try {
@@ -27,14 +31,14 @@
   const tone = (left: number | null | undefined) => (left == null ? 'muted' : left < 25 ? 'bad' : left < 50 ? 'warn' : 'ok');
 </script>
 
-<div class="slo" data-testid="wall-slo">
+<div class="slo" data-testid="wall-slo" bind:clientWidth={w} bind:clientHeight={h}>
   {#if slo && slo.enabled}
     <div class="rings">
       {#each slo.objectives as o (o.name)}
         {@const left = o.budgetRemainingPercent}
         {@const r = burn(o)}
         <figure class="ring {tone(left)}" data-testid="wall-ring">
-          <svg viewBox="0 0 100 100" aria-label="{o.name}: {left == null ? 'no data' : `${Math.round(left)} % of the budget left`}">
+          <svg viewBox="0 0 100 100" style:width="{ring}px" style:height="{ring}px" aria-label="{o.name}: {left == null ? 'no data' : `${Math.round(left)} % of the budget left`}">
             <circle cx="50" cy="50" r={R} class="track" />
             <circle cx="50" cy="50" r={R} class="left" stroke-dasharray="{(Math.max(0, Math.min(100, left ?? 0)) / 100) * C} {C}" transform="rotate(-90 50 50)" />
             <text x="50" y="62" text-anchor="middle" class="big">{left == null ? '–' : `${Math.round(left)}%`}</text>
@@ -76,8 +80,8 @@
     font-size: 2.4vmin;
   }
   svg {
-    width: 38vmin;
-    height: 38vmin;
+    display: block;
+    margin: 0 auto;
   }
   circle {
     fill: none;

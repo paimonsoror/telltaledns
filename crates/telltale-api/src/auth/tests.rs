@@ -498,6 +498,7 @@ fn obs_035_display_sessions_read_only_the_wall() {
     for p in [
         "/api/v1/auth/me",
         "/api/v1/system/info",
+        "/api/v1/system/health",
         "/api/v1/stats/top",
         "/api/v1/stats/flow",
         "/api/v1/stats/slo/attribution",

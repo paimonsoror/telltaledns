@@ -7,7 +7,7 @@
   import { poll } from '../../poll';
   import { short } from '../../format';
   import { squarify } from '../../treemap';
-  import { Loop, browserHost, ease, lerpBoxes, type Box } from '../../wall';
+  import { ease, frameHub, lerpBoxes, type Box } from '../../wall';
 
   let { motion }: { motion: boolean } = $props();
   let items = $state<S['TopItem'][]>([]);
@@ -31,17 +31,22 @@
     }, 5000),
   );
 
-  const loop = new Loop(() => {
-    const t = ease((performance.now() - started) / TWEEN_MS);
-    shown = lerpBoxes(from, to, t);
-    if (t >= 1) loop.stop();
-  }, browserHost());
-  const vis = () => loop.visibility();
-  document.addEventListener('visibilitychange', vis);
-  onDestroy(() => {
-    loop.stop();
-    document.removeEventListener('visibilitychange', vis);
-  });
+  // REQ: OBS-035 (T14.15) — on the wall's one animation loop while a tween runs.
+  let off: (() => void) | null = null;
+  const loop = {
+    start: () => {
+      off ??= frameHub().add(() => {
+        const t = ease((performance.now() - started) / TWEEN_MS);
+        shown = lerpBoxes(from, to, t);
+        if (t >= 1) loop.stop();
+      });
+    },
+    stop: () => {
+      off?.();
+      off = null;
+    },
+  };
+  onDestroy(() => loop.stop());
 
   $effect(() => {
     if (w <= 0 || h <= 0) return;

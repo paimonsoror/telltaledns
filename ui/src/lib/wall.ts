@@ -2,7 +2,7 @@
 // the tests can check them directly: the panel list from the URL, tile tweens, the particle
 // budget, the live ticker's buffer, and an animation loop that stops when the tab is hidden.
 
-export const PANELS = ['map', 'flow', 'slo', 'latency', 'heat'] as const;
+export const PANELS = ['map', 'flow', 'slo', 'latency', 'heat', 'kpi'] as const;
 export type Panel = (typeof PANELS)[number];
 export const PANEL_TITLE: Record<Panel, string> = {
   map: 'What the network is reaching',
@@ -10,6 +10,7 @@ export const PANEL_TITLE: Record<Panel, string> = {
   slo: 'Service level',
   latency: 'Answer time',
   heat: 'The week',
+  kpi: 'Right now',
 };
 
 /** `?panels=slo,flow` in that order; unknown names dropped; none (or nothing valid): all. */
@@ -177,3 +178,173 @@ export const browserHost = (): LoopHost => ({
   cancel: (id) => cancelAnimationFrame(id),
   hidden: () => document.visibilityState !== 'visible',
 });
+
+// ---- REQ: OBS-035 (T14.15, ADR-141) — layouts for the screen's size and shape.
+
+/** The kinds of screen a wall meets, from its size in CSS pixels. */
+export const SCREEN_CLASSES = ['compact', 'portrait', 'standard', 'ultrawide', 'large'] as const;
+export type ScreenClass = (typeof SCREEN_CLASSES)[number];
+
+/** `compact` (shorter side under 600), `portrait` (taller than 1.2 × wide), `large` (2560 × 1300
+ * and up), `ultrawide` (2.1 × as wide as tall), else `standard`. */
+export function screenClass(w: number, h: number): ScreenClass {
+  if (Math.min(w, h) < 600) return 'compact';
+  if (h > 1.2 * w) return 'portrait';
+  if (w >= 2560 && h >= 1300) return 'large';
+  if (w >= 2.1 * h) return 'ultrawide';
+  return 'standard';
+}
+
+/** [`screenClass`] that keeps `prev` while a 4 % change would still give it, so a window
+ * resized across a boundary doesn't flip back and forth. */
+export function screenClassStable(w: number, h: number, prev: ScreenClass | null): ScreenClass {
+  const now = screenClass(w, h);
+  if (!prev || now === prev) return now;
+  for (const f of [0.96, 1.04]) {
+    if (screenClass(w * f, h) === prev || screenClass(w, h * f) === prev) return prev;
+  }
+  return now;
+}
+
+/** Each panel's smallest useful size (CSS px). */
+export const PANEL_MIN: Record<Panel, { w: number; h: number }> = {
+  map: { w: 420, h: 280 },
+  flow: { w: 520, h: 300 },
+  slo: { w: 300, h: 240 },
+  latency: { w: 420, h: 200 },
+  heat: { w: 480, h: 200 },
+  kpi: { w: 240, h: 150 },
+};
+
+/** Panels that read well small: the side slots take them first. */
+const SMALL_FIRST: Panel[] = ['kpi', 'slo'];
+
+/** A slot as fractions of the panel area. */
+export interface SlotFrac {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const F = (x: number, y: number, w: number, h: number): SlotFrac => ({ x, y, w, h });
+const T3 = 1 / 3;
+
+/** Candidate layouts per screen class, most slots first; the first slot is the hero. */
+export const TEMPLATES: Record<ScreenClass, SlotFrac[][]> = {
+  compact: [[F(0, 0, 1, 1)]],
+  portrait: [[F(0, 0, 1, 0.6), F(0, 0.6, 1, 0.4)], [F(0, 0, 1, 1)]],
+  standard: [
+    [F(0, 0, 0.66, 1), F(0.66, 0, 0.34, 0.5), F(0.66, 0.5, 0.34, 0.5)],
+    [F(0, 0, 0.64, 1), F(0.64, 0, 0.36, 1)],
+    [F(0, 0, 1, 1)],
+  ],
+  ultrawide: [
+    [F(0.25, 0, 0.5, 1), F(0, 0, 0.25, 0.5), F(0, 0.5, 0.25, 0.5), F(0.75, 0, 0.25, 0.5), F(0.75, 0.5, 0.25, 0.5)],
+    [F(0.25, 0, 0.5, 1), F(0, 0, 0.25, 1), F(0.75, 0, 0.25, 1)],
+    [F(0, 0, 0.66, 1), F(0.66, 0, 0.34, 1)],
+    [F(0, 0, 1, 1)],
+  ],
+  large: [
+    [F(0, 0, T3, 0.5), F(T3, 0, T3, 0.5), F(2 * T3, 0, T3, 0.5), F(0, 0.5, T3, 0.5), F(T3, 0.5, T3, 0.5), F(2 * T3, 0.5, T3, 0.5)],
+    [F(0, 0, 0.5, 0.5), F(0.5, 0, 0.5, 0.5), F(0, 0.5, 0.5, 0.5), F(0.5, 0.5, 0.5, 0.5)],
+    [F(0, 0, 1, 1)],
+  ],
+};
+
+/** `?layout=`: `auto` (the default), `single` (one panel at a time, full screen), `grid` (the
+ * large screen's grid whatever the size), or a screen class to force. */
+export type LayoutMode = 'auto' | 'single' | 'grid' | ScreenClass;
+export function parseLayout(text: string | null | undefined): LayoutMode {
+  const t = (text ?? '').trim();
+  return t === 'single' || t === 'grid' || (SCREEN_CLASSES as readonly string[]).includes(t) ? (t as LayoutMode) : 'auto';
+}
+
+/** A placed slot: its rectangle (CSS px) and the panels it shows, rotating when more than one. */
+export interface Slot extends Box {
+  panels: Panel[];
+}
+
+export interface Layout {
+  cls: ScreenClass;
+  slots: Slot[];
+  /** The live tail as a column beside the panels (large screens) instead of a strip. */
+  tailSide: boolean;
+}
+
+/** Fits `panels` (in their order) into the first template of the class (most slots first) that
+ * gives every slot a panel at least its minimum size: the hero takes the first panel that fits
+ * it, small side slots prefer the panels that read well small; leftovers rotate in a slot they
+ * fit (the hero first). Deterministic. */
+export function chooseLayout(
+  w: number,
+  h: number,
+  panels: Panel[],
+  mode: LayoutMode = 'auto',
+  prev: ScreenClass | null = null,
+): Layout {
+  const cls: ScreenClass = mode === 'grid' ? 'large' : mode === 'auto' || mode === 'single' ? screenClassStable(w, h, prev) : mode;
+  const templates = mode === 'single' ? [[F(0, 0, 1, 1)]] : TEMPLATES[cls];
+  const fits = (p: Panel, b: Box) => b.w >= PANEL_MIN[p].w && b.h >= PANEL_MIN[p].h;
+  for (const t of templates) {
+    if (t.length > panels.length) continue;
+    const boxes: Box[] = t.map((f) => ({ x: f.x * w, y: f.y * h, w: f.w * w, h: f.h * h }));
+    const left = [...panels];
+    const take = (b: Box, order: Panel[]) => {
+      const p = order.find((x) => left.includes(x) && fits(x, b));
+      if (p) left.splice(left.indexOf(p), 1);
+      return p;
+    };
+    const chosen: (Panel | undefined)[] = [];
+    // The hero: the first panel that fits, saving the small-first ones for the side slots.
+    const big = left.filter((p) => !SMALL_FIRST.includes(p));
+    chosen.push(take(boxes[0], big.length ? big : left));
+    for (let i = 1; i < boxes.length; i++) {
+      // A small slot (under 30 % of the screen) prefers the panels that read well small.
+      const smallSlot = boxes[i].w * boxes[i].h < 0.3 * w * h;
+      const small = smallSlot ? SMALL_FIRST.filter((p) => left.includes(p)) : [];
+      chosen.push(take(boxes[i], [...small, ...left.filter((p) => !small.includes(p))]));
+    }
+    if (chosen.some((c) => c === undefined)) continue;
+    const slots: Slot[] = boxes.map((b, i) => ({ ...b, panels: [chosen[i] as Panel] }));
+    for (const p of left) (slots.find((x) => fits(p, x)) ?? slots[0]).panels.push(p);
+    return { cls, slots, tailSide: cls === 'large' && mode !== 'single' };
+  }
+  return { cls, slots: [{ x: 0, y: 0, w, h, panels: [...panels] }], tailSide: false };
+}
+
+/** REQ: OBS-035 (T14.15) — one animation loop for every panel on the wall: frame callbacks
+ * register and unregister, and the loop runs while any is registered and the tab is visible. */
+export class FrameHub {
+  private cbs = new Set<(dt: number) => void>();
+  private loop: Loop;
+  constructor(host: LoopHost) {
+    this.loop = new Loop((dt) => {
+      for (const cb of this.cbs) cb(dt);
+    }, host);
+  }
+  get size(): number {
+    return this.cbs.size;
+  }
+  get running(): boolean {
+    return this.loop.running;
+  }
+  add(cb: (dt: number) => void): () => void {
+    this.cbs.add(cb);
+    this.loop.start();
+    return () => {
+      this.cbs.delete(cb);
+      if (this.cbs.size === 0) this.loop.stop();
+    };
+  }
+  visibility() {
+    this.loop.visibility();
+  }
+}
+
+let hub: FrameHub | null = null;
+/** The page's one hub (made on first use). */
+export function frameHub(): FrameHub {
+  hub ??= new FrameHub(browserHost());
+  return hub;
+}

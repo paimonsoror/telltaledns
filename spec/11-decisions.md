@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-141 — Wall layouts for the screen's size and shape (Proposed)
+**Context:** T14.15 (OBS-035; owner request 2026-10-17: "various sized screens ... we will not be using the available real estate"). One panel at a time wasted ultrawide, portrait, and large screens.
+**Decision:**
+- Screen classes from the wall's size in CSS pixels (so a 4K TV at 2× scaling is 1920 × 1080): `compact` (shorter side < 600), `portrait` (height > 1.2 × width), `large` (≥ 2560 × 1300), `ultrawide` (width ≥ 2.1 × height), else `standard`; the previous class is kept while a 4 % change would still give it (no flipping at a boundary).
+- Per class, candidate templates (fractions of the panel area, the hero first, most slots first); `chooseLayout` takes the first one where every slot gets a panel at least its minimum size (`PANEL_MIN`): the hero the first panel that fits (the small-first panels saved), small slots (< 30 % of the area) the `kpi` and `slo` panels first; leftovers rotate in a slot they fit (the hero first). Pure and deterministic; tested across sizes for fit, overlap, fill, and placement.
+- Owner's choices (2026-10-17, "proceed with your recommendations"): a large screen shows everything at once (no rotation); a new `kpi` panel ("right now": queries per second, blocked share, from cache, the health word, from `/stats/summary` and `/system/health`); the tail as a strip except on a large screen, where it's a column.
+- `?layout=auto|single|grid|<class>`; one animation loop for every panel (`FrameHub`), stopping in a hidden tab; panels size to their slot (the SLO rings, the flow's labels hidden under 600 px).
+- Default: display sessions may also read `GET /api/v1/system/health` (the tile's health word; what the header icon shows a viewer).
+**Consequences:** a large screen polls every panel's data at once (as the dashboard would); the class comes from the whole wall while slots come from the panel area, so a large screen's tail column doesn't change its class.
+
 ## ADR-140 — Wall displays: a display token exchanged for a wall-only session (Proposed)
 **Context:** T14.13 (OBS-035; T14.9's design §8). A wall on an unattended screen needed a sign-in that lasts without leaving a person's account there. The owner chose a display token over longer viewer sessions or nothing (2026-10-17), and to keep the live tail on the wall.
 **Decision:**
