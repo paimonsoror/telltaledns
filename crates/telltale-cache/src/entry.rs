@@ -133,6 +133,14 @@ impl Entry {
         &self.data[self.wire_start()..]
     }
 
+    /// REQ: DNS-006, DNS-007 — a cached SERVFAIL (RFC 9520): fresh for its few seconds, never
+    /// served stale.
+    pub(crate) fn is_servfail(&self) -> bool {
+        self.wire()
+            .get(3)
+            .is_some_and(|b| u16::from(b & 0x0f) == rcode::SERVFAIL)
+    }
+
     /// Memory cost used for the byte budget: the data, the entry itself, its slot in the map
     /// (a 32-byte key beside it, at the map's typical load), its queue slot, and the
     /// allocator's rounding. Measured with `bench/memprobe.py` (T10.2).

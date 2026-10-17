@@ -1291,6 +1291,11 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-137 — An expired SERVFAIL is never served stale (Proposed)
+**Context:** M14 follow-up (owner request 2026-10-17; found in T14.1). SERVFAIL is cached for 5 s (RFC 9520, `spec/03` §4), but the serve-stale path treated an expired SERVFAIL like any expired answer: with `stale_max_age = 3600` and `stale_answer_client_timeout_ms = 0` (the owner's 2026-10-10 settings), an hourly reverse lookup that failed once got the same SERVFAIL back for up to an hour, counted as `refreshed`, even after the upstream would have answered. Serving a stale failure gives the client nothing RFC 8767 is for.
+**Decision:** an expired SERVFAIL entry is a miss (removed, asked upstream again), and `get_stale` never returns one. Fresh SERVFAILs are still served for their 5 s. Every other answer keeps serve-stale as before.
+**Consequences:** a failing name is asked upstream at most every 5 s per node instead of being answered stale for an hour; bad answers that were `refreshed` SERVFAILs move to `forwarded` (or go away). The availability SLO stops counting the same failure many times.
+
 ## ADR-135 — The wall display: a kiosk layout over the existing reads (Proposed)
 **Context:** T14.9 (OBS-035; design `docs/design/wall-display.md`). The pack's views, composed for a wall monitor; the screenshot that makes people try the project.
 **Decision:**

@@ -41,7 +41,7 @@ proxy_protocol = false
 - **Key:** `(qname_hash, qtype, qclass, DO-bit, cd-bit, upstream_view_id)`. `upstream_view_id` separates answers obtained from different upstream groups (e.g., a kids' group routed to a family-filter upstream must not share a cache with adults). Filtering is applied *before* the cache, so cached entries are policy-neutral.
 - **Value:** the response wire bytes (header with ID=0) + an offset list of TTL fields + insertion `Instant` + original min TTL. On a hit, `memcpy` into the send buffer, write the ID, and subtract elapsed seconds from each TTL offset. No re-encode.
 - **Structure:** 64 shards (power of two ≥ 4 × workers), each `parking_lot::Mutex<S3Fifo>`. Shard selection = hash bits. Capacity is configured in **bytes** (default 32 MiB) as well as entries.
-- **TTL policy:** `min_ttl` (default 0), `max_ttl` (default 86400), `negative_ttl_max` (default 3600, honoring SOA MINIMUM), SERVFAIL cached for 5 s (RFC 9520).
+- **TTL policy:** `min_ttl` (default 0), `max_ttl` (default 86400), `negative_ttl_max` (default 3600, honoring SOA MINIMUM), SERVFAIL cached for 5 s (RFC 9520) and never served stale: an expired SERVFAIL is a miss (ADR-137).
 - **Serve-stale** (DNS-007): keep expired entries for up to `stale_max_age` (default 1 day). Use them when upstreams fail or exceed `stale_answer_client_timeout` (default 1800 ms). Answer TTL = 30 s. Add EDE 3.
 - **Prefetch** (DNS-008): if an entry is hit while remaining TTL < `prefetch_threshold` (10%) and it has had ≥ `prefetch_min_hits` (3) hits, enqueue a refresh (deduplicated).
 - **In-flight dedup:** identical concurrent misses coalesce on one upstream request (a singleflight map keyed like the cache).

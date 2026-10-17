@@ -395,7 +395,9 @@ impl Cache {
                         Some(len) => Lookup::Hit { len, prefetch },
                         None => Lookup::Miss,
                     }
-                } else if p.serve_stale && age - e.ttl < p.stale_max_age {
+                // REQ: DNS-007 — an expired SERVFAIL is a miss, never a stale answer: serving it
+                // stale would repeat a failure for up to `stale_max_age` (spec/03 §4: 5 s).
+                } else if p.serve_stale && !e.is_servfail() && age - e.ttl < p.stale_max_age {
                     Lookup::Expired
                 } else {
                     shard.fifo.remove(key);
@@ -431,7 +433,7 @@ impl Cache {
         let mut guard = self.shard(key).lock();
         let shard = &mut *guard;
         let e = shard.fifo.peek(key)?;
-        if e.name() != qname.as_wire() {
+        if e.name() != qname.as_wire() || e.is_servfail() {
             return None;
         }
         let age = e.elapsed_secs(now);

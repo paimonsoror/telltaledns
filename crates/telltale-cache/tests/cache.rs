@@ -288,7 +288,8 @@ fn dns_006_negative_and_servfail_caching() {
             t0 + Duration::from_secs(6),
             &mut out
         ),
-        Lookup::Expired
+        // DNS-007: an expired SERVFAIL is a miss, never served stale.
+        Lookup::Miss
     );
 
     // REFUSED and truncated answers are never cached.
@@ -320,6 +321,62 @@ fn dns_006_rejects_mismatched_question() {
     assert_eq!(
         cache.insert(&key(&qa), &qa, &resp_for_b, Instant::now()),
         Err(Uncacheable::QuestionMismatch)
+    );
+}
+
+// REQ: DNS-007 — an expired SERVFAIL is a miss, not a stale answer: an hourly lookup that
+// failed once must not get the old failure back for the whole stale window.
+#[test]
+fn dns_007_an_expired_servfail_is_never_served_stale() {
+    let policy = CachePolicy {
+        stale_max_age: 3600,
+        ..CachePolicy::default()
+    };
+    let cache = Cache::new(policy);
+    let t0 = Instant::now();
+    let msg = query_bytes("10.10.168.192.in-addr.arpa", rtype::PTR, None, 1);
+    let q = parse_query(&msg).unwrap();
+    cache
+        .insert(
+            &key(&q),
+            &q,
+            &upstream_negative(&q, rcode::SERVFAIL, None),
+            t0,
+        )
+        .unwrap();
+    let mut out = [0u8; 1500];
+    let c = Client::from_query(&q, None);
+    // Fresh for 5 s (RFC 9520).
+    assert!(matches!(
+        cache.get(
+            &key(&q),
+            &q.qname,
+            &c,
+            t0 + Duration::from_secs(2),
+            &mut out
+        ),
+        Lookup::Hit { .. }
+    ));
+    // Then a miss, and nothing to serve stale.
+    let later = t0 + Duration::from_secs(60);
+    assert_eq!(
+        cache.get(&key(&q), &q.qname, &c, later, &mut out),
+        Lookup::Miss
+    );
+    assert!(
+        cache
+            .get_stale(&key(&q), &q.qname, &c, later, &mut out)
+            .is_none()
+    );
+    // A good answer for the same name is still served stale.
+    let msg = query_bytes("ok.example", rtype::A, None, 2);
+    let q = parse_query(&msg).unwrap();
+    cache
+        .insert(&key(&q), &q, &upstream_a(&q, &[5]), t0)
+        .unwrap();
+    assert_eq!(
+        cache.get(&key(&q), &q.qname, &c, later, &mut out),
+        Lookup::Expired
     );
 }
 
