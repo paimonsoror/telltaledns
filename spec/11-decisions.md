@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-144 — Memory: purge freed memory at once, release code pages after one-off work (Proposed)
+**Context:** T10.2 (NFR-001, `00` §5: ≤ 20 MiB idle, ≤ 64 MiB with 1M names and 100k cache entries). With the shipped musl build the node measured 22.7 MiB idle and 71.4 MiB loaded. Two things held memory nothing used: mimalloc's 10 ms purge delay kept a compile's freed pages (a 170 MiB peak, about 5 MiB after), and about 15 MiB of the 25 MiB of code stayed resident after running once at start-up, plus the kernel's fault-around neighbours.
+**Decision:**
+- mimalloc's `purge_delay` is set to 0 at the start of `run`: freed pages go back to the OS right away. The query path doesn't allocate (NFR-002), so the extra `madvise` calls land on misses, compiles, and background work.
+- 15 s after start-up, and after each filter index build, a background thread drops this process's mappings of the executable's read-only pages that hold no private (copy-on-write) copies (`MADV_DONTNEED`). The pages stay in the page cache; code that runs again maps them back with a minor fault. Writable mappings and any with anonymous pages are never touched.
+- Both live in `telltale-net` (the only crate allowed `unsafe`), using the `libmimalloc-sys` already linked (no new crate).
+**Consequences:** idle 13.7 MiB, loaded 60.0 MiB, compile peak 97.5 MiB (shipped build, `bench/memprobe.py`). The first query after a trim may take a few minor faults (microseconds each) for code that was dropped. RSS creeps back up by the code periodic work touches (about 1 MiB over 3 minutes in the probe). Off Linux both are no-ops.
+
 ## ADR-143 — Cluster members are trusted by the registry, never by their word (Proposed)
 **Context:** T10.7 security review (`docs/security-review.md`, findings C1, C3–C6). A member the registry didn't list (a resolver pod that left or expired, then reconnected with its still-valid certificate) was taken at its word: its Hello's eligibility was recorded, so it could get the cluster key, and its epoch could fence the primary. Pods also received every user's password hash and TOTP secret, and could ask other nodes to run simulations.
 **Decision:**

@@ -93,6 +93,27 @@ pub fn default_workers() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 
+/// REQ: NFR-001 (T10.2) — the allocator returns freed memory to the OS at once (call early in
+/// `main`). A no-op off Linux.
+pub fn allocator_purge_at_once() {
+    #[cfg(target_os = "linux")]
+    sys::allocator_purge_at_once();
+}
+
+/// REQ: NFR-001 (T10.2) — drops this process's resident copies of its executable's code and
+/// constants, after work that runs once (start-up, a list compile): what's still in use comes
+/// back from the page cache on its next access. Returns the bytes trimmed (0 off Linux).
+pub fn trim_executable_pages() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        sys::trim_executable_pages().unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
 /// REQ: CLU-008 (T6.11) — the size and free space (for unprivileged users) of the filesystem
 /// holding `path`, in bytes: `(total, available)`. `None` off Linux or when it can't be read.
 /// Lives here because it needs a syscall, and only this crate may use `unsafe`.

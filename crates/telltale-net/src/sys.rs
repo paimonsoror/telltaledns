@@ -628,9 +628,104 @@ impl Drop for MappedFile {
     }
 }
 
+// The allocator the binary links (`mimalloc`); this dependency makes sure its C library is
+// linked here too (tests), whether or not it's the global allocator.
+use libmimalloc_sys as _;
+
+unsafe extern "C" {
+    fn mi_option_set(option: libc::c_int, value: libc::c_long);
+}
+
+/// `mi_option_purge_delay` in mimalloc's `mi_option_e` (the same in v2 and v3).
+const MI_OPTION_PURGE_DELAY: libc::c_int = 15;
+
+/// REQ: NFR-001 (T10.2) — mimalloc returns freed memory to the OS at once instead of after
+/// its default 10 ms delay, which in practice kept a compile's peak and a cache fill's churn
+/// resident (98 MiB instead of 170 MiB at a 1M-name compile's peak).
+pub(crate) fn allocator_purge_at_once() {
+    // SAFETY: mi_option_set only stores an integer option; 0 is a documented value for
+    // purge_delay ("immediate purging"). Safe to call from any thread at any time.
+    unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, 0) }
+}
+
+/// REQ: NFR-001 (T10.2) — drops this process's resident pages of its own executable's
+/// read-only mappings (code and constants) that hold no private copies, so code that ran once
+/// (start-up, the API router and OpenAPI document, a compile) stops counting. Pages still in
+/// use come back on their next access, from the page cache (a minor fault). Returns the bytes
+/// that were resident in the mappings it trimmed.
+pub(crate) fn trim_executable_pages() -> io::Result<u64> {
+    let exe = std::fs::read_link("/proc/self/exe")?;
+    let exe = exe.to_string_lossy();
+    let smaps = std::fs::read_to_string("/proc/self/smaps")?;
+    // (start, end, eligible, rss KiB, anonymous KiB) of the mapping being read.
+    let mut cur: Option<(usize, usize, bool, u64, u64)> = None;
+    let mut trimmed = 0u64;
+    let mut finish = |m: Option<(usize, usize, bool, u64, u64)>| {
+        if let Some((start, end, true, rss, 0)) = m
+            && rss > 0
+        {
+            // SAFETY: `start..end` is one whole mapping of this process's executable that's
+            // read-only and has no anonymous (copy-on-write) pages, so every page in it is
+            // an unmodified copy of the file. For such a private file mapping MADV_DONTNEED
+            // only drops resident pages; the next access maps the file's page again (code
+            // keeps running, constants read the same). Failure is harmless (nothing changes).
+            if unsafe {
+                libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_DONTNEED)
+            } == 0
+            {
+                trimmed += rss * 1024;
+            }
+        }
+    };
+    for line in smaps.lines() {
+        let mut parts = line.split_ascii_whitespace();
+        let first = parts.next().unwrap_or_default();
+        if let Some((a, b)) = first.split_once('-')
+            && let (Ok(start), Ok(end)) =
+                (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16))
+        {
+            finish(cur.take());
+            let perms = parts.next().unwrap_or_default();
+            let path = parts.skip(3).collect::<Vec<_>>().join(" ");
+            let read_only = perms.as_bytes().get(1) == Some(&b'-');
+            cur = Some((start, end, read_only && path == exe, 0, 0));
+            continue;
+        }
+        let Some(m) = cur.as_mut() else { continue };
+        let mut kib = || {
+            parts
+                .next()
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        match first {
+            "Rss:" => m.3 = kib(),
+            "Anonymous:" => m.4 = kib(),
+            _ => {}
+        }
+    }
+    finish(cur.take());
+    Ok(trimmed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REQ: NFR-001 (T10.2) — trimming the executable's pages leaves the process working:
+    /// code and constants read back the same afterwards.
+    #[test]
+    fn nfr_001_trimming_code_pages_keeps_the_process_working() {
+        static TABLE: [u64; 4] = [1, 2, 3, 0xdead_beef];
+        let before: u64 = TABLE.iter().sum();
+        let trimmed = trim_executable_pages().unwrap();
+        assert!(trimmed > 0, "this test's own code was resident");
+        assert_eq!(TABLE.iter().sum::<u64>(), before);
+        assert_eq!(format!("{:?}", "still runs"), "\"still runs\"");
+        allocator_purge_at_once();
+        let v: Vec<u8> = vec![7; 1 << 20];
+        drop(v);
+    }
 
     #[test]
     fn dns_001_sockaddr_roundtrip() {

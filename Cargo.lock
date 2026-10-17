@@ -3539,6 +3539,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "libmimalloc-sys",
  "quinn",
  "rustls",
  "rustls-pki-types",

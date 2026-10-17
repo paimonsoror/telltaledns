@@ -1229,6 +1229,8 @@ fn config_files(cli: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 fn run(config: Vec<PathBuf>) -> io::Result<ExitCode> {
+    // REQ: NFR-001 (T10.2) — freed memory goes back to the OS at once.
+    telltale_net::allocator_purge_at_once();
     init_logging();
     let files = config_files(config);
     let Some(cfg) = server::load(&files) else {

@@ -32,6 +32,9 @@ http-body-util = "0.1.3"
 hyper = { version = "1.11.1", default-features = false, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 libc = "0.2.190"
+# REQ: NFR-001 (T10.2) — the allocator the binary already links (mimalloc, same version and
+# features): its option setter, to return freed memory at once. No new crate.
+libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["no_thp"] }
 # REQ: DNS-004/UPS-002 (T7.8) — DoH over HTTP/3; `02` §7 names h3 and h3-quinn.
 h3 = "0.0.8"
 h3-quinn = { version = "0.0.10", default-features = false }

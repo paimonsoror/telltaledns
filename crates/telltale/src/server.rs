@@ -26,6 +26,16 @@ use crate::pipeline::{Handler, Pipeline, Policy, Settings};
 
 /// Loads and validates config from `files` + environment plus what the UI/API stored
 /// (ADR-040), logging every problem.
+/// REQ: NFR-001 (T10.2) — drops the executable's resident pages after work that runs once
+/// (`telltale_net::trim_executable_pages`), off the query path.
+pub(crate) fn trim_code_pages(after: &'static str) {
+    std::thread::spawn(move || {
+        telltale_net::background_thread();
+        let bytes = telltale_net::trim_executable_pages();
+        tracing::debug!(after, mib = bytes >> 20, "released code pages");
+    });
+}
+
 pub(crate) fn load(files: &[PathBuf]) -> Option<Config> {
     load_files(files).map(|c| crate::replication::effective(&c))
 }
@@ -1054,6 +1064,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // An ephemeral resolver pod waits for the cluster's configuration too, so it never serves
     // unfiltered (CLU-009).
     readiness.set_bound();
+    // REQ: NFR-001 (T10.2) — once start-up has settled, the code that ran only for it (config
+    // loading, the API router and OpenAPI document) stops counting as resident.
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        trim_code_pages("start-up");
+    });
     if let Some(c) = &sources.cluster
         && cfg.cluster.ephemeral
     {

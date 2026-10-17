@@ -2,6 +2,8 @@
 
   python3 bench/memprobe.py                 # idle without lists, then 1M names + 100k entries
   python3 bench/memprobe.py --names 0       # idle only
+  python3 bench/memprobe.py --bin <path>    # the shipped binary (the gate figure, T10.2): build it with
+      docker buildx build --platform linux/amd64 --target bin --output type=local,dest=out .
 
 Starts the stub upstream and a server the way `gate.py` does, and at each stage prints RSS split
 by mapping (from /proc/<pid>/smaps: anonymous heap, thread stacks, the mapped list snapshot,
@@ -107,6 +109,10 @@ def main():
         st.start()
         time.sleep(5)
         report("idle, no lists", st.server.pid)
+        if args.settle:
+            # T10.2 — a node that's been up a while: start-up's code pages are released 15 s in.
+            time.sleep(max(args.settle - 5, 0))
+            report(f"idle, {args.settle} s after start", st.server.pid)
     finally:
         st.close()
     if not args.names:

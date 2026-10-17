@@ -487,6 +487,8 @@ impl Publisher {
                 if lookup == Lookup::Indexed {
                     snap.release_pages();
                 }
+                // REQ: NFR-001 (T10.2) — and so can the compile's and the index build's code.
+                crate::server::trim_code_pages("filter index");
                 info!(
                     version,
                     ?lookup,
