@@ -169,6 +169,20 @@ panels.append({
 })
 advance(6)
 
+# REQ: OBS-030 (T14.4) — answer time per histogram bucket over time, with exemplars (Prometheus
+# keeps them only with --enable-feature=exemplar-storage).
+panels.append({
+    "type": "heatmap", "title": "Answer time (histogram buckets)", "id": nid(), "datasource": DS,
+    "description": "Answers per telltale_query_duration_seconds bucket over time: a tail shows as a band, a slow upstream as a stripe. With exemplar storage on in Prometheus, dots link to the query (its trace ID opens it in the web UI's query log).",
+    "gridPos": place(24, 7, 0),
+    "targets": [{"datasource": DS, "expr": f'sum by (le) (increase(telltale_query_duration_seconds_bucket{{{SEL}}}[$__rate_interval]))',
+                 "legendFormat": "{{le}}", "format": "heatmap", "refId": "A", "exemplar": True}],
+    "options": {"calculate": False, "yAxis": {"unit": "s"}, "color": {"scheme": "Blues", "mode": "scheme"},
+                "cellGap": 1, "exemplars": {"color": "orange"}, "legend": {"show": True}, "tooltip": {"mode": "single"}},
+    "fieldConfig": {"defaults": {}, "overrides": []},
+})
+advance(7)
+
 # ---- Service level (REQ: OBS-016, ADR-105): the same objectives as the web UI's card, over
 # the dashboard's time range. $slo_le is the configured threshold, read from /metrics.
 row("Service level")

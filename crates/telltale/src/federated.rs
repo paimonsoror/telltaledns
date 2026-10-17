@@ -124,6 +124,12 @@ enum Read {
     Health,
     /// REQ: OBS-020 — the peer's own probes (older peers don't know it).
     Probes,
+    /// REQ: OBS-030 — the peer's own exemplars (older peers don't know it).
+    Exemplars {
+        from_us: u64,
+        to_us: u64,
+        path: Option<String>,
+    },
     /// REQ: OBS-029 — the peer's own hours for a device or a name (older peers don't know it).
     HeatmapKey {
         q: telltale_api::heatmap::KeyQuery,
@@ -214,6 +220,11 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Probes => serde_json::to_vec(&b.probes()),
         Read::SloParts { q } => serde_json::to_vec(&b.slo_parts(&q)),
         Read::HeatmapKey { q } => serde_json::to_vec(&b.heatmap_key(&q).map_err(text)?),
+        Read::Exemplars {
+            from_us,
+            to_us,
+            path,
+        } => serde_json::to_vec(&b.exemplars(from_us, to_us, path.as_deref())),
         Read::Annotations { filter } => serde_json::to_vec(&b.annotations(&filter)),
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
@@ -956,6 +967,42 @@ impl Backend for Federated {
         self.local.slo_settings()
     }
 
+    // REQ: OBS-030 (ADR-130) — every node's exemplars, labelled.
+    fn exemplars(
+        &self,
+        from_us: u64,
+        to_us: u64,
+        path: Option<&str>,
+    ) -> Vec<telltale_api::latency_heatmap::LatencyExemplar> {
+        let own = self.own_label();
+        let mut out: Vec<_> = if self.with_me() {
+            self.local
+                .exemplars(from_us, to_us, path)
+                .into_iter()
+                .map(|mut x| {
+                    x.node = Some(own.clone());
+                    x
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for (label, rows) in self
+            .everyone_labelled::<Vec<telltale_api::latency_heatmap::LatencyExemplar>>(|| {
+                Read::Exemplars {
+                    from_us,
+                    to_us,
+                    path: path.map(str::to_owned),
+                }
+            })
+        {
+            out.extend(rows.into_iter().map(|mut x| {
+                x.node = Some(label.clone());
+                x
+            }));
+        }
+        out
+    }
     // REQ: OBS-029 (ADR-129) — every node's hours for a device or a name, summed; an hour is
     // covered when every node that answered had the key in its list.
     fn heatmap_key(

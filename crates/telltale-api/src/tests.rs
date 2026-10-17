@@ -1075,8 +1075,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 93 with CLU-013's /cluster/rollout-settings/default, /cluster/rollout, …/promote, …/abort,
     // /cluster/versions, /cluster/versions/{version}/pin, and /cluster/pin; 94 with OBS-033's
     // /annotations; 95 with OBS-027's /stats/slo/attribution; 96 with OBS-029's
-    // /stats/heatmap.
-    assert_eq!(paths.len(), 96);
+    // /stats/heatmap; 98 with OBS-030's /stats/latency/heatmap and /exemplars.
+    assert_eq!(paths.len(), 98);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

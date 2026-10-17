@@ -843,6 +843,45 @@ impl Backend for ApiBackend {
         time_buckets(&self.src, self.counts(step, from_s, to_s))
     }
 
+    // REQ: OBS-030 (ADR-130) — this node's exemplar ring, newest first, with upstream names.
+    fn exemplars(
+        &self,
+        from_us: u64,
+        to_us: u64,
+        path: Option<&str>,
+    ) -> Vec<telltale_api::latency_heatmap::LatencyExemplar> {
+        let paths = telltale_telemetry::Path::ALL;
+        let want = path.and_then(|p| paths.iter().position(|x| x.label() == p));
+        if path.is_some() && want.is_none() {
+            return Vec::new();
+        }
+        let ups = crate::rollups::upstream_names(&self.src.pipeline);
+        self.src
+            .traces
+            .recent(from_us, to_us, want)
+            .into_iter()
+            .map(|x| {
+                let mut trace = String::with_capacity(32);
+                for b in x.trace {
+                    use std::fmt::Write as _;
+                    let _ = write!(trace, "{b:02x}");
+                }
+                telltale_api::latency_heatmap::LatencyExemplar {
+                    trace_id: trace,
+                    time: telltale_api::time::format_us(x.ts_us),
+                    ts_unix_micros: x.ts_us,
+                    latency_us: x.value_us,
+                    path: paths.get(x.path).map_or("other", |p| p.label()).to_owned(),
+                    upstream: (x.upstream > 0)
+                        .then(|| ups.get(usize::from(x.upstream)).cloned())
+                        .flatten()
+                        .filter(|n| !n.is_empty()),
+                    node: None,
+                }
+            })
+            .collect()
+    }
+
     // REQ: OBS-029 (ADR-129) — a device's or a name's hours on this node, from the stored top
     // lists and, for the current hour (and the previous one until it's stored), memory's.
     fn heatmap_key(
@@ -4471,9 +4510,44 @@ fn time_buckets(src: &Sources, series: Vec<(u64, Counts)>) -> Vec<TimeBucket> {
             if let Some(bad) = c.bad.as_deref() {
                 bad_maps(&mut b, bad, &ups);
             }
+            if let Some(lat) = c.lat.as_deref() {
+                lat_rows(&mut b, lat, &ups);
+            }
             b
         })
         .collect()
+}
+
+/// REQ: OBS-030 — a bucket's latency rows: by path label, and `upstream:<name>` (live buckets by
+/// ID through `ups`, stored ones by name).
+fn lat_rows(b: &mut TimeBucket, lat: &telltale_telemetry::agg::Lat, ups: &[String]) {
+    for (p, row) in telltale_telemetry::Path::ALL.iter().zip(&lat.by_path) {
+        if row.iter().any(|n| *n > 0) {
+            b.latency_hist.insert(p.label().to_owned(), row.to_vec());
+        }
+    }
+    let mut add = |key: String, row: &[u32]| {
+        let into = b
+            .latency_hist
+            .entry(key)
+            .or_insert_with(|| vec![0; row.len()]);
+        for (x, y) in into.iter_mut().zip(row) {
+            *x += y;
+        }
+    };
+    for (i, row) in lat.by_upstream.iter().enumerate() {
+        if i > 0 && row.iter().any(|n| *n > 0) {
+            let name = ups
+                .get(i)
+                .filter(|n| !n.is_empty())
+                .cloned()
+                .unwrap_or_else(|| "other".into());
+            add(format!("upstream:{name}"), row);
+        }
+    }
+    for (k, row) in &lat.named_upstream {
+        add(format!("upstream:{k}"), row);
+    }
 }
 
 /// REQ: OBS-027 — a bucket's bad answers as the API's maps: statuses by label, upstreams by name

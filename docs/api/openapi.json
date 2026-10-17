@@ -5332,6 +5332,166 @@
         }
       }
     },
+    "/api/v1/stats/latency/exemplars": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Recent queries in each latency bucket.",
+        "description": "Exemplars: for each answer path and latency bucket, a recent real query (at most one per\npath and bucket a second; the last 512 per node are kept, in memory only), newest first,\nat most 2,048. Each `traceId` opens the query in the log (`GET /api/v1/queries?trace=`), so\na dot on the latency heatmap leads to the query behind it. Every node's. Needs the\n`querylog:read` scope for agents (a trace ID names a query).",
+        "operationId": "latency_exemplars",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start (default 6 hours ago).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Only this path (`cache`, `upstream`, `local`, `synthesized`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exemplars, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatencyExemplars"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats/latency/heatmap": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Answers per latency bucket.",
+        "description": "The latency histogram over time: for each minute (up to 48 hours) or hour (up to 400 days),\nhow many answers landed in each `telltale_query_duration_seconds` bucket (`boundsUs`: 50 µs\nto 5 s, then everything slower), per answer path (`by=path`: `cache`, `upstream`, `local`,\n`synthesized` for blocked and special answers) or per upstream (`by=upstream`). Every node's,\nsummed. `partial` says some steps had answers without bucket counts (an older build's). Use\nit to see a latency tail as a shape over time rather than a p99. Example:\n`GET /api/v1/stats/latency/heatmap?from=-6h&by=path`.",
+        "operationId": "latency_heatmap",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start (RFC 3339 or relative; default 6 hours ago).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "-6h"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "`minute` (up to 48 hours, default) or `hour` (up to 400 days).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "by",
+            "in": "query",
+            "description": "`path` (default: `cache`, `upstream`, `local`, `synthesized`) or `upstream` (one series\nper upstream, by name).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bucket counts per step.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatencyHeatmap"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`heatmap_window`: longer than 48 hours of minutes or 400 days of hours.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/slo": {
       "get": {
         "tags": [
@@ -12687,6 +12847,21 @@
                     "type": "string"
                   }
                 },
+                "latencyHist": {
+                  "type": "object",
+                  "description": "REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "format": "int32",
+                      "minimum": 0
+                    }
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
                 "servfailByStatus": {
                   "type": "object",
                   "description": "REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in\nbuckets without any, or stored by builds before 0.5.",
@@ -13065,6 +13240,134 @@
           "upstream",
           "stage"
         ]
+      },
+      "LatencyExemplar": {
+        "type": "object",
+        "description": "REQ: OBS-030 — a recent query in a latency bucket.",
+        "required": [
+          "traceId",
+          "time",
+          "tsUnixMicros",
+          "latencyUs",
+          "path"
+        ],
+        "properties": {
+          "latencyUs": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "traceId": {
+            "type": "string",
+            "description": "32 hex digits: `GET /api/v1/queries?trace=` finds the query."
+          },
+          "tsUnixMicros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LatencyExemplars": {
+        "type": "object",
+        "description": "Recent exemplars, newest first.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LatencyExemplar"
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LatencyHeatmap": {
+        "type": "object",
+        "description": "REQ: OBS-030 — answers per latency bucket over time.",
+        "required": [
+          "from",
+          "to",
+          "step",
+          "by",
+          "boundsUs",
+          "starts",
+          "series",
+          "partial"
+        ],
+        "properties": {
+          "boundsUs": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "The buckets' upper bounds (µs); the last bucket (beyond 5 s) has none."
+          },
+          "by": {
+            "type": "string",
+            "description": "`path` or `upstream`."
+          },
+          "from": {
+            "type": "string"
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Some steps had answers but no bucket counts (stored by an older build, or a node that\ndoesn't count them yet): their answers are missing here."
+          },
+          "series": {
+            "type": "object",
+            "description": "Per path or upstream: for each start, the answers in each of the 17 buckets."
+          },
+          "starts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Each step's start (Unix seconds), oldest first."
+          },
+          "step": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        }
       },
       "LatencyRow": {
         "type": "object",
@@ -15799,6 +16102,21 @@
               "type": "integer",
               "format": "int32",
               "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "latencyHist": {
+            "type": "object",
+            "description": "REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
             },
             "propertyNames": {
               "type": "string"

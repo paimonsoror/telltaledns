@@ -1897,3 +1897,51 @@ test('obs_029 heatmap', async () => {
   await expect(page).toHaveURL(/#\/queries\?.*client=192\.168\.2\.14/);
   await page.unroute('**/api/v1/stats/heatmap*');
 });
+
+// REQ: OBS-030 (T14.4) — the latency heatmap: the Dashboard's tab draws the grid from the real
+// server; then stubbed bands and one exemplar: the dot opens its query by trace ID, the
+// objective's line is named, and the table view toggles.
+test('obs_030 latency heatmap', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await page.getByTestId('time-heatmap-tab').click();
+  const lh = page.getByTestId('latency-heatmap');
+  await expect(lh.getByTestId('latency-heatmap-canvas')).toBeVisible();
+  const now = Math.floor(Date.now() / 1000);
+  const start = now - (now % 60) - 120;
+  const row = (i: number, n: number) => Array.from({ length: 17 }, (_, j) => (j === i ? n : 0));
+  await page.route('**/api/v1/stats/latency/heatmap*', (route) =>
+    route.fulfill({
+      json: {
+        from: new Date((start - 3600) * 1000).toISOString(), to: new Date(now * 1000).toISOString(), step: 'minute', by: 'path',
+        boundsUs: [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 2500000, 5000000],
+        starts: [start, start + 60, start + 120],
+        series: { cache: [row(0, 900), row(0, 880), row(0, 910)], upstream: [row(9, 90), row(12, 10), row(9, 85)] },
+        partial: false,
+      },
+    }),
+  );
+  const trace = '0123456789abcdef0123456789abcdef';
+  await page.route('**/api/v1/stats/latency/exemplars*', (route) =>
+    route.fulfill({
+      json: {
+        items: [{ traceId: trace, time: new Date((start + 60) * 1000).toISOString(), tsUnixMicros: (start + 61) * 1_000_000, latencyUs: 400000, path: 'upstream', upstream: 'quad9-1' }],
+      },
+    }),
+  );
+  await lh.getByRole('button', { name: '1 h', exact: true }).click();
+  await expect(lh).toContainText('the latency objective (250 ms)');
+  await lh.getByRole('button', { name: 'Table', exact: true }).click();
+  await expect(lh.getByTestId('latency-heatmap-table')).toContainText('900');
+  await lh.getByRole('button', { name: 'Grid', exact: true }).click();
+  const dot = lh.getByTestId('exemplar');
+  await expect(dot).toHaveCount(1);
+  await expect(dot).toHaveAttribute('aria-label', /400 ms upstream via quad9-1/);
+  await dot.click();
+  await expect(page).toHaveURL(new RegExp(`#/queries\\?trace=${trace}`));
+  await page.unroute('**/api/v1/stats/latency/heatmap*');
+  await page.unroute('**/api/v1/stats/latency/exemplars*');
+  await page.goto('/#/');
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+});

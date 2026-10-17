@@ -1903,6 +1903,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stats/latency/exemplars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent queries in each latency bucket.
+         * @description Exemplars: for each answer path and latency bucket, a recent real query (at most one per
+         *     path and bucket a second; the last 512 per node are kept, in memory only), newest first,
+         *     at most 2,048. Each `traceId` opens the query in the log (`GET /api/v1/queries?trace=`), so
+         *     a dot on the latency heatmap leads to the query behind it. Every node's. Needs the
+         *     `querylog:read` scope for agents (a trace ID names a query).
+         */
+        get: operations["latency_exemplars"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/stats/latency/heatmap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Answers per latency bucket.
+         * @description The latency histogram over time: for each minute (up to 48 hours) or hour (up to 400 days),
+         *     how many answers landed in each `telltale_query_duration_seconds` bucket (`boundsUs`: 50 µs
+         *     to 5 s, then everything slower), per answer path (`by=path`: `cache`, `upstream`, `local`,
+         *     `synthesized` for blocked and special answers) or per upstream (`by=upstream`). Every node's,
+         *     summed. `partial` says some steps had answers without bucket counts (an older build's). Use
+         *     it to see a latency tail as a shape over time rather than a p99. Example:
+         *     `GET /api/v1/stats/latency/heatmap?from=-6h&by=path`.
+         */
+        get: operations["latency_heatmap"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/slo": {
         parameters: {
             query?: never;
@@ -4820,6 +4870,14 @@ export interface components {
                     [key: string]: number;
                 };
                 /**
+                 * @description REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds
+                 *     and the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and
+                 *     by upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.
+                 */
+                latencyHist?: {
+                    [key: string]: number[];
+                };
+                /**
                  * @description REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in
                  *     buckets without any, or stored by builds before 0.5.
                  */
@@ -4978,6 +5036,45 @@ export interface components {
          * @enum {string}
          */
         LatencyBy: "path" | "qtype" | "upstream" | "stage";
+        /** @description REQ: OBS-030 — a recent query in a latency bucket. */
+        LatencyExemplar: {
+            /** Format: int32 */
+            latencyUs: number;
+            node?: string | null;
+            path: string;
+            /** @description RFC 3339. */
+            time: string;
+            /** @description 32 hex digits: `GET /api/v1/queries?trace=` finds the query. */
+            traceId: string;
+            /** Format: int64 */
+            tsUnixMicros: number;
+            upstream?: string | null;
+        };
+        /** @description Recent exemplars, newest first. */
+        LatencyExemplars: {
+            items: components["schemas"]["LatencyExemplar"][];
+            missingNodes?: string[];
+        };
+        /** @description REQ: OBS-030 — answers per latency bucket over time. */
+        LatencyHeatmap: {
+            /** @description The buckets' upper bounds (µs); the last bucket (beyond 5 s) has none. */
+            boundsUs: number[];
+            /** @description `path` or `upstream`. */
+            by: string;
+            from: string;
+            missingNodes?: string[];
+            /**
+             * @description Some steps had answers but no bucket counts (stored by an older build, or a node that
+             *     doesn't count them yet): their answers are missing here.
+             */
+            partial: boolean;
+            /** @description Per path or upstream: for each start, the answers in each of the 17 buckets. */
+            series: Record<string, never>;
+            /** @description Each step's start (Unix seconds), oldest first. */
+            starts: number[];
+            step: string;
+            to: string;
+        };
         /** @description Latency percentiles for one key (HDR histogram, 2 significant digits). */
         LatencyRow: {
             /** Format: int64 */
@@ -6129,6 +6226,14 @@ export interface components {
             /** @description By status (`cached`, `forwarded`, `blocked`, ...). */
             byStatus: {
                 [key: string]: number;
+            };
+            /**
+             * @description REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds
+             *     and the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and
+             *     by upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.
+             */
+            latencyHist?: {
+                [key: string]: number[];
             };
             /**
              * @description REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in
@@ -10301,6 +10406,99 @@ export interface operations {
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    latency_exemplars: {
+        parameters: {
+            query?: {
+                /** @description Start (default 6 hours ago). */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /** @description Only this path (`cache`, `upstream`, `local`, `synthesized`). */
+                path?: string;
+                /** @description `cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`. */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exemplars, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LatencyExemplars"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    latency_heatmap: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start (RFC 3339 or relative; default 6 hours ago).
+                 * @example -6h
+                 */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /** @description `minute` (up to 48 hours, default) or `hour` (up to 400 days). */
+                step?: string;
+                /**
+                 * @description `path` (default: `cache`, `upstream`, `local`, `synthesized`) or `upstream` (one series
+                 *     per upstream, by name).
+                 */
+                by?: string;
+                /** @description `cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`. */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bucket counts per step. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LatencyHeatmap"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `heatmap_window`: longer than 48 hours of minutes or 400 days of hours. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

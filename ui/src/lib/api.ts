@@ -132,6 +132,11 @@ export const api = {
   latency: (by: S['LatencyBy'], scope?: string) => get<S['Items_LatencyRow']>('/stats/latency', { by, scope }),
   // REQ: OBS-016 — the service-level objectives and their error budgets.
   slo: (scope?: string) => get<S['SloStatus']>('/stats/slo', { scope }),
+  // REQ: OBS-030 — answers per latency bucket over time, and recent exemplars.
+  latencyHeatmap: (q: { from?: string; step?: string; by?: string; scope?: string }) =>
+    get<S['LatencyHeatmap']>('/stats/latency/heatmap', q),
+  latencyExemplars: (q: { from?: string; path?: string; scope?: string }) =>
+    get<S['LatencyExemplars']>('/stats/latency/exemplars', q),
   // REQ: OBS-029 — queries per slot (network, a device, or a name).
   heatmap: (q: { from?: string; grain?: string; kind?: string; key?: string; measure?: string; scope?: string }) =>
     get<S['Heatmap']>('/stats/heatmap', q),

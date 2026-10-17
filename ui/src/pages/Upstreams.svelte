@@ -10,6 +10,7 @@
   import { currentMode } from '../lib/mode.svelte';
   import { href } from '../lib/router.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
 
   let upstreams = $state<S['UpstreamInfo'][]>([]);
   let latency = $state<S['LatencyRow'][]>([]);
@@ -98,6 +99,8 @@
         : { ok: false, text: `Doesn't work: ${r.error ?? r.detail}` };
     },
   };
+  // REQ: OBS-030 — the upstream whose answer times the heatmap shows.
+  let latencyOf = $state('');
 </script>
 
 <div class="page">
@@ -135,6 +138,18 @@
     Health: <strong>closed</strong> = healthy, <strong>open</strong> = benched after failures,
     <strong>half_open</strong> = being probed. Percentiles cover this hour.
   </p>
+  <!-- REQ: OBS-030 (ADR-130) — one upstream's answer times as a shape over time. -->
+  {#if upstreams.length}
+    <section class="card" data-testid="upstream-latency">
+      <div class="card-head">
+        <h2>Answer time over time<HelpButton id="latency-heatmap" /></h2>
+        <select bind:value={latencyOf} aria-label="Upstream">
+          {#each upstreams as u (u.id)}<option value={u.name}>{u.name}</option>{/each}
+        </select>
+      </div>
+      {#key latencyOf}<LatencyHeatmap by="upstream" upstream={latencyOf || upstreams[0].name} testid="upstream-latency-heatmap" />{/key}
+    </section>
+  {/if}
   <!-- REQ: OBS-019 (ADR-108) — are the upstreams telling the truth? -->
   <section class="card" data-testid="upstream-quality">
     <h2>Answer quality<HelpButton id="upstream-checks" /></h2>

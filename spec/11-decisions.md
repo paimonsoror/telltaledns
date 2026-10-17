@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-130 — The latency heatmap: per-minute bucket counts and an exemplar ring (Proposed)
+**Context:** T14.4 (OBS-030; design `docs/design/latency-heatmap.md`). Percentiles per hour hide a DoT cold-start tail or one slow PTR; the Prometheus histogram has the shape but the UI didn't draw it (owner, 2026-10-16).
+**Decision:**
+- The aggregator counts each answer into its `BUCKETS_US` bucket per path and per upstream, in minute buckets only (not the per-second ones), allocated with the minute's first answer; stored as section `L`; hours sum minutes.
+- The exemplar sink keeps its last 512 choices in a ring (at most one per path and bucket a second, as for OpenMetrics).
+- Defaults taken at the start (owner: accept all defaults, 2026-10-16): the real 16 bounds plus overflow (17 rows; the design's 14 was a miscount); the paths the histogram has (`synthesized` holds blocked answers); a federated read says `partial` (not which node) when some buckets lack the counts; the Upstreams page gets a card with an upstream picker (it has no drawer); no per-client heatmap (design §8: the device timeline T14.8 gets a latency lane); the aggregator's cost is measured with the counts switched off and on.
+**Consequences:** about 300 B per minute bucket with answers (≈ 0.9 MB for 48 hours) plus 68 B per upstream used; one bucket index and an increment per event; exemplars are a live aid, older ones are gone.
+
 ## ADR-129 — The rhythm heatmap reads the buckets and the hourly top lists; nothing new stored (Proposed)
 **Context:** T14.3 (OBS-029; design `docs/design/rhythm-heatmap.md`). The owner saw a 10 am–2 pm burst only with a script (2026-10-16). ADR-123 left a per-minute heatmap "possible later, behind a benchmark".
 **Decision:**

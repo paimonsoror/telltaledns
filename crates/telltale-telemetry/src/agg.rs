@@ -10,7 +10,7 @@ use crate::event::{Name, QueryEvent, Record, UpstreamEvent};
 use crate::export::Exported;
 use crate::recent::{ClientWindow, RecentClients};
 use crate::topk::{SpaceSaving, Top};
-use crate::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Path, Proto, Status, qtype_index};
+use crate::{BUCKETS_US, N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Path, Proto, Status, qtype_index};
 
 /// Per-second buckets kept (15 minutes) and per-minute buckets (48 hours).
 pub const SECONDS: usize = 15 * 60;
@@ -54,6 +54,66 @@ pub struct Counts {
     /// REQ: OBS-027 (ADR-127) — the bucket's bad answers broken down, from its first one on
     /// (most buckets have none).
     pub bad: Option<Box<Bad>>,
+    /// REQ: OBS-030 (ADR-130) — answers per latency bucket, per path and upstream; minute
+    /// buckets only (not per second), from the minute's first answer.
+    pub lat: Option<Box<Lat>>,
+}
+
+/// Latency buckets: [`BUCKETS_US`]' bounds and the overflow (as `telltale_query_duration_seconds`).
+pub const N_LAT: usize = BUCKETS_US.len() + 1;
+/// Answer paths with their own row of buckets.
+pub const N_PATH: usize = Path::ALL.len();
+
+/// The latency bucket of `us` (the first bound at or above it; else the overflow).
+pub fn lat_bucket(us: u32) -> usize {
+    BUCKETS_US
+        .iter()
+        .position(|&ub| u64::from(us) <= ub)
+        .unwrap_or(N_LAT - 1)
+}
+
+/// REQ: OBS-030 (ADR-130) — a bucket's answers per latency bucket.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lat {
+    /// By answer path ([`Path`] order).
+    pub by_path: [[u32; N_LAT]; N_PATH],
+    /// By upstream ID, for answers an upstream gave (live buckets).
+    pub by_upstream: Vec<[u32; N_LAT]>,
+    /// By upstream name, in stored buckets (see [`Counts::name_upstreams`]); sorted by name.
+    pub named_upstream: Vec<(Box<str>, [u32; N_LAT])>,
+}
+
+/// Adds `b` into `a`, element-wise.
+pub fn add_row(a: &mut [u32; N_LAT], b: &[u32; N_LAT]) {
+    for (x, y) in a.iter_mut().zip(b) {
+        *x = x.saturating_add(*y);
+    }
+}
+
+/// Adds `row` to `key`'s entry in `v` (kept sorted by key).
+pub fn add_named_row(v: &mut Vec<(Box<str>, [u32; N_LAT])>, key: &str, row: &[u32; N_LAT]) {
+    match v.binary_search_by(|(k, _)| (**k).cmp(key)) {
+        Ok(i) => add_row(&mut v[i].1, row),
+        Err(i) => v.insert(i, (key.into(), *row)),
+    }
+}
+
+impl Lat {
+    /// Adds `b` into `self` (both the ID and the name columns).
+    pub fn merge(&mut self, b: &Self) {
+        for (x, y) in self.by_path.iter_mut().zip(&b.by_path) {
+            add_row(x, y);
+        }
+        for (i, row) in b.by_upstream.iter().enumerate() {
+            if self.by_upstream.len() <= i {
+                self.by_upstream.resize(i + 1, [0; N_LAT]);
+            }
+            add_row(&mut self.by_upstream[i], row);
+        }
+        for (k, row) in &b.named_upstream {
+            add_named_row(&mut self.named_upstream, k, row);
+        }
+    }
 }
 
 /// REQ: OBS-027 (ADR-127) — a bucket's bad answers, exactly: SERVFAILs (the availability
@@ -145,6 +205,15 @@ impl Counts {
     /// REQ: OBS-027 — the per-ID upstream columns of the bad answers as names (`names[id]`,
     /// this process's upstream table; ID 0 and IDs past it are `none` and `other`), for storing.
     pub fn name_upstreams(&mut self, names: &[&str]) {
+        // REQ: OBS-030 — the latency rows of the upstreams by name too (ID 0 never has one).
+        if let Some(l) = self.lat.as_deref_mut() {
+            for (i, row) in l.by_upstream.iter().enumerate() {
+                if i > 0 && row.iter().any(|n| *n > 0) {
+                    let name = names.get(i).copied().unwrap_or("other");
+                    add_named_row(&mut l.named_upstream, name, row);
+                }
+            }
+        }
         let Some(b) = self.bad.as_deref_mut() else {
             return;
         };
@@ -203,8 +272,22 @@ fn bump(v: &mut Vec<u32>, id: usize) {
 }
 
 impl Counts {
-    fn add_query(&mut self, e: &QueryEvent, slow_us: u64) {
+    fn add_query(&mut self, e: &QueryEvent, slow_us: u64, with_lat: bool) {
         self.total = self.total.saturating_add(1);
+        // REQ: OBS-030 — one bucket index and an increment (answered queries only).
+        if with_lat && e.status != Status::Dropped {
+            let l = self.lat.get_or_insert_with(Box::default);
+            let b = lat_bucket(e.t_total_us);
+            let cell = &mut l.by_path[e.status.path() as usize][b];
+            *cell = cell.saturating_add(1);
+            if e.upstream > 0 {
+                let u = usize::from(e.upstream).min(MAX_IDS - 1);
+                if l.by_upstream.len() <= u {
+                    l.by_upstream.resize(u + 1, [0; N_LAT]);
+                }
+                l.by_upstream[u][b] = l.by_upstream[u][b].saturating_add(1);
+            }
+        }
         // REQ: OBS-016 — the latency objective's bad events (dropped queries got no answer).
         let slow = is_slow(e, slow_us);
         if slow {
@@ -621,6 +704,9 @@ pub struct Aggregates {
     /// REQ: OBS-016 (T11.1) — answers slower than this (µs) count as `slow` in the time
     /// buckets: the latency objective's threshold (`[slo] latency_ms`).
     pub slo_latency_us: u64,
+    /// REQ: OBS-030 — count the minute buckets' latency rows (on; off only to measure their
+    /// cost).
+    pub latency_hist: bool,
 }
 
 /// The latency objective's default threshold (`[slo] latency_ms = 250`).
@@ -651,6 +737,7 @@ impl Aggregates {
             exported: Exported::default(),
             recent: RecentClients::default(),
             slo_latency_us: DEFAULT_SLO_LATENCY_US,
+            latency_hist: true,
         }
     }
 
@@ -674,10 +761,11 @@ impl Aggregates {
                 self.exported.add_query(e);
                 self.recent.add(e.client_ip, ts_s);
                 let slow_us = self.slo_latency_us;
-                for series in [&mut self.seconds, &mut self.minutes] {
-                    if let Some(c) = series.at(ts_s) {
-                        c.add_query(e, slow_us);
-                    }
+                if let Some(c) = self.seconds.at(ts_s) {
+                    c.add_query(e, slow_us, false);
+                }
+                if let Some(c) = self.minutes.at(ts_s) {
+                    c.add_query(e, slow_us, self.latency_hist);
                 }
                 if in_hour {
                     self.current.add_query(e, name, self.seq, slow_us);

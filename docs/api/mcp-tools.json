@@ -240,7 +240,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes.",
+    "description": "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes. With histogram: true, also the last hour's answers per latency bucket per minute (boundsUs, per path or per upstream when by is upstream), to see a tail's shape.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -253,6 +253,10 @@
             "qtype"
           ],
           "type": "string"
+        },
+        "histogram": {
+          "description": "Also the last hour's bucket counts per minute (OBS-030).",
+          "type": "boolean"
         },
         "hour": {
           "description": "Which hour (default current).",

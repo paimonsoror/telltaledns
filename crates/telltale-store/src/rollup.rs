@@ -11,8 +11,8 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use telltale_telemetry::agg::{Bad, Counts};
-use telltale_telemetry::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Status};
+use telltale_telemetry::agg::{Bad, Counts, Lat, N_LAT};
+use telltale_telemetry::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Path as AnswerPath, Status};
 
 use crate::state::StateError;
 
@@ -123,7 +123,76 @@ pub fn encode(c: &Counts) -> Vec<u8> {
         out.push(BAD_TAG);
         encode_bad(b, &mut out);
     }
+    // REQ: OBS-030 (ADR-130) — answers per latency bucket, after the bad answers.
+    if let Some(l) = c.lat.as_deref() {
+        out.push(LAT_TAG);
+        encode_lat(l, &mut out);
+    }
     out
+}
+
+/// Rows `path:<label>` and `upstream:<name>`, each the bucket count then that many u32s.
+fn encode_lat(l: &Lat, out: &mut Vec<u8>) {
+    let mut rows: Vec<(String, &[u32; N_LAT])> = AnswerPath::ALL
+        .iter()
+        .zip(&l.by_path)
+        .filter(|(_, r)| r.iter().any(|n| *n > 0))
+        .map(|(p, r)| (format!("path:{}", p.label()), r))
+        .collect();
+    rows.extend(
+        l.named_upstream
+            .iter()
+            .map(|(k, r)| (format!("upstream:{k}"), r)),
+    );
+    #[allow(clippy::cast_possible_truncation)] // N_LAT < 256
+    out.push(N_LAT as u8);
+    let n = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+    out.extend_from_slice(&n.to_le_bytes());
+    for (k, row) in rows.iter().take(usize::from(n)) {
+        let k = k.as_bytes();
+        let len = u8::try_from(k.len()).unwrap_or(u8::MAX);
+        out.push(len);
+        out.extend_from_slice(&k[..usize::from(len)]);
+        for v in *row {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+/// The latency section's body and what follows it; `None` when damaged. More buckets than this
+/// build has (a newer build's) fold into the overflow.
+fn decode_lat(bytes: &[u8]) -> Option<(Lat, &[u8])> {
+    let (&buckets, rest) = bytes.split_first()?;
+    let (count, mut rest) = rest.split_first_chunk::<2>()?;
+    let width = usize::from(buckets) * 4;
+    let mut lat = Lat::default();
+    for _ in 0..u16::from_le_bytes(*count) {
+        let (&len, entry) = rest.split_first()?;
+        let len = usize::from(len);
+        if entry.len() < len + width {
+            return None;
+        }
+        let key = String::from_utf8_lossy(&entry[..len]);
+        let mut row = [0u32; N_LAT];
+        for (i, w) in entry[len..len + width]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            let at = i.min(N_LAT - 1);
+            row[at] = row[at].saturating_add(u32::from_le_bytes(*w));
+        }
+        rest = &entry[len + width..];
+        if let Some(label) = key.strip_prefix("path:") {
+            if let Some(at) = AnswerPath::ALL.iter().position(|p| p.label() == label) {
+                telltale_telemetry::agg::add_row(&mut lat.by_path[at], &row);
+            }
+        } else if let Some(name) = key.strip_prefix("upstream:") {
+            telltale_telemetry::agg::add_named_row(&mut lat.named_upstream, name, &row);
+        }
+    }
+    Some((lat, rest))
 }
 
 /// The bad-answer lists, in order: SERVFAIL by status, slow by status, slow by rcode,
@@ -233,19 +302,16 @@ const GROUPS_TAG: u8 = b'G';
 const SLOW_TAG: u8 = b'S';
 /// Marks the bad answers broken down (T14.1).
 const BAD_TAG: u8 = b'B';
+/// Marks the answers per latency bucket (T14.4).
+const LAT_TAG: u8 = b'L';
 
 /// The tagged sections after the fixed columns (see [`encode`]): the named groups and the
 /// slow-answer count. A damaged section ends the reading; what came before it is kept.
-fn decode_tail(
-    mut b: &[u8],
-) -> (
-    Vec<telltale_telemetry::agg::NamedGroup>,
-    u32,
-    Option<Box<Bad>>,
-) {
+fn decode_tail(mut b: &[u8]) -> Tail {
     let mut groups = Vec::new();
     let mut slow = 0;
     let mut bad = None;
+    let mut lat = None;
     while let Some((&tag, rest)) = b.split_first() {
         match tag {
             GROUPS_TAG => match decode_groups(rest) {
@@ -269,11 +335,27 @@ fn decode_tail(
                 }
                 None => break,
             },
+            LAT_TAG => match decode_lat(rest) {
+                Some((d, r)) => {
+                    lat = Some(Box::new(d));
+                    b = r;
+                }
+                None => break,
+            },
             _ => break,
         }
     }
-    (groups, slow, bad)
+    (groups, slow, bad, lat)
 }
+
+/// What follows the fixed columns: the named groups, the slow count, the bad answers, and the
+/// latency rows.
+type Tail = (
+    Vec<telltale_telemetry::agg::NamedGroup>,
+    u32,
+    Option<Box<Bad>>,
+    Option<Box<Lat>>,
+);
 
 /// The named-group section's body (after its tag) and what follows it; `None` when damaged.
 fn decode_groups(b: &[u8]) -> Option<(Vec<telltale_telemetry::agg::NamedGroup>, &[u8])> {
@@ -340,7 +422,7 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
     }
     c.upstreams = vec![words.next()?];
     c.upstream_failures = words.next()?;
-    (c.named_groups, c.slow, c.bad) = decode_tail(tail);
+    (c.named_groups, c.slow, c.bad, c.lat) = decode_tail(tail);
     Some(c)
 }
 
@@ -369,6 +451,9 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     a.slow = a.slow.saturating_add(b.slow);
     if let Some(bb) = b.bad.as_deref() {
         a.bad.get_or_insert_with(Box::default).merge(bb);
+    }
+    if let Some(bl) = b.lat.as_deref() {
+        a.lat.get_or_insert_with(Box::default).merge(bl);
     }
     for g in &b.named_groups {
         telltale_telemetry::agg::add_named(&mut a.named_groups, &g.name, g.total, g.blocked);
@@ -1035,6 +1120,36 @@ mod tests {
             day.bad.as_deref().unwrap().servfail_status[Status::Refreshed as usize],
             20
         );
+    }
+
+    /// REQ: OBS-030 (T14.4) — latency rows round-trip by path and upstream name, an hour is the
+    /// element-wise sum of its minutes, and a bucket without them reads as none.
+    #[test]
+    fn obs_030_latency_rows_round_trip_and_sum_into_hours() {
+        let mut c = counts(10, 0);
+        let mut l = Lat::default();
+        l.by_path[AnswerPath::Cache as usize][0] = 9;
+        l.by_path[AnswerPath::Upstream as usize][9] = 1;
+        l.by_upstream = vec![[0; N_LAT], [0; N_LAT]];
+        l.by_upstream[1][9] = 1;
+        c.lat = Some(Box::new(l));
+        c.name_upstreams(&["", "quad9-1"]);
+        let d = decode(&encode(&c)).unwrap();
+        let back = d.lat.as_deref().unwrap();
+        assert_eq!(back.by_path[AnswerPath::Cache as usize][0], 9);
+        assert_eq!(back.by_path[AnswerPath::Upstream as usize][9], 1);
+        assert_eq!(back.named_upstream.len(), 1);
+        assert_eq!(&*back.named_upstream[0].0, "quad9-1");
+        assert_eq!(back.named_upstream[0].1[9], 1);
+        let r = Rollups::in_memory().unwrap();
+        let h0 = 1_791_072_000;
+        let rows: Vec<(u64, Counts)> = (0..60).map(|m| (h0 + m * 60, c.clone())).collect();
+        r.put_minutes(&rows).unwrap();
+        let hour = &r.range(Level::Hour, h0, h0 + 3600).unwrap()[0].1;
+        let hl = hour.lat.as_deref().unwrap();
+        assert_eq!(hl.by_path[AnswerPath::Cache as usize][0], 9 * 60);
+        assert_eq!(hl.named_upstream[0].1[9], 60);
+        assert!(decode(&encode(&counts(5, 0))).unwrap().lat.is_none());
     }
 
     /// REQ: OBS-029 — one key's hours, and the hours whose list doesn't have it.

@@ -2034,6 +2034,13 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - It draws the busiest 100 names (less their blocked queries) and the busiest 100 blocked names, every node of a cluster, from the same approximate top lists as the dashboard, so it adds no work to answering queries. Each hour starts every count again, so the map looks sparse just after the hour.
 - Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
 
+### Where does time go?
+The dashboard's **Where time goes** card (Advanced view) has two views:
+- **Percentiles:** this hour's p50, p90, p99, and max per answer path and transport, and the time spent waiting for upstreams.
+- **Heatmap:** answers over time (minutes for 1 to 24 hours, hours for 7 days) in the bands of `telltale_query_duration_seconds` (50 µs to 5 s, and slower), darker where more answers landed; one path or several (**cache**, **upstream**, **local names**, **blocked & special**). The dashed line is the [latency objective](#service-level-objectives)'s threshold. Dots are real queries (exemplars): select one to open it in the query log. The ticks along the top are [change markers](#change-markers). **Table** lists the counts.
+- On the **Upstreams** page, **Answer time over time** shows the same for one upstream.
+- `GET /api/v1/stats/latency/heatmap?from=-6h&by=path|upstream&step=minute|hour` (minutes back 48 hours, hours back 400 days) and `GET /api/v1/stats/latency/exemplars` (the last 512 per node, newest first; agents need `querylog:read`) return the data; the MCP tool `latency_breakdown` with `histogram: true` adds the last hour's bands. Each node counts its answers into the bands as it already does for `/metrics`, once per minute bucket; older builds' minutes have no bands and the answer says `partial`.
+
 ### Heatmap
 **Monitor → Heatmap** shows when queries happen: one row per day (or, with **Typical week**, one per weekday, each cell the mean of those days), one column per hour, 15 minutes, or minute of the day, in your browser's local time.
 - **Network** counts every query exactly, from the dashboard's per-minute and per-hour counts: hours back 400 days, 15-minute and minute slots back 7 days. **Blocked** colours blocked queries instead.

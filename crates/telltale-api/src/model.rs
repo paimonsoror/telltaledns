@@ -235,6 +235,11 @@ pub struct TimeBucket {
     /// REQ: OBS-027 — slow answers by response code.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub slow_by_rcode: BTreeMap<String, u32>,
+    /// REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds
+    /// and the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and
+    /// by upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub latency_hist: BTreeMap<String, Vec<u32>>,
 }
 
 /// Query parameters for `GET /stats/timeseries`.

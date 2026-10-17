@@ -50,6 +50,21 @@ pub(crate) struct Exemplar {
 /// Exemplars by path and bucket.
 pub(crate) type ExemplarTable = [[Option<Exemplar>; N_BUCKET]; N_PATH];
 
+/// REQ: OBS-030 (ADR-130) — the exemplars kept for the latency heatmap.
+pub(crate) const RING: usize = 512;
+
+/// REQ: OBS-030 — one exemplar as the heatmap draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RingExemplar {
+    pub(crate) trace: [u8; 16],
+    pub(crate) ts_us: u64,
+    pub(crate) value_us: u32,
+    /// [`Path`] index.
+    pub(crate) path: usize,
+    /// Upstream ID (0: none).
+    pub(crate) upstream: u16,
+}
+
 /// A query to send as a trace, as the privacy level keeps it.
 #[derive(Debug, Clone, Copy)]
 struct Traced {
@@ -62,6 +77,8 @@ struct Traced {
 #[derive(Debug, Default)]
 pub(crate) struct Traces {
     exemplars: Mutex<ExemplarTable>,
+    /// REQ: OBS-030 — the latest exemplars chosen, oldest first (at most [`RING`]).
+    ring: Mutex<VecDeque<RingExemplar>>,
     queue: Mutex<VecDeque<Traced>>,
     /// Queries sent as traces, dropped (the queue was full), and lost to failed requests.
     pub(crate) sent: AtomicU64,
@@ -75,6 +92,23 @@ impl Traces {
             .exemplars
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// REQ: OBS-030 — exemplars in `[from_us, to_us)` (of one path, when given), newest first.
+    pub(crate) fn recent(
+        &self,
+        from_us: u64,
+        to_us: u64,
+        path: Option<usize>,
+    ) -> Vec<RingExemplar> {
+        self.ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .rev()
+            .filter(|x| x.ts_us >= from_us && x.ts_us < to_us && path.is_none_or(|p| p == x.path))
+            .copied()
+            .collect()
     }
 
     fn take(&self, n: usize) -> Vec<Traced> {
@@ -159,6 +193,23 @@ impl Sink for TraceSink {
         let trace = trace_of(&e, &name);
         if exemplar {
             self.filled[path][slot] = e.ts_us;
+            {
+                let mut ring = self
+                    .shared
+                    .ring
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if ring.len() == RING {
+                    ring.pop_front();
+                }
+                ring.push_back(RingExemplar {
+                    trace,
+                    ts_us: e.ts_us,
+                    value_us: e.t_total_us,
+                    path,
+                    upstream: e.upstream,
+                });
+            }
             self.shared
                 .exemplars
                 .lock()
@@ -565,6 +616,60 @@ mod tests {
             "a second later, replaced"
         );
         assert!(shared.take(10).is_empty(), "no collector: no traces");
+    }
+
+    /// REQ: OBS-030 (ADR-130) — 2,000 answers in one second give at most one exemplar per path
+    /// and bucket (17 × 4); the ring returns them newest first, by window and path, and keeps
+    /// at most 512.
+    #[test]
+    fn obs_030_the_exemplar_ring_is_bounded_and_newest_first() {
+        let _key = crate::privacy::TEST_KEY_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (shared, mut s) = sink("");
+        let t0 = 1_791_000_000_000_000;
+        let n = name("shop.example");
+        let statuses = [
+            Status::Cached,
+            Status::Forwarded,
+            Status::Local,
+            Status::Blocked,
+        ];
+        for i in 0..2000u64 {
+            let latency = u32::try_from((i * 7_919) % 6_000_000).unwrap();
+            let st = statuses[usize::try_from(i % 4).unwrap()];
+            s.record(&Record::Query(ev(t0 + i * 400, latency, 0, st), n));
+        }
+        let all = shared.recent(0, u64::MAX, None);
+        assert!(
+            !all.is_empty() && all.len() <= N_BUCKET * N_PATH,
+            "{}",
+            all.len()
+        );
+        assert!(
+            all.windows(2).all(|w| w[0].ts_us >= w[1].ts_us),
+            "newest first"
+        );
+        let cache = shared.recent(0, u64::MAX, Some(Path::Cache as usize));
+        assert!(cache.iter().all(|x| x.path == Path::Cache as usize));
+        assert_eq!(shared.recent(0, t0, None).len(), 0, "the window");
+        for sec in 1..40u64 {
+            for b in 0..17u32 {
+                s.record(&Record::Query(
+                    ev(
+                        t0 + sec * 1_000_000 + u64::from(b),
+                        [
+                            40, 90, 200, 400, 900, 2_000, 4_000, 9_000, 20_000, 40_000, 90_000,
+                            200_000, 400_000, 900_000, 2_000_000, 4_000_000, 9_000_000,
+                        ][b as usize],
+                        0,
+                        Status::Cached,
+                    ),
+                    n,
+                ));
+            }
+        }
+        assert_eq!(shared.recent(0, u64::MAX, None).len(), RING, "bounded");
     }
 
     /// REQ: OBS-017 — 1 in N and every slow query is queued; the queue is bounded (counted);

@@ -667,3 +667,93 @@ fn obs_027_bad_answers_are_broken_down_and_only_they_reach_the_sketches() {
     );
     assert_eq!(quiet.bad_offers(HourSel::Current), 0);
 }
+
+// REQ: OBS-030 (ADR-130) — answers per latency bucket in the minute: 900 cache answers at 40 µs,
+// 90 upstream ones at 30 ms and 10 at 400 ms land in the 50 µs, 50 ms, and 500 ms buckets of
+// their paths; the latency objective's slow count agrees; the per-second buckets keep none.
+#[test]
+fn obs_030_minutes_count_answers_per_latency_bucket() {
+    use crate::agg::lat_bucket;
+    let mut agg = Aggregates::new();
+    let t0 = 1_791_072_000_000_000;
+    let c = ipv4(192, 168, 1, 20);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    for i in 0..900 {
+        agg.record(&Record::Query(query(t0 + i, c, Status::Cached, 40), name));
+    }
+    for (n, us) in [(90u64, 30_000u32), (10, 400_000)] {
+        for i in 0..n {
+            let mut e = query(t0 + 2000 + i, c, Status::Forwarded, us);
+            e.upstream = 1;
+            agg.record(&Record::Query(e, name));
+        }
+    }
+    let (_, m) = &agg.series(Resolution::Minute, 0, u64::MAX)[0];
+    let lat = m.lat.as_deref().unwrap();
+    let cache = &lat.by_path[Path::Cache as usize];
+    let up = &lat.by_path[Path::Upstream as usize];
+    assert_eq!(cache[lat_bucket(40)], 900);
+    assert_eq!(lat_bucket(40), 0, "the 50 µs bucket");
+    assert_eq!(up[lat_bucket(30_000)], 90);
+    assert_eq!(crate::BUCKETS_US[lat_bucket(30_000)], 50_000);
+    assert_eq!(up[lat_bucket(400_000)], 10);
+    assert_eq!(crate::BUCKETS_US[lat_bucket(400_000)], 500_000);
+    assert_eq!(lat.by_upstream[1].iter().sum::<u32>(), 100);
+    assert_eq!(
+        m.slow, 10,
+        "the objective's slow answers: the same threshold, the same count"
+    );
+    let over: u32 = up[lat_bucket(250_001)..].iter().sum();
+    assert_eq!(over, m.slow);
+    assert!(
+        agg.series(Resolution::Second, 0, u64::MAX)[0]
+            .1
+            .lat
+            .is_none()
+    );
+}
+
+/// REQ: OBS-030 — the latency rows cost less than 50 ns per event (the same events with them
+/// switched off and on, interleaved). Optimized builds only.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing: cargo test --release")]
+fn obs_030_latency_rows_cost_under_50_ns_per_event() {
+    let n = 1_000_000u64;
+    let c = ipv4(10, 0, 0, 1);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    let events: Vec<QueryEvent> = (0..n)
+        .map(|i| {
+            let mut e = query(
+                1_791_072_000_000_000 + i * 50,
+                c,
+                Status::Forwarded,
+                u32::try_from(i % 300_000).unwrap(),
+            );
+            e.upstream = u16::try_from(i % 4).unwrap();
+            e
+        })
+        .collect();
+    let run = |on: bool| {
+        let mut agg = Aggregates::new();
+        agg.latency_hist = on;
+        let t = Instant::now();
+        for e in &events {
+            agg.record(&Record::Query(*e, name));
+        }
+        t.elapsed()
+    };
+    let (mut off, mut on) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..3 {
+        off += run(false);
+        on += run(true);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let per = |d: Duration| d.as_nanos() as f64 / (3 * n) as f64;
+    let added = per(on) - per(off);
+    eprintln!(
+        "obs_030: {:.1} ns/event off, {:.1} on: +{added:.1} ns",
+        per(off),
+        per(on)
+    );
+    assert!(added < 50.0, "+{added:.1} ns per event");
+}

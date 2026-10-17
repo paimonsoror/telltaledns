@@ -268,11 +268,12 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "latency_breakdown",
-            description: "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes.",
+            description: "Read-only. Latency percentiles (p50/p90/p99/p99.9/max in ms) broken down by pipeline stage, upstream, client, or query type, for the current or previous hour. Find where time goes. With histogram: true, also the last hour's answers per latency bucket per minute (boundsUs, per path or per upstream when by is upstream), to see a tail's shape.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "by": {"type": "string", "enum": ["stage", "upstream", "client", "qtype"], "description": "Break down by."},
                 "hour": {"type": "string", "enum": ["current", "previous"], "description": "Which hour (default current)."},
+                "histogram": {"type": "boolean", "description": "Also the last hour's bucket counts per minute (OBS-030)."},
                 "scope": scope_schema()
             }, "required": ["by"], "additionalProperties": false})
             },
@@ -280,14 +281,30 @@ pub fn tools() -> Vec<Tool> {
                 if s(a, "by").is_none() {
                     return Err("`by` is required: stage, upstream, client, or qtype".into());
                 }
-                Ok(vec![(
+                let mut calls = vec![(
                     "latency".into(),
                     query(
                         "/api/v1/stats/latency",
                         a,
                         &[("by", "by"), ("hour", "hour"), ("scope", "scope")],
                     ),
-                )])
+                )];
+                // REQ: OBS-030 — the histogram over the last hour.
+                if a.get("histogram").and_then(Value::as_bool) == Some(true) {
+                    let by = if s(a, "by").as_deref() == Some("upstream") {
+                        "upstream"
+                    } else {
+                        "path"
+                    };
+                    calls.push((
+                        "histogram".into(),
+                        format!(
+                            "/api/v1/stats/latency/heatmap?from=-1h&step=minute&by={by}{}",
+                            scope_q(a)
+                        ),
+                    ));
+                }
+                Ok(calls)
             },
         },
         Tool {

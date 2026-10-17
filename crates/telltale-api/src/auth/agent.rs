@@ -173,7 +173,11 @@ pub fn required(method: &Method, path: &str) -> Need {
                 return Need::Scope("analytics:read");
             }
             // REQ: AGT-012 — vqlog reads the query log row by row (by client and name).
-            "/api/v1/queries" | "/api/v1/queries/stream" | "/api/v1/analytics/vqlog" => {
+            // REQ: OBS-030 — an exemplar's trace ID names one query.
+            "/api/v1/queries"
+            | "/api/v1/queries/stream"
+            | "/api/v1/analytics/vqlog"
+            | "/api/v1/stats/latency/exemplars" => {
                 return Need::Scope("querylog:read");
             }
             "/api/v1/lists"

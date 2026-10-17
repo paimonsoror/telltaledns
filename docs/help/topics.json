@@ -34,6 +34,16 @@
       "docs": "traffic-map"
     },
     {
+      "id": "latency-heatmap",
+      "title": "Answer time over time",
+      "term": "Latency heatmap with exemplars",
+      "summary": "Each column is a minute (or an hour), each row a band of answer time from 50 µs to over 5 s, and the colour how many answers landed there. Dots are real queries from those bands: select one to open it in the query log. The dashed line is the latency objective.",
+      "when": "A percentile says answers got slower; the heatmap shows whether it's a few slow ones (a tail), everything slower, or a stripe that starts at a moment (a change, an upstream).",
+      "example": "A stripe of upstream answers at 250–500 ms from 07:00 to 07:05 after a restart, while the cache stays at the bottom: the encrypted connections were warming up.",
+      "caution": "Bands are the Prometheus histogram's buckets, so a band is a range, not an exact time. Dots are a sample (at most one per band and path a second, the last 512 per node), kept in memory only.",
+      "docs": "where-does-time-go"
+    },
+    {
       "id": "heatmap",
       "title": "When things happen",
       "term": "Rhythm heatmap",

@@ -112,6 +112,11 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 - **Traces:** with `[telemetry.otlp] endpoint` and `traces_sample_every` (1 in N) or `traces_slow_ms`, the sink queues the chosen events (≤ 4,096; more dropped, counted) as the privacy level keeps them; a task sends them every 5 s, ≤ 512 per request, as OTLP/HTTP JSON to `<endpoint>/v1/traces`: a SERVER span (`DNS <qtype>`, the query's attributes) and, when `t_upstream_us > 0`, a CLIENT child span for the upstream wait placed at the query's end. `telltale_traces_total{result}`.
 - **Lookup:** `GET /api/v1/queries?trace=<32 hex>` searches `[ts, ts+1)` and keeps rows whose recomputed ID matches (after federation, so older nodes still answer); the UI's `#/queries?trace=`; MCP `search_queries` `trace`.
 
+### 5.2 Latency heatmap (OBS-030, ADR-130)
+- **Counts:** each minute bucket counts answers per `BUCKETS_US` bucket (16 bounds and the overflow, the same as `telltale_query_duration_seconds`) per answer path (`cache`, `upstream`, `local`, `synthesized`) and per upstream; allocated with the minute's first answer, not kept per second; stored in a tagged section (`L`) older builds skip, summed into hours and days.
+- **Exemplars:** the sink that fills the OpenMetrics slots also keeps the last 512 it chose (trace ID, time, latency, path, upstream) in a ring; nothing persisted.
+- **Read:** `GET /api/v1/stats/latency/heatmap?from&to&step=minute|hour&by=path|upstream&scope` (`boundsUs`, `starts`, `series` of per-step bucket counts; `partial` when some buckets have answers and no counts; minute ≤ 48 h, hour ≤ 400 d), `GET /api/v1/stats/latency/exemplars?from&to&path` (newest first, ≤ 2,048; agents need `querylog:read`); federated. MCP `latency_breakdown` with `histogram`.
+
 ## 6. Live tail (OBS-008)
 `GET /api/v1/queries/stream` (SSE) or `/ws`. Server-side filters: client, group, status set, qname glob, upstream, min latency, node(s). Rate-capped per subscriber (default 500 events/s, with drop counts sent inline).
 

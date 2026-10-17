@@ -16,6 +16,7 @@
   import SloCard from '../lib/components/SloCard.svelte';
   import DevicesByType from '../lib/components/DevicesByType.svelte';
   import ChangesControls from '../lib/components/ChangesControls.svelte';
+  import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
   import { changes } from '../lib/annotations.svelte';
   import { currentMode } from '../lib/mode.svelte';
 
@@ -112,6 +113,8 @@
     scope !== '' && !(scope.startsWith('node:') && nodes.find((n) => `node:${n.nodeId}` === scope)?.thisNode),
   );
   let error = $state<unknown>(null);
+  // REQ: OBS-030 — "Where time goes" as percentiles or as a heatmap over time.
+  let timeView = $state<'table' | 'heatmap'>('table');
 
   async function load() {
     const r = range;
@@ -344,9 +347,17 @@
 
   {#if advanced}
   <div class="grid-2">
-    <section class="card">
-      <h2>Where time goes <span class="muted small">(this hour)</span><HelpButton id="cache" /></h2>
-      {#if byPath.length + stages.length === 0}
+    <section class="card" class:wide={timeView === 'heatmap'}>
+      <div class="card-head">
+        <h2>Where time goes {#if timeView === 'table'}<span class="muted small">(this hour)</span>{/if}{#if timeView === 'heatmap'}<HelpButton id="latency-heatmap" />{:else}<HelpButton id="cache" />{/if}</h2>
+        <div class="seg" role="group" aria-label="Where time goes as">
+          <button type="button" aria-pressed={timeView === 'table'} onclick={() => (timeView = 'table')}>Percentiles</button>
+          <button type="button" aria-pressed={timeView === 'heatmap'} onclick={() => (timeView = 'heatmap')} data-testid="time-heatmap-tab">Heatmap</button>
+        </div>
+      </div>
+      {#if timeView === 'heatmap'}
+        <LatencyHeatmap />
+      {:else if byPath.length + stages.length === 0}
         <p class="empty">No answers yet this hour.</p>
       {:else}
         <div class="table-wrap">
@@ -430,6 +441,10 @@
 </div>
 
 <style>
+  /* REQ: OBS-030 — the heatmap takes the row's width. */
+  .card.wide {
+    grid-column: 1 / -1;
+  }
   .status-row {
     display: grid;
     gap: var(--gap);
