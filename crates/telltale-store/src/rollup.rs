@@ -11,8 +11,8 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use telltale_telemetry::agg::Counts;
-use telltale_telemetry::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS};
+use telltale_telemetry::agg::{Bad, Counts};
+use telltale_telemetry::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Status};
 
 use crate::state::StateError;
 
@@ -117,19 +117,135 @@ pub fn encode(c: &Counts) -> Vec<u8> {
         out.push(SLOW_TAG);
         out.extend_from_slice(&c.slow.to_le_bytes());
     }
+    // REQ: OBS-027 (ADR-127) — the bad answers broken down, after the slow count: builds that
+    // predate it stop at the unknown tag.
+    if let Some(b) = c.bad.as_deref() {
+        out.push(BAD_TAG);
+        encode_bad(b, &mut out);
+    }
     out
+}
+
+/// The bad-answer lists, in order: SERVFAIL by status, slow by status, slow by rcode,
+/// SERVFAIL by upstream, slow by upstream.
+const BAD_LISTS: u8 = 5;
+
+/// `(key, count)` lists: statuses by label, rcodes by number, upstreams by name.
+fn encode_bad(b: &Bad, out: &mut Vec<u8>) {
+    let by_status = |a: &[u32; N_STATUS]| -> Vec<(String, u32)> {
+        Status::ALL
+            .iter()
+            .filter(|s| a[**s as usize] > 0)
+            .map(|s| (s.label().to_owned(), a[*s as usize]))
+            .collect()
+    };
+    let rcodes: Vec<(String, u32)> = b
+        .slow_rcode
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| **n > 0)
+        .map(|(i, n)| (i.to_string(), *n))
+        .collect();
+    let named = |v: &[(Box<str>, u32)]| -> Vec<(String, u32)> {
+        v.iter().map(|(k, n)| (k.to_string(), *n)).collect()
+    };
+    out.push(BAD_LISTS);
+    for list in [
+        by_status(&b.servfail_status),
+        by_status(&b.slow_status),
+        rcodes,
+        named(&b.named_servfail_upstream),
+        named(&b.named_slow_upstream),
+    ] {
+        let n = u16::try_from(list.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&n.to_le_bytes());
+        for (k, v) in list.iter().take(usize::from(n)) {
+            let k = k.as_bytes();
+            let len = u8::try_from(k.len()).unwrap_or(u8::MAX);
+            out.push(len);
+            out.extend_from_slice(&k[..usize::from(len)]);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
+/// The bad-answer section's body and what follows it; `None` when damaged. Unknown status
+/// labels (a newer build's) are left out; lists past the five known are skipped.
+fn decode_bad(bytes: &[u8]) -> Option<(Bad, &[u8])> {
+    let (&lists, mut rest) = bytes.split_first()?;
+    let mut bad = Bad::default();
+    for list in 0..lists {
+        let (count, after) = rest.split_first_chunk::<2>()?;
+        rest = after;
+        for _ in 0..u16::from_le_bytes(*count) {
+            let (&len, entry) = rest.split_first()?;
+            let len = usize::from(len);
+            if entry.len() < len + 4 {
+                return None;
+            }
+            let key = String::from_utf8_lossy(&entry[..len]);
+            let value =
+                u32::from_le_bytes([entry[len], entry[len + 1], entry[len + 2], entry[len + 3]]);
+            rest = &entry[len + 4..];
+            let status = || {
+                Status::ALL
+                    .iter()
+                    .find(|s| s.label() == key)
+                    .map(|s| *s as usize)
+            };
+            match list {
+                0 => {
+                    if let Some(at) = status() {
+                        bad.servfail_status[at] = bad.servfail_status[at].saturating_add(value);
+                    }
+                }
+                1 => {
+                    if let Some(at) = status() {
+                        bad.slow_status[at] = bad.slow_status[at].saturating_add(value);
+                    }
+                }
+                2 => {
+                    if let Ok(code) = key.parse::<usize>() {
+                        let at = code.min(N_RCODE - 1);
+                        bad.slow_rcode[at] = bad.slow_rcode[at].saturating_add(value);
+                    }
+                }
+                3 => {
+                    telltale_telemetry::agg::add_name(
+                        &mut bad.named_servfail_upstream,
+                        &key,
+                        value,
+                    );
+                }
+                4 => {
+                    telltale_telemetry::agg::add_name(&mut bad.named_slow_upstream, &key, value);
+                }
+                _ => {}
+            }
+        }
+    }
+    Some((bad, rest))
 }
 
 /// Marks the named-group section (T6.16).
 const GROUPS_TAG: u8 = b'G';
 /// Marks the slow-answer count (T11.1).
 const SLOW_TAG: u8 = b'S';
+/// Marks the bad answers broken down (T14.1).
+const BAD_TAG: u8 = b'B';
 
 /// The tagged sections after the fixed columns (see [`encode`]): the named groups and the
 /// slow-answer count. A damaged section ends the reading; what came before it is kept.
-fn decode_tail(mut b: &[u8]) -> (Vec<telltale_telemetry::agg::NamedGroup>, u32) {
+fn decode_tail(
+    mut b: &[u8],
+) -> (
+    Vec<telltale_telemetry::agg::NamedGroup>,
+    u32,
+    Option<Box<Bad>>,
+) {
     let mut groups = Vec::new();
     let mut slow = 0;
+    let mut bad = None;
     while let Some((&tag, rest)) = b.split_first() {
         match tag {
             GROUPS_TAG => match decode_groups(rest) {
@@ -146,10 +262,17 @@ fn decode_tail(mut b: &[u8]) -> (Vec<telltale_telemetry::agg::NamedGroup>, u32) 
                 }
                 None => break,
             },
+            BAD_TAG => match decode_bad(rest) {
+                Some((d, r)) => {
+                    bad = Some(Box::new(d));
+                    b = r;
+                }
+                None => break,
+            },
             _ => break,
         }
     }
-    (groups, slow)
+    (groups, slow, bad)
 }
 
 /// The named-group section's body (after its tag) and what follows it; `None` when damaged.
@@ -217,7 +340,7 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
     }
     c.upstreams = vec![words.next()?];
     c.upstream_failures = words.next()?;
-    (c.named_groups, c.slow) = decode_tail(tail);
+    (c.named_groups, c.slow, c.bad) = decode_tail(tail);
     Some(c)
 }
 
@@ -244,10 +367,16 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     a.upstreams = vec![total.saturating_add(up)];
     a.upstream_failures = a.upstream_failures.saturating_add(b.upstream_failures);
     a.slow = a.slow.saturating_add(b.slow);
+    if let Some(bb) = b.bad.as_deref() {
+        a.bad.get_or_insert_with(Box::default).merge(bb);
+    }
     for g in &b.named_groups {
         telltale_telemetry::agg::add_named(&mut a.named_groups, &g.name, g.total, g.blocked);
     }
 }
+
+/// One node's buckets, oldest first.
+pub type NodeHours = (String, Vec<(u64, Counts)>);
 
 /// Shipped minutes of every node in `[?1, ?2)`, oldest first (by `shipped_minute_start`).
 const SHIPPED_RANGE: &str =
@@ -470,6 +599,90 @@ impl Rollups {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// REQ: OBS-027 — a stored top-K list summed over the hours in `[from_s, to_s)`: per key the
+    /// counts and error bounds add up (the true count stays within `[count - error, count]`),
+    /// heaviest first, at most `n`; and how many hours had the list.
+    pub fn top_range(
+        &self,
+        from_s: u64,
+        to_s: u64,
+        kind: &str,
+        n: usize,
+    ) -> Result<(Vec<TopRow>, u64)> {
+        let conn = self.conn();
+        let mut q = conn.prepare_cached(
+            "SELECT key, SUM(count), SUM(error) FROM hour_top WHERE start >= ?1 AND start < ?2 AND kind = ?3 \
+             GROUP BY key ORDER BY 2 DESC, key LIMIT ?4",
+        )?;
+        let rows = q
+            .query_map(
+                params![
+                    sql(from_s),
+                    sql(to_s),
+                    kind,
+                    i64::try_from(n).unwrap_or(i64::MAX)
+                ],
+                |r| {
+                    Ok(TopRow {
+                        key: r.get(0)?,
+                        count: unsql(r.get(1)?),
+                        error: unsql(r.get(2)?),
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let hours: i64 = conn
+            .prepare_cached(
+                "SELECT COUNT(DISTINCT start) FROM hour_top WHERE start >= ?1 AND start < ?2 AND kind = ?3",
+            )?
+            .query_row(params![sql(from_s), sql(to_s), kind], |r| r.get(0))?;
+        Ok((rows, unsql(hours)))
+    }
+
+    /// REQ: OBS-027 — whether an hour's top lists are stored.
+    pub fn has_hour_tops(&self, hour_start: u64) -> Result<bool> {
+        let conn = self.conn();
+        let n: i64 = conn
+            .prepare_cached("SELECT COUNT(*) FROM hour_top WHERE start = ?1")?
+            .query_row([sql(hour_start)], |r| r.get(0))?;
+        Ok(n > 0)
+    }
+
+    /// REQ: OBS-027 — shipped minutes in `[from_s, to_s)` per node (except `exclude`), summed
+    /// per hour, oldest first.
+    pub fn shipped_hours_by_node(
+        &self,
+        from_s: u64,
+        to_s: u64,
+        exclude: &[String],
+    ) -> Result<Vec<NodeHours>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(SHIPPED_RANGE)?;
+        let mut by: std::collections::BTreeMap<String, std::collections::BTreeMap<u64, Counts>> =
+            std::collections::BTreeMap::new();
+        let rows = st.query_map(params![sql(from_s), sql(to_s)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                unsql(r.get(1)?),
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (node, start, data) = row?;
+            if exclude.contains(&node) {
+                continue;
+            }
+            if let Some(c) = decode(&data) {
+                let hour = start - start % 3600;
+                merge(by.entry(node).or_default().entry(hour).or_default(), &c);
+            }
+        }
+        Ok(by
+            .into_iter()
+            .map(|(n, h)| (n, h.into_iter().collect()))
+            .collect())
     }
 
     /// An hour's stored latency summaries.
@@ -754,6 +967,73 @@ mod tests {
             Some([GROUPS_TAG, rest @ ..]) => decode_groups(rest).map_or(0, |(g, _)| g.len()),
             _ => 0,
         }
+    }
+
+    /// REQ: OBS-027 (T14.1) — the bad answers broken down round-trip after the slow count, sum
+    /// into hours and days, and a reader stops cleanly at a newer section it doesn't know.
+    #[test]
+    fn obs_027_bad_answers_round_trip_and_roll_up() {
+        let mut c = counts(100, 5);
+        c.slow = 2;
+        let mut b = Bad::default();
+        b.servfail_status[Status::Refreshed as usize] = 10;
+        b.slow_status[Status::Forwarded as usize] = 2;
+        b.slow_rcode[0] = 2;
+        b.servfail_upstream = vec![10, 0, 3];
+        c.bad = Some(Box::new(b));
+        c.name_upstreams(&["", "quad9-1", "quad9-2"]);
+        let d = decode(&encode(&c)).unwrap();
+        let bad = d.bad.as_deref().unwrap();
+        assert_eq!(bad.servfail_status[Status::Refreshed as usize], 10);
+        assert_eq!(bad.slow_status[Status::Forwarded as usize], 2);
+        assert_eq!(bad.slow_rcode[0], 2);
+        assert_eq!(
+            bad.named_servfail_upstream,
+            [("none".into(), 10), ("quad9-2".into(), 3)]
+        );
+        assert!(bad.servfail_upstream.is_empty(), "stored by name only");
+        assert_eq!(d.slow, 2);
+        // A newer section after it is skipped, what came before kept.
+        let mut newer = encode(&c);
+        newer.extend_from_slice(b"Zjunk");
+        assert_eq!(decode(&newer).unwrap().bad, d.bad);
+        let r = Rollups::in_memory().unwrap();
+        let h0 = 1_791_072_000;
+        r.put_minutes(&[(h0, c.clone()), (h0 + 60, c)]).unwrap();
+        let hour = &r.range(Level::Hour, h0, h0 + 3600).unwrap()[0].1;
+        assert_eq!(
+            hour.bad.as_deref().unwrap().named_servfail_upstream,
+            [("none".into(), 20), ("quad9-2".into(), 6)]
+        );
+        let day = &r.range(Level::Day, 0, u64::MAX / 2).unwrap()[0].1;
+        assert_eq!(
+            day.bad.as_deref().unwrap().servfail_status[Status::Refreshed as usize],
+            20
+        );
+    }
+
+    /// REQ: OBS-027 — stored top lists summed over a range of hours, with their error bounds.
+    #[test]
+    fn obs_027_top_lists_sum_over_hours() {
+        let r = Rollups::in_memory().unwrap();
+        let row = |k: &str, c: u64, e: u64| TopRow {
+            key: k.into(),
+            count: c,
+            error: e,
+        };
+        r.put_hour_extras(
+            3600,
+            &[("servfail_name", vec![row("x.", 6, 0), row("y.", 1, 1)])],
+            &[],
+        )
+        .unwrap();
+        r.put_hour_extras(7200, &[("servfail_name", vec![row("x.", 4, 1)])], &[])
+            .unwrap();
+        let (rows, hours) = r.top_range(0, 10_800, "servfail_name", 20).unwrap();
+        assert_eq!(hours, 2);
+        assert_eq!(rows, [row("x.", 10, 1), row("y.", 1, 1)]);
+        assert!(r.has_hour_tops(3600).unwrap());
+        assert!(!r.has_hour_tops(0).unwrap());
     }
 
     /// REQ: OBS-016 (T11.1) — the slow-answer count round-trips after the groups (or alone),

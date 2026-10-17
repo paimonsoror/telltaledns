@@ -6,6 +6,17 @@
   import { num, ms } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
+  import TabPanel from '../lib/components/TabPanel.svelte';
+  import BudgetAttribution from '../lib/components/BudgetAttribution.svelte';
+
+  // REQ: OBS-027 — the Analyze page answers "why": the query language, and who spent the
+  // error budget.
+  const tabs: TabItem[] = [
+    { id: 'query', label: 'Query' },
+    { id: 'budget', label: 'Error budget' },
+  ];
+  const tab = $derived(activeTab(tabs));
 
   const examples: { label: string; q: string }[] = [
     { label: 'Top blocked names today', q: 'from -24h | where status = blocked | top 10 name' },
@@ -23,7 +34,7 @@
   // Runs whatever is in the URL, so results can be shared and survive a reload.
   $effect(() => {
     const q = route.params.get('q');
-    if (!q) return;
+    if (!q || tab !== 'query') return;
     text = q;
     void run(q, route.params.get('estimate') === '1');
   });
@@ -75,6 +86,11 @@
 
 <div class="page">
   <h1>Analyze<HelpButton id="vqlog" /></h1>
+  <Tabs {tabs} active={tab} label="Analyze" />
+  <TabPanel active={tab}>
+  {#if tab === 'budget'}
+    <BudgetAttribution />
+  {:else}
   <form
     class="card"
     onsubmit={(e) => {
@@ -151,6 +167,8 @@
       {/if}
     </section>
   {/if}
+  {/if}
+  </TabPanel>
 </div>
 
 <style>

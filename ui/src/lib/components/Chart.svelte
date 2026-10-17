@@ -238,7 +238,7 @@
         <table class="compact changes-table">
           <thead><tr><th>Changed</th><th>What</th></tr></thead>
           <tbody>
-            {#each inRange as m (`${m.time}|${m.kind}|${m.summary}`)}
+            {#each inRange as m, i (i)}
               <tr><td>{clock(m.time)}</td><td>{m.summary}{#if m.actor} · {m.actor}{/if}{#if m.nodes.length} · {m.nodes.join(', ')}{/if}</td></tr>
             {/each}
           </tbody>
@@ -276,7 +276,7 @@
         {/each}
         {#if tip}
           <div class="mk-tip" role="tooltip" data-testid="marker-tip" style:left={`${Math.max(0, Math.min(tip.x + 8, box.width - 240))}px`}>
-            {#each tip.marks.slice(0, 5) as m (`${m.time}|${m.kind}|${m.summary}`)}
+            {#each tip.marks.slice(0, 5) as m, i (i)}
               <div>
                 <span class="muted">{clock(m.time)}</span>
                 {m.summary}

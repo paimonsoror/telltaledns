@@ -582,3 +582,88 @@ fn obs_022_excluded_queries_stay_out_of_the_analytics() {
     hub.drain_once(&mut drainer);
     assert_eq!(total(&hub), 2);
 }
+
+// REQ: OBS-027 (ADR-127) — bad answers broken down exactly per bucket (status, upstream, slow
+// rcode), and bad-only top lists of names and clients: good answers never touch them.
+#[test]
+fn obs_027_bad_answers_are_broken_down_and_only_they_reach_the_sketches() {
+    use crate::agg::BadTop;
+    let mut agg = Aggregates::new();
+    let t0 = 1_791_072_000_000_000; // an hour boundary
+    let a = ipv4(192, 168, 10, 185);
+    let b = ipv4(192, 168, 10, 20);
+    let name = |n: &str| crate::event::Name::from_wire(&wire(n));
+    for i in 0..1000 {
+        agg.record(&Record::Query(
+            query(t0 + i, b, Status::Cached, 80),
+            name("ok.example"),
+        ));
+    }
+    for i in 0..10 {
+        let mut e = query(t0 + 2000 + i, a, Status::Refreshed, 90);
+        e.rcode = Some(2);
+        agg.record(&Record::Query(e, name("247.73.85.170.in-addr.arpa")));
+    }
+    for (i, n) in ["x.example", "y.example", "z.example"].iter().enumerate() {
+        let mut e = query(t0 + 3000 + i as u64, b, Status::Forwarded, 900);
+        e.rcode = Some(2);
+        e.upstream = 2;
+        agg.record(&Record::Query(e, name(n)));
+    }
+    for i in 0..2 {
+        agg.record(&Record::Query(
+            query(t0 + 4000 + i, b, Status::Forwarded, 400_000),
+            name("slow.example"),
+        ));
+    }
+    assert_eq!(
+        agg.bad_offers(HourSel::Current),
+        15,
+        "only the 15 bad answers were offered"
+    );
+    let top = agg.bad_top(BadTop::ServfailName, HourSel::Current, 20);
+    assert_eq!(
+        (top[0].key.as_str(), top[0].count),
+        ("247.73.85.170.in-addr.arpa", 10)
+    );
+    let clients = agg.bad_top(BadTop::ServfailClient, HourSel::Current, 20);
+    assert_eq!(
+        (clients[0].key.as_str(), clients[0].count),
+        ("192.168.10.185", 10)
+    );
+    assert_eq!(
+        agg.bad_top(BadTop::SlowName, HourSel::Current, 20)[0].count,
+        2
+    );
+    let minute = agg.series(Resolution::Minute, 0, u64::MAX);
+    let mut c = minute[0].1.clone();
+    let bad = c.bad.as_deref().unwrap();
+    assert_eq!(bad.servfail_status[Status::Refreshed as usize], 10);
+    assert_eq!(bad.servfail_status[Status::Forwarded as usize], 3);
+    assert_eq!(
+        bad.servfail_upstream,
+        [10, 0, 3],
+        "10 with no upstream, 3 from upstream 2"
+    );
+    assert_eq!(bad.slow_status[Status::Forwarded as usize], 2);
+    assert_eq!(bad.slow_rcode[0], 2);
+    assert_eq!(c.slow, 2);
+    c.name_upstreams(&["", "quad9-1", "quad9-2"]);
+    assert_eq!(
+        c.bad.as_deref().unwrap().named_servfail_upstream,
+        [("none".into(), 10), ("quad9-2".into(), 3)]
+    );
+    // A bucket with only good answers allocates nothing.
+    let mut quiet = Aggregates::new();
+    quiet.record(&Record::Query(
+        query(t0, b, Status::Cached, 80),
+        name("ok.example"),
+    ));
+    assert!(
+        quiet.series(Resolution::Minute, 0, u64::MAX)[0]
+            .1
+            .bad
+            .is_none()
+    );
+    assert_eq!(quiet.bad_offers(HourSel::Current), 0);
+}

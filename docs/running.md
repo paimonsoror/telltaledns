@@ -2112,6 +2112,14 @@ window_days = 30             # 1 to 90
 - **Where:** the dashboard's **Service level** card (in the Advanced view: the Simple | Advanced switch at the top; in the menu on a phone), `GET /api/v1/stats/slo`, and the MCP tool `slo_status`. In a cluster the objectives cover every node's answers. They're worked out from the per-minute and per-hour counts the dashboard already keeps, so they cost nothing on the query path; slow answers are counted in the rollups from this release on (older hours count none).
 - **Prometheus:** `telltale_slo_objective_ratio{slo}` and `telltale_slo_latency_threshold_seconds` publish the settings. With `prometheusRule.enabled`, the Helm chart adds recording rules (`telltale:slo_availability_errors:ratio_rate5m` … `_3d`, and `telltale:slo_latency_errors:…`) and alerts (`TelltaleDNSSLOAvailabilityBurnFast`, `…BurnSlow`, `…BurnTicket`, and the same for latency) with the same windows and minimums; set `prometheusRule.slo` to the same targets as `[slo]`. Without Kubernetes, load `deploy/prometheus/telltale-slo-rules.yaml` (the same rules, for a scrape job named `telltale-metrics`). The Grafana dashboard's **Service level** row shows the SLIs, the budget left over the dashboard's time range, and the burn rate.
 
+#### Who spent it?
+**Who spent it?** under each objective on the Service level card (or **Analyze → Error budget**) breaks the window's bad answers down:
+- **Budget left** over the window as a line (one per node below it), with the [change markers](#change-markers), so a drop lines up with what changed.
+- **Clients** and **names** that got the bad answers: approximate top lists (each count may be up to its "±" over, Space-Saving's bound), kept per hour for 400 days. Select one to open its bad answers in the query log, where the log still has them (it keeps fewer days than the window).
+- **Upstreams** (`none`: no upstream on the answer, such as a SERVFAIL served from the cache), **status** (`refreshed`, `forwarded`, ...), **response code**, and **nodes**: exact, from the per-minute counts.
+- In a cluster every node is asked. A node on an older build, or a resolver pod that's gone (counted from the minutes it shipped, 7 days), adds to the totals without client and name lists, and is named as partial. The lists follow the query log's privacy level: names as hashes at 1, no clients at 2, only the timeline at 3.
+- `GET /api/v1/stats/slo/attribution?objective=availability&from=-30d` returns it, and the MCP tool `slo_attribution`. Counting it costs nothing on the query path: the analytics thread counts bad answers only.
+
 ### Listener checks
 A listener can be bound and still not answer: a stuck TLS stack, a firewall rule, a load balancer in front of it. So every node asks each of its own DNS listeners a question the way a device would, through the listener's own protocol:
 ```toml

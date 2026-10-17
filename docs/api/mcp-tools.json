@@ -507,6 +507,44 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Shows who and what consumed the error budget of an objective (availability: SERVFAIL answers; latency: slow answers) over its window: the budget (allowed and spent), a timeline per node and hour or day, and the bad answers by client and by name (approximate top lists: each row's errorMax bounds the overcount), and by status, upstream (none: no upstream on the answer, such as one served from the cache), response code, and node (exact). coverage.partialNodes names nodes without client and name lists for part of the window. Use it after slo_status shows a budget burning.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Rows per list (default 10).",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "objective": {
+          "description": "Which objective (default availability).",
+          "enum": [
+            "availability",
+            "latency"
+          ],
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
+        "window": {
+          "description": "Start of the window: relative like -7d or RFC 3339 (default: the objective's whole window, 30 days).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "slo_attribution"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
     "inputSchema": {
       "additionalProperties": false,

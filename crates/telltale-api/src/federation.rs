@@ -35,6 +35,12 @@ pub fn merge_timeseries(parts: Vec<Vec<TimeBucket>>) -> Vec<TimeBucket> {
         add(&mut t.by_rcode, b.by_rcode);
         add(&mut t.by_group, b.by_group);
         add(&mut t.blocked_by_group, b.blocked_by_group);
+        // REQ: OBS-027 — the bad answers broken down add up the same way.
+        add(&mut t.servfail_by_status, b.servfail_by_status);
+        add(&mut t.slow_by_status, b.slow_by_status);
+        add(&mut t.servfail_by_upstream, b.servfail_by_upstream);
+        add(&mut t.slow_by_upstream, b.slow_by_upstream);
+        add(&mut t.slow_by_rcode, b.slow_by_rcode);
     }
     by_start.into_values().collect()
 }

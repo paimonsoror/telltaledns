@@ -787,7 +787,7 @@
           <table class="compact">
             <thead><tr><th>When</th>{#if shownChanges.some((a) => a.node)}<th>Node</th>{/if}<th>What</th><th>Who</th></tr></thead>
             <tbody>
-              {#each shownChanges as a (`${a.node ?? ''}|${a.tUnixMs}|${a.kind}|${a.summary}`)}
+              {#each shownChanges as a, i (i)}
                 <tr>
                   <td class="nowrap">{dateTime(a.tUnixMs / 1000)}</td>
                   {#if shownChanges.some((x) => x.node)}<td>{a.node ?? ''}</td>{/if}

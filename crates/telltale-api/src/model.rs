@@ -218,6 +218,23 @@ pub struct TimeBucket {
     /// (`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.
     #[serde(default)]
     pub slow: u32,
+    /// REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in
+    /// buckets without any, or stored by builds before 0.5.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub servfail_by_status: BTreeMap<String, u32>,
+    /// REQ: OBS-027 — slow answers (see `slow`) by status.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slow_by_status: BTreeMap<String, u32>,
+    /// REQ: OBS-027 — SERVFAIL answers by the upstream that gave them (`none`: no upstream on
+    /// the answer, such as one served from the cache).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub servfail_by_upstream: BTreeMap<String, u32>,
+    /// REQ: OBS-027 — slow answers by upstream.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slow_by_upstream: BTreeMap<String, u32>,
+    /// REQ: OBS-027 — slow answers by response code.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub slow_by_rcode: BTreeMap<String, u32>,
 }
 
 /// Query parameters for `GET /stats/timeseries`.

@@ -239,6 +239,96 @@ impl ApiBackend {
         }
     }
 
+    /// REQ: OBS-027 — the window's bad-answer clients and names: stored hours from the rollups,
+    /// the current hour (and the previous one until it's stored) from memory, summed per key;
+    /// and how many hours that covers. No client list at privacy level 2 and above.
+    fn bad_lists(
+        &self,
+        q: &telltale_api::attribution::PartQuery,
+        privacy: u8,
+    ) -> (Vec<TopItem>, Vec<TopItem>, u64) {
+        use telltale_telemetry::agg::BadTop;
+        let (client_list, name_list) = if q.latency {
+            (BadTop::SlowClient, BadTop::SlowName)
+        } else {
+            (BadTop::ServfailClient, BadTop::ServfailName)
+        };
+        let db = self.src.rollups.as_ref();
+        let (current, previous) = {
+            let agg = self.src.pipeline.telemetry.aggregates();
+            (agg.current_hour_start(), agg.previous_hour_start())
+        };
+        let prev_live =
+            previous.filter(|h| db.is_none_or(|d| !d.has_hour_tops(*h).unwrap_or(false)));
+        let in_window = |h: u64| h >= q.from_s - q.from_s % 3600 && h < q.to_s;
+        let stored_to = q.to_s.min(prev_live.unwrap_or(current));
+        // Space-Saving's lists are kept per hour: read more than asked, so the summed heaviest
+        // are among them.
+        let n = (q.limit * 2).max(20);
+        let mut out = [
+            std::collections::BTreeMap::<String, (u64, u64)>::new(),
+            std::collections::BTreeMap::new(),
+        ];
+        let mut hours = 0;
+        for (i, which) in [client_list, name_list].into_iter().enumerate() {
+            if i == 0 && privacy >= 2 {
+                continue;
+            }
+            if let Some(d) = db {
+                match d.top_range(q.from_s, stored_to, which.kind(), n) {
+                    Ok((rows, h)) => {
+                        hours = hours.max(h);
+                        for r in rows {
+                            let e = out[i].entry(r.key).or_default();
+                            e.0 += r.count;
+                            e.1 += r.error;
+                        }
+                    }
+                    Err(e) => tracing::warn!("rollups: {e}"),
+                }
+            }
+            let agg = self.src.pipeline.telemetry.aggregates();
+            let mut live = Vec::new();
+            if in_window(current) {
+                live.push(telltale_telemetry::agg::HourSel::Current);
+            }
+            if prev_live.is_some_and(in_window) {
+                live.push(telltale_telemetry::agg::HourSel::Previous);
+            }
+            for sel in live {
+                for t in agg.bad_top(which, sel, n) {
+                    let e = out[i].entry(t.key).or_default();
+                    e.0 += t.count;
+                    e.1 += t.error;
+                }
+            }
+        }
+        hours += u64::from(in_window(current)) + u64::from(prev_live.is_some_and(in_window));
+        let [clients, names] = out;
+        let items = |m: std::collections::BTreeMap<String, (u64, u64)>, named: bool| {
+            let mut v: Vec<TopItem> = m
+                .into_iter()
+                .map(|(key, (count, error_bound))| TopItem {
+                    name: if named {
+                        key.parse::<IpAddr>()
+                            .ok()
+                            .and_then(|ip| self.client_name(ip))
+                    } else {
+                        None
+                    },
+                    key,
+                    count,
+                    error_bound,
+                    groups: Vec::new(),
+                })
+                .collect();
+            v.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
+            v.truncate(q.limit);
+            v
+        };
+        (items(clients, true), items(names, false), hours)
+    }
+
     /// List names of the active snapshot, by list ID.
     fn list_names(&self) -> Vec<String> {
         self.src
@@ -751,6 +841,45 @@ impl Backend for ApiBackend {
 
     fn timeseries(&self, step: Step, from_s: u64, to_s: u64) -> Vec<TimeBucket> {
         time_buckets(&self.src, self.counts(step, from_s, to_s))
+    }
+
+    // REQ: OBS-027 (ADR-127) — this node's hours and bad-answer lists; with `q.live` set (the
+    // whole cluster's read), also the pods that shipped minutes here and aren't answering.
+    fn slo_parts(
+        &self,
+        q: &telltale_api::attribution::PartQuery,
+    ) -> Vec<telltale_api::attribution::Part> {
+        let privacy = self.src.config.load().telemetry.qlog.privacy_level;
+        let (clients, names, top_hours) = self.bad_lists(q, privacy);
+        let mut parts = vec![telltale_api::attribution::Part {
+            node: None,
+            hours: self.timeseries(Step::Hour, q.from_s, q.to_s),
+            clients,
+            names,
+            top_hours,
+            partial: false,
+            privacy,
+        }];
+        if !q.live.is_empty()
+            && let Some(db) = self.src.rollups.as_ref()
+        {
+            let shipped = db
+                .shipped_hours_by_node(q.from_s, q.to_s, &q.live)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("rollups: {e}");
+                    Vec::new()
+                });
+            for (node, rows) in shipped {
+                parts.push(telltale_api::attribution::Part {
+                    node: Some(node),
+                    hours: time_buckets(&self.src, rows),
+                    partial: true,
+                    privacy,
+                    ..telltale_api::attribution::Part::default()
+                });
+            }
+        }
+        parts
     }
 
     // REQ: FLT-005 (ADR-050)
@@ -4190,6 +4319,7 @@ fn time_buckets(src: &Sources, series: Vec<(u64, Counts)>) -> Vec<TimeBucket> {
         .iter()
         .map(|g| g.name.to_string())
         .collect();
+    let ups = crate::rollups::upstream_names(&src.pipeline);
     series
         .into_iter()
         .map(|(start, c)| {
@@ -4244,9 +4374,64 @@ fn time_buckets(src: &Sources, series: Vec<(u64, Counts)>) -> Vec<TimeBucket> {
                     *b.blocked_by_group.entry(g.name.to_string()).or_default() += g.blocked;
                 }
             }
+            if let Some(bad) = c.bad.as_deref() {
+                bad_maps(&mut b, bad, &ups);
+            }
             b
         })
         .collect()
+}
+
+/// REQ: OBS-027 — a bucket's bad answers as the API's maps: statuses by label, upstreams by name
+/// (live buckets by ID through this node's upstream table, `ups`; stored ones carry names), and
+/// slow answers' response codes by name.
+fn bad_maps(b: &mut TimeBucket, bad: &telltale_telemetry::agg::Bad, ups: &[String]) {
+    for (i, s) in Status::ALL.iter().enumerate() {
+        if bad.servfail_status[i] > 0 {
+            b.servfail_by_status
+                .insert(s.label().to_owned(), bad.servfail_status[i]);
+        }
+        if bad.slow_status[i] > 0 {
+            b.slow_by_status
+                .insert(s.label().to_owned(), bad.slow_status[i]);
+        }
+    }
+    for (i, n) in bad.slow_rcode.iter().enumerate() {
+        if *n > 0 {
+            let key = if i == N_RCODE - 1 {
+                "other".to_owned()
+            } else {
+                rcode_name(u8::try_from(i).unwrap_or(u8::MAX))
+            };
+            *b.slow_by_rcode.entry(key).or_default() += n;
+        }
+    }
+    let name = |i: usize| -> String {
+        if i == 0 {
+            "none".to_owned()
+        } else {
+            ups.get(i)
+                .filter(|n| !n.is_empty())
+                .cloned()
+                .unwrap_or_else(|| "other".into())
+        }
+    };
+    for (i, n) in bad.servfail_upstream.iter().enumerate() {
+        if *n > 0 {
+            *b.servfail_by_upstream.entry(name(i)).or_default() += n;
+        }
+    }
+    for (i, n) in bad.slow_upstream.iter().enumerate() {
+        if *n > 0 {
+            *b.slow_by_upstream.entry(name(i)).or_default() += n;
+        }
+    }
+    for (k, n) in &bad.named_servfail_upstream {
+        *b.servfail_by_upstream.entry(k.to_string()).or_default() += n;
+    }
+    for (k, n) in &bad.named_slow_upstream {
+        *b.slow_by_upstream.entry(k.to_string()).or_default() += n;
+    }
 }
 
 #[cfg(test)]

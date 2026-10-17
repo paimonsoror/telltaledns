@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-127 — Error-budget attribution: exact per-bucket maps, bad-only hourly top lists (Proposed)
+**Context:** T14.1 (OBS-027; design `docs/design/error-budget-attribution.md`). The Service level card says how much budget is left, not who spent it; the owner needed a script to learn that one laptop's PTR name and the pre-10-13 AXFR SERVFAILs had (2026-10-16).
+**Decision:**
+- Exact where cardinality is bounded: bad answers per bucket by status, by upstream (owner 2026-10-16: exact, not a top list), and slow answers by response code; from the hour and day rollups for the whole window (400 days).
+- Approximate where it isn't: bad-only Space-Saving top lists per hour (32 entries, 20 stored) of names and clients, with the error bound shown.
+- Counted only on bad answers, on the telemetry thread; a bucket's maps are allocated with its first bad answer.
+- Owner decisions at task start (2026-10-16): `slow_by_rcode` added (the latency objective's rcode split); a resolver pod that isn't live counts from the primary's shipped minutes for 7 days and is listed as partial; the current hour (and the previous until stored) comes from memory; statuses are stored by label.
+- Rejected: the query log as the source (7 days on a Pi, the window is 30); per-name or per-client Prometheus series (cardinality).
+**Consequences:** a few hundred bytes per bucket that saw a bad answer; client and name counts are upper bounds; older builds' hours have a timeline only.
+
 ## ADR-136 — The site's decisions are an index plus pages of 50 (Proposed)
 **Context:** `decisions.html` rendered every ADR in full on one page and reached the 500 KiB page budget (DOC-005) with ADR-126; T14.7's ADR-133 took it to 502 KiB, and M14 adds eight more (owner chose to split it, 2026-10-16).
 **Decision:**

@@ -95,8 +95,12 @@ pub(crate) fn spawn(
                     .map(|g| g.name.to_string())
                     .collect();
                 let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                // REQ: OBS-027 — the bad answers' upstreams by name, for the same reason.
+                let ups = upstream_names(&pipeline);
+                let ups: Vec<&str> = ups.iter().map(String::as_str).collect();
                 for (_, c) in &mut rows {
                     c.name_groups(&names);
+                    c.name_upstreams(&ups);
                 }
                 let extras = agg
                     .previous_hour_start()
@@ -152,6 +156,20 @@ pub(crate) fn spawn(
     })
 }
 
+/// REQ: OBS-027 — this process's upstream names by ID (index 0 is "no upstream").
+pub(crate) fn upstream_names(pipeline: &Pipeline) -> Vec<String> {
+    let router = std::sync::Arc::clone(&pipeline.current().router);
+    let mut v = vec![String::new()];
+    for u in router.upstreams() {
+        let i = usize::from(u.id);
+        if v.len() <= i {
+            v.resize(i + 1, String::new());
+        }
+        v[i].clone_from(&u.name);
+    }
+    v
+}
+
 type Tops = Vec<(&'static str, Vec<TopRow>)>;
 type Extras = (Tops, Vec<LatencyRow>);
 
@@ -180,8 +198,37 @@ fn hour_tops(agg: &telltale_telemetry::Aggregates, privacy: u8) -> Tops {
             .collect();
         (name, rows)
     })
+    .chain(bad_tops(agg, HourSel::Previous, privacy))
     .collect()
 }
+
+/// REQ: OBS-027 (ADR-127) — the bad-answer lists of an hour, as the privacy level lets them be
+/// kept (no client lists at 2 and above), 20 each.
+pub(crate) fn bad_tops(
+    agg: &telltale_telemetry::Aggregates,
+    sel: HourSel,
+    privacy: u8,
+) -> Vec<(&'static str, Vec<TopRow>)> {
+    telltale_telemetry::agg::BadTop::ALL
+        .into_iter()
+        .filter(|b| privacy < 2 || !b.is_client())
+        .map(|b| {
+            let rows = agg
+                .bad_top(b, sel, BAD_KEPT)
+                .into_iter()
+                .map(|t| TopRow {
+                    key: t.key,
+                    count: t.count,
+                    error: t.error,
+                })
+                .collect();
+            (b.kind(), rows)
+        })
+        .collect()
+}
+
+/// Bad-answer entries stored per list and hour.
+pub(crate) const BAD_KEPT: usize = 20;
 
 /// The last complete hour's top-K lists and latency summaries.
 fn hour_extras(agg: &telltale_telemetry::Aggregates, pipeline: &Pipeline, privacy: u8) -> Extras {

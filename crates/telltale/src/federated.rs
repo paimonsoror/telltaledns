@@ -124,6 +124,10 @@ enum Read {
     Health,
     /// REQ: OBS-020 — the peer's own probes (older peers don't know it).
     Probes,
+    /// REQ: OBS-027 — the peer's own error-budget attribution part (older peers don't know it).
+    SloParts {
+        q: telltale_api::attribution::PartQuery,
+    },
     /// REQ: OBS-033 — the peer's own change markers (older peers don't know it).
     Annotations {
         filter: telltale_api::model::AnnotationFilter,
@@ -204,6 +208,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Anomalies { since_s } => serde_json::to_vec(&b.anomalies(since_s)),
         Read::Health => serde_json::to_vec(&b.health()),
         Read::Probes => serde_json::to_vec(&b.probes()),
+        Read::SloParts { q } => serde_json::to_vec(&b.slo_parts(&q)),
         Read::Annotations { filter } => serde_json::to_vec(&b.annotations(&filter)),
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
@@ -944,6 +949,99 @@ impl Backend for Federated {
     // worked out from the federated time buckets.
     fn slo_settings(&self) -> telltale_api::slo::Settings {
         self.local.slo_settings()
+    }
+
+    // REQ: OBS-027 (ADR-127) — every node's part, labelled. A peer on an older build that can't
+    // answer gives its hour buckets instead (a timeline, no lists: partial, not missing). Pods
+    // that shipped minutes here and aren't answering count from those, for the whole cluster.
+    fn slo_parts(
+        &self,
+        q: &telltale_api::attribution::PartQuery,
+    ) -> Vec<telltale_api::attribution::Part> {
+        let mine = telltale_api::attribution::PartQuery {
+            live: Vec::new(),
+            ..q.clone()
+        };
+        let peers = self.peers();
+        let answers = self.gather(
+            peers
+                .iter()
+                .map(|p| (p.clone(), Read::SloParts { q: mine.clone() }))
+                .collect(),
+        );
+        let mut live: Vec<String> = vec![self.cluster.identity.meta.node_id.clone()];
+        let mut out = Vec::new();
+        let mut answered = std::collections::HashSet::new();
+        for (peer, body) in answers {
+            if let Ok(parts) = serde_json::from_slice::<Vec<telltale_api::attribution::Part>>(&body)
+            {
+                for mut p in parts {
+                    p.node = Some(
+                        p.node
+                            .map_or_else(|| self.label_of(&peer), |id| self.label_of(&id)),
+                    );
+                    out.push(p);
+                }
+                answered.insert(peer.clone());
+                live.push(peer);
+            }
+        }
+        let missing_first = self.missing_nodes();
+        // Older peers: their hour buckets.
+        let older: Vec<String> = peers
+            .into_iter()
+            .filter(|p| !answered.contains(p) && missing_first.contains(&self.label_of(p)))
+            .collect();
+        let mut recovered = Vec::new();
+        if !older.is_empty() {
+            let reads = older
+                .iter()
+                .map(|p| {
+                    (
+                        p.clone(),
+                        Read::Timeseries {
+                            step: Step::Hour,
+                            from_s: q.from_s,
+                            to_s: q.to_s,
+                        },
+                    )
+                })
+                .collect();
+            for (peer, body) in self.gather(reads) {
+                if let Ok(hours) = serde_json::from_slice::<Vec<TimeBucket>>(&body) {
+                    recovered.push(self.label_of(&peer));
+                    out.push(telltale_api::attribution::Part {
+                        node: Some(self.label_of(&peer)),
+                        hours,
+                        partial: true,
+                        ..telltale_api::attribution::Part::default()
+                    });
+                    live.push(peer);
+                }
+            }
+        }
+        *self.missing.lock().unwrap_or_else(PoisonError::into_inner) = missing_first
+            .into_iter()
+            .filter(|m| !recovered.contains(m))
+            .collect();
+        if self.with_me() {
+            let local_q = telltale_api::attribution::PartQuery {
+                live: if self.only.is_none() {
+                    live
+                } else {
+                    Vec::new()
+                },
+                ..q.clone()
+            };
+            for mut p in self.local.slo_parts(&local_q) {
+                p.node = Some(
+                    p.node
+                        .map_or_else(|| self.own_label(), |id| self.label_of(&id)),
+                );
+                out.push(p);
+            }
+        }
+        out
     }
 
     // REQ: CLU-002 — counters sum across nodes.

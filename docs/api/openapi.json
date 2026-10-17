@@ -5267,6 +5267,96 @@
         }
       }
     },
+    "/api/v1/stats/slo/attribution": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Who spent the error budget.",
+        "description": "For one objective (`availability`: SERVFAIL answers; `latency`: answers slower than the\nobjective's threshold), the window's bad answers broken down: `byClient` and `byName`\n(approximate top lists, each row with `errorMax`: the true count is at least\n`bad - errorMax`), and `byStatus` (`refreshed`, `forwarded`, ...), `byUpstream` (`none`: no\nupstream on the answer, such as one served from the cache), `byRcode`, `byNode`, exact.\n`timeline` is every node's bad answers per hour or day (`step`), with the share of the\nwindow's budget each spent; `budget` the window's totals. In a cluster every node is asked;\n`coverage.partialNodes` names nodes whose client and name lists are missing for part of the\nwindow (they still count in the exact lists). Follows the query log's privacy level. Use it\nto answer \"why did the error budget drop?\". Example:\n`GET /api/v1/stats/slo/attribution?objective=availability&from=-30d`.",
+        "operationId": "slo_attribution",
+        "parameters": [
+          {
+            "name": "objective",
+            "in": "query",
+            "description": "`availability` (answers that were SERVFAIL) or `latency` (answers slower than the\nobjective's threshold).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "availability"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start (RFC 3339 or relative; default: the objective's window, `[slo] window_days`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per list (1–20, default 10).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "The timeline's grain: `hour` or `day` (default: `day` over windows longer than 7 days).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The attribution.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SloAttribution"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/summary": {
       "get": {
         "tags": [
@@ -6827,6 +6917,170 @@
           "windowStart": {
             "type": "string",
             "description": "The window examined (RFC 3339 start, and length in seconds)."
+          }
+        }
+      },
+      "AttributionBudget": {
+        "type": "object",
+        "description": "REQ: OBS-027 — the budget over the window.",
+        "required": [
+          "targetPct",
+          "answered",
+          "allowedBad",
+          "bad",
+          "remainingPct"
+        ],
+        "properties": {
+          "allowedBad": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bad answers the target allows over the window.",
+            "minimum": 0
+          },
+          "answered": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers counted (availability: every response; latency: every answer with a timing).",
+            "minimum": 0
+          },
+          "bad": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bad answers in the window.",
+            "minimum": 0
+          },
+          "remainingPct": {
+            "type": "number",
+            "format": "double",
+            "description": "The budget left, percent (negative: overspent)."
+          },
+          "targetPct": {
+            "type": "number",
+            "format": "double",
+            "description": "The objective's target, percent of good answers."
+          }
+        }
+      },
+      "AttributionCoverage": {
+        "type": "object",
+        "description": "REQ: OBS-027 — how much of the window the lists cover.",
+        "required": [
+          "topListsFromHours",
+          "approximate"
+        ],
+        "properties": {
+          "approximate": {
+            "type": "boolean",
+            "description": "The client and name lists are approximate (always)."
+          },
+          "hidden": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Why a list is empty on purpose: `names_hidden` (privacy level 1: names are hashes),\n`clients_hidden` (level 2), `timeline_only` (level 3)."
+          },
+          "partialNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Nodes without client and name lists for some of the window (an older build; a resolver\npod counted from the minutes it shipped): their bad answers count everywhere else."
+          },
+          "topListsFromHours": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Hours whose client and name lists were found (summed over nodes).",
+            "minimum": 0
+          }
+        }
+      },
+      "AttributionPoint": {
+        "type": "object",
+        "description": "REQ: OBS-027 — one node's bad answers in one hour or day.",
+        "required": [
+          "start",
+          "startUnixSeconds",
+          "answered",
+          "bad",
+          "budgetSpentPct"
+        ],
+        "properties": {
+          "answered": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bad": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "budgetSpentPct": {
+            "type": "number",
+            "format": "double",
+            "description": "The window's budget this spent, percent."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "description": "Start, RFC 3339."
+          },
+          "startUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AttributionRow": {
+        "type": "object",
+        "description": "REQ: OBS-027 — one row of a breakdown.",
+        "required": [
+          "key",
+          "bad",
+          "sharePct",
+          "exact"
+        ],
+        "properties": {
+          "bad": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "errorMax": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "exact": {
+            "type": "boolean",
+            "description": "Exact count (`false` for the client and name lists: their `bad` is an upper bound, and\nthe true count is at least `bad - errorMax`)."
+          },
+          "key": {
+            "type": "string",
+            "description": "A client address, a name, a status, an upstream (`none`: no upstream on the answer),\na response code, or a node.",
+            "example": "192.168.10.185"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A client's device name, when it has one."
+          },
+          "sharePct": {
+            "type": "number",
+            "format": "double",
+            "description": "Of the window's bad answers, percent."
           }
         }
       },
@@ -12238,11 +12492,71 @@
                     "type": "string"
                   }
                 },
+                "servfailByStatus": {
+                  "type": "object",
+                  "description": "REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in\nbuckets without any, or stored by builds before 0.5.",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "servfailByUpstream": {
+                  "type": "object",
+                  "description": "REQ: OBS-027 — SERVFAIL answers by the upstream that gave them (`none`: no upstream on\nthe answer, such as one served from the cache).",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
                 "slow": {
                   "type": "integer",
                   "format": "int32",
                   "description": "REQ: OBS-016 — answered queries slower than the latency objective's threshold\n(`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.",
                   "minimum": 0
+                },
+                "slowByRcode": {
+                  "type": "object",
+                  "description": "REQ: OBS-027 — slow answers by response code.",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "slowByStatus": {
+                  "type": "object",
+                  "description": "REQ: OBS-027 — slow answers (see `slow`) by status.",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "slowByUpstream": {
+                  "type": "object",
+                  "description": "REQ: OBS-027 — slow answers by upstream.",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
                 },
                 "startUnixSeconds": {
                   "type": "integer",
@@ -14723,6 +15037,103 @@
           }
         }
       },
+      "SloAttribution": {
+        "type": "object",
+        "description": "REQ: OBS-027 — who and what spent an objective's error budget.",
+        "required": [
+          "objective",
+          "from",
+          "to",
+          "step",
+          "budget",
+          "timeline",
+          "byClient",
+          "byName",
+          "byStatus",
+          "byUpstream",
+          "byRcode",
+          "byNode",
+          "coverage"
+        ],
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/AttributionBudget"
+          },
+          "byClient": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            }
+          },
+          "byName": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            }
+          },
+          "byNode": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            }
+          },
+          "byRcode": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            }
+          },
+          "byStatus": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            }
+          },
+          "byUpstream": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            }
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/AttributionCoverage"
+          },
+          "from": {
+            "type": "string"
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A plain note, such as few answers making one failure move the ratio a lot."
+          },
+          "objective": {
+            "type": "string",
+            "description": "`availability` or `latency`."
+          },
+          "step": {
+            "type": "string",
+            "description": "The timeline's grain: `hour` or `day`."
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributionPoint"
+            },
+            "description": "Per node and hour (or day), oldest first."
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
       "SloBurn": {
         "type": "object",
         "description": "REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the\nshare the target allows (1 spends exactly the budget over the objective's window).",
@@ -15198,11 +15609,71 @@
               "type": "string"
             }
           },
+          "servfailByStatus": {
+            "type": "object",
+            "description": "REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in\nbuckets without any, or stored by builds before 0.5.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "servfailByUpstream": {
+            "type": "object",
+            "description": "REQ: OBS-027 — SERVFAIL answers by the upstream that gave them (`none`: no upstream on\nthe answer, such as one served from the cache).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "slow": {
             "type": "integer",
             "format": "int32",
             "description": "REQ: OBS-016 — answered queries slower than the latency objective's threshold\n(`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.",
             "minimum": 0
+          },
+          "slowByRcode": {
+            "type": "object",
+            "description": "REQ: OBS-027 — slow answers by response code.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "slowByStatus": {
+            "type": "object",
+            "description": "REQ: OBS-027 — slow answers (see `slow`) by status.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "slowByUpstream": {
+            "type": "object",
+            "description": "REQ: OBS-027 — slow answers by upstream.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "startUnixSeconds": {
             "type": "integer",

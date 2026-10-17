@@ -1904,6 +1904,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stats/slo/attribution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Who spent the error budget.
+         * @description For one objective (`availability`: SERVFAIL answers; `latency`: answers slower than the
+         *     objective's threshold), the window's bad answers broken down: `byClient` and `byName`
+         *     (approximate top lists, each row with `errorMax`: the true count is at least
+         *     `bad - errorMax`), and `byStatus` (`refreshed`, `forwarded`, ...), `byUpstream` (`none`: no
+         *     upstream on the answer, such as one served from the cache), `byRcode`, `byNode`, exact.
+         *     `timeline` is every node's bad answers per hour or day (`step`), with the share of the
+         *     window's budget each spent; `budget` the window's totals. In a cluster every node is asked;
+         *     `coverage.partialNodes` names nodes whose client and name lists are missing for part of the
+         *     window (they still count in the exact lists). Follows the query log's privacy level. Use it
+         *     to answer "why did the error budget drop?". Example:
+         *     `GET /api/v1/stats/slo/attribution?objective=availability&from=-30d`.
+         */
+        get: operations["slo_attribution"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/summary": {
         parameters: {
             query?: never;
@@ -2512,6 +2542,96 @@ export interface components {
             windowSeconds: number;
             /** @description The window examined (RFC 3339 start, and length in seconds). */
             windowStart: string;
+        };
+        /** @description REQ: OBS-027 — the budget over the window. */
+        AttributionBudget: {
+            /**
+             * Format: int64
+             * @description Bad answers the target allows over the window.
+             */
+            allowedBad: number;
+            /**
+             * Format: int64
+             * @description Answers counted (availability: every response; latency: every answer with a timing).
+             */
+            answered: number;
+            /**
+             * Format: int64
+             * @description Bad answers in the window.
+             */
+            bad: number;
+            /**
+             * Format: double
+             * @description The budget left, percent (negative: overspent).
+             */
+            remainingPct: number;
+            /**
+             * Format: double
+             * @description The objective's target, percent of good answers.
+             */
+            targetPct: number;
+        };
+        /** @description REQ: OBS-027 — how much of the window the lists cover. */
+        AttributionCoverage: {
+            /** @description The client and name lists are approximate (always). */
+            approximate: boolean;
+            /**
+             * @description Why a list is empty on purpose: `names_hidden` (privacy level 1: names are hashes),
+             *     `clients_hidden` (level 2), `timeline_only` (level 3).
+             */
+            hidden?: string[];
+            /**
+             * @description Nodes without client and name lists for some of the window (an older build; a resolver
+             *     pod counted from the minutes it shipped): their bad answers count everywhere else.
+             */
+            partialNodes?: string[];
+            /**
+             * Format: int64
+             * @description Hours whose client and name lists were found (summed over nodes).
+             */
+            topListsFromHours: number;
+        };
+        /** @description REQ: OBS-027 — one node's bad answers in one hour or day. */
+        AttributionPoint: {
+            /** Format: int64 */
+            answered: number;
+            /** Format: int64 */
+            bad: number;
+            /**
+             * Format: double
+             * @description The window's budget this spent, percent.
+             */
+            budgetSpentPct: number;
+            node?: string | null;
+            /** @description Start, RFC 3339. */
+            start: string;
+            /** Format: int64 */
+            startUnixSeconds: number;
+        };
+        /** @description REQ: OBS-027 — one row of a breakdown. */
+        AttributionRow: {
+            /** Format: int64 */
+            bad: number;
+            /** Format: int64 */
+            errorMax?: number | null;
+            /**
+             * @description Exact count (`false` for the client and name lists: their `bad` is an upper bound, and
+             *     the true count is at least `bad - errorMax`).
+             */
+            exact: boolean;
+            /**
+             * @description A client address, a name, a status, an upstream (`none`: no upstream on the answer),
+             *     a response code, or a node.
+             * @example 192.168.10.185
+             */
+            key: string;
+            /** @description A client's device name, when it has one. */
+            name?: string | null;
+            /**
+             * Format: double
+             * @description Of the window's bad answers, percent.
+             */
+            sharePct: number;
         };
         /** @description One audit-log entry. */
         AuditInfo: {
@@ -4646,11 +4766,37 @@ export interface components {
                     [key: string]: number;
                 };
                 /**
+                 * @description REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in
+                 *     buckets without any, or stored by builds before 0.5.
+                 */
+                servfailByStatus?: {
+                    [key: string]: number;
+                };
+                /**
+                 * @description REQ: OBS-027 — SERVFAIL answers by the upstream that gave them (`none`: no upstream on
+                 *     the answer, such as one served from the cache).
+                 */
+                servfailByUpstream?: {
+                    [key: string]: number;
+                };
+                /**
                  * Format: int32
                  * @description REQ: OBS-016 — answered queries slower than the latency objective's threshold
                  *     (`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.
                  */
                 slow?: number;
+                /** @description REQ: OBS-027 — slow answers by response code. */
+                slowByRcode?: {
+                    [key: string]: number;
+                };
+                /** @description REQ: OBS-027 — slow answers (see `slow`) by status. */
+                slowByStatus?: {
+                    [key: string]: number;
+                };
+                /** @description REQ: OBS-027 — slow answers by upstream. */
+                slowByUpstream?: {
+                    [key: string]: number;
+                };
                 /**
                  * Format: int64
                  * @description Bucket start, Unix seconds.
@@ -5685,6 +5831,28 @@ export interface components {
              */
             undetermined: number;
         };
+        /** @description REQ: OBS-027 — who and what spent an objective's error budget. */
+        SloAttribution: {
+            budget: components["schemas"]["AttributionBudget"];
+            byClient: components["schemas"]["AttributionRow"][];
+            byName: components["schemas"]["AttributionRow"][];
+            byNode: components["schemas"]["AttributionRow"][];
+            byRcode: components["schemas"]["AttributionRow"][];
+            byStatus: components["schemas"]["AttributionRow"][];
+            byUpstream: components["schemas"]["AttributionRow"][];
+            coverage: components["schemas"]["AttributionCoverage"];
+            from: string;
+            missingNodes?: string[];
+            /** @description A plain note, such as few answers making one failure move the ratio a lot. */
+            note?: string | null;
+            /** @description `availability` or `latency`. */
+            objective: string;
+            /** @description The timeline's grain: `hour` or `day`. */
+            step: string;
+            /** @description Per node and hour (or day), oldest first. */
+            timeline: components["schemas"]["AttributionPoint"][];
+            to: string;
+        };
         /**
          * @description REQ: OBS-016 — the error budget's burn rate over one window: the bad share divided by the
          *     share the target allows (1 spends exactly the budget over the objective's window).
@@ -5909,11 +6077,37 @@ export interface components {
                 [key: string]: number;
             };
             /**
+             * @description REQ: OBS-027 — SERVFAIL answers by status (`refreshed`, `forwarded`, ...). Empty in
+             *     buckets without any, or stored by builds before 0.5.
+             */
+            servfailByStatus?: {
+                [key: string]: number;
+            };
+            /**
+             * @description REQ: OBS-027 — SERVFAIL answers by the upstream that gave them (`none`: no upstream on
+             *     the answer, such as one served from the cache).
+             */
+            servfailByUpstream?: {
+                [key: string]: number;
+            };
+            /**
              * Format: int32
              * @description REQ: OBS-016 — answered queries slower than the latency objective's threshold
              *     (`[slo] latency_ms`). 0 in buckets stored by builds before 0.4.
              */
             slow?: number;
+            /** @description REQ: OBS-027 — slow answers by response code. */
+            slowByRcode?: {
+                [key: string]: number;
+            };
+            /** @description REQ: OBS-027 — slow answers (see `slow`) by status. */
+            slowByStatus?: {
+                [key: string]: number;
+            };
+            /** @description REQ: OBS-027 — slow answers by upstream. */
+            slowByUpstream?: {
+                [key: string]: number;
+            };
             /**
              * Format: int64
              * @description Bucket start, Unix seconds.
@@ -10022,6 +10216,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SloStatus"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    slo_attribution: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `availability` (answers that were SERVFAIL) or `latency` (answers slower than the
+                 *     objective's threshold).
+                 * @example availability
+                 */
+                objective?: string;
+                /** @description Start (RFC 3339 or relative; default: the objective's window, `[slo] window_days`). */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /** @description `cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`. */
+                scope?: string;
+                /** @description Rows per list (1–20, default 10). */
+                limit?: number;
+                /** @description The timeline's grain: `hour` or `day` (default: `day` over windows longer than 7 days). */
+                step?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The attribution. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SloAttribution"];
                 };
             };
             /** @description Invalid request: problem+json says which parameter and how to fix it. */

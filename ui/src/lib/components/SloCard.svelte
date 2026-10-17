@@ -3,6 +3,7 @@
   // error budget left over the window, and how fast it's being spent right now.
   import type { S } from '../api';
   import { short } from '../format';
+  import { href } from '../router.svelte';
   import HelpButton from './HelpButton.svelte';
   import Tip from './Tip.svelte';
 
@@ -85,6 +86,8 @@
               <Tip text={burnTip(b)}><span class="burn" class:hot={(b.rate ?? 0) >= 6}>{b.window} {burnText(b)}</span></Tip>
             {/each}
           </div>
+          <!-- REQ: OBS-027 — who and what spent it. -->
+          <a class="small" href={href('/analyze', { tab: 'budget', objective: o.name })} data-testid={`slo-who-${o.name}`}>Who spent it?</a>
         </div>
       {/each}
     </div>

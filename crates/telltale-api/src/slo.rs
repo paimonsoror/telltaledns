@@ -68,7 +68,7 @@ pub const MIN_BAD: u64 = 10;
 
 /// Which objective a bucket is judged for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
     Availability,
     Latency,
 }
@@ -77,7 +77,7 @@ enum Kind {
 /// Prometheus rules count: availability over responses (every RCODE, as
 /// `telltale_responses_total`), latency over queries with a timing (all but `dropped`, as
 /// `telltale_query_duration_seconds_count`).
-fn tally(b: &TimeBucket, kind: Kind) -> (u64, u64) {
+pub fn tally(b: &TimeBucket, kind: Kind) -> (u64, u64) {
     let (answered, bad) = match kind {
         Kind::Availability => (
             b.by_rcode.values().map(|n| u64::from(*n)).sum(),

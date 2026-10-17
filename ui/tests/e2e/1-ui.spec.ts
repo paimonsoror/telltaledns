@@ -1803,3 +1803,48 @@ test('obs_033 change markers', async () => {
   for (let i = problems.length - 1; i >= 0; i--) if (/status of 4(05|22)/.test(problems[i])) problems.splice(i, 1);
   expect((await r.delete('/api/v1/records/marker.e2e.test', { headers: h })).status()).toBe(200);
 });
+
+// REQ: OBS-027 (T14.1) — "Who spent it?": the card's link opens Analyze → Error budget with the
+// real server's numbers; then a stubbed attribution: the bars, a row's link to the query log
+// filtered to its bad answers, the table view, and the partial-node note.
+test('obs_027 budget attribution', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await page.getByTestId('slo-who-availability').click();
+  await expect(page).toHaveURL(/#\/analyze\?.*tab=budget/);
+  const tab = page.getByTestId('budget-attribution');
+  await expect(tab.getByTestId('budget-summary')).toContainText('bad of');
+  const row = (key: string, bad: number, exact: boolean) => ({ key, bad, sharePct: Math.round((bad / 13) * 1000) / 10, exact, ...(exact ? {} : { errorMax: 0 }) });
+  await page.route('**/api/v1/stats/slo/attribution*', (route) =>
+    route.fulfill({
+      json: {
+        objective: 'availability', from: '2026-09-16T00:00:00.000Z', to: '2026-10-16T00:00:00.000Z', step: 'day',
+        budget: { targetPct: 99.9, answered: 10000, allowedBad: 10, bad: 13, remainingPct: -30 },
+        timeline: [
+          { start: '2026-10-14T00:00:00.000Z', startUnixSeconds: 1792022400, node: 'pi', answered: 5000, bad: 10, budgetSpentPct: 100 },
+          { start: '2026-10-15T00:00:00.000Z', startUnixSeconds: 1792108800, node: 'pi', answered: 5000, bad: 3, budgetSpentPct: 30 },
+        ],
+        byClient: [{ ...row('192.168.10.185', 10, false), name: 'PaimonLaptop' }, row('192.168.10.20', 3, false)],
+        byName: [row('247.73.85.170.in-addr.arpa', 10, false)],
+        byStatus: [row('refreshed', 10, true), row('forwarded', 3, true)],
+        byUpstream: [row('none', 10, true), row('quad9-2', 3, true)],
+        byRcode: [row('SERVFAIL', 13, true)],
+        byNode: [row('pi', 13, true)],
+        coverage: { topListsFromHours: 720, approximate: true, partialNodes: ['old-pod'] },
+      },
+    }),
+  );
+  await page.reload();
+  await expect(tab.getByTestId('budget-summary')).toContainText('overspent');
+  await expect(tab.getByTestId('partial-nodes')).toContainText('old-pod');
+  const clients = tab.getByTestId('by-client');
+  await expect(clients).toContainText('PaimonLaptop (192.168.10.185)');
+  await expect(tab.getByTestId('by-upstream')).toContainText('none');
+  await clients.getByRole('button', { name: 'Table' }).click();
+  await expect(clients.getByRole('table')).toContainText('76.9%');
+  await clients.getByRole('link', { name: /PaimonLaptop/ }).click();
+  await expect(page).toHaveURL(/#\/queries\?.*client=192\.168\.10\.185/);
+  await expect(page).toHaveURL(/rcode=SERVFAIL/);
+  await page.unroute('**/api/v1/stats/slo/attribution*');
+});

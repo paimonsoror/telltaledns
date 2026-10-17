@@ -191,6 +191,22 @@ panels[-1]["fieldConfig"]["defaults"]["custom"]["thresholdsStyle"] = {"mode": "l
 panels[-1]["fieldConfig"]["defaults"]["thresholds"] = {"mode": "absolute", "steps": [
     {"color": "green", "value": None}, {"color": "orange", "value": 6}, {"color": "red", "value": 14.4}]}
 advance(7)
+# REQ: OBS-027 (T14.1) — where the bad answers were, from what Prometheus has (no per-name or
+# per-client series: the web UI's Analyze → Error budget has those).
+stat("SERVFAIL answers (range)", 0, 8,
+     f'sum(increase(telltale_responses_total{{{SEL}, rcode="SERVFAIL"}}[$__range]))', "short",
+     "The availability objective's bad answers over the time range. Who and what they were: Analyze → Error budget in the web UI.",
+     decimals=0)
+panels.append({
+    "type": "bargauge", "title": "SERVFAIL answers by node (range)", "id": nid(), "datasource": DS,
+    "description": "Which node gave the availability objective's bad answers over the time range.",
+    "gridPos": place(16, 4, 8),
+    "targets": targets((f'sum by (instance) (increase(telltale_responses_total{{{SEL}, rcode="SERVFAIL"}}[$__range]))', "{{instance}}"), instant=True),
+    "options": {"orientation": "horizontal", "displayMode": "basic", "showUnfilled": True,
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}},
+    "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "color": {"mode": "fixed", "fixedColor": "red"}}, "overrides": []},
+})
+advance(4)
 
 # ---- Latency
 row("Latency")

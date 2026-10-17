@@ -51,6 +51,71 @@ pub struct Counts {
     /// REQ: OBS-016 (T11.1) — answered queries slower than the latency objective's
     /// threshold ([`Aggregates::slo_latency_us`] when they were counted).
     pub slow: u32,
+    /// REQ: OBS-027 (ADR-127) — the bucket's bad answers broken down, from its first one on
+    /// (most buckets have none).
+    pub bad: Option<Box<Bad>>,
+}
+
+/// REQ: OBS-027 (ADR-127) — a bucket's bad answers, exactly: SERVFAILs (the availability
+/// objective) and slow answers (the latency objective) by status and upstream, and slow ones by
+/// response code.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bad {
+    pub servfail_status: [u32; N_STATUS],
+    pub slow_status: [u32; N_STATUS],
+    pub slow_rcode: [u32; N_RCODE],
+    /// By upstream ID (index 0: no upstream on the event), in live buckets.
+    pub servfail_upstream: Vec<u32>,
+    pub slow_upstream: Vec<u32>,
+    /// By upstream name (`none` for no upstream), in stored buckets (see
+    /// [`Counts::name_upstreams`]); sorted by name.
+    pub named_servfail_upstream: Vec<(Box<str>, u32)>,
+    pub named_slow_upstream: Vec<(Box<str>, u32)>,
+}
+
+impl Bad {
+    /// Adds `b` into `self` (both the ID and the name columns).
+    pub fn merge(&mut self, b: &Self) {
+        for (x, y) in self.servfail_status.iter_mut().zip(&b.servfail_status) {
+            *x = x.saturating_add(*y);
+        }
+        for (x, y) in self.slow_status.iter_mut().zip(&b.slow_status) {
+            *x = x.saturating_add(*y);
+        }
+        for (x, y) in self.slow_rcode.iter_mut().zip(&b.slow_rcode) {
+            *x = x.saturating_add(*y);
+        }
+        for (i, n) in b.servfail_upstream.iter().enumerate() {
+            add_at(&mut self.servfail_upstream, i, *n);
+        }
+        for (i, n) in b.slow_upstream.iter().enumerate() {
+            add_at(&mut self.slow_upstream, i, *n);
+        }
+        for (k, n) in &b.named_servfail_upstream {
+            add_name(&mut self.named_servfail_upstream, k, *n);
+        }
+        for (k, n) in &b.named_slow_upstream {
+            add_name(&mut self.named_slow_upstream, k, *n);
+        }
+    }
+}
+
+fn add_at(v: &mut Vec<u32>, i: usize, n: u32) {
+    if n == 0 {
+        return;
+    }
+    if v.len() <= i {
+        v.resize(i + 1, 0);
+    }
+    v[i] = v[i].saturating_add(n);
+}
+
+/// Adds `n` to `key`'s entry in `v` (kept sorted by key).
+pub fn add_name(v: &mut Vec<(Box<str>, u32)>, key: &str, n: u32) {
+    match v.binary_search_by(|(k, _)| (**k).cmp(key)) {
+        Ok(i) => v[i].1 = v[i].1.saturating_add(n),
+        Err(i) => v.insert(i, (key.into(), n)),
+    }
 }
 
 /// One group's queries and blocked queries in a stored bucket (T6.16).
@@ -76,6 +141,31 @@ impl Counts {
             add_named(&mut self.named_groups, name, total, blocked);
         }
     }
+
+    /// REQ: OBS-027 — the per-ID upstream columns of the bad answers as names (`names[id]`,
+    /// this process's upstream table; ID 0 and IDs past it are `none` and `other`), for storing.
+    pub fn name_upstreams(&mut self, names: &[&str]) {
+        let Some(b) = self.bad.as_deref_mut() else {
+            return;
+        };
+        let name = |i: usize| -> &str {
+            if i == 0 {
+                "none"
+            } else {
+                names.get(i).copied().unwrap_or("other")
+            }
+        };
+        for (i, n) in b.servfail_upstream.iter().enumerate() {
+            if *n > 0 {
+                add_name(&mut b.named_servfail_upstream, name(i), *n);
+            }
+        }
+        for (i, n) in b.slow_upstream.iter().enumerate() {
+            if *n > 0 {
+                add_name(&mut b.named_slow_upstream, name(i), *n);
+            }
+        }
+    }
 }
 
 /// Adds to `name`'s entry in `v` (kept sorted by name).
@@ -96,6 +186,14 @@ pub fn add_named(v: &mut Vec<NamedGroup>, name: &str, total: u32, blocked: u32) 
     }
 }
 
+/// The availability objective's bad answer (RFC 1035 SERVFAIL).
+const SERVFAIL: u8 = 2;
+
+/// REQ: OBS-016 — the latency objective's bad answer: answered, and slower than `slow_us`.
+fn is_slow(e: &QueryEvent, slow_us: u64) -> bool {
+    e.status != Status::Dropped && u64::from(e.t_total_us) > slow_us
+}
+
 fn bump(v: &mut Vec<u32>, id: usize) {
     let i = id.min(MAX_IDS - 1);
     if v.len() <= i {
@@ -108,8 +206,27 @@ impl Counts {
     fn add_query(&mut self, e: &QueryEvent, slow_us: u64) {
         self.total = self.total.saturating_add(1);
         // REQ: OBS-016 — the latency objective's bad events (dropped queries got no answer).
-        if e.status != Status::Dropped && u64::from(e.t_total_us) > slow_us {
+        let slow = is_slow(e, slow_us);
+        if slow {
             self.slow = self.slow.saturating_add(1);
+        }
+        // REQ: OBS-027 — and both objectives' bad answers, broken down (bad answers only).
+        let servfail = e.rcode == Some(SERVFAIL);
+        if servfail || slow {
+            let b = self.bad.get_or_insert_with(Box::default);
+            let st = e.status as usize;
+            if servfail {
+                b.servfail_status[st] = b.servfail_status[st].saturating_add(1);
+                bump(&mut b.servfail_upstream, usize::from(e.upstream));
+            }
+            if slow {
+                b.slow_status[st] = b.slow_status[st].saturating_add(1);
+                bump(&mut b.slow_upstream, usize::from(e.upstream));
+                if let Some(rc) = e.rcode {
+                    let r = &mut b.slow_rcode[usize::from(rc).min(N_RCODE - 1)];
+                    *r = r.saturating_add(1);
+                }
+            }
         }
         let s = &mut self.status[e.status as usize];
         *s = s.saturating_add(1);
@@ -243,6 +360,52 @@ struct Hour {
     upstreams: Vec<Hist>,
     /// Per primary group (ADR-050), allocated when a group first shows up.
     per_group: Vec<Option<Box<GroupTops>>>,
+    /// REQ: OBS-027 — bad answers' names and clients, from the hour's first bad answer.
+    bad: Option<Box<BadTops>>,
+}
+
+/// REQ: OBS-027 (ADR-127) — one hour's top lists of bad answers only.
+#[derive(Debug, Clone)]
+struct BadTops {
+    servfail_name: SpaceSaving<Box<[u8]>>,
+    servfail_client: SpaceSaving<[u8; 16]>,
+    slow_name: SpaceSaving<Box<[u8]>>,
+    slow_client: SpaceSaving<[u8; 16]>,
+    /// Answers offered to these lists (the bench check: bad answers only).
+    offers: u64,
+}
+
+/// Entries per bad-answer top list (20 are stored).
+pub const BAD_TOP_CAPACITY: usize = 32;
+
+/// REQ: OBS-027 — which bad-answer top list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadTop {
+    ServfailName,
+    ServfailClient,
+    SlowName,
+    SlowClient,
+}
+
+impl BadTop {
+    pub const ALL: [Self; 4] = [
+        Self::ServfailName,
+        Self::ServfailClient,
+        Self::SlowName,
+        Self::SlowClient,
+    ];
+    /// The `hour_top` kind it's stored as.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::ServfailName => "servfail_name",
+            Self::ServfailClient => "servfail_client",
+            Self::SlowName => "slow_name",
+            Self::SlowClient => "slow_client",
+        }
+    }
+    pub const fn is_client(self) -> bool {
+        matches!(self, Self::ServfailClient | Self::SlowClient)
+    }
 }
 
 /// One group's top lists for an hour.
@@ -328,11 +491,39 @@ impl Hour {
             stage_upstream: Hist::default(),
             upstreams: Vec::new(),
             per_group: Vec::new(),
+            bad: None,
         }
     }
 
-    fn add_query(&mut self, e: &QueryEvent, name: &Name, seq: u64) {
+    fn add_query(&mut self, e: &QueryEvent, name: &Name, seq: u64, slow_us: u64) {
         let wire = name.as_wire();
+        // REQ: OBS-027 — bad answers' names and clients (nothing for good answers).
+        let servfail = e.rcode == Some(SERVFAIL);
+        let slow = is_slow(e, slow_us);
+        if servfail || slow {
+            let t = self.bad.get_or_insert_with(|| {
+                Box::new(BadTops {
+                    servfail_name: SpaceSaving::new(BAD_TOP_CAPACITY),
+                    servfail_client: SpaceSaving::new(BAD_TOP_CAPACITY),
+                    slow_name: SpaceSaving::new(BAD_TOP_CAPACITY),
+                    slow_client: SpaceSaving::new(BAD_TOP_CAPACITY),
+                    offers: 0,
+                })
+            });
+            t.offers += 1;
+            if servfail {
+                if !wire.is_empty() {
+                    t.servfail_name.offer(wire, boxed);
+                }
+                t.servfail_client.offer(&e.client_ip, |ip| *ip);
+            }
+            if slow {
+                if !wire.is_empty() {
+                    t.slow_name.offer(wire, boxed);
+                }
+                t.slow_client.offer(&e.client_ip, |ip| *ip);
+            }
+        }
         if !wire.is_empty() {
             self.domains.offer(wire, boxed);
             if e.status == Status::Blocked {
@@ -489,7 +680,7 @@ impl Aggregates {
                     }
                 }
                 if in_hour {
-                    self.current.add_query(e, name, self.seq);
+                    self.current.add_query(e, name, self.seq, slow_us);
                 }
             }
             Record::Upstream(e) => {
@@ -519,12 +710,13 @@ impl Aggregates {
         }
         let hour = e.ts_us / 1_000_000 / 3600;
         self.seq += 1;
+        let slow_us = self.slo_latency_us;
         if hour == self.current.index {
-            self.current.add_query(e, name, self.seq);
+            self.current.add_query(e, name, self.seq, slow_us);
         } else if hour + 1 == self.current.index {
             self.previous
                 .get_or_insert_with(|| Hour::new(hour))
-                .add_query(e, name, self.seq);
+                .add_query(e, name, self.seq, slow_us);
         }
     }
 
@@ -616,6 +808,52 @@ impl Aggregates {
                 })
                 .collect(),
         }
+    }
+
+    /// REQ: OBS-027 — the selected hour's heaviest bad-answer names (presentation form) or
+    /// clients, heaviest first.
+    pub fn bad_top(&self, which: BadTop, sel: HourSel, n: usize) -> Vec<Top<String>> {
+        let Some(t) = self.hour(sel).and_then(|h| h.bad.as_deref()) else {
+            return Vec::new();
+        };
+        let names = |t: &SpaceSaving<Box<[u8]>>| -> Vec<Top<String>> {
+            t.top(n)
+                .into_iter()
+                .map(|x| Top {
+                    key: crate::event::dotted(&x.key),
+                    count: x.count,
+                    error: x.error,
+                })
+                .collect()
+        };
+        let clients = |t: &SpaceSaving<[u8; 16]>| -> Vec<Top<String>> {
+            t.top(n)
+                .into_iter()
+                .map(|x| Top {
+                    key: client_text(x.key),
+                    count: x.count,
+                    error: x.error,
+                })
+                .collect()
+        };
+        match which {
+            BadTop::ServfailName => names(&t.servfail_name),
+            BadTop::ServfailClient => clients(&t.servfail_client),
+            BadTop::SlowName => names(&t.slow_name),
+            BadTop::SlowClient => clients(&t.slow_client),
+        }
+    }
+
+    /// REQ: OBS-027 — answers offered to the selected hour's bad-answer lists (bad ones only).
+    pub fn bad_offers(&self, sel: HourSel) -> u64 {
+        self.hour(sel)
+            .and_then(|h| h.bad.as_deref())
+            .map_or(0, |t| t.offers)
+    }
+
+    /// Start (Unix seconds) of the hour being counted now.
+    pub fn current_hour_start(&self) -> u64 {
+        self.current.index * 3600
     }
 
     /// Devices seen in a group this hour (up to the tracked capacity).

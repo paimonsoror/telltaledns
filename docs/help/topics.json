@@ -34,6 +34,16 @@
       "docs": "traffic-map"
     },
     {
+      "id": "slo-attribution",
+      "title": "Who spent the error budget?",
+      "term": "Error-budget attribution",
+      "summary": "For each service-level objective, the bad answers of its window broken down: which devices and names got them, from which upstream, with which status and response code, on which node, and when, as a burn-down of the budget left.",
+      "when": "The Service level card says the budget is running out and you want to know why before changing anything.",
+      "example": "Ten of 15 bad answers were one reverse-lookup name from one laptop, answered from the cache with SERVFAIL; the rest came before a fix two weeks ago.",
+      "caution": "Devices and names are approximate top lists (each count may be up to its ± over); the other lists are exact. Links open the query log, which keeps fewer days than the budget's window. Older nodes and resolver pods that are gone count in the totals but have no device or name lists.",
+      "docs": "who-spent-it"
+    },
+    {
       "id": "change-markers",
       "title": "What changed, on every chart",
       "term": "Change markers (annotations)",
