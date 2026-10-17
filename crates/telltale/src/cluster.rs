@@ -40,6 +40,7 @@ pub(crate) fn start(
     };
     info!(cluster = %id.meta.cluster_name, node = %id.meta.node_id, primary = id.is_primary(), "cluster member");
     let cluster = Cluster::new(id, VERSION);
+    cluster.set_ephemeral(cfg.cluster.ephemeral);
     // REQ: CLU-009 — the shared bootstrap secret works as a join token here (Helm). It's
     // re-read at every join, so a rotated Secret applies without a restart.
     if let Some(path) = &cfg.cluster.bootstrap_secret_file {

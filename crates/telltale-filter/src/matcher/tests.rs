@@ -575,3 +575,78 @@ fn obs_024_merged_decisions_equal_a_full_compile() {
         assert_eq!(compared, 30_000);
     }
 }
+
+/// Wire format from raw labels (a label may contain `.`, as `a\.b` does in presentation form).
+fn raw_wire(labels: &[&str]) -> Vec<u8> {
+    let mut w = Vec::new();
+    for l in labels {
+        w.push(u8::try_from(l.len()).unwrap());
+        w.extend_from_slice(l.as_bytes());
+    }
+    w.push(0);
+    w
+}
+
+/// REQ: FLT-002 (T10.7) — a label containing `.` (`a\.b.ads.example.com`) used to make the
+/// name unmatchable, so it slipped past every list. It's now matched as a subdomain of the
+/// labels to its right: subtree and subdomain rules apply, an exact rule for that name doesn't.
+#[test]
+fn flt_002_a_dotted_label_does_not_bypass_the_lists() {
+    let m = matcher_with(
+        vec![input(
+            "block",
+            ListKind::Block,
+            "||ads.example.com^\n|exact.example.org^\n*.wild.example.org\n",
+        )],
+        1,
+    );
+    let client = ClientCtx {
+        ip: CLIENT_IP,
+        name: None,
+        client_id: None,
+    };
+    let ask = |labels: &[&str]| {
+        let mut scratch = Scratch::default();
+        match m.decide(
+            &raw_wire(labels),
+            rtype::A,
+            &client,
+            &ListMask::all(8),
+            &mut scratch,
+        ) {
+            Decision::None => "none".to_owned(),
+            Decision::Allow(a) => format!("allow {}", describe(&m, &a)),
+            Decision::Block(a) => format!("block {}", describe(&m, &a)),
+        }
+    };
+    assert_eq!(
+        ask(&["a.b", "ads", "example", "com"]),
+        "block block Subtree/3"
+    );
+    assert_eq!(
+        ask(&["x", "a.b", "ads", "example", "com"]),
+        "block block Subtree/3"
+    );
+    assert_eq!(
+        ask(&["a.b", "wild", "example", "org"]),
+        "block block Subdomains/3"
+    );
+    assert_eq!(
+        ask(&["a.b", "exact", "example", "org"]),
+        "none",
+        "exact: only the name itself"
+    );
+    assert_eq!(
+        ask(&["a.b", "example", "com"]),
+        "none",
+        "nothing blocks example.com"
+    );
+    assert_eq!(
+        ask(&["x", "com.evil"]),
+        "none",
+        "a dotted top label matches nothing"
+    );
+    // The plain names still decide as before.
+    assert_eq!(decide(&m, "ads.example.com"), "block block Subtree/3");
+    assert_eq!(decide(&m, "exact.example.org"), "block block Exact/3");
+}

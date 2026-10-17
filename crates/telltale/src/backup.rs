@@ -398,6 +398,10 @@ fn read_archive(
         let mut body = (&mut r).take(size);
         match h[156] {
             b'L' => {
+                // T10.7 — bounded: a path, not a way to fill memory.
+                if size > MAX_LONG_NAME {
+                    return Err(bad("path too long"));
+                }
                 let mut name = Vec::new();
                 body.read_to_end(&mut name)
                     .map_err(|e| bad(&e.to_string()))?;
@@ -409,6 +413,9 @@ fn read_archive(
                     return Err(bad(&format!("unexpected path `{name}`")));
                 }
                 if name == "manifest.json" {
+                    if size > MAX_MANIFEST {
+                        return Err(bad("manifest too large"));
+                    }
                     let mut json = Vec::new();
                     body.read_to_end(&mut json)
                         .map_err(|e| bad(&e.to_string()))?;
@@ -482,6 +489,29 @@ pub(crate) fn show(archive: &Path) -> Result<Manifest, String> {
 
 // ------------------------------------------------------------------ restore
 
+/// The longest path entry and manifest an archive may hold (T10.7).
+const MAX_LONG_NAME: u64 = 4096;
+const MAX_MANIFEST: u64 = 16 << 20;
+
+/// REQ: API-007 (T10.7) — a directory the archive recorded (where it came from), used when
+/// the command doesn't name one: only an absolute path below the root, with no `..`. An archive
+/// is data; it doesn't get to pick an arbitrary place to write.
+fn recorded_dir(dir: &str, flag: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let p = PathBuf::from(dir);
+    let plain = p.is_absolute()
+        && p.components().count() > 1
+        && p.components()
+            .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    if plain {
+        Ok(p)
+    } else {
+        Err(format!(
+            "the backup records `{dir}` as its directory; name one with {flag}"
+        ))
+    }
+}
+
 /// Where `restore` put things.
 #[derive(Debug)]
 pub(crate) struct Restored {
@@ -502,16 +532,21 @@ pub(crate) fn restore(
 ) -> Result<Restored, String> {
     // The manifest comes last, so read once to learn the defaults (and check everything).
     let m = show(archive)?;
-    let data_dir = data_dir.map_or_else(|| PathBuf::from(&m.data_dir), Path::to_path_buf);
-    let config_dir = config_dir.map_or_else(
-        || {
-            m.config_files
-                .first()
-                .and_then(|c| Path::new(&c.original).parent().map(Path::to_path_buf))
-                .unwrap_or_else(|| PathBuf::from("/etc/telltale"))
+    let data_dir = match data_dir {
+        Some(d) => d.to_path_buf(),
+        None => recorded_dir(&m.data_dir, "--data-dir")?,
+    };
+    let config_dir = match config_dir {
+        Some(d) => d.to_path_buf(),
+        None => match m
+            .config_files
+            .first()
+            .and_then(|c| Path::new(&c.original).parent())
+        {
+            Some(d) => recorded_dir(&d.to_string_lossy(), "--config-dir")?,
+            None => PathBuf::from("/etc/telltale"),
         },
-        Path::to_path_buf,
-    );
+    };
     let target = |path: &str| -> PathBuf {
         match path.strip_prefix("config/") {
             Some(n) => config_dir.join(n),

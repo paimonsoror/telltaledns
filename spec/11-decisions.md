@@ -1291,6 +1291,26 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-143 — Cluster members are trusted by the registry, never by their word (Proposed)
+**Context:** T10.7 security review (`docs/security-review.md`, findings C1, C3–C6). A member the registry didn't list (a resolver pod that left or expired, then reconnected with its still-valid certificate) was taken at its word: its Hello's eligibility was recorded, so it could get the cluster key, and its epoch could fence the primary. Pods also received every user's password hash and TOTP secret, and could ask other nodes to run simulations.
+**Decision:**
+- A member the registry doesn't know comes back as a plain **ephemeral** member: not eligible, not a witness, no key share, no epoch announcements, and it expires again when it stops being heard from. A cluster from before registries (taken at its word before) has to re-join such nodes; every release since v0.1 records members at join.
+- Vote requests are answered only for candidates the registry lists as eligible and not witnesses.
+- RPC answers count only on the stream of the peer that was asked (C2); request IDs start at a random value.
+- The users-and-tokens blob isn't served to ephemeral or unknown members, and pods (`[cluster] ephemeral`) don't fetch it and drop any copy an older version gave them. Pods serve no API (the chart's API Service selects only the controller), so nothing users do changes.
+- Peers the registry doesn't list are treated as ephemeral for forwarded writes, maintenance, rollouts, and simulations; ephemeral members can't run simulations, and a peer's simulation can't name a list file this node doesn't read, turn on link-local downloads, or exceed this node's window and limits.
+- The primary accepts at most 30 joins a minute (`429` past that). A sender may have 4 unfinished shipped segments; a segment for an hour outside retention (or more than a day ahead) is acknowledged and dropped (an error would stall the sender); only registry members can ship.
+**Consequences:** before rolling this out, each live node's registry must list every node (a read-only check), or the change could demote one. A pod scale-out of more than 30 in a minute takes a little longer.
+
+## ADR-142 — Account changes need a signed-in session (Proposed)
+**Context:** T10.7 security review (finding A1). Any credential (an API token, an agent token, HTTP Basic) could change its account's password and two-factor sign-in, and create or revoke the account's tokens. A leaked token could then take the account over, or mint tokens that outlive its own revocation.
+**Decision (owner, 2026-10-17: "Signed-in sessions only"):**
+- `POST /auth/password`, `POST /auth/totp/{setup,enable,disable}`, `POST /tokens`, `DELETE /tokens/{id}`, and `POST /displays` answer `403` unless the request comes from a signed-in session (cookie and CSRF token). Revoking a display (`DELETE /displays/{id}`) stays open to admin tokens: it only takes access away.
+- The current password in those requests is checked like a sign-in (A2): the bounded concurrent checks, failures counted, and the account locked after five.
+- A password changed or an account disabled on the primary ends that user's sessions on replicas too, and drops cached Basic results (A3).
+- A token made in two writes (an agent's or a display's) is deleted if the second write fails (A4).
+**Consequences:** scripts that minted tokens with a token must sign in first (`POST /auth/login`, then the cookie and `X-CSRF-Token`); the shipped e2e scripts already did.
+
 ## ADR-141 — Wall layouts for the screen's size and shape (Proposed)
 **Context:** T14.15 (OBS-035; owner request 2026-10-17: "various sized screens ... we will not be using the available real estate"). One panel at a time wasted ultrawide, portrait, and large screens.
 **Decision:**

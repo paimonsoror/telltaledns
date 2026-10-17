@@ -66,6 +66,9 @@ fn zip(d: &[u8], want: impl Fn(&str) -> bool) -> Result<Entries, String> {
     let count = u16_at(d, eocd + 10).ok_or_else(bad)?;
     let mut at = u32_at(d, eocd + 16).ok_or_else(bad)? as usize;
     let mut out = Entries::new();
+    // T10.7 — the entries asked for unpack to ENTRY_LIMIT in all, not each: many wanted
+    // entries (or one name repeated) can't multiply it.
+    let mut unpacked = 0usize;
     for _ in 0..count {
         if u32_at(d, at) != Some(0x0201_4b50) {
             return Err(bad());
@@ -93,6 +96,13 @@ fn zip(d: &[u8], want: impl Fn(&str) -> bool) -> Result<Entries, String> {
         }
         if size as usize > ENTRY_LIMIT {
             return Err(format!("{name}: larger than {} MiB", ENTRY_LIMIT >> 20));
+        }
+        unpacked = unpacked.saturating_add(size as usize);
+        if unpacked > ENTRY_LIMIT {
+            return Err(format!(
+                "the archive unpacks to more than {} MiB",
+                ENTRY_LIMIT >> 20
+            ));
         }
         if u32_at(d, local) != Some(0x0403_4b50) {
             return Err(bad());

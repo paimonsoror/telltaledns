@@ -78,6 +78,17 @@ pub fn answer(cluster: &Cluster, peer: &str, body: &[u8]) -> Result<Vec<u8>, Str
     if ask.candidate != peer {
         return Err("a node can only ask for votes for itself".into());
     }
+    // REQ: CLU-005 (T10.7) — only a node the registry lists as eligible may stand: a resolver
+    // pod or a witness asking is refused before the ballot moves (a granted vote would bind
+    // this node to it for the epoch, and a high epoch would fence the primary).
+    if !cluster
+        .identity
+        .registry()
+        .iter()
+        .any(|n| n.node_id == peer && n.eligible && !n.witness)
+    {
+        return Err("only an eligible node can ask for votes".into());
+    }
     let now = now_ms();
     let mut guard = cluster
         .election

@@ -94,6 +94,10 @@ pub struct ImportReport {
     /// Local users the primary also has: the primary's record replaced them.
     pub replaced_local: Vec<String>,
     pub tokens: usize,
+    /// REQ: CLU-003, API-003 (T10.7) — this node's IDs of users whose password changed, who
+    /// were disabled, or whose local account the primary's replaced: their sign-in sessions
+    /// here were ended, as the primary ends them, and cached Basic results must be dropped.
+    pub signed_out: Vec<i64>,
 }
 
 fn hex(b: &[u8]) -> String {
@@ -205,16 +209,25 @@ impl State {
                 Some(h) => Some(unhex(h).ok_or_else(|| bad("TOTP secret"))?),
                 None => None,
             };
-            let existing: Option<(i64, String, i64)> = tx
+            let existing: Option<(i64, String, i64, String, bool)> = tx
                 .query_row(
-                    "SELECT id, origin, totp_last_step FROM users WHERE username = ?1",
+                    "SELECT id, origin, totp_last_step, password_hash, disabled
+                     FROM users WHERE username = ?1",
                     [&p.username],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?;
-            let local_id = if let Some((id, origin, step)) = existing {
+            let local_id = if let Some((id, origin, step, hash, disabled)) = existing {
                 if origin == "local" {
                     rep.replaced_local.push(p.username.clone());
+                }
+                if origin == "local" || hash != p.password_hash || (p.disabled && !disabled) {
+                    // A display session belongs to its token, not the user's sign-ins.
+                    tx.execute(
+                        "DELETE FROM sessions WHERE user_id = ?1 AND display_token IS NULL",
+                        [id],
+                    )?;
+                    rep.signed_out.push(id);
                 }
                 tx.execute(
                     "UPDATE users SET password_hash = ?2, role = ?3, totp_secret = ?4, totp_enabled = ?5,
@@ -448,6 +461,41 @@ mod tests {
         assert!(r.user_by_name("alice").unwrap().is_none());
         assert!(r.token("tok1").unwrap().is_none() && r.token("tok2").unwrap().is_none());
         assert!(r.user_by_name("pi-admin").unwrap().is_some());
+    }
+
+    /// REQ: CLU-003, API-003 (T10.7) — a password changed or an account disabled on the
+    /// primary ends that user's sign-in sessions on the replica (not a wall's display
+    /// session); an unchanged import leaves them.
+    #[test]
+    fn clu_003_a_password_change_ends_replica_sessions() {
+        let p = primary();
+        let r = State::in_memory().unwrap();
+        r.import_identities(&p.export_identities().unwrap())
+            .unwrap();
+        let admin = r.user_by_name("admin").unwrap().unwrap().id;
+        let alice = r.user_by_name("alice").unwrap().unwrap().id;
+        r.create_session(&[1; 32], admin, "c1", 5, 1000, None)
+            .unwrap();
+        r.create_session(&[2; 32], alice, "c2", 5, 1000, None)
+            .unwrap();
+        let rep = r
+            .import_identities(&p.export_identities().unwrap())
+            .unwrap();
+        assert!(rep.signed_out.is_empty(), "{:?}", rep.signed_out);
+        assert!(r.session(&[1; 32]).unwrap().is_some());
+
+        let pa = p.user_by_name("admin").unwrap().unwrap().id;
+        p.set_password(pa, "$argon2id$new", 50).unwrap();
+        let pb = p.user_by_name("alice").unwrap().unwrap().id;
+        p.update_user(pb, None, Some(true), None).unwrap();
+        let rep = r
+            .import_identities(&p.export_identities().unwrap())
+            .unwrap();
+        let mut out = rep.signed_out.clone();
+        out.sort_unstable();
+        assert_eq!(out, vec![admin, alice]);
+        assert!(r.session(&[1; 32]).unwrap().is_none(), "password changed");
+        assert!(r.session(&[2; 32]).unwrap().is_none(), "disabled");
     }
 
     /// REQ: CLU-003 (T9.1) — a damaged document changes nothing.

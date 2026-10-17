@@ -1195,7 +1195,7 @@ pub(crate) async fn list_displays(
 /// REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:
 /// open the returned `link` once on its browser and it stays signed in, able to read only what
 /// the wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code
-/// is shown only in this response. Audited as `display.create`.
+/// is shown only in this response. Audited as `display.create`. Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(post, path = "/api/v1/displays", tag = "auth", request_body = CreateDisplay,
     responses((status = 201, body = NewDisplay, description = "Created."),
         (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
@@ -1210,6 +1210,7 @@ pub(crate) async fn create_display(
     auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    Auth::require_session(&p)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let name = r.name.trim();
@@ -1234,9 +1235,14 @@ pub(crate) async fn create_display(
             )
             .map_err(db)?;
         let joined = networks.join(" ");
-        auth.state()
+        // T10.7 — never leave a half-made token behind (its secret is never shown).
+        if let Err(e) = auth
+            .state()
             .set_token_display(&id, (!joined.is_empty()).then_some(joined.as_str()))
-            .map_err(db)?;
+        {
+            let _ = auth.state().delete_token(&id, p.user_id);
+            return Err(db(e));
+        }
         let t = auth
             .state()
             .token(&id)
@@ -1474,7 +1480,7 @@ pub(crate) async fn get_me(
 
 /// Change my password.
 ///
-/// Needs the current password. Ends every other session of this user.
+/// Needs the current password. Ends every other session of this user. Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(post, path = "/api/v1/auth/password", tag = "auth", request_body = PasswordChange,
     responses((status = 204, description = "Changed."), (status = 401, body = Problem, description = "Not signed in, or the credentials are wrong.")))]
 pub(crate) async fn change_password(
@@ -1487,16 +1493,18 @@ pub(crate) async fn change_password(
     auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    Auth::require_session(&p)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         super::valid_password(&r.new_password)?;
         let u = auth.active_user(p.user_id)?;
-        if !crypto::verify_password(&r.current_password, &u.password_hash) {
-            return Err(Problem::new(
-                Code::Unauthorized,
-                "the current password is wrong",
-            ));
-        }
+        auth.check_own_password(&u, &r.current_password, now())
+            .map_err(|e| match e.code {
+                Code::Unauthorized => {
+                    Problem::new(Code::Unauthorized, "the current password is wrong")
+                }
+                _ => e,
+            })?;
         let hash = crypto::hash_password(&r.new_password).map_err(Problem::internal)?;
         auth.state().set_password(u.id, &hash, now()).map_err(db)?;
         let keep = match &p.via {
@@ -1519,7 +1527,7 @@ pub(crate) async fn change_password(
 /// Start two-factor enrollment.
 ///
 /// Returns a new TOTP secret (base32 and an `otpauth://` URL for a QR code). Nothing is
-/// enforced until POST /auth/totp/enable confirms a code from the app.
+/// enforced until POST /auth/totp/enable confirms a code from the app. Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(post, path = "/api/v1/auth/totp/setup", tag = "auth",
     responses((status = 200, body = TotpSetup, description = "The result."), (status = 409, body = Problem, description = "Conflicts with the current state: problem+json says what to change.")))]
 pub(crate) async fn totp_setup(
@@ -1529,6 +1537,7 @@ pub(crate) async fn totp_setup(
     // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
     auth.identity_writable()?;
     let p = principal(&req_ext)?;
+    Auth::require_session(&p)?;
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
         if u.totp_enabled {
@@ -1552,7 +1561,7 @@ pub(crate) async fn totp_setup(
 /// Turn on two-factor sign-in.
 ///
 /// Confirms a current code from the app enrolled with POST /auth/totp/setup, turns
-/// enforcement on, and returns ten single-use recovery codes (shown only now).
+/// enforcement on, and returns ten single-use recovery codes (shown only now). Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(post, path = "/api/v1/auth/totp/enable", tag = "auth", request_body = TotpCode,
     responses((status = 200, body = RecoveryCodes, description = "The result."), (status = 401, body = Problem, description = "Not signed in, or the credentials are wrong.")))]
 pub(crate) async fn totp_enable(
@@ -1565,6 +1574,7 @@ pub(crate) async fn totp_enable(
     auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    Auth::require_session(&p)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
@@ -1596,7 +1606,7 @@ pub(crate) async fn totp_enable(
 
 /// Turn off two-factor sign-in.
 ///
-/// Needs the current password. Removes the TOTP secret and the unused recovery codes.
+/// Needs the current password. Removes the TOTP secret and the unused recovery codes. Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(post, path = "/api/v1/auth/totp/disable", tag = "auth", request_body = PasswordConfirm,
     responses((status = 204, description = "Off."), (status = 401, body = Problem, description = "Not signed in, or the credentials are wrong.")))]
 pub(crate) async fn totp_disable(
@@ -1609,12 +1619,11 @@ pub(crate) async fn totp_disable(
     auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    Auth::require_session(&p)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let u = auth.active_user(p.user_id)?;
-        if !crypto::verify_password(&r.password, &u.password_hash) {
-            return Err(Problem::new(Code::Unauthorized, "the password is wrong"));
-        }
+        auth.check_own_password(&u, &r.password, now())?;
         auth.state().set_totp(u.id, None, false).map_err(db)?;
         auth.state().set_recovery_codes(u.id, &[]).map_err(db)?;
         auth.record(
@@ -1656,7 +1665,7 @@ pub(crate) async fn list_tokens(
 ///
 /// For scripts, dashboards, and agents: send as `Authorization: Bearer <token>`. `scope`
 /// `read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role.
-/// The token is shown only in this response.
+/// The token is shown only in this response. Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(post, path = "/api/v1/tokens", tag = "auth", request_body = CreateToken,
     responses((status = 201, body = NewToken, description = "Created."), (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
 pub(crate) async fn create_token(
@@ -1669,14 +1678,15 @@ pub(crate) async fn create_token(
     auth.identity_writable()?;
     let r = body(b)?;
     let p = principal(&req_ext)?;
+    if p.agent.is_some() {
+        return Err(Problem::new(Code::Forbidden, "agents can't create tokens"));
+    }
+    Auth::require_session(&p)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let name = r.name.trim();
         if name.is_empty() || name.len() > 64 {
             return Err(Problem::invalid("`name`: 1-64 characters"));
-        }
-        if p.agent.is_some() {
-            return Err(Problem::new(Code::Forbidden, "agents can't create tokens"));
         }
         let kind = r.kind.unwrap_or_default();
         let agent = agent_scopes(&r, kind, p.role)?;
@@ -1712,9 +1722,16 @@ pub(crate) async fn create_token(
             .map_err(db)?;
         if let Some((scopes, _)) = &agent {
             let list: Vec<&str> = scopes.iter().map(String::as_str).collect();
-            auth.state()
-                .set_token_agent(&id, &list.join(" "), r.group.as_deref(), r.rate_per_minute)
-                .map_err(db)?;
+            // T10.7 — never leave a half-made token behind (its secret is never shown).
+            if let Err(e) = auth.state().set_token_agent(
+                &id,
+                &list.join(" "),
+                r.group.as_deref(),
+                r.rate_per_minute,
+            ) {
+                let _ = auth.state().delete_token(&id, p.user_id);
+                return Err(db(e));
+            }
         }
         let t = auth
             .state()
@@ -1791,7 +1808,7 @@ fn agent_scopes(
 
 /// Revoke one of my API tokens.
 ///
-/// By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected.
+/// By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected. Needs a signed-in session: API tokens and Basic credentials get 403.
 #[utoipa::path(delete, path = "/api/v1/tokens/{id}", tag = "auth",
     params(("id" = String, Path, description = "Token ID")),
     responses((status = 204, description = "Revoked."), (status = 404, body = Problem, description = "Not found.")))]
@@ -1804,6 +1821,7 @@ pub(crate) async fn delete_token(
     // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
     auth.identity_writable()?;
     let p = principal(&req_ext)?;
+    Auth::require_session(&p)?;
     let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
     blocking(move || {
         let who = auth.actor(&p, ip, why);

@@ -326,11 +326,55 @@ impl Backend for Fake {
     }
 }
 
-/// A router plus an admin token for authenticated requests.
+/// A router plus an admin token for authenticated requests, and the admin's signed-in
+/// session for account changes (T10.7, ADR-142: tokens can't create or revoke tokens).
 struct TestApp {
     router: Router,
     bearer: String,
+    cookie: String,
+    csrf: String,
     auth: Arc<auth::Auth>,
+}
+
+impl TestApp {
+    /// A signed-in session for `user` (cookie header, CSRF token), on the real clock.
+    fn session_for(&self, user: &telltale_store::state::User) -> (String, String) {
+        let s = self
+            .auth
+            .start_session(user, "127.0.0.1".parse().unwrap(), auth_now())
+            .unwrap();
+        (format!("{}={}", auth::routes::COOKIE, s.cookie), s.csrf)
+    }
+
+    /// A request from the admin's signed-in session.
+    fn signed_in(&self, method: &str, uri: &str, body: serde_json::Value) -> Request<Body> {
+        with_session(&self.cookie, &self.csrf, method, uri, body)
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // called with `json!(..)` like the other helpers
+fn with_session(
+    cookie: &str,
+    csrf: &str,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("cookie", cookie)
+        .header("x-csrf-token", csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Sessions are checked against the real clock, not [`NOW`].
+fn auth_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(NOW, |d| d.as_secs())
 }
 
 async fn send(
@@ -389,11 +433,16 @@ fn app() -> (TestApp, Arc<Fake>) {
             NOW,
         )
         .unwrap();
+    let sess = auth
+        .start_session(&admin, "127.0.0.1".parse().unwrap(), auth_now())
+        .unwrap();
     let router = router(Arc::clone(&fake) as Shared, Arc::clone(&auth));
     (
         TestApp {
             router,
             bearer: format!("tt_{id}_{secret}"),
+            cookie: format!("{}={}", auth::routes::COOKIE, sess.cookie),
+            csrf: sess.csrf,
             auth,
         },
         fake,
@@ -558,13 +607,11 @@ async fn agt_004_agent_tokens_over_http() {
         };
     let (s, _, v) = send(
         &app,
-        call(
+        app.signed_in(
             "POST",
             "/api/v1/tokens",
-            &app.bearer,
             serde_json::json!({"name": "helper", "kind": "agent",
                 "scopes": ["analytics:read", "config:write:clients"], "ratePerMinute": 600}),
-            None,
         ),
     )
     .await;
@@ -688,10 +735,9 @@ async fn agt_004_group_restricted_agent() {
     };
     let (s, _, v) = send(
         &app,
-        call(
+        app.signed_in(
             "POST",
             "/api/v1/tokens",
-            &app.bearer,
             serde_json::json!({"name": "kids-helper", "kind": "agent", "group": "kids",
                 "scopes": ["querylog:read", "analytics:read", "config:read", "config:write:clients"]}),
         ),
@@ -757,31 +803,20 @@ async fn agt_004_group_restricted_agent() {
             NOW,
         )
         .unwrap();
-    let (id, secret) = (auth::crypto::random_id(), auth::crypto::random_secret());
-    app.auth
-        .state()
-        .create_token(
-            &id,
-            viewer.id,
-            "v",
-            &auth::crypto::secret_hash(&secret),
-            "read",
-            None,
-            NOW,
-        )
-        .unwrap();
-    let vt = format!("tt_{id}_{secret}");
-    let (s, _, _) = send(
+    let (cookie, csrf) = app.session_for(&viewer);
+    let (s, _, v) = send(
         &app,
-        call(
+        with_session(
+            &cookie,
+            &csrf,
             "POST",
             "/api/v1/tokens",
-            &vt,
             serde_json::json!({"name": "x", "kind": "agent", "scopes": ["config:write:*"]}),
         ),
     )
     .await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v["detail"].as_str().unwrap().contains("role"), "{v}");
 }
 
 // REQ: AGT-002 — promotion has a dry run: the checks and what would happen, no change.
@@ -877,7 +912,8 @@ async fn agt_006_mcp_over_http() {
 
     // An agent without querylog:read gets an error from search_queries.
     let req = Request::post("/api/v1/tokens")
-        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"name":"mcp-agent","kind":"agent","scopes":["analytics:read"]}"#,
@@ -1527,11 +1563,10 @@ async fn api_006_changes_are_audited_and_the_chain_verifies() {
     assert_eq!(s, StatusCode::OK);
     let (s, _, v) = send(
         &app,
-        req(
+        app.signed_in(
             "POST",
             "/api/v1/tokens",
             serde_json::json!({"name": "ci", "scope": "read"}),
-            None,
         ),
     )
     .await;
@@ -1539,11 +1574,10 @@ async fn api_006_changes_are_audited_and_the_chain_verifies() {
     let token_id = v["info"]["id"].as_str().unwrap().to_owned();
     let (s, _, _) = send(
         &app,
-        req(
+        app.signed_in(
             "DELETE",
             &format!("/api/v1/tokens/{token_id}"),
             serde_json::json!(null),
-            None,
         ),
     )
     .await;
@@ -1725,7 +1759,8 @@ async fn agt_009_list_check_samples_are_for_operators() {
         "{v}"
     );
     let req = Request::post("/api/v1/tokens")
-        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"name":"lists","kind":"agent","scopes":["config:write:lists"]}"#,
@@ -1775,7 +1810,8 @@ async fn ops_010_maintenance_requests_over_http() {
         "{v}"
     );
     let req = Request::post("/api/v1/tokens")
-        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("cookie", &app.cookie)
+        .header("x-csrf-token", &app.csrf)
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"name":"maint","kind":"agent","scopes":["ops:maintenance"]}"#,
@@ -1840,7 +1876,8 @@ async fn obs_024_simulation_requests_over_http() {
         let body = serde_json::json!({"name": format!("t-{scopes}-{group:?}"), "kind": "agent",
             "scopes": scopes.split(',').collect::<Vec<_>>(), "group": group});
         Request::post("/api/v1/tokens")
-            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
             .header("content-type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap()
@@ -1963,7 +2000,8 @@ async fn agt_009_a_tool_call_costs_one_request() {
     let (s, _, v) = send(
         &app,
         Request::post("/api/v1/tokens")
-            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::json!({"name": "slow", "kind": "agent",
@@ -2032,7 +2070,8 @@ async fn agt_009_a_batch_counts_each_message() {
     let (app, _) = app();
     let token = |name: &str| {
         Request::post("/api/v1/tokens")
-            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::json!({"name": name, "kind": "agent",
@@ -2297,7 +2336,8 @@ async fn obs_033_notes_over_http() {
     // Agents: the scope, and their owner in the note and the audit log.
     let token = |name: &str, scopes: &[&str]| {
         Request::post("/api/v1/tokens")
-            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("cookie", &app.cookie)
+            .header("x-csrf-token", &app.csrf)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::json!({"name": name, "kind": "agent", "scopes": scopes}).to_string(),
@@ -2359,5 +2399,96 @@ async fn obs_033_notes_over_http() {
     assert_eq!(
         (s, code(&v).as_deref()),
         (StatusCode::BAD_REQUEST, Some("invalid_parameter"))
+    );
+}
+
+// REQ: API-003 (T10.7, ADR-142) — account changes need a signed-in session: an API token
+// (even an admin's) can't create or revoke tokens, change the password, or touch two-factor
+// sign-in. A wrong current password counts toward the sign-in lockout.
+#[tokio::test]
+async fn api_003_account_changes_need_a_signed_in_session() {
+    let (app, _) = app();
+    let bearer = |method: &str, uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let null = serde_json::Value::Null;
+    for (method, uri, body) in [
+        (
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "more"}),
+        ),
+        ("DELETE", "/api/v1/tokens/whatever", null.clone()),
+        (
+            "POST",
+            "/api/v1/displays",
+            serde_json::json!({"name": "hall"}),
+        ),
+        (
+            "POST",
+            "/api/v1/auth/password",
+            serde_json::json!({"currentPassword": "correct horse battery",
+                "newPassword": "a brand new password"}),
+        ),
+        ("POST", "/api/v1/auth/totp/setup", null.clone()),
+        (
+            "POST",
+            "/api/v1/auth/totp/enable",
+            serde_json::json!({"code": "123456"}),
+        ),
+        (
+            "POST",
+            "/api/v1/auth/totp/disable",
+            serde_json::json!({"password": "correct horse battery"}),
+        ),
+    ] {
+        let (s, _, v) = send(&app, bearer(method, uri, body)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {uri}: {v}");
+        assert!(
+            v["detail"].as_str().unwrap().contains("signed-in session"),
+            "{method} {uri}: {v}"
+        );
+    }
+    // The signed-in session can.
+    let (s, _, v) = send(
+        &app,
+        app.signed_in(
+            "POST",
+            "/api/v1/tokens",
+            serde_json::json!({"name": "more"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    // Guessing the current password through a session locks the account like sign-in does.
+    let wrong = serde_json::json!({"currentPassword": "not the password",
+        "newPassword": "a brand new password"});
+    for n in 1..=5 {
+        let (s, _, v) = send(
+            &app,
+            app.signed_in("POST", "/api/v1/auth/password", wrong.clone()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "attempt {n}: {v}");
+    }
+    let (s, _, _) = send(&app, app.signed_in("POST", "/api/v1/auth/password", wrong)).await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "the sixth is counted and locks"
+    );
+    let right = serde_json::json!({"currentPassword": "correct horse battery",
+        "newPassword": "a brand new password"});
+    let (s, _, v) = send(&app, app.signed_in("POST", "/api/v1/auth/password", right)).await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited")),
+        "locked, even with the right password: {v}"
     );
 }

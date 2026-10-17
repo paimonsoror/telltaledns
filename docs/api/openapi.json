@@ -1308,7 +1308,7 @@
           "auth"
         ],
         "summary": "Change my password.",
-        "description": "Needs the current password. Ends every other session of this user.",
+        "description": "Needs the current password. Ends every other session of this user. Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "change_password",
         "requestBody": {
           "content": {
@@ -1417,7 +1417,7 @@
           "auth"
         ],
         "summary": "Turn off two-factor sign-in.",
-        "description": "Needs the current password. Removes the TOTP secret and the unused recovery codes.",
+        "description": "Needs the current password. Removes the TOTP secret and the unused recovery codes. Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "totp_disable",
         "requestBody": {
           "content": {
@@ -1452,7 +1452,7 @@
           "auth"
         ],
         "summary": "Turn on two-factor sign-in.",
-        "description": "Confirms a current code from the app enrolled with POST /auth/totp/setup, turns\nenforcement on, and returns ten single-use recovery codes (shown only now).",
+        "description": "Confirms a current code from the app enrolled with POST /auth/totp/setup, turns\nenforcement on, and returns ten single-use recovery codes (shown only now). Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "totp_enable",
         "requestBody": {
           "content": {
@@ -1494,7 +1494,7 @@
           "auth"
         ],
         "summary": "Start two-factor enrollment.",
-        "description": "Returns a new TOTP secret (base32 and an `otpauth://` URL for a QR code). Nothing is\nenforced until POST /auth/totp/enable confirms a code from the app.",
+        "description": "Returns a new TOTP secret (base32 and an `otpauth://` URL for a QR code). Nothing is\nenforced until POST /auth/totp/enable confirms a code from the app. Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "totp_setup",
         "responses": {
           "200": {
@@ -3103,7 +3103,7 @@
           "auth"
         ],
         "summary": "Make a wall display (admin).",
-        "description": "REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:\nopen the returned `link` once on its browser and it stays signed in, able to read only what\nthe wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code\nis shown only in this response. Audited as `display.create`.",
+        "description": "REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:\nopen the returned `link` once on its browser and it stays signed in, able to read only what\nthe wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code\nis shown only in this response. Audited as `display.create`. Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "create_display",
         "requestBody": {
           "content": {
@@ -6468,7 +6468,7 @@
           "auth"
         ],
         "summary": "Create an API token.",
-        "description": "For scripts, dashboards, and agents: send as `Authorization: Bearer <token>`. `scope`\n`read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role.\nThe token is shown only in this response.",
+        "description": "For scripts, dashboards, and agents: send as `Authorization: Bearer <token>`. `scope`\n`read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role.\nThe token is shown only in this response. Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "create_token",
         "requestBody": {
           "content": {
@@ -6510,7 +6510,7 @@
           "auth"
         ],
         "summary": "Revoke one of my API tokens.",
-        "description": "By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected.",
+        "description": "By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected. Needs a signed-in session: API tokens and Basic credentials get 403.",
         "operationId": "delete_token",
         "parameters": [
           {

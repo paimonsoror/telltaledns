@@ -572,6 +572,9 @@ mod as_pairs {
     }
 }
 
+/// Hours closed at most when events resume after a gap (T10.7).
+const MAX_CATCH_UP_HOURS: u64 = 48;
+
 /// The engine: feed it query events in timestamp order; read findings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Engine {
@@ -731,6 +734,30 @@ impl Engine {
         self.settings = s;
     }
 
+    /// REQ: OBS-014 (T10.7) — puts loaded state back within the bounds the code relies on
+    /// (a damaged or hand-edited `anomaly.json` must not panic the aggregator or loop it):
+    /// 24 hourly baselines per device, at most [`INTERVALS`] gaps, bounded lists, and an hour
+    /// that hour arithmetic can't overflow.
+    pub fn repair(&mut self) {
+        for c in self.clients.values_mut() {
+            c.rate.resize(24, Ewm::default());
+            c.tracked.truncate(TRACKED);
+            for t in &mut c.tracked {
+                t.n_intervals = t
+                    .n_intervals
+                    .min(u8::try_from(INTERVALS).unwrap_or(u8::MAX));
+            }
+            c.learned.truncate(LEARNED);
+            c.new_samples.truncate(SAMPLES);
+            c.nx_samples.truncate(SAMPLES);
+            c.dga_samples.truncate(SAMPLES);
+        }
+        if self.hour > u64::MAX / 86_400 {
+            self.hour = 0;
+            self.day = 0;
+        }
+    }
+
     /// Findings so far, oldest first.
     pub fn findings(&self) -> &[Finding] {
         &self.findings
@@ -817,6 +844,12 @@ impl Engine {
         if self.hour == 0 {
             self.hour = hour;
             self.day = ts_s / 86_400;
+        }
+        // T10.7 — a node that was down for long (or a stale `hour` in loaded state) catches
+        // up a couple of days, not every hour since; a state ahead of the clock starts over.
+        if hour > self.hour + MAX_CATCH_UP_HOURS || self.hour > hour + MAX_CATCH_UP_HOURS {
+            self.hour = hour - hour.min(MAX_CATCH_UP_HOURS);
+            self.day = self.hour * 3600 / 86_400;
         }
         while hour > self.hour {
             self.close_hour();

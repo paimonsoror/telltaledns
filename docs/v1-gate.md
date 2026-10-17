@@ -50,7 +50,7 @@ figure is now about 50 MB.
 |---|---|
 | All P0 requirements pass | ⚠️ checked (T10.6, `docs/v1-requirements.md`, kept current by CI): all 73 have tests or evidence, 66 with named tests. **Open:** NFR-005's `cargo-auditable` builds, CycloneDX SBOM, cosign-signed images, and reproducibility check (T10.10) |
 | Comparative benchmark report published | ✅ decided (owner, 2026-10-17): TelltaleDNS publishes its own numbers and the exact method (hardware, load, corpus) so anyone can reproduce or compare them; no side-by-side with other resolvers |
-| Security review of sign-in, the cluster, and the parsers | ⏳ not started |
+| Security review of sign-in, the cluster, and the parsers | ✅ done (T10.7, `docs/security-review.md`): 17 findings fixed with regression tests (2 high, in the cluster channel); accepted items and missing fuzz targets listed there |
 
 ## Next
 

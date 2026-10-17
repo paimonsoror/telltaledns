@@ -58,6 +58,7 @@ impl Anomalies {
         let engine = match std::fs::read(&path) {
             Ok(b) => match serde_json::from_slice::<Engine>(&b) {
                 Ok(mut e) => {
+                    e.repair();
                     e.set_settings(settings(cfg));
                     info!(devices = e.clients(), "anomaly baselines loaded");
                     e

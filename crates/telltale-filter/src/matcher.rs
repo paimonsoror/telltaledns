@@ -630,12 +630,19 @@ struct Name {
     key_len: usize,
     /// `ends[d]` = key length after `d + 1` labels.
     ends: [u8; MAX_LABELS],
+    /// Labels in the key: the whole name, or (T10.7) only the ones to the right of a label
+    /// that contains `.`.
     labels: usize,
+    /// The name's real depth, for the scope checks: a name with a dotted label is deeper than
+    /// its key, so an exact rule for the key's name doesn't match it.
+    total: usize,
 }
 
 impl Name {
-    /// `None` for the root, malformed input, or labels containing `.` (which can't be in a
-    /// list and would make the reversed key ambiguous).
+    /// `None` for the root or malformed input. REQ: FLT-002 (T10.7) — a label containing `.`
+    /// can't be in a list and would make the reversed key ambiguous, so the key stops at it: the
+    /// name is matched as a subdomain of the labels to its right (`a\.b.ads.example.com` is
+    /// below `ads.example.com`), never skipped. `None` only if the top label has one.
     fn from_wire(wire: &[u8]) -> Option<Self> {
         let mut starts = [0u8; MAX_LABELS];
         let mut n = 0;
@@ -660,12 +667,20 @@ impl Name {
             key_len: 0,
             ends: [0; MAX_LABELS],
             labels: n,
+            total: n,
         };
         for d in 0..n {
             let s = usize::from(starts[n - 1 - d]);
             let len = usize::from(wire[s]);
             let label = &wire[s + 1..s + 1 + len];
-            if label.contains(&b'.') || name.key_len + len + 1 > name.key.len() {
+            if label.contains(&b'.') {
+                if d == 0 {
+                    return None;
+                }
+                name.labels = d;
+                break;
+            }
+            if name.key_len + len + 1 > name.key.len() {
                 return None;
             }
             name.key[name.key_len..name.key_len + len].copy_from_slice(label);
@@ -828,7 +843,7 @@ impl Matcher {
         let take = |m: &'_ CompiledMod, labels: usize| {
             m.rewrite
                 && mask.contains(m.list)
-                && scope_applies(m.scope, labels, name.labels)
+                && scope_applies(m.scope, labels, name.total)
                 && m.applies_to(name.key(), qtype, client)
         };
         if let Some(s) = &self.snapshot {
@@ -928,7 +943,9 @@ impl Matcher {
     }
 
     fn snapshot_domains(&self, s: &Snapshot, name: &Name, mask: &ListMask, sink: &mut impl Sink) {
-        let total = name.labels;
+        // Scope checks use the name's real depth; lookups go only as deep as its key.
+        let total = name.total;
+        let keyed = name.labels;
         let mut offer = |scope: Scope, labels: usize, id: u32| {
             if !scope_applies(scope, labels, total) {
                 return;
@@ -941,7 +958,7 @@ impl Matcher {
             }
         };
         if let Some(index) = &self.index {
-            for labels in 1..=total {
+            for labels in 1..=keyed {
                 let prefix = name.prefix(labels);
                 for (i, scope) in SCOPES.into_iter().enumerate() {
                     if scope_applies(scope, labels, total)
@@ -955,7 +972,7 @@ impl Matcher {
         }
         // FST walk: depth 1 lives in the TLD's shard, depth ≥ 2 in the first-two-labels shard.
         let shards = s.domains[0].len();
-        let deep = shard_of(name.prefix(total.min(2)), shards);
+        let deep = shard_of(name.prefix(keyed.min(2)), shards);
         let top = shard_of(name.prefix(1), shards);
         for (i, scope) in SCOPES.into_iter().enumerate() {
             let maps = &s.domains[i];
@@ -965,11 +982,11 @@ impl Matcher {
                 }
             };
             if top == deep {
-                walk(maps[deep].as_fst(), name, 1, total, &mut f);
+                walk(maps[deep].as_fst(), name, 1, keyed, &mut f);
             } else {
                 walk(maps[top].as_fst(), name, 1, 1, &mut f);
-                if total >= 2 {
-                    walk(maps[deep].as_fst(), name, 2, total, &mut f);
+                if keyed >= 2 {
+                    walk(maps[deep].as_fst(), name, 2, keyed, &mut f);
                 }
             }
         }
@@ -992,7 +1009,7 @@ impl Matcher {
         };
         for (i, m) in self.mods.iter().enumerate().skip(start).take(count) {
             if mask.contains(m.list)
-                && scope_applies(m.scope, labels, name.labels)
+                && scope_applies(m.scope, labels, name.total)
                 && m.applies(name.key(), qtype, client)
             {
                 let labels = u8::try_from(labels).unwrap_or(u8::MAX);

@@ -149,6 +149,16 @@ impl ClusterManifest {
         v
     }
 
+    /// The blobs a node fetches: every one, except the users and tokens for an ephemeral
+    /// member (T10.7, ADR-143), which the primary doesn't serve it.
+    pub fn blobs_for(&self, ephemeral: bool) -> Vec<&BlobRef> {
+        let mut v = self.blobs();
+        if ephemeral && let Some(ids) = &self.identities {
+            v.retain(|b| b.hash != ids.hash);
+        }
+        v
+    }
+
     /// Whether `self` is newer than `(epoch, seq)`.
     pub fn newer_than(&self, epoch: u64, seq: u64) -> bool {
         (self.epoch, self.seq) > (epoch, seq)

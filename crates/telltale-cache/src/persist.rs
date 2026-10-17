@@ -87,7 +87,11 @@ impl Cache {
             for _ in 0..count {
                 offsets.push(r.u16()?);
             }
-            if age >= ttl.saturating_add(stale) || usize::from(question_end) > wire.len() {
+            // T10.7 — a question ends after the 12-byte header, a name, and type and class.
+            if age >= ttl.saturating_add(stale)
+                || usize::from(question_end) > wire.len()
+                || question_end < 17
+            {
                 continue;
             }
             if offsets.iter().any(|&o| usize::from(o) + 4 > wire.len()) {

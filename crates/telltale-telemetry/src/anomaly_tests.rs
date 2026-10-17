@@ -522,3 +522,35 @@ fn obs_036_a_chatty_loop_is_reported_once_per_streak() {
     assert_eq!(chatty[0].window_start_s, DAY0 + 3 * 3600);
     assert!(e.beacon_rhythm(chatty[0]).is_some_and(|b| b[3] > 0));
 }
+
+/// REQ: OBS-014 (T10.7) — damaged saved state (too few hourly baselines, an impossible gap
+/// count, an hour from long ago) is repaired on load: the engine keeps running, and catches up
+/// a bounded number of hours instead of every hour since.
+#[test]
+fn obs_014_damaged_state_is_repaired_on_load() {
+    let mut v = serde_json::to_value(run(true)).unwrap();
+    let clients = v["clients"].as_array_mut().unwrap();
+    let mut gaps = 0;
+    for pair in clients.iter_mut() {
+        let c = &mut pair[1];
+        c["rate"].as_array_mut().unwrap().truncate(3);
+        for t in c["tracked"].as_array_mut().unwrap() {
+            t["n_intervals"] = serde_json::json!(200);
+            gaps += 1;
+        }
+    }
+    assert!(gaps > 0, "the scenario tracks pairs");
+    v["hour"] = serde_json::json!(5);
+    let mut e: Engine = serde_json::from_value(v).unwrap();
+    e.repair();
+    let started = std::time::Instant::now();
+    for h in 0..30 {
+        e.observe(
+            DAY0 + 40 * 86_400 + h * 3600,
+            ip(PHONE),
+            &wire("example.com"),
+        );
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(e.clients() > 0);
+}

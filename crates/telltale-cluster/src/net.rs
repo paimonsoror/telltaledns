@@ -515,7 +515,14 @@ impl std::fmt::Debug for HandlerSlot {
 }
 
 /// RPCs awaiting an answer, by request ID.
-type PendingCalls = HashMap<u64, tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>;
+/// Calls waiting for an answer: by request ID, the peer asked and where its answer goes.
+type PendingCalls = HashMap<
+    u64,
+    (
+        String,
+        tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,
+    ),
+>;
 
 /// Largest RPC answer (the frame limit, less framing).
 const MAX_RPC: usize = crate::wire::MAX_FRAME - 1024;
@@ -529,6 +536,9 @@ pub enum BlobSource {
     Bytes(Bytes),
     File(PathBuf),
 }
+
+/// Joins accepted per minute (T10.7): a rollout of a few dozen pods fits; a loop doesn't.
+const MAX_JOINS_PER_MINUTE: usize = 30;
 
 /// Largest blob a replica accepts (FST shards of a few million names are ~5 MB).
 const MAX_BLOB: usize = 256 << 20;
@@ -548,6 +558,13 @@ pub struct Cluster {
     canary: watch::Sender<Option<Canary>>,
     /// Blobs this node serves, by hash.
     served: Mutex<HashMap<String, BlobSource>>,
+    /// REQ: CLU-003 (T10.7, ADR-143) — served blobs that hold the users and tokens: not
+    /// served to ephemeral members (resolver pods serve no API, so they never need them).
+    withheld: Mutex<std::collections::HashSet<String>>,
+    /// This node is an ephemeral member (`[cluster] ephemeral`, CLU-009).
+    ephemeral: std::sync::atomic::AtomicBool,
+    /// When recent joins were accepted (ms), for [`MAX_JOINS_PER_MINUTE`].
+    joins: Mutex<std::collections::VecDeque<u64>>,
     /// The newest manifest received from a peer (verified by whoever applies it).
     incoming: watch::Sender<Option<Arc<Signed>>>,
     /// The primary URL of the stream that's up (blobs are fetched from there).
@@ -633,8 +650,12 @@ impl Cluster {
             fence: Mutex::new(()),
             config_source: Mutex::new("file".into()),
             outbox: Mutex::new(HashMap::new()),
+            withheld: Mutex::new(std::collections::HashSet::new()),
+            ephemeral: std::sync::atomic::AtomicBool::new(false),
+            joins: Mutex::new(std::collections::VecDeque::new()),
             pending: Mutex::new(HashMap::new()),
-            next_rpc: std::sync::atomic::AtomicU64::new(1),
+            // T10.7 — not guessable from one process to the next.
+            next_rpc: std::sync::atomic::AtomicU64::new(rand::random::<u64>() >> 1),
             rpc_handler: std::sync::OnceLock::new(),
             election: Mutex::new(None),
             // ADR-056 — a primary in automatic failover waits for its first renewal.
@@ -748,15 +769,17 @@ impl Cluster {
         let rec = crate::node::NodeRecord {
             node_id: m.node_id.clone(),
             site: m.site.clone(),
-            // ADR-051, ADR-058 — eligibility was decided at join (a node from before the
-            // registry existed is taken at its word once): a Hello can't raise it, so the
-            // key share never follows a peer's claim.
-            eligible: known.map_or(m.eligible, |n| n.eligible),
+            // ADR-051, ADR-058 — eligibility was decided at join: a Hello can't raise it, so
+            // the key share never follows a peer's claim. REQ: CLU-005 (T10.7, ADR-143) — nor
+            // can a member the registry doesn't know (a resolver pod that left, or expired,
+            // and reconnected with its certificate) claim it back: it comes back as a plain
+            // ephemeral member, which expires again when it stops being heard from.
+            eligible: known.is_some_and(|n| n.eligible),
             advertise: m.advertise.clone(),
             joined: known.map_or_else(|| now_ms() / 1000, |n| n.joined),
             // Set at join (ADR-056, CLU-009); Hello doesn't carry them.
             witness: known.is_some_and(|n| n.witness),
-            ephemeral: known.is_some_and(|n| n.ephemeral),
+            ephemeral: known.is_none_or(|n| n.ephemeral),
         };
         if nodes.contains(&rec) {
             return;
@@ -949,6 +972,40 @@ impl Cluster {
             .map(|_| ())
     }
 
+    /// REQ: CLU-001, CLU-009 (T10.7) — whether another join may be accepted now: at most
+    /// [`MAX_JOINS_PER_MINUTE`]. Every join is a new member with its own share of the shipped
+    /// query log's retention, and the bootstrap secret is in every resolver pod.
+    fn admit_join(&self, now_ms: u64) -> bool {
+        let mut joins = self.joins.lock().unwrap_or_else(PoisonError::into_inner);
+        while joins
+            .front()
+            .is_some_and(|t| now_ms.saturating_sub(*t) >= 60_000)
+        {
+            joins.pop_front();
+        }
+        if joins.len() >= MAX_JOINS_PER_MINUTE {
+            return false;
+        }
+        joins.push_back(now_ms);
+        true
+    }
+
+    /// REQ: CLU-009 — marks this node an ephemeral member (a resolver pod), from its config.
+    pub fn set_ephemeral(&self, on: bool) {
+        self.ephemeral
+            .store(on, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether this node is an ephemeral member: by its config, or by the registry.
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .identity
+                .registry()
+                .iter()
+                .any(|n| n.node_id == self.identity.meta.node_id && n.ephemeral)
+    }
+
     /// Sets what answers peers' federated reads (once).
     pub fn set_rpc_handler(&self, h: RpcHandler) {
         let _ = self.rpc_handler.set(HandlerSlot(h));
@@ -986,7 +1043,7 @@ impl Cluster {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, done);
+            .insert(id, (peer.to_owned(), done));
         let frame = Frame {
             body: Some(Body::RpcRequest(RpcRequest {
                 id,
@@ -1160,14 +1217,15 @@ impl Cluster {
     }
 
     /// Whether `node` may announce an epoch (ADR-051): a voter, that is an eligible node or a
-    /// witness, in the registry. A member the registry doesn't know is taken at its word (a
-    /// cluster from before registries existed); a known member that can't vote is not.
+    /// witness, in the registry. REQ: CLU-005 (T10.7, ADR-143) — a member the registry doesn't
+    /// know may not (it used to be taken at its word, for clusters from before registries):
+    /// otherwise a resolver pod that left could fence the primary with one frame.
     pub fn may_announce_epoch(&self, node: &str) -> bool {
         self.identity
             .registry()
             .iter()
             .find(|n| n.node_id == node)
-            .is_none_or(crate::node::NodeRecord::voter)
+            .is_some_and(crate::node::NodeRecord::voter)
     }
 
     /// Fencing (ADR-051): a primary that hears of a higher epoch steps down at once.
@@ -1282,6 +1340,8 @@ impl Cluster {
     /// once, and peers that connect later get it first thing. It's the stable head: a canary
     /// head ends.
     pub fn publish(&self, signed: Signed, blobs: HashMap<String, BlobSource>) {
+        *self.withheld.lock().unwrap_or_else(PoisonError::into_inner) =
+            identities_of(&signed).into_iter().collect();
         *self.served.lock().unwrap_or_else(PoisonError::into_inner) = blobs;
         self.canary.send_replace(None);
         self.published.send_replace(Some(Arc::new(signed)));
@@ -1302,6 +1362,10 @@ impl Cluster {
         if !matches!(role, Role::Primary | Role::Emergency) || current != epoch {
             return false;
         }
+        self.withheld
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(identities_of(&signed));
         self.served
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1771,12 +1835,17 @@ impl Cluster {
             }
             Some(Body::RpcResponse(r)) => {
                 drop(members);
-                if let Some(done) = self
-                    .pending
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&r.id)
-                {
+                // REQ: CLU-002 (T10.7) — an answer counts only on the stream of the peer that
+                // was asked: another member can't answer (or fail) a call made to someone else,
+                // such as a vote request or a federated read.
+                let done = {
+                    let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                    let ours = pending
+                        .get(&r.id)
+                        .is_some_and(|(to, _)| peer.as_deref() == Some(to.as_str()));
+                    if ours { pending.remove(&r.id) } else { None }
+                };
+                if let Some((_, done)) = done {
                     let _ = done.send(if r.error.is_empty() {
                         Ok(r.body)
                     } else {
@@ -2043,6 +2112,13 @@ async fn handle(
             let Ok(jr) = serde_json::from_slice::<JoinRequest>(&body) else {
                 return reply(StatusCode::BAD_REQUEST, "bad join request".into());
             };
+            if !cluster.admit_join(now_ms()) {
+                warn!("join refused: more than {MAX_JOINS_PER_MINUTE} joins in a minute");
+                return reply(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many nodes are joining; try again in a minute".into(),
+                );
+            }
             match cluster
                 .identity
                 .accept_join(&jr, cluster.bootstrap_secret().as_deref())
@@ -2094,31 +2170,67 @@ async fn handle(
             Response::new(http_body_util::Either::Right(body))
         }
         (&Method::GET, path) if path.starts_with("/cluster/v1/blob/") => {
-            if peer.is_none() {
-                return reply(
-                    StatusCode::UNAUTHORIZED,
-                    "a cluster certificate is required".into(),
-                );
-            }
-            let hash = &path["/cluster/v1/blob/".len()..];
-            let source = cluster
-                .served
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(hash)
-                .cloned();
-            let bytes = match source {
-                None => return reply(StatusCode::NOT_FOUND, "no such blob".into()),
-                Some(BlobSource::Bytes(b)) => b,
-                Some(BlobSource::File(p)) => match tokio::fs::read(&p).await {
-                    Ok(b) => Bytes::from(b),
-                    Err(e) => return reply(StatusCode::GONE, format!("blob unavailable: {e}")),
-                },
-            };
-            Response::new(http_body_util::Either::Left(Full::new(bytes)))
+            serve_blob(
+                &cluster,
+                peer.as_deref(),
+                &path["/cluster/v1/blob/".len()..],
+            )
+            .await
         }
         _ => reply(StatusCode::NOT_FOUND, "not found".into()),
     }
+}
+
+/// Serves blob `hash` to `peer` (a cluster certificate's node ID).
+async fn serve_blob(cluster: &Cluster, peer: Option<&str>, hash: &str) -> Response<HttpBody> {
+    if peer.is_none() {
+        return reply(
+            StatusCode::UNAUTHORIZED,
+            "a cluster certificate is required".into(),
+        );
+    }
+    // REQ: CLU-003 (T10.7, ADR-143) — users and tokens go only to members the registry
+    // lists as permanent: not to resolver pods, nor to a peer it doesn't know.
+    let withheld = cluster
+        .withheld
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(hash);
+    if withheld
+        && !cluster
+            .identity
+            .registry()
+            .iter()
+            .any(|n| Some(n.node_id.as_str()) == peer && !n.ephemeral)
+    {
+        return reply(
+            StatusCode::FORBIDDEN,
+            "users and tokens aren't sent to ephemeral members".into(),
+        );
+    }
+    let source = cluster
+        .served
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(hash)
+        .cloned();
+    let bytes = match source {
+        None => return reply(StatusCode::NOT_FOUND, "no such blob".into()),
+        Some(BlobSource::Bytes(b)) => b,
+        Some(BlobSource::File(p)) => match tokio::fs::read(&p).await {
+            Ok(b) => Bytes::from(b),
+            Err(e) => return reply(StatusCode::GONE, format!("blob unavailable: {e}")),
+        },
+    };
+    Response::new(http_body_util::Either::Left(Full::new(bytes)))
+}
+
+/// The identities blob a manifest names (its hash), read from the primary's own signed bytes.
+fn identities_of(signed: &Signed) -> Option<String> {
+    serde_json::from_slice::<ClusterManifest>(&signed.json)
+        .ok()?
+        .identities
+        .map(|b| b.hash)
 }
 
 /// Serves the cluster port until `stop` changes.
@@ -2554,7 +2666,12 @@ pub async fn follow<F, Fut>(
                 break;
             }
             let t = tokio::time::Instant::now();
-            let refs: Vec<BlobRef> = m.blobs().into_iter().cloned().collect();
+            // REQ: CLU-003 (T10.7) — a resolver pod isn't sent the users and tokens.
+            let refs: Vec<BlobRef> = m
+                .blobs_for(cluster.is_ephemeral())
+                .into_iter()
+                .cloned()
+                .collect();
             let result = match cluster.fetch(&refs, &store).await {
                 Ok(n) => apply(m.clone()).await.map(|()| n),
                 Err(e) => Err(format!("fetching from the primary: {e}")),

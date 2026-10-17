@@ -536,7 +536,7 @@ export interface paths {
         put?: never;
         /**
          * Change my password.
-         * @description Needs the current password. Ends every other session of this user.
+         * @description Needs the current password. Ends every other session of this user. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         post: operations["change_password"];
         delete?: never;
@@ -599,7 +599,7 @@ export interface paths {
         put?: never;
         /**
          * Turn off two-factor sign-in.
-         * @description Needs the current password. Removes the TOTP secret and the unused recovery codes.
+         * @description Needs the current password. Removes the TOTP secret and the unused recovery codes. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         post: operations["totp_disable"];
         delete?: never;
@@ -620,7 +620,7 @@ export interface paths {
         /**
          * Turn on two-factor sign-in.
          * @description Confirms a current code from the app enrolled with POST /auth/totp/setup, turns
-         *     enforcement on, and returns ten single-use recovery codes (shown only now).
+         *     enforcement on, and returns ten single-use recovery codes (shown only now). Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         post: operations["totp_enable"];
         delete?: never;
@@ -641,7 +641,7 @@ export interface paths {
         /**
          * Start two-factor enrollment.
          * @description Returns a new TOTP secret (base32 and an `otpauth://` URL for a QR code). Nothing is
-         *     enforced until POST /auth/totp/enable confirms a code from the app.
+         *     enforced until POST /auth/totp/enable confirms a code from the app. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         post: operations["totp_setup"];
         delete?: never;
@@ -1365,7 +1365,7 @@ export interface paths {
          * @description REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:
          *     open the returned `link` once on its browser and it stays signed in, able to read only what
          *     the wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code
-         *     is shown only in this response. Audited as `display.create`.
+         *     is shown only in this response. Audited as `display.create`. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         post: operations["create_display"];
         delete?: never;
@@ -2383,7 +2383,7 @@ export interface paths {
          * Create an API token.
          * @description For scripts, dashboards, and agents: send as `Authorization: Bearer <token>`. `scope`
          *     `read` acts as viewer, `write` as operator, `admin` as admin, never above the owner's role.
-         *     The token is shown only in this response.
+         *     The token is shown only in this response. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         post: operations["create_token"];
         delete?: never;
@@ -2404,7 +2404,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke one of my API tokens.
-         * @description By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected.
+         * @description By the `id` from GET /tokens. Takes effect immediately; other tokens are unaffected. Needs a signed-in session: API tokens and Basic credentials get 403.
          */
         delete: operations["delete_token"];
         options?: never;

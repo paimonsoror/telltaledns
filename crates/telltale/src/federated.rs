@@ -250,12 +250,13 @@ pub(crate) fn rpc_handler(
         Box::pin(async move {
             // REQ: CLU-002, CLU-009 (ADR-054, ADR-058) — an ephemeral member serves no UI, so
             // nothing a user did arrives through it: it never forwards a write, and never
-            // pauses blocking or flushes caches on other nodes.
-            let ephemeral = cluster
+            // pauses blocking or flushes caches on other nodes. REQ: CLU-005 (T10.7, ADR-143) —
+            // a peer the registry doesn't list is treated the same.
+            let ephemeral = !cluster
                 .identity
                 .registry()
                 .iter()
-                .any(|n| n.node_id == peer && n.ephemeral);
+                .any(|n| n.node_id == peer && !n.ephemeral);
             if ephemeral && kind == crate::forward::KIND {
                 return Err("an ephemeral member can't forward configuration writes".into());
             }
@@ -303,8 +304,24 @@ pub(crate) fn rpc_handler(
                 return crate::devices::own(&src.pipeline);
             }
             if kind == crate::simulate::KIND {
-                // REQ: OBS-024 — another node simulating a change over the cluster's logs.
+                // REQ: OBS-024 — another node simulating a change over the cluster's logs (a
+                // user acted there). An ephemeral member serves no UI (T10.7).
+                if ephemeral {
+                    return Err("an ephemeral member can't run simulations".into());
+                }
                 return crate::simulate::handle(src, body).await;
+            }
+            if kind == crate::ship::KIND || kind == crate::ship::ROLLUP_KIND {
+                // REQ: CLU-007 (T10.7) — only from a member the registry lists: a pod that
+                // expired and came back with its certificate rejoins first.
+                let known = cluster
+                    .identity
+                    .registry()
+                    .iter()
+                    .any(|n| n.node_id == peer);
+                if !known {
+                    return Err("this node isn't in the cluster's registry".into());
+                }
             }
             if kind == crate::ship::KIND {
                 // REQ: CLU-007 — a node in ship mode delivering its query log.

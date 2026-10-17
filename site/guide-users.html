@@ -217,6 +217,7 @@ role = "viewer"</code></pre></li>
   -d '{"name": "grafana", "scope": "read"}' \
   http://dns.example.com:8053/api/v1/tokens</code></pre>
       <p>It returns <code>tt_&lt;id&gt;_&lt;secret&gt;</code> once. Send it as <code>Authorization: Bearer ...</code>.</p>
+      <p>Creating and revoking tokens, and changing a password or two-factor sign-in, need a signed-in session: a token can use the account, but not change it.</p>
     </div>
   </div>
 

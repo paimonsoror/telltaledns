@@ -1112,3 +1112,210 @@ fn clu_013_lag_counts_stable_versions_only() {
     // A replica still at 6 is.
     assert!(stable_seq(6, 0) < newest);
 }
+
+// REQ: CLU-005, CLU-009 (T10.7, ADR-143) — a member the registry doesn't know (a resolver pod
+// that left, or expired, and reconnected with its still-valid certificate) is trusted with
+// nothing: its Hello's claim of eligibility doesn't stick, it gets no key share, its higher
+// epoch doesn't fence the primary, and its vote requests are refused.
+#[test]
+fn clu_005_an_unknown_member_is_trusted_with_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let primary = Cluster::new(id, "0.1.0");
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: true,
+        secret: "s3cret".into(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "k8s".into(),
+        eligible: false,
+        version: "0.1.0".into(),
+    };
+    let resp = primary.identity.accept_join(&req, Some("s3cret")).unwrap();
+    let pod = resp.node_id.clone();
+    // It leaves: the registry forgets it, but its certificate still opens a stream.
+    primary.remove_ephemeral(&pod).unwrap();
+    assert!(!primary.identity.registry().iter().any(|n| n.node_id == pod));
+    let before = primary.role();
+
+    let mut peer = Some(pod.clone());
+    let hello = Frame {
+        body: Some(Body::Hello(Hello {
+            protocol: PROTOCOL,
+            cluster_id: primary.identity.meta.cluster_id.clone(),
+            node_id: pod.clone(),
+            version: "0.1.0".into(),
+            site: "k8s".into(),
+            eligible: true,
+            advertise: vec![],
+            epoch: before.1 + 50,
+            applied_seq: 0,
+            primary: false,
+            config_source: String::new(),
+            source_commit: String::new(),
+        })),
+    };
+    primary
+        .on_frame(&mut peer, hello, "inbound", &EchoSlot::default())
+        .unwrap();
+    let rec = primary
+        .identity
+        .registry()
+        .into_iter()
+        .find(|n| n.node_id == pod)
+        .unwrap();
+    assert!(
+        rec.ephemeral && !rec.eligible && !rec.witness,
+        "back as a plain ephemeral member: {rec:?}"
+    );
+    assert!(primary.key_share_for(&pod).is_none(), "no cluster key");
+    assert!(!primary.may_announce_epoch(&pod));
+    assert!(!primary.may_announce_epoch("never-seen"));
+    assert_eq!(
+        primary.role(),
+        before,
+        "its epoch doesn't fence the primary"
+    );
+
+    let ask = crate::election::Ask {
+        epoch: before.1 + 50,
+        candidate: pod.clone(),
+        round: 1,
+        pre: false,
+        applied: Default::default(),
+    };
+    let err =
+        crate::failover::answer(&primary, &pod, &serde_json::to_vec(&ask).unwrap()).unwrap_err();
+    assert!(err.contains("eligible"), "{err}");
+    assert_eq!(primary.identity.ballot().epoch, 0, "the ballot didn't move");
+}
+
+// REQ: CLU-002 (T10.7) — an RPC answer counts only on the stream of the peer that was asked:
+// another member can't answer, or fail, a call made to someone else.
+#[test]
+fn clu_002_an_answer_counts_only_from_the_peer_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Identity::init(
+        dir.path(),
+        "home",
+        vec!["https://127.0.0.1:1".into()],
+        "k8s",
+    )
+    .unwrap();
+    let c = Cluster::new(id, "0.1.0");
+    let (done, mut answer) = tokio::sync::oneshot::channel();
+    c.pending
+        .lock()
+        .unwrap()
+        .insert(7, ("node-a".to_owned(), done));
+    let reply = |text: &str| Frame {
+        body: Some(Body::RpcResponse(RpcResponse {
+            id: 7,
+            body: text.as_bytes().to_vec(),
+            error: String::new(),
+        })),
+    };
+    let mut other = Some("node-b".to_owned());
+    c.on_frame(&mut other, reply("forged"), "inbound", &EchoSlot::default())
+        .unwrap();
+    assert!(answer.try_recv().is_err(), "not from node-b");
+    let mut before_hello = None;
+    c.on_frame(
+        &mut before_hello,
+        reply("forged"),
+        "inbound",
+        &EchoSlot::default(),
+    )
+    .unwrap();
+    assert!(answer.try_recv().is_err(), "not before a Hello");
+    let mut asked = Some("node-a".to_owned());
+    c.on_frame(&mut asked, reply("real"), "inbound", &EchoSlot::default())
+        .unwrap();
+    assert_eq!(answer.try_recv().unwrap().unwrap(), b"real");
+}
+
+// REQ: CLU-003 (T10.7, ADR-143) — the users and tokens (password hashes, TOTP secrets) aren't
+// served to a resolver pod: it fetches everything else in the manifest, and is refused that.
+#[tokio::test(flavor = "multi_thread")]
+async fn clu_003_users_and_tokens_are_not_served_to_pods() {
+    use crate::sync::blob_ref;
+    let (pdir, rdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let addr = free_port().await;
+    let url = format!("https://{addr}");
+    let primary = Identity::init(pdir.path(), "home", vec![url.clone()], "k8s").unwrap();
+    let primary = Cluster::new(primary, "0.1.0");
+    primary.set_bootstrap_secret("s3cret-shared-by-helm".into());
+    let (stop_tx, stop) = watch::channel(false);
+    tokio::spawn(serve(Arc::clone(&primary), addr, stop.clone()));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let token = bootstrap_token(&url, "s3cret-shared-by-helm")
+        .await
+        .unwrap();
+    let key = pki::new_node_key().unwrap();
+    let req = JoinRequest {
+        witness: false,
+        ephemeral: true,
+        secret: token.secret.clone(),
+        csr_pem: key.csr_pem.clone(),
+        advertise: vec![],
+        site: "k8s".into(),
+        eligible: false,
+        version: "0.1.0".into(),
+    };
+    let resp = join(&token, &req).await.unwrap();
+    let pod =
+        Identity::save_joined(rdir.path(), &key.key_pem, &resp, "k8s", false, vec![]).unwrap();
+    let pod = Cluster::new(pod, "0.1.0");
+    let (pod_stop_tx, pod_stop) = watch::channel(false);
+    tokio::spawn(dial(Arc::clone(&pod), pod_stop));
+    let q = Arc::clone(&pod);
+    wait_for(|| q.reachable_primary().is_some()).await;
+
+    let ca_key = std::fs::read_to_string(crate::node::dir_of(pdir.path()).join("ca.key")).unwrap();
+    let (config, users) = (b"{}".to_vec(), br#"{"users":[]}"#.to_vec());
+    let (config_ref, users_ref) = (
+        blob_ref("config.json", &config),
+        blob_ref("identities.json", &users),
+    );
+    let mut blobs = HashMap::new();
+    blobs.insert(
+        config_ref.hash.clone(),
+        BlobSource::Bytes(Bytes::from(config)),
+    );
+    blobs.insert(
+        users_ref.hash.clone(),
+        BlobSource::Bytes(Bytes::from(users)),
+    );
+    let m = ClusterManifest {
+        cluster_id: primary.identity.meta.cluster_id.clone(),
+        epoch: 1,
+        seq: 1,
+        created_ms: now_ms(),
+        primary: primary.identity.meta.node_id.clone(),
+        config: config_ref.clone(),
+        identities: Some(users_ref.clone()),
+        ..ClusterManifest::default()
+    };
+    primary.publish(Signed::sign(&m, &ca_key).unwrap(), blobs);
+    assert_eq!(
+        m.blobs_for(true),
+        vec![&config_ref],
+        "a pod doesn't ask for them"
+    );
+    assert_eq!(m.blobs_for(false).len(), 2);
+
+    let store = BlobStore::open(rdir.path()).unwrap();
+    assert_eq!(pod.fetch(&[config_ref], &store).await.unwrap(), 1);
+    let err = pod.fetch(&[users_ref], &store).await.unwrap_err();
+    assert!(err.contains("403"), "{err}");
+    let _ = pod_stop_tx.send(true);
+    let _ = stop_tx.send(true);
+}

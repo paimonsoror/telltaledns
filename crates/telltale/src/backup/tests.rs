@@ -187,3 +187,17 @@ fn api_007_backup_default_name() {
         "{n}"
     );
 }
+
+/// REQ: API-007 (T10.7) — where an archive says it came from is used only when it's a plain
+/// absolute directory: not relative, not the root, no `..`.
+#[test]
+fn api_007_restore_trusts_only_plain_recorded_directories() {
+    assert_eq!(
+        recorded_dir("/var/lib/telltale", "--data-dir").unwrap(),
+        PathBuf::from("/var/lib/telltale")
+    );
+    for bad in ["data", "/", "/var/lib/../../etc", "./x", ""] {
+        let e = recorded_dir(bad, "--data-dir").unwrap_err();
+        assert!(e.contains("--data-dir"), "{bad}: {e}");
+    }
+}

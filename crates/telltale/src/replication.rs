@@ -457,8 +457,11 @@ async fn apply(
         .map(|s| s.commit.clone())
         .unwrap_or_default();
     cluster.set_local(|l| l.source_commit = commit);
-    // REQ: CLU-003 (T9.1, ADR-045) — the primary's users and tokens.
-    if let Some(b) = &m.identities {
+    // REQ: CLU-003 (T9.1, ADR-045) — the primary's users and tokens; not on a resolver pod,
+    // which serves no API and isn't sent them (T10.7, ADR-143).
+    if cluster.is_ephemeral() {
+        drop_identities(sources).await?;
+    } else if let Some(b) = &m.identities {
         import_identities(sources, store, b, &primary_label(&m)).await?;
     }
     // REQ: OBS-014 (ADR-103) — the primary's acknowledged anomalies. Best effort: a failure
@@ -581,6 +584,43 @@ fn primary_label(m: &ClusterManifest) -> String {
         .unwrap_or_else(|| m.primary.clone())
 }
 
+/// REQ: CLU-003 (T10.7, ADR-143) — a resolver pod drops the users and tokens an older version
+/// sent it (its own local users, if any, stay). Once per process.
+async fn drop_identities(sources: &Sources) -> Result<(), String> {
+    const DROPPED: &str = "dropped";
+    let Some(auth) = sources.auth.get().cloned() else {
+        return Ok(());
+    };
+    let applied = sources
+        .identities_applied
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if applied == DROPPED {
+        return Ok(());
+    }
+    let state = Arc::clone(auth.state());
+    let rep = tokio::task::spawn_blocking(move || {
+        state.import_identities(&telltale_store::state::Identities::default())
+    })
+    .await
+    .map_err(|e| format!("identities: {e}"))?
+    .map_err(|e| format!("identities: {e}"))?;
+    if rep.users_removed > 0 {
+        info!(
+            removed = rep.users_removed,
+            "cluster: dropped the users and tokens synced to this resolver pod"
+        );
+    }
+    DROPPED.clone_into(
+        &mut sources
+            .identities_applied
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    Ok(())
+}
+
 /// Takes in the primary's identities on a replica (T9.1), skipping an unchanged document.
 async fn import_identities(
     sources: &Sources,
@@ -617,6 +657,11 @@ async fn import_identities(
         tokens = rep.tokens,
         "cluster: users and tokens synced from the primary"
     );
+    // REQ: CLU-003, API-003 (T10.7) — a password changed or account disabled on the primary
+    // ends its sessions here too (the import did) and drops cached Basic results.
+    for id in &rep.signed_out {
+        auth.forget_basic(*id);
+    }
     if !rep.replaced_local.is_empty() {
         warn!(users = ?rep.replaced_local, "cluster: users made on this node now use the primary's account of the same name");
     }

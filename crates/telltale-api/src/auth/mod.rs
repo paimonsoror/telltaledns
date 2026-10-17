@@ -662,6 +662,14 @@ impl Auth {
             if map.len() > 10_000 {
                 map.retain(|_, v| now.saturating_sub(v.last) <= MAX_LOCK_SECS);
             }
+            // T10.7 — a burst within the window (one guess per name or display code) would
+            // still grow it: single misses go first, then all but the locked.
+            if map.len() > 10_000 {
+                map.retain(|_, v| v.count > 1 || v.locked_until > now);
+            }
+            if map.len() > 20_000 {
+                map.retain(|_, v| v.locked_until > now);
+            }
             locked
         };
         // REQ: API-006 — the first lock of a run is audited (not every failed attempt).
@@ -834,6 +842,44 @@ impl Auth {
                 self.fail(&ukey, now);
                 Problem::new(Code::Forbidden, e.detail)
             })?;
+        }
+        self.succeed(&ukey);
+        Ok(())
+    }
+
+    /// REQ: API-003 (T10.7, ADR-142) — changes to the account itself (its password, two-factor
+    /// sign-in, its API tokens) come only from a signed-in session. A leaked token or Basic
+    /// credential can then use the account but can't take it over, mint more tokens to outlive
+    /// its own revocation, or delete the owner's other tokens.
+    pub fn require_session(p: &Principal) -> Result<(), Problem> {
+        if matches!(p.via, Via::Session { .. }) {
+            return Ok(());
+        }
+        Err(
+            Problem::new(Code::Forbidden, "account changes need a signed-in session")
+                .hint("Sign in (the web UI, or POST /api/v1/auth/login) and send the session cookie and X-CSRF-Token; API tokens and Basic credentials can't change the account."),
+        )
+    }
+
+    /// REQ: API-003 (T10.7) — checks the account's own password for a self-service change,
+    /// under the same bound on concurrent checks and the same lockout as sign-in: a stolen
+    /// session can't be used to guess the password. Blocking (Argon2).
+    pub fn check_own_password(&self, user: &User, password: &str, now: u64) -> Result<(), Problem> {
+        let ukey = format!("u:{}", user.username.to_lowercase());
+        if let Some(wait) = self.locked(&ukey, now) {
+            return Err(Problem::new(
+                Code::RateLimited,
+                format!("too many failed sign-ins; try again in {wait} s"),
+            )
+            .retry_after(wait));
+        }
+        let ok = {
+            let _slot = self.password_check()?;
+            crypto::verify_password(password, &user.password_hash)
+        };
+        if !ok {
+            self.fail(&ukey, now);
+            return Err(Problem::new(Code::Unauthorized, "the password is wrong"));
         }
         self.succeed(&ukey);
         Ok(())

@@ -17,6 +17,11 @@ use super::format::{
 /// sections hold at most 8192 names of 256 bytes).
 const MAX_SECTION: usize = MAX_ROWS * 256;
 
+/// REQ: NFR-007, CLU-007 (T10.7) — the most a segment's name dictionary may hold. A real one is
+/// a few MiB (each distinct name once); a crafted segment (shipped by a peer) could otherwise
+/// repeat a full section per block and inflate gigabytes from a few compressed megabytes.
+const MAX_DICTIONARY: usize = 64 << 20;
+
 /// An open segment: its header and block index.
 #[derive(Debug)]
 pub struct Segment {
@@ -60,7 +65,8 @@ impl Dictionary {
     /// Appends a compressed name section holding `count` names.
     fn add_names(&mut self, frame: &[u8], count: u32) -> io::Result<()> {
         let from = self.buf.len();
-        let n = format::inflate_into(frame, MAX_SECTION, &mut self.buf)
+        let room = MAX_DICTIONARY.saturating_sub(from);
+        let n = format::inflate_into(frame, MAX_SECTION.min(room), &mut self.buf)
             .ok_or_else(|| invalid("name dictionary"))?;
         let mut pos = from;
         for _ in 0..count {
@@ -72,6 +78,8 @@ impl Dictionary {
                 .push(u32::try_from(pos + 1).map_err(|_| invalid("dictionary size"))?);
             pos += 1 + len;
         }
+        // Only what the names use stays (T10.7): a section can't pad the buffer.
+        self.buf.truncate(pos);
         Ok(())
     }
 }
@@ -406,4 +414,38 @@ fn walk_blocks<R: Read + Seek>(f: &mut R, len: u64) -> io::Result<Vec<(u64, Bloc
 
 fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.to_owned())
+}
+
+#[cfg(test)]
+mod dictionary_tests {
+    use super::*;
+
+    /// REQ: NFR-007, CLU-007 (T10.7) — a name section keeps only the names it counts, and a
+    /// segment's dictionary stops at [`MAX_DICTIONARY`]: a crafted (shipped) segment can't
+    /// make a search hold gigabytes.
+    #[test]
+    fn nfr_007_a_crafted_dictionary_is_bounded() {
+        let mut section = Vec::new();
+        while section.len() + 257 <= MAX_SECTION {
+            section.push(255);
+            section.extend_from_slice(&[b'a'; 255]);
+        }
+        let frame = format::deflate(&section).unwrap();
+        let mut d = Dictionary::default();
+        d.add_names(&frame, 1).unwrap();
+        assert_eq!(
+            (d.name_count(), d.buf.len()),
+            (1, 256),
+            "one name counted, one kept"
+        );
+        let full = u32::try_from(section.len() / 256).unwrap();
+        let mut d = Dictionary::default();
+        let mut sections = 0;
+        while d.add_names(&frame, full).is_ok() {
+            sections += 1;
+            assert!(sections <= MAX_DICTIONARY / MAX_SECTION, "past the budget");
+        }
+        assert!(d.buf.len() <= MAX_DICTIONARY);
+        assert_eq!(d.name(0).map(<[u8]>::len), Some(255));
+    }
 }

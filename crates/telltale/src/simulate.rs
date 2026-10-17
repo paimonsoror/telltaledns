@@ -1552,10 +1552,32 @@ pub(crate) async fn handle(
                 )
             })
         };
-        let current = Arc::new(merge(&req.current)?);
-        let candidate = Arc::new(merge(&req.candidate)?);
+        let current = merge(&req.current)?;
+        let mut candidate = merge(&req.candidate)?;
+        // REQ: OBS-024 (T10.7) — a peer says what to simulate, not what this node reads or
+        // reaches: a list file must be one this node's configuration already names, downloads
+        // follow this node's link-local setting, and the window and limits are this node's.
+        let files: Vec<_> = current.list.iter().filter_map(|l| l.path.clone()).collect();
+        if let Some(l) = changed_lists(&current, &candidate)
+            .iter()
+            .find(|l| l.path.as_ref().is_some_and(|p| !files.contains(p)))
+        {
+            return Err(Problem::invalid(format!(
+                "list {}: another node can't name a list file this node doesn't read",
+                l.name.as_str()
+            )));
+        }
+        candidate.filter.allow_link_local_urls = current.filter.allow_link_local_urls;
+        let (current, candidate) = (Arc::new(current), Arc::new(candidate));
+        let running = src.config.load();
+        let mut window = req.window;
+        window.max_rows = window.max_rows.min(running.simulate.max_rows);
+        window.max_secs = window.max_secs.min(running.simulate.max_secs);
+        window.from_us = window
+            .from_us
+            .max(window.to_us.saturating_sub(MAX_WINDOW_SECS * 1_000_000));
         // This node's own privacy level and settings decide what it may replay.
-        match mode(&src.config.load(), &candidate) {
+        match mode(&running, &candidate) {
             Mode::Unavailable(r) => {
                 return Err(Problem::unavailable(format!("not on this node: {r}")));
             }
@@ -1564,7 +1586,7 @@ pub(crate) async fn handle(
             }
             _ => {}
         }
-        local_part(&src, current, candidate, req.window, req.devices_only).await
+        local_part(&src, current, candidate, window, req.devices_only).await
     }
     .await;
     crate::forward::encode_answer(r)

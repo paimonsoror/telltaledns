@@ -229,12 +229,35 @@ pub(crate) fn receive(
             c.total
         ));
     }
+    // REQ: CLU-007 (T10.7) — only hours this node keeps: a segment past retention, or more
+    // than a day ahead of this node's clock, is acknowledged and dropped (retention would
+    // delete it, and an error would make the sender retry it forever).
+    let now_hour = now_s() / 3600;
+    if c.hour > now_hour + 24
+        || now_hour.saturating_sub(c.hour) > u64::from(retention_days.max(1)) * 24
+    {
+        debug!(
+            node = peer,
+            hour = c.hour,
+            "shipped segment outside retention: dropped"
+        );
+        return Ok(b"done".to_vec());
+    }
     let dir = shipped_root(data_dir).join(peer);
     let incoming = dir.join(".incoming");
     std::fs::create_dir_all(&incoming).map_err(|e| e.to_string())?;
     let tmp = incoming.join(format!("{}-{}-{}.seg.part", c.hour, c.node, c.part));
     let io = |e: io::Error| e.to_string();
     let mut f = if c.offset == 0 {
+        // REQ: CLU-007 (T10.7) — a sender has a few segments in flight at most: unfinished
+        // ones aren't counted by retention, so they'd otherwise fill the disk.
+        let open = std::fs::read_dir(&incoming)
+            .map_or(0, |d| d.flatten().filter(|e| e.path() != tmp).count());
+        if open >= MAX_IN_FLIGHT {
+            return Err(format!(
+                "{open} segments from this node are still unfinished; finish or wait for them"
+            ));
+        }
         std::fs::File::create(&tmp).map_err(io)?
     } else {
         let f = std::fs::OpenOptions::new()
@@ -268,12 +291,14 @@ pub(crate) fn receive(
     std::fs::rename(&tmp, &dest).map_err(io)?;
     stats.segments_received.fetch_add(1, Ordering::Relaxed);
     sweep_partials(data_dir, now_s());
-    let now_hour = now_s() / 3600;
     if let Err(e) = retention::enforce(&dir, now_hour, retention_days, retention_bytes, None) {
         warn!(node = peer, "shipped query log retention: {e}");
     }
     Ok(b"done".to_vec())
 }
+
+/// Unfinished segments a sender may have at once (it sends one at a time).
+const MAX_IN_FLIGHT: usize = 4;
 
 /// How long a half-received segment may wait for the rest of it.
 const PARTIAL_MAX_AGE: Duration = Duration::from_hours(24);
@@ -546,6 +571,51 @@ mod tests {
         );
         assert!(receive(dd, "../etc", &chunk(0, 10, &hash), 30, u64::MAX, &stats).is_err());
         assert_eq!(stats.segments_received.load(Ordering::Relaxed), 1);
+    }
+
+    // REQ: CLU-007 (T10.7) — a sender can't fill the disk with unfinished segments (a few in
+    // flight at most), and a segment for an hour this node doesn't keep is acknowledged and
+    // dropped (an error would stall the sender on it).
+    #[test]
+    fn clu_007_shipping_is_bounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dd = tmp.path().to_str().unwrap();
+        let stats = Stats::default();
+        let start = |hour: u64, part: u32| {
+            encode(
+                &Chunk {
+                    hour,
+                    node: 0,
+                    part,
+                    offset: 0,
+                    total: 100,
+                    hash: "00".into(),
+                },
+                b"x",
+            )
+        };
+        let hour = now_s() / 3600;
+        let put = |b: &[u8]| receive(dd, "abc123", b, 7, u64::MAX, &stats);
+        for part in 0..4 {
+            assert_eq!(put(&start(hour, part)).unwrap(), b"more");
+        }
+        assert!(
+            put(&start(hour, 4)).unwrap_err().contains("unfinished"),
+            "a fifth in flight"
+        );
+        assert_eq!(
+            put(&start(hour, 0)).unwrap(),
+            b"more",
+            "restarting one is fine"
+        );
+        assert_eq!(
+            put(&start(hour - 8 * 24, 9)).unwrap(),
+            b"done",
+            "past retention"
+        );
+        assert_eq!(put(&start(hour + 48, 9)).unwrap(), b"done", "far ahead");
+        assert_eq!(stats.segments_received.load(Ordering::Relaxed), 0);
+        assert_eq!(shipped_dirs(dd).len(), 1);
     }
 
     #[test]
