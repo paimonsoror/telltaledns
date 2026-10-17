@@ -1,0 +1,164 @@
+diff --git a/crates/telltale-net/src/doh3.rs b/crates/telltale-net/src/doh3.rs
+index ee30a33..bee2a48 100644
+--- a/crates/telltale-net/src/doh3.rs
++++ b/crates/telltale-net/src/doh3.rs
+@@ -32,6 +32,8 @@ pub struct Doh3Config {
+     /// URL path (default `/dns-query`); `<path>/<client-id>` also matches.
+     pub path: String,
+     pub idle_timeout: Duration,
++    /// Max concurrent connections; beyond it, new ones are refused.
++    pub max_connections: usize,
+ }
+ 
+ impl Doh3Config {
+@@ -41,6 +43,7 @@ impl Doh3Config {
+             tls,
+             path: "/dns-query".to_owned(),
+             idle_timeout: Duration::from_secs(30),
++            max_connections: 1024,
+         }
+     }
+ }
+@@ -113,12 +116,20 @@ async fn accept_loop<H: QueryHandler>(
+     stats: Arc<DohStats>,
+     mut stop: watch::Receiver<bool>,
+ ) {
++    // REQ: DNS-004 — the same cap as the HTTP/2 listener: refused beyond it, not accepted
++    // without bound.
++    let slots = Arc::new(tokio::sync::Semaphore::new(cfg.max_connections.max(1)));
+     loop {
+         let incoming = tokio::select! {
+             _ = stop.changed() => return,
+             i = endpoint.accept() => i,
+         };
+         let Some(incoming) = incoming else { return };
++        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
++            stats.rejected.fetch_add(1, Ordering::Relaxed);
++            incoming.refuse();
++            continue;
++        };
+         let (cfg, handler, stats) = (Arc::clone(&cfg), Arc::clone(&handler), Arc::clone(&stats));
+         tokio::spawn(async move {
+             let peer = incoming.remote_address();
+@@ -152,6 +163,7 @@ async fn accept_loop<H: QueryHandler>(
+                     serve(req, stream, &cfg, peer, sni_id, handler.as_ref(), &stats).await;
+                 });
+             }
++            drop(permit);
+         });
+     }
+ }
+diff --git a/crates/telltale-net/src/doq.rs b/crates/telltale-net/src/doq.rs
+index 83dc278..032f26a 100644
+--- a/crates/telltale-net/src/doq.rs
++++ b/crates/telltale-net/src/doq.rs
+@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
+ use std::time::Duration;
+ 
+ use quinn::crypto::rustls::QuicServerConfig;
+-use tokio::sync::watch;
++use tokio::sync::{Semaphore, watch};
+ use tokio::task::JoinHandle;
+ use tracing::debug;
+ 
+@@ -36,6 +36,8 @@ pub struct DoqConfig {
+     pub idle_timeout: Duration,
+     /// Streams (queries) one connection may have open at once.
+     pub max_streams: u32,
++    /// Max concurrent connections; beyond it, new ones are refused.
++    pub max_connections: usize,
+ }
+ 
+ impl DoqConfig {
+@@ -45,6 +47,7 @@ impl DoqConfig {
+             tls,
+             idle_timeout: Duration::from_secs(30),
+             max_streams: 100,
++            max_connections: 1024,
+         }
+     }
+ }
+@@ -53,6 +56,8 @@ impl DoqConfig {
+ #[derive(Debug, Default)]
+ pub struct DoqStats {
+     pub connections: AtomicU64,
++    /// Connections refused because `max_connections` was reached.
++    pub rejected: AtomicU64,
+     pub queries: AtomicU64,
+     /// Streams that broke RFC 9250 (bad length, a non-zero message ID): the connection closes.
+     pub protocol_errors: AtomicU64,
+@@ -96,6 +101,7 @@ impl DoqServer {
+             handler,
+             Arc::clone(&stats),
+             rx,
++            cfg.max_connections,
+         ));
+         Ok(Self {
+             endpoint,
+@@ -131,13 +137,22 @@ async fn accept_loop<H: QueryHandler>(
+     handler: Arc<H>,
+     stats: Arc<DoqStats>,
+     mut stop: watch::Receiver<bool>,
++    max_connections: usize,
+ ) {
++    // REQ: DNS-004 — the same cap as TCP (`spec/03` §1): a connection beyond it is refused
++    // (QUIC CONNECTION_REFUSED) instead of accepted without bound.
++    let slots = Arc::new(Semaphore::new(max_connections.max(1)));
+     loop {
+         let incoming = tokio::select! {
+             _ = stop.changed() => return,
+             i = endpoint.accept() => i,
+         };
+         let Some(incoming) = incoming else { return };
++        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
++            stats.rejected.fetch_add(1, Ordering::Relaxed);
++            incoming.refuse();
++            continue;
++        };
+         let (certs, handler, stats) =
+             (Arc::clone(&certs), Arc::clone(&handler), Arc::clone(&stats));
+         tokio::spawn(async move {
+@@ -156,6 +171,7 @@ async fn accept_loop<H: QueryHandler>(
+                 .and_then(|d| d.server_name.clone())
+                 .and_then(|sni| certs.client_id(&sni));
+             serve_conn(conn, peer, client_id, handler, stats).await;
++            drop(permit);
+         });
+     }
+ }
+diff --git a/crates/telltale-net/tests/doq.rs b/crates/telltale-net/tests/doq.rs
+index 6024838..c1f10f4 100644
+--- a/crates/telltale-net/tests/doq.rs
++++ b/crates/telltale-net/tests/doq.rs
+@@ -88,6 +88,31 @@ fn server() -> (DoqServer, Seen, SocketAddr) {
+     (s, seen, addr)
+ }
+ 
++/// REQ: DNS-004 — connections beyond `max_connections` are refused, not accepted without
++/// bound.
++#[tokio::test]
++async fn dns_004_doq_connection_cap() {
++    let seen: Seen = Arc::default();
++    let store = CertStore::load(fixture("a.crt"), fixture("a.key")).unwrap();
++    let mut cfg = DoqConfig::new("127.0.0.1:0".parse().unwrap(), store);
++    cfg.max_connections = 1;
++    let s = DoqServer::bind(&cfg, Arc::new(handler(Arc::clone(&seen)))).unwrap();
++    let addr = s.local_addr();
++    let ep = client();
++    let first = ep.connect(addr, "kids.dns.test").unwrap().await.unwrap();
++    assert!(ask(&first, 0).await.is_ok());
++    let second = ep.connect(addr, "kids.dns.test").unwrap().await;
++    assert!(second.is_err(), "the second connection should be refused");
++    assert_eq!(
++        s.stats_handle()
++            .rejected
++            .load(std::sync::atomic::Ordering::Relaxed),
++        1
++    );
++    drop(first);
++    s.shutdown().await;
++}
++
+ /// REQ: DNS-004 — answers on their own streams, concurrently, with the SNI client ID.
+ #[tokio::test]
+ async fn dns_004_doq_answers_streams_and_client_ids() {

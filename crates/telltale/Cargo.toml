@@ -77,3 +77,5 @@ dhat-heap = ["dep:dhat"]
 allocation-counter = "0.8.1"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["io-util"] }
+# REQ: OPS-006 (T10.6) — health endpoint tests call the router directly.
+tower = { version = "0.5.3", default-features = false, features = ["util"] }

@@ -1,0 +1,43 @@
+# REQ: T10.6 — evidence for P0 requirements a test can't show (read by spec/trace.py).
+# One entry per requirement: what demonstrates it, and where. Keep each line short and checkable.
+
+[evidence]
+"NFR-001" = [
+  "the gate itself: `bench/gate.py` measures every `00 §5` target",
+  "results and method in `docs/v1-gate.md` (M10)",
+]
+"NFR-005" = [
+  "**partly met:** `cargo-deny` (licenses, advisories, sources) is the CI `deny` job; release binaries and `SHA256SUMS` are minisign-signed (`image.yml`)",
+  "**open (T10.10):** `cargo-auditable` builds, a CycloneDX SBOM, cosign-signed images, a reproducibility check",
+]
+"NFR-006" = [
+  "clean-room rule in `AGENTS.md` (rule 6) and `docs/analysis.md` (what was learned from public docs only)",
+  "importers read Pi-hole's and Technitium's documented formats, no code (`spec/11`)",
+  "dependencies are permissive licenses only (`deny.toml`, the CI `deny` job)",
+]
+"OPS-002" = [
+  "the chart is linted (`helm lint --strict`) and installed on kind and k3d in CI (the `helm` jobs, `deploy/helm/scaled-e2e.sh`)",
+]
+"DOC-001" = [
+  "`site/build.py --check` in the CI `site` job; published by `.github/workflows/pages.yml` on every push to `main`",
+]
+"DOC-003" = [
+  "`site/how-it-works.html`, `site/nerds.html`, `site/performance.html`, `site/config.html` (generated from the schema)",
+]
+"DOC-004" = [
+  "`site/standards.html`: every RFC with its status",
+]
+"DNS-013" = [
+  "EDE 15/17 on blocked answers: `flt_008_blocked_a_and_aaaa_null_answers`, `flt_008_nxdomain_and_nodata_with_soa` (`telltale-proto`)",
+  "EDE 3 on stale answers: `dns_007_serve_stale_window`, `dns_007_refreshed_answers_come_from_the_cache_at_once`",
+  "EDE 22 when no upstream answers: `dns_013_no_upstream_answer_is_servfail_with_ede_22`; EDE 21 on refused zone transfers: `dns_019_zone_transfers_are_refused_without_upstream`",
+]
+"DOC-002" = [
+  "`site/start.html` (the \"Start here\" track) and `site/index.html`, checked by `site/build.py --check`",
+]
+"OPS-001" = [
+  "`image.yml`: amd64, arm64, and arm/v7 built FROM scratch, the size gate, and `deploy/image/smoke.sh` on each platform under QEMU",
+]
+"NFR-004" = [
+  "cargo-fuzz targets in `fuzz/fuzz_targets/`: `parse_query`, `parse_response`, `parse_list`, `cache_response`, `qlog_segment`, `differential`; run by `.github/workflows/fuzz.yml`",
+]

@@ -1,0 +1,143 @@
+diff --git a/crates/telltale-recursor/src/lib.rs b/crates/telltale-recursor/src/lib.rs
+index 78eb443..8817391 100644
+--- a/crates/telltale-recursor/src/lib.rs
++++ b/crates/telltale-recursor/src/lib.rs
+@@ -623,7 +623,8 @@ impl Recursor {
+         let t0 = Instant::now();
+         let mut res = net::ask(addr, qn, qt, dnssec_ok, mix, timeout).await;
+         if res == Err(NetError::CaseMismatch) {
+-            // REQ: DNS-012 — 0x20: this server changes the case; ask it plainly.
++            // REQ: DNS-012 — 0x20: nothing with the case intact came in time, only replies
++            // with it changed: this server doesn't echo the case; ask it plainly.
+             self.caches.no_case(ip);
+             res = net::ask(addr, qn, qt, dnssec_ok, false, timeout).await;
+         }
+diff --git a/crates/telltale-recursor/src/net.rs b/crates/telltale-recursor/src/net.rs
+index 4e99717..398fbce 100644
+--- a/crates/telltale-recursor/src/net.rs
++++ b/crates/telltale-recursor/src/net.rs
+@@ -3,6 +3,7 @@
+ //! randomization of the name (checked on the way back).
+ 
+ use std::net::{IpAddr, SocketAddr};
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::time::Duration;
+ 
+ use telltale_proto::{EdnsOut, HEADER_LEN, Header, NameBuf, build_query, read_name, summarize};
+@@ -94,9 +95,18 @@ pub(crate) async fn ask(
+ ) -> Result<Vec<u8>, NetError> {
+     let id: u16 = rand::random();
+     let query = wire_query(id, name, qtype, dnssec_ok, mix_case).ok_or(NetError::Bad)?;
+-    let resp = tokio::time::timeout(timeout, udp(server, &query, mix_case))
++    // REQ: DNS-012 — a reply whose letter case differs is not taken as the server's word: it
++    // may be a spoof that guessed the ID and port but not the case. The one with the case
++    // intact is waited for; only when none comes in time does the server count as one that
++    // doesn't echo the case.
++    let case_changed = AtomicBool::new(false);
++    let resp = match tokio::time::timeout(timeout, udp(server, &query, mix_case, &case_changed))
+         .await
+-        .map_err(|_| NetError::Timeout)??;
++    {
++        Ok(r) => r?,
++        Err(_) if case_changed.load(Ordering::Relaxed) => return Err(NetError::CaseMismatch),
++        Err(_) => return Err(NetError::Timeout),
++    };
+     if Header::parse(&resp).is_some_and(|h| h.flags.tc()) {
+         // Truncated: the whole answer over TCP (RFC 7766), with a little more time.
+         return tokio::time::timeout(timeout * 2, tcp(server, &query, mix_case))
+@@ -106,7 +116,12 @@ pub(crate) async fn ask(
+     Ok(resp)
+ }
+ 
+-async fn udp(server: SocketAddr, query: &[u8], exact: bool) -> Result<Vec<u8>, NetError> {
++async fn udp(
++    server: SocketAddr,
++    query: &[u8],
++    exact: bool,
++    case_changed: &AtomicBool,
++) -> Result<Vec<u8>, NetError> {
+     let bind: SocketAddr = match server.ip() {
+         IpAddr::V4(_) => (std::net::Ipv4Addr::UNSPECIFIED, 0).into(),
+         IpAddr::V6(_) => (std::net::Ipv6Addr::UNSPECIFIED, 0).into(),
+@@ -122,7 +137,8 @@ async fn udp(server: SocketAddr, query: &[u8], exact: bool) -> Result<Vec<u8>, N
+                 buf.truncate(n);
+                 return Ok(buf);
+             }
+-            Err(NetError::CaseMismatch) => return Err(NetError::CaseMismatch),
++            // The case changed: noted, and the wait for an intact one goes on.
++            Err(NetError::CaseMismatch) => case_changed.store(true, Ordering::Relaxed),
+             // Stray or spoofed: keep waiting for the real one.
+             Err(_) => {}
+         }
+diff --git a/crates/telltale-recursor/tests/recursor.rs b/crates/telltale-recursor/tests/recursor.rs
+index ffc44ea..a59e091 100644
+--- a/crates/telltale-recursor/tests/recursor.rs
++++ b/crates/telltale-recursor/tests/recursor.rs
+@@ -15,6 +15,7 @@ use tokio::net::UdpSocket;
+ 
+ /// A zone: its records, its delegations (child, server name, glue), and quirks.
+ #[derive(Clone, Default)]
++#[allow(clippy::struct_excessive_bools)] // independent quirks
+ struct Zone {
+     origin: &'static str,
+     records: Vec<(&'static str, u16, Vec<u8>)>,
+@@ -25,6 +26,9 @@ struct Zone {
+     poison: bool,
+     /// Always refers back to the root (lame).
+     lame: bool,
++    /// Before every answer, sends a forged one first: the question in lowercase and the
++    /// address 6.6.6.6 (an off-path spoofer who guessed the ID and port, but not the case).
++    spoof: bool,
+     /// Milliseconds to wait before answering (changeable while running).
+     delay_ms: Option<Arc<AtomicU64>>,
+ }
+@@ -183,6 +187,16 @@ async fn serve(ip: u8, port: u16, z: Zone, log: Log) {
+                     tokio::time::sleep(Duration::from_millis(ms)).await;
+                 }
+             }
++            if z.spoof {
++                let mut fake = z.clone();
++                fake.lowercase = true;
++                for r in &mut fake.records {
++                    if r.1 == rtype::A {
++                        r.2 = a([6, 6, 6, 6]);
++                    }
++                }
++                let _ = s.send_to(&respond(&fake, q), from).await;
++            }
+             let _ = s.send_to(&respond(&z, q), from).await;
+         }
+     });
+@@ -419,6 +433,32 @@ async fn dns_012_case_randomization() {
+     );
+ }
+ 
++/// REQ: DNS-012 — 0x20 holds against a spoofed reply: an answer whose letter case differs
++/// is not the server's word, so the resolver keeps waiting for one with the case intact
++/// instead of asking again plainly (which would let a spoofer who guessed the ID and port
++/// win on the retry).
++#[tokio::test]
++async fn dns_012_case_mismatch_does_not_drop_0x20() {
++    let (mut s, log) = tree(|z| z[2].1.spoof = true).await;
++    s.case_randomization = true;
++    let r = Recursor::new(s);
++    let res = r
++        .resolve(name("www.example.com"), rtype::A, false)
++        .await
++        .unwrap();
++    assert_eq!(
++        addrs(&res),
++        vec![IpAddr::from([10, 0, 0, 1])],
++        "the server's answer, not the spoofed one"
++    );
++    let seen = log.lock().unwrap().clone();
++    assert_eq!(
++        seen.iter().filter(|(ip, _)| *ip == 4).count(),
++        1,
++        "asked once, never again plainly: {seen:?}"
++    );
++}
++
+ /// REQ: DNS-012, UPS-012 — `answer` returns a full response for the client's query: its
+ /// ID and question, RA, the records.
+ #[tokio::test]

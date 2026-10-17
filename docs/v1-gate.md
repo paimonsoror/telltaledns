@@ -48,13 +48,13 @@ figure is now about 50 MB.
 
 | Item | Status |
 |---|---|
-| All P0 requirements pass | ⏳ not yet checked requirement by requirement |
-| Comparative benchmark report published | ⏳ owner decision needed: the project doesn't compare itself with other resolvers in public text |
+| All P0 requirements pass | ⚠️ checked (T10.6, `docs/v1-requirements.md`, kept current by CI): all 73 have tests or evidence, 66 with named tests. **Open:** NFR-005's `cargo-auditable` builds, CycloneDX SBOM, cosign-signed images, and reproducibility check (T10.10) |
+| Comparative benchmark report published | ✅ decided (owner, 2026-10-17): TelltaleDNS publishes its own numbers and the exact method (hardware, load, corpus) so anyone can reproduce or compare them; no side-by-side with other resolvers |
 | Security review of sign-in, the cluster, and the parsers | ⏳ not started |
 
 ## Next
 
 Tracked as M10 in `spec/10-roadmap-and-tasks.md`: find where the memory goes (idle, and with
 1M names), make the recompile meet 8 s on a Pi 4, bring the cold start under 500 ms, measure
-latency and Pi throughput on separate hardware, measure cross-site propagation, the
-requirement-by-requirement check, and the security review.
+latency and Pi throughput on separate hardware, measure cross-site propagation, the security
+review, and the supply-chain items NFR-005 still lacks (T10.10).

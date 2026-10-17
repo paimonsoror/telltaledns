@@ -1,0 +1,92 @@
+diff --git a/crates/telltale-filter/src/compile/mod.rs b/crates/telltale-filter/src/compile/mod.rs
+index 9a9f9b8..8350c65 100644
+--- a/crates/telltale-filter/src/compile/mod.rs
++++ b/crates/telltale-filter/src/compile/mod.rs
+@@ -811,7 +811,10 @@ pub fn regex_builder() -> regex_automata::meta::Builder {
+     b
+ }
+ 
+-/// Drops regexes the engine won't build (e.g. size limits), reporting each one.
++/// Drops regexes the engine won't build (e.g. size limits), reporting each one. The kept
++/// rules are guaranteed to build *as one set*, which is how the matcher uses them: the size
++/// limit applies to the combined automaton, so patterns that each fit can still exceed it
++/// together, and a snapshot whose regex set doesn't build can't be activated at all.
+ fn check_regexes(
+     rules: Vec<RegexRule>,
+     inputs: &[ListMeta],
+@@ -822,9 +825,13 @@ fn check_regexes(
+     }
+     let mut kept = Vec::new();
+     let mut errors = Vec::new();
++    let mut memory = Vec::new();
+     for r in rules {
+         match regex_builder().build(&r.pattern) {
+-            Ok(_) => kept.push(r),
++            Ok(re) => {
++                memory.push(re.memory_usage());
++                kept.push(r);
++            }
+             Err(e) => errors.push((
+                 inputs[usize::from(r.list)].name.clone(),
+                 r.line,
+@@ -832,6 +839,25 @@ fn check_regexes(
+             )),
+         }
+     }
++    // Until the set builds, drop the pattern that costs the most on its own.
++    loop {
++        let patterns: Vec<&str> = kept.iter().map(|r| r.pattern.as_str()).collect();
++        if patterns.is_empty() || regex_builder().build_many(&patterns).is_ok() {
++            break;
++        }
++        let Some(i) = (0..memory.len()).max_by_key(|&i| memory[i]) else {
++            break;
++        };
++        let r = kept.remove(i);
++        memory.remove(i);
++        errors.push((
++            inputs[usize::from(r.list)].name.clone(),
++            r.line,
++            "too large together with the other regexes (the set exceeds the engine's size \
++             limit)"
++                .to_owned(),
++        ));
++    }
+     (kept, errors)
+ }
+ 
+diff --git a/crates/telltale-filter/src/compile/tests.rs b/crates/telltale-filter/src/compile/tests.rs
+index 38c83f5..b06b3d1 100644
+--- a/crates/telltale-filter/src/compile/tests.rs
++++ b/crates/telltale-filter/src/compile/tests.rs
+@@ -261,3 +261,30 @@ fn reversed_keys() {
+     assert_eq!(reversed_key("ads.example.com"), b"com.example.ads.");
+     assert_eq!(reversed_key("com"), b"com.");
+ }
++
++/// REQ: FLT-003 — regexes that each fit the engine's size limit but not together are
++/// dropped at compile time (and reported), so the snapshot's regex set always builds and
++/// the snapshot can be activated.
++#[test]
++fn flt_003_regex_set_that_only_fails_as_a_whole_is_trimmed() {
++    let mut text = String::new();
++    for _ in 0..16 {
++        let _ = writeln!(text, "(?:[a-z]{{200}}){{200}}");
++    }
++    text.push_str("^ads[0-9]+\\.\n");
++    let tmp = tempfile::tempdir().unwrap();
++    let out = tmp.path().join("v1");
++    let report = compile(
++        vec![input("rx", ListKind::Block, &text)],
++        &out,
++        &CompileOptions::default(),
++    )
++    .unwrap();
++    assert!(!report.regex_errors.is_empty(), "some patterns must be dropped");
++    assert!(report.manifest.stats.regexes >= 1, "the small one stays");
++    let snap = std::sync::Arc::new(Snapshot::open(&out).unwrap());
++    assert!(
++        crate::matcher::Matcher::new(Some(snap), crate::matcher::Overlay::default()).is_ok(),
++        "the snapshot must activate"
++    );
++}

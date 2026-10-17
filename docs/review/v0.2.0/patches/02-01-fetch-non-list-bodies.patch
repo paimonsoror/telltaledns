@@ -1,0 +1,115 @@
+diff --git a/crates/telltale-filter/src/fetch/http.rs b/crates/telltale-filter/src/fetch/http.rs
+index 3c3ec9e..48f8c53 100644
+--- a/crates/telltale-filter/src/fetch/http.rs
++++ b/crates/telltale-filter/src/fetch/http.rs
+@@ -278,6 +278,7 @@ impl Client {
+                 retryable,
+             });
+         }
++        refuse_compressed(header(http::header::CONTENT_ENCODING))?;
+         let (etag, last_modified) = (header(ETAG), header(LAST_MODIFIED));
+         if let Some(len) = resp
+             .headers()
+@@ -424,6 +425,18 @@ where
+         .map_err(|e| HttpError::retry(format!("request: {e}")))
+ }
+ 
++/// REQ: FLT-004 — a server that ignores `Accept-Encoding: identity` and compresses anyway
++/// would hand the parser a binary blob (and make the size cap meaningless): refused, so the
++/// last good copy stays.
++fn refuse_compressed(encoding: Option<String>) -> Result<(), HttpError> {
++    match encoding {
++        Some(enc) if !enc.trim().eq_ignore_ascii_case("identity") => Err(HttpError::fatal(
++            format!("compressed response (Content-Encoding: {enc}); lists must be sent as is"),
++        )),
++        _ => Ok(()),
++    }
++}
++
+ fn too_big(max: u64) -> String {
+     format!("larger than the {max}-byte limit (raise max_bytes for this list)")
+ }
+diff --git a/crates/telltale-filter/src/fetch/mod.rs b/crates/telltale-filter/src/fetch/mod.rs
+index f8bbab6..f580ca9 100644
+--- a/crates/telltale-filter/src/fetch/mod.rs
++++ b/crates/telltale-filter/src/fetch/mod.rs
+@@ -472,6 +472,7 @@ fn accept_body(
+     now: u64,
+ ) -> Result<Outcome, String> {
+     sanity_check(data)?;
++    usable_check(data)?;
+     let hash = content_hash(data);
+     if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
+         return Ok(Outcome::Unchanged);
+@@ -532,6 +533,27 @@ fn sanity_check(data: &[u8]) -> Result<(), String> {
+     Ok(())
+ }
+ 
++/// Rejects a body that parses to no rules at all (while having invalid lines), or to more
++/// invalid lines than rules: a JSON error, a compressed blob, or an HTML page without the
++/// doctype prefix passes [`sanity_check`] and would otherwise replace a good list with
++/// nothing. REQ: FLT-004 — a list that fails keeps its last good version.
++fn usable_check(data: &[u8]) -> Result<(), String> {
++    use crate::parse::{ListOptions, parse_list};
++    let s = parse_list(data, ListOptions::default(), |_, _| {});
++    if (s.rules == 0 && s.invalid > 0) || s.invalid > s.rules {
++        let first = s
++            .samples
++            .iter()
++            .find(|x| !x.unsupported)
++            .map_or("", |x| x.reason.as_str());
++        return Err(format!(
++            "not a usable list: {} rules, {} invalid lines (first: {first})",
++            s.rules, s.invalid
++        ));
++    }
++    Ok(())
++}
++
+ async fn read_file(path: &std::path::Path, max_bytes: u64) -> Result<Response, String> {
+     let meta = tokio::fs::metadata(path)
+         .await
+diff --git a/crates/telltale-filter/tests/fetch.rs b/crates/telltale-filter/tests/fetch.rs
+index 6aafc4b..d123d94 100644
+--- a/crates/telltale-filter/tests/fetch.rs
++++ b/crates/telltale-filter/tests/fetch.rs
+@@ -731,3 +731,39 @@ async fn flt_004_system_resolver() {
+         .unwrap();
+     assert!(ips.iter().any(IpAddr::is_loopback), "{ips:?}");
+ }
++
++/// REQ: FLT-004 — a 200 that isn't a list (a JSON error, a compressed body, an HTML page
++/// without the doctype prefix) never replaces the good copy.
++#[tokio::test]
++async fn flt_004_non_list_bodies_keep_the_last_good_copy() {
++    let srv = serve(
++        handler(|req, _| match req.path.as_str() {
++            "/good" => ok("a.com\nb.com\n"),
++            "/json" => ok("{\"error\": \"rate limited\", \"retry\": 30}"),
++            "/head" => ok("<head><title>Sign in</title></head><body>portal</body>"),
++            _ => Reply {
++                status: 200,
++                body: vec![0x1f, 0x8b, 0x08, 0x00, 0x61, 0x2e, 0x63, 0x6f, 0x6d, 0x0a],
++                ..Reply::default()
++            }
++            .header("Content-Encoding", "gzip"),
++        }),
++        None,
++    )
++    .await;
++    let tmp = tempfile::tempdir().unwrap();
++    let f = fetcher(tmp.path(), settings(), &[]);
++    assert_eq!(
++        f.refresh_one(&spec("l", srv.url("http", "h", "/good"))).await,
++        Outcome::Updated
++    );
++    for path in ["/json", "/head", "/gzip"] {
++        let outcome = f.refresh_one(&spec("l", srv.url("http", "h", path))).await;
++        assert!(matches!(outcome, Outcome::Failed(_)), "{path}: {outcome:?}");
++        assert_eq!(
++            f.store().read_source("l").unwrap(),
++            b"a.com\nb.com\n",
++            "{path}: last good kept"
++        );
++    }
++}

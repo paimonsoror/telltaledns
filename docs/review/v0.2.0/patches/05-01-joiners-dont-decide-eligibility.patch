@@ -1,0 +1,166 @@
+diff --git a/crates/telltale-cluster/src/net.rs b/crates/telltale-cluster/src/net.rs
+index 32a0f9a..6146e2a 100644
+--- a/crates/telltale-cluster/src/net.rs
++++ b/crates/telltale-cluster/src/net.rs
+@@ -604,7 +604,10 @@ impl Cluster {
+         let rec = crate::node::NodeRecord {
+             node_id: m.node_id.clone(),
+             site: m.site.clone(),
+-            eligible: m.eligible,
++            // ADR-051, ADR-058 — eligibility was decided at join (a node from before the
++            // registry existed is taken at its word once): a Hello can't raise it, so the
++            // key share never follows a peer's claim.
++            eligible: known.map_or(m.eligible, |n| n.eligible),
+             advertise: m.advertise.clone(),
+             joined: known.map_or_else(|| now_ms() / 1000, |n| n.joined),
+             // Set at join (ADR-056, CLU-009); Hello doesn't carry them.
+diff --git a/crates/telltale-cluster/src/net_tests.rs b/crates/telltale-cluster/src/net_tests.rs
+index 007e1bd..5053ed2 100644
+--- a/crates/telltale-cluster/src/net_tests.rs
++++ b/crates/telltale-cluster/src/net_tests.rs
+@@ -690,3 +690,79 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
+     let _ = pod_stop_tx.send(true);
+     let _ = stop_tx.send(true);
+ }
++
++// REQ: CLU-001, CLU-009 (ADR-051, ADR-058) — a member decides nothing about its own standing:
++// a join with the shared bootstrap secret is an ephemeral member whatever it asks for, and a
++// Hello can't make a known member eligible, so the cluster key is never shared on a peer's
++// say-so. A join token may still bring an eligible node, which then gets the key.
++#[test]
++fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
++    let dir = tempfile::tempdir().unwrap();
++    let id = Identity::init(dir.path(), "home", vec!["https://127.0.0.1:1".into()], "k8s").unwrap();
++    let primary = Cluster::new(id, "0.1.0");
++    let key = pki::new_node_key().unwrap();
++    let req = JoinRequest {
++        witness: true,
++        ephemeral: false,
++        secret: "s3cret".into(),
++        csr_pem: key.csr_pem.clone(),
++        advertise: vec![],
++        site: "k8s".into(),
++        eligible: true,
++        version: "0.1.0".into(),
++    };
++    let resp = primary.identity.accept_join(&req, Some("s3cret")).unwrap();
++    let record = |id: &str| {
++        primary
++            .identity
++            .registry()
++            .into_iter()
++            .find(|n| n.node_id == id)
++            .unwrap()
++    };
++    let rec = record(&resp.node_id);
++    assert!(
++        rec.ephemeral && !rec.eligible && !rec.witness && !rec.voter(),
++        "a bootstrap join is ephemeral: {rec:?}"
++    );
++    // Its Hello claims eligibility: the registry keeps what the join decided, and no key
++    // share is due.
++    let mut peer = Some(resp.node_id.clone());
++    let hello = Frame {
++        body: Some(Body::Hello(Hello {
++            protocol: PROTOCOL,
++            cluster_id: primary.identity.meta.cluster_id.clone(),
++            node_id: resp.node_id.clone(),
++            version: "0.1.0".into(),
++            site: "k8s".into(),
++            eligible: true,
++            advertise: vec![],
++            epoch: 1,
++            applied_seq: 0,
++            primary: false,
++            config_source: String::new(),
++            source_commit: String::new(),
++        })),
++    };
++    primary
++        .on_frame(&mut peer, hello, "inbound", &EchoSlot::default())
++        .unwrap();
++    assert!(!record(&resp.node_id).eligible, "a Hello can't raise eligibility");
++    assert!(primary.key_share_for(&resp.node_id).is_none());
++    // A token join may be eligible, and then the key share is due.
++    let token = primary.identity.create_token(60, None).unwrap();
++    let key2 = pki::new_node_key().unwrap();
++    let req2 = JoinRequest {
++        witness: false,
++        ephemeral: false,
++        secret: token.secret,
++        csr_pem: key2.csr_pem,
++        advertise: vec![],
++        site: "pi".into(),
++        eligible: true,
++        version: "0.1.0".into(),
++    };
++    let resp2 = primary.identity.accept_join(&req2, Some("s3cret")).unwrap();
++    assert!(record(&resp2.node_id).eligible && !record(&resp2.node_id).ephemeral);
++    assert!(primary.key_share_for(&resp2.node_id).is_some());
++}
+diff --git a/crates/telltale-cluster/src/node.rs b/crates/telltale-cluster/src/node.rs
+index 47819fe..ccb063c 100644
+--- a/crates/telltale-cluster/src/node.rs
++++ b/crates/telltale-cluster/src/node.rs
+@@ -592,15 +592,21 @@ impl Identity {
+             .unwrap_or_default();
+         let h = Token::secret_hash(&req.secret);
+         let t = now();
+-        // REQ: CLU-009 — the shared bootstrap secret works like a token that never expires.
+-        let ok = recs
++        let by_token = recs
+             .iter()
+-            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()))
+-            || bootstrap
++            .any(|r| r.exp > t && same(r.hash.as_bytes(), h.as_bytes()));
++        // REQ: CLU-009 — the shared bootstrap secret works like a token that never expires.
++        let by_bootstrap = !by_token
++            && bootstrap
+                 .is_some_and(|b| !b.is_empty() && same(b.as_bytes(), req.secret.as_bytes()));
+-        if !ok {
++        if !by_token && !by_bootstrap {
+             return Err("the join token is unknown or expired".into());
+         }
++        // REQ: CLU-001, CLU-009 (ADR-051, ADR-058) — standing is decided here, not claimed.
++        // The bootstrap secret is in every resolver pod, so a join with it is an ephemeral
++        // member whatever it asks for: eligibility (and with it the cluster key) and a
++        // witness's vote come only with a join token.
++        let ephemeral = req.ephemeral || by_bootstrap;
+         let (node_id, cert_pem) =
+             pki::issue(&ca, &req.csr_pem, &hosts(&req.advertise)).map_err(|e| e.to_string())?;
+         let mut nodes = self.registry();
+@@ -608,11 +614,11 @@ impl Identity {
+         nodes.push(NodeRecord {
+             node_id: node_id.clone(),
+             site: req.site.clone(),
+-            eligible: req.eligible && !req.witness && !req.ephemeral,
++            eligible: req.eligible && !req.witness && !ephemeral,
+             advertise: req.advertise.clone(),
+             joined: t,
+-            witness: req.witness && !req.ephemeral,
+-            ephemeral: req.ephemeral,
++            witness: req.witness && !ephemeral,
++            ephemeral,
+         });
+         self.save_registry(&nodes)?;
+         let mut primary_urls = self.meta.advertise.clone();
+diff --git a/docs/running.md b/docs/running.md
+index ca9a240..01c9439 100644
+--- a/docs/running.md
++++ b/docs/running.md
+@@ -1369,9 +1369,12 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
+   Cluster page's **node_settings** check fails until they're removed.
+ 
+ **When the primary is gone: promote another node (manual failover).**
+-- **Who can be promoted:** a node joined with `--eligible`. The primary shares the cluster's
+-  signing key with eligible nodes once they connect, so one of them can take over. Give eligible
+-  nodes `--advertise` URLs, so a returning old primary can be reached and told to step down.
++- **Who can be promoted:** a node joined with `--eligible` using a join token. The primary
++  shares the cluster's signing key with eligible nodes once they connect, so one of them can
++  take over. A node that joined with the Helm chart's bootstrap secret (a resolver pod) is
++  always an ephemeral member: it can't be eligible or a witness, whatever its settings say.
++  Give eligible nodes `--advertise` URLs, so a returning old primary can be reached and told
++  to step down.
+ - **How:** use **Promote this node…** on the Cluster page (admin, live), or stop the node, run
+   `telltale cluster promote`, and start it. It's refused while the primary is up.
+ - **What happens:**

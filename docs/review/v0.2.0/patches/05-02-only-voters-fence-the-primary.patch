@@ -1,0 +1,125 @@
+diff --git a/crates/telltale-cluster/src/failover.rs b/crates/telltale-cluster/src/failover.rs
+index 2390358..13fcefd 100644
+--- a/crates/telltale-cluster/src/failover.rs
++++ b/crates/telltale-cluster/src/failover.rs
+@@ -154,9 +154,11 @@ fn step(cluster: &Cluster, id: &Identity, reply: Option<(String, Reply)>, now: u
+     };
+     let local = cluster.local_state();
+     el.applied = (local.epoch, local.applied_seq);
++    // ADR-051 — only voters' epochs count (see `Cluster::may_announce_epoch`).
+     let seen = cluster
+         .members()
+         .iter()
++        .filter(|m| cluster.may_announce_epoch(&m.node_id))
+         .map(|m| m.epoch)
+         .fold(cluster.role().1, u64::max);
+     let mut outs = el.observe(seen);
+diff --git a/crates/telltale-cluster/src/net.rs b/crates/telltale-cluster/src/net.rs
+index 32a0f9a..6dc4170 100644
+--- a/crates/telltale-cluster/src/net.rs
++++ b/crates/telltale-cluster/src/net.rs
+@@ -991,9 +991,26 @@ impl Cluster {
+             .clone()
+     }
+ 
++    /// Whether `node` may announce an epoch (ADR-051): a voter, that is an eligible node or a
++    /// witness, in the registry. A member the registry doesn't know is taken at its word (a
++    /// cluster from before registries existed); a known member that can't vote is not.
++    pub fn may_announce_epoch(&self, node: &str) -> bool {
++        self.identity
++            .registry()
++            .iter()
++            .find(|n| n.node_id == node)
++            .is_none_or(crate::node::NodeRecord::voter)
++    }
++
+     /// Fencing (ADR-051): a primary that hears of a higher epoch steps down at once.
+     fn observe_epoch(&self, epoch: u64, from: &str) {
+         let (role, mine) = self.role();
++        if epoch > mine && !self.may_announce_epoch(from) {
++            // Hellos and heartbeats aren't signed: a member that can't vote (a resolver pod)
++            // could otherwise fence the primary and freeze the cluster with one frame.
++            debug!(epoch, from, "ignoring a newer epoch from a member that can't vote");
++            return;
++        }
+         if epoch > mine {
+             if role == Role::Primary {
+                 warn!(epoch, mine, from, "a newer primary exists: stepping down");
+diff --git a/crates/telltale-cluster/src/net_tests.rs b/crates/telltale-cluster/src/net_tests.rs
+index 007e1bd..d0b5771 100644
+--- a/crates/telltale-cluster/src/net_tests.rs
++++ b/crates/telltale-cluster/src/net_tests.rs
+@@ -690,3 +690,73 @@ async fn clu_009_a_pod_that_shuts_down_leaves_at_once() {
+     let _ = pod_stop_tx.send(true);
+     let _ = stop_tx.send(true);
+ }
++
++// REQ: CLU-005 (ADR-051) — a newer epoch in a Hello or heartbeat fences the primary only when
++// it comes from a voter: an ephemeral member's frames (unsigned, from a resolver pod that
++// could be compromised) never demote it.
++#[test]
++fn clu_005_only_voters_can_fence_the_primary() {
++    let dir = tempfile::tempdir().unwrap();
++    let id = Identity::init(dir.path(), "home", vec!["https://127.0.0.1:1".into()], "k8s").unwrap();
++    let primary = Cluster::new(id, "0.1.0");
++    let join = |eligible: bool, ephemeral: bool, site: &str| {
++        let key = pki::new_node_key().unwrap();
++        let token = primary.identity.create_token(60, None).unwrap();
++        primary
++            .identity
++            .accept_join(
++                &JoinRequest {
++                    witness: false,
++                    ephemeral,
++                    secret: token.secret,
++                    csr_pem: key.csr_pem,
++                    advertise: vec![],
++                    site: site.into(),
++                    eligible,
++                    version: "0.1.0".into(),
++                },
++                None,
++            )
++            .unwrap()
++            .node_id
++    };
++    let pod = join(false, true, "k8s");
++    let pi = join(true, false, "pi");
++    // (A Hello claiming `eligible: true` is 05-01's case: there the registry keeps what the
++    // join decided, so the two patches together close both doors.)
++    let hello = |node_id: &str, epoch: u64| Frame {
++        body: Some(Body::Hello(Hello {
++            protocol: PROTOCOL,
++            cluster_id: primary.identity.meta.cluster_id.clone(),
++            node_id: node_id.to_owned(),
++            version: "0.1.0".into(),
++            site: "x".into(),
++            eligible: false,
++            advertise: vec![],
++            epoch,
++            applied_seq: 0,
++            primary: true,
++            config_source: String::new(),
++            source_commit: String::new(),
++        })),
++    };
++    let heartbeat = |epoch: u64| Frame {
++        body: Some(Body::Heartbeat(Heartbeat {
++            ts_ms: 1,
++            epoch,
++            ..Heartbeat::default()
++        })),
++    };
++    assert_eq!(primary.role(), (Role::Primary, 1));
++    let echo = EchoSlot::default();
++    // The pod claims to be the primary of epoch 99: ignored.
++    let mut peer = Some(pod.clone());
++    primary.on_frame(&mut peer, hello(&pod, 99), "inbound", &echo).unwrap();
++    primary.on_frame(&mut peer, heartbeat(100), "inbound", &echo).unwrap();
++    assert_eq!(primary.role(), (Role::Primary, 1), "a pod can't fence the primary");
++    assert!(primary.is_primary());
++    // An eligible node announcing epoch 2 (it was promoted): fenced.
++    let mut peer = Some(pi.clone());
++    primary.on_frame(&mut peer, hello(&pi, 2), "inbound", &echo).unwrap();
++    assert_eq!(primary.role(), (Role::Replica, 2));
++}

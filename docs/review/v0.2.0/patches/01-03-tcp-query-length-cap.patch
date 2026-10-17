@@ -1,0 +1,49 @@
+diff --git a/crates/telltale-net/src/tcp.rs b/crates/telltale-net/src/tcp.rs
+index 8a5a049..94b18c1 100644
+--- a/crates/telltale-net/src/tcp.rs
++++ b/crates/telltale-net/src/tcp.rs
+@@ -91,6 +91,10 @@ pub struct TcpServer {
+ 
+ /// Largest DNS message (2-byte length prefix).
+ const MAX_MSG: usize = u16::MAX as usize;
++/// Largest query accepted: the same bound as the UDP receive buffer. Queries are small; a
++/// length prefix beyond this is junk, and reading it would buffer up to 64 KiB per
++/// connection on the client's say-so.
++const MAX_QUERY: usize = 4096;
+ 
+ thread_local! {
+     /// Response scratch space, one per runtime thread rather than per connection, so idle
+@@ -306,8 +310,8 @@ async fn serve_conn<S, H>(
+             }
+         }
+         let n = usize::from(u16::from_be_bytes(len));
+-        if n < 12 {
+-            break; // shorter than a DNS header: the stream is out of sync
++        if !(12..=MAX_QUERY).contains(&n) {
++            break; // shorter than a DNS header, or far longer than any query: out of sync
+         }
+         req.resize(n, 0);
+         if !matches!(
+diff --git a/crates/telltale-net/tests/tcp.rs b/crates/telltale-net/tests/tcp.rs
+index b780757..9ed8b32 100644
+--- a/crates/telltale-net/tests/tcp.rs
++++ b/crates/telltale-net/tests/tcp.rs
+@@ -138,6 +138,18 @@ async fn dns_001_tcp_connection_cap() {
+     server.shutdown().await;
+ }
+ 
++/// REQ: DNS-001 — a length prefix beyond any real query closes the connection instead of
++/// buffering up to 64 KiB per connection on the client's say-so.
++#[tokio::test]
++async fn dns_001_tcp_oversized_query_closes_connection() {
++    let server = TcpServer::bind(cfg(), Arc::new(echo)).unwrap();
++    let mut s = TcpStream::connect(server.local_addr()).await.unwrap();
++    s.write_all(&[0x20, 0x00, 1, 2, 3]).await.unwrap(); // claims 8192 bytes
++    let r = tokio::time::timeout(Duration::from_secs(2), read_frame(&mut s)).await;
++    assert!(matches!(r, Ok(Err(_))), "{r:?}");
++    server.shutdown().await;
++}
++
+ #[tokio::test]
+ async fn dns_001_tcp_runt_length_closes_connection() {
+     let server = TcpServer::bind(cfg(), Arc::new(echo)).unwrap();

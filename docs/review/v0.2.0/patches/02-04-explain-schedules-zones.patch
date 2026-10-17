@@ -1,0 +1,234 @@
+diff --git a/crates/telltale/src/explain.rs b/crates/telltale/src/explain.rs
+index 215e17f..8c1bcbf 100644
+--- a/crates/telltale/src/explain.rs
++++ b/crates/telltale/src/explain.rs
+@@ -15,7 +15,7 @@ use telltale_policy::{ClientTable, IdSource, Neighbors, Pause, Special};
+ use telltale_proto::{NameBuf, build_query, class, parse_query};
+ use telltale_upstream::Question;
+ 
+-use crate::pipeline::{Dynamic, FilterState, unix_now};
++use crate::pipeline::{Dynamic, FilterState, ScheduleNow, unix_now};
+ 
+ /// What to explain.
+ #[derive(Debug, Clone)]
+@@ -120,6 +120,8 @@ pub(crate) struct State<'a> {
+     pub(crate) filter: Option<&'a FilterState>,
+     pub(crate) neighbors: &'a Neighbors,
+     pub(crate) pause: &'a Pause,
++    /// REQ: FLT-010 — which schedules are on right now.
++    pub(crate) schedules: &'a ScheduleNow,
+ }
+ 
+ /// Explains `req` against `st`, reading list sources through `source(list name)`.
+@@ -174,7 +176,7 @@ pub(crate) fn explain(
+         notes: Vec::new(),
+     };
+ 
+-    let special = match answered_early(policy, &q, req.client) {
++    let special = match answered_early(policy, &q, req.client, clients.group_names(ident)) {
+         Ok(special) => special,
+         Err((outcome, summary)) => {
+             e.outcome = outcome;
+@@ -240,7 +242,9 @@ pub(crate) fn explain(
+             e.notes
+                 .push("quick rules decide before lists: the list matches below don't apply".into());
+         }
+-    } else if decide(&mut e, winner, group, st.pause) {
++    } else if schedule_block(&mut e, st, clients, ident, group)
++        || decide(&mut e, winner, group, st.pause)
++    {
+         return Ok(e);
+     }
+ 
+@@ -303,13 +307,52 @@ fn quick_decision(
+     Some((m.allow, desc))
+ }
+ 
+-/// `spec/03` §3 steps 2–5 (access, ANY, special names, local records): the outcome if one
+-/// of them answers, else the special-name class to continue with. Rate limiting depends on
+-/// the moment, not the name, so it isn't explained.
++/// REQ: FLT-010 — a block-everything schedule that's on for the client's group decides
++/// before the lists (the pipeline's `schedule_block`), unless blocking is paused. True if
++/// the query is blocked by it.
++fn schedule_block(
++    e: &mut Explanation,
++    st: &State<'_>,
++    clients: &ClientTable,
++    ident: telltale_policy::Identity,
++    group: &telltale_policy::Group,
++) -> bool {
++    let Some(&g) = clients.group_ids(ident).first() else {
++        return false;
++    };
++    let Some(Some((reason, _))) = st.schedules.block_all.get(usize::from(g)) else {
++        return false;
++    };
++    if st.pause.is_paused(&group.name, unix_now) {
++        return false;
++    }
++    e.outcome = Outcome::Blocked;
++    e.summary = format!(
++        "{reason} for group {}: answered {}",
++        group.name,
++        block_answer_text(group.block.mode)
++    );
++    e.block = Some(BlockInfo {
++        list: reason.clone(),
++        mode: group.block.mode,
++        ttl: group.block.ttl,
++        ede_code: group.block.ede_code,
++    });
++    if e.filter.is_some() {
++        e.notes
++            .push("a schedule decides before lists: the list matches below don't apply".into());
++    }
++    true
++}
++
++/// `spec/03` §3 steps 2–5 (access, ANY, special names, local records and zones): the outcome
++/// if one of them answers, else the special-name class to continue with. Rate limiting
++/// depends on the moment, not the name, so it isn't explained.
+ fn answered_early(
+     policy: &crate::pipeline::Policy,
+     q: &telltale_proto::Query<'_>,
+     client: IpAddr,
++    groups: &[Box<str>],
+ ) -> Result<Option<Special>, (Outcome, String)> {
+     if !telltale_policy::is_allowed(&policy.allowed, client) {
+         return Err((
+@@ -334,6 +377,20 @@ fn answered_early(
+             if policy.local.answer(q, &mut out, None).is_some() {
+                 return Err((Outcome::Local, "answered from local records".into()));
+             }
++            // REQ: DNS-018 — an authoritative zone this client's groups see answers before
++            // any filtering (the pipeline's `zone_answer`).
++            if let Some(z) = policy.zones.iter().find(|z| {
++                q.qname.is_subdomain_of(&z.apex)
++                    && (z.groups.is_empty() || z.groups.iter().any(|g| groups.contains(g)))
++            }) {
++                return Err((
++                    Outcome::Local,
++                    format!(
++                        "answered from the authoritative zone {} (local data, never filtered)",
++                        z.apex.display()
++                    ),
++                ));
++            }
+             return Ok(special);
+         }
+     };
+diff --git a/crates/telltale/src/explain/tests.rs b/crates/telltale/src/explain/tests.rs
+index c4146f6..9b6469a 100644
+--- a/crates/telltale/src/explain/tests.rs
++++ b/crates/telltale/src/explain/tests.rs
+@@ -348,3 +348,92 @@ groups = ["kids"]
+         Outcome::Resolved
+     );
+ }
++
++/// REQ: FLT-010, FLT-013 — a block-everything schedule that's on shows up in the
++/// explanation, as the pipeline applies it.
++#[test]
++fn flt_013_schedules_are_explained() {
++    let extra = r#"
++[[group]]
++name = "night"
++networks = ["10.0.3.0/24"]
++schedules = ["always"]
++
++[[schedule]]
++name = "always"
++action = "block_all"
++tz = "UTC"
++window = [{ days = ["daily"], start = "00:00", end = "23:59" }]
++"#;
++    let (p, sources) = setup_with(extra);
++    let cfg = telltale_config::Loader::new()
++        .toml_str("t.toml", format!("{CONFIG}{extra}"))
++        .env(Vec::<(String, String)>::new())
++        .load()
++        .unwrap()
++        .config;
++    let compiled = telltale_config::schedule::compile(&cfg);
++    let clients = telltale_policy::ClientTable::from_config(&cfg);
++    p.schedules.store(Arc::new(crate::pipeline::ScheduleNow::compute(
++        &cfg,
++        &compiled,
++        clients.groups(),
++        1_791_237_600, // Monday 2026-10-05 22:00 UTC: inside the window
++    )));
++    p.set_filter(None);
++    let answer = served(&p, "www.example.org", "10.0.3.5").expect("the pipeline blocks it");
++    assert!(contains(&answer, b"blocked by schedule always"));
++    let e = ask(&p, &sources, "www.example.org", "10.0.3.5");
++    assert_eq!(e.outcome, Outcome::Blocked, "{}", e.summary);
++    assert!(e.summary.contains("schedule always"), "{}", e.summary);
++    // Other groups are unaffected, in both.
++    assert!(served(&p, "www.example.org", "10.0.0.9").is_none());
++    assert_eq!(
++        ask(&p, &sources, "www.example.org", "10.0.0.9").outcome,
++        Outcome::Resolved
++    );
++}
++
++/// REQ: DNS-018, FLT-013 — a name in an authoritative zone is local data in the
++/// explanation too, for the groups that see the zone.
++#[test]
++fn flt_013_zones_are_explained() {
++    let extra = r#"
++[[group]]
++name = "office"
++networks = ["10.0.4.0/24"]
++
++[[zone]]
++name = "corp.example"
++groups = ["office"]
++[[zone.record]]
++name = "intranet.corp.example"
++type = "A"
++value = "10.10.0.5"
++"#;
++    let cfg = telltale_config::Loader::new()
++        .toml_str("t.toml", format!("{CONFIG}{extra}"))
++        .env(Vec::<(String, String)>::new())
++        .load()
++        .unwrap()
++        .config;
++    let (local, _) = LocalData::from_config(&cfg);
++    let mut policy = Policy::from_config(&cfg, local);
++    policy.zones = Arc::new(crate::server::load_zones(&cfg).unwrap());
++    let p = Pipeline::new(
++        Settings::default(),
++        Arc::new(Cache::new(CachePolicy::default())),
++        Arc::new(Router::from_config(&cfg).unwrap()),
++        policy,
++    );
++    let sources = HashMap::new();
++    let answer = served(&p, "intranet.corp.example", "10.0.4.5").expect("answered locally");
++    assert!(contains(&answer, &[10, 10, 0, 5]));
++    let e = ask(&p, &sources, "intranet.corp.example", "10.0.4.5");
++    assert_eq!(e.outcome, Outcome::Local, "{}", e.summary);
++    // Outside the office the zone isn't visible.
++    assert_eq!(
++        ask(&p, &sources, "intranet.corp.example", "10.0.0.9").outcome,
++        Outcome::Resolved
++    );
++}
+diff --git a/crates/telltale/src/pipeline.rs b/crates/telltale/src/pipeline.rs
+index 546b2a8..a0e8ee5 100644
+--- a/crates/telltale/src/pipeline.rs
++++ b/crates/telltale/src/pipeline.rs
+@@ -511,11 +511,13 @@ impl Pipeline {
+     ) -> Result<crate::explain::Explanation, String> {
+         let dynamic = self.state.load();
+         let filter = self.filter.load();
++        let schedules = self.schedules.load();
+         let st = crate::explain::State {
+             dynamic: &dynamic,
+             filter: filter.as_deref(),
+             neighbors: &self.neighbors,
+             pause: &self.pause,
++            schedules: &schedules,
+         };
+         crate::explain::explain(&st, req, source)
+     }

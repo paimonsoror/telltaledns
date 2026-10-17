@@ -1,0 +1,284 @@
+diff --git a/crates/telltale-upstream/src/health.rs b/crates/telltale-upstream/src/health.rs
+index 4d4a28b..8eb557b 100644
+--- a/crates/telltale-upstream/src/health.rs
++++ b/crates/telltale-upstream/src/health.rs
+@@ -27,6 +27,59 @@ pub enum Breaker {
+     HalfOpen,
+ }
+ 
++/// REQ: UPS-006, OBS-011 — what an attempt came to. NOERROR and NXDOMAIN are successes;
++/// everything else is a failure, counted by kind so that a failure rate can be read.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Outcome {
++    Ok,
++    /// No answer within the attempt's timeout.
++    Timeout,
++    /// A connection, TLS, or socket error.
++    Network,
++    /// An answer that didn't match the query or didn't parse.
++    BadResponse,
++    /// The upstream's hostname couldn't be resolved.
++    Unresolved,
++    ServFail,
++    Refused,
++    /// Any other RCODE (FORMERR, NOTIMP, ...).
++    OtherRcode,
++}
++
++/// How many failure kinds [`Outcome`] has.
++pub const FAILURE_KINDS: usize = 7;
++
++impl Outcome {
++    /// The failure kinds, in the order of [`HealthSnapshot::failures_by_kind`].
++    pub const FAILURES: [Self; FAILURE_KINDS] = [
++        Self::Timeout,
++        Self::Network,
++        Self::BadResponse,
++        Self::Unresolved,
++        Self::ServFail,
++        Self::Refused,
++        Self::OtherRcode,
++    ];
++
++    /// The metrics label.
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::Ok => "ok",
++            Self::Timeout => "timeout",
++            Self::Network => "network",
++            Self::BadResponse => "bad_response",
++            Self::Unresolved => "unresolved",
++            Self::ServFail => "servfail",
++            Self::Refused => "refused",
++            Self::OtherRcode => "other_rcode",
++        }
++    }
++
++    fn index(self) -> Option<usize> {
++        Self::FAILURES.iter().position(|k| *k == self)
++    }
++}
++
+ /// A point-in-time view for metrics and the API (OBS-011).
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub struct HealthSnapshot {
+@@ -36,6 +89,8 @@ pub struct HealthSnapshot {
+     pub error_rate: f64,
+     pub requests: u64,
+     pub failures: u64,
++    /// `failures` by kind, in the order of [`Outcome::FAILURES`].
++    pub failures_by_kind: [u64; FAILURE_KINDS],
+ }
+ 
+ #[derive(Debug)]
+@@ -54,6 +109,7 @@ struct Inner {
+     last_used: Option<Instant>,
+     requests: u64,
+     failures: u64,
++    by_kind: [u64; FAILURE_KINDS],
+ }
+ 
+ /// Thread-safe health tracker for one upstream.
+@@ -77,6 +133,7 @@ impl Default for Health {
+             last_used: None,
+             requests: 0,
+             failures: 0,
++            by_kind: [0; FAILURE_KINDS],
+         }))
+     }
+ }
+@@ -110,6 +167,15 @@ impl Health {
+         }
+     }
+ 
++    /// REQ: UPS-006, OBS-011 — records an attempt with what went wrong, so that failures can
++    /// be told apart (`telltale_upstream_failures_total{kind}`); then as [`Self::record`].
++    pub fn record_outcome(&self, outcome: Outcome, latency: Duration, now: Instant) {
++        if let Some(i) = outcome.index() {
++            self.0.lock().by_kind[i] += 1;
++        }
++        self.record(outcome == Outcome::Ok, latency, now);
++    }
++
+     /// Records an attempt's outcome. Failures count as `latency` toward the EWMA too, so a
+     /// slow or dead upstream sorts behind healthy ones under `fastest`.
+     pub fn record(&self, ok: bool, latency: Duration, now: Instant) {
+@@ -197,6 +263,7 @@ impl Health {
+             },
+             requests: h.requests,
+             failures: h.failures,
++            failures_by_kind: h.by_kind,
+         }
+     }
+ }
+@@ -274,6 +341,26 @@ mod tests {
+         assert_eq!(h.snapshot().breaker, Breaker::Open);
+     }
+ 
++    /// REQ: UPS-006, OBS-011 — failures are counted by kind, and the total still matches.
++    #[test]
++    fn ups_006_failures_are_counted_by_kind() {
++        let h = Health::default();
++        let t = Instant::now();
++        h.record_outcome(Outcome::Ok, MS, t);
++        h.record_outcome(Outcome::ServFail, MS, t);
++        h.record_outcome(Outcome::ServFail, MS, t);
++        h.record_outcome(Outcome::Timeout, 400 * MS, t);
++        let s = h.snapshot();
++        assert_eq!((s.requests, s.failures), (4, 3));
++        let by: Vec<(&str, u64)> = Outcome::FAILURES
++            .iter()
++            .zip(s.failures_by_kind)
++            .filter(|(_, n)| *n > 0)
++            .map(|(k, n)| (k.label(), n))
++            .collect();
++        assert_eq!(by, vec![("timeout", 1), ("servfail", 2)]);
++    }
++
+     #[test]
+     fn ups_005_ewma_tracks_latency() {
+         let h = Health::default();
+diff --git a/crates/telltale-upstream/src/upstream.rs b/crates/telltale-upstream/src/upstream.rs
+index 18a01b9..a7d046f 100644
+--- a/crates/telltale-upstream/src/upstream.rs
++++ b/crates/telltale-upstream/src/upstream.rs
+@@ -20,7 +20,7 @@ use crate::doh::Doh;
+ use crate::doh3::Doh3;
+ use crate::doq::Doq;
+ use crate::endpoint::{Endpoint, Host, Protocol};
+-use crate::health::Health;
++use crate::health::{Health, Outcome};
+ use crate::tls::{TlsOptions, client_config, server_name};
+ 
+ /// The question being forwarded, detached from the client's packet so it can move into
+@@ -731,19 +731,26 @@ impl Upstream {
+     ) -> Result<Vec<u8>, ExchangeError> {
+         let start = Instant::now();
+         let result = self.exchange_inner(q, timeout).await;
+-        let ok = match &result {
+-            Ok(resp) => {
+-                let rc = summarize(resp).map_or(rcode::SERVFAIL, |s| s.rcode);
+-                rc == rcode::NOERROR || rc == rcode::NXDOMAIN
+-            }
+-            Err(_) => false,
++        // REQ: UPS-006, OBS-011 — what went wrong, not only that something did.
++        let outcome = match &result {
++            Ok(resp) => match summarize(resp).map_or(rcode::SERVFAIL, |s| s.rcode) {
++                rcode::NOERROR | rcode::NXDOMAIN => Outcome::Ok,
++                rcode::SERVFAIL => Outcome::ServFail,
++                rcode::REFUSED => Outcome::Refused,
++                _ => Outcome::OtherRcode,
++            },
++            Err(ExchangeError::Timeout) => Outcome::Timeout,
++            Err(ExchangeError::Io(_)) => Outcome::Network,
++            Err(ExchangeError::BadResponse) => Outcome::BadResponse,
++            Err(ExchangeError::Unresolved) => Outcome::Unresolved,
+         };
++        let ok = outcome == Outcome::Ok;
+         let latency = if ok {
+             start.elapsed()
+         } else {
+             start.elapsed().max(timeout)
+         };
+-        self.health.record(ok, latency, Instant::now());
++        self.health.record_outcome(outcome, latency, Instant::now());
+         result
+     }
+ 
+diff --git a/crates/telltale-upstream/tests/upstream.rs b/crates/telltale-upstream/tests/upstream.rs
+index f5a3250..7fea78d 100644
+--- a/crates/telltale-upstream/tests/upstream.rs
++++ b/crates/telltale-upstream/tests/upstream.rs
+@@ -393,6 +393,37 @@ async fn ups_006_chaos_one_upstream_blackholed() {
+     }
+ }
+ 
++/// REQ: UPS-006, OBS-011 — what went wrong is counted by kind, not only as "failure".
++#[tokio::test]
++async fn ups_006_failure_kinds_are_counted() {
++    use telltale_upstream::health::Outcome;
++    let kind = |u: &Upstream, k: Outcome| {
++        let s = u.health.snapshot();
++        Outcome::FAILURES
++            .iter()
++            .zip(s.failures_by_kind)
++            .find(|(x, _)| **x == k)
++            .map_or(0, |(_, n)| n)
++    };
++    let bad = upstream(1, fake(Fake::ServFail).await, 1);
++    let _ = bad
++        .exchange(&question("x.example"), Duration::from_millis(400))
++        .await;
++    let dead = upstream(2, fake(Fake::Blackhole).await, 1);
++    let _ = dead
++        .exchange(&question("x.example"), Duration::from_millis(100))
++        .await;
++    assert_eq!(
++        (kind(&bad, Outcome::ServFail), kind(&bad, Outcome::Timeout)),
++        (1, 0)
++    );
++    assert_eq!(
++        (kind(&dead, Outcome::Timeout), kind(&dead, Outcome::ServFail)),
++        (1, 0)
++    );
++    assert_eq!(dead.health.snapshot().failures, 1);
++}
++
+ /// REQ: DNS-015 (T9.9) — `ecs = "client"`: the query carries the client's /24, and a
+ /// question without a subnet (a private client) carries none.
+ #[tokio::test]
+diff --git a/crates/telltale/src/http.rs b/crates/telltale/src/http.rs
+index fab903f..e6bef67 100644
+--- a/crates/telltale/src/http.rs
++++ b/crates/telltale/src/http.rs
+@@ -24,7 +24,7 @@ use telltale_net::{DohStats, TcpStats, WorkerStats};
+ use telltale_telemetry::Metrics;
+ use telltale_telemetry::prom::{CONTENT_TYPE, PromWriter};
+ use telltale_upstream::Router;
+-use telltale_upstream::health::Breaker;
++use telltale_upstream::health::{Breaker, Outcome};
+ 
+ /// Everything `/metrics` reads.
+ #[derive(Debug)]
+@@ -926,6 +926,21 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
+             s.failures,
+         );
+     }
++    // REQ: UPS-006, OBS-011 — the failures by kind, so a failure rate can be read.
++    w.family(
++        "telltale_upstream_failures_total",
++        "counter",
++        "Failed upstream attempts by kind: timeout, network, bad_response, unresolved, servfail, refused, other_rcode.",
++    );
++    for (name, s) in &snaps {
++        for (kind, n) in Outcome::FAILURES.iter().zip(s.failures_by_kind) {
++            w.sample(
++                "telltale_upstream_failures_total",
++                &[("upstream", name), ("kind", kind.label())],
++                n,
++            );
++        }
++    }
+     w.family(
+         "telltale_upstream_breaker_state",
+         "gauge",
+@@ -1285,6 +1300,7 @@ mod tests {
+             "telltale_query_duration_seconds",
+             "telltale_cache_hits_total",
+             "telltale_upstream_requests_total",
++            "telltale_upstream_failures_total",
+             "telltale_udp_received_total",
+             "telltale_tcp_connections_total",
+         ] {
+diff --git a/docs/running.md b/docs/running.md
+index ca9a240..8fa647a 100644
+--- a/docs/running.md
++++ b/docs/running.md
+@@ -1580,6 +1580,7 @@ Main metrics:
+ | `telltale_responses_total{rcode}`, `telltale_queries_by_qtype_total{qtype}` | answers by RCODE; queries by type |
+ | `telltale_cache_*` | hits, misses, stale answers served, prefetches, entries, bytes, evictions |
+ | `telltale_upstream_requests_total{upstream,outcome}` | attempts per upstream, `outcome` = `success` or `failure` (timeouts, errors, SERVFAIL/REFUSED) |
++| `telltale_upstream_failures_total{upstream,kind}` | the failures by kind: `timeout`, `network` (connection, TLS, socket), `bad_response` (mismatched or malformed), `unresolved` (the upstream's hostname), `servfail`, `refused`, `other_rcode` |
+ | `telltale_upstream_duration_seconds{upstream,protocol}` | exchange-time histogram per upstream (p50/p95/p99 in Grafana) |
+ | `telltale_upstream_breaker_state`, `telltale_upstream_latency_ewma_seconds` | circuit breaker (0 closed, 1 half-open, 2 open); smoothed latency |
+ | `telltale_blocked_total{group,list}` | blocks by the client's group and the deciding list |

@@ -1,0 +1,36 @@
+diff --git a/crates/telltale/src/dnstap.rs b/crates/telltale/src/dnstap.rs
+index ab2a2ff..c7f04bd 100644
+--- a/crates/telltale/src/dnstap.rs
++++ b/crates/telltale/src/dnstap.rs
+@@ -191,16 +191,28 @@ enum Target {
+ trait Stream: Read + Write + Send {}
+ impl<T: Read + Write + Send> Stream for T {}
+ 
++/// Longest wait for the reader: connecting, its handshake reply, and each write. Without a
++/// write timeout a reader that stops reading (its socket buffer full) parks this thread for
++/// good, and the queue's drops are the only sign.
++const IO_TIMEOUT: Duration = Duration::from_secs(5);
++
+ fn connect(t: &Target) -> std::io::Result<Box<dyn Stream>> {
+     let mut s: Box<dyn Stream> = match t {
+         Target::Unix(p) => {
+             let s = std::os::unix::net::UnixStream::connect(p)?;
+-            s.set_read_timeout(Some(Duration::from_secs(5)))?;
++            s.set_read_timeout(Some(IO_TIMEOUT))?;
++            s.set_write_timeout(Some(IO_TIMEOUT))?;
+             Box::new(s)
+         }
+         Target::Tcp(a) => {
+-            let s = TcpStream::connect(a)?;
+-            s.set_read_timeout(Some(Duration::from_secs(5)))?;
++            use std::net::ToSocketAddrs as _;
++            let addr = a
++                .to_socket_addrs()?
++                .next()
++                .ok_or_else(|| std::io::Error::other(format!("{a}: no address")))?;
++            let s = TcpStream::connect_timeout(&addr, IO_TIMEOUT)?;
++            s.set_read_timeout(Some(IO_TIMEOUT))?;
++            s.set_write_timeout(Some(IO_TIMEOUT))?;
+             s.set_nodelay(true)?;
+             Box::new(s)
+         }

@@ -1,0 +1,85 @@
+diff --git a/crates/telltale-cache/src/entry.rs b/crates/telltale-cache/src/entry.rs
+index ae209cb..e0e4ea6 100644
+--- a/crates/telltale-cache/src/entry.rs
++++ b/crates/telltale-cache/src/entry.rs
+@@ -248,7 +248,7 @@ fn finish(
+         if r.is_opt() {
+             seen_opt = true;
+             end = r.name_off;
+-            arcount -= 1;
++            arcount = arcount.saturating_sub(1);
+             continue;
+         }
+         offsets.push(u16::try_from(r.ttl_off).map_err(|_| Uncacheable::Malformed)?);
+diff --git a/crates/telltale-cache/tests/cache.rs b/crates/telltale-cache/tests/cache.rs
+index 40d28f1..caa788c 100644
+--- a/crates/telltale-cache/tests/cache.rs
++++ b/crates/telltale-cache/tests/cache.rs
+@@ -692,3 +692,25 @@ fn dns_015_ecs_scoped_keys() {
+         Lookup::Miss
+     ));
+ }
++
++/// An upstream answer whose only record is an OPT counted as an answer is unusable: neither
++/// rendered (it used to come out with ANCOUNT 1, no records, and ARCOUNT underflowed) nor
++/// cached.
++#[test]
++fn dns_006_opt_counted_as_an_answer_is_unusable() {
++    let req = query_bytes("opt.example", rtype::A, None, 7);
++    let q = parse_query(&req).unwrap();
++    let mut resp = [0u8; 512];
++    let b = ResponseBuilder::new(&q, &mut resp, rcode::NOERROR).unwrap();
++    let len = b.finish(Some(EdnsOut::new(1232))).unwrap();
++    resp[7] = 1; // ANCOUNT
++    resp[11] = 0; // ARCOUNT
++    let client = Client::from_query(&q, None);
++    let mut out = [0u8; 512];
++    assert!(Cache::render(&q, &resp[..len], &client, &mut out).is_none());
++    let cache = Cache::new(CachePolicy::default());
++    assert_eq!(
++        cache.insert(&key(&q), &q, &resp[..len], Instant::now()),
++        Err(Uncacheable::Malformed)
++    );
++}
+diff --git a/crates/telltale-proto/src/record.rs b/crates/telltale-proto/src/record.rs
+index 8525eea..e6f43c8 100644
+--- a/crates/telltale-proto/src/record.rs
++++ b/crates/telltale-proto/src/record.rs
+@@ -153,7 +153,9 @@ pub fn summarize(msg: &[u8]) -> Result<ResponseSummary, ParseError> {
+     for r in records(msg)? {
+         let r = r?;
+         if r.is_opt() {
+-            if s.opt_off.is_some() {
++            // RFC 6891 §6.1.1: one OPT, in the additional section. Anywhere else it would be
++            // stripped as if it were additional data, leaving ANCOUNT or NSCOUNT wrong.
++            if s.opt_off.is_some() || r.section != Section::Additional {
+                 return Err(ParseError::BadOpt);
+             }
+             let e = Edns::from_parts(r.rclass, r.ttl, r.rdata(msg))?;
+diff --git a/crates/telltale-proto/tests/proto.rs b/crates/telltale-proto/tests/proto.rs
+index 403f9f8..4d43e0c 100644
+--- a/crates/telltale-proto/tests/proto.rs
++++ b/crates/telltale-proto/tests/proto.rs
+@@ -358,3 +358,22 @@ fn flt_007_cname_targets_readable_from_hickory_response() {
+     telltale_proto::read_name(&bytes, cname.rdata_off, &mut target).unwrap();
+     assert_eq!(target.display().to_string(), "tracker.ads.example.net");
+ }
++
++/// RFC 6891 §6.1.1 — an OPT anywhere but the additional section is a malformed response:
++/// the cache strips the OPT as additional data, so counting it elsewhere would leave the
++/// stored answer claiming records it doesn't have.
++#[test]
++fn dns_005_opt_outside_additional_is_malformed() {
++    let msg = query("example.com", rtype::A, false);
++    let q = parse_query(&msg).unwrap();
++    let mut out = [0u8; 512];
++    let b = ResponseBuilder::new(&q, &mut out, rcode::NOERROR).unwrap();
++    let len = b.finish(Some(EdnsOut::new(1232))).unwrap();
++    assert!(summarize(&out[..len]).is_ok());
++    out[7] = 1; // ANCOUNT = 1: the only record (the OPT) counted as an answer
++    out[11] = 0; // ARCOUNT = 0
++    assert_eq!(
++        summarize(&out[..len]),
++        Err(telltale_proto::ParseError::BadOpt)
++    );
++}

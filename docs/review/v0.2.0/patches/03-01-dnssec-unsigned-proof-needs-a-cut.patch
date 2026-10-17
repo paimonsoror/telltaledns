@@ -1,0 +1,291 @@
+diff --git a/crates/telltale-upstream/src/dnssec.rs b/crates/telltale-upstream/src/dnssec.rs
+index 7253705..8c2a94c 100644
+--- a/crates/telltale-upstream/src/dnssec.rs
++++ b/crates/telltale-upstream/src/dnssec.rs
+@@ -28,11 +28,12 @@ use std::time::Duration;
+ use futures_util::StreamExt as _;
+ use futures_util::stream::{self, Stream};
+ use hickory_net::dnssec::DnssecDnsHandle;
++use hickory_net::proto::dnssec::rdata::DNSSECRData;
+ use hickory_net::proto::dnssec::{Proof, TrustAnchors};
+ use hickory_net::proto::op::{
+     DnsRequest, DnsRequestOptions, DnsResponse, Edns, Message, OpCode, Query, ResponseCode,
+ };
+-use hickory_net::proto::rr::{Name, RecordType};
++use hickory_net::proto::rr::{Name, RData, Record, RecordType, RecordTypeSet};
+ use hickory_net::runtime::TokioRuntimeProvider;
+ use hickory_net::{DnsHandle, NetError};
+ use parking_lot::Mutex;
+@@ -615,13 +616,65 @@ async fn ds_signed(
+         .answers
+         .iter()
+         .any(|a| !matches!(a.record_type(), RecordType::DS | RecordType::RRSIG));
++    // REQ: DNS-011 (ADR-098) — a secure denial of DS proves an unsigned delegation only when
++    // the record that denies it also shows a zone cut: NS present, SOA and DS absent (RFC 4035
++    // §5.2, RFC 5155 §8.9; what hickory's own insecure-delegation check asks for). Every name
++    // inside a signed zone has a secure DS denial too, and whether `apex` has an SOA came from
++    // an unvalidated answer, so the denial alone let a spoofed answer pass as insecure.
++    let cut = r
++        .authorities
++        .iter()
++        .any(|a| a.proof == Proof::Secure && denies_ds_at_cut(a, apex));
+     match (has_ds, other, verdict(&r)) {
+         (true, _, Verdict::Secure) => Some(true),
+-        (false, false, Verdict::Secure | Verdict::Insecure) => Some(false),
++        (false, false, Verdict::Secure) if cut => Some(false),
++        (false, false, Verdict::Insecure) => Some(false),
+         _ => None,
+     }
+ }
+ 
++/// REQ: DNS-011 (ADR-098) — `rec` is an NSEC or NSEC3 that denies a DS at `apex` and shows it
++/// as a zone cut (NS, no SOA, no DS). An NSEC3 is matched by hashing `apex` the way its owner
++/// was hashed.
++fn denies_ds_at_cut(rec: &Record, apex: &Name) -> bool {
++    let cut = |types: &RecordTypeSet| {
++        types.contains(RecordType::NS)
++            && !types.contains(RecordType::SOA)
++            && !types.contains(RecordType::DS)
++    };
++    match &rec.data {
++        RData::DNSSEC(DNSSECRData::NSEC(n)) => rec.name == *apex && cut(n.type_set()),
++        RData::DNSSEC(DNSSECRData::NSEC3(n)) => {
++            cut(n.type_set())
++                && n
++                    .hash_algorithm()
++                    .hash(n.salt(), apex, n.iterations())
++                    .is_ok_and(|h| {
++                        rec.name.iter().next().is_some_and(|label| {
++                            label.eq_ignore_ascii_case(base32hex(h.as_ref()).as_bytes())
++                        })
++                    })
++        }
++        _ => false,
++    }
++}
++
++/// Base32 with the extended hex alphabet, no padding (RFC 4648 §7): NSEC3 owner labels.
++fn base32hex(data: &[u8]) -> String {
++    const T: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
++    let mut out = String::with_capacity(data.len().div_ceil(5) * 8);
++    for chunk in data.chunks(5) {
++        let mut block = [0u8; 8];
++        block[3..3 + chunk.len()].copy_from_slice(chunk);
++        let v = u64::from_be_bytes(block);
++        for i in 0..(chunk.len() * 8).div_ceil(5) {
++            let idx = usize::try_from((v >> (35 - 5 * i)) & 31).unwrap_or(0);
++            out.push(char::from(T[idx]));
++        }
++    }
++    out
++}
++
+ /// REQ: DNS-011 (ADR-098) — what a validation error says about the answer. Hitting the
+ /// validator's depth limit (hickory's default 26; raising it overflowed a runtime thread's
+ /// stack in testing) means the proof couldn't be finished, not that a signature failed:
+@@ -741,6 +794,78 @@ mod depth_tests {
+         assert_eq!(zone_candidates("a.b.c.d"), vec!["c.d", "b.c.d", "a.b.c.d"]);
+     }
+ 
++    /// REQ: DNS-011 (ADR-098) — base32hex (RFC 4648 §10 vectors, lowercase, unpadded).
++    #[test]
++    fn dns_011_base32hex() {
++        assert_eq!(base32hex(b""), "");
++        assert_eq!(base32hex(b"f"), "co");
++        assert_eq!(base32hex(b"fo"), "cpng");
++        assert_eq!(base32hex(b"foo"), "cpnmu");
++        assert_eq!(base32hex(b"foob"), "cpnmuog");
++        assert_eq!(base32hex(b"fooba"), "cpnmuoj1");
++        assert_eq!(base32hex(b"foobar"), "cpnmuoj1e8");
++    }
++
++    /// REQ: DNS-011 (ADR-098) — only a delegation's NSEC or NSEC3 (NS without SOA or DS)
++    /// proves a zone unsigned: not the NSEC of an ordinary name inside a signed zone, nor
++    /// another name's.
++    #[test]
++    #[allow(clippy::unwrap_used)]
++    fn dns_011_ds_denial_must_show_a_cut() {
++        use hickory_net::proto::dnssec::Nsec3HashAlgorithm;
++        use hickory_net::proto::dnssec::rdata::{NSEC, NSEC3};
++        use RecordType::{A, DS, NS, NSEC as T_NSEC, NSEC3 as T_NSEC3, RRSIG, SOA};
++        let apex = Name::from_ascii("child.example.").unwrap();
++        let nsec = |owner: &str, types: &[RecordType]| {
++            let next = Name::from_ascii("z.example.").unwrap();
++            let data = RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(next, types.iter().copied())));
++            let mut r = Record::from_rdata(Name::from_ascii(owner).unwrap(), 300, data);
++            r.proof = Proof::Secure;
++            r
++        };
++        assert!(denies_ds_at_cut(&nsec("child.example.", &[NS, RRSIG, T_NSEC]), &apex));
++        assert!(
++            !denies_ds_at_cut(&nsec("child.example.", &[A, RRSIG, T_NSEC]), &apex),
++            "a name inside the zone, not a cut"
++        );
++        assert!(
++            !denies_ds_at_cut(&nsec("child.example.", &[NS, SOA, T_NSEC]), &apex),
++            "the child's own NSEC"
++        );
++        assert!(
++            !denies_ds_at_cut(&nsec("child.example.", &[NS, DS, T_NSEC]), &apex),
++            "a signed delegation"
++        );
++        assert!(
++            !denies_ds_at_cut(&nsec("other.example.", &[NS, T_NSEC]), &apex),
++            "another owner"
++        );
++        // NSEC3: the owner is the hash of the apex.
++        let salt = b"\xab\xcd";
++        let hash = Nsec3HashAlgorithm::SHA1.hash(salt, &apex, 5).unwrap();
++        let owner = Name::from_ascii(format!("{}.example.", base32hex(hash.as_ref()))).unwrap();
++        let nsec3 = |owner: &Name, types: &[RecordType]| {
++            let n = NSEC3::new(
++                Nsec3HashAlgorithm::SHA1,
++                false,
++                5,
++                salt.to_vec(),
++                vec![0; 20],
++                types.iter().copied(),
++            );
++            let mut r = Record::from_rdata(owner.clone(), 300, RData::DNSSEC(DNSSECRData::NSEC3(n)));
++            r.proof = Proof::Secure;
++            r
++        };
++        assert!(denies_ds_at_cut(&nsec3(&owner, &[NS, RRSIG, T_NSEC3]), &apex));
++        assert!(!denies_ds_at_cut(&nsec3(&owner, &[A, RRSIG, T_NSEC3]), &apex));
++        let wrong = Name::from_ascii("0123456789abcdefghijklmnopqrstuv.example.").unwrap();
++        assert!(
++            !denies_ds_at_cut(&nsec3(&wrong, &[NS, T_NSEC3]), &apex),
++            "another name's hash"
++        );
++    }
++
+     /// REQ: DNS-011 (ADR-098) — the depth limit is indeterminate; other errors stay bogus.
+     #[test]
+     fn dns_011_depth_limit_is_indeterminate() {
+diff --git a/crates/telltale-upstream/tests/dnssec_offline.rs b/crates/telltale-upstream/tests/dnssec_offline.rs
+index 164056d..068bb99 100644
+--- a/crates/telltale-upstream/tests/dnssec_offline.rs
++++ b/crates/telltale-upstream/tests/dnssec_offline.rs
+@@ -9,7 +9,7 @@
+ 
+ use std::collections::BTreeMap;
+ use std::sync::Arc;
+-use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::time::Duration;
+ 
+ use hickory_net::proto::dnssec::crypto::Ed25519SigningKey;
+@@ -36,6 +36,9 @@ struct Zone {
+     plain: BTreeMap<(Name, RecordType), Vec<Record>>,
+     /// The DNSKEY's RDATA, for the anchors file.
+     key: Vec<u8>,
++    /// ADR-098 — spoof `b.a.`: answer its A and SOA unsigned (an attacker's forgery for a
++    /// name inside the signed root, with a made-up SOA so that it looks like a zone apex).
++    forge: AtomicBool,
+ }
+ 
+ fn b64(data: &[u8]) -> String {
+@@ -100,6 +103,15 @@ fn zone() -> Zone {
+         (n("a."), vec![RData::A(A::new(192, 0, 2, 1))]),
+         (
+             n("a."),
++            vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
++                n("b.a."),
++                [RecordType::A, RecordType::RRSIG, RecordType::NSEC],
++            )))],
++        ),
++        // An ordinary name inside the root (not a zone cut): its NSEC has no NS.
++        (n("b.a."), vec![RData::A(A::new(192, 0, 2, 7))]),
++        (
++            n("b.a."),
+             vec![RData::DNSSEC(DNSSECRData::NSEC(NSEC::new(
+                 n("bad."),
+                 [RecordType::A, RecordType::RRSIG, RecordType::NSEC],
+@@ -168,6 +180,7 @@ fn zone() -> Zone {
+         sets,
+         plain,
+         key: key_rdata,
++        forge: AtomicBool::new(false),
+     }
+ }
+ 
+@@ -227,7 +240,17 @@ async fn serve(z: Arc<Zone>, asked: Arc<AtomicUsize>) -> std::net::SocketAddr {
+                 m.add_authorities(z.sets[&(n("."), RecordType::SOA)].clone());
+                 m.add_authorities(z.sets[&(owner.clone(), RecordType::NSEC)].clone());
+             };
+-            if in_plain(&qn, qt) {
++            if z.forge.load(Ordering::Relaxed)
++                && qn == n("b.a.")
++                && matches!(qt, RecordType::A | RecordType::SOA)
++            {
++                let data = if qt == RecordType::A {
++                    RData::A(A::new(192, 0, 2, 66))
++                } else {
++                    RData::SOA(SOA::new(n("ns.b.a."), n("x.b.a."), 1, 1800, 900, 604_800, 300))
++                };
++                m.add_answers(vec![Record::from_rdata(qn.clone(), 300, data)]);
++            } else if in_plain(&qn, qt) {
+                 plain_answer(&z, &mut m, &qn, qt);
+             } else if let Some(rs) = z.sets.get(&(qn.clone(), qt)) {
+                 m.add_answers(rs.clone());
+@@ -285,7 +308,19 @@ async fn setup(
+     Arc<Stats>,
+     tempfile::TempDir,
+ ) {
+-    let z = Arc::new(zone());
++    setup_zone(anchor, Arc::new(zone())).await
++}
++
++async fn setup_zone(
++    anchor: bool,
++    z: Arc<Zone>,
++) -> (
++    Validator,
++    Arc<Group>,
++    Arc<AtomicUsize>,
++    Arc<Stats>,
++    tempfile::TempDir,
++) {
+     let asked = Arc::new(AtomicUsize::new(0));
+     let addr = serve(Arc::clone(&z), Arc::clone(&asked)).await;
+     let dir = tempfile::tempdir().unwrap();
+@@ -467,3 +502,39 @@ async fn dns_011_offline_unsigned_zone_through_cname_is_insecure() {
+         "only the forged signature"
+     );
+ }
++
++/// REQ: DNS-011 (ADR-098) — a spoofed, unsigned answer for a name inside the signed root
++/// stays bogus even when the spoofer also forges an SOA for it. The root's secure denial of a
++/// DS at `b.a.` proves there is no DS there, not that `b.a.` is a zone cut (its NSEC has no
++/// NS), so the unsigned-zone proof must not accept it, and must not remember `b.a.` as an
++/// unsigned zone for the questions that follow.
++#[tokio::test]
++async fn dns_011_offline_forged_apex_inside_signed_zone_stays_bogus() {
++    let z = Arc::new(zone());
++    let budget = Duration::from_secs(5);
++    let (v, g, _, _, _dir) = setup_zone(true, Arc::clone(&z)).await;
++    let r = v
++        .resolve(&g, question("b.a", rtype::A), budget, true, false)
++        .await
++        .unwrap();
++    assert_eq!(r.verdict, Verdict::Secure, "b.a. A, signed");
++
++    z.forge.store(true, Ordering::Relaxed);
++    let (v, g, _, stats, _dir2) = setup_zone(true, Arc::clone(&z)).await;
++    for round in 1..=2 {
++        let r = v
++            .resolve(&g, question("b.a", rtype::A), budget, true, false)
++            .await
++            .unwrap();
++        assert_eq!(
++            r.verdict,
++            Verdict::Bogus,
++            "an unsigned answer inside the signed root (question {round})"
++        );
++    }
++    assert_eq!(
++        stats.insecure.load(Ordering::Relaxed),
++        0,
++        "never judged insecure"
++    );
++}

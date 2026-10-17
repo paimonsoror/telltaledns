@@ -1,0 +1,129 @@
+diff --git a/crates/telltale-api/src/auth/routes.rs b/crates/telltale-api/src/auth/routes.rs
+index 9cae629..7f578db 100644
+--- a/crates/telltale-api/src/auth/routes.rs
++++ b/crates/telltale-api/src/auth/routes.rs
+@@ -36,6 +36,12 @@ const ISSUER: &str = "TelltaleDNS";
+ 
+ type AuthState = Arc<Auth>;
+ 
++/// REQ: AGT-005 — the client address of the request an in-process call is made for. The
++/// MCP server puts it on the REST requests it builds (they have no peer address of their
++/// own), so lockouts and the audit log see the agent's address, not `0.0.0.0`.
++#[derive(Debug, Clone, Copy)]
++pub struct OnBehalfOf(pub IpAddr);
++
+ fn now() -> u64 {
+     std::time::SystemTime::now()
+         .duration_since(std::time::UNIX_EPOCH)
+@@ -61,6 +67,9 @@ pub(crate) fn body<T>(b: Result<Json<T>, JsonRejection>) -> Result<T, Problem> {
+ /// proxy; entries further left are client-supplied and can be forged. Used for lockouts,
+ /// break-glass networks, and audit entries.
+ pub(crate) fn remote(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> IpAddr {
++    if let Some(o) = req_ext.get::<OnBehalfOf>() {
++        return o.0;
++    }
+     let peer = req_ext
+         .get::<ConnectInfo<SocketAddr>>()
+         .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
+diff --git a/crates/telltale-api/src/lib.rs b/crates/telltale-api/src/lib.rs
+index 5c0cfc0..da23aa3 100644
+--- a/crates/telltale-api/src/lib.rs
++++ b/crates/telltale-api/src/lib.rs
+@@ -422,6 +422,7 @@ pub fn router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
+         api: api.clone(),
+         sessions: Arc::new(mcp::Sessions::default()),
+         auth: Arc::clone(&auth),
++        on_behalf_of: None,
+     };
+     // REQ: AGT-008 (T7.4) — RFC 9728 protected-resource metadata (public), for OAuth sign-in
+     // from MCP clients.
+diff --git a/crates/telltale-api/src/mcp.rs b/crates/telltale-api/src/mcp.rs
+index 17558e1..c403099 100644
+--- a/crates/telltale-api/src/mcp.rs
++++ b/crates/telltale-api/src/mcp.rs
+@@ -1208,6 +1208,9 @@ pub struct Mcp {
+     pub sessions: Arc<Sessions>,
+     /// Plans and the approval policy (AGT-007).
+     pub auth: Arc<crate::auth::Auth>,
++    /// REQ: AGT-005 — the client address of the request being served (`post` sets it), put
++    /// on every in-process REST call so lockouts and the audit log see the agent's address.
++    pub on_behalf_of: Option<std::net::IpAddr>,
+ }
+ 
+ /// Who called: their plans key and how the audit log names them.
+@@ -1343,6 +1346,10 @@ impl Mcp {
+                 req = req.header(*k, v);
+             }
+         }
++        // REQ: AGT-005 — the in-process request has no peer; it acts for the agent's.
++        if let Some(ip) = self.on_behalf_of {
++            req = req.extension(crate::auth::routes::OnBehalfOf(ip));
++        }
+         let req = match body {
+             Some(b) => req
+                 .header("content-type", "application/json")
+@@ -1852,17 +1859,16 @@ pub async fn post(
+     ext: axum::http::Extensions,
+     body: axum::body::Bytes,
+ ) -> Response {
++    // REQ: AGT-005 — every REST call made for this request carries its client address.
++    let ip = crate::auth::routes::remote(&mcp.auth, &ext, &headers);
++    let mcp = Mcp {
++        on_behalf_of: Some(ip),
++        ..mcp
++    };
+     // The caller, for plans (AGT-007): the session or token, and its audit name.
+     let caller = crate::auth::routes::principal(&ext).ok().map(|p| Caller {
+         owner: crate::plans::owner_key(&p),
+-        name: mcp
+-            .auth
+-            .actor(
+-                &p,
+-                crate::auth::routes::remote(&mcp.auth, &ext, &headers),
+-                None,
+-            )
+-            .name,
++        name: mcp.auth.actor(&p, ip, None).name,
+     });
+     let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
+         let e = rpc_error(&Value::Null, -32700, "parse error: the body isn't JSON");
+diff --git a/crates/telltale-api/src/tests.rs b/crates/telltale-api/src/tests.rs
+index bcd2b89..70127bf 100644
+--- a/crates/telltale-api/src/tests.rs
++++ b/crates/telltale-api/src/tests.rs
+@@ -1402,3 +1402,35 @@ async fn api_003_trusted_proxy_forwards_the_client_address() {
+         .unwrap();
+     assert_eq!(login[0].remote.as_deref(), Some("192.168.1.20"));
+ }
++
++// REQ: AGT-005 — a change made through MCP is audited with the agent's address: the REST
++// call behind the tool runs in-process and has no peer address of its own.
++#[tokio::test]
++async fn agt_005_mcp_changes_keep_the_client_address() {
++    let (app, _) = app();
++    let mut req = Request::post("/mcp")
++        .header("authorization", format!("Bearer {}", app.bearer))
++        .header("content-type", "application/json")
++        .body(Body::from(
++            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
++                "params": {"name": "flush_cache", "arguments": {"reason": "stale answers"}}})
++            .to_string(),
++        ))
++        .unwrap();
++    req.extensions_mut()
++        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
++            [192, 168, 1, 77],
++            40_000,
++        ))));
++    let (s, _, v) = send(&app, req).await;
++    assert_eq!(s, StatusCode::OK, "{v}");
++    assert_eq!(v["result"]["isError"], false, "{v}");
++    let flush = app
++        .auth
++        .state()
++        .audit_page(None, 10, Some("cache.flush"), None)
++        .unwrap();
++    assert_eq!(flush.len(), 1, "{flush:?}");
++    assert_eq!(flush[0].remote.as_deref(), Some("192.168.1.77"));
++    assert_eq!(flush[0].reason.as_deref(), Some("stale answers"));
++}

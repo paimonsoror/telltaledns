@@ -1,0 +1,121 @@
+diff --git a/crates/telltale-cache/src/entry.rs b/crates/telltale-cache/src/entry.rs
+index ae209cb..4427005 100644
+--- a/crates/telltale-cache/src/entry.rs
++++ b/crates/telltale-cache/src/entry.rs
+@@ -302,7 +302,8 @@ impl<'a> Client<'a> {
+ }
+ 
+ /// Writes `e` for `client` into `out`. `ttl_override` sets every TTL (serve-stale); otherwise
+-/// TTLs count down by the entry's age. Returns `None` if `out` is too small. Allocation-free.
++/// TTLs count down by the entry's age. An answer that doesn't fit `out` is written truncated
++/// (TC=1, the question only). Returns `None` only if even that doesn't fit. Allocation-free.
+ pub(crate) fn write(
+     e: &Entry,
+     client: &Client<'_>,
+@@ -311,24 +312,35 @@ pub(crate) fn write(
+     out: &mut [u8],
+ ) -> Option<usize> {
+     let wire = e.wire();
+-    let len = wire.len();
+     let qend = usize::from(e.question_end);
+     if client.question.len() != qend - HEADER_LEN {
+         return None;
+     }
+-    out.get_mut(..len)?.copy_from_slice(wire);
++    // REQ: DNS-005 — too big for the caller's buffer (a UDP worker's): served truncated from
++    // the cache, so the client retries over TCP where it fits, instead of being treated as
++    // a miss and resolved upstream again on every UDP query.
++    let truncated = out.len() < wire.len();
++    let len = if truncated { qend } else { wire.len() };
++    out.get_mut(..len)?.copy_from_slice(&wire[..len]);
+     header::set_id(out, client.id);
+     let mut flags = header::flags(out)
+         .with(FlagBit::Rd, client.rd)
+-        .with(FlagBit::Aa, false);
++        .with(FlagBit::Aa, false)
++        .with(FlagBit::Tc, truncated);
+     if !client.ad_ok {
+         flags = flags.with(FlagBit::Ad, false);
+     }
+     header::set_flags(out, flags);
+     out[HEADER_LEN..qend].copy_from_slice(client.question);
+-    match ttl_override {
+-        Some(t) => set_ttls_packed(&mut out[..len], e.packed_offsets(), t),
+-        None => patch_ttls_packed(&mut out[..len], e.packed_offsets(), e.elapsed_secs(now), 0),
++    if truncated {
++        out[6..HEADER_LEN].fill(0); // no records follow
++    } else {
++        match ttl_override {
++            Some(t) => set_ttls_packed(&mut out[..len], e.packed_offsets(), t),
++            None => {
++                patch_ttls_packed(&mut out[..len], e.packed_offsets(), e.elapsed_secs(now), 0);
++            }
++        }
+     }
+     match &client.edns {
+         Some(edns) => append_opt(out, len, edns).ok(),
+diff --git a/crates/telltale-cache/tests/cache.rs b/crates/telltale-cache/tests/cache.rs
+index 40d28f1..bfa8153 100644
+--- a/crates/telltale-cache/tests/cache.rs
++++ b/crates/telltale-cache/tests/cache.rs
+@@ -692,3 +692,45 @@ fn dns_015_ecs_scoped_keys() {
+         Lookup::Miss
+     ));
+ }
++
++/// REQ: DNS-005, DNS-006 — a cached answer larger than the caller's buffer (a UDP worker's
++/// 4 KiB) is served truncated from the cache: TC=1, the client's question and OPT, no
++/// records. It is a hit, not a miss that resolves the name upstream again.
++#[test]
++fn dns_005_oversized_cached_answer_is_truncated_not_missed() {
++    let cache = Cache::new(CachePolicy::default());
++    let now = Instant::now();
++    let req = query_bytes("big.example", rtype::TXT, Some(EdnsOut::new(1232)), 9);
++    let q = parse_query(&req).unwrap();
++    let mut resp = vec![0u8; 8192];
++    let mut b = ResponseBuilder::new(&q, &mut resp, rcode::NOERROR).unwrap();
++    let mut rdata = vec![255u8];
++    rdata.extend_from_slice(&[b'x'; 255]);
++    for _ in 0..20 {
++        b.answer_rdata(None, rtype::TXT, 300, &rdata).unwrap();
++    }
++    let len = b.finish(None).unwrap();
++    assert!(len > 4096);
++    cache.insert(&key(&q), &q, &resp[..len], now).unwrap();
++    let client = Client::from_query(&q, Some(EdnsOut::new(1232)));
++
++    let mut small = [0u8; 4096];
++    let got = cache.get(&key(&q), &q.qname, &client, now, &mut small);
++    let Lookup::Hit { len: n, .. } = got else {
++        unreachable!("a cached answer that doesn't fit must still be a hit: {got:?}");
++    };
++    let s = summarize(&small[..n]).unwrap();
++    assert!(s.header.flags.tc(), "truncated");
++    assert_eq!((s.header.ancount, s.header.arcount), (0, 1), "question and OPT only");
++    assert_eq!(&small[12..q.question_end], q.question_bytes());
++
++    let mut big = [0u8; 8192];
++    let got = cache.get(&key(&q), &q.qname, &client, now, &mut big);
++    let Lookup::Hit { len: n, .. } = got else {
++        unreachable!("{got:?}");
++    };
++    let s = summarize(&big[..n]).unwrap();
++    assert!(!s.header.flags.tc());
++    assert_eq!(s.header.ancount, 20);
++    assert_eq!(cache.stats().hits, 2);
++}
+diff --git a/crates/telltale/src/pipeline.rs b/crates/telltale/src/pipeline.rs
+index 546b2a8..12952d3 100644
+--- a/crates/telltale/src/pipeline.rs
++++ b/crates/telltale/src/pipeline.rs
+@@ -2151,7 +2151,9 @@ enum Internal {
+ /// A NOERROR answer with no AAAA record (CNAMEs only, or none) outside the exclusion set
+ /// (T9.10): DNS64 applies.
+ fn needs_dns64(resp: &[u8], exclude: &[Cidr]) -> bool {
+-    if response_rcode(resp) != rcode::NOERROR {
++    // A truncated answer (too big for the buffer) has no records to judge; the client
++    // retries over TCP.
++    if response_rcode(resp) != rcode::NOERROR || telltale_proto::header::flags(resp).tc() {
+         return false;
+     }
+     records(resp).is_ok_and(|mut it| {

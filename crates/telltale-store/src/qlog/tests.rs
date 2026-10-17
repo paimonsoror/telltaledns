@@ -531,3 +531,35 @@ fn obs_003_parallel_search_matches_sequential() {
         }
     }
 }
+
+// REQ: NFR-007 — the store reports on itself: the time its block writes take (with their count)
+// and how many segments it holds, matching what's on disk.
+#[test]
+fn nfr_007_store_write_latency_and_segment_count() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut b = Builder::spawn(settings(tmp.path(), 0)).unwrap();
+    for h in 0..3u64 {
+        for i in 0..50u64 {
+            b.push(
+                &ev((BASE_HOUR + h) * HOUR_US + i, 1, Status::Forwarded, 100),
+                &wire("a.example"),
+            );
+        }
+    }
+    let stats = b.stats();
+    drop(b);
+    let on_disk = super::list_segments(tmp.path()).unwrap().len() as u64;
+    assert_eq!(on_disk, 3, "one part per hour");
+    assert_eq!(stats.segments.load(Relaxed), on_disk);
+    assert!(stats.blocks_written.load(Relaxed) >= 3);
+    assert!(
+        stats.block_write_micros.load(Relaxed) > 0,
+        "block writes are timed"
+    );
+    // A writer starting on that directory counts what's already there.
+    let b = Builder::spawn(settings(tmp.path(), 0)).unwrap();
+    let again = b.stats();
+    drop(b);
+    assert_eq!(again.segments.load(Relaxed), on_disk);
+}

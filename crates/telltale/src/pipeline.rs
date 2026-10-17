@@ -4125,6 +4125,137 @@ groups = ["kids"]
         assert_eq!(forwarded[0].upstream, id, "the upstream that answered");
     }
 
+    /// A stub upstream on loopback that answers every question NOERROR (no records) and counts
+    /// what it was asked.
+    async fn counting_upstream() -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((len, from)) = sock.recv_from(&mut buf).await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let Ok(question) = parse_query(&buf[..len]) else {
+                    continue;
+                };
+                let mut out = [0u8; 512];
+                let reply = ResponseBuilder::new(&question, &mut out, rcode::NOERROR).unwrap();
+                let len = reply.finish(None).unwrap();
+                let _ = sock.send_to(&out[..len], from).await;
+            }
+        });
+        (addr, count)
+    }
+
+    /// REQ: DNS-013 — when no upstream answers, the client gets SERVFAIL with EDE 22 (No
+    /// Reachable Authority) and the reason, not a silent timeout.
+    #[tokio::test]
+    async fn dns_013_no_upstream_answer_is_servfail_with_ede_22() {
+        // A socket that reads questions and never answers.
+        let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = s.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 512];
+            while s.recv_from(&mut b).await.is_ok() {}
+        });
+        let cfg = format!(
+            "[[upstream]]\nname = \"mute\"\nurl = \"udp://{addr}\"\ntimeout_ms = 150\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"mute\"]\n"
+        );
+        let p = pipeline_with(&cfg, "");
+        let meta = RequestMeta {
+            peer: "10.0.0.9:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        let Response::Deferred(answer) = Handler(Arc::clone(&p)).handle(
+            &query("nobody.example", rtype::A, true),
+            &meta,
+            &mut out,
+        ) else {
+            panic!("a miss goes upstream");
+        };
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(10), answer)
+            .await
+            .expect("answered within the upstream timeouts")
+            .unwrap();
+        assert_eq!(summarize(&resp).unwrap().rcode, rcode::SERVFAIL);
+        // EDE option code 15, info-code 22, then the text.
+        let ede22 = [0u8, 22];
+        assert!(resp.windows(2).any(|w| w == ede22), "EDE 22");
+        let text = b"no upstream answered";
+        assert!(resp.windows(text.len()).any(|w| w == text), "the reason");
+    }
+
+    /// REQ: DNS-017 — conditional forwarding of a reverse zone (Pi-hole `rev-server`): reverse
+    /// lookups for the LAN's range go to the route's upstream (the router), even though
+    /// private-range PTRs are otherwise answered NXDOMAIN locally; another private range with
+    /// no route still is, and nothing else reaches the router.
+    #[tokio::test]
+    async fn dns_017_reverse_zone_goes_to_its_route() {
+        use std::sync::atomic::Ordering;
+        let (router, at_router) = counting_upstream().await;
+        let (public, at_public) = counting_upstream().await;
+        let cfg = format!(
+            "[[upstream]]\nname = \"router\"\nurl = \"udp://{router}\"\n\
+             [[upstream]]\nname = \"public\"\nurl = \"udp://{public}\"\n\
+             [[upstream_group]]\nname = \"default\"\nmembers = [\"public\"]\n\
+             [[upstream_group]]\nname = \"lan\"\nmembers = [\"router\"]\n\
+             [[route]]\nmatch_suffix = [\"168.192.in-addr.arpa\"]\nupstream_group = \"lan\"\n"
+        );
+        let p = pipeline_with(&cfg, "");
+        let meta = RequestMeta {
+            peer: "192.168.1.20:1000".parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let ask = |name: &str| {
+            let mut out = [0u8; 4096];
+            match Handler(Arc::clone(&p)).handle(&query(name, rtype::PTR, true), &meta, &mut out) {
+                Response::Ready(len) => (Some(summarize(&out[..len]).unwrap().rcode), None),
+                Response::Deferred(f) => (None, Some(f)),
+                Response::Drop => (None, None),
+            }
+        };
+        // The LAN's reverse zone: to the router.
+        let (now, later) = ask("20.1.168.192.in-addr.arpa");
+        assert_eq!(now, None, "routed: asked upstream");
+        let answer = later.unwrap().await.unwrap();
+        assert_eq!(summarize(&answer).unwrap().rcode, rcode::NOERROR);
+        assert_eq!(
+            (
+                at_router.load(Ordering::SeqCst),
+                at_public.load(Ordering::SeqCst)
+            ),
+            (1, 0)
+        );
+        // A private range without a route: NXDOMAIN here, nobody asked.
+        let (now, later) = ask("5.0.0.10.in-addr.arpa");
+        assert!(later.is_none());
+        assert_eq!(now, Some(rcode::NXDOMAIN));
+        assert_eq!(
+            (
+                at_router.load(Ordering::SeqCst),
+                at_public.load(Ordering::SeqCst)
+            ),
+            (1, 0)
+        );
+        // A public range: to the default group.
+        let (_, later) = ask("8.8.8.8.in-addr.arpa");
+        later.unwrap().await.unwrap();
+        assert_eq!(
+            (
+                at_router.load(Ordering::SeqCst),
+                at_public.load(Ordering::SeqCst)
+            ),
+            (1, 1)
+        );
+    }
+
     /// REQ: DNS-007 — with `stale_answer_client_timeout_ms = 0`, an expired entry is answered
     /// at once (`refreshed`, EDE 3, the stale TTL) while the upstream refreshes it, and the next
     /// question is a fresh cache hit with the new answer. With the default wait and a working

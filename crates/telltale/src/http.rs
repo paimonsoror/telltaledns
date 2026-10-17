@@ -1074,6 +1074,27 @@ fn render_qlog(w: &mut PromWriter, q: &telltale_store::qlog::Stats) {
         w.family(name, "counter", help)
             .sample(name, &[], v.load(Relaxed));
     }
+    // REQ: NFR-007 — the store's own health: how long block writes take, and how many
+    // segments it holds.
+    #[allow(clippy::cast_precision_loss)] // microsecond totals far below 2^52
+    let secs = q.block_write_micros.load(Relaxed) as f64 / 1e6;
+    w.family(
+        "telltale_qlog_block_write_seconds",
+        "summary",
+        "Time spent encoding and writing query-log blocks (rate of sum over count: the average).",
+    )
+    .sample("telltale_qlog_block_write_seconds_sum", &[], secs)
+    .sample(
+        "telltale_qlog_block_write_seconds_count",
+        &[],
+        q.blocks_written.load(Relaxed),
+    );
+    w.family(
+        "telltale_qlog_segments",
+        "gauge",
+        "Query-log segment files on disk.",
+    )
+    .sample("telltale_qlog_segments", &[], q.segments.load(Relaxed));
 }
 
 /// REQ: DNS-011 — DNSSEC verdicts on forwarded answers (`spec/06` §5).
@@ -1875,6 +1896,52 @@ mod tests {
             shadow: Arc::new(crate::shadow::Shadow::new(0, 0)),
             traces: Arc::default(),
         }
+    }
+
+    /// REQ: OPS-006 — the health endpoints through the router: `/healthz` and `/livez` answer as
+    /// long as the process does; `/readyz` is 503 `starting` until every listener is bound and,
+    /// for a resolver pod, the cluster's configuration is applied, then 200.
+    #[tokio::test]
+    async fn ops_006_health_endpoints() {
+        use tower::ServiceExt as _;
+        let mut src = sources();
+        src.readiness = Arc::new(crate::readiness::Readiness::new(true));
+        // The listener answers only `allowed_networks`; the test asks from loopback.
+        src.allowed = vec![telltale_config::Cidr::parse("127.0.0.0/8").unwrap()];
+        let src = Arc::new(src);
+        let get = |path: &'static str| {
+            let app = router(Arc::clone(&src));
+            async move {
+                let req = axum::http::Request::builder()
+                    .uri(path)
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        40000,
+                    ))))
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let r = app.oneshot(req).await.unwrap();
+                let status = r.status().as_u16();
+                let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, String::from_utf8(body.to_vec()).unwrap())
+            }
+        };
+        assert_eq!(get("/healthz").await, (200, "ok\n".into()));
+        assert_eq!(get("/livez").await, (200, "ok\n".into()));
+        let (status, body) = get("/readyz").await;
+        assert_eq!(status, 503, "nothing bound yet: {body}");
+        assert!(body.contains("\"ready\":false"), "{body}");
+        src.readiness.set_bound();
+        assert_eq!(
+            get("/readyz").await.0,
+            503,
+            "bound, still waiting for the configuration"
+        );
+        src.readiness.set_synced();
+        assert_eq!(get("/readyz").await, (200, "{\"ready\":true}\n".into()));
+        assert_eq!(get("/healthz").await.0, 200);
     }
 
     /// REQ: OPS-010, OPS-006 — `/readyz` is 503 with the reason during maintenance (and the

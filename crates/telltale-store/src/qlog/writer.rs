@@ -61,6 +61,12 @@ pub struct Stats {
     pub bytes_written: AtomicU64,
     pub segments_removed: AtomicU64,
     pub write_errors: AtomicU64,
+    /// REQ: NFR-007 — time spent encoding and writing blocks (µs; with `blocks_written`, the
+    /// average write latency).
+    pub block_write_micros: AtomicU64,
+    /// REQ: NFR-007 — segment files on disk (counted at start and at each retention pass, plus
+    /// the parts opened since).
+    pub segments: AtomicU64,
     /// The last write error, for logs and status.
     pub last_error: Mutex<Option<String>>,
 }
@@ -362,6 +368,9 @@ fn run_retention(s: &Settings, stats: &Stats, current: Option<&Path>) {
         }
         Err(e) => note(stats, Err(e)),
     }
+    if let Ok(segs) = super::list_segments(&s.dir) {
+        stats.segments.store(segs.len() as u64, Ordering::Relaxed);
+    }
 }
 
 fn write_block(
@@ -380,7 +389,9 @@ fn write_block(
             .map_or(0, |o| o.part + 1);
         finish(open, s.fsync)?;
         *open = Some(create(s, b.key, from)?);
+        stats.segments.fetch_add(1, Ordering::Relaxed);
     }
+    let started = Instant::now();
     let Some(o) = open.as_mut() else {
         return Ok(());
     };
@@ -403,6 +414,10 @@ fn write_block(
     stats
         .bytes_written
         .fetch_add(buf.len() as u64, Ordering::Relaxed);
+    stats.block_write_micros.fetch_add(
+        u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
     Ok(())
 }
 
