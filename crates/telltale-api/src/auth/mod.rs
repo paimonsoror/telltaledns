@@ -126,7 +126,76 @@ pub struct Principal {
     pub via: Via,
     /// Set for agent tokens: what they may do, checked on every request.
     pub agent: Option<AgentGrant>,
+    /// REQ: OBS-035 (T14.13) — a display session: its display token's name. It may only read
+    /// what the wall shows ([`display_allows`]).
+    pub display: Option<String>,
 }
+
+/// REQ: OBS-035 (T14.13) — what a display session may do: read what the wall shows (the
+/// statistics, the flow, the service level, the heatmaps, the change markers, the live tail,
+/// this node's information and its own sign-in) and sign out. Nothing else.
+pub fn display_allows(method: &axum::http::Method, path: &str) -> bool {
+    let p = path.trim_end_matches('/');
+    if *method == axum::http::Method::POST {
+        return p == "/api/v1/auth/logout";
+    }
+    if *method != axum::http::Method::GET && *method != axum::http::Method::HEAD {
+        return false;
+    }
+    matches!(
+        p,
+        "/api/v1/auth/me"
+            | "/api/v1/system/info"
+            | "/api/v1/queries/stream"
+            | "/api/v1/annotations"
+    ) || p
+        .strip_prefix("/api/v1/stats/")
+        .is_some_and(|r| !r.is_empty())
+}
+
+/// REQ: OBS-035 (T14.13) — display token networks: `192.168.2.0/24`, `10.0.0.5`, or IPv6
+/// forms; at most 16.
+pub fn parse_networks(items: &[String]) -> Result<Vec<(IpAddr, u8)>, String> {
+    if items.len() > 16 {
+        return Err("at most 16 networks".into());
+    }
+    items
+        .iter()
+        .map(|t| {
+            let t = t.trim();
+            let (addr, len) = t.split_once('/').map_or((t, None), |(a, l)| (a, Some(l)));
+            let ip: IpAddr = addr
+                .parse()
+                .map_err(|_| format!("`{t}` isn't an address or a network"))?;
+            let max = if ip.is_ipv4() { 32 } else { 128 };
+            let len = match len {
+                None => max,
+                Some(l) => l
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|l| *l <= max)
+                    .ok_or_else(|| format!("`{t}`: the prefix length must be 0 to {max}"))?,
+            };
+            Ok((ip, len))
+        })
+        .collect()
+}
+
+/// REQ: OBS-035 (T14.13) — `ip` may use a display token with these networks (space-separated;
+/// none: anywhere).
+pub fn display_network_ok(ip: Option<IpAddr>, networks: Option<&str>) -> bool {
+    let Some(text) = networks.filter(|t| !t.trim().is_empty()) else {
+        return true;
+    };
+    let items: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    let Ok(nets) = parse_networks(&items) else {
+        return false;
+    };
+    ip.is_some_and(|ip| nets.iter().any(|(n, l)| in_network(ip, *n, *l)))
+}
+
+/// REQ: OBS-035 (T14.13) — how long a display session lasts without an expiry on its token.
+pub const DISPLAY_SESSION_SECS: u64 = 400 * 86_400;
 
 /// Who did something, for the audit log (REQ: API-006, AGT-005 attribution).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -821,7 +890,7 @@ impl Auth {
             return Ok(Some(who));
         }
         match p.session {
-            Some(c) => self.by_session(c, now),
+            Some(c) => self.by_session(c, now, p.remote),
             None => Ok(None),
         }
     }
@@ -834,14 +903,25 @@ impl Auth {
             .ok_or_else(|| Problem::new(Code::Unauthorized, "this account is disabled or gone"))
     }
 
-    fn by_session(&self, cookie: &str, now: u64) -> Result<Option<Principal>, Problem> {
+    fn by_session(
+        &self,
+        cookie: &str,
+        now: u64,
+        remote: Option<IpAddr>,
+    ) -> Result<Option<Principal>, Problem> {
         let id_hash = crypto::secret_hash(cookie);
         let Some(s) = self.state.session(&id_hash).map_err(db)? else {
             return Ok(None); // a stale cookie is just "not signed in"
         };
-        if s.expires <= now || now.saturating_sub(s.last_seen) > self.settings.session_idle_secs {
+        // REQ: OBS-035 (T14.13) — a display session has no idle limit (a wall is unattended).
+        let idle = s.display_token.is_none()
+            && now.saturating_sub(s.last_seen) > self.settings.session_idle_secs;
+        if s.expires <= now || idle {
             let _ = self.state.delete_session(&id_hash);
             return Ok(None);
+        }
+        if let Some(tid) = &s.display_token {
+            return self.by_display_session(&s, tid, id_hash, now, remote);
         }
         let user = self.active_user(s.user_id)?;
         // Touch at most once a minute: reads stay reads.
@@ -857,7 +937,134 @@ impl Auth {
                 csrf: s.csrf,
             },
             agent: None,
+            display: None,
         }))
+    }
+
+    /// REQ: OBS-035 (T14.13) — a display session lives as long as its token: revoked or
+    /// expired, the session ends; from outside the token's networks it's refused.
+    fn by_display_session(
+        &self,
+        s: &telltale_store::state::Session,
+        token_id: &str,
+        id_hash: Vec<u8>,
+        now: u64,
+        remote: Option<IpAddr>,
+    ) -> Result<Option<Principal>, Problem> {
+        let token = self
+            .state
+            .token(token_id)
+            .map_err(db)?
+            .filter(|t| t.is_display() && t.expires.is_none_or(|e| e > now));
+        let Some(token) = token else {
+            let _ = self.state.delete_session(&id_hash);
+            return Ok(None);
+        };
+        if !display_network_ok(remote, token.display_networks.as_deref()) {
+            return Err(Problem::new(
+                Code::Forbidden,
+                "this wall display can't be used from this address",
+            )
+            .hint(
+                "An admin can change the display's networks in Settings → Users → Wall displays.",
+            ));
+        }
+        let user = self.active_user(s.user_id)?;
+        if now.saturating_sub(s.last_seen) >= 60 {
+            let _ = self.state.touch_session(&id_hash, now);
+            let _ = self.state.touch_token(token_id, now);
+        }
+        Ok(Some(Principal {
+            user_id: user.id,
+            role: Role::Viewer,
+            username: format!("display:{}", token.name),
+            via: Via::Session {
+                id_hash,
+                csrf: s.csrf.clone(),
+            },
+            agent: None,
+            display: Some(token.name),
+        }))
+    }
+
+    /// REQ: OBS-035 (T14.13) — exchanges a display link's code (`tt_<id>_<secret>`) for a display
+    /// session, from an address the token allows. Failures count toward the address's sign-in
+    /// lockout. Returns the session and the display's name. Blocking.
+    pub fn open_display(
+        &self,
+        code: &str,
+        remote: IpAddr,
+        now: u64,
+    ) -> Result<(NewSession, String), Problem> {
+        let akey = format!("a:{remote}");
+        if let Some(wait) = self.locked(&akey, now) {
+            return Err(Problem::new(
+                Code::RateLimited,
+                format!("too many failed attempts; try again in {wait} s"),
+            ));
+        }
+        let bad = |me: &Self| {
+            me.fail(&akey, now);
+            Problem::new(
+                Code::Unauthorized,
+                "this display link isn't valid (any more)",
+            )
+            .hint("An admin can make a new one in Settings → Users → Wall displays.")
+        };
+        let Some(rest) = code.trim().strip_prefix("tt_") else {
+            return Err(bad(self));
+        };
+        let Some((id, secret)) = rest.split_at_checked(16) else {
+            return Err(bad(self));
+        };
+        let Some(secret) = secret.strip_prefix('_') else {
+            return Err(bad(self));
+        };
+        let token = self.state.token(id).map_err(db)?;
+        let Some(token) = token.filter(|t| {
+            t.is_display()
+                && crypto::ct_eq(&crypto::secret_hash(secret), &t.secret_hash)
+                && t.expires.is_none_or(|e| e > now)
+        }) else {
+            return Err(bad(self));
+        };
+        if !display_network_ok(Some(remote), token.display_networks.as_deref()) {
+            return Err(Problem::new(
+                Code::Forbidden,
+                "this wall display can't be opened from this address",
+            )
+            .hint(
+                "An admin can change the display's networks in Settings → Users → Wall displays.",
+            ));
+        }
+        let user = self.active_user(token.user_id)?;
+        self.succeed(&akey);
+        let cookie = crypto::random_secret();
+        let csrf = crypto::random_secret();
+        let expires = token.expires.unwrap_or(now + DISPLAY_SESSION_SECS);
+        let hash = crypto::secret_hash(&cookie);
+        self.state
+            .create_session(
+                &hash,
+                user.id,
+                &csrf,
+                now,
+                expires,
+                Some(&remote.to_string()),
+            )
+            .map_err(db)?;
+        self.state
+            .set_session_display(&hash, &token.id)
+            .map_err(db)?;
+        let _ = self.state.touch_token(&token.id, now);
+        Ok((
+            NewSession {
+                cookie,
+                csrf,
+                expires,
+            },
+            token.name,
+        ))
     }
 
     fn by_token(&self, presented: &str, now: u64) -> Result<Principal, Problem> {
@@ -873,6 +1080,13 @@ impl Auth {
             || token.expires.is_some_and(|e| e <= now)
         {
             return Err(bad());
+        }
+        // REQ: OBS-035 (T14.13) — a display token only opens the wall (its link), never the API.
+        if token.is_display() {
+            return Err(
+                Problem::new(Code::Unauthorized, "a display token isn't an API token")
+                    .hint("Open the display's link on the wall's browser instead."),
+            );
         }
         let user = self.active_user(token.user_id)?;
         let user_role = Role::parse(&user.role).unwrap_or(Role::Viewer);
@@ -905,6 +1119,7 @@ impl Auth {
             role,
             via: Via::Token { id: id.to_owned() },
             agent,
+            display: None,
         })
     }
 
@@ -1004,6 +1219,7 @@ impl Auth {
             username: user.username,
             via: Via::Basic,
             agent: None,
+            display: None,
         })
     }
 

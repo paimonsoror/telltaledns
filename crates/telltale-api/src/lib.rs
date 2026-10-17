@@ -934,7 +934,7 @@ async fn fallback(
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
         auth::routes::get_me, auth::routes::change_password, auth::routes::totp_setup,
         auth::routes::totp_enable, auth::routes::totp_disable, auth::routes::list_tokens,
-        auth::routes::create_token, auth::routes::delete_token, auth::routes::list_users,
+        auth::routes::create_token, auth::routes::delete_token, auth::routes::open_display, auth::routes::list_displays, auth::routes::create_display, auth::routes::revoke_display, auth::routes::list_users,
         auth::routes::create_user, auth::routes::update_user, auth::routes::delete_user,
         auth::routes::user_tokens, auth::routes::revoke_user_token,
         auth::routes::audit_log, auth::routes::audit_verify, auth::routes::oidc_start,
@@ -951,7 +951,7 @@ async fn fallback(
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,
         auth::routes::TotpCode, auth::routes::PasswordConfirm, auth::routes::RecoveryCodes,
-        auth::routes::TokenInfo, auth::routes::TokenKind, auth::routes::CreateToken, auth::routes::NewToken,
+        auth::routes::TokenInfo, auth::routes::TokenKind, auth::routes::CreateToken, auth::routes::NewToken, auth::routes::DisplayInfo, auth::routes::CreateDisplay, auth::routes::NewDisplay, auth::routes::OpenDisplay, auth::routes::DisplayOpened,
         auth::routes::UserInfo, auth::routes::CreateUser, auth::routes::UpdateUser,
         auth::routes::AuditInfo, auth::routes::AuditPage, auth::routes::AuditVerify,
         auth::routes::OidcButton, auth::routes::LogoutResult

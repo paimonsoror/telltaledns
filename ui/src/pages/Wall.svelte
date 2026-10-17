@@ -8,6 +8,7 @@
   import type { S } from '../lib/api';
   import { navigate, route } from '../lib/router.svelte';
   import { clock } from '../lib/format';
+  import { session } from '../lib/session.svelte';
   import Logo from '../lib/components/Logo.svelte';
   import LatencyHeatmap from '../lib/components/LatencyHeatmap.svelte';
   import WallMap from '../lib/components/wall/WallMap.svelte';
@@ -56,8 +57,10 @@
   const tick = setInterval(() => (now = Date.now() / 1000), 1000);
   onDestroy(() => clearInterval(tick));
 
+  // REQ: OBS-035 (T14.13) — a wall display's session can only show the wall: nowhere to exit to.
+  const display = $derived(!!session.user?.display);
   function exit() {
-    navigate('/');
+    if (!display) navigate('/');
   }
   function key(e: KeyboardEvent) {
     if (e.key === 'Escape') exit();

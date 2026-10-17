@@ -256,6 +256,7 @@ impl Backend for Fake {
             detail: "4100 queries in an hour; usually 119 ± 30".into(),
             nodes: Vec::new(),
             acknowledged: None,
+            informational: false,
             rhythm: None,
         }];
         self.annotate_acks(&mut v);
@@ -1080,7 +1081,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // OBS-032's /stats/flow.
     // 100 with OBS-028's /cluster/compare; 101 with OBS-031's /clients/{id}/rhythm; 102 with
     // OBS-034's /clients/{id}/timeline.
-    assert_eq!(paths.len(), 102);
+    // 105 with OBS-035's /auth/display, /displays and /displays/{id}.
+    assert_eq!(paths.len(), 105);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

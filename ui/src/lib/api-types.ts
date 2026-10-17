@@ -390,6 +390,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/display": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a wall display.
+         * @description REQ: OBS-035 (T14.13) — exchanges a display link's code for a display session (a cookie),
+         *     from an address the display allows. The session reads only what the wall shows (the
+         *     statistics, the flow, the service level, the heatmaps, the change markers, the live tail),
+         *     lasts until the display is revoked or expires (no idle limit), and is checked against the
+         *     display's networks on every request. Failed codes count toward the address's sign-in
+         *     lockout. Audited as `display.open`.
+         */
+        post: operations["open_display"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1316,6 +1341,55 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/displays": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Wall displays (admin).
+         * @description REQ: OBS-035 (T14.13) — every display token, whoever made it: name, networks, owner, expiry,
+         *     and last use. The codes are never shown again.
+         */
+        get: operations["list_displays"];
+        put?: never;
+        /**
+         * Make a wall display (admin).
+         * @description REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:
+         *     open the returned `link` once on its browser and it stays signed in, able to read only what
+         *     the wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code
+         *     is shown only in this response. Audited as `display.create`.
+         */
+        post: operations["create_display"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/displays/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a wall display (admin).
+         * @description REQ: OBS-035 (T14.13) — ends the display's sessions at once (the wall shows the sign-in
+         *     page). Audited as `display.revoke`.
+         */
+        delete: operations["revoke_display"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2712,6 +2786,11 @@ export interface components {
              */
             id: string;
             /**
+             * @description REQ: OBS-036 — a finding to see, not an anomaly (`chatty_loop`): left out of the sidebar
+             *     badge and the `anomaly` alert rule.
+             */
+            informational?: boolean;
+            /**
              * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
              * @example domain_volume
              */
@@ -2727,8 +2806,9 @@ export interface components {
              */
             observed: number;
             /**
-             * @description REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its
-             *     queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`).
+             * @description REQ: OBS-031 — a beacon's (or a chatty loop's) rhythm when it was reported: 24 counts of
+             *     gaps between its queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s
+             *     `binsS`).
              */
             rhythm?: number[] | null;
             /** Format: double */
@@ -3779,6 +3859,18 @@ export interface components {
              */
             source: string;
         };
+        /** @description `POST /api/v1/displays`. */
+        CreateDisplay: {
+            /**
+             * Format: int32
+             * @description Ends after this many days (default: when revoked).
+             */
+            expiresInDays?: number | null;
+            /** @description What it's for (`hallway`): 1–64 characters. */
+            name: string;
+            /** @description Only from these addresses or networks (`192.168.2.0/24`, `10.0.0.5`); at most 16. */
+            networks?: string[];
+        };
         CreateToken: {
             /**
              * Format: int32
@@ -3821,6 +3913,11 @@ export interface components {
             /** @description False when identification is off or not allowed (`reason`). */
             available: boolean;
             /**
+             * @description REQ: OBS-034 (T14.12) — when its product or class last changed (RFC 3339), and what it
+             *     looked like before (`Roku player`, or a class such as `unknown`).
+             */
+            changedAt?: string | null;
+            /**
              * @description `phone`, `tv`, `streaming`, `camera`, ... or `unknown`.
              * @example streaming
              */
@@ -3837,6 +3934,7 @@ export interface components {
             level: string;
             /** @description The node that worked it out (in a cluster). */
             node?: string | null;
+            previous?: string | null;
             /** @description The product (`Roku player`), when it's at least `possibly`. */
             product?: string | null;
             /** @description The signature's ID (`roku-player`). */
@@ -3904,6 +4002,28 @@ export interface components {
              *     `[clients] mdns`; no MAC).
              */
             source: string;
+        };
+        /** @description REQ: OBS-035 (T14.13) — a wall display token, as an admin sees it (never its secret). */
+        DisplayInfo: {
+            /** Format: int64 */
+            createdUnixSeconds: number;
+            /** Format: int64 */
+            expiresUnixSeconds?: number | null;
+            id: string;
+            /** Format: int64 */
+            lastUsedUnixSeconds?: number | null;
+            name: string;
+            /** @description The addresses it may be used from (empty: anywhere). */
+            networks: string[];
+            /** @description Who made it. */
+            owner: string;
+        };
+        /** @description A display session opened. */
+        DisplayOpened: {
+            csrfToken: string;
+            /** Format: int64 */
+            expiresUnixSeconds: number;
+            name: string;
         };
         /** @description REQ: OBS-019 — answers carrying one EDE code. */
         EdeCount: {
@@ -4429,6 +4549,11 @@ export interface components {
                  */
                 id: string;
                 /**
+                 * @description REQ: OBS-036 — a finding to see, not an anomaly (`chatty_loop`): left out of the sidebar
+                 *     badge and the `anomaly` alert rule.
+                 */
+                informational?: boolean;
+                /**
                  * @description `rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.
                  * @example domain_volume
                  */
@@ -4444,8 +4569,9 @@ export interface components {
                  */
                 observed: number;
                 /**
-                 * @description REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its
-                 *     queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`).
+                 * @description REQ: OBS-031 — a beacon's (or a chatty loop's) rhythm when it was reported: 24 counts of
+                 *     gaps between its queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s
+                 *     `binsS`).
                  */
                 rhythm?: number[] | null;
                 /** Format: double */
@@ -4591,6 +4717,11 @@ export interface components {
                 /** @description False when identification is off or not allowed (`reason`). */
                 available: boolean;
                 /**
+                 * @description REQ: OBS-034 (T14.12) — when its product or class last changed (RFC 3339), and what it
+                 *     looked like before (`Roku player`, or a class such as `unknown`).
+                 */
+                changedAt?: string | null;
+                /**
                  * @description `phone`, `tv`, `streaming`, `camera`, ... or `unknown`.
                  * @example streaming
                  */
@@ -4607,6 +4738,7 @@ export interface components {
                 level: string;
                 /** @description The node that worked it out (in a cluster). */
                 node?: string | null;
+                previous?: string | null;
                 /** @description The product (`Roku player`), when it's at least `possibly`. */
                 product?: string | null;
                 /** @description The signature's ID (`roku-player`). */
@@ -5356,6 +5488,23 @@ export interface components {
             names: number;
         };
         /** @description List wrapper. */
+        Listed_DisplayInfo: {
+            items: {
+                /** Format: int64 */
+                createdUnixSeconds: number;
+                /** Format: int64 */
+                expiresUnixSeconds?: number | null;
+                id: string;
+                /** Format: int64 */
+                lastUsedUnixSeconds?: number | null;
+                name: string;
+                /** @description The addresses it may be used from (empty: anywhere). */
+                networks: string[];
+                /** @description Who made it. */
+                owner: string;
+            }[];
+        };
+        /** @description List wrapper. */
         Listed_TokenInfo: {
             items: {
                 /** Format: int64 */
@@ -5494,6 +5643,11 @@ export interface components {
         /** @description The signed-in user. */
         Me: {
             allowBasicApi: boolean;
+            /**
+             * @description REQ: OBS-035 (T14.13) — a wall display's session: the display's name. It shows only
+             *     the wall.
+             */
+            display?: string | null;
             /** Format: int64 */
             id: number;
             /**
@@ -5519,6 +5673,17 @@ export interface components {
          * @enum {string}
          */
         NameMatch: "substring" | "exact" | "suffix" | "glob" | "regex";
+        /** @description A new display: its link's code, shown only in this response. */
+        NewDisplay: {
+            /**
+             * @description Open `#/display?code=<code>` on the wall's browser (the code stays in the address's
+             *     fragment, which browsers don't send).
+             */
+            code: string;
+            info: components["schemas"]["DisplayInfo"];
+            /** @description The UI path to open, for convenience: `#/display?code=…`. */
+            link: string;
+        };
         /** @description A registrable domain a device contacted for the first time (REQ: OBS-009). */
         NewDomain: {
             client: string;
@@ -5700,6 +5865,11 @@ export interface components {
             id: string;
             /** @description Label. */
             name: string;
+        };
+        /** @description `POST /api/v1/auth/display`. */
+        OpenDisplay: {
+            /** @description The code from the display's link. */
+            code: string;
         };
         /**
          * @description REQ: OBS-018 (ADR-109) — a blocked name that looks like it shouldn't be: devices kept
@@ -7715,6 +7885,57 @@ export interface operations {
             };
         };
     };
+    open_display: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenDisplay"];
+            };
+        };
+        responses: {
+            /** @description Opened: the cookie is set. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DisplayOpened"];
+                };
+            };
+            /** @description The code isn't valid (revoked, expired, or mistyped). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not from this address: the display is limited to some networks. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many failed attempts from this address. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -9233,6 +9454,116 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Items_DhcpLease"];
+                };
+            };
+        };
+    };
+    list_displays: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The displays. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Listed_DisplayInfo"];
+                };
+            };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_display: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDisplay"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewDisplay"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    revoke_display: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Display ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Signed in, but not allowed to do this (role, token scope, or agent restriction). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

@@ -471,3 +471,54 @@ fn obs_031_rhythm_memory_at_1024_devices() {
     println!("anomaly state at 1,024 devices x 16 pairs: {total} bytes, of which rhythm {rhythm}");
     assert!(rhythm <= 2 * 1024 * 1024, "{rhythm}");
 }
+
+/// REQ: OBS-036 — a 2.5 s loop for two hours is one informational `chatty_loop` finding; it
+/// isn't reported again until it stops for an hour and starts again; a browser's smear never is.
+#[test]
+fn obs_036_a_chatty_loop_is_reported_once_per_streak() {
+    let mut e = Engine::new(Settings {
+        learning_days: 0,
+        ..Settings::default()
+    });
+    let start_us = (DAY0 + 3 * 3600) * 1_000_000;
+    let mut rng = Rng(11);
+    let mut t = start_us;
+    let run = |e: &mut Engine, from: u64, to: u64, rng: &mut Rng| {
+        let mut t = from;
+        while t < to {
+            e.observe_query(t, ip(PHONE), &wire("time.pool.ntp.org"), Some(0));
+            // A browser too: gaps from 0.5 s to about 56 s.
+            if rng.below(8) == 0 {
+                e.observe_query(t + 1, ip(PHONE), &wire("www.example.com"), Some(0));
+            }
+            t += 2_400_000 + rng.below(200_001);
+        }
+        t
+    };
+    t = run(&mut e, t, start_us + 2 * 3_600_000_000, &mut rng);
+    // Quiet for an hour and a half, then the loop again for an hour.
+    let back = t + 5_400_000_000;
+    run(&mut e, back, back + 3_600_000_000, &mut rng);
+    // Close that last hour.
+    e.observe_query(back + 7_300_000_000, ip(TV), &wire("x.example"), Some(0));
+    let chatty: Vec<&Finding> = e
+        .findings()
+        .iter()
+        .filter(|f| f.kind == Kind::ChattyLoop)
+        .collect();
+    assert_eq!(chatty.len(), 2, "{:#?}", e.findings());
+    assert!(
+        chatty
+            .iter()
+            .all(|f| f.domain.as_deref() == Some("ntp.org"))
+    );
+    assert!(Kind::ChattyLoop.informational() && !Kind::Beacon.informational());
+    assert!(
+        (2.3..=2.7).contains(&chatty[0].baseline),
+        "{}",
+        chatty[0].baseline
+    );
+    assert!(chatty[0].detail.contains("informational"));
+    assert_eq!(chatty[0].window_start_s, DAY0 + 3 * 3600);
+    assert!(e.beacon_rhythm(chatty[0]).is_some_and(|b| b[3] > 0));
+}

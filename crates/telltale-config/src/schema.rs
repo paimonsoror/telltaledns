@@ -1175,6 +1175,9 @@ pub enum AlertWhen {
     /// REQ: CLU-013 — the cluster is pinned to an older version, so configuration changes wait
     /// (while pinned; raise `for_secs` if you pin on purpose for long).
     ClusterPinned,
+    /// REQ: OBS-036 — a device asks a domain at a steady rhythm faster than every 30 s
+    /// (informational findings, which `anomaly` leaves out; one alert per finding).
+    ChattyLoop,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

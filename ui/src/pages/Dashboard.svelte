@@ -277,10 +277,6 @@
 <div class="page">
   <div class="page-head">
     <h1>Dashboard<HelpButton id="how-it-works" /></h1>
-    {#if advanced}
-      <!-- REQ: OBS-035 — the wall display (a full-screen rotation for a monitor). -->
-      <a class="small" href="#/wall" data-testid="open-wall" title="Full screen, for a wall monitor">Wall</a>
-    {/if}
     {#if nodes.length > 1}
       <!-- REQ: CLU-002 — every node together, or one node (or site) at a time. -->
       <label class="small">

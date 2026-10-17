@@ -769,6 +769,7 @@ impl Auth {
                 rate_per_minute: None,
                 client: None,
             }),
+            display: None,
         })
     }
 

@@ -121,7 +121,15 @@ const MIGRATIONS: &[&str] = &[
         note TEXT,
         window_start INTEGER NOT NULL
     );",
+    // 9: display tokens for the wall (OBS-035, T14.13, ADR-140): a token whose agent scopes are
+    // `display`, optionally limited to some networks, exchanged once for a display session.
+    "ALTER TABLE tokens ADD COLUMN display_networks TEXT;
+    ALTER TABLE sessions ADD COLUMN display_token TEXT;",
 ];
+
+/// REQ: OBS-035 (T14.13) — the pseudo agent scope that marks a display token. An older node
+/// reads it as an agent scope that allows nothing, so a display token can't act as a token there.
+pub const DISPLAY_SCOPE: &str = "display";
 
 /// Stored for OIDC users: no password matches it (they sign in at their provider).
 pub const NO_PASSWORD: &str = "!oidc";
@@ -167,6 +175,8 @@ pub struct Session {
     pub last_seen: u64,
     /// The OIDC provider this session came from, if any.
     pub oidc_provider: Option<String>,
+    /// REQ: OBS-035 (T14.13) — a display session: the display token it was opened with.
+    pub display_token: Option<String>,
 }
 
 /// An API token row (the secret is never stored, only its hash).
@@ -187,6 +197,16 @@ pub struct Token {
     pub agent_group: Option<String>,
     /// An agent token's own request limit.
     pub agent_rate_per_minute: Option<u32>,
+    /// REQ: OBS-035 (T14.13) — a display token's networks (space-separated CIDRs; `None`:
+    /// anywhere).
+    pub display_networks: Option<String>,
+}
+
+impl Token {
+    /// REQ: OBS-035 (T14.13) — a display token (opens the wall, nothing else).
+    pub fn is_display(&self) -> bool {
+        self.agent_scopes.as_deref() == Some(DISPLAY_SCOPE)
+    }
 }
 
 /// Errors from the state database.
@@ -524,7 +544,8 @@ impl State {
     pub fn session(&self, id_hash: &[u8]) -> Result<Option<Session>> {
         self.with(|c| {
             c.query_row(
-                "SELECT user_id, csrf, created, expires, last_seen, oidc_provider FROM sessions WHERE id_hash = ?1",
+                "SELECT user_id, csrf, created, expires, last_seen, oidc_provider, display_token
+                 FROM sessions WHERE id_hash = ?1",
                 [id_hash],
                 |r| {
                     Ok(Session {
@@ -534,11 +555,29 @@ impl State {
                         expires: u(r.get(3)?),
                         last_seen: u(r.get(4)?),
                         oidc_provider: r.get(5)?,
+                        display_token: r.get(6)?,
                     })
                 },
             )
             .optional()
         })
+    }
+
+    /// REQ: OBS-035 (T14.13) — marks a session as a display session of `token`.
+    pub fn set_session_display(&self, id_hash: &[u8], token: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE sessions SET display_token = ?2 WHERE id_hash = ?1",
+                params![id_hash, token],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — ends every session opened with display token `token`.
+    pub fn delete_display_sessions(&self, token: &str) -> Result<u64> {
+        self.with(|c| c.execute("DELETE FROM sessions WHERE display_token = ?1", [token]))
+            .map(|n| n as u64)
     }
 
     /// Marks a session as started through an OIDC provider.
@@ -573,7 +612,10 @@ impl State {
     pub fn delete_user_sessions(&self, user_id: i64, keep: Option<&[u8]>) -> Result<u64> {
         self.with(|c| {
             c.execute(
-                "DELETE FROM sessions WHERE user_id = ?1 AND (?2 IS NULL OR id_hash != ?2)",
+                // A display session belongs to its token (revoke that to end it), not the user's
+                // sign-ins.
+                "DELETE FROM sessions WHERE user_id = ?1 AND (?2 IS NULL OR id_hash != ?2)
+                     AND display_token IS NULL",
                 params![user_id, keep],
             )
         })
@@ -584,7 +626,8 @@ impl State {
     pub fn purge_sessions(&self, now: u64, idle_before: u64) -> Result<u64> {
         self.with(|c| {
             c.execute(
-                "DELETE FROM sessions WHERE expires <= ?1 OR last_seen < ?2",
+                // A display session has no idle limit: a wall is unattended.
+                "DELETE FROM sessions WHERE expires <= ?1 OR (last_seen < ?2 AND display_token IS NULL)",
                 params![i(now), i(idle_before)],
             )
         })
@@ -637,6 +680,41 @@ impl State {
             agent_rate_per_minute: r
                 .get::<_, Option<i64>>(10)?
                 .and_then(|n| u32::try_from(n).ok()),
+            display_networks: r.get(11)?,
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — makes a token a display token. Called right after `create_token`.
+    pub fn set_token_display(&self, id: &str, networks: Option<&str>) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE tokens SET agent_scopes = ?2, display_networks = ?3 WHERE id = ?1",
+                params![id, DISPLAY_SCOPE, networks],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — every display token, whoever made it, oldest first.
+    pub fn display_tokens(&self) -> Result<Vec<Token>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
+                 FROM tokens WHERE agent_scopes = ?1 ORDER BY created",
+            )?;
+            st.query_map([DISPLAY_SCOPE], Self::row_token)?.collect()
+        })
+    }
+
+    /// REQ: OBS-035 (T14.13) — revokes a display token, whoever made it.
+    pub fn delete_display_token(&self, id: &str) -> Result<bool> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM tokens WHERE id = ?1 AND agent_scopes = ?2",
+                params![id, DISPLAY_SCOPE],
+            )
+            .map(|n| n == 1)
         })
     }
 
@@ -662,7 +740,7 @@ impl State {
         self.with(|c| {
             c.query_row(
                 "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
-                        agent_scopes, agent_group, agent_rate_per_minute
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
                  FROM tokens WHERE id = ?1",
                 [id],
                 Self::row_token,
@@ -675,7 +753,7 @@ impl State {
         self.with(|c| {
             let mut st = c.prepare(
                 "SELECT id, user_id, name, secret_hash, scope, expires, created, last_used,
-                        agent_scopes, agent_group, agent_rate_per_minute
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
                  FROM tokens WHERE user_id = ?1 ORDER BY created",
             )?;
             st.query_map([user_id], Self::row_token)?.collect()

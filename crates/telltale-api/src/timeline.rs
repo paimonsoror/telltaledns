@@ -322,6 +322,31 @@ pub fn texts(client: &str, mins: u64, slow_ms: u32) -> [String; 3] {
     ]
 }
 
+/// REQ: OBS-034 (T14.12) — an `identity` event when the device's product or class changed in
+/// `[first, to)`.
+pub fn identity_event(
+    id: &crate::model::DeviceIdentity,
+    first: u64,
+    to: u64,
+    client: &str,
+) -> Option<TimelineEvent> {
+    let t = id.changed_at.as_deref()?;
+    let at = crate::time::parse_time(t, 0).ok()?;
+    if at < first || at >= to {
+        return None;
+    }
+    let now = id.product.clone().unwrap_or_else(|| id.class.clone());
+    let was = id.previous.as_deref().unwrap_or("unknown");
+    Some(TimelineEvent {
+        time: t.to_owned(),
+        time_unix_seconds: at,
+        kind: "identity".into(),
+        summary: format!("now looks like {now} (was {was})"),
+        href: format!("#/clients?device={client}&view=rhythm"),
+        domain: None,
+    })
+}
+
 /// Counts reads, for the cache's test.
 pub static READS: AtomicU64 = AtomicU64::new(0);
 
@@ -491,6 +516,12 @@ pub(crate) async fn client_timeline(
                     href: "#/anomalies".into(),
                     domain: f.domain.clone(),
                 });
+            }
+            // REQ: OBS-034 (T14.12) — the device's identity changed in the window.
+            if let Ok(id) = bk.identity(&client)
+                && let Some(e) = identity_event(&id, first, to, &client)
+            {
+                events.push(e);
             }
             events.extend(bursts(&lanes, &starts, bin, &client));
             events.sort_by(|a, b| {
@@ -681,6 +712,30 @@ mod tests {
         assert_eq!(READS.load(Ordering::Relaxed) - before, 1);
         let _ = cached("obs_034_test|2", make);
         assert_eq!(READS.load(Ordering::Relaxed) - before, 2);
+    }
+
+    // REQ: OBS-034 (T14.12) — an identity change inside the window is an event; outside, none.
+    #[test]
+    fn obs_034_identity_change_event() {
+        let at = DAY + 3600;
+        let id = crate::model::DeviceIdentity {
+            client: "192.168.2.14".into(),
+            available: true,
+            product: Some("Roku player".into()),
+            class: "streaming".into(),
+            changed_at: Some(crate::time::format_us(at * 1_000_000)),
+            previous: Some("unknown".into()),
+            ..crate::model::DeviceIdentity::default()
+        };
+        let e = identity_event(&id, DAY, DAY + 86_400, "192.168.2.14").unwrap_or_default();
+        assert_eq!((e.kind.as_str(), e.time_unix_seconds), ("identity", at));
+        assert_eq!(e.summary, "now looks like Roku player (was unknown)");
+        assert!(identity_event(&id, at + 1, DAY + 86_400, "192.168.2.14").is_none());
+        let never = crate::model::DeviceIdentity {
+            changed_at: None,
+            ..id
+        };
+        assert!(identity_event(&never, DAY, DAY + 86_400, "x").is_none());
     }
 
     // REQ: OBS-034 — the reads parse, with the columns `fold` reads.

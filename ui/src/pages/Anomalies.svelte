@@ -33,6 +33,7 @@
     domain_volume: 'Unusual traffic to one domain',
     drift: 'Many new domains',
     beacon: 'Regular phone-home',
+    chatty_loop: 'Chatty loop',
     nxdomain_storm: 'Burst of failed lookups',
     dga: 'Machine-generated-looking domains',
   };
@@ -111,14 +112,15 @@
   {#each items as f (f.id)}
     <section class="card finding" class:acked={!!f.acknowledged} data-testid="anomaly">
       <div class="row">
-        <span class="badge {f.kind === 'beacon' || f.kind === 'drift' ? 'warn' : 'bad'}">{titles[f.kind] ?? f.kind}</span>
+        <span class="badge {f.informational ? '' : f.kind === 'beacon' || f.kind === 'drift' ? 'warn' : 'bad'}">{titles[f.kind] ?? f.kind}</span>
+        {#if f.informational}<span class="muted small" data-testid="informational">for your information: not counted as an anomaly</span>{/if}
         <strong>{f.clientName ?? f.client}</strong>
         {#if f.domain}<span class="mono">→ {f.domain}</span>{/if}
         <span class="spacer"></span>
         <span class="muted small">{dateTime(Date.parse(f.windowStart) / 1000)}</span>
       </div>
       <p>{f.detail}</p>
-      {#if f.kind === 'beacon' && f.rhythm && f.domain}
+      {#if (f.kind === 'beacon' || f.kind === 'chatty_loop') && f.rhythm && f.domain}
         <!-- REQ: OBS-031 — the beacon's rhythm when it was reported. -->
         <RhythmStrip rows={[{ domain: f.domain, recent: f.rhythm }]} client={f.client} toggle={false} />
       {/if}

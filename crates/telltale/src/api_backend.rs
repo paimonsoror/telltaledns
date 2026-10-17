@@ -1675,6 +1675,7 @@ impl Backend for ApiBackend {
                     acknowledged: None,
                     // REQ: OBS-031 — a beacon's strip at report time.
                     rhythm: rhythm.map(|b| b.iter().map(|&n| u32::from(n)).collect()),
+                    informational: f.kind.informational(),
                 }
             })
             .collect();

@@ -1014,6 +1014,68 @@
         }
       }
     },
+    "/api/v1/auth/display": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Open a wall display.",
+        "description": "REQ: OBS-035 (T14.13) — exchanges a display link's code for a display session (a cookie),\nfrom an address the display allows. The session reads only what the wall shows (the\nstatistics, the flow, the service level, the heatmaps, the change markers, the live tail),\nlasts until the display is revoked or expires (no idle limit), and is checked against the\ndisplay's networks on every request. Failed codes count toward the address's sign-in\nlockout. Audited as `display.open`.",
+        "operationId": "open_display",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenDisplay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Opened: the cookie is set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisplayOpened"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The code isn't valid (revoked, expired, or mistyped).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not from this address: the display is limited to some networks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts from this address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -2998,6 +3060,134 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Items_DhcpLease"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/displays": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Wall displays (admin).",
+        "description": "REQ: OBS-035 (T14.13) — every display token, whoever made it: name, networks, owner, expiry,\nand last use. The codes are never shown again.",
+        "operationId": "list_displays",
+        "responses": {
+          "200": {
+            "description": "The displays.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Listed_DisplayInfo"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Make a wall display (admin).",
+        "description": "REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:\nopen the returned `link` once on its browser and it stays signed in, able to read only what\nthe wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code\nis shown only in this response. Audited as `display.create`.",
+        "operationId": "create_display",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDisplay"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewDisplay"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/displays/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revoke a wall display (admin).",
+        "description": "REQ: OBS-035 (T14.13) — ends the display's sessions at once (the wall shows the sign-in\npage). Audited as `display.revoke`.",
+        "operationId": "revoke_display",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Display ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "403": {
+            "description": "Signed in, but not allowed to do this (role, token scope, or agent restriction).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -7461,6 +7651,10 @@
             "description": "REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding\nhas the same ID on every node and after restarts. Acknowledge findings by it.",
             "example": "6ab0f180a1b2c3d4"
           },
+          "informational": {
+            "type": "boolean",
+            "description": "REQ: OBS-036 — a finding to see, not an anomaly (`chatty_loop`): left out of the sidebar\nbadge and the `anomaly` alert rule."
+          },
           "kind": {
             "type": "string",
             "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
@@ -7488,7 +7682,7 @@
               "format": "int32",
               "minimum": 0
             },
-            "description": "REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its\nqueries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`)."
+            "description": "REQ: OBS-031 — a beacon's (or a chatty loop's) rhythm when it was reported: 24 counts of\ngaps between its queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s\n`binsS`)."
           },
           "spread": {
             "type": "number",
@@ -9976,6 +10170,36 @@
           }
         }
       },
+      "CreateDisplay": {
+        "type": "object",
+        "description": "`POST /api/v1/displays`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "expiresInDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Ends after this many days (default: when revoked).",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "What it's for (`hallway`): 1–64 characters."
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only from these addresses or networks (`192.168.2.0/24`, `10.0.0.5`); at most 16."
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateToken": {
         "type": "object",
         "required": [
@@ -10084,6 +10308,13 @@
             "type": "boolean",
             "description": "False when identification is off or not allowed (`reason`)."
           },
+          "changedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-034 (T14.12) — when its product or class last changed (RFC 3339), and what it\nlooked like before (`Roku player`, or a class such as `unknown`)."
+          },
           "class": {
             "type": "string",
             "description": "`phone`, `tv`, `streaming`, `camera`, ... or `unknown`.",
@@ -10122,6 +10353,12 @@
               "null"
             ],
             "description": "The node that worked it out (in a cluster)."
+          },
+          "previous": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "product": {
             "type": [
@@ -10320,6 +10557,79 @@
           "source": {
             "type": "string",
             "description": "`router` (read from a `[[router]]`) or `mdns` (the name the device announces,\n`[clients] mdns`; no MAC)."
+          }
+        }
+      },
+      "DisplayInfo": {
+        "type": "object",
+        "description": "REQ: OBS-035 (T14.13) — a wall display token, as an admin sees it (never its secret).",
+        "required": [
+          "id",
+          "name",
+          "networks",
+          "owner",
+          "createdUnixSeconds"
+        ],
+        "properties": {
+          "createdUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expiresUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastUsedUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "networks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The addresses it may be used from (empty: anywhere)."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Who made it."
+          }
+        }
+      },
+      "DisplayOpened": {
+        "type": "object",
+        "description": "A display session opened.",
+        "required": [
+          "name",
+          "csrfToken",
+          "expiresUnixSeconds"
+        ],
+        "properties": {
+          "csrfToken": {
+            "type": "string"
+          },
+          "expiresUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -11659,6 +11969,10 @@
                   "description": "REQ: OBS-014 — stable ID (from the kind, device, domain, and window): the same finding\nhas the same ID on every node and after restarts. Acknowledge findings by it.",
                   "example": "6ab0f180a1b2c3d4"
                 },
+                "informational": {
+                  "type": "boolean",
+                  "description": "REQ: OBS-036 — a finding to see, not an anomaly (`chatty_loop`): left out of the sidebar\nbadge and the `anomaly` alert rule."
+                },
                 "kind": {
                   "type": "string",
                   "description": "`rate_spike`, `domain_volume`, `drift`, `beacon`, `nxdomain_storm`, or `dga`.",
@@ -11686,7 +12000,7 @@
                     "format": "int32",
                     "minimum": 0
                   },
-                  "description": "REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its\nqueries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`)."
+                  "description": "REQ: OBS-031 — a beacon's (or a chatty loop's) rhythm when it was reported: 24 counts of\ngaps between its queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s\n`binsS`)."
                 },
                 "spread": {
                   "type": "number",
@@ -12119,6 +12433,13 @@
                   "type": "boolean",
                   "description": "False when identification is off or not allowed (`reason`)."
                 },
+                "changedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "REQ: OBS-034 (T14.12) — when its product or class last changed (RFC 3339), and what it\nlooked like before (`Roku player`, or a class such as `unknown`)."
+                },
                 "class": {
                   "type": "string",
                   "description": "`phone`, `tv`, `streaming`, `camera`, ... or `unknown`.",
@@ -12157,6 +12478,12 @@
                     "null"
                   ],
                   "description": "The node that worked it out (in a cluster)."
+                },
+                "previous": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "product": {
                   "type": [
@@ -14111,6 +14438,69 @@
           }
         }
       },
+      "Listed_DisplayInfo": {
+        "type": "object",
+        "description": "List wrapper.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "REQ: OBS-035 (T14.13) — a wall display token, as an admin sees it (never its secret).",
+              "required": [
+                "id",
+                "name",
+                "networks",
+                "owner",
+                "createdUnixSeconds"
+              ],
+              "properties": {
+                "createdUnixSeconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "expiresUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "id": {
+                  "type": "string"
+                },
+                "lastUsedUnixSeconds": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "name": {
+                  "type": "string"
+                },
+                "networks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The addresses it may be used from (empty: anywhere)."
+                },
+                "owner": {
+                  "type": "string",
+                  "description": "Who made it."
+                }
+              }
+            }
+          }
+        }
+      },
       "Listed_TokenInfo": {
         "type": "object",
         "description": "List wrapper.",
@@ -14485,6 +14875,13 @@
           "allowBasicApi": {
             "type": "boolean"
           },
+          "display": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: OBS-035 (T14.13) — a wall display's session: the display's name. It shows only\nthe wall."
+          },
           "id": {
             "type": "integer",
             "format": "int64"
@@ -14539,6 +14936,28 @@
           "glob",
           "regex"
         ]
+      },
+      "NewDisplay": {
+        "type": "object",
+        "description": "A new display: its link's code, shown only in this response.",
+        "required": [
+          "code",
+          "link",
+          "info"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Open `#/display?code=<code>` on the wall's browser (the code stays in the address's\nfragment, which browsers don't send)."
+          },
+          "info": {
+            "$ref": "#/components/schemas/DisplayInfo"
+          },
+          "link": {
+            "type": "string",
+            "description": "The UI path to open, for convenience: `#/display?code=…`."
+          }
+        }
       },
       "NewDomain": {
         "type": "object",
@@ -14980,6 +15399,20 @@
             "description": "Label."
           }
         }
+      },
+      "OpenDisplay": {
+        "type": "object",
+        "description": "`POST /api/v1/auth/display`.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The code from the display's link."
+          }
+        },
+        "additionalProperties": false
       },
       "OverblockSuspect": {
         "type": "object",

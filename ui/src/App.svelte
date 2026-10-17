@@ -7,6 +7,7 @@
   import { poll } from './lib/poll';
   import Logo from './lib/components/Logo.svelte';
   import Wall from './pages/Wall.svelte';
+  import Display from './pages/Display.svelte';
   import HelpButton from './lib/components/HelpButton.svelte';
   import Icon from './lib/components/Icon.svelte';
   import PauseControl from './lib/components/PauseControl.svelte';
@@ -134,7 +135,8 @@
   async function loadBadges() {
     const [a, l] = await Promise.all([api.anomalies('-24h', false).catch(() => null), api.lists().catch(() => null)]);
     badges = {
-      '/anomalies': a?.items.length ?? 0,
+      // REQ: OBS-036 — informational findings (a chatty loop) aren't counted.
+      '/anomalies': a?.items.filter((x) => !x.informational).length ?? 0,
       '/lists': l?.items.filter((x) => x.state === 'failed').length ?? 0,
     };
   }
@@ -179,11 +181,14 @@
     <div class="notice bad">Can't reach TelltaleDNS: {session.error}</div>
     <button onclick={refreshSession}>Retry</button>
   </main>
+{:else if route.path === '/display'}
+  <!-- REQ: OBS-035 (T14.13) — a wall display's link, signed in or not. -->
+  <Display />
 {:else if session.setupRequired}
   <Setup />
 {:else if !session.user}
   <Login />
-{:else if route.path === '/wall'}
+{:else if route.path === '/wall' || session.user.display}
   <!-- REQ: OBS-035 — the wall display: signed in like any page, without the navigation. -->
   <Wall />
 {:else}
@@ -247,6 +252,12 @@
       <HelpButton id="simple-advanced" />
       <AgentInbox />
       <PauseControl />
+      {#if currentMode() === 'advanced'}
+        <!-- REQ: OBS-035 — the wall display (full screen, for a monitor). -->
+        <button class="icon-btn" onclick={() => navigate('/wall')} title="Wall display (full screen, for a monitor)" aria-label="Wall display" data-testid="open-wall"
+          ><Icon name="wall" /></button
+        >
+      {/if}
       <button class="icon-btn" onclick={() => (theme = nextTheme)} title={`Theme: ${theme} (click for ${nextTheme})`} aria-label={`Theme: ${theme}`}>
         <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'auto'} />
       </button>

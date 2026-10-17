@@ -26,6 +26,7 @@ fn api_003_promotion_is_confirmed_with_the_password() {
             csrf: String::new(),
         },
         agent: None,
+        display: None,
     };
     assert_eq!(
         a.confirm(&session, None, None, T0).unwrap_err().code,
@@ -487,4 +488,131 @@ fn api_003_http_basic_lockout_counts_the_address() {
             .unwrap()
             .is_some()
     );
+}
+
+// REQ: OBS-035 (T14.13) — a display session may read what the wall shows and sign out,
+// nothing else.
+#[test]
+fn obs_035_display_sessions_read_only_the_wall() {
+    use axum::http::Method;
+    for p in [
+        "/api/v1/auth/me",
+        "/api/v1/system/info",
+        "/api/v1/stats/top",
+        "/api/v1/stats/flow",
+        "/api/v1/stats/slo/attribution",
+        "/api/v1/stats/latency/heatmap",
+        "/api/v1/queries/stream",
+        "/api/v1/annotations",
+    ] {
+        assert!(display_allows(&Method::GET, p), "{p}");
+    }
+    assert!(display_allows(&Method::POST, "/api/v1/auth/logout"));
+    for (m, p) in [
+        (Method::GET, "/api/v1/queries"),
+        (Method::GET, "/api/v1/clients"),
+        (Method::GET, "/api/v1/tokens"),
+        (Method::GET, "/api/v1/displays"),
+        (Method::GET, "/api/v1/config/entries"),
+        (Method::GET, "/api/v1/stats"),
+        (Method::POST, "/api/v1/stats/top"),
+        (Method::POST, "/api/v1/blocking/pause"),
+        (Method::DELETE, "/api/v1/displays/x"),
+        (Method::GET, "/mcp"),
+    ] {
+        assert!(!display_allows(&m, p), "{m} {p}");
+    }
+}
+
+// REQ: OBS-035 (T14.13) — networks: addresses and CIDRs, checked against v4 and v4-mapped
+// addresses; none means anywhere.
+#[test]
+fn obs_035_display_networks() {
+    let ok = |n: &str| parse_networks(&[n.to_owned()]).is_ok();
+    assert!(ok("192.168.2.0/24") && ok("10.0.0.5") && ok("fd00::/8"));
+    assert!(!ok("192.168.2.0/33") && !ok("nope") && !ok("10.0.0.0/x"));
+    let ip = |s: &str| s.parse::<IpAddr>().ok();
+    assert!(display_network_ok(
+        ip("192.168.2.14"),
+        Some("192.168.2.0/24")
+    ));
+    assert!(display_network_ok(
+        ip("::ffff:192.168.2.14"),
+        Some("10.0.0.0/8 192.168.2.0/24")
+    ));
+    assert!(!display_network_ok(
+        ip("192.168.3.14"),
+        Some("192.168.2.0/24")
+    ));
+    assert!(!display_network_ok(None, Some("192.168.2.0/24")));
+    assert!(display_network_ok(ip("203.0.113.9"), None));
+}
+
+// REQ: OBS-035 (T14.13) — a display link opens a session that acts as a display (viewer, no
+// idle limit), only from its networks; the code is no API token; revoking ends the session.
+#[test]
+fn obs_035_display_link_session_and_revocation() {
+    let a = auth(Settings::default());
+    let u = a
+        .create_user("root", "correct horse battery", Role::Admin, false, T0)
+        .unwrap();
+    let st = a.state();
+    st.create_token(
+        "abcdefgh12345678",
+        u.id,
+        "hallway",
+        &crypto::secret_hash("s3cret"),
+        "read",
+        None,
+        T0,
+    )
+    .unwrap();
+    st.set_token_display("abcdefgh12345678", Some("192.168.1.0/24"))
+        .unwrap();
+    let code = "tt_abcdefgh12345678_s3cret";
+    // Wrong secret, then from outside its networks.
+    assert_eq!(
+        a.open_display("tt_abcdefgh12345678_nope", IP, T0)
+            .unwrap_err()
+            .code,
+        Code::Unauthorized
+    );
+    let outside = IpAddr::V4(Ipv4Addr::new(192, 168, 9, 9));
+    assert_eq!(
+        a.open_display(code, outside, T0).unwrap_err().code,
+        Code::Forbidden
+    );
+    let (s, name) = a.open_display(code, IP, T0).unwrap();
+    assert_eq!(name, "hallway");
+    let p = |remote: IpAddr| Presented {
+        session: Some(&s.cookie),
+        remote: Some(remote),
+        ..Presented::default()
+    };
+    // Two days later, unused: no idle limit for a display.
+    let later = T0 + 2 * 86_400;
+    let _ = st.purge_sessions(later, later - 86_400);
+    let who = a.authenticate(&p(IP), later).unwrap().unwrap();
+    assert_eq!(who.display.as_deref(), Some("hallway"));
+    assert_eq!(
+        (who.role, who.username.as_str()),
+        (Role::Viewer, "display:hallway")
+    );
+    assert_eq!(
+        a.authenticate(&p(outside), later).unwrap_err().code,
+        Code::Forbidden
+    );
+    // The code is no bearer token.
+    let bearer = Presented {
+        bearer: Some(code),
+        ..Presented::default()
+    };
+    assert_eq!(
+        a.authenticate(&bearer, later).unwrap_err().code,
+        Code::Unauthorized
+    );
+    // Revoked: the session is gone.
+    assert!(st.delete_display_token("abcdefgh12345678").unwrap());
+    assert!(a.authenticate(&p(IP), later).unwrap().is_none());
+    assert!(a.open_display(code, IP, later).is_err());
 }

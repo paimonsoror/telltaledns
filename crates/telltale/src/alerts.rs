@@ -131,6 +131,7 @@ fn one_off(w: AlertWhen) -> bool {
     matches!(
         w,
         AlertWhen::Anomaly
+            | AlertWhen::ChattyLoop
             | AlertWhen::UpdateAvailable
             | AlertWhen::NewDevice
             | AlertWhen::PlanPending
@@ -449,10 +450,18 @@ fn observe(
             .collect(),
         // REQ: OBS-013, OBS-014 — every node's findings (federated), except ones someone
         // already acknowledged.
-        AlertWhen::Anomaly => b
+        // REQ: OBS-036 — informational findings only for a rule that asks for them by kind.
+        AlertWhen::Anomaly | AlertWhen::ChattyLoop => b
             .anomalies(now.saturating_sub(3600))
             .into_iter()
             .filter(|f| f.acknowledged.is_none())
+            .filter(|f| {
+                if rule.when == AlertWhen::ChattyLoop {
+                    f.kind == "chatty_loop"
+                } else {
+                    !f.informational
+                }
+            })
             .map(|f| {
                 let who = f.client_name.clone().unwrap_or_else(|| f.client.clone());
                 let key = format!(
@@ -1039,6 +1048,58 @@ mod tests {
         );
     }
 
+    /// REQ: OBS-036 — the `anomaly` rule leaves informational findings out; `chatty_loop`
+    /// takes only those.
+    #[test]
+    fn obs_036_chatty_loops_alert_only_by_kind() {
+        let finding = |kind: &str, informational: bool| telltale_api::model::AnomalyFinding {
+            id: kind.into(),
+            kind: kind.into(),
+            client: "192.168.2.14".into(),
+            client_name: None,
+            domain: Some("ntp.org".into()),
+            window_start: "2026-10-17T03:00:00.000Z".into(),
+            window_seconds: 3600,
+            observed: 1440.0,
+            baseline: 2.5,
+            spread: 98.0,
+            threshold: 120.0,
+            detail: format!("{kind} detail"),
+            nodes: Vec::new(),
+            acknowledged: None,
+            rhythm: None,
+            informational,
+        };
+        let b = Stub {
+            view: telltale_api::model::ClusterView {
+                enabled: false,
+                cluster_id: None,
+                name: None,
+                this_node: None,
+                newest_config_seq: 0,
+                healthy: true,
+                checks: Vec::new(),
+                nodes: Vec::new(),
+                events: Vec::new(),
+                authority: None,
+                conflicts: Vec::new(),
+                failover: None,
+                source: None,
+                host: None,
+                rollout: None,
+            },
+            probes: Vec::new(),
+            findings: vec![finding("beacon", false), finding("chatty_loop", true)],
+        };
+        let o = |w: AlertWhen| observe(&b, &rule(w, 0), 1000, &[], &Paused::default());
+        let anomaly = o(AlertWhen::Anomaly);
+        let chatty = o(AlertWhen::ChattyLoop);
+        assert_eq!(anomaly.len(), 1, "{anomaly:?}");
+        assert!(anomaly.iter().all(|(k, _)| k.starts_with("beacon|")));
+        assert_eq!(chatty.len(), 1, "{chatty:?}");
+        assert!(chatty.iter().all(|(k, _)| k.starts_with("chatty_loop|")));
+    }
+
     /// REQ: OBS-010 (review 04-10) — past the cap, only the oldest one-off subjects are
     /// forgotten: one still being observed isn't sent again.
     #[test]
@@ -1068,6 +1129,7 @@ mod tests {
     struct Stub {
         view: telltale_api::model::ClusterView,
         probes: Vec<telltale_api::model::ProbeResult>,
+        findings: Vec<telltale_api::model::AnomalyFinding>,
     }
 
     impl Backend for Stub {
@@ -1079,6 +1141,9 @@ mod tests {
         }
         fn probes(&self) -> Vec<telltale_api::model::ProbeResult> {
             self.probes.clone()
+        }
+        fn anomalies(&self, _: u64) -> Vec<telltale_api::model::AnomalyFinding> {
+            self.findings.clone()
         }
         fn timeseries(&self, _: Step, _: u64, _: u64) -> Vec<telltale_api::model::TimeBucket> {
             Vec::new()
@@ -1183,6 +1248,7 @@ mod tests {
         let stub = |maint: bool| Stub {
             view: view(maint),
             probes: vec![probe("pi2"), probe("k3s")],
+            findings: Vec::new(),
         };
         let rules = vec![
             rule(AlertWhen::NodeDown, 60),
@@ -1349,6 +1415,7 @@ mod tests {
             let b = Stub {
                 view: view(r),
                 probes: Vec::new(),
+                findings: Vec::new(),
             };
             rules
                 .iter()

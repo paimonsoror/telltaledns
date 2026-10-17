@@ -1291,6 +1291,28 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-140 — Wall displays: a display token exchanged for a wall-only session (Proposed)
+**Context:** T14.13 (OBS-035; T14.9's design §8). A wall on an unattended screen needed a sign-in that lasts without leaving a person's account there. The owner chose a display token over longer viewer sessions or nothing (2026-10-17), and to keep the live tail on the wall.
+**Decision:**
+- A display token is a token row with the pseudo agent scope `display` (`DISPLAY_SCOPE`) and optional `display_networks` (CIDRs). Admins make, list, and revoke them (`POST|GET /api/v1/displays`, `DELETE /api/v1/displays/{id}`; Settings → Users → Wall displays); they replicate with the other tokens, so every node accepts one.
+- Its link is `#/display?code=tt_<id>_<secret>`: the code stays in the fragment (never in server logs). `POST /api/v1/auth/display` exchanges it for a session cookie marked with the token (`sessions.display_token`), from an allowed address; failures count toward the address's sign-in lockout.
+- A display session acts as `viewer` named `display:<name>`, with no idle limit, until the token's expiry (default 400 days) or revocation (the session ends with the token); its networks are checked on every request; it may only GET `/auth/me`, `/system/info`, `/stats/*`, `/queries/stream`, `/annotations`, and POST `/auth/logout` (`display_allows`). The code is never an API token. The UI shows only the wall to it. Making, opening, and revoking are audited (`display.create`, `display.open`, `display.revoke`).
+- Defaults: the pseudo agent scope (an older node in a mixed cluster reads it as an agent scope allowing nothing, so a display token can't act as a read token there); sessions survive the owner's password change (they belong to the token; disabling the owner ends them); the token's owner is the admin who made it (deleting that user deletes it).
+**Consequences:** the wall's reads include the live tail (device and name), as for a viewer; a leaked link opens only that from the allowed networks until revoked.
+
+## ADR-139 — A device's last identity change is kept and drawn on its timeline (Proposed)
+**Context:** T14.12 (OBS-034, OBS-025; T14.8's deferral). The timeline had no way to say "this is when it started looking like a Roku".
+**Decision:** each identification pass compares a device's new identity with its last: a different signature (`productId`) or class is a change; a score or level wobble, a first guess, or an unavailable previous identity isn't. The last change's time and the previous product (else class) are kept per device in `devices.json` (`changed_s`, `previous`) and shown as `DeviceIdentity.changedAt` / `previous`; the device timeline adds an `identity` event when `changedAt` is in its window. Only the last change, not a history (defaults: one change per device keeps `devices.json` bounded; a history would be a new store).
+**Consequences:** a device that flips between two guesses shows only the latest flip; in a cluster the merged (most confident) identity's change is the one drawn.
+
+## ADR-138 — Chatty loops are an informational finding (Proposed)
+**Context:** T14.11 (OBS-036; T14.5's design §8). The 2.5 s NTP loop that overspent nothing but puzzled the owner is too fast for the beacon detector (30 s to 1 h) by design. The owner chose an informational finding (2026-10-17) over counting it like other findings or adding none.
+**Decision:**
+- At each hour's close a tracked pair whose hour has ≥ 120 gaps with ≥ 80 % in one rhythm bin from 1 s to 25 s (bins 1–8) is a `chatty_loop` finding, on devices past learning, once per streak: an hour that isn't chatty resets it. The evidence: the hour's queries, the typical gap (the 16-gap mean, else the bin's middle), the bin's share, and the rhythm strip (kept like a beacon's).
+- `Kind::informational()` and `AnomalyFinding.informational`: the sidebar badge and the `anomaly` alert rule skip it; a new alert `when = "chatty_loop"` takes only these. Health never counted anomalies.
+- Defaults: bins 1–8 (bursts under 1 s are A+AAAA pairs, not loops; 25–38 s overlaps the beacon range); learned devices only, like every detector; no per-domain baseline (a loop is a loop whether it's usual or not).
+**Consequences:** the golden fixture is unchanged (its devices have no such loop); `telltale_anomalies_total{kind="chatty_loop"}` counts them.
+
 ## ADR-137 — An expired SERVFAIL is never served stale (Proposed)
 **Context:** M14 follow-up (owner request 2026-10-17; found in T14.1). SERVFAIL is cached for 5 s (RFC 9520, `spec/03` §4), but the serve-stale path treated an expired SERVFAIL like any expired answer: with `stale_max_age = 3600` and `stale_answer_client_timeout_ms = 0` (the owner's 2026-10-10 settings), an hourly reverse lookup that failed once got the same SERVFAIL back for up to an hour, counted as `refreshed`, even after the upstream would have answered. Serving a stale failure gives the client nothing RFC 8767 is for.
 **Decision:** an expired SERVFAIL entry is a miss (removed, asked upstream again), and `get_stale` never returns one. Fresh SERVFAILs are still served for their 5 s. Every other answer keeps serve-stale as before.
@@ -1302,6 +1324,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - `#/wall` renders without the sidebar and header (signed in like any page), one panel at a time from `?panels=` in its order, `?every=` seconds each, with the live tail (`/queries/stream`) as a ticker of the newest 50. No new endpoints, metrics, or storage.
 - Motion: tile tweens (600 ms, by key), up to 60 particles on the flow, a sliding progress hairline; none of it with `prefers-reduced-motion` or `?motion=off`; the animation loop stops while the tab is hidden.
 - Defaults taken at the start (owner: accept all defaults, 2026-10-16): wall-specific panels over the same layout modules (the map, flow, and heatmap are pages, not components) and the latency heatmap component with a `wall` prop; the map shows the busiest names only; a click anywhere exits; the SLO needle on a log scale to 14.4; the helpers in `ui/src/lib/wall.ts` checked by the Playwright spec importing them (no unit runner); rotation checked with a real 5 s timer; the Pi CPU figure, the demo screenshot and GIF left to do; a **Wall** link on the dashboard in the Advanced view. A viewer role or kiosk session (design §8) is an auth change for its own ADR, proposed to the owner.
+- Owner request 2026-10-17: the Wall entry is an icon button in the header, between pause and the theme (Advanced view), not a link on the dashboard.
 **Consequences:** the wall polls what the pages poll (top lists every 5 s, flow 10 s, SLO and latency 30 s, heatmap 5 min) plus one tail stream, so a wall costs about as much as a dashboard left open.
 
 ## ADR-134 — The device timeline: bounded vqlog reads folded into lanes, cached (Proposed)

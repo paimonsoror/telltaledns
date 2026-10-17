@@ -237,6 +237,12 @@ pub async fn authenticate(
         Err(p) => return challenge(&auth, &path, presented_token, p.into_response()),
     };
     let method = req.method().clone();
+    // REQ: OBS-035 (T14.13) — a display session reads only what the wall shows.
+    if principal.display.is_some() && !super::display_allows(&method, &path) {
+        return Problem::new(Code::Forbidden, "a wall display can only show the wall")
+            .hint("Sign in as a user for the rest of TelltaleDNS.")
+            .into_response();
+    }
     if let Some(refused) = csrf_rejected(&principal, &method, &headers) {
         return refused;
     }
@@ -393,6 +399,10 @@ pub struct Me {
     pub recovery_codes_left: u64,
     /// How this request authenticated: `session`, `token`, or `basic`.
     pub via: String,
+    /// REQ: OBS-035 (T14.13) — a wall display's session: the display's name. It shows only
+    /// the wall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 /// Whether setup is needed and who is signed in (public).
@@ -661,6 +671,7 @@ fn me(auth: &Auth, u: &User, p: Option<&Principal>) -> Result<Me, Problem> {
             _ => "session",
         }
         .to_owned(),
+        display: p.and_then(|p| p.display.clone()),
     })
 }
 
@@ -700,6 +711,7 @@ pub fn public(auth: AuthState) -> Router {
         .route("/api/v1/auth/status", get(status))
         .route("/api/v1/auth/setup", post(setup))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/auth/display", post(open_display))
         .route("/api/v1/auth/oidc/{id}/start", get(oidc_start))
         .route("/api/v1/auth/oidc/{id}/callback", get(oidc_callback))
         .with_state(auth)
@@ -731,6 +743,9 @@ pub fn admin(auth: AuthState) -> Router {
         )
         .route("/api/v1/audit", get(audit_log))
         .route("/api/v1/audit/verify", get(audit_verify))
+        // REQ: OBS-035 (T14.13) — wall displays.
+        .route("/api/v1/displays", get(list_displays).post(create_display))
+        .route("/api/v1/displays/{id}", delete(revoke_display))
         .with_state(auth)
 }
 
@@ -1025,6 +1040,260 @@ pub(crate) async fn login(
         }),
     )
         .into_response())
+}
+
+/// REQ: OBS-035 (T14.13) — a wall display token, as an admin sees it (never its secret).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayInfo {
+    pub id: String,
+    pub name: String,
+    /// The addresses it may be used from (empty: anywhere).
+    pub networks: Vec<String>,
+    /// Who made it.
+    pub owner: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_unix_seconds: Option<u64>,
+    pub created_unix_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_unix_seconds: Option<u64>,
+}
+
+/// `POST /api/v1/displays`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateDisplay {
+    /// What it's for (`hallway`): 1–64 characters.
+    pub name: String,
+    /// Only from these addresses or networks (`192.168.2.0/24`, `10.0.0.5`); at most 16.
+    #[serde(default)]
+    pub networks: Vec<String>,
+    /// Ends after this many days (default: when revoked).
+    pub expires_in_days: Option<u32>,
+}
+
+/// A new display: its link's code, shown only in this response.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NewDisplay {
+    /// Open `#/display?code=<code>` on the wall's browser (the code stays in the address's
+    /// fragment, which browsers don't send).
+    pub code: String,
+    /// The UI path to open, for convenience: `#/display?code=…`.
+    pub link: String,
+    pub info: DisplayInfo,
+}
+
+/// `POST /api/v1/auth/display`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenDisplay {
+    /// The code from the display's link.
+    pub code: String,
+}
+
+/// A display session opened.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayOpened {
+    pub name: String,
+    pub csrf_token: String,
+    pub expires_unix_seconds: u64,
+}
+
+fn display_info(auth: &Auth, t: &telltale_store::state::Token) -> DisplayInfo {
+    DisplayInfo {
+        id: t.id.clone(),
+        name: t.name.clone(),
+        networks: t
+            .display_networks
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        owner: auth
+            .state()
+            .user(t.user_id)
+            .ok()
+            .flatten()
+            .map_or_else(|| format!("#{}", t.user_id), |u| u.username),
+        expires_unix_seconds: t.expires,
+        created_unix_seconds: t.created,
+        last_used_unix_seconds: t.last_used,
+    }
+}
+
+/// Open a wall display.
+///
+/// REQ: OBS-035 (T14.13) — exchanges a display link's code for a display session (a cookie),
+/// from an address the display allows. The session reads only what the wall shows (the
+/// statistics, the flow, the service level, the heatmaps, the change markers, the live tail),
+/// lasts until the display is revoked or expires (no idle limit), and is checked against the
+/// display's networks on every request. Failed codes count toward the address's sign-in
+/// lockout. Audited as `display.open`.
+#[utoipa::path(post, path = "/api/v1/auth/display", tag = "auth", request_body = OpenDisplay,
+    responses((status = 200, body = DisplayOpened, description = "Opened: the cookie is set."),
+        (status = 401, body = Problem, description = "The code isn't valid (revoked, expired, or mistyped)."),
+        (status = 403, body = Problem, description = "Not from this address: the display is limited to some networks."),
+        (status = 429, body = Problem, description = "Too many failed attempts from this address.")))]
+pub(crate) async fn open_display(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
+    b: Result<Json<OpenDisplay>, JsonRejection>,
+) -> Result<Response, Problem> {
+    let r = body(b)?;
+    let ip = remote(&auth, &req_ext, &headers);
+    let https = is_https(&auth, &req_ext, &headers);
+    let (sess, name) = blocking(move || {
+        let now = now();
+        let (sess, name) = auth.open_display(&r.code, ip, now)?;
+        let who = Actor {
+            name: format!("display:{name}"),
+            kind: "session",
+            remote: Some(ip.to_string()),
+            reason: None,
+        };
+        auth.record(&who, "display.open", &name, &serde_json::json!({}));
+        Ok((sess, name))
+    })
+    .await?;
+    let ttl = sess.expires.saturating_sub(now());
+    Ok((
+        [(header::SET_COOKIE, session_cookie(&sess, ttl, https))],
+        Json(DisplayOpened {
+            name,
+            csrf_token: sess.csrf,
+            expires_unix_seconds: sess.expires,
+        }),
+    )
+        .into_response())
+}
+
+/// Wall displays (admin).
+///
+/// REQ: OBS-035 (T14.13) — every display token, whoever made it: name, networks, owner, expiry,
+/// and last use. The codes are never shown again.
+#[utoipa::path(get, path = "/api/v1/displays", tag = "auth",
+    responses((status = 200, body = Listed<DisplayInfo>, description = "The displays."),
+        (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
+pub(crate) async fn list_displays(
+    State(auth): State<AuthState>,
+) -> Result<Json<Listed<DisplayInfo>>, Problem> {
+    blocking(move || {
+        let items = auth.state().display_tokens().map_err(db)?;
+        Ok(Json(Listed {
+            items: items.iter().map(|t| display_info(&auth, t)).collect(),
+        }))
+    })
+    .await
+}
+
+/// Make a wall display (admin).
+///
+/// REQ: OBS-035 (T14.13) — a revocable display token for `#/wall` on an unattended screen:
+/// open the returned `link` once on its browser and it stays signed in, able to read only what
+/// the wall shows, from the given `networks` if any, until revoked or `expiresInDays`. The code
+/// is shown only in this response. Audited as `display.create`.
+#[utoipa::path(post, path = "/api/v1/displays", tag = "auth", request_body = CreateDisplay,
+    responses((status = 201, body = NewDisplay, description = "Created."),
+        (status = 400, body = Problem, description = "Invalid request: problem+json says which parameter and how to fix it."),
+        (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction).")))]
+pub(crate) async fn create_display(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
+    b: Result<Json<CreateDisplay>, JsonRejection>,
+) -> Result<(StatusCode, Json<NewDisplay>), Problem> {
+    // REQ: CLU-003 (T9.1) — on a replica, identities come from the primary.
+    auth.identity_writable()?;
+    let r = body(b)?;
+    let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
+    blocking(move || {
+        let name = r.name.trim();
+        if name.is_empty() || name.len() > 64 || name.chars().any(char::is_control) {
+            return Err(Problem::invalid("`name`: 1-64 characters"));
+        }
+        let nets = super::parse_networks(&r.networks)
+            .map_err(|e| Problem::invalid(format!("`networks`: {e}")))?;
+        let networks: Vec<String> = nets.iter().map(|(n, l)| format!("{n}/{l}")).collect();
+        let (id, secret) = (crypto::random_id(), crypto::random_secret());
+        let now = now();
+        let expires = r.expires_in_days.map(|d| now + u64::from(d.max(1)) * 86_400);
+        auth.state()
+            .create_token(
+                &id,
+                p.user_id,
+                name,
+                &crypto::secret_hash(&secret),
+                Scope::Read.as_str(),
+                expires,
+                now,
+            )
+            .map_err(db)?;
+        let joined = networks.join(" ");
+        auth.state()
+            .set_token_display(&id, (!joined.is_empty()).then_some(joined.as_str()))
+            .map_err(db)?;
+        let t = auth
+            .state()
+            .token(&id)
+            .map_err(db)?
+            .ok_or_else(|| Problem::internal("display vanished"))?;
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "display.create",
+            &id,
+            &serde_json::json!({ "name": name, "networks": networks, "expiresUnixSeconds": expires }),
+        );
+        let code = format!("tt_{id}_{secret}");
+        Ok((
+            StatusCode::CREATED,
+            Json(NewDisplay {
+                link: format!("#/display?code={code}"),
+                code,
+                info: display_info(&auth, &t),
+            }),
+        ))
+    })
+    .await
+}
+
+/// Revoke a wall display (admin).
+///
+/// REQ: OBS-035 (T14.13) — ends the display's sessions at once (the wall shows the sign-in
+/// page). Audited as `display.revoke`.
+#[utoipa::path(delete, path = "/api/v1/displays/{id}", tag = "auth",
+    params(("id" = String, Path, description = "Display ID")),
+    responses((status = 204, description = "Revoked."),
+        (status = 403, body = Problem, description = "Signed in, but not allowed to do this (role, token scope, or agent restriction)."),
+        (status = 404, body = Problem, description = "Not found.")))]
+pub(crate) async fn revoke_display(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    req_ext: axum::http::Extensions,
+    Path(id): Path<String>,
+) -> Result<StatusCode, Problem> {
+    auth.identity_writable()?;
+    let p = principal(&req_ext)?;
+    let (ip, why) = (remote(&auth, &req_ext, &headers), reason(&headers));
+    blocking(move || {
+        let name = auth.state().token(&id).map_err(db)?.map(|t| t.name);
+        if !auth.state().delete_display_token(&id).map_err(db)? {
+            return Err(Problem::not_found(format!("no wall display `{id}`")));
+        }
+        let ended = auth.state().delete_display_sessions(&id).map_err(db)?;
+        auth.record(
+            &auth.actor(&p, ip, why),
+            "display.revoke",
+            &id,
+            &serde_json::json!({ "name": name, "sessionsEnded": ended }),
+        );
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
 }
 
 /// Sign out.
@@ -1371,8 +1640,13 @@ pub(crate) async fn list_tokens(
     let p = principal(&req_ext)?;
     blocking(move || {
         let items = auth.state().tokens_for(p.user_id).map_err(db)?;
+        // REQ: OBS-035 (T14.13) — display tokens are listed under Wall displays.
         Ok(Json(Listed {
-            items: items.iter().map(token_info).collect(),
+            items: items
+                .iter()
+                .filter(|t| !t.is_display())
+                .map(token_info)
+                .collect(),
         }))
     })
     .await

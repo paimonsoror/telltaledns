@@ -70,6 +70,9 @@ pub struct IdToken {
     pub agent_group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_rate_per_minute: Option<u32>,
+    /// REQ: OBS-035 (T14.13) — a display token's networks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_networks: Option<String>,
 }
 
 /// Every identity on the primary, in a stable order (so equal content hashes equally).
@@ -158,7 +161,7 @@ impl State {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut st = c.prepare(
                 "SELECT id, user_id, name, secret_hash, scope, expires, created,
-                        agent_scopes, agent_group, agent_rate_per_minute
+                        agent_scopes, agent_group, agent_rate_per_minute, display_networks
                  FROM tokens ORDER BY id",
             )?;
             let tokens = st
@@ -176,6 +179,7 @@ impl State {
                         agent_rate_per_minute: r
                             .get::<_, Option<i64>>(9)?
                             .and_then(|n| u32::try_from(n).ok()),
+                        display_networks: r.get(10)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -320,13 +324,14 @@ impl State {
             let h = unhex(&t.secret_hash).ok_or_else(|| bad("token hash"))?;
             tx.execute(
                 "INSERT INTO tokens (id, user_id, name, secret_hash, scope, expires, created,
-                     agent_scopes, agent_group, agent_rate_per_minute, origin)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'cluster')
+                     agent_scopes, agent_group, agent_rate_per_minute, display_networks, origin)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'cluster')
                  ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, name = excluded.name,
                      secret_hash = excluded.secret_hash, scope = excluded.scope,
                      expires = excluded.expires, created = excluded.created,
                      agent_scopes = excluded.agent_scopes, agent_group = excluded.agent_group,
-                     agent_rate_per_minute = excluded.agent_rate_per_minute, origin = 'cluster'",
+                     agent_rate_per_minute = excluded.agent_rate_per_minute,
+                     display_networks = excluded.display_networks, origin = 'cluster'",
                 params![
                     t.id,
                     owner,
@@ -337,7 +342,8 @@ impl State {
                     i(t.created),
                     t.agent_scopes,
                     t.agent_group,
-                    t.agent_rate_per_minute.map(i64::from)
+                    t.agent_rate_per_minute.map(i64::from),
+                    t.display_networks
                 ],
             )?;
             ids_seen.push(t.id.clone());

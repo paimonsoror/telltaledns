@@ -861,6 +861,12 @@ pub struct DeviceIdentity {
     /// Why (only from `GET /api/v1/clients/{id}/identity`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<IdentityEvidence>,
+    /// REQ: OBS-034 (T14.12) — when its product or class last changed (RFC 3339), and what it
+    /// looked like before (`Roku player`, or a class such as `unknown`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
 }
 
 /// REQ: OBS-025 — the evidence behind an identity.
@@ -1843,10 +1849,15 @@ pub struct AnomalyFinding {
     /// REQ: OBS-014 — who acknowledged it and when; absent while nobody has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledged: Option<AnomalyAckInfo>,
-    /// REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its
-    /// queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`).
+    /// REQ: OBS-031 — a beacon's (or a chatty loop's) rhythm when it was reported: 24 counts of
+    /// gaps between its queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s
+    /// `binsS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rhythm: Option<Vec<u32>>,
+    /// REQ: OBS-036 — a finding to see, not an anomaly (`chatty_loop`): left out of the sidebar
+    /// badge and the `anomaly` alert rule.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub informational: bool,
 }
 
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex

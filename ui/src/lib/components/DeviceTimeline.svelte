@@ -92,7 +92,7 @@
   const laneHref = (l: S['TimelineLane']) =>
     href('/queries', l.other || !l.domain ? { client, ...window_ } : { client, name: l.domain, match: 'suffix', ...window_ });
   const newAt = (l: S['TimelineLane']) => (l.firstSeenTime ? Date.parse(l.firstSeenTime) / 1000 : null);
-  const evShape: Record<string, string> = { firstSeen: 'hollow', anomaly: 'warn', blockedBurst: 'bad' };
+  const evShape: Record<string, string> = { firstSeen: 'hollow', anomaly: 'warn', blockedBurst: 'bad', identity: 'diamond' };
   const cols = $derived(data ? spans(data) : []);
   const sum = (a: number[], f: number, t: number) => a.slice(f, t).reduce((x, y) => x + y, 0);
 </script>
@@ -193,7 +193,7 @@
           </div>
         </div>
       </div>
-      <p class="muted small">Darker is more queries; red underline: blocked; amber tick: slower than the latency objective. Dots above: <span class="key hollow"></span> first contact, <span class="key warn"></span> anomaly, <span class="key bad"></span> blocked burst; grey ticks are changes.</p>
+      <p class="muted small">Darker is more queries; red underline: blocked; amber tick: slower than the latency objective. Dots above: <span class="key hollow"></span> first contact, <span class="key warn"></span> anomaly, <span class="key bad"></span> blocked burst, <span class="key diamond"></span> the device's identity changed; grey ticks are changes.</p>
     {/if}
   {/if}
 </div>
@@ -275,6 +275,13 @@
   .event.bad,
   .key.bad {
     background: var(--bad);
+  }
+  /* REQ: OBS-034 (T14.12) — an identity change. */
+  .event.diamond,
+  .key.diamond {
+    border-radius: 1px;
+    transform: rotate(45deg);
+    background: var(--text);
   }
   .marker {
     position: absolute;

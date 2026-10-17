@@ -383,9 +383,50 @@ fn obs_025_per_device_state_is_small() {
             .map(|i| format!("{}{i:02}.example", "d".repeat(28)))
             .collect(),
         domains_s: u64::MAX,
+        // REQ: OBS-034 (T14.12) — the last identity change, at its longest.
+        changed_s: Some(u64::MAX),
+        previous: Some("Samsung smart TV (QN90)".into()),
     };
     let n = serde_json::to_vec(&s).unwrap().len() + "\"255.255.255.255\":".len();
     assert!(n <= 1024, "{n} bytes");
+}
+
+// REQ: OBS-034 (T14.12) — a different product or class is a change; a score or level wobble,
+// or a first guess, isn't.
+#[test]
+fn obs_034_identity_changes() {
+    let unknown = DeviceIdentity {
+        client: "192.0.2.5".into(),
+        available: true,
+        class: "unknown".into(),
+        level: "unknown".into(),
+        ..DeviceIdentity::default()
+    };
+    let roku = DeviceIdentity {
+        product: Some("Roku player".into()),
+        product_id: Some("roku-player".into()),
+        class: "streaming".into(),
+        level: "likely".into(),
+        score: 0.8,
+        ..unknown.clone()
+    };
+    assert_eq!(change_of(Some(&unknown), &roku).as_deref(), Some("unknown"));
+    assert_eq!(change_of(None, &roku), None);
+    let wobble = DeviceIdentity {
+        score: 0.7,
+        level: "possibly".into(),
+        ..roku.clone()
+    };
+    assert_eq!(change_of(Some(&roku), &wobble), None);
+    let gone = DeviceIdentity {
+        available: false,
+        ..roku.clone()
+    };
+    assert_eq!(change_of(Some(&gone), &unknown), None);
+    assert_eq!(
+        change_of(Some(&roku), &unknown).as_deref(),
+        Some("Roku player")
+    );
 }
 
 // REQ: OBS-025 — AC (8): two nodes' identities of one device agree after merging (the

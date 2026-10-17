@@ -2120,6 +2120,7 @@ mod anomaly_tests {
             detail: format!("{observed} queries"),
             nodes: Vec::new(),
             acknowledged: None,
+            informational: false,
             rhythm: None,
         }
     }

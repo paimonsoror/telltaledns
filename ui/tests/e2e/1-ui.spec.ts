@@ -2224,6 +2224,8 @@ test('obs_034 device timeline', async () => {
     events: [
       { time: new Date((day + 168 * 300) * 1000).toISOString(), timeUnixSeconds: day + 168 * 300, kind: 'firstSeen', summary: 'first query to ntp.org', href: '#/queries?client=192.168.2.14&name=ntp.org&match=suffix', domain: 'ntp.org' },
       ...[30, 100, 200].map((i) => ({ time: new Date((day + i * 300) * 1000).toISOString(), timeUnixSeconds: day + i * 300, kind: 'blockedBurst', summary: '12 blocked in 5 min, mostly ads.example', href: '#/queries?client=192.168.2.14&status=blocked', domain: 'ads.example' })),
+      // REQ: OBS-034 (T14.12) — the device's identity changed.
+      { time: new Date((day + 170 * 300) * 1000).toISOString(), timeUnixSeconds: day + 170 * 300, kind: 'identity', summary: 'now looks like Roku player (was unknown)', href: '#/clients?device=192.168.2.14&view=rhythm' },
     ],
     markers: [{ t: new Date((day + 3600) * 1000).toISOString(), tUnixMs: (day + 3600) * 1000, kind: 'config.applied', summary: 'configuration 312 applied' }],
     source: 'querylog', truncated: false,
@@ -2240,7 +2242,8 @@ test('obs_034 device timeline', async () => {
   await expect(cv).toHaveAttribute('data-lanes', '3');
   await expect(cv).toHaveAttribute('data-bins', '288');
   await expect(tl.getByTestId('timeline-lane')).toHaveCount(3);
-  await expect(tl.getByTestId('timeline-event')).toHaveCount(4);
+  await expect(tl.getByTestId('timeline-event')).toHaveCount(5);
+  await expect(tl.locator('[data-testid="timeline-event"][data-kind="identity"]')).toHaveClass(/diamond/);
   await expect(tl.locator('[data-testid="timeline-event"][data-kind="blockedBurst"]')).toHaveCount(3);
   await expect(tl.getByTestId('timeline-marker')).toHaveCount(1);
   await expect(tl.getByTestId('timeline-new')).toHaveCount(1);
@@ -2389,4 +2392,98 @@ test('obs_035 wall', async () => {
   await page.keyboard.press('Escape');
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.locator('nav.side')).toBeVisible();
+});
+
+// REQ: OBS-036 — a chatty loop is shown with its strip and marked informational, and the
+// sidebar badge doesn't count it.
+test('obs_036 chatty loop', async () => {
+  const strip = Array.from({ length: 24 }, (_, i) => (i === 3 ? 1400 : i === 4 ? 20 : 0));
+  const f = (id: string, kind: string, informational: boolean) => ({
+    id, kind, client: '192.168.2.14', domain: 'ntp.org', windowStart: '2026-10-17T03:00:00.000Z', windowSeconds: 3600,
+    observed: 1440, baseline: 2.5, spread: 98, threshold: 120, detail: 'asked every 2.5 s: 1440 queries this hour (informational)',
+    rhythm: strip, ...(informational ? { informational: true } : {}),
+  });
+  let items = [f('6a2c0e00d1b2c3d4', 'chatty_loop', true)];
+  await page.route('**/api/v1/analytics/anomalies?*', (route) => route.fulfill({ json: { items } }));
+  await page.goto('/#/anomalies');
+  await page.reload(); // the sidebar badge loads at start
+  const card = page.getByTestId('anomaly');
+  await expect(card).toContainText('Chatty loop');
+  await expect(card.getByTestId('informational')).toBeVisible();
+  await expect(card.getByTestId('rhythm').locator('rect.dominant')).toHaveAttribute('data-bin', '3');
+  await expect(page.locator('a.nav[href="#/anomalies"] .count')).toHaveCount(0);
+  // A real anomaly beside it is counted.
+  items = [...items, f('6a2c0e00e1b2c3d4', 'beacon', false)];
+  await page.reload();
+  await expect(page.locator('a.nav[href="#/anomalies"] .count')).toHaveText('1');
+  await page.unroute('**/api/v1/analytics/anomalies?*');
+});
+
+// REQ: OBS-035 — the Wall button sits in the header between pause and theme, styled like them
+// (Advanced view), and opens the wall.
+test('obs_035 wall button in the header', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  const wall = page.getByTestId('open-wall');
+  await expect(wall).toHaveClass(/icon-btn/);
+  const order = await page.locator('header.top .icon-btn').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''));
+  const i = order.indexOf('Wall display');
+  expect(order[i - 1]).toBe('Pause blocking');
+  expect(order[i + 1]).toMatch(/^Theme:/);
+  const [w, t] = [await wall.boundingBox(), await page.getByRole('button', { name: /^Theme:/ }).boundingBox()];
+  expect(Math.abs(w!.y - t!.y)).toBeLessThan(2);
+  expect(Math.abs(w!.height - t!.height)).toBeLessThan(2);
+  await wall.click();
+  await expect(page.getByTestId('wall')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Simple', exact: true }).click();
+  await expect(page.getByTestId('open-wall')).toHaveCount(0);
+});
+
+// REQ: OBS-035 (T14.13, ADR-140) — a wall display: an admin makes a link, a fresh browser opens
+// it and sees only the wall (other pages and changes refused), and revoking it signs the
+// screen out.
+test('obs_035 wall display link', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/settings?tab=users');
+  const card = page.getByTestId('wall-displays');
+  await card.getByTestId('display-name').fill('hallway');
+  await card.getByTestId('display-create').click();
+  const shown = card.getByTestId('display-link');
+  await expect(shown).toContainText('#/display?code=tt_');
+  const link = (await shown.locator('.link').textContent())!.trim();
+  await expect(card.getByTestId('display-row')).toHaveCount(1);
+  // The API never lists it among the user's tokens.
+  const tokens = await (await page.request.get('/api/v1/tokens')).json();
+  expect(tokens.items.some((t: { name: string }) => t.name === 'hallway')).toBe(false);
+
+  const ctx = await page.context().browser()!.newContext();
+  const wall = await ctx.newPage();
+  await wall.goto(link + '&panels=slo');
+  await expect(wall.getByTestId('wall')).toBeVisible();
+  await expect(wall.getByTestId('wall-panel-slo')).toBeVisible();
+  expect(wall.url()).not.toContain('code=');
+  // Only the wall: another page still shows the wall, Esc stays.
+  await wall.goto(new URL('/#/settings', wall.url()).toString());
+  await expect(wall.getByTestId('wall')).toBeVisible();
+  await wall.keyboard.press('Escape');
+  await expect(wall.getByTestId('wall')).toBeVisible();
+  // Its session reads the wall's data and nothing else.
+  expect((await wall.request.get('/api/v1/stats/slo')).status()).toBe(200);
+  expect((await wall.request.get('/api/v1/clients')).status()).toBe(403);
+  expect((await wall.request.get('/api/v1/tokens')).status()).toBe(403);
+  const me = await (await wall.request.get('/api/v1/auth/me')).json();
+  expect(me.display).toBe('hallway');
+  // The code is no API token.
+  const code = new URL(link.replace('#/display', '/display')).searchParams.get('code')!;
+  expect((await wall.request.get('/api/v1/stats/slo', { headers: { authorization: `Bearer ${code}` } })).status()).toBe(401);
+
+  // Revoked: the screen is signed out.
+  await card.getByTestId('display-revoke').click();
+  await expect(card.getByTestId('display-row')).toHaveCount(0);
+  expect((await wall.request.get('/api/v1/stats/slo')).status()).toBe(401);
+  await wall.reload();
+  await expect(wall.getByTestId('wall')).toHaveCount(0);
+  await ctx.close();
 });

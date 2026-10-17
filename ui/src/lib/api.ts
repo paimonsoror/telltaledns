@@ -102,6 +102,11 @@ export const api = {
   totpEnable: (code: string) => post<S['RecoveryCodes']>('/auth/totp/enable', { code }),
   totpDisable: (password: string) => post<void>('/auth/totp/disable', { password }),
   tokens: () => get<S['Listed_TokenInfo']>('/tokens'),
+  // REQ: OBS-035 (T14.13) — wall displays.
+  displays: () => get<S['Listed_DisplayInfo']>('/displays'),
+  createDisplay: (b: S['CreateDisplay']) => post<S['NewDisplay']>('/displays', b),
+  revokeDisplay: (id: string) => call<void>('DELETE', `/displays/${encodeURIComponent(id)}`),
+  openDisplay: (b: S['OpenDisplay']) => post<S['DisplayOpened']>('/auth/display', b),
   createToken: (b: S['CreateToken']) => post<S['NewToken']>('/tokens', b),
   deleteToken: (id: string) => call<void>('DELETE', `/tokens/${encodeURIComponent(id)}`),
   users: () => get<S['Listed_UserInfo']>('/users'),

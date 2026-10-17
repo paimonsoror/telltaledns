@@ -10,6 +10,7 @@
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
+  import WallDisplays from '../lib/components/WallDisplays.svelte';
 
   const tabs = $derived<TabItem[]>(
     [
@@ -628,6 +629,8 @@
         <p class="muted small">Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.</p>
       </form>
     </section>
+    <!-- REQ: OBS-035 (T14.13) — wall displays. -->
+    <WallDisplays />
   {:else if tab === 'audit' && can('admin')}
     <section class="card">
       <div class="card-head">

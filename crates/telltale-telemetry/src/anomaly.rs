@@ -16,6 +16,9 @@
 //! - **DGA-like names** (T7.14): first-seen registrable domains whose label looks generated
 //!   ([`crate::dga::score`]); one finding per device per hour with at least
 //!   [`DGA_MIN_PER_HOUR`] of them.
+//! - **Chatty loop** (OBS-036, informational): a tracked domain asked at one steady rhythm
+//!   faster than every 30 s for an hour ([`CHATTY_MIN_GAPS`] gaps, [`CHATTY_SHARE_PCT`] % in one
+//!   rhythm bin from 1 s to 25 s); once per streak.
 //!
 //! It also keeps a feed of first-seen domains (after a device's first day), with their scores,
 //! and per tracked pair a **rhythm** (REQ: OBS-031): this hour's inter-arrival gaps in
@@ -52,6 +55,13 @@ const MAX_FINDINGS: usize = 1000;
 pub const DGA_MIN_PER_HOUR: u32 = 2;
 /// First-seen domains kept in the feed (oldest dropped first).
 const MAX_NEW_DOMAINS: usize = 2000;
+/// REQ: OBS-036 — a chatty loop: at least this many gaps in the hour...
+pub const CHATTY_MIN_GAPS: u32 = 120;
+/// ...this share of them (percent) in one rhythm bin...
+pub const CHATTY_SHARE_PCT: u32 = 80;
+/// ...and that bin between these (1–1.5 s up to 17–25 s).
+pub const CHATTY_BINS: std::ops::RangeInclusive<usize> = 1..=8;
+
 /// REQ: OBS-031 — rhythm bins per tracked pair.
 pub const RHYTHM_BINS: usize = 24;
 /// REQ: OBS-031 — the rhythm bins' upper bounds in milliseconds (ratio about 1.5): bin 0 is under
@@ -176,16 +186,19 @@ pub enum Kind {
     Beacon,
     NxdomainStorm,
     Dga,
+    /// REQ: OBS-036 — informational: shown, never counted as an anomaly.
+    ChattyLoop,
 }
 
 impl Kind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::RateSpike,
         Self::DomainVolume,
         Self::Drift,
         Self::Beacon,
         Self::NxdomainStorm,
         Self::Dga,
+        Self::ChattyLoop,
     ];
     pub const fn label(self) -> &'static str {
         match self {
@@ -195,7 +208,14 @@ impl Kind {
             Self::Beacon => "beacon",
             Self::NxdomainStorm => "nxdomain_storm",
             Self::Dga => "dga",
+            Self::ChattyLoop => "chatty_loop",
         }
+    }
+
+    /// REQ: OBS-036 — a finding to see, not an anomaly: kept out of the badge and the anomaly
+    /// alert rule.
+    pub const fn informational(self) -> bool {
+        matches!(self, Self::ChattyLoop)
     }
 }
 
@@ -286,6 +306,9 @@ struct Tracked {
     rhythm: [u16; RHYTHM_BINS],
     #[serde(default)]
     rhythm_long: [u16; RHYTHM_BINS],
+    /// REQ: OBS-036 — this streak of chatty hours is reported.
+    #[serde(default)]
+    chatty_reported: bool,
 }
 
 impl Tracked {
@@ -305,7 +328,23 @@ impl Tracked {
             last_ms: 0,
             rhythm: [0; RHYTHM_BINS],
             rhythm_long: [0; RHYTHM_BINS],
+            chatty_reported: false,
         }
+    }
+
+    /// REQ: OBS-036 — the hour's dominant rhythm bin, if it makes a chatty loop.
+    fn chatty_bin(&self) -> Option<usize> {
+        let total: u32 = self.rhythm.iter().map(|&n| u32::from(n)).sum();
+        if total < CHATTY_MIN_GAPS {
+            return None;
+        }
+        let (bin, top) = self
+            .rhythm
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(&a.0)))?;
+        (CHATTY_BINS.contains(&bin) && u32::from(*top) * 100 >= CHATTY_SHARE_PCT * total)
+            .then_some(bin)
     }
 
     /// REQ: OBS-031 — folds the hour into the decayed copy and starts a new hour.
@@ -906,7 +945,7 @@ impl Engine {
                 t.fold_rhythm();
             }
             for f in &out[first..] {
-                if f.kind != Kind::Beacon {
+                if f.kind != Kind::Beacon && f.kind != Kind::ChattyLoop {
                     continue;
                 }
                 if let Some(t) = client
@@ -1007,6 +1046,46 @@ impl Engine {
                         ),
                     });
                 }
+            }
+            // REQ: OBS-036 — a steady loop faster than every 30 s, once per streak.
+            match t.chatty_bin() {
+                Some(bin) if learned && !t.chatty_reported => {
+                    t.chatty_reported = true;
+                    let gaps: u32 = t.rhythm.iter().map(|&n| u32::from(n)).sum();
+                    let share = u32::from(t.rhythm[bin]) * 100 / gaps.max(1);
+                    let lo = if bin == 0 {
+                        0
+                    } else {
+                        RHYTHM_EDGES_MS[bin - 1]
+                    };
+                    let hi = RHYTHM_EDGES_MS[bin];
+                    let every = if t.n_intervals >= 4 {
+                        let (m, _) = mean_std(t.gaps());
+                        m
+                    } else {
+                        f64::from(u32::try_from(u64::midpoint(lo, hi)).unwrap_or(0)) / 1000.0
+                    };
+                    out.push(Finding {
+                        kind: Kind::ChattyLoop,
+                        client: key,
+                        domain: Some(t.domain.clone()),
+                        window_start_s: start,
+                        window_s: 3600,
+                        observed: f64::from(t.hour),
+                        baseline: every,
+                        spread: f64::from(share),
+                        threshold: f64::from(CHATTY_MIN_GAPS),
+                        detail: format!(
+                            "asked every {every:.1} s: {} queries this hour, {share}% of the gaps \
+                             {:.1}–{:.1} s apart (informational)",
+                            t.hour,
+                            f64::from(u32::try_from(lo).unwrap_or(0)) / 1000.0,
+                            f64::from(u32::try_from(hi).unwrap_or(0)) / 1000.0
+                        ),
+                    });
+                }
+                Some(_) => {}
+                None => t.chatty_reported = false,
             }
             t.hour = 0;
         }

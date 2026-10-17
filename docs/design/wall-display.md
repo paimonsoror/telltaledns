@@ -90,4 +90,4 @@ Recorded in ADR-135:
   is checked with a real 5 s timer (the suite shares one page, so no fake clock).
 - **Not done here:** the Pi 4 Chromium CPU figure (no Pi desktop to measure on, and the live Pi is
   off limits); the demo screenshot and GIF; the viewer / kiosk session (§8: proposed to the owner).
-- A **Wall** link on the dashboard in the Advanced view. Auth unchanged.
+- A **Wall** link on the dashboard in the Advanced view. Auth unchanged. (Moved on 2026-10-17, owner request: an icon button at the top right between pause and the theme, styled like them.)

@@ -736,6 +736,11 @@
           "description": "REQ: CLU-013 — the cluster is pinned to an older version, so configuration changes wait\n(while pinned; raise `for_secs` if you pin on purpose for long).",
           "type": "string",
           "const": "cluster_pinned"
+        },
+        {
+          "description": "REQ: OBS-036 — a device asks a domain at a steady rhythm faster than every 30 s\n(informational findings, which `anomaly` leaves out; one alert per finding).",
+          "type": "string",
+          "const": "chatty_loop"
         }
       ]
     },

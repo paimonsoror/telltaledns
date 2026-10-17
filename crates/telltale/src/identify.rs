@@ -59,6 +59,19 @@ pub(crate) struct Seen {
     /// When `domains` was last refreshed.
     #[serde(default)]
     pub(crate) domains_s: u64,
+    /// REQ: OBS-034 (T14.12) — when its product or class last changed, and what it was.
+    #[serde(default)]
+    pub(crate) changed_s: Option<u64>,
+    #[serde(default)]
+    pub(crate) previous: Option<String>,
+}
+
+/// REQ: OBS-034 (T14.12) — what a device looked like before, if `new` is a different product
+/// or class than `old` (a score or level wobble isn't a change; neither is a first guess).
+pub(crate) fn change_of(old: Option<&DeviceIdentity>, new: &DeviceIdentity) -> Option<String> {
+    let old = old.filter(|o| o.available)?;
+    let key = |i: &DeviceIdentity| (i.product_id.clone(), i.class.clone());
+    (key(old) != key(new)).then(|| old.product.clone().unwrap_or_else(|| old.class.clone()))
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -213,6 +226,8 @@ pub(crate) fn to_identity(key: &str, g: &Guess, inp: &Inputs, at_s: u64) -> Devi
             at_s.saturating_mul(1_000_000),
         )),
         node: None,
+        changed_at: None,
+        previous: None,
         evidence: Some(IdentityEvidence {
             domains: g
                 .domains
@@ -259,6 +274,8 @@ pub(crate) fn override_identity(key: &str, kind: DeviceClass, at_s: u64) -> Devi
         )),
         node: None,
         evidence: None,
+        changed_at: None,
+        previous: None,
     }
 }
 
@@ -489,7 +506,6 @@ impl Identifier {
                 })
             })
             .collect();
-        let snapshot_seen = seen.clone();
         drop(seen);
         merge_by_mac(&mut devices);
         let (sigs, problem) = load_catalog(&cfg);
@@ -498,6 +514,8 @@ impl Identifier {
         }
         let dynamic = src.pipeline.current();
         let clients = &dynamic.policy.clients;
+        let before = self.current.load_full();
+        let mut changes: Vec<(String, String)> = Vec::new();
         let mut by_client = BTreeMap::new();
         for d in &devices {
             let ident = clients.identify(d.ip, None, None, &src.pipeline.neighbors);
@@ -513,8 +531,30 @@ impl Identifier {
             };
             identity.suggested_group =
                 suggested_group(&cfg, &identity.class, clients.group_names(ident));
+            if let Some(prev) = change_of(before.by_client.get(&d.key), &identity) {
+                changes.push((d.key.clone(), prev));
+            }
             by_client.insert(d.key.clone(), identity);
         }
+        // REQ: OBS-034 (T14.12) — the last change per device, kept in `devices.json`.
+        let snapshot_seen = {
+            let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+            for (k, prev) in changes {
+                if let Some(s) = seen.get_mut(&k) {
+                    s.changed_s = Some(now);
+                    s.previous = Some(prev);
+                }
+            }
+            for (k, i) in &mut by_client {
+                if let Some(s) = seen.get(k) {
+                    i.changed_at = s
+                        .changed_s
+                        .map(|t| telltale_api::time::format_us(t.saturating_mul(1_000_000)));
+                    i.previous.clone_from(&s.previous);
+                }
+            }
+            seen.clone()
+        };
         self.current.store(Arc::new(Snapshot {
             reason: None,
             by_client,
