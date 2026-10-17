@@ -54,6 +54,16 @@
       "docs": "heatmap"
     },
     {
+      "id": "flow",
+      "title": "Where queries go",
+      "term": "Query flow (Sankey diagram)",
+      "summary": "One diagram from groups through the decision (cached, forwarded, blocked, …) and the upstream to the response code, each band as wide as its number of answers.",
+      "when": "You want proportions at a glance: how much of the kids' traffic is blocked, which upstream gives the SERVFAILs, or how one device's queries are answered.",
+      "example": "A thin red band from quad9-1 to SERVFAIL: 40 of the hour's 1,000 answers, every one from that upstream.",
+      "caution": "Each band is counted for exactly its pair, never split in proportion. A device's flow comes from the query log (the last 24 hours at most). Minutes from before 0.5 have no flow counts.",
+      "docs": "flow"
+    },
+    {
       "id": "slo-attribution",
       "title": "Who spent the error budget?",
       "term": "Error-budget attribution",

@@ -503,6 +503,28 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: OBS-032 (ADR-132)
+        Tool {
+            name: "query_flow",
+            description: "Read-only. Where queries went: groups -> decision (status: cached, forwarded, blocked, ...) -> upstream -> response code, as nodes and links. Every link is an exact counter for that pair (no proportional split); a status whose count exceeds what leaves it has deadEnd answers (dropped queries get no response code). Network-wide from the time buckets (partial when some buckets predate the counts), or one device (client, its IP address) from the query log over at most the last 24 hours (truncated when the read stopped early; refused at privacy level 2+). Use it to see what share of a group's traffic is blocked, which upstream gives the SERVFAILs, or how one device's queries are answered.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "window": {"type": "string", "description": "Start: relative like -6h or RFC 3339 (default -1h; a device -24h)."},
+                "client": {"type": "string", "description": "One device's IP address."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "flow".into(),
+                    query(
+                        "/api/v1/stats/flow",
+                        a,
+                        &[("window", "from"), ("client", "client"), ("scope", "scope")],
+                    ),
+                )])
+            },
+        },
         Tool {
             name: "new_domains",
             description: "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",

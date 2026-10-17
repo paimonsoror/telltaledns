@@ -112,6 +112,10 @@ A custom, append-only columnar segment format optimized for "filter by time, cli
 - **Traces:** with `[telemetry.otlp] endpoint` and `traces_sample_every` (1 in N) or `traces_slow_ms`, the sink queues the chosen events (≤ 4,096; more dropped, counted) as the privacy level keeps them; a task sends them every 5 s, ≤ 512 per request, as OTLP/HTTP JSON to `<endpoint>/v1/traces`: a SERVER span (`DNS <qtype>`, the query's attributes) and, when `t_upstream_us > 0`, a CLIENT child span for the upstream wait placed at the query's end. `telltale_traces_total{result}`.
 - **Lookup:** `GET /api/v1/queries?trace=<32 hex>` searches `[ts, ts+1)` and keeps rows whose recomputed ID matches (after federation, so older nodes still answer); the UI's `#/queries?trace=`; MCP `search_queries` `trace`.
 
+### 5.3 Query flow (OBS-032, ADR-132)
+- **Counts:** each minute bucket counts four joints per answer: `group_status` (always), then `status_upstream` and `upstream_rcode` when an upstream is on the event, else `status_rcode`; a sorted array of packed keys allocated with the minute's first answer; stored as section `F` by name (`<group>/<status>`, `<status>/<rcode>`, `<status>/<upstream>`, `<upstream>/<rcode>`), summed into hours and days.
+- **Read:** `GET /api/v1/stats/flow?from&to&scope&client` (`nodes` per stage, `links` with exact counts, dead ends for statuses without a response code, `source` `buckets` or `querylog`, `truncated`, `partial`, `missingNodes`); a device from the query log over the last 24 hours (vqlog), refused at privacy level 2 and above. MCP `query_flow`.
+
 ### 5.2 Latency heatmap (OBS-030, ADR-130)
 - **Counts:** each minute bucket counts answers per `BUCKETS_US` bucket (16 bounds and the overflow, the same as `telltale_query_duration_seconds`) per answer path (`cache`, `upstream`, `local`, `synthesized`) and per upstream; allocated with the minute's first answer, not kept per second; stored in a tagged section (`L`) older builds skip, summed into hours and days.
 - **Exemplars:** the sink that fills the OpenMetrics slots also keeps the last 512 it chose (trace ID, time, latency, path, upstream) in a ring; nothing persisted.

@@ -757,3 +757,122 @@ fn obs_030_latency_rows_cost_under_50_ns_per_event() {
     );
     assert!(added < 50.0, "+{added:.1} ns per event");
 }
+
+// REQ: OBS-032 (ADR-132) — 1,000 answers over two groups and two upstreams: group → status
+// counts every answer; status → upstream and upstream → response code each count the 290 that
+// asked an upstream; status → response code the rest but the 10 dropped (no response code: a
+// dead end); the 40 SERVFAILs from upstream 1 are exactly that link; names on storing.
+#[test]
+fn obs_032_minutes_count_the_flow_joints_exactly() {
+    use crate::agg::{Joint, flow_key};
+    let mut agg = Aggregates::new();
+    let t0 = 1_791_072_000_000_000;
+    let c = ipv4(192, 168, 1, 20);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    let mut ts = t0;
+    let mut add = |n: u32, group: u16, status: Status, upstream: u16, rcode: Option<u8>| {
+        for _ in 0..n {
+            let mut e = query(ts, c, status, 900);
+            ts += 1;
+            (e.group, e.upstream, e.rcode) = (group, upstream, rcode);
+            agg.record(&Record::Query(e, name));
+        }
+    };
+    add(500, 0, Status::Cached, 0, Some(0));
+    add(200, 1, Status::Blocked, 0, Some(3));
+    add(80, 0, Status::Forwarded, 1, Some(0));
+    add(80, 1, Status::Forwarded, 1, Some(0));
+    add(40, 0, Status::ServFail, 1, Some(2));
+    add(90, 1, Status::Forwarded, 2, Some(0));
+    add(10, 0, Status::Dropped, 0, None);
+    let (_, m) = &agg.series(Resolution::Minute, 0, u64::MAX)[0];
+    let f = m.flow.as_deref().unwrap();
+    let sum = |j: Joint| -> u32 {
+        f.live
+            .iter()
+            .filter(|(k, _)| crate::agg::flow_unkey(*k).0 == j)
+            .map(|(_, n)| n)
+            .sum()
+    };
+    assert_eq!(sum(Joint::GroupStatus), 1000);
+    assert_eq!(sum(Joint::StatusUpstream), 290);
+    assert_eq!(sum(Joint::UpstreamRcode), 290);
+    assert_eq!(
+        sum(Joint::StatusRcode),
+        700,
+        "the 10 dropped have no response code"
+    );
+    let at = |k: u32| f.live.iter().find(|(x, _)| *x == k).map_or(0, |(_, n)| *n);
+    assert_eq!(at(flow_key(Joint::UpstreamRcode, 1, 2)), 40);
+    // Links out of every group equal its count.
+    for (g, n) in m.groups.iter().enumerate() {
+        let out: u32 = Status::ALL
+            .iter()
+            .map(|s| at(flow_key(Joint::GroupStatus, g, *s as usize)))
+            .sum();
+        assert_eq!(out, *n, "group {g}");
+    }
+    let mut named = m.clone();
+    named.name_flow(&["default", "kids"], &["", "quad9-1", "quad9-2"]);
+    let f = named.flow.as_deref().unwrap();
+    let get = |k: &str| {
+        f.named
+            .iter()
+            .find(|(x, _)| &**x == k)
+            .map_or(0, |(_, n)| *n)
+    };
+    assert_eq!(get("ur:quad9-1/2"), 40);
+    assert_eq!(get("su:forwarded/quad9-2"), 90);
+    assert_eq!(get("gs:kids/blocked"), 200);
+    assert_eq!(get("sr:cached/0"), 500);
+    assert!(
+        agg.series(Resolution::Second, 0, u64::MAX)[0]
+            .1
+            .flow
+            .is_none(),
+        "minute buckets only"
+    );
+}
+
+/// REQ: OBS-032 — the flow joints cost less than 50 ns per event (switched off and on,
+/// interleaved). Optimized builds only.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing: cargo test --release")]
+fn obs_032_flow_joints_cost_under_50_ns_per_event() {
+    let n = 1_000_000u64;
+    let c = ipv4(10, 0, 0, 1);
+    let name = crate::event::Name::from_wire(&wire("x.example"));
+    let events: Vec<QueryEvent> = (0..n)
+        .map(|i| {
+            let status = Status::ALL[usize::try_from(i % 6).unwrap()];
+            let mut e = query(1_791_072_000_000_000 + i * 50, c, status, 900);
+            e.group = u16::try_from(i % 5).unwrap();
+            e.upstream = u16::try_from(i % 4).unwrap();
+            e.rcode = Some(u8::try_from(i % 4).unwrap());
+            e
+        })
+        .collect();
+    let run = |on: bool| {
+        let mut agg = Aggregates::new();
+        agg.flow_joints = on;
+        let t = Instant::now();
+        for e in &events {
+            agg.record(&Record::Query(*e, name));
+        }
+        t.elapsed()
+    };
+    let (mut off, mut on) = (Duration::ZERO, Duration::ZERO);
+    for _ in 0..3 {
+        off += run(false);
+        on += run(true);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let per = |d: Duration| d.as_nanos() as f64 / (3 * n) as f64;
+    let added = per(on) - per(off);
+    eprintln!(
+        "obs_032: {:.1} ns/event off, {:.1} on: +{added:.1} ns",
+        per(off),
+        per(on)
+    );
+    assert!(added < 50.0, "+{added:.1} ns per event");
+}

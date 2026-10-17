@@ -1003,6 +1003,11 @@ impl Backend for Federated {
         }
         out
     }
+    // REQ: OBS-032 — the setting is the cluster's (replicated configuration): this node's.
+    fn qlog_privacy_level(&self) -> u8 {
+        self.local.qlog_privacy_level()
+    }
+
     // REQ: OBS-029 (ADR-129) — every node's hours for a device or a name, summed; an hour is
     // covered when every node that answered had the key in its list.
     fn heatmap_key(

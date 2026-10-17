@@ -41,6 +41,8 @@ pub fn merge_timeseries(parts: Vec<Vec<TimeBucket>>) -> Vec<TimeBucket> {
         add(&mut t.servfail_by_upstream, b.servfail_by_upstream);
         add(&mut t.slow_by_upstream, b.slow_by_upstream);
         add(&mut t.slow_by_rcode, b.slow_by_rcode);
+        // REQ: OBS-032 — flow joints add by key.
+        add(&mut t.flow, b.flow);
         // REQ: OBS-030 — latency rows add element-wise.
         for (k, row) in b.latency_hist {
             let into = t.latency_hist.entry(k).or_default();

@@ -26,6 +26,7 @@
     analyze: 'M4 20V11M10 20V5M16 20v-6M2 20h20',
     traffic: 'M3 3h18v18H3zM11 3v18M11 12h10M3 14h8M16 12v9',
     heatmap: 'M3 3h5v5H3zM10 3h5v5h-5zM17 3h4v5h-4zM3 10h5v5H3zM10 10h5v5h-5zM17 10h4v5h-4zM3 17h5v4H3zM10 17h5v4h-5zM17 17h4v4h-4z',
+    flow: 'M3 5h4c5 0 5 7 10 7h4M3 12h4c5 0 5-7 10-7h4M3 19h4c5 0 5-7 10-7',
     bell: 'M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0',
     inbox: 'M4 13h4l2 3h4l2-3h4M4 13l2.5-8h11l2.5 8v6H4z',
     // REQ: OBS-015 — health: one shape per level (circle ✓, triangle !, octagon ×).

@@ -57,6 +57,87 @@ pub struct Counts {
     /// REQ: OBS-030 (ADR-130) — answers per latency bucket, per path and upstream; minute
     /// buckets only (not per second), from the minute's first answer.
     pub lat: Option<Box<Lat>>,
+    /// REQ: OBS-032 (ADR-132) — the query flow's joint counts; minute buckets only, from the
+    /// minute's first answer.
+    pub flow: Option<Box<Flow>>,
+}
+
+/// REQ: OBS-032 — the four joints of the query flow, each counted for exactly its pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Joint {
+    /// Group → status, every answer.
+    GroupStatus,
+    /// Status → response code, answers that asked no upstream.
+    StatusRcode,
+    /// Status → upstream, answers an upstream was asked for.
+    StatusUpstream,
+    /// Upstream → response code, the same answers.
+    UpstreamRcode,
+}
+
+impl Joint {
+    pub const ALL: [Self; 4] = [
+        Self::GroupStatus,
+        Self::StatusRcode,
+        Self::StatusUpstream,
+        Self::UpstreamRcode,
+    ];
+    /// The prefix of the joint's stored keys.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::GroupStatus => "gs",
+            Self::StatusRcode => "sr",
+            Self::StatusUpstream => "su",
+            Self::UpstreamRcode => "ur",
+        }
+    }
+}
+
+/// A packed live key: the joint, then its two indexes (each below 2^14).
+pub fn flow_key(j: Joint, a: usize, b: usize) -> u32 {
+    let a = u32::try_from(a.min(0x3fff)).unwrap_or(0x3fff);
+    let b = u32::try_from(b.min(0x3fff)).unwrap_or(0x3fff);
+    (u32::from(j as u8) << 28) | (a << 14) | b
+}
+
+/// A packed key's joint and indexes.
+pub fn flow_unkey(k: u32) -> (Joint, usize, usize) {
+    let j = Joint::ALL[((k >> 28) as usize).min(3)];
+    (j, ((k >> 14) & 0x3fff) as usize, (k & 0x3fff) as usize)
+}
+
+/// REQ: OBS-032 (ADR-132) — a bucket's joint counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Flow {
+    /// Packed keys ([`flow_key`]) and counts, sorted by key, in live buckets.
+    pub live: Vec<(u32, u32)>,
+    /// By name, in stored buckets (see [`Counts::name_flow`]): `gs:<group>/<status>`,
+    /// `sr:<status>/<rcode number>`, `su:<status>/<upstream>`, `ur:<upstream>/<rcode number>`;
+    /// sorted.
+    pub named: Vec<(Box<str>, u32)>,
+}
+
+impl Flow {
+    fn bump(&mut self, key: u32) {
+        match self.live.binary_search_by_key(&key, |(k, _)| *k) {
+            Ok(i) => self.live[i].1 = self.live[i].1.saturating_add(1),
+            Err(i) => self.live.insert(i, (key, 1)),
+        }
+    }
+
+    /// Adds `b` into `self` (both the packed and the named keys).
+    pub fn merge(&mut self, b: &Self) {
+        for (k, n) in &b.live {
+            match self.live.binary_search_by_key(k, |(k, _)| *k) {
+                Ok(i) => self.live[i].1 = self.live[i].1.saturating_add(*n),
+                Err(i) => self.live.insert(i, (*k, *n)),
+            }
+        }
+        for (k, n) in &b.named {
+            add_name(&mut self.named, k, *n);
+        }
+    }
 }
 
 /// Latency buckets: [`BUCKETS_US`]' bounds and the overflow (as `telltale_query_duration_seconds`).
@@ -202,6 +283,26 @@ impl Counts {
         }
     }
 
+    /// REQ: OBS-032 — the flow's packed keys as names (`groups` and `ups` as in
+    /// [`Self::name_groups`] and [`Self::name_upstreams`]), for storing.
+    pub fn name_flow(&mut self, groups: &[&str], ups: &[&str]) {
+        let Some(f) = self.flow.as_deref_mut() else {
+            return;
+        };
+        let status = |i: usize| Status::ALL.get(i).map_or("other", |s| s.label());
+        let group = |i: usize| groups.get(i).copied().unwrap_or("other");
+        let up = |i: usize| ups.get(i).copied().unwrap_or("other");
+        for (k, n) in &f.live {
+            let key = match flow_unkey(*k) {
+                (Joint::GroupStatus, g, s) => format!("gs:{}/{}", group(g), status(s)),
+                (Joint::StatusRcode, s, r) => format!("sr:{}/{r}", status(s)),
+                (Joint::StatusUpstream, s, u) => format!("su:{}/{}", status(s), up(u)),
+                (Joint::UpstreamRcode, u, r) => format!("ur:{}/{r}", up(u)),
+            };
+            add_name(&mut f.named, &key, *n);
+        }
+    }
+
     /// REQ: OBS-027 — the per-ID upstream columns of the bad answers as names (`names[id]`,
     /// this process's upstream table; ID 0 and IDs past it are `none` and `other`), for storing.
     pub fn name_upstreams(&mut self, names: &[&str]) {
@@ -272,8 +373,26 @@ fn bump(v: &mut Vec<u32>, id: usize) {
 }
 
 impl Counts {
-    fn add_query(&mut self, e: &QueryEvent, slow_us: u64, with_lat: bool) {
+    fn add_query(&mut self, e: &QueryEvent, slow_us: u64, with_lat: bool, with_flow: bool) {
         self.total = self.total.saturating_add(1);
+        // REQ: OBS-032 — two or three increments: group → status, then status → upstream →
+        // response code, or status → response code (no response code: a dead end).
+        if with_flow {
+            let f = self.flow.get_or_insert_with(Box::default);
+            let st = e.status as usize;
+            let g = usize::from(e.group).min(MAX_IDS - 1);
+            f.bump(flow_key(Joint::GroupStatus, g, st));
+            let rc = e.rcode.map(|rc| usize::from(rc).min(N_RCODE - 1));
+            if e.upstream > 0 {
+                let u = usize::from(e.upstream).min(MAX_IDS - 1);
+                f.bump(flow_key(Joint::StatusUpstream, st, u));
+                if let Some(rc) = rc {
+                    f.bump(flow_key(Joint::UpstreamRcode, u, rc));
+                }
+            } else if let Some(rc) = rc {
+                f.bump(flow_key(Joint::StatusRcode, st, rc));
+            }
+        }
         // REQ: OBS-030 — one bucket index and an increment (answered queries only).
         if with_lat && e.status != Status::Dropped {
             let l = self.lat.get_or_insert_with(Box::default);
@@ -707,6 +826,9 @@ pub struct Aggregates {
     /// REQ: OBS-030 — count the minute buckets' latency rows (on; off only to measure their
     /// cost).
     pub latency_hist: bool,
+    /// REQ: OBS-032 — count the minute buckets' flow joints (on; off only to measure their
+    /// cost).
+    pub flow_joints: bool,
 }
 
 /// The latency objective's default threshold (`[slo] latency_ms = 250`).
@@ -738,6 +860,7 @@ impl Aggregates {
             recent: RecentClients::default(),
             slo_latency_us: DEFAULT_SLO_LATENCY_US,
             latency_hist: true,
+            flow_joints: true,
         }
     }
 
@@ -762,10 +885,10 @@ impl Aggregates {
                 self.recent.add(e.client_ip, ts_s);
                 let slow_us = self.slo_latency_us;
                 if let Some(c) = self.seconds.at(ts_s) {
-                    c.add_query(e, slow_us, false);
+                    c.add_query(e, slow_us, false, false);
                 }
                 if let Some(c) = self.minutes.at(ts_s) {
-                    c.add_query(e, slow_us, self.latency_hist);
+                    c.add_query(e, slow_us, self.latency_hist, self.flow_joints);
                 }
                 if in_hour {
                     self.current.add_query(e, name, self.seq, slow_us);

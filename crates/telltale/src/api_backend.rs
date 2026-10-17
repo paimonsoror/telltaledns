@@ -884,6 +884,10 @@ impl Backend for ApiBackend {
 
     // REQ: OBS-029 (ADR-129) — a device's or a name's hours on this node, from the stored top
     // lists and, for the current hour (and the previous one until it's stored), memory's.
+    fn qlog_privacy_level(&self) -> u8 {
+        self.src.config.load().telemetry.qlog.privacy_level
+    }
+
     fn heatmap_key(
         &self,
         q: &telltale_api::heatmap::KeyQuery,
@@ -4513,6 +4517,9 @@ fn time_buckets(src: &Sources, series: Vec<(u64, Counts)>) -> Vec<TimeBucket> {
             if let Some(lat) = c.lat.as_deref() {
                 lat_rows(&mut b, lat, &ups);
             }
+            if let Some(flow) = c.flow.as_deref() {
+                flow_map(&mut b, flow, &groups, &ups);
+            }
             b
         })
         .collect()
@@ -4547,6 +4554,53 @@ fn lat_rows(b: &mut TimeBucket, lat: &telltale_telemetry::agg::Lat, ups: &[Strin
     }
     for (k, row) in &lat.named_upstream {
         add(format!("upstream:{k}"), row);
+    }
+}
+
+/// The name of a bucket's response-code column (the last holds every higher code).
+fn rcode_column(i: usize) -> String {
+    if i >= N_RCODE - 1 {
+        "other".to_owned()
+    } else {
+        rcode_name(u8::try_from(i).unwrap_or(u8::MAX))
+    }
+}
+
+/// REQ: OBS-032 — a bucket's flow joints as `gs:<group>/<status>`, `sr:<status>/<rcode>`,
+/// `su:<status>/<upstream>`, `ur:<upstream>/<rcode>` (live buckets through this node's group and
+/// upstream tables; stored ones carry names and rcode numbers).
+fn flow_map(
+    b: &mut TimeBucket,
+    flow: &telltale_telemetry::agg::Flow,
+    groups: &[String],
+    ups: &[String],
+) {
+    use telltale_telemetry::agg::{Joint, flow_unkey};
+    let status = |i: usize| Status::ALL.get(i).map_or("other", |s| s.label());
+    let named = |v: &[String], i: usize| {
+        v.get(i)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "other".into())
+    };
+    for (k, n) in &flow.live {
+        let key = match flow_unkey(*k) {
+            (Joint::GroupStatus, g, s) => format!("gs:{}/{}", named(groups, g), status(s)),
+            (Joint::StatusRcode, s, r) => format!("sr:{}/{}", status(s), rcode_column(r)),
+            (Joint::StatusUpstream, s, u) => format!("su:{}/{}", status(s), named(ups, u)),
+            (Joint::UpstreamRcode, u, r) => format!("ur:{}/{}", named(ups, u), rcode_column(r)),
+        };
+        *b.flow.entry(key).or_default() += n;
+    }
+    for (k, n) in &flow.named {
+        let key = match (k.split_at_checked(3), k.rsplit_once('/')) {
+            (Some(("sr:" | "ur:", _)), Some((head, code))) => match code.parse::<usize>() {
+                Ok(r) => format!("{head}/{}", rcode_column(r)),
+                Err(_) => continue,
+            },
+            _ => k.to_string(),
+        };
+        *b.flow.entry(key).or_default() += n;
     }
 }
 

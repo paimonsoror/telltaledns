@@ -1856,6 +1856,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stats/flow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where queries went.
+         * @description The query flow as a diagram's data: groups → decision (status) → upstream → response code.
+         *     Each link is a counter incremented for exactly that pair as queries were answered (no
+         *     proportional split): `group:<name> → status:<label>` for every answer, then
+         *     `status → upstream:<name> → rcode:<name>` for answers an upstream was asked for and
+         *     `status → rcode` for the rest; a status or upstream whose `count` exceeds what leaves it
+         *     has `deadEnd` answers (dropped queries get no response code). Every node's, summed, from the
+         *     time buckets (`source: buckets`; `partial` when some lacked the counts). With `client`, one
+         *     device's flow from the query log over at most the last 24 hours (`source: querylog`;
+         *     `truncated` when the read stopped early); refused at privacy level 2 and above. Example:
+         *     `GET /api/v1/stats/flow?from=-6h`.
+         */
+        get: operations["stats_flow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/heatmap": {
         parameters: {
             query?: never;
@@ -3877,6 +3906,33 @@ export interface components {
             subject: string;
             summary: string;
         };
+        /** @description One link: answers counted for exactly this pair. */
+        FlowLink: {
+            /** Format: int64 */
+            count: number;
+            /** @description Into a SERVFAIL (status or response code). */
+            failure: boolean;
+            source: string;
+            target: string;
+        };
+        /** @description One node of the diagram. */
+        FlowNode: {
+            /**
+             * Format: int64
+             * @description Answers through it (the larger of what comes in and what goes out).
+             */
+            count: number;
+            /**
+             * Format: int64
+             * @description Answers that end here (a dropped query has no response code).
+             */
+            deadEnd: number;
+            /** @description `<stage>:<name>`, what links name. */
+            id: string;
+            name: string;
+            /** @description `group`, `status`, `upstream`, or `rcode`. */
+            stage: string;
+        };
         /** @description A domain sent to other servers (conditional forwarding). */
         ForwardInfo: {
             /** @example corp.example */
@@ -4870,6 +4926,15 @@ export interface components {
                     [key: string]: number;
                 };
                 /**
+                 * @description REQ: OBS-032 — the query flow's joint counts: `gs:<group>/<status>` (every answer),
+                 *     `su:<status>/<upstream>` and `ur:<upstream>/<rcode>` (answers an upstream was asked for),
+                 *     `sr:<status>/<rcode>` (the rest with a response code). Minute and longer buckets; empty
+                 *     before 0.5.
+                 */
+                flow?: {
+                    [key: string]: number;
+                };
+                /**
                  * @description REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds
                  *     and the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and
                  *     by upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.
@@ -5583,6 +5648,33 @@ export interface components {
             /** @description From a signed-in session with two-factor sign-in on: the current code. */
             totp?: string | null;
         };
+        /** @description REQ: OBS-032 — where queries went. */
+        QueryFlow: {
+            client?: string | null;
+            from: string;
+            links: components["schemas"]["FlowLink"][];
+            missingNodes?: string[];
+            /** @description By stage (groups, statuses, upstreams, response codes), largest first. */
+            nodes: components["schemas"]["FlowNode"][];
+            /**
+             * @description Some buckets had answers but no joint counts (stored by an older build, or a node that
+             *     doesn't count them yet): their answers are missing here.
+             */
+            partial: boolean;
+            /** @description `buckets` (the time buckets' joint counts) or `querylog` (one device's rows). */
+            source: string;
+            to: string;
+            /**
+             * Format: int64
+             * @description Answers in the window (group → status links add up to it).
+             */
+            total: number;
+            /**
+             * @description The query log read stopped early, or had more combinations than it returns: the numbers
+             *     cover what it read.
+             */
+            truncated: boolean;
+        };
         /** @description A page of query-log rows, newest first. */
         QueryPage: {
             items: components["schemas"]["QueryRow"][];
@@ -6225,6 +6317,15 @@ export interface components {
             };
             /** @description By status (`cached`, `forwarded`, `blocked`, ...). */
             byStatus: {
+                [key: string]: number;
+            };
+            /**
+             * @description REQ: OBS-032 — the query flow's joint counts: `gs:<group>/<status>` (every answer),
+             *     `su:<status>/<upstream>` and `ur:<upstream>/<rcode>` (answers an upstream was asked for),
+             *     `sr:<status>/<rcode>` (the rest with a response code). Minute and longer buckets; empty
+             *     before 0.5.
+             */
+            flow?: {
                 [key: string]: number;
             };
             /**
@@ -10304,6 +10405,65 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stats_flow: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start (RFC 3339 or relative; default 1 hour ago, or 24 hours for a device).
+                 * @example -1h
+                 */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /** @description One device (its address): its flow from the query log, over at most the last 24 hours. */
+                client?: string;
+                /** @description `cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`. */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Nodes and links. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryFlow"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `privacy_level`: the privacy level hides devices. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A device's flow needs the query log, which is off. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

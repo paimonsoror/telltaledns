@@ -20,6 +20,7 @@
   import Dashboard from './pages/Dashboard.svelte';
   import Traffic from './pages/Traffic.svelte';
   import Heatmap from './pages/Heatmap.svelte';
+  import Flow from './pages/Flow.svelte';
   import Queries from './pages/Queries.svelte';
   import Explain from './pages/Explain.svelte';
   import Analyze from './pages/Analyze.svelte';
@@ -40,6 +41,7 @@
     { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
     { path: '/traffic', label: 'Traffic map', page: Traffic, icon: 'traffic', section: 'Monitor' },
     { path: '/heatmap', label: 'Heatmap', page: Heatmap, icon: 'heatmap', section: 'Monitor' },
+    { path: '/flow', label: 'Flow', page: Flow, icon: 'flow', section: 'Monitor' },
     { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },
     { path: '/analyze', label: 'Analyze', page: Analyze, icon: 'analyze', section: 'Monitor' },
     { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },

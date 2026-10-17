@@ -101,6 +101,8 @@ pub(crate) fn spawn(
                 for (_, c) in &mut rows {
                     c.name_groups(&names);
                     c.name_upstreams(&ups);
+                    // REQ: OBS-032 — the flow joints by group and upstream name too.
+                    c.name_flow(&names, &ups);
                 }
                 let extras = agg
                     .previous_hour_start()

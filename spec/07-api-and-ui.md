@@ -36,6 +36,7 @@ Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framew
 |---|---|
 | **Dashboard** | KPI tiles (queries, blocked %, cache hit %, p95 latency, active clients, nodes up); queries-over-time stacked by status; latency percentiles over time; "where time goes" stage breakdown; top domains/blocked/clients; upstream share + health; scope selector (cluster/site/node) |
 | **Traffic map** | A treemap of the busiest allowed and blocked names this hour, grouped by service, site, or name; live, with the fastest-growing tiles marked (OBS-026) |
+| **Flow** | Groups → decision → upstream → response code as a Sankey diagram (SVG), for the network or one device; links table; a node opens the page behind it (OBS-032) |
 | **Latency heatmap** | Answer time per bucket over time (Dashboard → Where time goes → Heatmap; per upstream on the Upstreams page), with exemplar dots that open their query and the latency objective's line (OBS-030) |
 | **Heatmap** | Days (or a typical week) × time of day for the network, one device, or one name; cells link to the query log; the change markers as ticks (OBS-029) |
 | **Query log** | Virtualized table; live-tail toggle; a filter bar with chips; per-row stage-timing bar; "Why?" (explain) drawer; quick actions (allow/block domain for this client's group) |

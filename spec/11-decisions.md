@@ -1291,6 +1291,13 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-132 — Query flow: four exact joint counters, no proportional splits (Proposed)
+**Context:** T14.6 (OBS-032; design `docs/design/query-flow-sankey.md`). The buckets had marginals (by group, status, rcode) but no joints, so a flow diagram would have had to guess. The owner decided four stages (2026-10-16).
+**Decision:**
+- Each minute bucket counts `group_status` for every answer, and either `status_upstream` + `upstream_rcode` (an upstream on the event) or `status_rcode` (none): every link in the diagram is a counter incremented for exactly that pair.
+- Defaults taken at the start (owner: accept all defaults, 2026-10-16): `status_rcode` counts only the answers that asked no upstream (the design's AC had it count every answer, which can't then be split exactly for a status that sometimes asks an upstream); minute buckets only, as T14.4; a federated read says `partial` (not which node) for buckets without joints; a device from vqlog over the last 24 hours, whose own row cap sets `truncated` (in place of the design's 200k); a backend privacy-level read refuses `client` at level 2; the layout's invariants are checked by Playwright on the drawn SVG (the UI has no unit-test runner); `group_status` is kept in the rollups (the dashboard's traffic-by-group chart could read it later: a follow-up, unchanged here). Agents read it with `analytics:read`, a device's flow included (counts by group, decision, upstream and code, no names: like the device heatmap).
+**Consequences:** a sorted array of at most ~100 keys per minute bucket with answers, two or three binary-search increments per event; no names involved, so nothing for the privacy levels to hide except the device mode.
+
 ## ADR-130 — The latency heatmap: per-minute bucket counts and an exemplar ring (Proposed)
 **Context:** T14.4 (OBS-030; design `docs/design/latency-heatmap.md`). Percentiles per hour hide a DoT cold-start tail or one slow PTR; the Prometheus histogram has the shape but the UI didn't draw it (owner, 2026-10-16).
 **Decision:**

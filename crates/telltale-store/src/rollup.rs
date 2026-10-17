@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use telltale_telemetry::agg::{Bad, Counts, Lat, N_LAT};
+use telltale_telemetry::agg::{Bad, Counts, Flow, Lat, N_LAT};
 use telltale_telemetry::{N_PROTO, N_QTYPE, N_RCODE, N_STATUS, Path as AnswerPath, Status};
 
 use crate::state::StateError;
@@ -128,7 +128,41 @@ pub fn encode(c: &Counts) -> Vec<u8> {
         out.push(LAT_TAG);
         encode_lat(l, &mut out);
     }
+    // REQ: OBS-032 (ADR-132) — the flow joints by name, after the latency rows.
+    if let Some(f) = c.flow.as_deref()
+        && !f.named.is_empty()
+    {
+        out.push(FLOW_TAG);
+        let n = u16::try_from(f.named.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&n.to_le_bytes());
+        for (k, v) in f.named.iter().take(usize::from(n)) {
+            let k = k.as_bytes();
+            let len = u8::try_from(k.len()).unwrap_or(u8::MAX);
+            out.push(len);
+            out.extend_from_slice(&k[..usize::from(len)]);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
     out
+}
+
+/// The flow section's body and what follows it; `None` when damaged.
+fn decode_flow(bytes: &[u8]) -> Option<(Flow, &[u8])> {
+    let (count, mut rest) = bytes.split_first_chunk::<2>()?;
+    let mut flow = Flow::default();
+    for _ in 0..u16::from_le_bytes(*count) {
+        let (&len, entry) = rest.split_first()?;
+        let len = usize::from(len);
+        if entry.len() < len + 4 {
+            return None;
+        }
+        let key = String::from_utf8_lossy(&entry[..len]);
+        let value =
+            u32::from_le_bytes([entry[len], entry[len + 1], entry[len + 2], entry[len + 3]]);
+        rest = &entry[len + 4..];
+        telltale_telemetry::agg::add_name(&mut flow.named, &key, value);
+    }
+    Some((flow, rest))
 }
 
 /// Rows `path:<label>` and `upstream:<name>`, each the bucket count then that many u32s.
@@ -304,6 +338,8 @@ const SLOW_TAG: u8 = b'S';
 const BAD_TAG: u8 = b'B';
 /// Marks the answers per latency bucket (T14.4).
 const LAT_TAG: u8 = b'L';
+/// Marks the flow joints (OBS-032).
+const FLOW_TAG: u8 = b'F';
 
 /// The tagged sections after the fixed columns (see [`encode`]): the named groups and the
 /// slow-answer count. A damaged section ends the reading; what came before it is kept.
@@ -312,6 +348,7 @@ fn decode_tail(mut b: &[u8]) -> Tail {
     let mut slow = 0;
     let mut bad = None;
     let mut lat = None;
+    let mut flow = None;
     while let Some((&tag, rest)) = b.split_first() {
         match tag {
             GROUPS_TAG => match decode_groups(rest) {
@@ -342,19 +379,27 @@ fn decode_tail(mut b: &[u8]) -> Tail {
                 }
                 None => break,
             },
+            FLOW_TAG => match decode_flow(rest) {
+                Some((d, r)) => {
+                    flow = Some(Box::new(d));
+                    b = r;
+                }
+                None => break,
+            },
             _ => break,
         }
     }
-    (groups, slow, bad, lat)
+    (groups, slow, bad, lat, flow)
 }
 
-/// What follows the fixed columns: the named groups, the slow count, the bad answers, and the
-/// latency rows.
+/// What follows the fixed columns: the named groups, the slow count, the bad answers, the
+/// latency rows, and the flow joints.
 type Tail = (
     Vec<telltale_telemetry::agg::NamedGroup>,
     u32,
     Option<Box<Bad>>,
     Option<Box<Lat>>,
+    Option<Box<Flow>>,
 );
 
 /// The named-group section's body (after its tag) and what follows it; `None` when damaged.
@@ -422,7 +467,7 @@ pub fn decode(b: &[u8]) -> Option<Counts> {
     }
     c.upstreams = vec![words.next()?];
     c.upstream_failures = words.next()?;
-    (c.named_groups, c.slow, c.bad, c.lat) = decode_tail(tail);
+    (c.named_groups, c.slow, c.bad, c.lat, c.flow) = decode_tail(tail);
     Some(c)
 }
 
@@ -454,6 +499,9 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     }
     if let Some(bl) = b.lat.as_deref() {
         a.lat.get_or_insert_with(Box::default).merge(bl);
+    }
+    if let Some(bf) = b.flow.as_deref() {
+        a.flow.get_or_insert_with(Box::default).merge(bf);
     }
     for g in &b.named_groups {
         telltale_telemetry::agg::add_named(&mut a.named_groups, &g.name, g.total, g.blocked);
@@ -1120,6 +1168,48 @@ mod tests {
             day.bad.as_deref().unwrap().servfail_status[Status::Refreshed as usize],
             20
         );
+    }
+
+    /// REQ: OBS-032 (T14.6) — the flow joints round-trip by name, after the latency rows, and
+    /// sum into hours; a bucket without them reads as none.
+    #[test]
+    fn obs_032_flow_joints_round_trip_and_roll_up() {
+        use telltale_telemetry::agg::{Joint, flow_key};
+        let mut c = counts(100, 5);
+        let mut f = Flow {
+            live: vec![
+                (flow_key(Joint::GroupStatus, 1, Status::Cached as usize), 60),
+                (
+                    flow_key(Joint::StatusUpstream, Status::Forwarded as usize, 1),
+                    40,
+                ),
+                (flow_key(Joint::UpstreamRcode, 1, 2), 40),
+            ],
+            named: Vec::new(),
+        };
+        f.live.sort_unstable();
+        c.flow = Some(Box::new(f));
+        c.name_flow(&["default", "kids"], &["", "quad9-1"]);
+        let d = decode(&encode(&c)).unwrap();
+        let back = d.flow.as_deref().unwrap();
+        assert!(back.live.is_empty(), "stored by name only");
+        assert_eq!(
+            back.named,
+            [
+                ("gs:kids/cached".into(), 60),
+                ("su:forwarded/quad9-1".into(), 40),
+                ("ur:quad9-1/2".into(), 40)
+            ]
+        );
+        let r = Rollups::in_memory().unwrap();
+        let h0 = 1_791_072_000;
+        r.put_minutes(&[(h0, c.clone()), (h0 + 60, c)]).unwrap();
+        let hour = &r.range(Level::Hour, h0, h0 + 3600).unwrap()[0].1;
+        assert_eq!(
+            hour.flow.as_deref().unwrap().named[2],
+            ("ur:quad9-1/2".into(), 80)
+        );
+        assert!(decode(&encode(&counts(5, 0))).unwrap().flow.is_none());
     }
 
     /// REQ: OBS-030 (T14.4) — latency rows round-trip by path and upstream name, an hour is the

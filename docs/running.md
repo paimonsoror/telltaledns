@@ -2048,6 +2048,14 @@ The dashboard's **Where time goes** card (Advanced view) has two views:
 - Point at a cell (or move with the arrow keys) for its count; select it (or press Enter) to open the query log from that time. The bars on the right and at the bottom sum each row and column; the small ticks are [change markers](#change-markers). **Table** shows it by hour.
 - `GET /api/v1/stats/heatmap?from=-7d&grain=15m` (`kind=client|name`, `key`, `measure=blocked`) and the MCP tool `activity_heatmap` return the same as parallel arrays. A name needs privacy level 0, a device level 1 or lower.
 
+### Flow
+**Monitor → Flow** shows where queries go, as one diagram: **groups** → **decision** (cached, forwarded, blocked, local, …) → **upstream** → **response code**. The width of each band is the number of answers, and red bands end in a SERVFAIL.
+- Every band is a count kept for exactly that pair as queries were answered, never an estimate: each minute counts group → decision for every answer, then decision → upstream → response code for the answers an upstream was asked for, and decision → response code for the rest. A dropped query has no response code, so it ends at its decision.
+- **Network** reads those minute counts, every node of a cluster (15 minutes to 7 days). Minutes from a build before 0.5 have no flow counts: the card says some answers are missing.
+- **Device** (an address) reads that device's queries in the query log, at most the last 24 hours. If the read stops early, the card says so. It needs query-log privacy level 1 or lower.
+- Point at a band for its count and share (of every answer, and of where it comes from); select a node to open what's behind it (a group's settings, the lists for **blocked**, the upstreams, or the query log for a decision or a response code). Nodes under 0.5 % fold into **other** until you tick **Show small**. **Live** refreshes it every 15 seconds. **Table** lists every band. On a phone the stages run top to bottom.
+- `GET /api/v1/stats/flow?from=-6h` (`client` for one device) and the MCP tool `query_flow` return the nodes and links. Grafana has no built-in Sankey panel; a community Sankey plugin can draw the same from that endpoint.
+
 ### Change markers
 Every time chart (the dashboard's, the Cache page's) draws a thin line for each thing that was done to a node, or that the node did to itself, so a change lines up with what it did to the graph:
 

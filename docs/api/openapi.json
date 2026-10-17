@@ -5162,6 +5162,97 @@
         }
       }
     },
+    "/api/v1/stats/flow": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Where queries went.",
+        "description": "The query flow as a diagram's data: groups → decision (status) → upstream → response code.\nEach link is a counter incremented for exactly that pair as queries were answered (no\nproportional split): `group:<name> → status:<label>` for every answer, then\n`status → upstream:<name> → rcode:<name>` for answers an upstream was asked for and\n`status → rcode` for the rest; a status or upstream whose `count` exceeds what leaves it\nhas `deadEnd` answers (dropped queries get no response code). Every node's, summed, from the\ntime buckets (`source: buckets`; `partial` when some lacked the counts). With `client`, one\ndevice's flow from the query log over at most the last 24 hours (`source: querylog`;\n`truncated` when the read stopped early); refused at privacy level 2 and above. Example:\n`GET /api/v1/stats/flow?from=-6h`.",
+        "operationId": "stats_flow",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start (RFC 3339 or relative; default 1 hour ago, or 24 hours for a device).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "-1h"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "One device (its address): its flow from the query log, over at most the last 24 hours.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nodes and links.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryFlow"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`privacy_level`: the privacy level hides devices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A device's flow needs the query log, which is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/heatmap": {
       "get": {
         "tags": [
@@ -10212,6 +10303,69 @@
           }
         }
       },
+      "FlowLink": {
+        "type": "object",
+        "description": "One link: answers counted for exactly this pair.",
+        "required": [
+          "source",
+          "target",
+          "count",
+          "failure"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failure": {
+            "type": "boolean",
+            "description": "Into a SERVFAIL (status or response code)."
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        }
+      },
+      "FlowNode": {
+        "type": "object",
+        "description": "One node of the diagram.",
+        "required": [
+          "id",
+          "stage",
+          "name",
+          "count",
+          "deadEnd"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers through it (the larger of what comes in and what goes out).",
+            "minimum": 0
+          },
+          "deadEnd": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers that end here (a dropped query has no response code).",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "`<stage>:<name>`, what links name."
+          },
+          "name": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`group`, `status`, `upstream`, or `rcode`."
+          }
+        }
+      },
       "ForwardInfo": {
         "type": "object",
         "description": "A domain sent to other servers (conditional forwarding).",
@@ -12847,6 +13001,18 @@
                     "type": "string"
                   }
                 },
+                "flow": {
+                  "type": "object",
+                  "description": "REQ: OBS-032 — the query flow's joint counts: `gs:<group>/<status>` (every answer),\n`su:<status>/<upstream>` and `ur:<upstream>/<rcode>` (answers an upstream was asked for),\n`sr:<status>/<rcode>` (the rest with a response code). Minute and longer buckets; empty\nbefore 0.5.",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
                 "latencyHist": {
                   "type": "object",
                   "description": "REQ: OBS-030 — answers per latency bucket (the `telltale_query_duration_seconds` bounds\nand the overflow, 17 counts) by path (`cache`, `upstream`, `local`, `synthesized`) and\nby upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.",
@@ -14541,6 +14707,71 @@
         },
         "additionalProperties": false
       },
+      "QueryFlow": {
+        "type": "object",
+        "description": "REQ: OBS-032 — where queries went.",
+        "required": [
+          "from",
+          "to",
+          "source",
+          "total",
+          "nodes",
+          "links",
+          "partial",
+          "truncated"
+        ],
+        "properties": {
+          "client": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlowLink"
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlowNode"
+            },
+            "description": "By stage (groups, statuses, upstreams, response codes), largest first."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Some buckets had answers but no joint counts (stored by an older build, or a node that\ndoesn't count them yet): their answers are missing here."
+          },
+          "source": {
+            "type": "string",
+            "description": "`buckets` (the time buckets' joint counts) or `querylog` (one device's rows)."
+          },
+          "to": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers in the window (group → status links add up to it).",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The query log read stopped early, or had more combinations than it returns: the numbers\ncover what it read."
+          }
+        }
+      },
       "QueryPage": {
         "type": "object",
         "description": "A page of query-log rows, newest first.",
@@ -16098,6 +16329,18 @@
           "byStatus": {
             "type": "object",
             "description": "By status (`cached`, `forwarded`, `blocked`, ...).",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "flow": {
+            "type": "object",
+            "description": "REQ: OBS-032 — the query flow's joint counts: `gs:<group>/<status>` (every answer),\n`su:<status>/<upstream>` and `ur:<upstream>/<rcode>` (answers an upstream was asked for),\n`sr:<status>/<rcode>` (the rest with a response code). Minute and longer buckets; empty\nbefore 0.5.",
             "additionalProperties": {
               "type": "integer",
               "format": "int32",

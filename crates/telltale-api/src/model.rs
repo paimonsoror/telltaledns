@@ -240,6 +240,12 @@ pub struct TimeBucket {
     /// by upstream (`upstream:<name>`). Minute and longer buckets; empty before 0.5.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub latency_hist: BTreeMap<String, Vec<u32>>,
+    /// REQ: OBS-032 — the query flow's joint counts: `gs:<group>/<status>` (every answer),
+    /// `su:<status>/<upstream>` and `ur:<upstream>/<rcode>` (answers an upstream was asked for),
+    /// `sr:<status>/<rcode>` (the rest with a response code). Minute and longer buckets; empty
+    /// before 0.5.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub flow: BTreeMap<String, u32>,
 }
 
 /// Query parameters for `GET /stats/timeseries`.

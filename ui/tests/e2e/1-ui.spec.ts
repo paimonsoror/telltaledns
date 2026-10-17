@@ -1387,7 +1387,7 @@ test('flt_010 schedules are edited from the UI', async () => {
   const g = groups.getByTestId('entry-row').filter({ hasText: 'ipv6only' });
   await g.getByRole('button', { name: 'Edit' }).click();
   await page.getByRole('group', { name: 'Schedules' }).getByLabel('ui-bedtime').check();
-  await page.getByRole('button', { name: 'Check' }).click();
+  await page.getByRole('button', { name: 'Check', exact: true }).click();
   await page.getByRole('button', { name: 'Apply' }).click();
   const card = page.getByTestId('group-card').filter({ hasText: 'ipv6only' });
   await expect(async () => {
@@ -1944,4 +1944,103 @@ test('obs_030 latency heatmap', async () => {
   await page.unroute('**/api/v1/stats/latency/exemplars*');
   await page.goto('/#/');
   await page.getByRole('button', { name: 'Simple', exact: true }).click();
+});
+
+// REQ: OBS-032 (T14.6) — the query flow: the real server's answer draws; then a stubbed flow:
+// four stages; the layout's invariants on the drawn SVG (each full column's nodes add up to
+// the total on one scale, nodes don't overlap, bands stay within their nodes); a band's hover
+// shows its share; `blocked` opens Lists; small nodes fold; the table view; the phone layout
+// stacks; a device's truncated read is said.
+test('obs_032 flow', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/flow');
+  await expect(page.getByRole('heading', { name: /^Flow/ })).toBeVisible();
+  await expect(page.getByTestId('flow')).not.toContainText('Loading');
+  const node = (id: string, stage: string, name: string, count: number, deadEnd = 0) => ({ id, stage, name, count, deadEnd });
+  const link = (source: string, target: string, count: number, failure = false) => ({ source, target, count, failure });
+  const flow = (client?: string, truncated = false) => ({
+    from: new Date(Date.now() - 3_600_000).toISOString(), to: new Date().toISOString(), client,
+    source: client ? 'querylog' : 'buckets', total: 1000, partial: false, truncated,
+    nodes: [
+      node('group:default', 'group', 'default', 630), node('group:kids', 'group', 'kids', 368), node('group:guests', 'group', 'guests', 2),
+      node('status:cached', 'status', 'cached', 500), node('status:forwarded', 'status', 'forwarded', 250),
+      node('status:blocked', 'status', 'blocked', 200), node('status:servfail', 'status', 'servfail', 40), node('status:dropped', 'status', 'dropped', 10, 10),
+      node('upstream:quad9-1', 'upstream', 'quad9-1', 200), node('upstream:quad9-2', 'upstream', 'quad9-2', 90),
+      node('rcode:NOERROR', 'rcode', 'NOERROR', 750), node('rcode:NXDOMAIN', 'rcode', 'NXDOMAIN', 200), node('rcode:SERVFAIL', 'rcode', 'SERVFAIL', 40),
+    ],
+    links: [
+      link('group:default', 'status:cached', 400), link('group:kids', 'status:cached', 100), link('group:default', 'status:forwarded', 80),
+      link('group:kids', 'status:forwarded', 168), link('group:guests', 'status:forwarded', 2), link('group:kids', 'status:blocked', 100),
+      link('group:default', 'status:blocked', 100), link('group:default', 'status:servfail', 40, true), link('group:default', 'status:dropped', 10),
+      link('status:cached', 'rcode:NOERROR', 500), link('status:blocked', 'rcode:NXDOMAIN', 200),
+      link('status:forwarded', 'upstream:quad9-1', 160), link('status:forwarded', 'upstream:quad9-2', 90), link('status:servfail', 'upstream:quad9-1', 40),
+      link('upstream:quad9-1', 'rcode:NOERROR', 160), link('upstream:quad9-1', 'rcode:SERVFAIL', 40, true), link('upstream:quad9-2', 'rcode:NOERROR', 90),
+    ],
+  });
+  await page.route('**/api/v1/stats/flow*', (route) => {
+    const client = new URL(route.request().url()).searchParams.get('client') ?? undefined;
+    return route.fulfill({ json: flow(client, !!client) });
+  });
+  await page.getByRole('button', { name: '6 h', exact: true }).click();
+  const svg = page.getByTestId('flow-svg');
+  await expect(svg).toBeVisible();
+  await expect(page.getByTestId('flow')).toContainText('1,000 answers');
+  const nodes = () =>
+    svg.getByTestId('flow-node').evaluateAll((els) =>
+      els.map((e) => ({ id: e.dataset.id ?? '', col: Number(e.dataset.col), x: Number(e.dataset.x), y: Number(e.dataset.y), w: Number(e.dataset.w), h: Number(e.dataset.h) })),
+    );
+  let ns = await nodes();
+  expect(new Set(ns.map((n) => n.col))).toEqual(new Set([0, 1, 2, 3]));
+  // guests (0.2 %) folds into "other": one small node in its stage stays itself.
+  expect(ns.some((n) => n.id === 'group:guests')).toBe(true);
+  const scale = Number(await svg.getAttribute('data-scale'));
+  for (const col of [0, 1]) {
+    const sum = ns.filter((n) => n.col === col).reduce((a, n) => a + n.h, 0);
+    expect(Math.abs(sum - 1000 * scale)).toBeLessThan(0.01);
+  }
+  for (const col of [0, 1, 2, 3]) {
+    const c = ns.filter((n) => n.col === col).sort((a, b) => a.y - b.y);
+    for (let i = 1; i < c.length; i++) expect(c[i].y).toBeGreaterThanOrEqual(c[i - 1].y + c[i - 1].h - 0.01);
+  }
+  const links = await svg.getByTestId('flow-link').evaluateAll((els) =>
+    els.map((e) => ({ s: e.dataset.source ?? '', t: e.dataset.target ?? '', w: Number(e.dataset.width), y0: Number(e.dataset.y0), y1: Number(e.dataset.y1) })),
+  );
+  expect(links.length).toBe(17);
+  const byId = new Map(ns.map((n) => [n.id, n]));
+  for (const l of links) {
+    const s = byId.get(l.s)!;
+    const t = byId.get(l.t)!;
+    expect(l.y0 - l.w / 2).toBeGreaterThanOrEqual(s.y - 0.01);
+    expect(l.y0 + l.w / 2).toBeLessThanOrEqual(s.y + s.h + 0.01);
+    expect(l.y1 - l.w / 2).toBeGreaterThanOrEqual(t.y - 0.01);
+    expect(l.y1 + l.w / 2).toBeLessThanOrEqual(t.y + t.h + 0.01);
+  }
+  // A band's share: of every answer and of its source.
+  await svg.locator('[data-source="upstream:quad9-1"][data-target="rcode:SERVFAIL"]').focus();
+  await expect(page.getByTestId('flow-tip')).toContainText('quad9-1 → SERVFAIL: 40 (4.0 % of all · 20.0 % of quad9-1)');
+  // Show small keeps everything; a link opens the page behind a node.
+  await page.getByTestId('flow-small').check();
+  ns = await nodes();
+  expect(ns.length).toBe(13);
+  await page.getByRole('button', { name: 'Table', exact: true }).click();
+  await expect(page.getByTestId('flow-table')).toContainText('Upstream quad9-1');
+  await expect(page.getByTestId('flow-table').locator('tr.fail')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Diagram', exact: true }).click();
+  await svg.locator('[data-id="status:blocked"]').click();
+  await expect(page).toHaveURL(/#\/lists/);
+  // The phone layout: stages top to bottom.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#/flow');
+  await expect(page.getByTestId('flow-svg')).toHaveAttribute('data-vertical', '1');
+  ns = await nodes();
+  expect(new Set(ns.filter((n) => n.col === 0).map((n) => n.y)).size).toBe(1);
+  expect(Math.max(...ns.filter((n) => n.col === 3).map((n) => n.y))).toBeGreaterThan(ns[0].y);
+  // A device: from the query log; a capped read is said.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByRole('button', { name: 'Device', exact: true }).click();
+  await page.getByTestId('flow-client').fill('192.168.2.14');
+  await page.getByRole('button', { name: 'Show', exact: true }).click();
+  await expect(page.getByTestId('flow')).toContainText('from the query log');
+  await expect(page.getByTestId('flow-truncated')).toBeVisible();
+  await page.unroute('**/api/v1/stats/flow*');
 });
