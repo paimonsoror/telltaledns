@@ -19,6 +19,7 @@
   import Setup from './pages/Setup.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Traffic from './pages/Traffic.svelte';
+  import Heatmap from './pages/Heatmap.svelte';
   import Queries from './pages/Queries.svelte';
   import Explain from './pages/Explain.svelte';
   import Analyze from './pages/Analyze.svelte';
@@ -38,6 +39,7 @@
   const pages: { path: string; label: string; page: Component; icon: string; section: string }[] = [
     { path: '/', label: 'Dashboard', page: Dashboard, icon: 'dashboard', section: 'Monitor' },
     { path: '/traffic', label: 'Traffic map', page: Traffic, icon: 'traffic', section: 'Monitor' },
+    { path: '/heatmap', label: 'Heatmap', page: Heatmap, icon: 'heatmap', section: 'Monitor' },
     { path: '/queries', label: 'Query log', page: Queries, icon: 'queries', section: 'Monitor' },
     { path: '/analyze', label: 'Analyze', page: Analyze, icon: 'analyze', section: 'Monitor' },
     { path: '/explain', label: 'Explain', page: Explain, icon: 'explain', section: 'Monitor' },

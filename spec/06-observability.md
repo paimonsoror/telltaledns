@@ -44,6 +44,7 @@ Upstream transactions additionally emit `UpstreamEvent { ts, upstream_id, latenc
 ## 3. Rollups
 - Minute rollups are flushed to SQLite `rollup_minute` (kept 7 days), then aggregated into `rollup_hour` (kept 400 days) and `rollup_day` (kept forever; tiny). Top-K and serialized HDR histograms are stored per hour.
 - All dashboard queries beyond 15 minutes read rollups, never raw logs. So "last 30 days" charts render in < 100 ms on a Pi.
+- REQ: OBS-029 (ADR-129) — the heatmap reads the same: the network's slots from the hour buckets (400 days) or the minute buckets (7 days, summed into 15-minute slots), a device's or a name's hours from `hour_top` (`clients`, `domains`, `blocked`) and memory's current lists. `GET /api/v1/stats/heatmap` (`starts`/`values` arrays, `covered` for a key; federated, `Read::HeatmapKey`), MCP `activity_heatmap`. A 7-day minute read and its sum take under 150 ms on the build VM.
 
 ### 3.1 Annotations (change markers; OBS-033, ADR-133)
 - **Data:** `<data_dir>/annotations.jsonl`, one JSON line per event (`t`, `kind`, `summary`, `source`, `actor`, kind fields, `ref`), appended (`O_APPEND`, no fsync) by the background task that knows about the event: never the query path or the telemetry thread. Capped at 20,000 lines and 90 days, compacted in place at start and once a day. A write failure is logged once an hour and changes nothing else.

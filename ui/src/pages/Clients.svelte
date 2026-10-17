@@ -90,7 +90,7 @@
                     {#each c.groups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                   </td>
                   <td class="num">{num(c.count)}</td>
-                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a></td>
+                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a></td>
                 </tr>
               {/each}
             </tbody>

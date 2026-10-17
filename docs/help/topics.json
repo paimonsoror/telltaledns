@@ -34,6 +34,16 @@
       "docs": "traffic-map"
     },
     {
+      "id": "heatmap",
+      "title": "When things happen",
+      "term": "Rhythm heatmap",
+      "summary": "A grid of days (or a typical week) by time of day, each cell coloured by how many queries were asked then: for the whole network, one device, or one name.",
+      "when": "You want to see a pattern over time: a burst in the morning, a device that never sleeps, a tablet's bedtime, or when a name is asked for.",
+      "example": "A bright band from 10:00 to 14:00 on Thursday only, from one device asking pool.ntp.org every couple of seconds.",
+      "caution": "A device or a name is counted from each hour's top 100: hatched hours had it below the list (unknown, not zero). 15-minute and minute slots reach back 7 days; hours back 400.",
+      "docs": "heatmap"
+    },
+    {
       "id": "slo-attribution",
       "title": "Who spent the error budget?",
       "term": "Error-budget attribution",

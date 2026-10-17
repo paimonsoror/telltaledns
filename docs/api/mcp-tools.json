@@ -545,6 +545,60 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. When things happen: queries per slot over a window, as parallel arrays (starts in Unix seconds UTC, values). kind network (the whole network, exact; grain hour back 400 days, or 15m or minute back 7 days), client (one device by IP address) or name (one domain name): hour grain, from each hour's top-100 list, so covered is false for hours where the key wasn't listed (unknown, not zero). measure blocked counts blocked queries (network and names). Use it to find bursts, polling devices, and daily rhythms. At most 10,080 values.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "grain": {
+          "description": "Slot size (default hour; client and name: hour only).",
+          "enum": [
+            "hour",
+            "15m",
+            "minute"
+          ],
+          "type": "string"
+        },
+        "key": {
+          "description": "The device's IP address (client) or the name (name).",
+          "type": "string"
+        },
+        "kind": {
+          "description": "What to count (default network).",
+          "enum": [
+            "network",
+            "client",
+            "name"
+          ],
+          "type": "string"
+        },
+        "measure": {
+          "description": "Default queries.",
+          "enum": [
+            "queries",
+            "blocked"
+          ],
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
+        "window": {
+          "description": "Start: relative like -7d or RFC 3339 (default -7d).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "activity_heatmap"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
     "inputSchema": {
       "additionalProperties": false,

@@ -1856,6 +1856,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stats/heatmap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Queries per slot.
+         * @description For the whole network (exact, from the time buckets: hour slots back 400 days, 15-minute or
+         *     minute slots back 7 days), or for one device (`kind=client`, `key` its address) or one name
+         *     (`kind=name`) by hour, from each hour's top list of the busiest 100: exact while the key
+         *     is in the list; `covered` is false for hours where it wasn't (its count is unknown, not
+         *     zero). `starts` and `values` are parallel arrays in UTC; lay them out by local time. Every
+         *     node's, summed. A name needs privacy level 0 (names are hashes above it), a device level 1 or
+         *     lower. Example: `GET /api/v1/stats/heatmap?from=-7d&grain=15m`.
+         */
+        get: operations["stats_heatmap"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/stats/latency": {
         parameters: {
             query?: never;
@@ -3517,7 +3543,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -3954,6 +3980,34 @@ export interface components {
              * @example upstream quad9 isn't answering (its circuit breaker is open)
              */
             summary: string;
+        };
+        /** @description REQ: OBS-029 — queries per slot. */
+        Heatmap: {
+            /**
+             * @description A device or a name: false where the key wasn't in that hour's top list (its count is
+             *     then unknown, shown as "below this hour's top list"). Absent for the network.
+             */
+            covered?: boolean[] | null;
+            from: string;
+            /** @description `hour`, `15m`, or `minute`. */
+            grain: string;
+            key?: string | null;
+            /** @description `network`, `client`, or `name`. */
+            kind: string;
+            /** @description `queries` or `blocked`. */
+            measure: string;
+            missingNodes?: string[];
+            /** @description `exact` (the network) or `topList`. */
+            precision: string;
+            /**
+             * Format: int64
+             * @description Seconds per slot.
+             */
+            slotSeconds: number;
+            /** @description Each slot's start (Unix seconds, UTC), oldest first; parallel to `values`. */
+            starts: number[];
+            to: string;
+            values: number[];
         };
         /** @description One host sample, with sizes in bytes and shares in percent. */
         HostInfo: {
@@ -10145,6 +10199,69 @@ export interface operations {
             };
             /** @description Nothing was changed through the API: the file's settings are in effect already. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    stats_heatmap: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start (RFC 3339 or relative; default 7 days ago).
+                 * @example -7d
+                 */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /**
+                 * @description `hour` (up to 400 days), `15m` or `minute` (up to 7 days, the minutes kept); default
+                 *     `hour`. A device or a name: `hour` only.
+                 * @example 15m
+                 */
+                grain?: string;
+                /** @description `network` (default), `client` (with `key` an address), or `name` (with `key` a name). */
+                kind?: string;
+                /** @description The device's address or the name. */
+                key?: string;
+                /**
+                 * @description `queries` (default) or `blocked` (the network and names; a device's blocked queries
+                 *     aren't kept per hour).
+                 */
+                measure?: string;
+                /** @description `cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`. */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queries per slot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Heatmap"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `heatmap_window`: the window is too long for the grain, or a device or a name with a finer grain than hours; `privacy_level`: the privacy level hides names or devices. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1848,3 +1848,52 @@ test('obs_027 budget attribution', async () => {
   await expect(page).toHaveURL(/rcode=SERVFAIL/);
   await page.unroute('**/api/v1/stats/slo/attribution*');
 });
+
+// REQ: OBS-029 (T14.3) — the heatmap: the network grid from the real server; then a stubbed
+// device whose first hour was below the list: the keyboard moves the focus and the tooltip
+// says so, the typical week averages, the table view toggles, and a cell opens the query log.
+test('obs_029 heatmap', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/heatmap');
+  await expect(page.getByRole('heading', { name: /^Heatmap/ })).toBeVisible();
+  await expect(page.getByTestId('heatmap-canvas')).toBeVisible();
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  const day0 = Math.floor(day.getTime() / 1000) - 86_400;
+  const starts = Array.from({ length: 48 }, (_, i) => day0 + i * 3600);
+  await page.route('**/api/v1/stats/heatmap*', (route) =>
+    route.fulfill({
+      json: {
+        from: new Date(day0 * 1000).toISOString(), to: new Date((day0 + 48 * 3600) * 1000).toISOString(),
+        grain: 'hour', slotSeconds: 3600, kind: 'client', key: '192.168.2.14', measure: 'queries',
+        starts, values: starts.map((_, i) => (i === 0 ? 0 : 100 + i)), covered: starts.map((_, i) => i !== 0),
+        precision: 'topList',
+      },
+    }),
+  );
+  await page.getByRole('button', { name: 'Device', exact: true }).click();
+  await page.getByTestId('heatmap-key').fill('192.168.2.14');
+  await page.getByRole('button', { name: 'Show', exact: true }).click();
+  const canvas = page.getByTestId('heatmap-canvas');
+  await expect(canvas).toBeVisible();
+  await canvas.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByTestId('heatmap-tip')).toContainText('101 queries');
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByTestId('heatmap-tip')).toContainText("below this hour's top list");
+  // A typical week: each weekday's hour is the mean of its days (one day each here).
+  await page.getByTestId('heatmap-fold').check();
+  await canvas.focus();
+  // The first day's weekday row (Monday first), then its second hour.
+  const weekday = (new Date(day0 * 1000).getDay() + 6) % 7;
+  for (let i = 0; i < weekday; i++) await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByTestId('heatmap-tip')).toContainText('101 queries on average over 1 day');
+  await page.getByTestId('heatmap-fold').uncheck();
+  await page.getByRole('button', { name: 'Table', exact: true }).click();
+  await expect(page.getByTestId('heatmap-table')).toContainText('125');
+  await page.getByRole('button', { name: 'Grid', exact: true }).click();
+  await canvas.click({ position: { x: 112, y: 26 } });
+  await expect(page).toHaveURL(/#\/queries\?.*client=192\.168\.2\.14/);
+  await page.unroute('**/api/v1/stats/heatmap*');
+});

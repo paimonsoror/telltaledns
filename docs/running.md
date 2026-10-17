@@ -2034,6 +2034,13 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - It draws the busiest 100 names (less their blocked queries) and the busiest 100 blocked names, every node of a cluster, from the same approximate top lists as the dashboard, so it adds no work to answering queries. Each hour starts every count again, so the map looks sparse just after the hour.
 - Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
 
+### Heatmap
+**Monitor → Heatmap** shows when queries happen: one row per day (or, with **Typical week**, one per weekday, each cell the mean of those days), one column per hour, 15 minutes, or minute of the day, in your browser's local time.
+- **Network** counts every query exactly, from the dashboard's per-minute and per-hour counts: hours back 400 days, 15-minute and minute slots back 7 days. **Blocked** colours blocked queries instead.
+- **Device** (an address) and **Name** come from each hour's top lists (the busiest 100), by hour. While it's in the list the count is exact; hatched hours had it below the list, so its count there is unknown, not zero. Open one from the Clients page (**When**) or the Traffic map.
+- Point at a cell (or move with the arrow keys) for its count; select it (or press Enter) to open the query log from that time. The bars on the right and at the bottom sum each row and column; the small ticks are [change markers](#change-markers). **Table** shows it by hour.
+- `GET /api/v1/stats/heatmap?from=-7d&grain=15m` (`kind=client|name`, `key`, `measure=blocked`) and the MCP tool `activity_heatmap` return the same as parallel arrays. A name needs privacy level 0, a device level 1 or lower.
+
 ### Change markers
 Every time chart (the dashboard's, the Cache page's) draws a thin line for each thing that was done to a node, or that the node did to itself, so a change lines up with what it did to the graph:
 

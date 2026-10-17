@@ -759,22 +759,71 @@
       }
     },
     {
+      "type": "heatmap",
+      "title": "Queries over time (15-minute slots)",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Queries per 15 minutes as a heatmap over time: bursts and quiet nights stand out. The web UI's Heatmap page lays them out by day and time of day, and for one device or name.",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "interval": "15m",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(telltale_queries_total{job=~\"$job\", instance=~\"$instance\"}[15m]))",
+          "legendFormat": "queries",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "yAxis": {
+          "axisPlacement": "hidden"
+        },
+        "color": {
+          "scheme": "Blues",
+          "mode": "scheme"
+        },
+        "cellGap": 1,
+        "legend": {
+          "show": true
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
       "type": "row",
       "title": "Service level",
-      "id": 10,
+      "id": 11,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 19
       },
       "panels": []
     },
     {
       "type": "stat",
       "title": "Availability",
-      "id": 11,
+      "id": 12,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -784,7 +833,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 14
+        "y": 20
       },
       "targets": [
         {
@@ -834,7 +883,7 @@
     {
       "type": "stat",
       "title": "Within the latency threshold",
-      "id": 12,
+      "id": 13,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -844,7 +893,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 14
+        "y": 20
       },
       "targets": [
         {
@@ -894,7 +943,7 @@
     {
       "type": "stat",
       "title": "Availability budget left",
-      "id": 13,
+      "id": 14,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -904,7 +953,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 14
+        "y": 20
       },
       "targets": [
         {
@@ -962,7 +1011,7 @@
     {
       "type": "stat",
       "title": "Latency budget left",
-      "id": 14,
+      "id": 15,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -972,7 +1021,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 14
+        "y": 20
       },
       "targets": [
         {
@@ -1030,7 +1079,7 @@
     {
       "type": "timeseries",
       "title": "Burn rate over the last hour",
-      "id": 15,
+      "id": 16,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1040,7 +1089,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 24
       },
       "targets": [
         {
@@ -1116,7 +1165,7 @@
     {
       "type": "stat",
       "title": "SERVFAIL answers (range)",
-      "id": 16,
+      "id": 17,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1126,7 +1175,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 25
+        "y": 31
       },
       "targets": [
         {
@@ -1176,7 +1225,7 @@
     {
       "type": "bargauge",
       "title": "SERVFAIL answers by node (range)",
-      "id": 17,
+      "id": 18,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1186,7 +1235,7 @@
         "h": 4,
         "w": 16,
         "x": 8,
-        "y": 25
+        "y": 31
       },
       "targets": [
         {
@@ -1228,20 +1277,20 @@
     {
       "type": "row",
       "title": "Latency",
-      "id": 18,
+      "id": 19,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 35
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Answer time by path (p50 / p95 / p99)",
-      "id": 19,
+      "id": 20,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1251,7 +1300,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 36
       },
       "targets": [
         {
@@ -1319,7 +1368,7 @@
     {
       "type": "timeseries",
       "title": "Where time goes",
-      "id": 20,
+      "id": 21,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1329,7 +1378,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 36
       },
       "targets": [
         {
@@ -1394,20 +1443,20 @@
     {
       "type": "row",
       "title": "Upstreams",
-      "id": 21,
+      "id": 22,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 44
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Upstream latency (p50 / p95 / p99)",
-      "id": 22,
+      "id": 23,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1417,7 +1466,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 45
       },
       "targets": [
         {
@@ -1482,7 +1531,7 @@
     {
       "type": "timeseries",
       "title": "Upstream share of traffic",
-      "id": 23,
+      "id": 24,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1492,7 +1541,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 39
+        "y": 45
       },
       "targets": [
         {
@@ -1539,7 +1588,7 @@
     {
       "type": "timeseries",
       "title": "Upstream failure rate",
-      "id": 24,
+      "id": 25,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1549,7 +1598,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 39
+        "y": 45
       },
       "targets": [
         {
@@ -1596,7 +1645,7 @@
     {
       "type": "state-timeline",
       "title": "Circuit breakers",
-      "id": 25,
+      "id": 26,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1606,7 +1655,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 47
+        "y": 53
       },
       "targets": [
         {
@@ -1664,20 +1713,20 @@
     {
       "type": "row",
       "title": "Filtering",
-      "id": 26,
+      "id": 27,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 58
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Blocked by list",
-      "id": 27,
+      "id": 28,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1687,7 +1736,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 53
+        "y": 59
       },
       "targets": [
         {
@@ -1734,7 +1783,7 @@
     {
       "type": "timeseries",
       "title": "Blocked by group",
-      "id": 28,
+      "id": 29,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1744,7 +1793,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 53
+        "y": 59
       },
       "targets": [
         {
@@ -1791,7 +1840,7 @@
     {
       "type": "table",
       "title": "Lists",
-      "id": 29,
+      "id": 30,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1801,7 +1850,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 53
+        "y": 59
       },
       "targets": [
         {
@@ -1855,20 +1904,20 @@
     {
       "type": "row",
       "title": "Cache",
-      "id": 30,
+      "id": 31,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 67
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Answered from cache",
-      "id": 31,
+      "id": 32,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1878,7 +1927,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 62
+        "y": 68
       },
       "targets": [
         {
@@ -1934,7 +1983,7 @@
     {
       "type": "timeseries",
       "title": "Cache activity",
-      "id": 32,
+      "id": 33,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1944,7 +1993,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 62
+        "y": 68
       },
       "targets": [
         {
@@ -2027,7 +2076,7 @@
     {
       "type": "timeseries",
       "title": "Cache size",
-      "id": 33,
+      "id": 34,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2037,7 +2086,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 62
+        "y": 68
       },
       "targets": [
         {
@@ -2084,20 +2133,20 @@
     {
       "type": "row",
       "title": "Clients",
-      "id": 34,
+      "id": 35,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 75
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Top clients",
-      "id": 35,
+      "id": 36,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2107,7 +2156,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 76
       },
       "targets": [
         {
@@ -2154,20 +2203,20 @@
     {
       "type": "row",
       "title": "Transports",
-      "id": 36,
+      "id": 37,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 78
+        "y": 84
       },
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Queries by transport",
-      "id": 37,
+      "id": 38,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2177,7 +2226,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 79
+        "y": 85
       },
       "targets": [
         {
@@ -2224,7 +2273,7 @@
     {
       "type": "timeseries",
       "title": "Encrypted DNS problems",
-      "id": 38,
+      "id": 39,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2234,7 +2283,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 79
+        "y": 85
       },
       "targets": [
         {
@@ -2317,20 +2366,20 @@
     {
       "type": "row",
       "title": "TelltaleDNS",
-      "id": 39,
+      "id": 40,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 92
       },
       "panels": []
     },
     {
       "type": "stat",
       "title": "Uptime",
-      "id": 40,
+      "id": 41,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2340,7 +2389,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 87
+        "y": 93
       },
       "targets": [
         {
@@ -2389,7 +2438,7 @@
     {
       "type": "stat",
       "title": "Restarts",
-      "id": 41,
+      "id": 42,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2399,7 +2448,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 87
+        "y": 93
       },
       "targets": [
         {
@@ -2453,7 +2502,7 @@
     {
       "type": "stat",
       "title": "After a crash or a kill",
-      "id": 42,
+      "id": 43,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2463,7 +2512,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 87
+        "y": 93
       },
       "targets": [
         {
@@ -2517,7 +2566,7 @@
     {
       "type": "stat",
       "title": "OOM kills",
-      "id": 43,
+      "id": 44,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2527,7 +2576,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 87
+        "y": 93
       },
       "targets": [
         {
@@ -2581,7 +2630,7 @@
     {
       "type": "timeseries",
       "title": "Telemetry and query log",
-      "id": 44,
+      "id": 45,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2591,7 +2640,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 91
+        "y": 97
       },
       "targets": [
         {
@@ -2665,7 +2714,7 @@
     {
       "type": "timeseries",
       "title": "Memory",
-      "id": 45,
+      "id": 46,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2675,7 +2724,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 91
+        "y": 97
       },
       "targets": [
         {
@@ -2731,7 +2780,7 @@
     {
       "type": "timeseries",
       "title": "Machine",
-      "id": 46,
+      "id": 47,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2741,7 +2790,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 98
+        "y": 104
       },
       "targets": [
         {
@@ -2788,7 +2837,7 @@
     {
       "type": "timeseries",
       "title": "Temperature and disk",
-      "id": 47,
+      "id": 48,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2798,7 +2847,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 98
+        "y": 104
       },
       "targets": [
         {
@@ -2854,7 +2903,7 @@
     {
       "type": "state-timeline",
       "title": "Maintenance",
-      "id": 48,
+      "id": 49,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2864,7 +2913,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 105
+        "y": 111
       },
       "targets": [
         {

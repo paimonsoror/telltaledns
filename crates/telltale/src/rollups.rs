@@ -268,6 +268,56 @@ fn hour_extras(agg: &telltale_telemetry::Aggregates, pipeline: &Pipeline, privac
 }
 
 #[cfg(test)]
+mod heatmap_bench {
+    use telltale_store::rollup::{Level, Rollups};
+    use telltale_telemetry::agg::Counts;
+
+    /// REQ: OBS-029 (ADR-123's benchmark) — the network heatmap's biggest read: 7 days of
+    /// minutes from the rollups, summed into 15-minute slots, in under 150 ms, and its answer
+    /// under 200 KB. Release builds only (`cargo test --release`): debug builds are ~10× slower.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "timing: run with --release")]
+    fn obs_029_seven_days_of_minutes_read_fast() {
+        let db = Rollups::in_memory().unwrap();
+        let day0 = 1_791_072_000;
+        let rows: Vec<(u64, Counts)> = (0..7 * 1440)
+            .map(|m| {
+                let mut c = Counts {
+                    total: 25,
+                    ..Counts::default()
+                };
+                c.status[0] = 25;
+                c.rcode[0] = 25;
+                (day0 + m * 60, c)
+            })
+            .collect();
+        db.put_minutes(&rows).unwrap();
+        let t = std::time::Instant::now();
+        let read = db.range(Level::Minute, day0, day0 + 7 * 86_400).unwrap();
+        let cells = telltale_api::heatmap::slots(
+            read.iter().map(|(s, c)| (*s, u64::from(c.total))),
+            day0,
+            900,
+            7 * 96,
+        );
+        let took = t.elapsed();
+        assert_eq!(read.len(), 10_080);
+        assert_eq!(cells.iter().sum::<u64>(), 25 * 10_080);
+        let minute_answer = telltale_api::heatmap::Heatmap {
+            starts: (0..10_080).map(|i| day0 + i * 60).collect(),
+            values: vec![1402; 10_080],
+            ..telltale_api::heatmap::Heatmap::default()
+        };
+        let bytes = serde_json::to_vec(&minute_answer).unwrap().len();
+        eprintln!(
+            "obs_029: 7 days of minutes read and summed in {took:?}; a minute-grain answer is {bytes} bytes"
+        );
+        assert!(took < std::time::Duration::from_millis(150), "{took:?}");
+        assert!(bytes < 200_000, "{bytes}");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use telltale_telemetry::event::{Name, Record};

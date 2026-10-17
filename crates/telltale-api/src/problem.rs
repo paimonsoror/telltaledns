@@ -66,6 +66,10 @@ pub enum Code {
     AnnotationTime,
     /// The route exists but not for this method (annotations are append-only).
     MethodNotAllowed,
+    /// REQ: OBS-029 — a heatmap window too long for its grain, or a finer grain than the data.
+    HeatmapWindow,
+    /// The query log's privacy level hides what was asked for (names, or devices).
+    PrivacyLevel,
 }
 
 impl Code {
@@ -98,6 +102,8 @@ impl Code {
             Self::AnnotationText => "https://telltaledns.dev/problems/annotation_text",
             Self::AnnotationTime => "https://telltaledns.dev/problems/annotation_time",
             Self::MethodNotAllowed => "https://telltaledns.dev/problems/method_not_allowed",
+            Self::HeatmapWindow => "https://telltaledns.dev/problems/heatmap_window",
+            Self::PrivacyLevel => "https://telltaledns.dev/problems/privacy_level",
         }
     }
 
@@ -130,6 +136,8 @@ impl Code {
             Self::AnnotationText => "Invalid note text",
             Self::AnnotationTime => "Invalid note time",
             Self::MethodNotAllowed => "Method not allowed",
+            Self::HeatmapWindow => "Heatmap window too long",
+            Self::PrivacyLevel => "Hidden by the privacy level",
         }
     }
 
@@ -154,7 +162,9 @@ impl Code {
             | Self::MaintenanceInvalid
             | Self::SimulationWindow
             | Self::AnnotationText
-            | Self::AnnotationTime => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::AnnotationTime
+            | Self::HeatmapWindow
+            | Self::PrivacyLevel => StatusCode::UNPROCESSABLE_ENTITY,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }

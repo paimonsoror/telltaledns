@@ -454,6 +454,38 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: OBS-029 (ADR-129)
+        Tool {
+            name: "activity_heatmap",
+            description: "Read-only. When things happen: queries per slot over a window, as parallel arrays (starts in Unix seconds UTC, values). kind network (the whole network, exact; grain hour back 400 days, or 15m or minute back 7 days), client (one device by IP address) or name (one domain name): hour grain, from each hour's top-100 list, so covered is false for hours where the key wasn't listed (unknown, not zero). measure blocked counts blocked queries (network and names). Use it to find bursts, polling devices, and daily rhythms. At most 10,080 values.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "kind": {"type": "string", "enum": ["network", "client", "name"], "description": "What to count (default network)."},
+                "key": {"type": "string", "description": "The device's IP address (client) or the name (name)."},
+                "window": {"type": "string", "description": "Start: relative like -7d or RFC 3339 (default -7d)."},
+                "grain": {"type": "string", "enum": ["hour", "15m", "minute"], "description": "Slot size (default hour; client and name: hour only)."},
+                "measure": {"type": "string", "enum": ["queries", "blocked"], "description": "Default queries."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "heatmap".into(),
+                    query(
+                        "/api/v1/stats/heatmap",
+                        a,
+                        &[
+                            ("kind", "kind"),
+                            ("key", "key"),
+                            ("window", "from"),
+                            ("grain", "grain"),
+                            ("measure", "measure"),
+                            ("scope", "scope"),
+                        ],
+                    ),
+                )])
+            },
+        },
         Tool {
             name: "new_domains",
             description: "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",

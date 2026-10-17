@@ -124,6 +124,10 @@ enum Read {
     Health,
     /// REQ: OBS-020 — the peer's own probes (older peers don't know it).
     Probes,
+    /// REQ: OBS-029 — the peer's own hours for a device or a name (older peers don't know it).
+    HeatmapKey {
+        q: telltale_api::heatmap::KeyQuery,
+    },
     /// REQ: OBS-027 — the peer's own error-budget attribution part (older peers don't know it).
     SloParts {
         q: telltale_api::attribution::PartQuery,
@@ -209,6 +213,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Health => serde_json::to_vec(&b.health()),
         Read::Probes => serde_json::to_vec(&b.probes()),
         Read::SloParts { q } => serde_json::to_vec(&b.slo_parts(&q)),
+        Read::HeatmapKey { q } => serde_json::to_vec(&b.heatmap_key(&q).map_err(text)?),
         Read::Annotations { filter } => serde_json::to_vec(&b.annotations(&filter)),
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
@@ -951,6 +956,24 @@ impl Backend for Federated {
         self.local.slo_settings()
     }
 
+    // REQ: OBS-029 (ADR-129) — every node's hours for a device or a name, summed; an hour is
+    // covered when every node that answered had the key in its list.
+    fn heatmap_key(
+        &self,
+        q: &telltale_api::heatmap::KeyQuery,
+    ) -> Result<telltale_api::heatmap::KeyPart, Problem> {
+        let n = usize::try_from((q.to_s - q.from_s).div_ceil(3600)).unwrap_or(0);
+        let mut parts = Vec::new();
+        if self.with_me() {
+            parts.push(self.local.heatmap_key(q)?);
+        }
+        for (_, p) in self.everyone_labelled::<telltale_api::heatmap::KeyPart>(|| {
+            Read::HeatmapKey { q: q.clone() }
+        }) {
+            parts.push(p);
+        }
+        Ok(telltale_api::heatmap::KeyPart::merge(parts, n))
+    }
     // REQ: OBS-027 (ADR-127) — every node's part, labelled. A peer on an older build that can't
     // answer gives its hour buckets instead (a timeline, no lists: partial, not missing). Pods
     // that shipped minutes here and aren't answering count from those, for the whole cluster.

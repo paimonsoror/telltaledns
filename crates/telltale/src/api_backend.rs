@@ -843,6 +843,100 @@ impl Backend for ApiBackend {
         time_buckets(&self.src, self.counts(step, from_s, to_s))
     }
 
+    // REQ: OBS-029 (ADR-129) — a device's or a name's hours on this node, from the stored top
+    // lists and, for the current hour (and the previous one until it's stored), memory's.
+    fn heatmap_key(
+        &self,
+        q: &telltale_api::heatmap::KeyQuery,
+    ) -> Result<telltale_api::heatmap::KeyPart, Problem> {
+        use telltale_telemetry::agg::HourSel;
+        let privacy = self.src.config.load().telemetry.qlog.privacy_level;
+        let hidden = (q.kind == "name" && privacy >= 1) || (q.kind == "client" && privacy >= 2);
+        if hidden {
+            return Err(Problem::new(
+                telltale_api::problem::Code::PrivacyLevel,
+                format!(
+                    "the query log's privacy level ({privacy}) hides {}s",
+                    q.kind
+                ),
+            )
+            .hint("The network heatmap works at every level."));
+        }
+        let (stored_kind, mem_kind) = match (q.kind.as_str(), q.blocked) {
+            ("client", _) => ("clients", telltale_telemetry::agg::TopKind::Clients),
+            (_, true) => ("blocked", telltale_telemetry::agg::TopKind::Blocked),
+            _ => ("domains", telltale_telemetry::agg::TopKind::Domains),
+        };
+        let n = usize::try_from((q.to_s - q.from_s).div_ceil(3600)).unwrap_or(0);
+        let mut part = telltale_api::heatmap::KeyPart {
+            values: vec![0; n],
+            covered: vec![true; n],
+        };
+        let slot = |start: u64| -> Option<usize> {
+            (start >= q.from_s)
+                .then(|| usize::try_from((start - q.from_s) / 3600).ok())
+                .flatten()
+                .filter(|i| *i < n)
+        };
+        let same = |k: &str| -> bool {
+            if q.kind == "client" {
+                k.parse::<IpAddr>().ok() == q.key.parse::<IpAddr>().ok()
+            } else {
+                k.trim_end_matches('.').eq_ignore_ascii_case(&q.key)
+            }
+        };
+        let (current, previous) = {
+            let agg = self.src.pipeline.telemetry.aggregates();
+            (agg.current_hour_start(), agg.previous_hour_start())
+        };
+        let db = self.src.rollups.as_ref();
+        let prev_live =
+            previous.filter(|h| db.is_none_or(|d| !d.has_hour_tops(*h).unwrap_or(false)));
+        let stored_to = q.to_s.min(prev_live.unwrap_or(current));
+        if let Some(d) = db {
+            let key = if q.kind == "client" {
+                q.key
+                    .parse::<IpAddr>()
+                    .map_or_else(|_| q.key.clone(), |ip| ip.to_string())
+            } else {
+                q.key.clone()
+            };
+            let (found, hours) = d
+                .top_key_hours(q.from_s, stored_to, stored_kind, &key)
+                .map_err(|e| Problem::internal(e.to_string()))?;
+            for h in hours {
+                if let Some(i) = slot(h) {
+                    part.covered[i] = false;
+                }
+            }
+            for (h, c) in found {
+                if let Some(i) = slot(h) {
+                    part.values[i] += c;
+                    part.covered[i] = true;
+                }
+            }
+        }
+        let agg = self.src.pipeline.telemetry.aggregates();
+        let live = [
+            (HourSel::Current, Some(current)),
+            (HourSel::Previous, prev_live),
+        ];
+        for (sel, start) in live {
+            let Some(i) = start.and_then(slot) else {
+                continue;
+            };
+            let top = agg.top_names(mem_kind, sel, telltale_telemetry::agg::TOP_REPORTED);
+            match top.iter().find(|t| same(&t.key)) {
+                Some(t) => {
+                    part.values[i] += t.count;
+                    part.covered[i] = true;
+                }
+                None => part.covered[i] = top.is_empty(),
+            }
+        }
+        Ok(part)
+    }
+
     // REQ: OBS-027 (ADR-127) — this node's hours and bad-answer lists; with `q.live` set (the
     // whole cluster's read), also the pods that shipped minutes here and aren't answering.
     fn slo_parts(

@@ -1291,6 +1291,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-129 — The rhythm heatmap reads the buckets and the hourly top lists; nothing new stored (Proposed)
+**Context:** T14.3 (OBS-029; design `docs/design/rhythm-heatmap.md`). The owner saw a 10 am–2 pm burst only with a script (2026-10-16). ADR-123 left a per-minute heatmap "possible later, behind a benchmark".
+**Decision:**
+- Three variants: the network (exact, from the time buckets), a device and a name (from each hour's top-100 list: exact while listed, `covered: false` where it wasn't). No new per-device or per-name storage.
+- Defaults taken at the start of the task (owner: accept all defaults, 2026-10-16): a device or a name has hour slots only (its lists are hourly), and a finer grain is `422 heatmap_window`; 15-minute and minute slots reach back 7 days (the minute rollups' retention), not the design's 30 days for 15 minutes; a device is given by address; `measure=blocked` for the network and names only (a device's blocked queries aren't kept per hour); the current hour (and the previous one until stored) from memory; a name needs privacy level 0 and a device level 1 or lower (`422 privacy_level`); the dashboard thumbnail (design §8) is left out; the query log link opens from the cell's start (the log takes no end time).
+- The browser lays the slots out in local time; the API answers UTC starts.
+- The benchmark ADR-123 waited for: 7 days of minutes read and summed in under 150 ms on the build VM, and a minute-grain answer under 200 KB.
+**Consequences:** devices and names outside the busiest 100 in an hour show as hatched, not zero; a new rollup kind would be needed for exact per-device grids.
+
 ## ADR-127 — Error-budget attribution: exact per-bucket maps, bad-only hourly top lists (Proposed)
 **Context:** T14.1 (OBS-027; design `docs/design/error-budget-attribution.md`). The Service level card says how much budget is left, not who spent it; the owner needed a script to learn that one laptop's PTR name and the pre-10-13 AXFR SERVFAILs had (2026-10-16).
 **Decision:**

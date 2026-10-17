@@ -5162,6 +5162,115 @@
         }
       }
     },
+    "/api/v1/stats/heatmap": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Queries per slot.",
+        "description": "For the whole network (exact, from the time buckets: hour slots back 400 days, 15-minute or\nminute slots back 7 days), or for one device (`kind=client`, `key` its address) or one name\n(`kind=name`) by hour, from each hour's top list of the busiest 100: exact while the key\nis in the list; `covered` is false for hours where it wasn't (its count is unknown, not\nzero). `starts` and `values` are parallel arrays in UTC; lay them out by local time. Every\nnode's, summed. A name needs privacy level 0 (names are hashes above it), a device level 1 or\nlower. Example: `GET /api/v1/stats/heatmap?from=-7d&grain=15m`.",
+        "operationId": "stats_heatmap",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start (RFC 3339 or relative; default 7 days ago).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "-7d"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "grain",
+            "in": "query",
+            "description": "`hour` (up to 400 days), `15m` or `minute` (up to 7 days, the minutes kept); default\n`hour`. A device or a name: `hour` only.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "15m"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "`network` (default), `client` (with `key` an address), or `name` (with `key` a name).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "query",
+            "description": "The device's address or the name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "measure",
+            "in": "query",
+            "description": "`queries` (default) or `blocked` (the network and names; a device's blocked queries\naren't kept per hour).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default), `site:<name>`, `node:<name or ID>`, or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queries per slot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Heatmap"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`heatmap_window`: the window is too long for the grain, or a device or a name with a finer grain than hours; `privacy_level`: the privacy level hides names or devices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/stats/latency": {
       "get": {
         "tags": [
@@ -9236,7 +9345,9 @@
           "version_blobs_missing",
           "annotation_text",
           "annotation_time",
-          "method_not_allowed"
+          "method_not_allowed",
+          "heatmap_window",
+          "privacy_level"
         ]
       },
       "ConfigChange": {
@@ -10261,6 +10372,90 @@
             "type": "string",
             "description": "In words, with the numbers.",
             "example": "upstream quad9 isn't answering (its circuit breaker is open)"
+          }
+        }
+      },
+      "Heatmap": {
+        "type": "object",
+        "description": "REQ: OBS-029 — queries per slot.",
+        "required": [
+          "from",
+          "to",
+          "grain",
+          "slotSeconds",
+          "kind",
+          "measure",
+          "starts",
+          "values",
+          "precision"
+        ],
+        "properties": {
+          "covered": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "boolean"
+            },
+            "description": "A device or a name: false where the key wasn't in that hour's top list (its count is\nthen unknown, shown as \"below this hour's top list\"). Absent for the network."
+          },
+          "from": {
+            "type": "string"
+          },
+          "grain": {
+            "type": "string",
+            "description": "`hour`, `15m`, or `minute`."
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "`network`, `client`, or `name`."
+          },
+          "measure": {
+            "type": "string",
+            "description": "`queries` or `blocked`."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "precision": {
+            "type": "string",
+            "description": "`exact` (the network) or `topList`."
+          },
+          "slotSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds per slot.",
+            "minimum": 0
+          },
+          "starts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Each slot's start (Unix seconds, UTC), oldest first; parallel to `values`."
+          },
+          "to": {
+            "type": "string"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         }
       },

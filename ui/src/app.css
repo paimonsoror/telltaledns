@@ -39,6 +39,11 @@
   /* REQ: OBS-033 — change markers on time charts, and notes among them. */
   --mk-ink: #5b6b7b;
   --mk-note: #b7791f;
+  /* REQ: OBS-029 — the heatmap: full-strength cells, empty cells, and hatched (unknown) ones. */
+  --hm-ink: #3b6fb6;
+  --hm-ink-blocked: #c2413a;
+  --hm-bg: #eef2f6;
+  --hm-hatch: #9aa7b4;
   --side-hover: rgb(255 255 255 / 7%);
   --card-border: transparent;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
@@ -79,6 +84,10 @@
     --tm-ink: #0b1a25;
     --mk-ink: #93a3b3;
     --mk-note: #e0a84e;
+    --hm-ink: #78a5e6;
+    --hm-ink-blocked: #ef7067;
+    --hm-bg: #1c2834;
+    --hm-hatch: #6b7c8c;
     --side-hover: rgb(255 255 255 / 6%);
     --card-border: #223140;
     color-scheme: dark;
@@ -118,6 +127,10 @@
   --tm-ink: #0b1a25;
   --mk-ink: #93a3b3;
   --mk-note: #e0a84e;
+  --hm-ink: #78a5e6;
+  --hm-ink-blocked: #ef7067;
+  --hm-bg: #1c2834;
+  --hm-hatch: #6b7c8c;
   --side-hover: rgb(255 255 255 / 6%);
   --card-border: #223140;
   color-scheme: dark;

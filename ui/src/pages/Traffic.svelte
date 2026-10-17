@@ -265,7 +265,7 @@
       {#if mode !== 'name'}
         <ul class="members">
           {#each t.members.slice(0, 8) as m (m.name)}
-            <li><a href={href('/queries', { name: m.name, match: 'exact' })}>{m.name}</a><span>{num(m.count)}</span></li>
+            <li><a href={href('/queries', { name: m.name, match: 'exact' })}>{m.name}</a><span><a class="when" href={href('/heatmap', { kind: 'name', key: m.name })} aria-label={`When ${m.name} is asked for`}>when</a> {num(m.count)}</span></li>
           {/each}
           {#if t.members.length > 8}<li class="muted">and {t.members.length - 8} more</li>{/if}
         </ul>

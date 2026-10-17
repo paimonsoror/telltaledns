@@ -375,6 +375,9 @@ pub fn merge(a: &mut Counts, b: &Counts) {
     }
 }
 
+/// One key's `(hour start, count)` where listed, and every hour with the list.
+pub type KeyHours = (Vec<(u64, u64)>, Vec<u64>);
+
 /// One node's buckets, oldest first.
 pub type NodeHours = (String, Vec<(u64, Counts)>);
 
@@ -639,6 +642,28 @@ impl Rollups {
             )?
             .query_row(params![sql(from_s), sql(to_s), kind], |r| r.get(0))?;
         Ok((rows, unsql(hours)))
+    }
+
+    /// REQ: OBS-029 — one key's count in a stored top list, per hour of `[from_s, to_s)` where
+    /// it's listed; and every hour with that list at all (the key's absence there means it was
+    /// below the list, not zero).
+    pub fn top_key_hours(&self, from_s: u64, to_s: u64, kind: &str, key: &str) -> Result<KeyHours> {
+        let conn = self.conn();
+        let found = conn
+            .prepare_cached(
+                "SELECT start, count FROM hour_top WHERE start >= ?1 AND start < ?2 AND kind = ?3 AND key = ?4 ORDER BY start",
+            )?
+            .query_map(params![sql(from_s), sql(to_s), kind, key], |r| {
+                Ok((unsql(r.get(0)?), unsql(r.get(1)?)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let hours = conn
+            .prepare_cached(
+                "SELECT DISTINCT start FROM hour_top WHERE start >= ?1 AND start < ?2 AND kind = ?3 ORDER BY start",
+            )?
+            .query_map(params![sql(from_s), sql(to_s), kind], |r| Ok(unsql(r.get(0)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((found, hours))
     }
 
     /// REQ: OBS-027 — whether an hour's top lists are stored.
@@ -1010,6 +1035,33 @@ mod tests {
             day.bad.as_deref().unwrap().servfail_status[Status::Refreshed as usize],
             20
         );
+    }
+
+    /// REQ: OBS-029 — one key's hours, and the hours whose list doesn't have it.
+    #[test]
+    fn obs_029_one_key_over_hours() {
+        let r = Rollups::in_memory().unwrap();
+        let row = |k: &str, c: u64| TopRow {
+            key: k.into(),
+            count: c,
+            error: 0,
+        };
+        r.put_hour_extras(
+            3600,
+            &[(
+                "clients",
+                vec![row("192.168.2.14", 900), row("10.0.0.9", 4)],
+            )],
+            &[],
+        )
+        .unwrap();
+        r.put_hour_extras(7200, &[("clients", vec![row("10.0.0.9", 7)])], &[])
+            .unwrap();
+        let (found, hours) = r
+            .top_key_hours(0, 10_800, "clients", "192.168.2.14")
+            .unwrap();
+        assert_eq!(found, [(3600, 900)]);
+        assert_eq!(hours, [3600, 7200], "listed in 7200 too, without the key");
     }
 
     /// REQ: OBS-027 — stored top lists summed over a range of hours, with their error bounds.

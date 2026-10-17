@@ -155,6 +155,20 @@ ts("Responses by RCODE", 12, 12, 8,
    "reqps", "Responses per second by response code.", stack=True, fill=30)
 advance(8)
 
+# REQ: OBS-029 (T14.3) — when queries happen, 15-minute slots (the web UI's Heatmap page has
+# devices and names too).
+panels.append({
+    "type": "heatmap", "title": "Queries over time (15-minute slots)", "id": nid(), "datasource": DS,
+    "description": "Queries per 15 minutes as a heatmap over time: bursts and quiet nights stand out. The web UI's Heatmap page lays them out by day and time of day, and for one device or name.",
+    "gridPos": place(24, 6, 0),
+    "interval": "15m",
+    "targets": targets((f'sum(increase(telltale_queries_total{{{SEL}}}[15m]))', "queries")),
+    "options": {"calculate": False, "yAxis": {"axisPlacement": "hidden"}, "color": {"scheme": "Blues", "mode": "scheme"},
+                "cellGap": 1, "legend": {"show": True}, "tooltip": {"mode": "single"}},
+    "fieldConfig": {"defaults": {}, "overrides": []},
+})
+advance(6)
+
 # ---- Service level (REQ: OBS-016, ADR-105): the same objectives as the web UI's card, over
 # the dashboard's time range. $slo_le is the configured threshold, read from /metrics.
 row("Service level")
