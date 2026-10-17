@@ -2338,6 +2338,14 @@ nxdomain_percent = 50          # ...that are at least this share of the device's
 ```
 The engine runs on the telemetry thread, never on the query path, keeps a few KiB per device (at most `max_clients`, 1024 by default), and saves its baselines to `<data_dir>/anomaly.json` hourly and on shutdown, so restarts don't restart the learning period. It's off when `[telemetry.qlog] privacy_level` is 1 or above (names and devices are hidden). Replaying the same queries always gives the same findings (fixed arithmetic on event timestamps, no machine learning).
 
+### A device's rhythm
+**Clients → Seen this hour → Rhythm** shows how regularly a device asks for each domain it talks to most (the ones the engine tracks, up to 16): one row per domain, one column per gap between two queries, on a log scale from under a second to two hours and longer, darker where more of the gaps fall.
+- A timer is one dark, outlined cell with its period in words: a time-sync loop every 2.5 s, a phone-home every 5 min. A person browsing is a smear across many columns.
+- **Recent** (the default) weighs the last couple of hours (each hour's close halves what was there and adds that hour); **This hour** shows only this hour. **Table** lists the counts.
+- **usual** marks a rhythm the device already had while it was being learned; **new rhythm** one that has been regular for 4 hours or more and wasn't (the beacon detector reports it on the Anomalies page, where a beacon finding shows its own strip as it was when reported).
+- Select a row for that device's queries to the domain. In a cluster, every node's view of the device is added together.
+- It's measured, not judged: what alerts is still the beacon detector (30 s to an hour, low jitter, 4 hours). `GET /api/v1/clients/<ip>/rhythm` returns the bins and the words; the MCP tool `get_client_profile` includes the period and share per domain, and `find_anomalies` a beacon's bins. It needs the anomaly engine, so privacy level 0.
+
 ### Acknowledging findings
 Once you've looked at a finding, acknowledge it: **Acknowledge** on its card (or **Acknowledge all**), `POST /api/v1/analytics/anomalies/acknowledge` with its `id`, or the MCP tool `acknowledge_anomalies`. It stops counting as new: the sidebar badge and anomaly alerts skip it, and the page hides it unless **Show acknowledged** is on, where it shows who acknowledged it, when, and the note. **Undo acknowledge** takes it back. Acknowledging blocks nothing and changes no configuration.
 - It needs the operator role (agents: `ops:anomalies`) and is recorded in the audit log as `anomaly.ack` or `anomaly.unack`.

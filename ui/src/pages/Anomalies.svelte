@@ -9,6 +9,7 @@
   import { dateTime, num } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
+  import RhythmStrip from '../lib/components/RhythmStrip.svelte';
 
   let all = $state<S['AnomalyFinding'][]>([]);
   let showAcked = $state(false);
@@ -117,6 +118,10 @@
         <span class="muted small">{dateTime(Date.parse(f.windowStart) / 1000)}</span>
       </div>
       <p>{f.detail}</p>
+      {#if f.kind === 'beacon' && f.rhythm && f.domain}
+        <!-- REQ: OBS-031 — the beacon's rhythm when it was reported. -->
+        <RhythmStrip rows={[{ domain: f.domain, recent: f.rhythm }]} client={f.client} toggle={false} />
+      {/if}
       {#if f.acknowledged}
         <p class="small ack-line" data-testid="acknowledged">
           <span class="badge ok">Acknowledged</span>

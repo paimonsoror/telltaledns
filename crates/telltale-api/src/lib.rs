@@ -28,6 +28,7 @@ pub mod mcp;
 pub mod model;
 pub mod plans;
 pub mod problem;
+pub mod rhythm_api;
 pub mod rollout_api;
 pub mod simulate_api;
 pub mod slo;
@@ -442,6 +443,15 @@ pub trait Backend: Send + Sync + 'static {
     fn identities(&self) -> Vec<model::DeviceIdentity> {
         Vec::new()
     }
+    /// REQ: OBS-031 (T14.5) — one device's rhythm per tracked domain (by address, or a named
+    /// device's name), unfinished: `rhythm_api::finish` adds the dominant bin and the words.
+    fn client_rhythm(&self, client: &str) -> Result<rhythm_api::ClientRhythm, Problem> {
+        Ok(rhythm_api::ClientRhythm {
+            client: client.to_owned(),
+            reason: Some("disabled".into()),
+            ..rhythm_api::ClientRhythm::default()
+        })
+    }
     /// REQ: OBS-025 — one device's identity (by address, or a named device's name), with the
     /// evidence.
     fn identity(&self, client: &str) -> Result<model::DeviceIdentity, Problem> {
@@ -797,6 +807,7 @@ fn rest_router(backend: Shared, auth: Arc<auth::Auth>) -> Router {
         .merge(simulate_api::routes(Arc::clone(&backend)))
         // REQ: OBS-025 — what kind of device each address is.
         .merge(identify_api::routes(Arc::clone(&backend)))
+        .merge(rhythm_api::routes(Arc::clone(&backend)))
         // REQ: CLU-013 — the rollout in progress and the kept versions.
         .merge(rollout_api::read_routes(Arc::clone(&backend)))
         .route_layer(from_fn(auth::routes::require_viewer));
@@ -910,7 +921,7 @@ async fn fallback(
         license(name = "Apache-2.0 OR MIT")
     ),
     paths(
-        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
+        system_info, system_health, system_probes, maintenance_api::start, maintenance_api::end, upstream_checks, shadow_lists, overblocking, update_check, plans::list, plans::approve, plans::reject, cluster, compare::cluster_compare, rhythm_api::client_rhythm, config_api::cluster_promote, config_api::backup_download, git_hook, stats_summary, stats_timeseries, stats_top, stats_latency, stats_slo, attribution::slo_attribution, heatmap::stats_heatmap, flow::stats_flow, latency_heatmap::latency_heatmap, latency_heatmap::latency_exemplars, queries,
         queries_stream,
         explain, lists, groups, services, clients, upstreams,
         auth::routes::status, auth::routes::setup, auth::routes::login, auth::routes::logout,
@@ -928,7 +939,7 @@ async fn fallback(
         Problem, problem::Code, SystemInfo, MaskedClients, ClusterInfo, ClusterPeer, ClusterView, ClusterNode, ClusterEvent, ClusterCheck, ClusterConflict, ClusterFailover, ClusterSource, HostReport, HostInfo, HostPoint, model::RuleInput, model::RuleInfo, model::CacheNodeStats, model::CacheEntry, model::CacheLookup, model::CacheFlushRequest, model::CacheFlushNode, model::CacheFlushResult, model::CacheSettings, model::CacheWarmStart, model::CachePoint, model::CacheSizing, model::CacheSizingStep, model::CacheMakeup, model::CacheTopEntry, model::CacheNodeEntries, model::BlockingRequest, model::BlockingNode, model::PauseInfo, model::ConfigEntry, plans::Plan, model::ServiceInfo, PromoteRequest, model::PromotePlan, Summary, TimeBucket, TopItem, LatencyRow, QueryPage, QueryRow,
         TailDropped,
         ScanStats, Explanation, ExplainClient, ExplainBlock, ExplainFilter, ExplainRule,
-        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::DeviceIdentity, model::IdentityEvidence, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
+        ExplainLine, ExplainRoute, ListInfo, GroupInfo, ClientInfo, ClientInput, ClientChange, LocalName, RecordInput, RecordsInput, ForwardInfo, ForwardInput, ConfigChange, AnomalyFinding, model::AnomalyAckInfo, model::AnomalyAckRequest, model::AnomalyAckResult, model::Annotation, model::AnnotationPage, model::NoteRequest, model::Health, model::HealthReason, model::NodeMaintenance, model::MaintenanceRequest, model::MaintenanceResult, model::GuardReadings, model::ClusterPin, model::ClusterRollout, model::RolloutFailure, model::RolloutNode, model::RolloutStatus, model::ClusterVersion, model::ClusterVersions, model::PinRequest, model::RolloutAction, model::DeviceIdentity, model::IdentityEvidence, model::MatchedDomain, model::IdentityRunnerUp, model::Simulation, model::SimulatedClass, model::SimulatedName, model::SimulatedDevice, model::SimulatedGroup, model::SimulateRequest, model::SloStatus, attribution::SloAttribution, attribution::AttributionBudget, attribution::AttributionPoint, attribution::AttributionRow, attribution::AttributionCoverage, heatmap::Heatmap, flow::QueryFlow, flow::FlowNode, flow::FlowLink, compare::NodeCompare, compare::NodeNumbers, compare::NodeSeries, compare::NodeFinding, rhythm_api::ClientRhythm, rhythm_api::RhythmDomain, latency_heatmap::LatencyHeatmap, latency_heatmap::LatencyExemplar, latency_heatmap::LatencyExemplars, model::SloObjective, model::SloBurn, model::ProbeResult, model::UpstreamChecks, model::UpstreamQuality, model::EdeCount, model::UpstreamDisagreement, model::ShadowListStats, model::NameCount, model::OverblockSuspect, NewDomain, VqlogResult, VqlogCost, ZoneInfo, model::RewriteInfo, model::AlertsStatus, model::FiringAlert, model::AlertDelivery, model::AlertTest, model::CheckResult, ListShare, DhcpLease, UpstreamInfo, Step, TopKind,
         Hour, LatencyBy, NameMatch, auth::Role, auth::Scope, auth::routes::Me,
         auth::routes::AuthStatus, auth::routes::SetupRequest, auth::routes::LoginRequest,
         auth::routes::LoginResponse, auth::routes::PasswordChange, auth::routes::TotpSetup,

@@ -2134,3 +2134,70 @@ test('obs_028 node compare', async () => {
   await page.unroute('**/api/v1/cluster/versions');
   await page.unroute('**/api/v1/cluster/compare*');
 });
+
+// REQ: OBS-031 (ADR-131) — the rhythm strip: a device's drawer shows a time-sync loop as one
+// outlined bin with "every 2.5 s", a row opens the query log, a table view, both themes; a
+// beacon finding carries its strip.
+test('obs_031 rhythm strip', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const bins = (at: number, n: number, smear = false) =>
+    Array.from({ length: 24 }, (_, i) => (smear ? (i >= 2 && i <= 12 ? 30 : 0) : i === at ? n : i === at + 1 ? Math.round(n / 50) : 0));
+  await page.route('**/api/v1/stats/top?*', (route) => {
+    const kind = new URL(route.request().url()).searchParams.get('kind');
+    return kind === 'clients' ? route.fulfill({ json: { items: [{ key: '192.168.2.14', count: 1440, groups: ['default'] }] } }) : route.fallback();
+  });
+  await page.route('**/api/v1/clients/*/rhythm', (route) =>
+    route.fulfill({
+      json: {
+        client: '192.168.2.14', available: true, binsS: [1, 1.5, 2.2, 3.3, 5, 7.5, 11, 17, 25, 38, 56, 84, 126, 190, 285, 427, 640, 960, 1440, 2160, 3240, 4860, 7290],
+        domains: [
+          { domain: 'ntp.org', hour: bins(3, 1400), recent: bins(3, 2100), dominantBin: 3, dominantSharePct: 98, period: 'every 2.5 s', regularHours: 0, knownPeriodic: true, meanPerHour: 1440 },
+          { domain: 'example.com', hour: bins(0, 0, true), recent: bins(0, 0, true), dominantBin: 2, dominantSharePct: 9.1, regularHours: 0, knownPeriodic: false, meanPerHour: 300 },
+        ],
+      },
+    }),
+  );
+  await page.goto('/#/clients');
+  await page.getByTestId('open-rhythm').first().click();
+  const strip = page.getByTestId('rhythm');
+  await expect(strip.getByTestId('rhythm-row')).toHaveCount(2);
+  await expect(strip.getByTestId('rhythm-period')).toHaveText('every 2.5 s');
+  await expect(strip.locator('rect.dominant')).toHaveCount(1);
+  await expect(strip.locator('rect.dominant')).toHaveAttribute('data-bin', '3');
+  await expect(strip).toContainText('usual');
+  // This hour and recent switch the arrays.
+  await strip.getByRole('button', { name: 'This hour' }).click();
+  await expect(strip.locator('rect.dominant')).toHaveAttribute('data-n', '1400');
+  // The table: the bins as numbers.
+  await strip.getByTestId('rhythm-table-toggle').check();
+  await expect(strip.getByTestId('rhythm-table').locator('tbody tr')).toHaveCount(2);
+  await expect(strip.getByTestId('rhythm-table').locator('tbody tr').first()).toContainText('1,400');
+  await strip.getByTestId('rhythm-table-toggle').uncheck();
+  // Both themes draw it.
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((t) => (document.documentElement.dataset.theme = t), theme);
+    await expect(strip.locator('rect.dominant')).toBeVisible();
+  }
+  // A row opens that device's queries for the name.
+  await strip.getByTestId('rhythm-row').first().click();
+  await expect(page).toHaveURL(/#\/queries\?.*client=192\.168\.2\.14.*name=ntp\.org/);
+  await page.unroute('**/api/v1/stats/top?*');
+  await page.unroute('**/api/v1/clients/*/rhythm');
+
+  // A beacon finding shows its strip inline.
+  await page.route('**/api/v1/analytics/anomalies?*', (route) =>
+    route.fulfill({
+      json: {
+        items: [{
+          id: '6a2c0e00b1b2c3d4', kind: 'beacon', client: '192.168.1.40', domain: 'c2.example', windowStart: '2026-10-08T10:00:00.000Z',
+          windowSeconds: 14400, observed: 300, baseline: 0, spread: 1.2, threshold: 15, detail: 'every 300 s ± 1.2 s for 4 hours; it wasn\'t periodic before',
+          rhythm: bins(15, 48),
+        }],
+      },
+    }),
+  );
+  await page.goto('/#/anomalies');
+  await expect(page.getByTestId('anomaly').getByTestId('rhythm').locator('rect.dominant')).toHaveAttribute('data-bin', '15');
+  await page.unroute('**/api/v1/analytics/anomalies?*');
+  await page.evaluate(() => delete document.documentElement.dataset.theme);
+});

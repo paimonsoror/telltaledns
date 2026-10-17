@@ -205,14 +205,14 @@ fn obs_013_per_client_state_is_bounded() {
     let e = run(true);
     for dev in [PHONE, TV, PLUG, CAMERA, LAPTOP, NAS] {
         let b = e.client_bytes(ip(dev)).unwrap();
-        assert!(b <= 4096, "device {dev}: {b} bytes");
+        assert!(b <= 4096 + RHYTHM_BYTES, "device {dev}: {b} bytes");
     }
     // A device that talks to thousands of domains stays bounded too.
     let mut e = Engine::new(Settings::default());
     for i in 0..5000u64 {
         e.observe(DAY0 + i, ip(99), &wire(&format!("d{i}.x{i}.example")));
     }
-    assert!(e.client_bytes(ip(99)).unwrap() <= 4096);
+    assert!(e.client_bytes(ip(99)).unwrap() <= 4096 + RHYTHM_BYTES);
     // The device cap evicts the least recently seen.
     let mut e = Engine::new(Settings {
         max_clients: 3,
@@ -362,4 +362,112 @@ fn obs_010_new_devices_after_the_first_day() {
         e.new_clients(DAY0 + 3 * 86_400).is_empty(),
         "only since the given time"
     );
+}
+
+/// REQ: OBS-031 (T14.5 AC 1) — an NTP loop every 2.5 s ± 0.1 s for an hour lands in bin 3
+/// (2.2–3.3 s); a browser's random gaps have no bin above 30 %.
+#[test]
+fn obs_031_a_time_sync_loop_is_one_bin_and_a_browser_a_smear() {
+    let mut e = Engine::new(Settings::default());
+    let mut rng = Rng(7);
+    let start_us = (DAY0 + 3 * 3600) * 1_000_000;
+    let mut events: Vec<(u64, &str)> = Vec::new();
+    let mut t = start_us;
+    while t < start_us + 3_590_000_000 {
+        events.push((t, "time.pool.ntp.org"));
+        t += 2_400_000 + rng.below(200_001); // 2.4–2.6 s
+    }
+    let mut t = start_us;
+    while t < start_us + 3_590_000_000 {
+        events.push((t, "www.example.com"));
+        // 0.5 s × 1.023^k for k in 0..208: about 0.5 s to 56 s, log-uniform.
+        let mut gap = 500_000u64;
+        for _ in 0..rng.below(208) {
+            gap = gap * 1023 / 1000;
+        }
+        t += gap;
+    }
+    events.sort_unstable();
+    for (ts, name) in &events {
+        e.observe_query(*ts, ip(PHONE), &wire(name), Some(0));
+    }
+    let rows = e.rhythm(ip(PHONE));
+    let share = |d: &str| {
+        let r = rows.iter().find(|r| r.domain == d).unwrap();
+        let total: u32 = r.hour.iter().map(|&n| u32::from(n)).sum();
+        let (bin, top) = r.hour.iter().enumerate().max_by_key(|(_, n)| **n).unwrap();
+        (bin, f64::from(*top) / f64::from(total), r.typical_gap_s)
+    };
+    let (bin, ntp, gap) = share("ntp.org");
+    assert_eq!(bin, 3, "{rows:?}");
+    assert!(ntp >= 0.95, "{ntp}");
+    assert!(gap.is_some_and(|g| (2.4..=2.6).contains(&g)), "{gap:?}");
+    let (_, web, _) = share("example.com");
+    assert!(web <= 0.30, "{web}");
+    // `recent` holds this hour too.
+    let r = &rows[0];
+    assert_eq!(r.recent, r.hour);
+    // The alert path is untouched: no finding from an hour of anything.
+    assert_eq!(e.findings().len(), 0);
+}
+
+/// REQ: OBS-031 (T14.5 AC 2) — at the hour's close the decayed copy is `previous / 2 + hour`,
+/// saturating at 65,535; a beacon finding keeps its pair's rhythm.
+#[test]
+fn obs_031_the_hour_folds_into_the_decayed_copy() {
+    let mut t = Tracked::new(1, "x.example".into(), 0);
+    t.rhythm_long[3] = 1001;
+    t.rhythm[3] = 5;
+    t.rhythm[7] = 9;
+    t.rhythm_long[20] = u16::MAX;
+    t.rhythm[20] = u16::MAX;
+    t.fold_rhythm();
+    assert_eq!(t.rhythm_long[3], 505);
+    assert_eq!(t.rhythm_long[7], 9);
+    assert_eq!(t.rhythm_long[20], u16::MAX);
+    assert_eq!(t.rhythm, [0; RHYTHM_BINS]);
+    assert_eq!(rhythm_bin(0), 0);
+    assert_eq!(rhythm_bin(999), 0);
+    assert_eq!(rhythm_bin(1_000), 1);
+    assert_eq!(rhythm_bin(2_500), 3);
+    assert_eq!(rhythm_bin(300_000), 15);
+    assert_eq!(rhythm_bin(u64::MAX), RHYTHM_BINS - 1);
+    // The 14-day fixture's camera beacon (every 300 s) keeps its strip, around bin 15.
+    let e = run(true);
+    let beacon = e
+        .findings()
+        .iter()
+        .find(|f| f.kind == Kind::Beacon)
+        .unwrap();
+    let bins = e.beacon_rhythm(beacon).unwrap();
+    let (top, _) = bins.iter().enumerate().max_by_key(|(_, n)| **n).unwrap();
+    assert_eq!(top, 15, "{bins:?}");
+}
+
+/// REQ: OBS-031 (T14.5 AC 5) — the rhythm's memory: 1,024 devices with 16 tracked pairs each.
+#[test]
+fn obs_031_rhythm_memory_at_1024_devices() {
+    let mut e = Engine::new(Settings::default());
+    for dev in 0..1024u32 {
+        let [_, _, a, b] = dev.to_be_bytes();
+        let ip = std::net::Ipv4Addr::new(10, 0, a, b)
+            .to_ipv6_mapped()
+            .octets();
+        for d in 0..16u64 {
+            e.observe_query(
+                (DAY0 + d) * 1_000_000,
+                ip,
+                &wire(&format!("n.d{d}.example")),
+                Some(0),
+            );
+        }
+    }
+    let total: usize = e
+        .clients
+        .keys()
+        .map(|k| e.client_bytes(*k).unwrap_or(0))
+        .sum();
+    let rhythm = 1024 * RHYTHM_BYTES;
+    println!("anomaly state at 1,024 devices x 16 pairs: {total} bytes, of which rhythm {rhythm}");
+    assert!(rhythm <= 2 * 1024 * 1024, "{rhythm}");
 }

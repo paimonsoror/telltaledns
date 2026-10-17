@@ -186,7 +186,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. A device's profile: its identity, groups, top domains this hour, and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+    "description": "Read-only. A device's profile: its identity, groups, top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

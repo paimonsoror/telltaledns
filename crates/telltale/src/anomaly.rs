@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use telltale_config::{AnomalySensitivity, Config};
-use telltale_telemetry::anomaly::{Engine, Finding, Kind, Sensitivity, Settings};
+use telltale_telemetry::anomaly::{
+    Engine, Finding, Kind, PairRhythm, RHYTHM_BINS, Sensitivity, Settings,
+};
 use telltale_telemetry::event::Record;
 use telltale_telemetry::ring::Sink;
 use tracing::{info, warn};
@@ -77,11 +79,19 @@ impl Anomalies {
         self.engine.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Findings, newest first.
-    pub(crate) fn findings(&self) -> Vec<Finding> {
-        let mut v = self.lock().findings().to_vec();
-        v.reverse();
-        v
+    /// REQ: OBS-031 — findings, newest first, each beacon with its pair's rhythm at report time.
+    pub(crate) fn findings_with_rhythm(&self) -> Vec<(Finding, Option<[u16; RHYTHM_BINS]>)> {
+        let e = self.lock();
+        e.findings()
+            .iter()
+            .rev()
+            .map(|f| (f.clone(), e.beacon_rhythm(f)))
+            .collect()
+    }
+
+    /// REQ: OBS-031 — a device's tracked pairs with their rhythms.
+    pub(crate) fn rhythm(&self, client: [u8; 16]) -> Vec<PairRhythm> {
+        self.lock().rhythm(client)
     }
 
     /// REQ: OBS-009 (T7.14) — first-seen domains since `since` (Unix seconds), newest first,
@@ -154,12 +164,10 @@ pub(crate) struct AnomalySink {
 impl Sink for AnomalySink {
     fn record(&mut self, r: &Record) {
         if let Record::Query(e, name) = r {
-            self.shared.lock().observe_answer(
-                e.ts_us / 1_000_000,
-                e.client_ip,
-                name.as_wire(),
-                e.rcode,
-            );
+            // REQ: OBS-031 — microseconds: the rhythm counts gaps in milliseconds.
+            self.shared
+                .lock()
+                .observe_query(e.ts_us, e.client_ip, name.as_wire(), e.rcode);
         }
     }
 

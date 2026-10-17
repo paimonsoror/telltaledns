@@ -1941,6 +1941,68 @@
         }
       }
     },
+    "/api/v1/clients/{id}/rhythm": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "How a device's queries are spaced (OBS-031).",
+        "description": "For each registrable domain the anomaly engine tracks for the device (up to 16 per node),\nthe gaps between its queries as counts in 24 log-spaced bins (`binsS`: under 1 s, then\n1–1.5 s, 1.5–2.2 s, … up to 7,290 s and longer): `hour` (this hour) and `recent` (each hour's\nclose halves it and adds that hour). `dominantBin` and `dominantSharePct` say how regular it\nis (a time-sync loop every 2.5 s puts nearly everything in bin 3, 2.2–3.3 s), `period` says it\nin words, `knownPeriodic` that it was periodic while the device was learning (usual), and\n`regularHours` how long the beacon detector has found it regular (4 reports a new beacon).\nEvery node's, summed by domain. `id` is an address, or a named device's name. Needs the\nanomaly engine (`available: false`, `reason: disabled` without it), which runs only at\nquery-log privacy level 0. `bins=false` leaves the bins out. Example:\n`GET /api/v1/clients/192.168.2.14/rhythm`.",
+        "operationId": "client_rhythm",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "An address, or a named device's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bins",
+            "in": "query",
+            "description": "`false`: the dominant period and share per domain without the bins (default true).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The device's rhythm per domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRhythm"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No named device by that name, and not an address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`privacy_level`: the query log's privacy level hides devices and names.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{name}": {
       "put": {
         "tags": [
@@ -7323,6 +7385,18 @@
             "format": "double",
             "description": "What was seen, the device's usual value (± spread), and the bar it crossed."
           },
+          "rhythm": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its\nqueries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`)."
+          },
           "spread": {
             "type": "number",
             "format": "double"
@@ -8712,6 +8786,53 @@
           }
         },
         "additionalProperties": false
+      },
+      "ClientRhythm": {
+        "type": "object",
+        "description": "REQ: OBS-031 — a device's rhythm per domain.",
+        "required": [
+          "client",
+          "available",
+          "binsS",
+          "domains"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "False when the anomaly engine is off (`reason: disabled`)."
+          },
+          "binsS": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The bins' upper bounds in seconds; the last bin (7,290 s and longer) has none."
+          },
+          "client": {
+            "type": "string",
+            "description": "The device's address."
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RhythmDomain"
+            },
+            "description": "Sorted by the dominant share, most regular first; at most 16."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "ClusterCheck": {
         "type": "object",
@@ -11350,6 +11471,18 @@
                   "type": "number",
                   "format": "double",
                   "description": "What was seen, the device's usual value (± spread), and the bar it crossed."
+                },
+                "rhythm": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  },
+                  "description": "REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its\nqueries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`)."
                 },
                 "spread": {
                   "type": "number",
@@ -15358,6 +15491,106 @@
           "domain": {
             "type": "string",
             "example": "nas.example.com"
+          }
+        }
+      },
+      "RhythmDomain": {
+        "type": "object",
+        "description": "One tracked domain's rhythm.",
+        "required": [
+          "domain",
+          "dominantSharePct",
+          "regularHours",
+          "knownPeriodic",
+          "meanPerHour"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "description": "The registrable domain (eTLD+1)."
+          },
+          "dominantBin": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The bin holding most of `recent`, and its share (percent).",
+            "minimum": 0
+          },
+          "dominantSharePct": {
+            "type": "number",
+            "format": "double"
+          },
+          "hour": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "This hour's gaps per bin (24 counts; see `binsS`)."
+          },
+          "knownPeriodic": {
+            "type": "boolean",
+            "description": "It was periodic while the device was learning: its usual behaviour."
+          },
+          "meanPerHour": {
+            "type": "number",
+            "format": "double",
+            "description": "Its queries per hour, usually."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cluster nodes that track it."
+          },
+          "period": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "In words, when one bin holds at least half: `every 2.5 s`, `every 5 min`, `in bursts`."
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "The recent view: each hour's close halves it and adds that hour; this hour included."
+          },
+          "regularHours": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Consecutive hours the beacon detector found it regular (4 reports a new beacon).",
+            "minimum": 0
+          },
+          "sinceTime": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Since when it's tracked (RFC 3339)."
+          },
+          "sinceUnixSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "typicalGapS": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The mean of the latest gaps in whole seconds (1 s to an hour), when there are enough."
           }
         }
       },

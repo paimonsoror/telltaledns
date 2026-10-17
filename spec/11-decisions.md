@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-131 — The rhythm strip: a log-spaced gap histogram beside the beacon detector (Proposed)
+**Context:** T14.5 (OBS-031; design `docs/design/beacon-rhythm-strip.md`). The beacon detector measured inter-arrival regularity but nobody could see it; a 2.5 s NTP loop (too fast to be a beacon) was invisible.
+**Decision:**
+- Each tracked (device, eTLD+1) pair counts this hour's gaps in milliseconds into 24 log-spaced bins (bin 0 under 1 s, then ratio ~1.5 to ≥ 7,290 s; saturating `u16`) and keeps a decayed copy folded at each hour's close (`floor(previous / 2) + hour`). The 16-gap buffer and the beacon rules are unchanged, so the golden fixture is byte-identical; the strip shows more than the detector judges.
+- `GET /api/v1/clients/{id}/rhythm` (federated `Read::ClientRhythm`, bins summed by domain), the Clients page's Rhythm drawer, the strip on beacon findings (`AnomalyFinding.rhythm`), MCP `get_client_profile.rhythm`.
+- Defaults taken at the start (owner: accept all defaults, 2026-10-16): no level-1 mode with `domain: null` (the engine is off from level 1), so the read answers `422 privacy_level` from level 1; the beacon's snapshot kept beside the findings (`Engine::beacon_rhythms`, bounded like the findings) instead of inside `Finding`; the API's `recent` is the stored copy plus this hour; `u16` bins (1.63 MiB at 1,024 devices × 16 pairs, under the design's 2 MiB line), so the per-device state bound becomes T3.13's 4 KiB plus 1,664 B (`RHYTHM_BYTES`); `period` in words from the 16-gap mean when it agrees with the dominant bin, shown at ≥ 50 %; the Clients page gains a Rhythm drawer (it had none); cells shaded by share of the row's busiest bin, ink `--hm-ink`; agents `analytics:read`. A "chatty periodic" finding (design §8) is left as a proposal.
+**Consequences:** one `partition_point` over 23 bounds and one increment per query to a tracked pair, on the telemetry thread; `anomaly.json` grows by the same 1,664 B per device (older files load with empty bins).
+
 ## ADR-128 — Node comparison: robust statistics on the entry node, honest about small bases (Proposed)
 **Context:** T14.2 (OBS-028; design `docs/design/node-comparison.md`). The owner's cluster has two nodes of very different size (a Pi and the Kubernetes pods): a SERVFAIL share alone blames the smaller one for the same failures on a tenth of the traffic.
 **Decision:**

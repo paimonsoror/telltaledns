@@ -270,6 +270,10 @@ fn analytics_extra(p: &str) -> bool {
         || p == "/api/v1/cluster/versions"
         // REQ: OBS-028 — the node comparison.
         || p == "/api/v1/cluster/compare"
+        // REQ: OBS-031 — how a device's queries are spaced.
+        || p.strip_prefix("/api/v1/clients/")
+            .and_then(|r| r.strip_suffix("/rhythm"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// What a `DELETE` outside the configuration areas needs.

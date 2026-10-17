@@ -1843,6 +1843,10 @@ pub struct AnomalyFinding {
     /// REQ: OBS-014 — who acknowledged it and when; absent while nobody has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledged: Option<AnomalyAckInfo>,
+    /// REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its
+    /// queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rhythm: Option<Vec<u32>>,
 }
 
 /// REQ: OBS-014 (ADR-103) — a finding's stable ID: its window start (Unix seconds, 8 hex

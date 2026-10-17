@@ -235,7 +235,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "get_client_profile",
-            description: "Read-only. A device's profile: its identity, groups, top domains this hour, and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
+            description: "Read-only. A device's profile: its identity, groups, top domains this hour, its rhythm (per tracked domain, how regularly it's queried: the dominant period such as 'every 2.5 s' and its share), and its most recent queries (with latency and status). Give a device name or IP. Recent queries need the querylog:read scope; without it that part is reported as not allowed.",
             input_schema: || {
                 json!({"type": "object", "properties": {
                 "client": {"type": "string", "description": "Device name (as in the device list) or IP."},
@@ -2457,6 +2457,18 @@ impl Mcp {
                 .await;
             out.insert(
                 "identity".into(),
+                if ok { body } else { json!({"error": body}) },
+            );
+            // REQ: OBS-031 — the dominant period and share per domain, without the bins.
+            let (ok, body) = self
+                .get(
+                    &format!("/api/v1/clients/{}/rhythm?bins=false", enc(&c)),
+                    auth,
+                    client,
+                )
+                .await;
+            out.insert(
+                "rhythm".into(),
                 if ok { body } else { json!({"error": body}) },
             );
             if let Some(ip) = ip {

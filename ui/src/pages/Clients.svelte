@@ -11,6 +11,8 @@
   import IdentityLine from '../lib/components/IdentityLine.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
+  import Drawer from '../lib/components/Drawer.svelte';
+  import RhythmStrip from '../lib/components/RhythmStrip.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -57,6 +59,21 @@
   ]);
   const tab = $derived(activeTab(tabs));
 
+  // REQ: OBS-031 — a device's rhythm, in a drawer.
+  let rhythmFor = $state<string | null>(null);
+  let rhythm = $state<S['ClientRhythm'] | null>(null);
+  let rhythmError = $state<unknown>(null);
+  async function openRhythm(ip: string) {
+    rhythmFor = ip;
+    rhythm = null;
+    rhythmError = null;
+    try {
+      rhythm = await api.rhythm(ip);
+    } catch (e) {
+      rhythmError = e;
+    }
+  }
+
   async function remove(name: string) {
     try {
       await api.deleteClient(name);
@@ -90,7 +107,7 @@
                     {#each c.groups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                   </td>
                   <td class="num">{num(c.count)}</td>
-                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a></td>
+                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openRhythm(c.key)} data-testid="open-rhythm">Rhythm</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -165,4 +182,18 @@
     </section>
   {/if}
   </TabPanel>
+  {#if rhythmFor}
+    <Drawer title={`Rhythm: ${rhythmFor}`} onclose={() => (rhythmFor = null)}>
+      <p class="muted small">How regularly this device asks for each domain it talks to most: each column is a gap between two queries (log scale), darker where more of them fall. One dark cell is a timer; a smear is a person.<HelpButton id="rhythm" /></p>
+      <ErrorNote error={rhythmError} />
+      {#if rhythm}
+        {#if !rhythm.available}
+          <p class="empty">The anomaly engine is off (<code>[telemetry.anomaly] enabled</code>), so nothing measures the rhythm.</p>
+        {:else}
+          <RhythmStrip rows={rhythm.domains} client={rhythm.client} binsS={rhythm.binsS} />
+          {#if rhythm.missingNodes?.length}<p class="muted small">Not answering: {rhythm.missingNodes.join(', ')}.</p>{/if}
+        {/if}
+      {/if}
+    </Drawer>
+  {/if}
 </div>

@@ -64,6 +64,10 @@ enum Read {
     Identity {
         client: String,
     },
+    /// REQ: OBS-031 — one device's rhythm (older peers don't know it).
+    ClientRhythm {
+        client: String,
+    },
     /// REQ: CLU-002 (T9.2) — the histograms behind `Latency` (older peers don't know it).
     LatencyHist {
         by: LatencyBy,
@@ -184,6 +188,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::NewDevices { since_s } => serde_json::to_vec(&b.new_devices(since_s)),
         Read::Identities => serde_json::to_vec(&b.identities()),
         Read::Identity { client } => serde_json::to_vec(&b.identity(&client).ok()),
+        Read::ClientRhythm { client } => serde_json::to_vec(&b.client_rhythm(&client).ok()),
         Read::TailOpen { params } => serde_json::to_vec(&tail_open(b, &params).map_err(text)?),
         Read::TailPoll { id } => serde_json::to_vec(&tail_poll(id)),
         Read::TailClose { id } => {
@@ -1416,6 +1421,35 @@ impl Backend for Federated {
             .next()
             .unwrap_or_else(|| crate::identify::unavailable(&key, "not_seen")))
     }
+    // REQ: OBS-031 — every node's view of the device (it may roam), summed by domain.
+    fn client_rhythm(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::rhythm_api::ClientRhythm, Problem> {
+        let local = self.local.client_rhythm(client)?;
+        let key = local.client.clone();
+        let mut available = local.available;
+        let mut parts = vec![(Some(self.own_label()), local.domains)];
+        for (label, v) in
+            self.everyone_labelled::<Option<telltale_api::rhythm_api::ClientRhythm>>(|| {
+                Read::ClientRhythm {
+                    client: key.clone(),
+                }
+            })
+        {
+            if let Some(r) = v.filter(|r| r.available) {
+                available = true;
+                parts.push((Some(label), r.domains));
+            }
+        }
+        Ok(telltale_api::rhythm_api::ClientRhythm {
+            client: key,
+            available,
+            reason: (!available).then(|| "disabled".to_owned()),
+            domains: telltale_api::rhythm_api::merge(parts),
+            ..telltale_api::rhythm_api::ClientRhythm::default()
+        })
+    }
     fn upstreams(&self) -> Vec<UpstreamInfo> {
         self.local.upstreams()
     }
@@ -2083,6 +2117,7 @@ mod anomaly_tests {
             detail: format!("{observed} queries"),
             nodes: Vec::new(),
             acknowledged: None,
+            rhythm: None,
         }
     }
 

@@ -105,6 +105,16 @@
       "docs": "why-was-it-blocked-explain"
     },
     {
+      "id": "rhythm",
+      "title": "How regularly does it ask?",
+      "term": "Rhythm strip (inter-arrival histogram)",
+      "summary": "For each domain a device talks to most, how its queries are spaced: one column per gap between two queries, on a log scale from under a second to two hours, darker where more of the gaps fall.",
+      "when": "A device is chattier than it should be and you want to know whether it's a timer (one dark cell) or a person (a smear).",
+      "example": "A thermostat asks ntp.org every 2.5 s: one dark cell in the 2.2–3.3 s column, about 1,400 an hour, all answered from the cache.",
+      "caution": "It shows the rhythm; it doesn't judge it. Only a new regular rhythm between 30 s and an hour, for 4 hours, becomes a beacon finding. It needs the anomaly engine (privacy level 0).",
+      "docs": "a-devices-rhythm"
+    },
+    {
       "id": "anomalies",
       "title": "When a device behaves differently",
       "term": "Anomaly detection",

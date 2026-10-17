@@ -185,6 +185,7 @@ export const api = {
   // REQ: OBS-025 (T13.3) — what each device looks like.
   identities: () => get<S['Items_DeviceIdentity']>('/clients/identities'),
   identity: (id: string) => get<S['DeviceIdentity']>(`/clients/${encodeURIComponent(id)}/identity`),
+  rhythm: (id: string) => get<S['ClientRhythm']>(`/clients/${encodeURIComponent(id)}/rhythm`),
   // REQ: OBS-024 (T13.1) — what a whole shared configuration would have done.
   simulate: (body: S['SimulateRequest']) => post<S['Simulation']>('/simulate', body),
   cluster: () => get<S['ClusterView']>('/cluster'),

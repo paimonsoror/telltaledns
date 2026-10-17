@@ -1506,6 +1506,68 @@ impl Backend for ApiBackend {
         self.src.identify.list()
     }
 
+    // REQ: OBS-031 — this node's view of a device's rhythm.
+    fn client_rhythm(
+        &self,
+        client: &str,
+    ) -> Result<telltale_api::rhythm_api::ClientRhythm, Problem> {
+        let addr = if let Ok(ip) = client.parse::<IpAddr>() {
+            ip
+        } else {
+            let cfg = self.src.config.load();
+            let c = cfg
+                .client
+                .iter()
+                .find(|c| c.name.as_str().eq_ignore_ascii_case(client))
+                .ok_or_else(|| {
+                    Problem::not_found(format!(
+                        "`{client}` is neither an address nor a named device"
+                    ))
+                    .hint("Give a device's IP address, or the name it has on the Clients page.")
+                })?;
+            device_addresses(c)
+                .iter()
+                .find_map(|a| a.parse::<IpAddr>().ok())
+                .ok_or_else(|| {
+                    Problem::not_found(format!("`{client}` has no single address"))
+                        .hint("Give one of the device's IP addresses.")
+                })?
+        };
+        let text = addr.to_string();
+        let Some(a) = &self.src.anomalies else {
+            return Ok(telltale_api::rhythm_api::ClientRhythm {
+                client: text,
+                reason: Some("disabled".into()),
+                ..telltale_api::rhythm_api::ClientRhythm::default()
+            });
+        };
+        let key = match addr {
+            IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+            IpAddr::V6(v6) => v6.octets(),
+        };
+        let domains = a
+            .rhythm(key)
+            .into_iter()
+            .map(|r| telltale_api::rhythm_api::RhythmDomain {
+                domain: r.domain,
+                hour: r.hour.iter().map(|&n| u32::from(n)).collect(),
+                recent: r.recent.iter().map(|&n| u32::from(n)).collect(),
+                typical_gap_s: r.typical_gap_s,
+                regular_hours: r.regular_hours,
+                known_periodic: r.known_periodic,
+                since_unix_seconds: Some(r.since_s),
+                mean_per_hour: f64::from(r.mean_per_hour),
+                ..telltale_api::rhythm_api::RhythmDomain::default()
+            })
+            .collect();
+        Ok(telltale_api::rhythm_api::ClientRhythm {
+            client: text,
+            available: true,
+            domains,
+            ..telltale_api::rhythm_api::ClientRhythm::default()
+        })
+    }
+
     fn identity(&self, client: &str) -> Result<telltale_api::model::DeviceIdentity, Problem> {
         if client.parse::<IpAddr>().is_ok() {
             return Ok(self.src.identify.get(client));
@@ -1571,10 +1633,10 @@ impl Backend for ApiBackend {
         // REQ: OBS-025 — findings say what the device looks like, when that's known.
         let snap = self.src.identify.snapshot();
         let mut items: Vec<telltale_api::model::AnomalyFinding> = a
-            .findings()
+            .findings_with_rhythm()
             .into_iter()
-            .filter(|f| f.window_start_s >= since_s)
-            .map(|f| {
+            .filter(|(f, _)| f.window_start_s >= since_s)
+            .map(|(f, rhythm)| {
                 let client = telltale_telemetry::agg::client_text(f.client);
                 let kind = f.kind.label();
                 let detail = match snap
@@ -1607,6 +1669,8 @@ impl Backend for ApiBackend {
                     detail,
                     nodes: Vec::new(),
                     acknowledged: None,
+                    // REQ: OBS-031 — a beacon's strip at report time.
+                    rhythm: rhythm.map(|b| b.iter().map(|&n| u32::from(n)).collect()),
                 }
             })
             .collect();

@@ -17,7 +17,10 @@
 //!   ([`crate::dga::score`]); one finding per device per hour with at least
 //!   [`DGA_MIN_PER_HOUR`] of them.
 //!
-//! It also keeps a feed of first-seen domains (after a device's first day), with their scores.
+//! It also keeps a feed of first-seen domains (after a device's first day), with their scores,
+//! and per tracked pair a **rhythm** (REQ: OBS-031): this hour's inter-arrival gaps in
+//! milliseconds as a log-spaced histogram ([`RHYTHM_EDGES_MS`]), and a decayed copy folded at
+//! each hour's close. It is shown, never judged: the beacon detector reads only the 16 gaps.
 //!
 //! **Deterministic:** time comes only from event timestamps (windows close when an event from a
 //! later window arrives), state is ordered (`BTreeMap`), hashing is FNV-1a, and the math is
@@ -49,6 +52,53 @@ const MAX_FINDINGS: usize = 1000;
 pub const DGA_MIN_PER_HOUR: u32 = 2;
 /// First-seen domains kept in the feed (oldest dropped first).
 const MAX_NEW_DOMAINS: usize = 2000;
+/// REQ: OBS-031 — rhythm bins per tracked pair.
+pub const RHYTHM_BINS: usize = 24;
+/// REQ: OBS-031 — the rhythm bins' upper bounds in milliseconds (ratio about 1.5): bin 0 is under
+/// 1 s, bin `i` is `[edge[i-1], edge[i])`, the last bin is 7,290 s and longer.
+pub const RHYTHM_EDGES_MS: [u64; RHYTHM_BINS - 1] = [
+    1_000, 1_500, 2_200, 3_300, 5_000, 7_500, 11_000, 17_000, 25_000, 38_000, 56_000, 84_000,
+    126_000, 190_000, 285_000, 427_000, 640_000, 960_000, 1_440_000, 2_160_000, 3_240_000,
+    4_860_000, 7_290_000,
+];
+
+/// REQ: OBS-031 (ADR-131) — what the rhythm adds to a device's state: two bin arrays and the
+/// last query's time per tracked pair.
+pub const RHYTHM_BYTES: usize = TRACKED * (2 * RHYTHM_BINS * 2 + 8);
+
+/// REQ: OBS-031 — the rhythm bin of a gap.
+pub fn rhythm_bin(gap_ms: u64) -> usize {
+    RHYTHM_EDGES_MS.partition_point(|&e| e <= gap_ms)
+}
+
+/// REQ: OBS-031 — one tracked pair's rhythm, for the API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PairRhythm {
+    pub domain: String,
+    /// This hour's gaps per bin.
+    pub hour: [u16; RHYTHM_BINS],
+    /// The decayed copy (`previous / 2 + hour` at each hour's close) plus this hour's.
+    pub recent: [u16; RHYTHM_BINS],
+    /// Consecutive hours the beacon detector found regular.
+    pub regular_hours: u32,
+    /// Periodic while the device was learning: its usual behaviour.
+    pub known_periodic: bool,
+    pub since_s: u64,
+    /// Queries per hour, its baseline.
+    pub mean_per_hour: f32,
+    /// The mean of the last gaps (whole seconds, 1 s to an hour), when there are at least 4.
+    pub typical_gap_s: Option<f64>,
+}
+
+/// REQ: OBS-031 — the rhythm of a beacon finding's pair when it was reported. Kept beside the
+/// findings, so their own form (and the golden fixture) doesn't change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BeaconRhythm {
+    pub client: [u8; 16],
+    pub domain: String,
+    pub window_start_s: u64,
+    pub bins: [u16; RHYTHM_BINS],
+}
 
 /// Detector sensitivity: the spread multiplier for "observed > center + k × spread".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -229,6 +279,13 @@ struct Tracked {
     /// Periodic during learning: its baseline, not an anomaly.
     known_periodic: bool,
     reported_beacon: bool,
+    /// REQ: OBS-031 — the last query's time (ms), this hour's rhythm, and the decayed copy.
+    #[serde(default)]
+    last_ms: u64,
+    #[serde(default)]
+    rhythm: [u16; RHYTHM_BINS],
+    #[serde(default)]
+    rhythm_long: [u16; RHYTHM_BINS],
 }
 
 impl Tracked {
@@ -245,6 +302,35 @@ impl Tracked {
             regular_hours: 0,
             known_periodic: false,
             reported_beacon: false,
+            last_ms: 0,
+            rhythm: [0; RHYTHM_BINS],
+            rhythm_long: [0; RHYTHM_BINS],
+        }
+    }
+
+    /// REQ: OBS-031 — folds the hour into the decayed copy and starts a new hour.
+    fn fold_rhythm(&mut self) {
+        for (long, hour) in self.rhythm_long.iter_mut().zip(self.rhythm) {
+            *long = (*long / 2).saturating_add(hour);
+        }
+        self.rhythm = [0; RHYTHM_BINS];
+    }
+
+    fn pair_rhythm(&self) -> PairRhythm {
+        let mut recent = self.rhythm_long;
+        for (r, h) in recent.iter_mut().zip(self.rhythm) {
+            *r = r.saturating_add(h);
+        }
+        PairRhythm {
+            domain: self.domain.clone(),
+            hour: self.rhythm,
+            recent,
+            regular_hours: self.regular_hours,
+            known_periodic: self.known_periodic,
+            since_s: self.since_s,
+            mean_per_hour: self.volume.mean,
+            typical_gap_s: (self.n_intervals >= 4)
+                .then(|| (mean_std(self.gaps()).0 * 10.0).round() / 10.0),
         }
     }
 
@@ -379,7 +465,7 @@ impl Client {
 
     /// Volume and beaconing: counts a query to a tracked pair (tracking it if there's room or
     /// an idle pair to replace).
-    fn track(&mut self, fp: u64, span: &[u8], ts_s: u64) {
+    fn track(&mut self, fp: u64, span: &[u8], ts_s: u64, at_ms: u64) {
         let idx = match self.tracked.iter().position(|t| t.fp == fp) {
             Some(i) => Some(i),
             None if self.tracked.len() < TRACKED => {
@@ -416,6 +502,12 @@ impl Client {
             }
         }
         t.last_s = ts_s;
+        // REQ: OBS-031 — one bin index and one increment per query to a tracked pair.
+        if t.last_ms > 0 {
+            let bin = rhythm_bin(at_ms.saturating_sub(t.last_ms));
+            t.rhythm[bin] = t.rhythm[bin].saturating_add(1);
+        }
+        t.last_ms = at_ms;
     }
 }
 
@@ -458,6 +550,9 @@ pub struct Engine {
     /// Fingerprints of `settings.ignore_domains` (rebuilt from the settings).
     #[serde(skip)]
     ignore_fps: Vec<u64>,
+    /// REQ: OBS-031 — each beacon finding's rhythm at report time (at most as many as findings).
+    #[serde(default)]
+    beacon_rhythms: std::collections::VecDeque<BeaconRhythm>,
 }
 
 /// Second-level labels under which registrations sit one level deeper (`co.uk`, `com.au`).
@@ -572,6 +667,7 @@ impl Engine {
             total: BTreeMap::new(),
             new_domains: std::collections::VecDeque::new(),
             ignore_fps: Vec::new(),
+            beacon_rhythms: std::collections::VecDeque::new(),
         }
         .with_ignores()
     }
@@ -619,12 +715,33 @@ impl Engine {
         self.new_domains.iter()
     }
 
+    /// REQ: OBS-031 — a device's tracked pairs with their rhythms (empty for an unknown device).
+    pub fn rhythm(&self, client: [u8; 16]) -> Vec<PairRhythm> {
+        self.clients
+            .get(&client)
+            .map(|c| c.tracked.iter().map(Tracked::pair_rhythm).collect())
+            .unwrap_or_default()
+    }
+
+    /// REQ: OBS-031 — the rhythm a beacon finding's pair had when it was reported.
+    pub fn beacon_rhythm(&self, f: &Finding) -> Option<[u16; RHYTHM_BINS]> {
+        let domain = f.domain.as_deref()?;
+        self.beacon_rhythms
+            .iter()
+            .rev()
+            .find(|r| {
+                r.client == f.client && r.window_start_s == f.window_start_s && r.domain == domain
+            })
+            .map(|r| r.bins)
+    }
+
     /// Devices with state.
     pub fn clients(&self) -> usize {
         self.clients.len()
     }
 
-    /// Approximate memory of one device's state, in bytes (the T3.13 budget is 4 KiB).
+    /// Approximate memory of one device's state, in bytes (the T3.13 budget of 4 KiB, plus
+    /// [`RHYTHM_BYTES`] for the rhythm: ADR-131).
     pub fn client_bytes(&self, ip: [u8; 16]) -> Option<usize> {
         let c = self.clients.get(&ip)?;
         Some(
@@ -650,6 +767,13 @@ impl Engine {
     /// [`Self::observe`] with the answer's RCODE (`None` when nothing was sent), for the
     /// NXDOMAIN storm detector.
     pub fn observe_answer(&mut self, ts_s: u64, client: [u8; 16], wire: &[u8], rcode: Option<u8>) {
+        self.observe_query(ts_s.saturating_mul(1_000_000), client, wire, rcode);
+    }
+
+    /// [`Self::observe_answer`] at `at_us` (microseconds): the rhythm counts gaps in
+    /// milliseconds; everything else reads whole seconds.
+    pub fn observe_query(&mut self, at_us: u64, client: [u8; 16], wire: &[u8], rcode: Option<u8>) {
+        let ts_s = at_us / 1_000_000;
         let hour = ts_s / 3600;
         if self.hour == 0 {
             self.hour = hour;
@@ -726,7 +850,7 @@ impl Engine {
                         dga_score: score,
                     });
                 }
-                c.track(fp, span, ts_s);
+                c.track(fp, span, ts_s, at_us / 1_000);
             }
         }
         if let Some(f) = storm {
@@ -775,7 +899,32 @@ impl Engine {
             client.dga_hour = 0;
             client.dga_samples.clear();
             // Domain volume first, so a rate spike one domain explains is reported once.
+            let first = out.len();
             let explained = Self::close_pairs(client, key, start, end, learned, mult, &mut out);
+            // REQ: OBS-031 — fold the hour's rhythm; a new beacon keeps its pair's at report time.
+            for t in &mut client.tracked {
+                t.fold_rhythm();
+            }
+            for f in &out[first..] {
+                if f.kind != Kind::Beacon {
+                    continue;
+                }
+                if let Some(t) = client
+                    .tracked
+                    .iter()
+                    .find(|t| f.domain.as_deref() == Some(t.domain.as_str()))
+                {
+                    if self.beacon_rhythms.len() >= MAX_FINDINGS {
+                        self.beacon_rhythms.pop_front();
+                    }
+                    self.beacon_rhythms.push_back(BeaconRhythm {
+                        client: key,
+                        domain: t.domain.clone(),
+                        window_start_s: f.window_start_s,
+                        bins: t.rhythm_long,
+                    });
+                }
+            }
             if let Some(f) = Self::close_rate(client, key, start, hod, learned, mult, explained) {
                 out.push(f);
             }

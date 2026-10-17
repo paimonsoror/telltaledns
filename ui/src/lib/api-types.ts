@@ -931,6 +931,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients/{id}/rhythm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How a device's queries are spaced (OBS-031).
+         * @description For each registrable domain the anomaly engine tracks for the device (up to 16 per node),
+         *     the gaps between its queries as counts in 24 log-spaced bins (`binsS`: under 1 s, then
+         *     1–1.5 s, 1.5–2.2 s, … up to 7,290 s and longer): `hour` (this hour) and `recent` (each hour's
+         *     close halves it and adds that hour). `dominantBin` and `dominantSharePct` say how regular it
+         *     is (a time-sync loop every 2.5 s puts nearly everything in bin 3, 2.2–3.3 s), `period` says it
+         *     in words, `knownPeriodic` that it was periodic while the device was learning (usual), and
+         *     `regularHours` how long the beacon detector has found it regular (4 reports a new beacon).
+         *     Every node's, summed by domain. `id` is an address, or a named device's name. Needs the
+         *     anomaly engine (`available: false`, `reason: disabled` without it), which runs only at
+         *     query-log privacy level 0. `bins=false` leaves the bins out. Example:
+         *     `GET /api/v1/clients/192.168.2.14/rhythm`.
+         */
+        get: operations["client_rhythm"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients/{name}": {
         parameters: {
             query?: never;
@@ -2666,6 +2696,11 @@ export interface components {
              * @description What was seen, the device's usual value (± spread), and the bar it crossed.
              */
             observed: number;
+            /**
+             * @description REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its
+             *     queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`).
+             */
+            rhythm?: number[] | null;
             /** Format: double */
             spread: number;
             /** Format: double */
@@ -3283,6 +3318,19 @@ export interface components {
              * @example Living room TV
              */
             name?: string | null;
+        };
+        /** @description REQ: OBS-031 — a device's rhythm per domain. */
+        ClientRhythm: {
+            /** @description False when the anomaly engine is off (`reason: disabled`). */
+            available: boolean;
+            /** @description The bins' upper bounds in seconds; the last bin (7,290 s and longer) has none. */
+            binsS: number[];
+            /** @description The device's address. */
+            client: string;
+            /** @description Sorted by the dominant share, most regular first; at most 16. */
+            domains: components["schemas"]["RhythmDomain"][];
+            missingNodes?: string[];
+            reason?: string | null;
         };
         /** @description One health check with a plain-language fix when it fails. */
         ClusterCheck: {
@@ -4337,6 +4385,11 @@ export interface components {
                  * @description What was seen, the device's usual value (± spread), and the bar it crossed.
                  */
                 observed: number;
+                /**
+                 * @description REQ: OBS-031 — a beacon's rhythm when it was reported: 24 counts of gaps between its
+                 *     queries per log-spaced bin (bounds in `GET /api/v1/clients/{id}/rhythm`'s `binsS`).
+                 */
+                rhythm?: number[] | null;
                 /** Format: double */
                 spread: number;
                 /** Format: double */
@@ -5903,6 +5956,47 @@ export interface components {
             answer: string;
             /** @example nas.example.com */
             domain: string;
+        };
+        /** @description One tracked domain's rhythm. */
+        RhythmDomain: {
+            /** @description The registrable domain (eTLD+1). */
+            domain: string;
+            /**
+             * Format: int32
+             * @description The bin holding most of `recent`, and its share (percent).
+             */
+            dominantBin?: number | null;
+            /** Format: double */
+            dominantSharePct: number;
+            /** @description This hour's gaps per bin (24 counts; see `binsS`). */
+            hour?: number[];
+            /** @description It was periodic while the device was learning: its usual behaviour. */
+            knownPeriodic: boolean;
+            /**
+             * Format: double
+             * @description Its queries per hour, usually.
+             */
+            meanPerHour: number;
+            /** @description The cluster nodes that track it. */
+            nodes?: string[];
+            /** @description In words, when one bin holds at least half: `every 2.5 s`, `every 5 min`, `in bursts`. */
+            period?: string | null;
+            /** @description The recent view: each hour's close halves it and adds that hour; this hour included. */
+            recent?: number[];
+            /**
+             * Format: int32
+             * @description Consecutive hours the beacon detector found it regular (4 reports a new beacon).
+             */
+            regularHours: number;
+            /** @description Since when it's tracked (RFC 3339). */
+            sinceTime?: string | null;
+            /** Format: int64 */
+            sinceUnixSeconds?: number | null;
+            /**
+             * Format: double
+             * @description The mean of the latest gaps in whole seconds (1 s to an hour), when there are enough.
+             */
+            typicalGapS?: number | null;
         };
         /**
          * @description What a user may do (`spec/08` §6).
@@ -8251,6 +8345,50 @@ export interface operations {
             };
             /** @description No named device by that name, and not an address. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    client_rhythm: {
+        parameters: {
+            query?: {
+                /** @description `false`: the dominant period and share per domain without the bins (default true). */
+                bins?: boolean;
+            };
+            header?: never;
+            path: {
+                /** @description An address, or a named device's name. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The device's rhythm per domain. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientRhythm"];
+                };
+            };
+            /** @description No named device by that name, and not an address. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `privacy_level`: the query log's privacy level hides devices and names. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
