@@ -11,6 +11,7 @@
   let { client }: { client: string } = $props();
 
   const windows = [
+    { id: '1h', label: '1 h', from: '-1h' },
     { id: '6h', label: '6 h', from: '-6h' },
     { id: '24h', label: '24 h', from: '-24h' },
     { id: '3d', label: '3 d', from: '-3d' },
@@ -23,6 +24,13 @@
   let table = $state(false);
   let width = $state(0);
   let canvas = $state<HTMLCanvasElement>();
+  let scroller = $state<HTMLDivElement>();
+  // A window wider than the screen opens on its newest end: "now" is what you came for.
+  $effect(() => {
+    void data;
+    void table;
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+  });
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
   let theme = $state(0);
 
@@ -143,7 +151,7 @@
         </table>
       </div>
     {:else if g}
-      <div class="scroll">
+      <div class="scroll" bind:this={scroller} data-testid="timeline-scroll">
         <div class="inner" style:grid-template-columns="{LABEL_W}px {g.width}px">
           <div class="label sticky small muted">{day(data.bins[0])}</div>
           <div class="rail" data-testid="timeline-rail">
