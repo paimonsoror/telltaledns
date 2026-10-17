@@ -185,6 +185,19 @@ impl Maintenance {
             "maintenance started ({}): /readyz answers 503; DNS keeps answering",
             w.reason
         );
+        // REQ: OBS-033 — a change marker.
+        let until = telltale_api::time::format_us(w.until_ms.saturating_mul(1000));
+        crate::annotations::record(telltale_api::model::Annotation {
+            actor: Some(w.by.clone()),
+            until: Some(until.clone()),
+            reason: Some(w.reason.clone()),
+            href: Some("#/cluster".into()),
+            ..crate::annotations::marker(
+                "maintenance.entered",
+                now_ms(),
+                format!("maintenance until {until}: {}", w.reason),
+            )
+        });
         *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Some(w);
         self.starts.fetch_add(1, Ordering::Relaxed);
         self.changed.notify_one();
@@ -207,9 +220,24 @@ impl Maintenance {
                 return Err(e);
             }
         }
-        if was.is_some() {
+        if let Some(w) = &was {
             self.apply(None, false);
             info!("maintenance ended: ready for traffic again");
+            // REQ: OBS-033 — a change marker.
+            let early = w.until_ms > now_ms();
+            crate::annotations::record(telltale_api::model::Annotation {
+                reason: Some(w.reason.clone()),
+                href: Some("#/cluster".into()),
+                ..crate::annotations::marker(
+                    "maintenance.left",
+                    now_ms(),
+                    if early {
+                        "maintenance ended: ready for traffic again"
+                    } else {
+                        "maintenance window ran out: ready for traffic again"
+                    },
+                )
+            });
         }
         self.changed.notify_one();
         Ok(was)

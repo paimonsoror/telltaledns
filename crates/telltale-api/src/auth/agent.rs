@@ -77,6 +77,10 @@ pub const SCOPES: &[(&str, &str)] = &[
         "start and end node maintenance (at most two hours)",
     ),
     (
+        "ops:annotate",
+        "leave notes on the time charts (change markers)",
+    ),
+    (
         "cluster:admin",
         "promote a node to primary; change the staged-rollout settings; promote or abort a rollout; pin and unpin the cluster",
     ),
@@ -163,7 +167,9 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/cache/stats"
             | "/api/v1/cache/lookup"
             | "/api/v1/cache/entries"
-            | "/api/v1/blocking" => {
+            | "/api/v1/blocking"
+            // REQ: OBS-033 — change markers.
+            | "/api/v1/annotations" => {
                 return Need::Scope("analytics:read");
             }
             // REQ: AGT-012 — vqlog reads the query log row by row (by client and name).
@@ -299,6 +305,8 @@ fn post_need(p: &str) -> Option<Need> {
             Need::Scope("ops:anomalies")
         }
         "/api/v1/cluster/promote" => Need::Scope("cluster:admin"),
+        // REQ: OBS-033 — a note on the time charts is an immediate, append-only op.
+        "/api/v1/annotations" => Need::Scope("ops:annotate"),
         // REQ: CLU-013 — rollouts and pins change what every node serves.
         "/api/v1/cluster/rollout/promote" | "/api/v1/cluster/rollout/abort" => {
             Need::Scope("cluster:admin")
@@ -640,6 +648,30 @@ mod tests {
         }
         assert_eq!(
             implied_role(&parse_scopes(&["ops:maintenance".into()]).unwrap()),
+            Role::Operator
+        );
+    }
+
+    /// REQ: OBS-033, AGT-004 — reading change markers is analytics; a note needs
+    /// `ops:annotate` (an operator scope, not in the default set); changing one isn't for
+    /// anyone.
+    #[test]
+    fn obs_033_annotation_routes_need_their_scope() {
+        use Need::{Forbidden, Scope};
+        assert_eq!(
+            required(&Method::GET, "/api/v1/annotations"),
+            Scope("analytics:read")
+        );
+        assert_eq!(
+            required(&Method::POST, "/api/v1/annotations"),
+            Scope("ops:annotate")
+        );
+        for m in [Method::PUT, Method::DELETE] {
+            assert_eq!(required(&m, "/api/v1/annotations"), Forbidden, "{m}");
+        }
+        assert!(!DEFAULT_SCOPES.contains(&"ops:annotate"));
+        assert_eq!(
+            implied_role(&parse_scopes(&["ops:annotate".into()]).unwrap()),
             Role::Operator
         );
     }

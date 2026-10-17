@@ -2741,3 +2741,146 @@ pub struct RolloutAction {
     /// `If-Match`).
     pub config_version: u64,
 }
+
+/// REQ: OBS-033 (ADR-133) — one change marker: something done to a node, or that it did to
+/// itself, at a moment. The same shape is a line of `<data_dir>/annotations.jsonl`. Which
+/// fields are set depends on `kind`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    /// When, RFC 3339 UTC.
+    #[schema(example = "2026-10-13T02:52:11.000Z")]
+    pub t: String,
+    /// The same, Unix milliseconds.
+    pub t_unix_ms: u64,
+    /// `config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,
+    /// `maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,
+    /// `cache.flushed`, `upstream.breaker`, or `note`.
+    #[schema(example = "config.applied")]
+    pub kind: String,
+    /// What happened, in one sentence.
+    #[schema(example = "configuration 312 applied (gitops, 3 sections changed)")]
+    pub summary: String,
+    /// The node it happened on (federated reads; a standalone node leaves it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// `config.applied`: where the change came from: `ui` (a signed-in user), `api` (an API
+    /// token), `agent` (an agent token), `gitops`, `file` (the config files were reloaded),
+    /// or `cluster` (a replica applying the primary's version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Who, when known: a user, `token:<name> (owner: <user>)`, or
+    /// `agent:<name> (owner: <user>)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// `config.applied`: the configuration sequence (the cluster's, else this node's
+    /// configuration version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    /// `config.applied`: the configuration sections that changed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<String>,
+    /// `config.applied` on a replica, `lists.refreshed`: the filter snapshot version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_version: Option<u64>,
+    /// `build.started`, `node.restarted`, `rollout.stage`: the build or rollout version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// `build.started`, `node.restarted`: the build's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// `node.restarted`: the run before didn't stop cleanly (a crash, an OOM kill, a power cut).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unclean_shutdown: Option<bool>,
+    /// `lists.refreshed`: the lists whose content changed (added, removed, or downloaded anew).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lists: Vec<String>,
+    /// `lists.refreshed`: blocked names gained (negative: lost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_delta: Option<i64>,
+    /// `rollout.stage`: `canary`, `promoted`, `aborted`, `failed`, `pinned`, or `unpinned`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// `maintenance.entered`, `blocking.paused`: until when (RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// `maintenance.entered`: why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// `upstream.breaker`: the upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// `upstream.breaker`: `open`, `half_open`, or `closed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// `note`: the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// `blocking.*`, `cache.flushed`: the nodes it was done on, when not only this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<String>,
+    /// Where the web UI shows more (`#/settings?tab=system`, `#/cluster`, `#/lists`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+}
+
+/// REQ: OBS-033 — the parameters of `GET /api/v1/annotations`.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AnnotationParams {
+    /// Start (RFC 3339 or relative such as `-24h`; default 24 hours ago).
+    #[param(example = "-24h")]
+    pub from: Option<String>,
+    /// End (default now).
+    pub to: Option<String>,
+    /// Kinds to keep, comma-separated (default all), e.g. `config.applied,note`.
+    #[param(example = "config.applied,note")]
+    pub kinds: Option<String>,
+    /// `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`.
+    #[param(example = "cluster")]
+    pub scope: Option<String>,
+    /// At most this many, newest first (1–2000, default 500).
+    pub limit: Option<usize>,
+    /// Only markers before this time (RFC 3339): pass `nextBefore` from the previous page.
+    pub before: Option<String>,
+}
+
+/// REQ: OBS-033 — what a federated annotation read asks each node, already parsed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnotationFilter {
+    /// `[from_ms, to_ms)`.
+    pub from_ms: u64,
+    pub to_ms: u64,
+    /// Empty: every kind.
+    pub kinds: Vec<String>,
+    /// At most this many, newest first.
+    pub limit: usize,
+}
+
+/// REQ: OBS-033 — a page of change markers, newest first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationPage {
+    pub items: Vec<Annotation>,
+    /// More markers in the window than `limit`: ask again with `before = nextBefore`.
+    pub truncated: bool,
+    /// With `truncated`: the `before` for the next page (the oldest marker's time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<String>,
+    /// Cluster nodes that couldn't be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteRequest {
+    /// 1 to 200 characters, one line.
+    #[schema(example = "moved the access point to the hallway")]
+    pub text: String,
+    /// When it happened (RFC 3339; default now): up to 7 days back, never ahead.
+    #[serde(default)]
+    #[schema(example = "2026-10-16T14:05:00Z")]
+    pub time: Option<String>,
+}

@@ -124,6 +124,10 @@ enum Read {
     Health,
     /// REQ: OBS-020 — the peer's own probes (older peers don't know it).
     Probes,
+    /// REQ: OBS-033 — the peer's own change markers (older peers don't know it).
+    Annotations {
+        filter: telltale_api::model::AnnotationFilter,
+    },
     /// REQ: OBS-019 — the peer's own upstream answer quality (older peers don't know it).
     UpstreamChecks,
     /// REQ: OBS-018 — the peer's own shadow-list counts and over-blocking suspects.
@@ -200,6 +204,7 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::Anomalies { since_s } => serde_json::to_vec(&b.anomalies(since_s)),
         Read::Health => serde_json::to_vec(&b.health()),
         Read::Probes => serde_json::to_vec(&b.probes()),
+        Read::Annotations { filter } => serde_json::to_vec(&b.annotations(&filter)),
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
@@ -1584,6 +1589,40 @@ impl Backend for Federated {
             }));
         }
         rows
+    }
+    // REQ: OBS-033 (ADR-133) — each node keeps its own markers: every node's, labelled,
+    // newest first.
+    fn annotations(
+        &self,
+        f: &telltale_api::model::AnnotationFilter,
+    ) -> Vec<telltale_api::model::Annotation> {
+        let label = |rows: Vec<telltale_api::model::Annotation>, node: &str| {
+            rows.into_iter()
+                .map(|mut a| {
+                    a.node = Some(node.to_owned());
+                    a
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut pages = Vec::new();
+        if self.with_me() {
+            pages.push(label(self.local.annotations(f), &self.own_label()));
+        }
+        for (node, rows) in self.everyone_labelled::<Vec<telltale_api::model::Annotation>>(|| {
+            Read::Annotations { filter: f.clone() }
+        }) {
+            pages.push(label(rows, &node));
+        }
+        telltale_api::annotations_api::merge(pages, f.limit)
+    }
+    // REQ: OBS-033 — a note (or a pause or flush asked here) is this node's own marker.
+    fn annotate(
+        &self,
+        a: telltale_api::model::Annotation,
+    ) -> Result<telltale_api::model::Annotation, Problem> {
+        let mut written = self.local.annotate(a)?;
+        written.node = Some(self.own_label());
+        Ok(written)
     }
     // REQ: DNS-006, CLU-002 (T6.13) — each node has its own cache: one row per node.
     fn cache_stats(&self) -> Vec<telltale_api::model::CacheNodeStats> {

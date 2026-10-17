@@ -13,6 +13,8 @@ struct Fake {
     seen: Mutex<Vec<String>>,
     /// REQ: OBS-014 — acknowledged finding IDs.
     acks: Mutex<Vec<String>>,
+    /// REQ: OBS-033 — markers written.
+    notes: Mutex<Vec<crate::model::Annotation>>,
 }
 
 /// The one finding the fake reports.
@@ -25,6 +27,23 @@ const NOW: u64 = 1_791_072_000;
 impl Backend for Fake {
     fn now_unix_seconds(&self) -> u64 {
         NOW
+    }
+    fn annotations(&self, f: &crate::model::AnnotationFilter) -> Vec<crate::model::Annotation> {
+        let mut v: Vec<_> = self
+            .notes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|a| a.t_unix_ms >= f.from_ms && a.t_unix_ms < f.to_ms)
+            .cloned()
+            .collect();
+        v.sort_by_key(|a| std::cmp::Reverse(a.t_unix_ms));
+        v.truncate(f.limit);
+        v
+    }
+    fn annotate(&self, a: crate::model::Annotation) -> Result<crate::model::Annotation, Problem> {
+        self.notes.lock().unwrap().push(a.clone());
+        Ok(a)
     }
     fn system_info(&self) -> SystemInfo {
         SystemInfo {
@@ -1054,8 +1073,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 86 with OPS-010's /nodes/{id}/maintenance, OBS-024's /simulate and
     // /simulate-settings/default, and OBS-025's /clients/identities and /clients/{id}/identity;
     // 93 with CLU-013's /cluster/rollout-settings/default, /cluster/rollout, …/promote, …/abort,
-    // /cluster/versions, /cluster/versions/{version}/pin, and /cluster/pin.
-    assert_eq!(paths.len(), 93);
+    // /cluster/versions, /cluster/versions/{version}/pin, and /cluster/pin; 94 with OBS-033's
+    // /annotations.
+    assert_eq!(paths.len(), 94);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -2195,5 +2215,142 @@ async fn api_003_admins_revoke_other_users_tokens() {
             .user(ana.id)
             .unwrap()
             .is_some_and(|u| !u.disabled)
+    );
+}
+
+// REQ: OBS-033, AGT-004, AGT-005 — notes over HTTP: 201 with the line as written; 422
+// `annotation_text` past 200 characters and `annotation_time` ahead of now; PUT and DELETE 405;
+// an agent token needs `ops:annotate` (403 without), and its note and audit entry name its
+// owner; a viewer reads but can't write; the read pages with `truncated` and `nextBefore`.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one flow: write, refuse, scope, audit, read
+async fn obs_033_notes_over_http() {
+    let (app, fake) = app();
+    let post = |token: &str, body: serde_json::Value| {
+        Request::post("/api/v1/annotations")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-telltale-reason", "recording why")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let code = |v: &serde_json::Value| v["code"].as_str().map(str::to_owned);
+    let (s, _, v) = send(
+        &app,
+        post(&app.bearer, serde_json::json!({"text": " moved the AP "})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        (v["kind"].as_str(), v["text"].as_str(), v["actor"].as_str()),
+        (
+            Some("note"),
+            Some("moved the AP"),
+            Some("token:tests (owner: root)")
+        )
+    );
+    assert_eq!(v["tUnixMs"], NOW * 1000);
+    let (s, _, v) = send(
+        &app,
+        post(&app.bearer, serde_json::json!({"text": "x".repeat(201)})),
+    )
+    .await;
+    assert_eq!(
+        (s, code(&v).as_deref()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("annotation_text")),
+        "{v}"
+    );
+    let (s, _, v) = send(
+        &app,
+        post(
+            &app.bearer,
+            serde_json::json!({"text": "later", "time": "2026-10-04T01:00:00Z"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (s, code(&v).as_deref()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("annotation_time")),
+        "{v}"
+    );
+    for m in ["PUT", "DELETE"] {
+        let req = Request::builder()
+            .method(m)
+            .uri("/api/v1/annotations")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .body(Body::empty())
+            .unwrap();
+        let (s, _, v) = send(&app, req).await;
+        assert_eq!(
+            (s, code(&v).as_deref()),
+            (StatusCode::METHOD_NOT_ALLOWED, Some("method_not_allowed")),
+            "{m}: {v}"
+        );
+    }
+    // Agents: the scope, and their owner in the note and the audit log.
+    let token = |name: &str, scopes: &[&str]| {
+        Request::post("/api/v1/tokens")
+            .header("authorization", format!("Bearer {}", app.bearer))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"name": name, "kind": "agent", "scopes": scopes}).to_string(),
+            ))
+            .unwrap()
+    };
+    let (s, _, v) = send(&app, token("reader", &["analytics:read"])).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let reader = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(
+        &app,
+        post(&reader, serde_json::json!({"text": "not allowed"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, _, v) = send(&app, token("noter", &["ops:annotate"])).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let noter = v["token"].as_str().unwrap().to_owned();
+    let (s, _, v) = send(
+        &app,
+        post(
+            &noter,
+            serde_json::json!({"text": "ISP outage", "time": "-2h"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["actor"], "agent:noter (owner: root)");
+    assert_eq!(v["tUnixMs"], (NOW - 7200) * 1000);
+    let audit = app
+        .auth
+        .state()
+        .audit_page(None, 10, Some("annotation.note"), None)
+        .unwrap();
+    assert_eq!(audit.len(), 2, "{audit:?}");
+    assert!(
+        audit.iter().any(|a| a.actor == "agent:noter (owner: root)"),
+        "{audit:?}"
+    );
+    assert_eq!(
+        fake.notes.lock().unwrap().len(),
+        2,
+        "refused notes never reach the backend"
+    );
+    // The read: newest first, one more than asked says there are more.
+    let (s, _, v) = get(&app, "/api/v1/annotations?limit=1").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["text"], "moved the AP");
+    assert_eq!(v["truncated"], true);
+    let before = v["nextBefore"].as_str().unwrap().to_owned();
+    let (_, _, v) = get(
+        &app,
+        &format!("/api/v1/annotations?limit=1&before={before}"),
+    )
+    .await;
+    assert_eq!(v["items"][0]["text"], "ISP outage");
+    assert_eq!(v["truncated"], false);
+    let (s, _, v) = get(&app, "/api/v1/annotations?kinds=reboot").await;
+    assert_eq!(
+        (s, code(&v).as_deref()),
+        (StatusCode::BAD_REQUEST, Some("invalid_parameter"))
     );
 }

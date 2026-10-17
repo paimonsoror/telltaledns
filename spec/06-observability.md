@@ -45,6 +45,14 @@ Upstream transactions additionally emit `UpstreamEvent { ts, upstream_id, latenc
 - Minute rollups are flushed to SQLite `rollup_minute` (kept 7 days), then aggregated into `rollup_hour` (kept 400 days) and `rollup_day` (kept forever; tiny). Top-K and serialized HDR histograms are stored per hour.
 - All dashboard queries beyond 15 minutes read rollups, never raw logs. So "last 30 days" charts render in < 100 ms on a Pi.
 
+### 3.1 Annotations (change markers; OBS-033, ADR-133)
+- **Data:** `<data_dir>/annotations.jsonl`, one JSON line per event (`t`, `kind`, `summary`, `source`, `actor`, kind fields, `ref`), appended (`O_APPEND`, no fsync) by the background task that knows about the event: never the query path or the telemetry thread. Capped at 20,000 lines and 90 days, compacted in place at start and once a day. A write failure is logged once an hour and changes nothing else.
+- **Kinds:** `config.applied` (only when the configuration itself changed; `seq` is the cluster's sequence in a cluster, else `state.db`'s configuration version; the primary or a standalone node records the write's `source` (`ui`, `api`, `agent`, `gitops`, `file`) and `actor`, a replica `gitops` when the manifest names a commit, else `cluster`, without an actor), `build.started`, `node.restarted` (`uncleanShutdown`), `lists.refreshed` (only on the node that compiles, only when the snapshot changed), `rollout.stage`, `maintenance.entered`/`.left`, `blocking.paused`/`.resumed`, `cache.flushed`, `upstream.breaker` (one line per upstream per 5 minutes at most), `note`.
+- **Notes:** `POST /api/v1/annotations` `{text, time?}`: 1–200 characters after trimming (422 `annotation_text`), up to 7 days back and never ahead (422 `annotation_time`); operator role, agents `ops:annotate` (not in the default set); audited `annotation.note`; not configuration (allowed under GitOps, not replicated): the receiving node appends it, and federated reads show it everywhere. `PUT`/`DELETE` answer 405.
+- **Read:** `GET /api/v1/annotations?from&to&kinds&scope&limit&before` (federated `Read::Annotations`, newest first, `limit` ≤ 2,000, `truncated`, `missingNodes`; `before` pages back); MCP `list_annotations`, `annotate`, and `get_overview.changes`.
+- **Prometheus:** `telltale_config_seq`, `telltale_build_info`, `telltale_filter_snapshot_version`, `telltale_annotations_total{kind}`; the Grafana dashboard draws them as annotations.
+- **UI:** one store per page feeds every chart's markers; lines of one kind and `seq` from several nodes draw as one marker naming the nodes; node pages show only that node's.
+
 ## 4. Query-log store (OBS-003)
 A custom, append-only columnar segment format optimized for "filter by time, client, domain substring, status" on low-end storage.
 - **Segment = one hour per node:** `qlog/YYYY/MM/DD/HH-<node>.seg`.

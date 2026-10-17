@@ -1735,3 +1735,71 @@ test('obs_018 shadow list and over-blocking', async () => {
   await expect(ob).toContainText('e2e-block');
   await page.unroute('**/api/v1/analytics/overblocking*');
 });
+
+// REQ: OBS-033 (T14.7) — change markers: a configuration change made through the API is a
+// marker on the dashboard's Queries chart whose hover names its version; the Changes toggle
+// hides it; Settings → System lists it; the "Note…" form adds a marker that names its author.
+// Notes are checked and append-only.
+test('obs_033 change markers', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const r = page.request;
+  const csrf = (await (await r.get('/api/v1/auth/status')).json()).csrfToken as string;
+  const h = { 'x-csrf-token': csrf };
+  const put = await r.put('/api/v1/records/marker.e2e.test', { headers: h, data: { records: [{ type: 'A', value: '192.0.2.33' }] } });
+  expect(put.status()).toBe(200);
+  const seq = (await put.json()).configVersion as number;
+  const applied = `configuration ${seq} applied`;
+  await expect
+    .poll(async () => ((await (await r.get('/api/v1/annotations?kinds=config.applied')).json()).items as { summary: string }[]).map((a) => a.summary), {
+      timeout: 15_000,
+    })
+    .toContainEqual(expect.stringContaining(applied));
+
+  await page.goto('/#/');
+  const chart = page.locator('.card.chart').filter({ hasText: 'Queries by status' });
+  const marker = chart.getByTestId('chart-markers').getByRole('button', { name: new RegExp(applied) });
+  await expect(marker).toBeVisible({ timeout: 20_000 });
+  await marker.hover();
+  await expect(chart.getByTestId('marker-tip')).toContainText(applied);
+  await expect(chart.getByTestId('marker-tip')).toContainText('admin');
+  // The toggle hides every marker (and is remembered).
+  await page.getByTestId('changes-toggle').uncheck();
+  await expect(chart.getByTestId('chart-markers')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId('changes-toggle')).not.toBeChecked();
+  await page.getByTestId('changes-toggle').check();
+  await expect(marker).toBeVisible();
+
+  // Settings → System lists it, with who.
+  await page.goto('/#/settings?tab=system');
+  const list = page.getByTestId('changes-list');
+  await expect(list).toContainText(applied);
+  await expect(list.getByRole('row').filter({ hasText: applied })).toContainText('admin');
+
+  // A note from the dashboard: a marker of its own that names its author.
+  await page.goto('/#/');
+  await page.getByTestId('note-open').click();
+  await page.getByTestId('note-text').fill('moved the access point to the hallway');
+  await page.getByRole('button', { name: 'Add note' }).click();
+  const note = chart.getByTestId('chart-markers').getByRole('button', { name: /moved the access point to the hallway \(admin\)/ });
+  await expect(note).toBeVisible();
+  await note.hover();
+  await expect(chart.getByTestId('marker-tip')).toContainText('admin');
+
+  // Checked and append-only (API).
+  const long = await r.post('/api/v1/annotations', { headers: h, data: { text: 'x'.repeat(201) } });
+  expect(long.status()).toBe(422);
+  expect((await long.json()).code).toBe('annotation_text');
+  const ahead = await r.post('/api/v1/annotations', { headers: h, data: { text: 'later', time: new Date(Date.now() + 3_600_000).toISOString() } });
+  expect(ahead.status()).toBe(422);
+  expect((await ahead.json()).code).toBe('annotation_time');
+  for (const m of ['put', 'delete'] as const) {
+    const res = await r[m]('/api/v1/annotations', { headers: h });
+    expect(res.status(), m).toBe(405);
+  }
+  const audit = (await (await r.get('/api/v1/audit?action=annotation.note')).json()).items;
+  expect(audit[0]).toMatchObject({ action: 'annotation.note', actor: 'admin' });
+  // The refusals above are expected: not page problems.
+  for (let i = problems.length - 1; i >= 0; i--) if (/status of 4(05|22)/.test(problems[i])) problems.splice(i, 1);
+  expect((await r.delete('/api/v1/records/marker.e2e.test', { headers: h })).status()).toBe(200);
+});

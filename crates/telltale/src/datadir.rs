@@ -29,6 +29,13 @@ pub(crate) struct Runs {
 
 /// This process's view of the run record (zero until [`record_start`]).
 static RUNS: std::sync::OnceLock<Runs> = std::sync::OnceLock::new();
+/// REQ: OBS-033 — this start followed a run that never stopped.
+static UNCLEAN_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// REQ: OBS-033 — whether this process's start followed a run that didn't stop cleanly.
+pub(crate) fn unclean_start() -> bool {
+    UNCLEAN_NOW.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The run record as of this process's start.
 pub(crate) fn runs() -> Runs {
@@ -45,6 +52,7 @@ pub(crate) fn record_start(dir: &Path) -> Runs {
         .unwrap_or_default();
     if r.running {
         r.unclean += 1;
+        UNCLEAN_NOW.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     r.starts += 1;
     r.running = true;

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod alerts;
+mod annotations;
 mod anomaly;
 mod api_backend;
 mod archive;

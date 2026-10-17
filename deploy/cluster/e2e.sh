@@ -16,7 +16,9 @@
 # keeps answering, survives its restart, keeps node_down quiet while it's stopped, and is
 # audited; a timed-out request isn't applied later; the primary in manual mode stays primary;
 # (T13.1, OBS-024): a simulation on the replica covers the primary's rows and its copy of the
-# replica's shipped rows, and one on the primary lists the stopped replica as missing.
+# replica's shipped rows, and one on the primary lists the stopped replica as missing; (T14.7,
+# OBS-033): a forwarded change is a marker on both nodes with one sequence, a note made on the
+# replica is in the primary's read, and the stopped replica is listed as missing there.
 # Usage: deploy/cluster/e2e.sh [path/to/telltale]   (default: target/debug/telltale)
 set -euo pipefail
 B=${1:-target/debug/telltale}
@@ -299,6 +301,46 @@ for _ in $(seq 50); do [ "$(q 25302 fwd.e2e.test)" = 10.0.0.1 ] && break; sleep 
 get '/api/v1/audit' | grep -q 'admin via r' || fail "the primary's audit log doesn't name the user and entry node"
 echo "ok"
 
+# REQ: OBS-033 (T14.7) — the forwarded record is one config.applied marker on each node with the
+# same sequence: the primary's names who made it, the replica's says it came from the cluster.
+# A note made on the replica is the replica's own, and the primary's read shows it, labelled.
+echo "== change markers across the cluster (OBS-033)"
+cat > "$E/ann.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+mode = sys.argv[2]
+items = d["items"]
+if mode == "applied":
+    by_seq = {}
+    for a in items:
+        by_seq.setdefault(a["seq"], {})[a["node"]] = a
+    ok = [s for s, n in by_seq.items() if "r" in n and len(n) == 2
+          and n["r"]["source"] == "cluster" and "r" not in [k for k, v in n.items() if v.get("actor")]
+          and any("admin" in (v.get("actor") or "") for v in n.values())]
+    sys.exit(0 if ok else 1)
+if mode == "note":
+    sys.exit(0 if any(a["kind"] == "note" and a["node"] == "r" and a["text"] == "e2e moved the AP" and a["actor"] == "admin" for a in items) else 1)
+if mode == "page":
+    sys.exit(0 if len(items) == 1 and d["truncated"] and d.get("nextBefore") else 1)
+if mode == "missing":
+    sys.exit(0 if "r" in d.get("missingNodes", []) else 1)
+PY
+annok() { get "$1" > "$E/ann.json" && python3 "$E/ann.py" "$E/ann.json" "$2"; }
+ok=""
+for _ in $(seq 40); do annok '/api/v1/annotations?kinds=config.applied&from=-15m' applied && { ok=1; break; }; sleep 0.5; done
+[ -n "$ok" ] || fail "the forwarded change isn't one config.applied marker per node with one sequence: $(cat "$E/ann.json")"
+code=$(curl -s -o "$E/note.json" -w '%{http_code}' -b "$E/rjar" -X POST -H "x-csrf-token: $CSRF" \
+  -H 'content-type: application/json' -d '{"text":"e2e moved the AP"}' "$RAPI/api/v1/annotations")
+[ "$code" = 201 ] || fail "a note on the replica answered $code: $(cat "$E/note.json")"
+annok '/api/v1/annotations?kinds=note&from=-15m' note || fail "the primary's read doesn't show the replica's note: $(cat "$E/ann.json")"
+annok '/api/v1/annotations?from=-15m&limit=1' page || fail "a one-marker page isn't truncated with nextBefore: $(cat "$E/ann.json")"
+# The configuration sequence is the same on both nodes; the replica counted its note.
+seqm() { curl -s "http://127.0.0.1:$1/metrics" | awk '/^telltale_config_seq / {print $2}'; }
+for _ in $(seq 40); do [ -n "$(seqm 29001)" ] && [ "$(seqm 29001)" = "$(seqm 29002)" ] && break; sleep 0.5; done
+{ [ "$(seqm 29001)" = "$(seqm 29002)" ] && [ "$(seqm 29001)" -gt 0 ]; }   || fail "telltale_config_seq differs: primary $(seqm 29001), replica $(seqm 29002)"
+curl -s http://127.0.0.1:29002/metrics | grep -q '^telltale_annotations_total{kind="note"} 1$'   || fail "the replica's telltale_annotations_total doesn't count its note"
+echo "ok (configuration $(seqm 29001) on both nodes)"
+
 echo "== quick rules made on the replica apply on every node (T6.12, ADR-067)"
 code=$(curl -s -o "$E/rule.json" -w '%{http_code}' -b "$E/rjar" -X PUT -H "x-csrf-token: $CSRF" \
   -H 'content-type: application/json' -d '{"action":"block","domain":"qr1.e2e.test","note":"cluster e2e"}' \
@@ -456,6 +498,8 @@ assert not [x for x in h["reasons"] if x.get("node") == "r"], h["reasons"]
 assert h["level"] == sys.argv[2], (h["level"], sys.argv[2])
 assert "r" not in h.get("missingNodes", []), h.get("missingNodes")
 PY
+# REQ: OBS-033 — the primary's change markers meanwhile name the stopped node.
+annok '/api/v1/annotations?from=-1h' missing || fail "the primary's markers don't list the stopped replica as missing: $(cat "$E/ann.json")"
 # REQ: OBS-024 — a simulation meanwhile covers what the primary holds and names the stopped node.
 TELLTALE_TOKEN=$TOKEN "$B" config simulate "$E/cand.toml" --window 1h --url "$API" --json > "$E/sim2.json" \
   || fail "the primary's simulation with the replica stopped failed: $(cat "$E/sim2.json")"

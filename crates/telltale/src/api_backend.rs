@@ -1266,6 +1266,29 @@ impl Backend for ApiBackend {
         Ok(self.src.identify.get(&addr))
     }
 
+    // REQ: OBS-033 — this node's change markers.
+    fn annotations(
+        &self,
+        f: &telltale_api::model::AnnotationFilter,
+    ) -> Vec<telltale_api::model::Annotation> {
+        crate::annotations::get().map_or_else(Vec::new, |a| a.read(f))
+    }
+
+    fn annotate(
+        &self,
+        a: telltale_api::model::Annotation,
+    ) -> Result<telltale_api::model::Annotation, Problem> {
+        let Some(store) = crate::annotations::get() else {
+            return Err(Problem::unavailable(
+                "change markers aren't open on this node yet",
+            ));
+        };
+        store.append(a).map_err(|e| {
+            Problem::unavailable(format!("the marker couldn't be written: {e}"))
+                .hint("The node's data directory may be full or read-only; DNS is unaffected.")
+        })
+    }
+
     fn config_version(&self) -> u64 {
         self.src
             .auth
@@ -2412,6 +2435,7 @@ impl Backend for ApiBackend {
                 ManagedError::State(e) => Problem::internal(e.to_string()),
             })?;
             // Apply: the main loop re-reads the files and state.db, validates, and swaps.
+            provenance(&w.by, version);
             let (tx, rx) = tokio::sync::oneshot::channel();
             let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
             if !applied {
@@ -3936,6 +3960,7 @@ impl ApiBackend {
                 ManagedError::NotFound { .. } => Problem::not_found(e.to_string()),
                 ManagedError::State(e) => Problem::internal(e.to_string()),
             })?;
+            provenance(&w.by, version);
             let (tx, rx) = tokio::sync::oneshot::channel();
             let applied = src.reload.send(tx).await.is_ok() && rx.await.unwrap_or(false);
             if !applied {
@@ -3945,6 +3970,19 @@ impl ApiBackend {
             }
             Ok(change(true, version))
         })
+    }
+}
+
+/// REQ: OBS-033 — the change about to be applied came from `by` and is configuration
+/// version `version`: for its `config.applied` marker.
+fn provenance(by: &str, version: u64) {
+    if let Some(a) = crate::annotations::get() {
+        a.set_provenance(crate::annotations::Provenance {
+            source: telltale_api::annotations_api::source_of(by).to_owned(),
+            actor: Some(by.to_owned()),
+            seq: Some(version),
+            filter_version: None,
+        });
     }
 }
 

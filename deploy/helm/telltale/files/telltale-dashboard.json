@@ -95,7 +95,50 @@
     ]
   },
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "name": "Configuration",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "enable": true,
+        "iconColor": "blue",
+        "expr": "changes(telltale_config_seq{job=~\"$job\", instance=~\"$instance\"}[5m]) > 0",
+        "step": "60s",
+        "titleFormat": "configuration",
+        "textFormat": "a new configuration version on {{instance}}",
+        "useValueForTime": false
+      },
+      {
+        "name": "Lists",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "enable": true,
+        "iconColor": "purple",
+        "expr": "changes(telltale_filter_snapshot_version{job=~\"$job\", instance=~\"$instance\"}[5m]) > 0",
+        "step": "60s",
+        "titleFormat": "lists",
+        "textFormat": "a new filter snapshot on {{instance}}",
+        "useValueForTime": false
+      },
+      {
+        "name": "Restarts",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "enable": true,
+        "iconColor": "orange",
+        "expr": "changes(telltale_process_starts_total{job=~\"$job\", instance=~\"$instance\"}[5m]) > 0",
+        "step": "60s",
+        "titleFormat": "restart",
+        "textFormat": "{{instance}} restarted",
+        "useValueForTime": false
+      }
+    ]
   },
   "panels": [
     {

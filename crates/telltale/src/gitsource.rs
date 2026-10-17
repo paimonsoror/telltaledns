@@ -333,6 +333,14 @@ pub(crate) async fn run(
                         &serde_json::json!({ "author": s.author, "subject": s.subject, "signedBy": s.signed_by, "repo": g.repo.as_str() }),
                     );
                 }
+                // REQ: OBS-033 — the marker says Git, and the commit's author.
+                if let Some(a) = crate::annotations::get() {
+                    a.set_provenance(crate::annotations::Provenance {
+                        source: "gitops".into(),
+                        actor: status(&cfg).map(|s| s.author).filter(|a| !a.is_empty()),
+                        ..crate::annotations::Provenance::default()
+                    });
+                }
                 // Apply: the effective configuration now uses the new commit's file.
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 if sources.reload.send(tx).await.is_ok() && !rx.await.unwrap_or(false) {

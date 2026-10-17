@@ -555,6 +555,21 @@ ADR_HEAD = re.compile(r"^## (ADR-(\d{3})) — (.*?)(?: \(([^()]*)\))?\s*$")
 SECTION = re.compile(r"^\*\*([A-Z][A-Za-z ]+):\*\*\s*(.*)$")
 
 
+# REQ: DOC-005, DOC-006 (ADR-136) — the records live on part pages of this many each, so no
+# page outgrows the page budget as decisions are added; decisions.html is their index.
+ADRS_PER_PAGE = 50
+
+
+def adr_page(num):
+    """The part page that holds ADR number `num`."""
+    return "decisions-{}.html".format((num - 1) // ADRS_PER_PAGE + 1)
+
+
+def adr_href(adr_id):
+    """A link to one decision record (`ADR-061`) on its part page."""
+    return "{}#{}".format(adr_page(int(adr_id[4:])), adr_id.lower())
+
+
 def parse_adrs():
     adrs, cur = [], None
     for line in read(os.path.join(ROOT, "spec", "11-decisions.md")).splitlines():
@@ -571,6 +586,7 @@ def parse_adrs():
 
 
 def render_decisions(page, reqs):
+    """The index page (decisions.html) and the part pages, as `{name: html}`."""
     adrs = parse_adrs()
     known = {a["id"] for a in adrs}
     ids = [a["id"] for a in adrs]
@@ -593,8 +609,17 @@ def render_decisions(page, reqs):
             c=html.escape(s.lower()), s=html.escape(s), n=n, t=html.escape(STATUS_TEXT.get(s.lower(), "")))
         for s, n in sorted(counts.items(), key=lambda kv: -kv[1]))
     summary = '<p class="legend adr-legend">{} decisions. {}</p>'.format(len(adrs), legend)
-    out = []
+    num_of = {a["id"]: a["num"] for a in adrs}
+    parts = sorted({adr_page(a["num"]) for a in adrs}, key=lambda n: int(n[10:-5]))
+    records = {n: [] for n in parts}
+    index = []
     for a in sorted(adrs, key=lambda a: a["num"]):
+        mine = adr_page(a["num"])
+
+        def here(x, mine=mine):
+            # Same part page: an anchor; another one: that page.
+            return "#" + x.lower() if adr_page(num_of[x]) == mine else adr_href(x)
+
         sections, cur = [], None
         for line in a["lines"]:
             m = SECTION.match(line)
@@ -620,12 +645,24 @@ def render_decisions(page, reqs):
                 '<span class="chip req" title="{}">{}</span>'.format(html.escape(reqs[r][0]), r) for r in a["reqs"]) + "</p>")
         if a["mentions"]:
             chips.append('<p class="chips"><span class="muted small">Builds on</span> ' + " ".join(
-                '<a class="chip adr" href="#{}">{}</a>'.format(x.lower(), x) for x in a["mentions"]) + "</p>")
+                '<a class="chip adr" href="{}">{}</a>'.format(here(x), x) for x in a["mentions"]) + "</p>")
         if mentioned_by[a["id"]]:
             chips.append('<p class="chips"><span class="muted small">Referenced by</span> ' + " ".join(
-                '<a class="chip adr" href="#{}">{}</a>'.format(x.lower(), x) for x in sorted(mentioned_by[a["id"]])) + "</p>")
+                '<a class="chip adr" href="{}">{}</a>'.format(here(x), x) for x in sorted(mentioned_by[a["id"]])) + "</p>")
         areas = "".join('<span class="chip area" data-area="{a}" title="{t}">{a}</span>'.format(a=x, t=html.escape(AREAS[x])) for x in a["areas"])
-        out.append(
+        gist_html = '<span class="adr-gist muted">{}</span>'.format(html.escape(gist)) if gist else ""
+        # The index: one line per record, linking to its part page (the id is kept here too, so
+        # an old decisions.html#adr-NNN link still lands on it without JavaScript).
+        index.append(
+            '<article class="adr adr-row card" id="{lid}" data-num="{num}" data-status="{st}" data-areas="{areas_attr}">'
+            '<a class="adr-head" href="{href}"><span class="adr-id">{id}</span> <span class="adr-title">{title}</span></a>'
+            '<span class="adr-meta"><span class="pill {st}">{status}</span>{areas}</span>{gist}</article>'.format(
+                lid=a["id"].lower(), num=a["num"], st=html.escape(a["status"].lower()), areas_attr=" ".join(a["areas"]),
+                href=adr_href(a["id"]), id=a["id"], title=md_inline(a["title"], set()), status=html.escape(a["status"]),
+                areas=areas, gist=gist_html,
+            )
+        )
+        records[mine].append(
             '<details class="adr card" id="{lid}" data-num="{num}" data-status="{st}" data-areas="{areas_attr}">'
             '<summary><span class="adr-head"><span class="adr-id">{id}</span> <span class="adr-title">{title}</span></span>'
             '<span class="adr-meta"><span class="pill {st}">{status}</span>{areas}</span>'
@@ -635,11 +672,27 @@ def render_decisions(page, reqs):
             '<a href="{gh}spec/11-decisions.md#{anchor}">In the specification</a></p></div></details>'.format(
                 lid=a["id"].lower(), num=a["num"], st=html.escape(a["status"].lower()), areas_attr=" ".join(a["areas"]),
                 id=a["id"], title=md_inline(a["title"], set()), status=html.escape(a["status"]), areas=areas,
-                gist='<span class="adr-gist muted">{}</span>'.format(html.escape(gist)) if gist else "",
+                gist=gist_html,
                 body=body, chips="".join(chips), gh=GH, anchor=gh_anchor(a["heading"]),
             )
         )
-    return page.replace("<!-- @decisions-summary -->", summary).replace("<!-- @decisions -->", "\n".join(out))
+    def nav(current):
+        links = ['<a href="decisions.html"{}>All decisions</a>'.format(' aria-current="page"' if current is None else "")]
+        for n in parts:
+            nums = [a["num"] for a in adrs if adr_page(a["num"]) == n]
+            label = "ADR-{:03d} to {:03d}".format(min(nums), max(nums))
+            links.append('<a href="{}"{}>{}</a>'.format(n, ' aria-current="page"' if n == current else "", label))
+        return '<nav class="adr-parts" aria-label="Decision pages">{}</nav>'.format(" ".join(links))
+
+    pages = {"decisions.html": page.replace("<!-- @decisions-summary -->", summary + nav(None)).replace(
+        "<!-- @decisions -->", "\n".join(index))}
+    for n in parts:
+        nums = [a["num"] for a in adrs if adr_page(a["num"]) == n]
+        span = "ADR-{:03d} to ADR-{:03d}".format(min(nums), max(nums))
+        part = page.replace("<title>Decisions — TelltaleDNS</title>", "<title>Decisions {} — TelltaleDNS</title>".format(span))
+        part = part.replace("<h1>Decisions</h1>", "<h1>Decisions <span class=\"muted\">{}</span></h1>".format(span))
+        pages[n] = part.replace("<!-- @decisions-summary -->", nav(n)).replace("<!-- @decisions -->", "\n".join(records[n]))
+    return pages
 
 
 # REQ: API-011, DOC-006 (T3.11) — the glossary page, from the same file as the UI's "?" panels.
@@ -784,7 +837,7 @@ def _chips(item, adrs, reqs):
     out = []
     for a in item.get("adrs", []):
         title, anchor = adrs.get(a, (a, ""))
-        out.append('<a class="chip adr" href="decisions.html#{}" title="{}">{}</a>'.format(a.lower(), html.escape(title), a))
+        out.append('<a class="chip adr" href="{}" title="{}">{}</a>'.format(adr_href(a), html.escape(title), a))
     for r in item.get("reqs", []):
         text, spec = reqs.get(r, ("", "01-requirements.md"))
         title = re.sub(r"\*\*|`", "", text)
@@ -994,9 +1047,9 @@ def coverage_errors(data):
     return errors
 
 
-def link_errors(out_dir):
+def link_errors(out_dir, names):
     errors = []
-    for name in PAGES:
+    for name in names:
         text = read(os.path.join(out_dir, name))
         for ref in re.findall(r'(?:href|src)="([^"#]+)"', text):
             if re.match(r"^(https?:|mailto:)", ref):
@@ -1021,6 +1074,7 @@ def main():
     arch = json.loads(read(os.path.join(SITE, "data", "architecture.json")))
     adrs, reqs = repo_ids()
     values_rows = parse_values(read(HELM_VALUES))
+    written = []
     for name in PAGES:
         page = read(os.path.join(SITE, name))
         slug = name[:-5]
@@ -1044,20 +1098,22 @@ def main():
             page = render_standards(page, data)
         if name == "nerds.html":
             page = render_nerds(page, arch, adrs, reqs)
-        if name == "decisions.html":
-            page = render_decisions(page, reqs)
-        if "<!-- @" in page:
-            sys.exit("{}: unreplaced marker".format(name))
-        with open(os.path.join(out, name), "w", encoding="utf-8") as f:
-            f.write(page)
+        # The decisions index and its part pages come from one template.
+        generated = render_decisions(page, reqs) if name == "decisions.html" else {name: page}
+        for gname, gpage in generated.items():
+            if "<!-- @" in gpage:
+                sys.exit("{}: unreplaced marker".format(gname))
+            with open(os.path.join(out, gname), "w", encoding="utf-8") as f:
+                f.write(gpage)
+            written.append(gname)
     with open(os.path.join(out, ".nojekyll"), "w") as f:
         f.write("")
-    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out)
+    errors = coverage_errors(data) + nerds_errors(arch, adrs, reqs) + helm_values_errors(values_rows) + link_errors(out, written)
     for e in errors:
         print("error: " + e, file=sys.stderr)
     if errors:
         sys.exit(1)
-    sizes = {n: os.path.getsize(os.path.join(out, n)) for n in PAGES}
+    sizes = {n: os.path.getsize(os.path.join(out, n)) for n in written}
     for n, sz in sizes.items():
         if sz > 500 * 1024:
             sys.exit("{} is {} KiB (> 500 KiB page budget, DOC-005)".format(n, sz // 1024))

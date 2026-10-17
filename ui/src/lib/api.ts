@@ -147,6 +147,10 @@ export const api = {
   unacknowledgeAnomalies: (ids: string[]) => post<S['AnomalyAckResult']>('/analytics/anomalies/unacknowledge', { ids }),
   // REQ: OBS-015 — healthy, degraded, or severe, and why.
   health: () => get<S['Health']>('/system/health'),
+  // REQ: OBS-033 — change markers (every node's, newest first), and notes.
+  annotations: (q: { from?: string; to?: string; kinds?: string; scope?: string; limit?: number; before?: string }) =>
+    get<S['AnnotationPage']>('/annotations', q),
+  annotate: (b: S['NoteRequest']) => post<S['Annotation']>('/annotations', b),
   // REQ: OBS-020 — the synthetic probes of every node's listeners.
   probes: () => get<S['Items_ProbeResult']>('/system/probes'),
   // REQ: OBS-009 (T7.14)

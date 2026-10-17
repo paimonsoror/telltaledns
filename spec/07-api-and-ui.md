@@ -49,4 +49,5 @@ Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framew
 UX rules:
 - A banner shows cluster state: read-only (no primary), GitOps-managed, client IPs masked, or a node lagging.
 - Every chart has a table view.
+- Every time chart shows change markers (OBS-033, `06` §3.1): thin vertical lines for configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, breakers, and notes, from one shared store per page, with a Changes toggle in the dashboard header.
 - The UI requires JavaScript and is not prerendered.

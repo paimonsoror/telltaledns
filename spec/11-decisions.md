@@ -1291,6 +1291,25 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-136 — The site's decisions are an index plus pages of 50 (Proposed)
+**Context:** `decisions.html` rendered every ADR in full on one page and reached the 500 KiB page budget (DOC-005) with ADR-126; T14.7's ADR-133 took it to 502 KiB, and M14 adds eight more (owner chose to split it, 2026-10-16).
+**Decision:**
+- `decisions.html` is the index: one row per ADR (number, title, status, areas, its first sentence), still searchable and filterable, linking to the record.
+- The records are on `decisions-1.html` (ADR-001 to 050), `decisions-2.html` (051 to 100), and so on (`ADRS_PER_PAGE` in `site/build.py`), with the same explorer within the page and links between the pages.
+- Links to a record go to its page (`decisions-3.html#adr-133`). The index keeps each row's `id`, so an old `decisions.html#adr-NNN` lands on that row without JavaScript, and with it goes on to the record.
+- Rejected: raising the budget for this one page (it would keep growing).
+**Consequences:** the index is 80 KiB and each part about 200 KiB; search on the index covers titles and first sentences, full-text search works within a part page.
+
+## ADR-133 — Change markers: a bounded per-node annotation file, federated, with notes (Proposed)
+**Context:** T14.7 (OBS-033; design `docs/design/change-markers.md`). Lining a change up with a graph meant reading timestamps across logs (owner, 2026-10-16); every later M14 chart overlays these markers.
+**Decision:**
+- Each node appends one JSON line per event to `<data_dir>/annotations.jsonl` from the background task that knows about it, never the query path or the telemetry thread; no fsync; 20,000 lines and 90 days; a failed write is logged once an hour and changes nothing else.
+- Owner decisions at task start (2026-10-16; details in the design, §9): `seq` is the cluster's sequence, else `state.db`'s version; only the primary or a standalone node knows a change's `source` and `actor` (a replica writes `gitops` or `cluster`); `config.applied` only when configuration sections changed; the UI merges one kind and `seq` across nodes; `lists.refreshed` only where lists compile; notes need the operator role (agents `ops:annotate`); reads page back with `before`.
+- Notes: `POST /api/v1/annotations`, 1–200 characters, up to 7 days back, append-only (405), audited `annotation.note`, not configuration, not replicated.
+- Prometheus: new `telltale_config_seq` and `telltale_annotations_total{kind}`; Grafana annotations from `changes()`.
+- Rejected: the audit table as the source (primary-only, misses restarts and breakers); Grafana's annotation API (credentials).
+**Consequences:** at most a few MB per node; a replica's marker doesn't say who (the primary's does); markers don't outlive an ephemeral data directory.
+
 ## ADR-126 — Zone transfers are refused, never forwarded (Proposed)
 **Context:** AXFR and IXFR had no special handling, so they were forwarded like any query. An upstream resolver can't serve a zone transfer, so each one came back SERVFAIL, was cached, and counted against the availability objective (OBS-016). On the homelab (2026-10-12) the old Technitium's catalog-zone sync (`cluster-catalog.dnscluster`, AXFR every 5 minutes via the Pi) was 288 of 359 SERVFAILs in a day and overspent the 30-day error budget. Each attempt also sent a private zone name to the public upstream.
 **Decision:**

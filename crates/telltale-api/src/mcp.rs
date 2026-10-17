@@ -110,14 +110,25 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "get_overview",
-            description: "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms). Start here to see whether anything is off.",
+            description: "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms), plus `changes`: how many change markers fell in the window (configuration applied, restarts, list refreshes, rollouts, pauses, notes, ...) and the latest three, so 'what changed?' needs no second call (list_annotations has them all). Start here to see whether anything is off.",
             input_schema: || json!({"type": "object", "properties": {"window": window_schema(), "scope": scope_schema()}, "additionalProperties": false}),
             calls: |a| {
                 let from = s(a, "window").unwrap_or_else(|| "-24h".into());
-                Ok(vec![(
-                    "overview".into(),
-                    format!("/api/v1/stats/summary?from={}{}", enc(&from), scope_q(a)),
-                )])
+                Ok(vec![
+                    (
+                        "overview".into(),
+                        format!("/api/v1/stats/summary?from={}{}", enc(&from), scope_q(a)),
+                    ),
+                    // REQ: OBS-033 — what changed in the window (digested in `call_tool`).
+                    (
+                        "changes".into(),
+                        format!(
+                            "/api/v1/annotations?from={}&limit=500{}",
+                            enc(&from),
+                            scope_q(a)
+                        ),
+                    ),
+                ])
             },
         },
         Tool {
@@ -362,6 +373,39 @@ pub fn tools() -> Vec<Tool> {
             description: "Read-only. Can clients actually reach DNS? Every node asks each of its own listeners a question through the listener's protocol (UDP, TCP, DoT, DoH, DoH3, DoQ), plus any extra targets such as a load balancer's address: per probe, whether the last one answered, how long it took, the error, failures in a row, and for TLS listeners the certificate's expiry (days left). Use it when devices say DNS is down but the server looks fine.",
             input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
             calls: |_| Ok(vec![("probes".into(), "/api/v1/system/probes".into())]),
+        },
+        // REQ: OBS-033 (ADR-133)
+        Tool {
+            name: "list_annotations",
+            description: "Read-only. What changed, and when: change markers from every node, newest first. Configuration versions applied (seq, source: ui, api, agent, gitops, file, or cluster on a replica; actor when known), new builds, restarts (uncleanShutdown), list refreshes that changed the rules, rollout stages, maintenance, blocking paused or resumed, cache flushes, upstream circuit breakers, and the notes people and agents left (annotate). One change applied on four nodes is four markers with the same seq. Use it to line up a change with a graph ('did SERVFAILs start after the rollout?').",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "window": window_schema(),
+                "kinds": {"type": "array", "items": {"type": "string", "enum": crate::annotations_api::KINDS}, "description": "Only these kinds (default all)."},
+                "before": {"type": "string", "description": "Only markers before this time: nextBefore from the previous result, to page back."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "At most this many (default 50)."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                let from = s(a, "window").unwrap_or_else(|| "-24h".into());
+                let mut path = format!(
+                    "/api/v1/annotations?from={}&limit={}",
+                    enc(&from),
+                    limit(a, 50)
+                );
+                if let Some(kinds) = a.get("kinds").and_then(Value::as_array) {
+                    let k: Vec<&str> = kinds.iter().filter_map(Value::as_str).collect();
+                    if !k.is_empty() {
+                        let _ = write!(path, "&kinds={}", enc(&k.join(",")));
+                    }
+                }
+                if let Some(b) = s(a, "before") {
+                    let _ = write!(path, "&before={}", enc(&b));
+                }
+                path.push_str(&scope_q(a));
+                Ok(vec![("annotations".into(), path)])
+            },
         },
         // REQ: OBS-021 (ADR-106)
         Tool {
@@ -1340,7 +1384,70 @@ pub fn write_tools() -> Vec<WriteTool> {
                 })
             },
         },
+        // REQ: OBS-033 (ADR-133)
+        WriteTool {
+            name: "annotate",
+            description: "Changes at once (audited, no plan; nothing about DNS changes). Leaves a visible note on every time chart; use it to record why you changed something or what happened on the network (\"moved the AP\", \"ISP outage\"). text: 1 to 200 characters, one line; time: when it happened (default now, up to 7 days back). Notes can't be edited or deleted: add a correcting one. Needs the ops:annotate scope.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "text": {"type": "string", "minLength": 1, "maxLength": 200, "description": "What happened, on one line."},
+                "time": {"type": "string", "description": "When (RFC 3339 or relative like -2h); default now; at most 7 days back."},
+                "reason": reason_schema()
+            }, "required": ["text", "reason"], "additionalProperties": false})
+            },
+            effect: Effect::Immediate,
+            destructive: false,
+            write: |a| {
+                let text = need(a, "text")?;
+                let mut body = serde_json::Map::new();
+                body.insert("text".into(), Value::String(text.clone()));
+                if let Some(t) = s(a, "time") {
+                    body.insert("time".into(), Value::String(t));
+                }
+                Ok(Write {
+                    method: "POST",
+                    path: "/api/v1/annotations".into(),
+                    summary: format!("Note on the time charts: {text}"),
+                    body: Some(Value::Object(body)),
+                    merge: None,
+                })
+            },
+        },
     ]
+}
+
+/// REQ: OBS-033 — a page of change markers as `get_overview` shows it: the count and the
+/// latest three (time, node, kind, summary).
+fn changes_digest(page: &Value) -> Value {
+    if page.get("error").is_some() {
+        return page.clone();
+    }
+    let items = page
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let latest: Vec<Value> = items
+        .iter()
+        .take(3)
+        .map(|a| {
+            let mut o = serde_json::Map::new();
+            for k in ["t", "node", "kind", "summary"] {
+                if let Some(v) = a.get(k) {
+                    o.insert(k.into(), v.clone());
+                }
+            }
+            Value::Object(o)
+        })
+        .collect();
+    let mut out = json!({"count": items.len(), "latest": latest});
+    if page.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out["countIsAtLeast"] = json!(true);
+    }
+    if let Some(m) = page.get("missingNodes") {
+        out["missingNodes"] = m.clone();
+    }
+    out
 }
 
 /// Plan management tools: `(name, description, schema, readOnly, destructive, idempotent)`.
@@ -2258,6 +2365,12 @@ impl Mcp {
                     json!({"error": "no IP address known for this device"}),
                 );
             }
+        }
+        // REQ: OBS-033 — the overview's changes: how many, and the latest three.
+        if name == "get_overview"
+            && let Some(page) = out.get("changes").cloned()
+        {
+            out.insert("changes".into(), changes_digest(&page));
         }
         add_missing_nodes(&mut out);
         let structured = Value::Object(out);

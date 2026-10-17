@@ -60,6 +60,12 @@ pub enum Code {
     VersionUnknown,
     /// REQ: CLU-013 — the version is listed but its files are no longer kept.
     VersionBlobsMissing,
+    /// REQ: OBS-033 — a note's text is empty, longer than 200 characters, or not one line.
+    AnnotationText,
+    /// REQ: OBS-033 — a note's time is in the future or more than 7 days back.
+    AnnotationTime,
+    /// The route exists but not for this method (annotations are append-only).
+    MethodNotAllowed,
 }
 
 impl Code {
@@ -89,6 +95,9 @@ impl Code {
             Self::NoRollout => "https://telltaledns.dev/problems/no_rollout",
             Self::VersionUnknown => "https://telltaledns.dev/problems/version_unknown",
             Self::VersionBlobsMissing => "https://telltaledns.dev/problems/version_blobs_missing",
+            Self::AnnotationText => "https://telltaledns.dev/problems/annotation_text",
+            Self::AnnotationTime => "https://telltaledns.dev/problems/annotation_time",
+            Self::MethodNotAllowed => "https://telltaledns.dev/problems/method_not_allowed",
         }
     }
 
@@ -118,6 +127,9 @@ impl Code {
             Self::NoRollout => "No rollout in progress",
             Self::VersionUnknown => "Unknown version",
             Self::VersionBlobsMissing => "Version no longer kept",
+            Self::AnnotationText => "Invalid note text",
+            Self::AnnotationTime => "Invalid note time",
+            Self::MethodNotAllowed => "Method not allowed",
         }
     }
 
@@ -140,7 +152,10 @@ impl Code {
             Self::InvalidConfig
             | Self::MaintenanceTooLong
             | Self::MaintenanceInvalid
-            | Self::SimulationWindow => StatusCode::UNPROCESSABLE_ENTITY,
+            | Self::SimulationWindow
+            | Self::AnnotationText
+            | Self::AnnotationTime => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         }
     }
 }

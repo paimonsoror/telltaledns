@@ -308,6 +308,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/annotations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Change markers.
+         * @description What was done to each node, or what it did to itself, newest first: configuration
+         *     versions applied (`seq`, `source`: `ui`, `api`, `agent`, `gitops`, `file`, or `cluster` on
+         *     a replica; `actor` when known), new builds, restarts, list refreshes that changed the rules,
+         *     rollout stages, maintenance, blocking paused or resumed, cache flushes, upstream circuit
+         *     breakers (at most one line per upstream per 5 minutes), and operators' and agents' notes.
+         *     Each node keeps its own (20,000 lines, 90 days); in a cluster every node is asked and each
+         *     marker carries its `node` (one change applied on four nodes is four markers with the same
+         *     `seq`). With `truncated`, ask again with `before = nextBefore` for older ones. Use it to
+         *     answer "what changed around then?". Example: `GET /api/v1/annotations?from=-6h&kinds=config.applied,note`.
+         */
+        get: operations["list_annotations"];
+        put?: never;
+        /**
+         * Leave a note on the time charts.
+         * @description Marks a moment on every time chart of every node with a short text, for what the network
+         *     itself can't see: "moved the access point", "ISP outage", "migrated the NAS". `time`
+         *     defaults to now and may be up to 7 days back. The receiving node keeps it (the federated
+         *     read shows it everywhere); it's not configuration, so it's allowed in a GitOps-managed
+         *     cluster. Notes can't be changed or deleted: add a correcting note. Needs the operator role
+         *     (agents: the `ops:annotate` scope); audit-logged as `annotation.note`.
+         */
+        post: operations["add_note"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -2303,6 +2340,100 @@ export interface components {
             /** @description REQ: OPS-010 — nodes whose alerts are paused for maintenance, until when. */
             maintenance: components["schemas"]["NodeMaintenance"][];
         };
+        /**
+         * @description REQ: OBS-033 (ADR-133) — one change marker: something done to a node, or that it did to
+         *     itself, at a moment. The same shape is a line of `<data_dir>/annotations.jsonl`. Which
+         *     fields are set depends on `kind`.
+         */
+        Annotation: {
+            /**
+             * @description Who, when known: a user, `token:<name> (owner: <user>)`, or
+             *     `agent:<name> (owner: <user>)`.
+             */
+            actor?: string | null;
+            /** @description `build.started`, `node.restarted`: the build's commit. */
+            commit?: string | null;
+            /**
+             * Format: int64
+             * @description `config.applied` on a replica, `lists.refreshed`: the filter snapshot version.
+             */
+            filterVersion?: number | null;
+            /** @description Where the web UI shows more (`#/settings?tab=system`, `#/cluster`, `#/lists`). */
+            href?: string | null;
+            /**
+             * @description `config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,
+             *     `maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,
+             *     `cache.flushed`, `upstream.breaker`, or `note`.
+             * @example config.applied
+             */
+            kind: string;
+            /** @description `lists.refreshed`: the lists whose content changed (added, removed, or downloaded anew). */
+            lists?: string[];
+            /** @description The node it happened on (federated reads; a standalone node leaves it out). */
+            node?: string | null;
+            /** @description `blocking.*`, `cache.flushed`: the nodes it was done on, when not only this one. */
+            nodes?: string[];
+            /** @description `maintenance.entered`: why. */
+            reason?: string | null;
+            /**
+             * Format: int64
+             * @description `lists.refreshed`: blocked names gained (negative: lost).
+             */
+            rulesDelta?: number | null;
+            /** @description `config.applied`: the configuration sections that changed. */
+            sections?: string[];
+            /**
+             * Format: int64
+             * @description `config.applied`: the configuration sequence (the cluster's, else this node's
+             *     configuration version).
+             */
+            seq?: number | null;
+            /**
+             * @description `config.applied`: where the change came from: `ui` (a signed-in user), `api` (an API
+             *     token), `agent` (an agent token), `gitops`, `file` (the config files were reloaded),
+             *     or `cluster` (a replica applying the primary's version).
+             */
+            source?: string | null;
+            /** @description `rollout.stage`: `canary`, `promoted`, `aborted`, `failed`, `pinned`, or `unpinned`. */
+            stage?: string | null;
+            /** @description `upstream.breaker`: `open`, `half_open`, or `closed`. */
+            state?: string | null;
+            /**
+             * @description What happened, in one sentence.
+             * @example configuration 312 applied (gitops, 3 sections changed)
+             */
+            summary: string;
+            /**
+             * @description When, RFC 3339 UTC.
+             * @example 2026-10-13T02:52:11.000Z
+             */
+            t: string;
+            /**
+             * Format: int64
+             * @description The same, Unix milliseconds.
+             */
+            tUnixMs: number;
+            /** @description `note`: the text. */
+            text?: string | null;
+            /** @description `node.restarted`: the run before didn't stop cleanly (a crash, an OOM kill, a power cut). */
+            uncleanShutdown?: boolean | null;
+            /** @description `maintenance.entered`, `blocking.paused`: until when (RFC 3339). */
+            until?: string | null;
+            /** @description `upstream.breaker`: the upstream. */
+            upstream?: string | null;
+            /** @description `build.started`, `node.restarted`, `rollout.stage`: the build or rollout version. */
+            version?: string | null;
+        };
+        /** @description REQ: OBS-033 — a page of change markers, newest first. */
+        AnnotationPage: {
+            items: components["schemas"]["Annotation"][];
+            /** @description Cluster nodes that couldn't be read. */
+            missingNodes?: string[];
+            /** @description With `truncated`: the `before` for the next page (the oldest marker's time). */
+            nextBefore?: string | null;
+            /** @description More markers in the window than `limit`: ask again with `before = nextBefore`. */
+            truncated: boolean;
+        };
         /** @description REQ: OBS-014 — an acknowledgement: someone looked at the finding. */
         AnomalyAckInfo: {
             /** @description RFC 3339. */
@@ -3266,7 +3397,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -4928,6 +5059,19 @@ export interface components {
             since: string;
             /** @description When it ends (RFC 3339). */
             until: string;
+        };
+        /** @description REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart. */
+        NoteRequest: {
+            /**
+             * @description 1 to 200 characters, one line.
+             * @example moved the access point to the hallway
+             */
+            text: string;
+            /**
+             * @description When it happened (RFC 3339; default now): up to 7 days back, never ahead.
+             * @example 2026-10-16T14:05:00Z
+             */
+            time?: string | null;
         };
         /** @description A "Sign in with ..." button. */
         OidcButton: {
@@ -6605,6 +6749,99 @@ export interface operations {
             };
             /** @description The query log is off. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_annotations: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start (RFC 3339 or relative such as `-24h`; default 24 hours ago).
+                 * @example -24h
+                 */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /**
+                 * @description Kinds to keep, comma-separated (default all), e.g. `config.applied,note`.
+                 * @example config.applied,note
+                 */
+                kinds?: string;
+                /**
+                 * @description `cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`.
+                 * @example cluster
+                 */
+                scope?: string;
+                /** @description At most this many, newest first (1–2000, default 500). */
+                limit?: number;
+                /** @description Only markers before this time (RFC 3339): pass `nextBefore` from the previous page. */
+                before?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Markers, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnnotationPage"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    add_note: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteRequest"];
+            };
+        };
+        responses: {
+            /** @description The note as written. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Annotation"];
+                };
+            };
+            /** @description Needs the operator role (agents: ops:annotate). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `annotation_text`: empty, over 200 characters, or several lines; `annotation_time`: ahead of now, or more than 7 days back. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

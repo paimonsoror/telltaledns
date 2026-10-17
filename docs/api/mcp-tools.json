@@ -6,7 +6,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms). Start here to see whether anything is off.",
+    "description": "Read-only. Key numbers for a time window: queries, blocked %, cache hit %, NXDOMAIN, active clients, and latency percentiles (p50/p90/p99 in ms), plus `changes`: how many change markers fell in the window (configuration applied, restarts, list refreshes, rollouts, pauses, notes, ...) and the latest three, so 'what changed?' needs no second call (list_annotations has them all). Start here to see whether anything is off.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -409,6 +409,61 @@
       "type": "object"
     },
     "name": "probe_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. What changed, and when: change markers from every node, newest first. Configuration versions applied (seq, source: ui, api, agent, gitops, file, or cluster on a replica; actor when known), new builds, restarts (uncleanShutdown), list refreshes that changed the rules, rollout stages, maintenance, blocking paused or resumed, cache flushes, upstream circuit breakers, and the notes people and agents left (annotate). One change applied on four nodes is four markers with the same seq. Use it to line up a change with a graph ('did SERVFAILs start after the rollout?').",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "description": "Only markers before this time: nextBefore from the previous result, to page back.",
+          "type": "string"
+        },
+        "kinds": {
+          "description": "Only these kinds (default all).",
+          "items": {
+            "enum": [
+              "config.applied",
+              "build.started",
+              "node.restarted",
+              "lists.refreshed",
+              "rollout.stage",
+              "maintenance.entered",
+              "maintenance.left",
+              "blocking.paused",
+              "blocking.resumed",
+              "cache.flushed",
+              "upstream.breaker",
+              "note"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "At most this many (default 50).",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
+        "window": {
+          "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_annotations"
   },
   {
     "annotations": {
@@ -1629,6 +1684,40 @@
       "type": "object"
     },
     "name": "end_maintenance"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes at once (audited, no plan; nothing about DNS changes). Leaves a visible note on every time chart; use it to record why you changed something or what happened on the network (\"moved the AP\", \"ISP outage\"). text: 1 to 200 characters, one line; time: when it happened (default now, up to 7 days back). Notes can't be edited or deleted: add a correcting one. Needs the ops:annotate scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "description": "Why (required): goes into the audit log and is shown to whoever approves the plan.",
+          "type": "string"
+        },
+        "text": {
+          "description": "What happened, on one line.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "time": {
+          "description": "When (RFC 3339 or relative like -2h); default now; at most 7 days back.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "annotate"
   },
   {
     "annotations": {

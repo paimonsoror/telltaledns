@@ -859,6 +859,46 @@ fn render_probes(w: &mut PromWriter, probes: &crate::probes::Probes) {
     }
 }
 
+/// REQ: OBS-033 — the configuration sequence and the change markers written.
+fn render_annotations(w: &mut PromWriter, src: &Sources) {
+    // REQ: OBS-033 — the configuration sequence (the cluster's, else state.db's version):
+    // `changes(telltale_config_seq[5m]) > 0` marks a change in Grafana.
+    let seq = match &src.cluster {
+        Some(c) => c.local_state().applied_seq,
+        None => src
+            .auth
+            .get()
+            .and_then(|a| a.state().config_version().ok())
+            .unwrap_or(0),
+    };
+    w.family(
+        "telltale_config_seq",
+        "gauge",
+        "The configuration sequence this node applied (the cluster's; a standalone node's configuration version).",
+    )
+    .sample("telltale_config_seq", &[], seq);
+    if let Some(a) = crate::annotations::get() {
+        let f = w.family(
+            "telltale_annotations_total",
+            "counter",
+            "Change markers written to this node's annotations.jsonl since start, by kind.",
+        );
+        for (kind, n) in a.counts() {
+            f.sample("telltale_annotations_total", &[("kind", kind)], n);
+        }
+        w.family(
+            "telltale_annotation_write_failures_total",
+            "counter",
+            "Change markers that couldn't be written (the data directory full or read-only).",
+        )
+        .sample(
+            "telltale_annotation_write_failures_total",
+            &[],
+            a.failures().0,
+        );
+    }
+}
+
 fn render_process(w: &mut PromWriter, src: &Sources) {
     w.family("telltale_build_info", "gauge", "Build information.")
         .sample(
@@ -872,6 +912,7 @@ fn render_process(w: &mut PromWriter, src: &Sources) {
             ],
             1,
         );
+    render_annotations(w, src);
     // REQ: OPS-004 (ADR-046) — 1 when the release index lists a newer build on this channel.
     let available = src.update.lock().is_ok_and(|u| u.state == "available");
     w.family(

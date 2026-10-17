@@ -820,6 +820,17 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: OBS-003 (review 04-05) — level 1's names are hashed with this node's (or, once a
     // primary's version arrives, the cluster's) key.
     crate::privacy::init(std::path::Path::new(cfg.node.data_dir.as_str()));
+    // REQ: OBS-033 — change markers: this start, and a new build.
+    let annotations = crate::annotations::init(
+        std::path::Path::new(cfg.node.data_dir.as_str()),
+        crate::annotations::now_ms(),
+    );
+    annotations.started(
+        crate::build_info::VERSION,
+        crate::build_info::COMMIT,
+        crate::datadir::unclean_start(),
+        crate::annotations::now_ms(),
+    );
     // REQ: OBS-009 (review 04-04) — the in-memory analytics follow the privacy level.
     pipeline
         .telemetry
@@ -952,6 +963,8 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     crate::maintenance::spawn_expiry(Arc::clone(&sources), http_stopped.clone());
     // REQ: OBS-020 (T11.3) — synthetic probes of every listener, off the DNS path.
     crate::probes::spawn(Arc::clone(&sources), http_stopped.clone());
+    // REQ: OBS-033 — breaker markers and the daily compaction, off the DNS path.
+    crate::annotations::spawn(Arc::clone(&sources), annotations, http_stopped.clone());
     // REQ: CLU-003 — the Git config source polls on the primary (ADR-049).
     if let Some(c) = &sources.cluster
         && cfg.cluster.git.is_some()
@@ -1328,11 +1341,31 @@ async fn reload(
         .pipeline
         .telemetry
         .set_privacy(new.telemetry.qlog.privacy_level);
+    config_marker(sources, current, &new);
     sources.config.store(Arc::new(new.clone()));
     sources.file_config.store(Arc::new(file));
     *current = new;
     info!("configuration reloaded");
     true
+}
+
+/// REQ: OBS-033 — the `config.applied` marker for a reload that changed the configuration (a
+/// cluster's primary writes it when it publishes the version).
+fn config_marker(sources: &http::Sources, old: &Config, new: &Config) {
+    let Some(ann) = crate::annotations::get() else {
+        return;
+    };
+    let sections = crate::annotations::changed_sections(old, new);
+    let primary = !crate::replication::follows_primary(new)
+        && sources.cluster.as_ref().is_some_and(|c| c.is_primary());
+    let seq = || match &sources.cluster {
+        Some(c) => Some(c.local_state().applied_seq).filter(|s| *s > 0),
+        None => sources
+            .auth
+            .get()
+            .and_then(|a| a.state().config_version().ok()),
+    };
+    ann.reloaded(sections, primary, seq, crate::annotations::now_ms());
 }
 
 /// REQ: API-006 — a reload that changed anything is audited with the changed settings'

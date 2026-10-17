@@ -152,6 +152,7 @@
           <tr><th scope="row"><code>shadow_lists</code>, <code>overblocking_suspects</code></th><td>what a list would block before it does; blocked names someone seems to want</td></tr>
           <tr><th scope="row"><code>upstream_checks</code></th><td>whether upstreams filter, fail DNSSEC, or answer differently from a second opinion</td></tr>
           <tr><th scope="row"><code>probe_status</code></th><td>whether every listener answers its own probe, and when certificates expire</td></tr>
+          <tr><th scope="row"><code>list_annotations</code></th><td>what changed and when, on every node: configuration versions and who made them, restarts, list refreshes, rollouts, pauses, and notes (<code>get_overview</code> includes the latest three)</td></tr>
           <tr><th scope="row"><code>cache_advice</code></th><td>whether each node's cache would gain from being bigger, or could be smaller</td></tr>
           <tr><th scope="row"><code>slo_status</code></th><td>the service-level objectives: error budget left and how fast it's going</td></tr>
           <tr><th scope="row"><code>get_overview</code></th><td>queries, blocked %, cache hits, clients, latency for a window</td></tr>
@@ -190,7 +191,7 @@
       </table></div>
       <p class="muted">Every plan tool takes <code>simulate</code> (<code>"24h"</code>, up to <code>"7d"</code>): the plan then shows what the change would have done to those queries. Plans only simulate when asked, unless an operator turns on simulating by default in Settings; no agent tool can turn that on.</p>
       <h3>Act at once (low risk, audited)</h3>
-      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>, <code>acknowledge_anomalies</code> (marks findings as seen on every node, or takes it back), <code>start_maintenance</code> (up to 2 hours: a node steps out of the load balancer, keeps answering, and its alerts pause) and <code>end_maintenance</code>. And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
+      <p class="muted"><code>pause_blocking</code> (1 to 60 minutes), <code>resume_blocking</code>, <code>flush_cache</code>, <code>acknowledge_anomalies</code> (marks findings as seen on every node, or takes it back), <code>start_maintenance</code> (up to 2 hours: a node steps out of the load balancer, keeps answering, and its alerts pause) and <code>end_maintenance</code>, and <code>annotate</code> (a note on every time chart, to say why you changed something). And two checks that change nothing: <code>check_upstream</code> and <code>check_list</code> try a server or a list from the node before a plan adds it.</p>
       <h3>Resources and prompts</h3>
       <p class="muted">Resources an assistant can attach: <code>telltale://cluster/status</code>, <code>telltale://config</code> (no secrets), <code>telltale://reports/daily</code>. Ready-made prompts: <code>investigate_device</code>, <code>weekly_network_report</code>, <code>tune_blocklists</code>, <code>upstream_health_review</code>.</p>
     </div>
@@ -215,7 +216,7 @@ from -180d | where status = blocked | bucket 1d | stats count</code></pre>
   <p class="eyebrow">Safe by design</p>
   <h2>Guardrails that are always on</h2>
   <div class="grid">
-    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>, <code>ops:anomalies</code>, <code>ops:maintenance</code>. Simulating a change also needs <code>querylog:read</code>. A token can also be limited to one group of devices.</p></div>
+    <div class="card"><h3>Least privilege</h3><p>Each token has scopes: <code>analytics:read</code>, <code>querylog:read</code>, <code>config:read</code>, one <code>config:write:…</code> per area, <code>ops:pause</code>, <code>ops:cache</code>, <code>ops:anomalies</code>, <code>ops:maintenance</code>, <code>ops:annotate</code>. Simulating a change also needs <code>querylog:read</code>. A token can also be limited to one group of devices.</p></div>
     <div class="card"><h3>Preview before change</h3><p>Every change is a plan with before and after, how many recent questions it would affect, and warnings. A plan made against an older configuration goes stale instead of overwriting newer work.</p></div>
     <div class="card"><h3>A person in the loop</h3><p>Turn on <code>[agents] require_approval</code>, and plans wait in the UI's <b>Agent changes</b> inbox. Agents can't approve anything, their own plans included.</p></div>
     <div class="card"><h3>Full audit</h3><p>Changes are recorded as <code>agent:&lt;token&gt; (owner: &lt;you&gt;)</code>, with the MCP client and the reason the agent gave. Every write needs a reason.</p></div>

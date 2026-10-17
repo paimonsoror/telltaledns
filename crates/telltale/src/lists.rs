@@ -556,6 +556,22 @@ async fn compile_loop(
         match result {
             Ok(Ok(Some((report, dir)))) => {
                 publisher.publish(dir.clone());
+                // REQ: OBS-033 — a marker when the rules changed (a forced compile of the
+                // same lists writes none).
+                let marker = {
+                    let before = shared
+                        .compiled
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    crate::annotations::lists_line(
+                        before.as_ref().map(|c| &c.manifest),
+                        &report.manifest,
+                        crate::annotations::now_ms(),
+                    )
+                };
+                if let Some(m) = marker {
+                    crate::annotations::record(m);
+                }
                 let st = &report.manifest.stats;
                 info!(
                     version = report.manifest.version,

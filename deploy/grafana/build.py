@@ -387,7 +387,22 @@ dashboard = {
          "definition": 'query_result(max(telltale_slo_latency_threshold_seconds{job=~"$job"}))',
          "regex": "/ ([0-9.e+-]+) [0-9]+$/", "refresh": 2, "current": {"text": "0.25", "value": "0.25"}},
     ]},
-    "annotations": {"list": []},
+    # REQ: OBS-033 (T14.7) — change markers from Prometheus: no Grafana credentials, no second
+    # data path. `changes()` over the configuration sequence, the filter snapshot, and the start
+    # counter marks a new configuration, a list refresh, and a restart.
+    "annotations": {"list": [
+        {"name": name, "datasource": DS, "enable": True, "iconColor": color,
+         "expr": f'changes({metric}{{{SEL}}}[5m]) > 0', "step": "60s",
+         "titleFormat": title, "textFormat": text, "useValueForTime": False}
+        for name, metric, color, title, text in [
+            ("Configuration", "telltale_config_seq", "blue", "configuration",
+             "a new configuration version on {{instance}}"),
+            ("Lists", "telltale_filter_snapshot_version", "purple", "lists",
+             "a new filter snapshot on {{instance}}"),
+            ("Restarts", "telltale_process_starts_total", "orange", "restart",
+             "{{instance}} restarted"),
+        ]
+    ]},
     "panels": panels,
 }
 

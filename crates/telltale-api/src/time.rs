@@ -27,8 +27,29 @@ pub fn parse_time(text: &str, now_s: u64) -> Result<u64, String> {
     })
 }
 
+/// REQ: OBS-033 — like [`parse_time`], in Unix milliseconds: an RFC 3339 time keeps its
+/// milliseconds (a page cursor must not round to the second).
+pub fn parse_time_ms(text: &str, now_ms: u64) -> Result<u64, String> {
+    let t = text.trim();
+    if let Some((secs, ms)) = rfc3339_parts(t) {
+        return Ok(secs.saturating_mul(1000) + ms);
+    }
+    parse_time(t, now_ms / 1000).map(|s| {
+        if s == now_ms / 1000 {
+            now_ms
+        } else {
+            s.saturating_mul(1000)
+        }
+    })
+}
+
 /// Parses `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)` to Unix seconds.
 fn rfc3339(text: &str) -> Option<u64> {
+    rfc3339_parts(text).map(|(s, _)| s)
+}
+
+/// Unix seconds and the fraction's milliseconds.
+fn rfc3339_parts(text: &str) -> Option<(u64, u64)> {
     let bytes = text.as_bytes();
     let num = |r: std::ops::Range<usize>| -> Option<i64> {
         let part = text.get(r)?;
@@ -54,11 +75,13 @@ fn rfc3339(text: &str) -> Option<u64> {
         return None;
     }
     let mut rest = &text[19..];
+    let mut millis = 0;
     if let Some(frac) = rest.strip_prefix('.') {
         let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
         if digits == 0 {
             return None;
         }
+        millis = format!("{:0<3}", &frac[..digits.min(3)]).parse().ok()?;
         rest = &frac[digits..];
     }
     let offset = match rest {
@@ -76,7 +99,7 @@ fn rfc3339(text: &str) -> Option<u64> {
     };
     let days = days_from_civil(year, month, day);
     let secs = days * 86_400 + hour * 3600 + minute * 60 + second - offset;
-    u64::try_from(secs).ok()
+    u64::try_from(secs).ok().map(|s| (s, millis))
 }
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -134,5 +157,26 @@ mod tests {
             assert!(parse_time(bad, now).is_err(), "{bad}");
         }
         assert_eq!(format_us(1_791_072_000_123_456), "2026-10-04T00:00:00.123Z");
+    }
+
+    // REQ: OBS-033 — a page cursor keeps its milliseconds.
+    #[test]
+    fn obs_033_millisecond_times() {
+        let now_ms = 1_791_072_000_500;
+        assert_eq!(
+            parse_time_ms("2026-10-04T00:00:00.123Z", now_ms),
+            Ok(1_791_072_000_123)
+        );
+        assert_eq!(
+            parse_time_ms("2026-10-04T00:00:00.1Z", now_ms),
+            Ok(1_791_072_000_100)
+        );
+        assert_eq!(
+            parse_time_ms("2026-10-04T00:00:00Z", now_ms),
+            Ok(1_791_072_000_000)
+        );
+        assert_eq!(parse_time_ms("now", now_ms), Ok(now_ms));
+        assert_eq!(parse_time_ms("-1h", now_ms), Ok(1_791_068_400_000));
+        assert!(parse_time_ms("yesterday", now_ms).is_err());
     }
 }

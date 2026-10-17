@@ -316,6 +316,12 @@ details.adr > summary:focus-visible { outline: 2px solid var(--brand); outline-o
 .adr-links { margin-top: 14px; }
 
 details.adr { scroll-margin-top: 84px; }
+/* ADR-136 — the index's rows, and the links between the decision pages. */
+.adr-row { padding: 12px 18px; display: flex; flex-direction: column; gap: 6px; scroll-margin-top: 84px; }
+.adr-row .adr-head { color: var(--ink); text-decoration: none; }
+.adr-row .adr-head:hover .adr-title { text-decoration: underline; }
+.adr-parts { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; font-size: 14.5px; }
+.adr-parts a[aria-current="page"] { font-weight: 700; color: var(--ink); text-decoration: none; }
 details.adr[open] .adr-gist { display: none; }
 
 /* ADR-122 — Guides: link cards, callouts, an "on this page" list, and tables that wrap. */

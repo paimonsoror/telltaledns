@@ -470,6 +470,20 @@ async fn apply(
     }
     let json = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
     write_atomic(&cdir.join(APPLIED), &json).map_err(|e| e.to_string())?;
+    // REQ: OBS-033 — the marker: a replica knows the version and whether Git made it, not who.
+    if let Some(a) = crate::annotations::get() {
+        a.set_provenance(crate::annotations::Provenance {
+            source: if m.source.is_some() {
+                "gitops"
+            } else {
+                "cluster"
+            }
+            .to_owned(),
+            actor: None,
+            seq: Some(m.seq),
+            filter_version: m.filter.as_ref().map(|f| f.version),
+        });
+    }
     // The normal reload path: validate, swap, audit-free (the primary audited the change).
     let (tx, rx) = oneshot::channel();
     reload
@@ -1388,6 +1402,12 @@ impl Primary {
                         rcfg.bake_secs
                     ),
                 );
+                rollout_marker(
+                    "canary",
+                    seq,
+                    None,
+                    format!("rollout: version {seq} to {n} canary node(s) first"),
+                );
                 format!(" to {n} canary node(s)")
             }
             Mode::Stable => {
@@ -1420,6 +1440,11 @@ impl Primary {
             .as_ref()
             .map(|s| s.commit.clone())
             .unwrap_or_default();
+        // REQ: OBS-033 — the reload's marker gets this version's sequence (a new commit: Git).
+        if changed && let Some(a) = crate::annotations::get() {
+            let git = !commit.is_empty() && commit != self.cluster.local_state().source_commit;
+            a.published(seq, git, now);
+        }
         // REQ: CLU-013 — while a canary version bakes, the nodes waiting for it aren't behind.
         let canary_of = if self.ro.active.is_some() {
             self.stable.1
@@ -1541,6 +1566,15 @@ impl Primary {
                         "rollout_failed",
                         &self.cluster.identity.meta.node_id,
                         format!("version {}: {reason}", a.version.1),
+                    );
+                    rollout_marker(
+                        "failed",
+                        a.version.1,
+                        None,
+                        format!(
+                            "rollout of version {} failed and was pinned back: {reason}",
+                            a.version.1
+                        ),
                     );
                     self.last_readings = Some(r.clone());
                     self.last_failure = Some(rollout::Failure {
@@ -1680,6 +1714,15 @@ impl Primary {
             "rollout_promoted",
             &self.cluster.identity.meta.node_id,
             format!("version {} to every node as {seq} ({by})", active.version.1),
+        );
+        rollout_marker(
+            "promoted",
+            seq,
+            None,
+            format!(
+                "rollout: version {} to every node as {seq} ({by})",
+                active.version.1
+            ),
         );
         info!(
             seq,
@@ -1841,6 +1884,12 @@ impl Primary {
                 rollout::Cmd::Pin { .. } => Some("pinned"),
                 rollout::Cmd::Unpin { .. } => Some("unpinned"),
             };
+            let who = match &cmd {
+                rollout::Cmd::Promote { by }
+                | rollout::Cmd::Abort { by }
+                | rollout::Cmd::Pin { by, .. }
+                | rollout::Cmd::Unpin { by } => by.clone(),
+            };
             let r = match cmd {
                 rollout::Cmd::Promote { by } => {
                     let r = self.last_readings.clone().unwrap_or_default();
@@ -1869,8 +1918,10 @@ impl Primary {
                 }
                 rollout::Cmd::Unpin { by } => self.unpin(&by).await,
             };
-            if let (Ok(_), Some(w)) = (&r, what) {
+            if let (Ok(done), Some(w)) = (&r, what) {
                 self.count(w);
+                // REQ: OBS-033 — operators' rollout commands are markers too.
+                rollout_marker(w, self.last.seq, Some(who), format!("rollout: {done}"));
             }
             // The status shows the outcome before the answer goes back.
             let rcfg = self.sources.config.load().cluster.rollout.clone();
@@ -1879,6 +1930,17 @@ impl Primary {
             let _ = reply.send(r);
         }
     }
+}
+
+/// REQ: OBS-033 — a `rollout.stage` marker on the primary.
+fn rollout_marker(stage: &str, seq: u64, actor: Option<String>, summary: String) {
+    crate::annotations::record(telltale_api::model::Annotation {
+        stage: Some(stage.to_owned()),
+        version: Some(seq.to_string()),
+        actor,
+        href: Some("#/cluster?tab=rollouts".into()),
+        ..crate::annotations::marker("rollout.stage", crate::annotations::now_ms(), summary)
+    });
 }
 
 /// REQ: CLU-013 — this node serves the pinned version: its snapshot (installed beside the

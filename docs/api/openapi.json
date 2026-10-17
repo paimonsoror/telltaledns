@@ -759,6 +759,148 @@
         }
       }
     },
+    "/api/v1/annotations": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Change markers.",
+        "description": "What was done to each node, or what it did to itself, newest first: configuration\nversions applied (`seq`, `source`: `ui`, `api`, `agent`, `gitops`, `file`, or `cluster` on\na replica; `actor` when known), new builds, restarts, list refreshes that changed the rules,\nrollout stages, maintenance, blocking paused or resumed, cache flushes, upstream circuit\nbreakers (at most one line per upstream per 5 minutes), and operators' and agents' notes.\nEach node keeps its own (20,000 lines, 90 days); in a cluster every node is asked and each\nmarker carries its `node` (one change applied on four nodes is four markers with the same\n`seq`). With `truncated`, ask again with `before = nextBefore` for older ones. Use it to\nanswer \"what changed around then?\". Example: `GET /api/v1/annotations?from=-6h&kinds=config.applied,note`.",
+        "operationId": "list_annotations",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start (RFC 3339 or relative such as `-24h`; default 24 hours ago).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "-24h"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kinds",
+            "in": "query",
+            "description": "Kinds to keep, comma-separated (default all), e.g. `config.applied,note`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "config.applied,note"
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default, every node), `site:<name>`, `node:<name or ID>`, or `node:local`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "cluster"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many, newest first (1–2000, default 500).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Only markers before this time (RFC 3339): pass `nextBefore` from the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markers, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnotationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Leave a note on the time charts.",
+        "description": "Marks a moment on every time chart of every node with a short text, for what the network\nitself can't see: \"moved the access point\", \"ISP outage\", \"migrated the NAS\". `time`\ndefaults to now and may be up to 7 days back. The receiving node keeps it (the federated\nread shows it everywhere); it's not configuration, so it's allowed in a GitOps-managed\ncluster. Notes can't be changed or deleted: add a correcting note. Needs the operator role\n(agents: the `ops:annotate` scope); audit-logged as `annotation.note`.",
+        "operationId": "add_note",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The note as written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Annotation"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs the operator role (agents: ops:annotate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`annotation_text`: empty, over 200 characters, or several lines; `annotation_time`: ahead of now, or more than 7 days back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -6317,6 +6459,211 @@
           }
         }
       },
+      "Annotation": {
+        "type": "object",
+        "description": "REQ: OBS-033 (ADR-133) — one change marker: something done to a node, or that it did to\nitself, at a moment. The same shape is a line of `<data_dir>/annotations.jsonl`. Which\nfields are set depends on `kind`.",
+        "required": [
+          "t",
+          "tUnixMs",
+          "kind",
+          "summary"
+        ],
+        "properties": {
+          "actor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who, when known: a user, `token:<name> (owner: <user>)`, or\n`agent:<name> (owner: <user>)`."
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`build.started`, `node.restarted`: the build's commit."
+          },
+          "filterVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`config.applied` on a replica, `lists.refreshed`: the filter snapshot version.",
+            "minimum": 0
+          },
+          "href": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the web UI shows more (`#/settings?tab=system`, `#/cluster`, `#/lists`)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`config.applied`, `build.started`, `node.restarted`, `lists.refreshed`, `rollout.stage`,\n`maintenance.entered`, `maintenance.left`, `blocking.paused`, `blocking.resumed`,\n`cache.flushed`, `upstream.breaker`, or `note`.",
+            "example": "config.applied"
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`lists.refreshed`: the lists whose content changed (added, removed, or downloaded anew)."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node it happened on (federated reads; a standalone node leaves it out)."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`blocking.*`, `cache.flushed`: the nodes it was done on, when not only this one."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`maintenance.entered`: why."
+          },
+          "rulesDelta": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`lists.refreshed`: blocked names gained (negative: lost)."
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`config.applied`: the configuration sections that changed."
+          },
+          "seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`config.applied`: the configuration sequence (the cluster's, else this node's\nconfiguration version).",
+            "minimum": 0
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`config.applied`: where the change came from: `ui` (a signed-in user), `api` (an API\ntoken), `agent` (an agent token), `gitops`, `file` (the config files were reloaded),\nor `cluster` (a replica applying the primary's version)."
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`rollout.stage`: `canary`, `promoted`, `aborted`, `failed`, `pinned`, or `unpinned`."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`upstream.breaker`: `open`, `half_open`, or `closed`."
+          },
+          "summary": {
+            "type": "string",
+            "description": "What happened, in one sentence.",
+            "example": "configuration 312 applied (gitops, 3 sections changed)"
+          },
+          "t": {
+            "type": "string",
+            "description": "When, RFC 3339 UTC.",
+            "example": "2026-10-13T02:52:11.000Z"
+          },
+          "tUnixMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The same, Unix milliseconds.",
+            "minimum": 0
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`note`: the text."
+          },
+          "uncleanShutdown": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`node.restarted`: the run before didn't stop cleanly (a crash, an OOM kill, a power cut)."
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`maintenance.entered`, `blocking.paused`: until when (RFC 3339)."
+          },
+          "upstream": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`upstream.breaker`: the upstream."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`build.started`, `node.restarted`, `rollout.stage`: the build or rollout version."
+          }
+        }
+      },
+      "AnnotationPage": {
+        "type": "object",
+        "description": "REQ: OBS-033 — a page of change markers, newest first.",
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Annotation"
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Cluster nodes that couldn't be read."
+          },
+          "nextBefore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `truncated`: the `before` for the next page (the oldest marker's time)."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More markers in the window than `limit`: ask again with `before = nextBefore`."
+          }
+        }
+      },
       "AnomalyAckInfo": {
         "type": "object",
         "description": "REQ: OBS-014 — an acknowledgement: someone looked at the finding.",
@@ -8632,7 +8979,10 @@
           "cluster_pinned",
           "no_rollout",
           "version_unknown",
-          "version_blobs_missing"
+          "version_blobs_missing",
+          "annotation_text",
+          "annotation_time",
+          "method_not_allowed"
         ]
       },
       "ConfigChange": {
@@ -12904,6 +13254,29 @@
             "description": "When it ends (RFC 3339)."
           }
         }
+      },
+      "NoteRequest": {
+        "type": "object",
+        "description": "REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "1 to 200 characters, one line.",
+            "example": "moved the access point to the hallway"
+          },
+          "time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it happened (RFC 3339; default now): up to 7 days back, never ahead.",
+            "example": "2026-10-16T14:05:00Z"
+          }
+        },
+        "additionalProperties": false
       },
       "OidcButton": {
         "type": "object",

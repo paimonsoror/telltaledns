@@ -342,6 +342,30 @@
 
   // ---- system
   let info = $state<S['SystemInfo'] | null>(null);
+  // REQ: OBS-033 — the last 200 change markers (every node's), filterable: the table view of
+  // every chart's markers.
+  let changeList = $state<S['AnnotationPage'] | null>(null);
+  let changeKind = $state('');
+  let changeText = $state('');
+  let changeError = $state<unknown>(null);
+  async function loadChanges() {
+    try {
+      changeList = await api.annotations({ from: '-90d', limit: 200, kinds: changeKind || undefined });
+      changeError = null;
+    } catch (e) {
+      changeError = e;
+    }
+  }
+  $effect(() => {
+    void changeKind;
+    if (tab === 'system') return poll(loadChanges, 30_000);
+  });
+  const shownChanges = $derived(
+    (changeList?.items ?? []).filter((a) => {
+      const q = changeText.trim().toLowerCase();
+      return !q || `${a.summary} ${a.actor ?? ''} ${a.node ?? ''}`.toLowerCase().includes(q);
+    }),
+  );
   // REQ: OBS-020 — every node's listener probes, refreshed while the tab is open.
   let probes = $state<S['ProbeResult'][] | null>(null);
   async function loadProbes() {
@@ -733,6 +757,51 @@
       {/if}
       <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would.</p>
     </section>
+    <section class="card" data-testid="changes-list">
+      <h2>Changes<HelpButton id="change-markers" /></h2>
+      <div class="change-filters">
+        <label class="small">
+          Kind
+          <select bind:value={changeKind} aria-label="Kind of change">
+            <option value="">every kind</option>
+            <option value="config.applied">configuration applied</option>
+            <option value="note">notes</option>
+            <option value="lists.refreshed">list refreshes</option>
+            <option value="rollout.stage">rollouts</option>
+            <option value="build.started,node.restarted">builds and restarts</option>
+            <option value="maintenance.entered,maintenance.left">maintenance</option>
+            <option value="blocking.paused,blocking.resumed">pauses</option>
+            <option value="cache.flushed">cache flushes</option>
+            <option value="upstream.breaker">upstream breakers</option>
+          </select>
+        </label>
+        <input class="small" type="search" placeholder="Filter" bind:value={changeText} aria-label="Filter changes" />
+      </div>
+      <ErrorNote error={changeError} />
+      {#if changeList == null}
+        <p class="empty">Loading…</p>
+      {:else if shownChanges.length === 0}
+        <p class="empty">No changes recorded{changeKind || changeText ? ' that match' : ''} in the last 90 days.</p>
+      {:else}
+        <div class="table-wrap">
+          <table class="compact">
+            <thead><tr><th>When</th>{#if shownChanges.some((a) => a.node)}<th>Node</th>{/if}<th>What</th><th>Who</th></tr></thead>
+            <tbody>
+              {#each shownChanges as a (`${a.node ?? ''}|${a.tUnixMs}|${a.kind}|${a.summary}`)}
+                <tr>
+                  <td class="nowrap">{dateTime(a.tUnixMs / 1000)}</td>
+                  {#if shownChanges.some((x) => x.node)}<td>{a.node ?? ''}</td>{/if}
+                  <td>{#if a.href}<a href={a.href}>{a.summary}</a>{:else}{a.summary}{/if}</td>
+                  <td class="small">{a.actor ?? a.source ?? ''}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+      {#if changeList?.missingNodes?.length}<p class="muted small">Not answering: {changeList.missingNodes.join(', ')}.</p>{/if}
+      <p class="muted small">The last 200 configuration versions, builds, restarts, list refreshes, rollouts, maintenance, pauses, cache flushes, breakers, and notes, from every node. Each node keeps 90 days.</p>
+    </section>
     {#if info}
       <!-- REQ: OPS-004 (ADR-046) -->
       <section class="card" data-testid="updates">
@@ -823,6 +892,13 @@
 </div>
 
 <style>
+  .change-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
   .cert-soon {
     color: var(--warn);
     font-weight: 600;

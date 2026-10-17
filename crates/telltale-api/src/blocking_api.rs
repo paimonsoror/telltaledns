@@ -108,6 +108,28 @@ async fn pause(
                 req.group.as_deref().unwrap_or("*"),
                 &serde_json::json!({ "minutes": minutes, "node": req.node }),
             );
+            // REQ: OBS-033 — a change marker on this node, naming where it applied.
+            let now_ms = backend.now_unix_seconds() * 1000;
+            let who = req
+                .group
+                .as_deref()
+                .map_or_else(|| "everyone".to_owned(), |g| format!("group {g}"));
+            crate::annotations_api::mark(
+                &backend,
+                crate::model::Annotation {
+                    actor: Some(actor.name.clone()),
+                    until: Some(crate::time::format_us(
+                        (now_ms + u64::from(minutes) * 60_000) * 1000,
+                    )),
+                    nodes: items.iter().filter_map(|n| n.node.clone()).collect(),
+                    ..crate::annotations_api::marker(
+                        "blocking.paused",
+                        now_ms,
+                        format!("blocking paused for {who}, {minutes} min"),
+                    )
+                },
+            )
+            .await;
             Json(Items {
                 missing_nodes: Vec::new(),
                 items,
@@ -159,6 +181,24 @@ async fn resume(
                 req.group.as_deref().unwrap_or("*"),
                 &serde_json::json!({ "node": req.node }),
             );
+            // REQ: OBS-033 — a change marker on this node, naming where it applied.
+            let who = req
+                .group
+                .as_deref()
+                .map_or_else(|| "every pause".to_owned(), |g| format!("group {g}"));
+            crate::annotations_api::mark(
+                &backend,
+                crate::model::Annotation {
+                    actor: Some(actor.name.clone()),
+                    nodes: items.iter().filter_map(|n| n.node.clone()).collect(),
+                    ..crate::annotations_api::marker(
+                        "blocking.resumed",
+                        backend.now_unix_seconds() * 1000,
+                        format!("blocking resumed ({who})"),
+                    )
+                },
+            )
+            .await;
             Json(Items {
                 missing_nodes: Vec::new(),
                 items,

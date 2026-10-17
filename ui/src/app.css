@@ -36,6 +36,9 @@
   --on-bad: #ffffff;
   /* The traffic map: text on its strongest tiles. */
   --tm-ink: #ffffff;
+  /* REQ: OBS-033 — change markers on time charts, and notes among them. */
+  --mk-ink: #5b6b7b;
+  --mk-note: #b7791f;
   --side-hover: rgb(255 255 255 / 7%);
   --card-border: transparent;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
@@ -74,6 +77,8 @@
     --warn-strong: #e0a84e;
     --on-bad: #1b0705;
     --tm-ink: #0b1a25;
+    --mk-ink: #93a3b3;
+    --mk-note: #e0a84e;
     --side-hover: rgb(255 255 255 / 6%);
     --card-border: #223140;
     color-scheme: dark;
@@ -111,6 +116,8 @@
   --warn-strong: #e0a84e;
   --on-bad: #1b0705;
   --tm-ink: #0b1a25;
+  --mk-ink: #93a3b3;
+  --mk-note: #e0a84e;
   --side-hover: rgb(255 255 255 / 6%);
   --card-border: #223140;
   color-scheme: dark;

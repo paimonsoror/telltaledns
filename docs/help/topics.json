@@ -34,6 +34,16 @@
       "docs": "traffic-map"
     },
     {
+      "id": "change-markers",
+      "title": "What changed, on every chart",
+      "term": "Change markers (annotations)",
+      "summary": "Thin vertical lines on the time charts for what was done to a node or what it did to itself: a configuration change (and whether it came from the web UI, the API, an agent, Git, or the config files), a new build, a restart, a list refresh that changed the rules, a rollout, maintenance, a pause, a cache flush, an upstream's circuit breaker. Hover one to see what and who; Note… adds your own.",
+      "when": "A graph changed and you want to know why: line the change up with the moment it happened instead of reading logs. Leave a note for what the network can't see itself, like a new access point or an ISP outage.",
+      "example": "SERVFAILs stop right after a diamond that says configuration 313 applied (gitops, 1 section changed): the commit fixed it. A dot at 10:05 reads moved the AP to the hallway (admin).",
+      "caution": "Each node keeps its last 20,000 markers and 90 days. A replica knows a change's version and whether Git made it, but not who: the primary's marker says who. Notes can't be edited or deleted; add a correcting one.",
+      "docs": "change-markers"
+    },
+    {
       "id": "live-view",
       "title": "Watch questions as they happen",
       "term": "Live tail",

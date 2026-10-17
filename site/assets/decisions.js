@@ -1,11 +1,13 @@
 // REQ: DOC-006 — the decisions explorer. Without JavaScript every ADR is a <details> that
 // opens on its own and links work as anchors; with it: search, status and area filters,
-// order, expand all, and #adr-NNN opens (and scrolls to) that record.
+// order, expand all, and #adr-NNN opens (and scrolls to) that record. On the index
+// (decisions.html, ADR-136) the rows link to the part pages, and #adr-NNN goes to its page.
 (function () {
   var list = document.getElementById("adr-list");
   var tools = document.querySelector(".adr-tools");
   if (!list || !tools) return;
-  var items = Array.prototype.slice.call(list.querySelectorAll("details.adr"));
+  var items = Array.prototype.slice.call(list.querySelectorAll(".adr"));
+  var isIndex = items.length > 0 && items[0].tagName !== "DETAILS";
   var q = document.getElementById("adr-q");
   var area = document.getElementById("adr-area");
   var sort = document.getElementById("adr-sort");
@@ -73,6 +75,12 @@
     if (!m) return;
     var d = document.getElementById(m[1]);
     if (!d) return;
+    // An old link to the one-page record: on to the page that holds it now.
+    if (isIndex) {
+      var a = d.querySelector("a.adr-head");
+      if (a) location.replace(a.getAttribute("href"));
+      return;
+    }
     if (d.hidden) {
       // A link to a filtered-out record shows everything again.
       q.value = ""; area.value = ""; status = "";
@@ -92,6 +100,7 @@
     expand.textContent = open ? "Collapse all" : "Expand all";
   });
   window.addEventListener("hashchange", openHash);
+  if (isIndex) expand.hidden = true;
   tools.hidden = false;
   order();
   apply();

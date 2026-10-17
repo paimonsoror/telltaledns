@@ -2019,6 +2019,7 @@ Main metrics:
 | `telltale_telemetry_dropped_total`, `telltale_qlog_*`, `telltale_ratelimited_total` | analytics that fell behind (answers never wait), query-log writes, rate limiting |
 | `telltale_udp_*`, `telltale_tcp_*` | listener counters |
 | `telltale_resident_memory_bytes`, `telltale_uptime_seconds`, `telltale_build_info` | process |
+| `telltale_config_seq`, `telltale_annotations_total{kind}`, `telltale_annotation_write_failures_total` | the configuration sequence this node applied; [change markers](#change-markers) written, and those that couldn't be |
 | `telltale_process_starts_total`, `telltale_process_unclean_starts_total` | starts on this data directory, and those after a run that didn't stop cleanly (a crash, an OOM kill, a power cut); kept in `<data_dir>/runs.json`, so they count across restarts (a new pod with an empty volume starts from 1). Settings → System shows them too. |
 | `telltale_host_*`, `telltale_cgroup_*`, `telltale_data_*`, `telltale_open_fds` | the machine it runs on: see [Host resources](#host-resources) |
 
@@ -2032,6 +2033,26 @@ Counters are kept per thread and summed on scrape, so recording never slows a qu
 - Point at a tile for the names behind it; select it to open them in the query log.
 - It draws the busiest 100 names (less their blocked queries) and the busiest 100 blocked names, every node of a cluster, from the same approximate top lists as the dashboard, so it adds no work to answering queries. Each hour starts every count again, so the map looks sparse just after the hour.
 - Uptime monitors, phones checking their connection, and other background lookups can crowd it: [keep them out](#keeping-names-and-devices-out-of-the-log).
+
+### Change markers
+Every time chart (the dashboard's, the Cache page's) draws a thin line for each thing that was done to a node, or that the node did to itself, so a change lines up with what it did to the graph:
+
+| Marker | When it's written |
+|---|---|
+| Configuration applied | a change took effect: its version, where it came from (`ui` for a signed-in user, `api` for an API token, `agent`, `gitops`, `file` when the config files were reloaded), who made it, and which sections changed. On a cluster replica: the version, and `gitops` or `cluster` (a replica can't tell who; the primary's marker says) |
+| Build started, node restarted | every start, and a new build the first time it starts (`uncleanShutdown` after a crash, an out-of-memory kill, or a power cut) |
+| Lists refreshed | a list download changed the rules: which lists, and how many blocked names were gained or lost (a refresh that changed nothing writes none) |
+| Rollout | a [staged rollout](#rolling-a-change-out-in-stages) reached its canaries, was promoted, failed and was pinned back, aborted, pinned, or unpinned (the primary's) |
+| Maintenance, pauses, cache flushes | [maintenance](#taking-a-node-down-for-maintenance) entered or left; blocking paused or resumed; the cache flushed (the node asked, naming the nodes it applied to) |
+| Upstream breaker | an upstream's circuit breaker opened or closed (at most one per upstream every 5 minutes) |
+| Note | what an operator or an agent wrote (below) |
+
+- **Hover** a marker (or tab to it) for what happened, when, who, and on which nodes; select it to open where it happened (Settings, Cluster, Lists, Upstreams). One change applied on several nodes is one marker naming them. Where more than 40 would crowd a chart, close ones share a marker with a count (`×3`).
+- **Changes** in the dashboard header turns them off and on (remembered in this browser). In the Advanced view, chips pick the kinds. The node picker shows one node's markers only.
+- **Settings → System → Changes** lists the last 200 from every node, filterable: the table view of every chart's markers. `GET /api/v1/annotations?from=-24h&kinds=config.applied,note` returns them (newest first, at most 2,000 a page, `nextBefore` for the next page), and the MCP tool `list_annotations`; `get_overview` includes how many fell in its window and the latest three.
+- **Notes:** the **Note…** button (operators) puts your own marker on every chart of every node: a new access point, an ISP outage, a migration. 1 to 200 characters on one line, now or up to 7 days back. `POST /api/v1/annotations` with `{"text": "moved the AP", "time": "2026-10-16T14:05:00Z"}` does the same, and so does the MCP tool `annotate` (agents need the `ops:annotate` scope, which isn't in the default set). Notes are audit-logged (`annotation.note`) and can't be edited or deleted: add a correcting note. They aren't configuration, so a GitOps-managed cluster takes them too.
+- Each node keeps its own in `<data_dir>/annotations.jsonl`: at most 20,000 lines and 90 days, trimmed at start and once a day. They're written beside the work they describe, never on the query path. If the file can't be written (a full or read-only disk), the node logs it once an hour, counts it in `telltale_annotation_write_failures_total`, and carries on.
+- **Prometheus and Grafana:** `telltale_config_seq` is the configuration sequence the node applied (the cluster's, or a standalone node's configuration version), and `telltale_annotations_total{kind}` counts the markers written. The Grafana dashboard draws `changes(telltale_config_seq[5m]) > 0` (configuration), `changes(telltale_filter_snapshot_version[5m]) > 0` (lists), and `changes(telltale_process_starts_total[5m]) > 0` (restarts) as annotations on every panel, with no Grafana credentials.
 
 ### Host resources
 Every node samples its machine every 15 seconds (off the DNS path, from `/proc`, `/sys`, and the cgroup files) and shows it on the **Cluster** page, one card per node, with the last hour as a line under each bar. A standalone node shows its own card there too. In a cluster, the samples travel in the nodes' heartbeats, so any node's page shows every machine.
@@ -2470,7 +2491,7 @@ Give an AI assistant (or any automation) an **agent token** instead of your own 
 | `querylog:read` | the query log and live tail: who asked for what |
 | `config:read` | lists, groups, devices, upstreams, local names, forwarded domains |
 | `config:write:clients`, `config:write:records`, `config:write:forwards`, `config:write:rules`, `config:write:lists`, `config:write:groups`, `config:write:upstreams`, `config:write:ratelimit` (`config:write:*` for all) | name and regroup devices; change local names; send domains to other servers; make quick rules; change lists, groups, and upstreams; change the rate limit |
-| `ops:pause`, `ops:cache`, `ops:anomalies`, `ops:maintenance` | pause blocking; flush the cache; acknowledge device anomalies; start and end [node maintenance](#taking-a-node-down-for-maintenance) (at most 2 hours) |
+| `ops:pause`, `ops:cache`, `ops:anomalies`, `ops:maintenance`, `ops:annotate` | pause blocking; flush the cache; acknowledge device anomalies; start and end [node maintenance](#taking-a-node-down-for-maintenance) (at most 2 hours); leave [notes](#change-markers) on the time charts |
 | `cluster:admin` | promote a node to primary |
 
 The default is `analytics:read` and `config:read`: read-only, without the query log. A token never gets more than its owner's role allows.
@@ -2513,6 +2534,8 @@ For agents that start their tools as a subprocess, use the stdio transport. It r
 | `new_domains` | domains devices contacted for the first time, with DGA scores |
 | `vqlog` | any count, top list, percentile, or time series over the query log, in one query (needs `querylog:read`; below) |
 | `cluster_status` | members, roles, sync, versions, checks, each node's maintenance window |
+| `list_annotations` | what changed and when: every node's [change markers](#change-markers), newest first (needs `analytics:read`) |
+| `annotate` | leave a note on every time chart (needs `ops:annotate`; changes at once, audited) |
 | `start_maintenance`, `end_maintenance` | put a node in [maintenance](#taking-a-node-down-for-maintenance) for up to 2 hours (not ready, still answering, alerts paused), or end it (needs `ops:maintenance`; changes at once, audited) |
 | `get_config` | one configuration section (no secrets) |
 

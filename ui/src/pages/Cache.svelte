@@ -6,6 +6,7 @@
   import { poll } from '../lib/poll';
   import { bytes, duration, logDate, logTime, num, pct } from '../lib/format';
   import Chart from '../lib/components/Chart.svelte';
+  import { changes } from '../lib/annotations.svelte';
 
   type Series = { label: string; color: string; values: number[] };
   import CacheCard from '../lib/components/CacheCard.svelte';
@@ -26,6 +27,8 @@
 
   $effect(() =>
     poll(async () => {
+      // REQ: OBS-033 — the last hour's change markers (a flush, a restart) on both charts.
+      void changes.load('-1h');
       try {
         stats = (await api.cacheStats()).items;
         error = null;
@@ -241,8 +244,8 @@
   </section>
 
   {#if charts.times.length > 1}
-    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} />
-    <Chart title="Lookups per 15 s" times={charts.times} series={charts.lookups} height={160} />
+    <Chart title="Answered from the cache, last hour (%)" times={charts.times} series={charts.hit} height={180} format={(n) => pct(n)} markers={changes.markers} />
+    <Chart title="Lookups per 15 s" times={charts.times} series={charts.lookups} height={160} markers={changes.markers} />
   {:else if stats.length}
     <p class="muted small">The charts fill in over the first minutes (a sample every 15 s).</p>
   {/if}

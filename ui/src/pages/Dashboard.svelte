@@ -15,6 +15,8 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import SloCard from '../lib/components/SloCard.svelte';
   import DevicesByType from '../lib/components/DevicesByType.svelte';
+  import ChangesControls from '../lib/components/ChangesControls.svelte';
+  import { changes } from '../lib/annotations.svelte';
   import { currentMode } from '../lib/mode.svelte';
 
   const ranges = [
@@ -116,6 +118,8 @@
     try {
       const g = group || undefined;
       const sc = scope || undefined;
+      // REQ: OBS-033 — the window's change markers, once for every chart (refetched each minute).
+      void changes.load(r.from, sc);
       const [s, ts, d, b, c, u, st, lp, gs, cl, sl] = await Promise.all([
         api.summary(r.summary, undefined, sc),
         api.timeseries({ from: r.from, step: r.step, scope: sc }),
@@ -295,7 +299,9 @@
         <button aria-pressed={range.id === r.id} onclick={() => (range = r)}>{r.label}</button>
       {/each}
     </div>
+    <ChangesControls />
   </div>
+  <ChangesControls part="body" {advanced} />
 
   <ErrorNote {error} />
   {#if summary?.missingNodes?.length}
@@ -318,7 +324,7 @@
   {#if advanced}<SloCard {slo} />{/if}
 
   <div class="status-row">
-    <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} />
+    <Chart title="Queries by status" {times} series={statusSeries} stacked seconds={range.step === 'second'} markers={changes.markers} />
     <section class="card">
       <h2>Answers by status</h2>
       {#if statusParts.length === 0}
@@ -331,7 +337,7 @@
 
   <!-- Advanced view only (owner, 2026-10-09), like the Service level card above. -->
   {#if advanced && (groupSeries.length > 1 || (groupSeries.length === 1 && groupSeries[0].label !== 'default'))}
-    <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} />
+    <Chart title="Traffic by group" {times} series={groupSeries} stacked seconds={range.step === 'second'} markers={changes.markers} />
   {/if}
   <!-- REQ: OBS-025 — devices by what they look like (Advanced view). -->
   {#if advanced}<DevicesByType />{/if}
@@ -385,7 +391,7 @@
     </section>
   </div>
 
-    <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} />
+    <Chart title="Upstream exchanges" {times} series={upstreamSeries} height={160} bars seconds={range.step === 'second'} markers={changes.markers} />
   {/if}
 
   <div class="grid-3">

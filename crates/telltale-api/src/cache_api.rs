@@ -188,6 +188,25 @@ async fn flush(
                 &target,
                 &serde_json::json!({ "subtree": req.subtree.unwrap_or(false), "node": req.node, "removed": total_removed }),
             );
+            // REQ: OBS-033 — a change marker on this node, naming where it applied.
+            let what = match (&req.name, req.subtree.unwrap_or(false)) {
+                (None, _) => "cache flushed".to_owned(),
+                (Some(n), true) => format!("cache flushed for {n} and below"),
+                (Some(n), false) => format!("cache flushed for {n}"),
+            };
+            crate::annotations_api::mark(
+                &backend,
+                crate::model::Annotation {
+                    actor: Some(actor.name.clone()),
+                    nodes: out.nodes.iter().filter_map(|n| n.node.clone()).collect(),
+                    ..crate::annotations_api::marker(
+                        "cache.flushed",
+                        backend.now_unix_seconds() * 1000,
+                        format!("{what} ({total_removed} entries)"),
+                    )
+                },
+            )
+            .await;
             Json(out).into_response()
         }
         Ok(Err(e)) => e.into_response(),
