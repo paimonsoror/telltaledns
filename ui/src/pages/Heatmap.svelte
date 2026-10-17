@@ -257,6 +257,10 @@
         {#if kind === 'network'}The whole network{:else if key}{key}{:else}Pick a {kind === 'client' ? 'device' : 'name'}{/if}
         {#if data}<span class="muted small">· {data.grain === '15m' ? '15-minute' : data.grain} slots, your local time</span>{/if}
       </h2>
+      {#if kind === 'client' && key}
+        <!-- REQ: OBS-034 — the device's day, lane by lane. -->
+        <a class="small" href={href('/clients', { device: key, view: 'timeline' })} data-testid="heatmap-day">Day timeline</a>
+      {/if}
       <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Grid' : 'Table'}</button>
     </div>
     {#if data?.missingNodes?.length}<p class="small muted">Without {data.missingNodes.join(', ')}: they didn't answer.</p>{/if}

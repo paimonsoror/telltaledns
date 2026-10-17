@@ -1291,6 +1291,13 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-134 — The device timeline: bounded vqlog reads folded into lanes, cached (Proposed)
+**Context:** T14.8 (OBS-034; design `docs/design/device-day-timeline.md`). The owner found the 2.5 s NTP loop of 192.168.2.14 by hand; nothing showed one device's day with what happened around it.
+**Decision:**
+- `GET /api/v1/clients/{id}/timeline` runs three vqlog reads for the device (queries by registrable domain and status, slow answers by domain, every query with p99, per bin of whole minutes) and folds them into lanes (the top 30 by queries, `other`), a latency lane, and events: first-seen domains (OBS-009), the device's anomaly findings, and blocked bursts (≥ 10 blocked in a bin), with the change markers (OBS-033). Cached 30 s per request.
+- Defaults taken at the start (owner: accept all defaults, 2026-10-16): vqlog on the entry node (its log and the rows shipped to it), not a new `Read::ClientTimeline`; vqlog's bounds (2M rows, 100k groups, 25 s) in place of 500k rows and 5 s; the latency lane included; identity changes not yet events (they need `changedAt`); agents `querylog:read`; level 1 lanes without domain, level 2 `422 privacy_level`; `id` an address; the deep link `#/clients?device=…&view=timeline` with a device drawer (Rhythm, Timeline); a table of lanes × at most 24 columns; `coverageFrom` from `retention_days`; MCP `device_timeline` at 24 bins and 10 lanes.
+**Consequences:** a request scans the device's rows three times (block-pruned by client), at most once per 30 s for the same view; the answer for a 7-day, 2,016-bin, 50-lane request is about 50 × 3 × 2,016 numbers.
+
 ## ADR-131 — The rhythm strip: a log-spaced gap histogram beside the beacon detector (Proposed)
 **Context:** T14.5 (OBS-031; design `docs/design/beacon-rhythm-strip.md`). The beacon detector measured inter-arrival regularity but nobody could see it; a 2.5 s NTP loop (too fast to be a beacon) was invisible.
 **Decision:**

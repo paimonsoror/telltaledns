@@ -105,6 +105,16 @@
       "docs": "why-was-it-blocked-explain"
     },
     {
+      "id": "device-timeline",
+      "title": "A device's day",
+      "term": "Device timeline (swimlanes)",
+      "summary": "One device over a window as lanes, one per domain it talks to, with a cell per few minutes: darker for more queries, red underline for blocked, amber tick for slow; its answer time below and what happened (first contacts, anomalies, blocked bursts, changes) above.",
+      "when": "You want to know when something on a device started and what else it was doing at the time.",
+      "example": "The ntp.org lane is empty until 14:00, then dark every 5 minutes until 18:30, with a hollow dot at 14:00: its first query to ntp.org.",
+      "caution": "It reads the query log, so it reaches back only as far as the log keeps (the rest is grey), and only the rows that reached the node you're on.",
+      "docs": "a-devices-day"
+    },
+    {
       "id": "rhythm",
       "title": "How regularly does it ask?",
       "term": "Rhythm strip (inter-arrival histogram)",

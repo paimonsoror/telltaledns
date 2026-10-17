@@ -631,6 +631,45 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. One device's day (or any window up to 7 days) from the query log: a lane per registrable domain (the top lanes by queries, the rest in 'other') with queries, blocked, and slow answers per bin (24 bins by default here: hours over a day), every query and the p99 answer time (ms) per bin, and events: domains first contacted, anomaly findings, and blocked bursts (10+ blocked in a bin), plus the change markers. Use it to answer 'when did this start, and what else did the device do?'. Needs querylog:read; refused at privacy level 2, no domain names at level 1.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bins": {
+          "description": "Bins over the window (default 24).",
+          "maximum": 2016,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "client": {
+          "description": "The device's IP address.",
+          "type": "string"
+        },
+        "lanes": {
+          "description": "Domain lanes before 'other' (default 10 here).",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "window": {
+          "description": "Start: relative like -24h or RFC 3339 (default -24h, at most 7 days).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "type": "object"
+    },
+    "name": "device_timeline"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Every cluster node side by side over one window: answered count, q/s, SERVFAIL, slow, from-cache, and upstream-failure shares (percent, each with a Wilson 95 % interval), and p50/p99 from the latency histograms. findings names a node that deviates from the others (level odd: robust z >= 3 against the others' median and MAD with three or more nodes, non-overlapping intervals with two), with oddSince when it started, and notes a node that only looks worse because it has the same bad count on a much smaller base (level note). Use it to answer 'is something odd with that node?' before blaming one. Nodes that didn't answer are in missingNodes; one node alone has nothing to compare.",
     "inputSchema": {
       "additionalProperties": false,

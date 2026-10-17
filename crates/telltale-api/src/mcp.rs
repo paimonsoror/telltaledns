@@ -525,6 +525,32 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: OBS-034 (ADR-134)
+        Tool {
+            name: "device_timeline",
+            description: "Read-only. One device's day (or any window up to 7 days) from the query log: a lane per registrable domain (the top lanes by queries, the rest in 'other') with queries, blocked, and slow answers per bin (24 bins by default here: hours over a day), every query and the p99 answer time (ms) per bin, and events: domains first contacted, anomaly findings, and blocked bursts (10+ blocked in a bin), plus the change markers. Use it to answer 'when did this start, and what else did the device do?'. Needs querylog:read; refused at privacy level 2, no domain names at level 1.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "client": {"type": "string", "description": "The device's IP address."},
+                "window": {"type": "string", "description": "Start: relative like -24h or RFC 3339 (default -24h, at most 7 days)."},
+                "lanes": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Domain lanes before 'other' (default 10 here)."},
+                "bins": {"type": "integer", "minimum": 1, "maximum": 2016, "description": "Bins over the window (default 24)."}
+            }, "required": ["client"], "additionalProperties": false})
+            },
+            calls: |a| {
+                let c = s(a, "client").ok_or("`client` is required")?;
+                let mut path = format!(
+                    "/api/v1/clients/{}/timeline?bins={}&lanes={}",
+                    enc(&c),
+                    a.get("bins").and_then(Value::as_u64).unwrap_or(24),
+                    a.get("lanes").and_then(Value::as_u64).unwrap_or(10)
+                );
+                if let Some(w) = s(a, "window") {
+                    path = format!("{path}&from={}", enc(&w));
+                }
+                Ok(vec![("timeline".into(), path)])
+            },
+        },
         // REQ: OBS-028 (ADR-128)
         Tool {
             name: "compare_nodes",

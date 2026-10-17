@@ -2,7 +2,7 @@
   // REQ: API-005, API-010 — configured devices and the clients seen this hour; name a device
   // from either list.
   import { api, type S } from '../lib/api';
-  import { href } from '../lib/router.svelte';
+  import { href, navigate, route } from '../lib/router.svelte';
   import { num } from '../lib/format';
   import { session } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -13,6 +13,7 @@
   import TabPanel from '../lib/components/TabPanel.svelte';
   import Drawer from '../lib/components/Drawer.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
+  import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -59,20 +60,32 @@
   ]);
   const tab = $derived(activeTab(tabs));
 
-  // REQ: OBS-031 — a device's rhythm, in a drawer.
-  let rhythmFor = $state<string | null>(null);
+  // REQ: OBS-031, OBS-034 — a device's drawer: its rhythm and its day. The address says which
+  // (`#/clients?device=…&view=timeline`), so findings and the heatmap can link to it.
+  const rhythmFor = $derived(route.params.get('device'));
+  const view = $derived(route.params.get('view') === 'timeline' ? 'timeline' : 'rhythm');
   let rhythm = $state<S['ClientRhythm'] | null>(null);
   let rhythmError = $state<unknown>(null);
-  async function openRhythm(ip: string) {
-    rhythmFor = ip;
+  function openDevice(ip: string, v: 'rhythm' | 'timeline') {
+    const params: Record<string, string> = { device: ip, view: v };
+    const t = route.params.get('tab');
+    if (t) params.tab = t;
+    navigate('/clients', params);
+  }
+  function closeDevice() {
+    const t = route.params.get('tab');
+    navigate('/clients', t ? { tab: t } : {});
+  }
+  $effect(() => {
+    const ip = rhythmFor;
+    if (!ip || view !== 'rhythm') return;
     rhythm = null;
     rhythmError = null;
-    try {
-      rhythm = await api.rhythm(ip);
-    } catch (e) {
-      rhythmError = e;
-    }
-  }
+    api
+      .rhythm(ip)
+      .then((r) => (rhythm = r))
+      .catch((e) => (rhythmError = e));
+  });
 
   async function remove(name: string) {
     try {
@@ -107,7 +120,7 @@
                     {#each c.groups ?? [] as g (g)}<span class="group-chip" style:--gc={groupColor(g)}>{g}</span>{/each}
                   </td>
                   <td class="num">{num(c.count)}</td>
-                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openRhythm(c.key)} data-testid="open-rhythm">Rhythm</button></td>
+                  <td class="num"><a href={href('/queries', { client: c.key })}>Queries</a> · <a href={href('/heatmap', { kind: 'client', key: c.key })}>When</a> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'rhythm')} data-testid="open-rhythm">Rhythm</button> · <button type="button" class="link small" onclick={() => openDevice(c.key, 'timeline')} data-testid="open-timeline">Day</button></td>
                 </tr>
               {/each}
             </tbody>
@@ -183,7 +196,15 @@
   {/if}
   </TabPanel>
   {#if rhythmFor}
-    <Drawer title={`Rhythm: ${rhythmFor}`} onclose={() => (rhythmFor = null)}>
+    <Drawer title={rhythmFor} onclose={closeDevice}>
+      <div class="seg" role="group" aria-label="Device view">
+        <button type="button" aria-pressed={view === 'rhythm'} onclick={() => openDevice(rhythmFor, 'rhythm')} data-testid="device-rhythm">Rhythm</button>
+        <button type="button" aria-pressed={view === 'timeline'} onclick={() => openDevice(rhythmFor, 'timeline')} data-testid="device-timeline">Timeline</button>
+      </div>
+      {#if view === 'timeline'}
+        <p class="muted small">This device's day from the query log: a lane per domain it talks to, the answer time below, and what happened above.<HelpButton id="device-timeline" /></p>
+        <DeviceTimeline client={rhythmFor} />
+      {:else}
       <p class="muted small">How regularly this device asks for each domain it talks to most: each column is a gap between two queries (log scale), darker where more of them fall. One dark cell is a timer; a smear is a person.<HelpButton id="rhythm" /></p>
       <ErrorNote error={rhythmError} />
       {#if rhythm}
@@ -193,6 +214,7 @@
           <RhythmStrip rows={rhythm.domains} client={rhythm.client} binsS={rhythm.binsS} />
           {#if rhythm.missingNodes?.length}<p class="muted small">Not answering: {rhythm.missingNodes.join(', ')}.</p>{/if}
         {/if}
+      {/if}
       {/if}
     </Drawer>
   {/if}

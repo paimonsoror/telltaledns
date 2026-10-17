@@ -1009,6 +1009,9 @@ impl Backend for Federated {
         out
     }
     // REQ: OBS-032 — the setting is the cluster's (replicated configuration): this node's.
+    fn qlog_retention_days(&self) -> u32 {
+        self.local.qlog_retention_days()
+    }
     fn qlog_privacy_level(&self) -> u8 {
         self.local.qlog_privacy_level()
     }

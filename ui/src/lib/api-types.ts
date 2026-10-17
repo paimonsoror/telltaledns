@@ -961,6 +961,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/clients/{id}/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A device's day.
+         * @description One device over a window (default the last 24 hours, at most 7 days) as swimlanes: a lane per
+         *     registrable domain (the top `lanes` by queries, the rest in `other`) with its queries, blocked
+         *     answers, and slow answers (over the latency objective's threshold) per bin (`bins`, whole
+         *     minutes; 288 by default, 5 minutes over a day); every query and the p99 answer time per bin
+         *     (the latency lane); `events`: domains first contacted, anomaly findings for the device, and
+         *     blocked bursts (10 or more blocked in a bin); and the change markers. From the query log, so
+         *     nothing older than it keeps (`coverageFrom`); every node's rows that reached this one. The
+         *     same request within 30 seconds is answered from memory. `truncated` says a read stopped
+         *     early. At privacy level 1 the lanes have no domain; from level 2 it's refused. Use it to
+         *     answer "when did this start, and what else did the device do?". Example:
+         *     `GET /api/v1/clients/192.168.2.14/timeline?from=-24h`.
+         */
+        get: operations["client_timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/clients/{name}": {
         parameters: {
             query?: never;
@@ -3828,6 +3858,34 @@ export interface components {
             /** @description The MAC's registered vendor. */
             vendor?: string | null;
         };
+        /** @description REQ: OBS-034 — one device's window as lanes and events. */
+        DeviceTimeline: {
+            /** Format: int64 */
+            binSeconds: number;
+            /** @description Each bin's start, Unix seconds. */
+            bins: number[];
+            /** @description The device's address. */
+            client: string;
+            /** @description The query log keeps nothing older than this (RFC 3339), when it's inside the window. */
+            coverageFrom?: string | null;
+            /** @description Oldest first. */
+            events: components["schemas"]["TimelineEvent"][];
+            from: string;
+            /** @description Busiest first, `other` last. */
+            lanes: components["schemas"]["TimelineLane"][];
+            /** @description The change markers in the window (OBS-033), oldest first. */
+            markers: components["schemas"]["Annotation"][];
+            missingNodes?: string[];
+            p99Ms: (number | null)[];
+            /** @description Every query per bin, and the p99 answer time per bin (ms; null without queries). */
+            queries: number[];
+            /** @description `querylog`. */
+            source: string;
+            to: string;
+            /** @description A read stopped early (rows, groups, or time): the lanes cover what it read. */
+            truncated: boolean;
+            truncatedReason?: string | null;
+        };
         /** @description A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3). */
         DhcpLease: {
             /** @description The device's name in TelltaleDNS (a named client, else the host name). */
@@ -6629,6 +6687,39 @@ export interface components {
              */
             upstreamQueries: number;
         };
+        /** @description Something that happened to or on the device. */
+        TimelineEvent: {
+            domain?: string | null;
+            /** @description The UI page that shows it (`#/…`). */
+            href: string;
+            /** @description `firstSeen`, `anomaly`, or `blockedBurst`. */
+            kind: string;
+            summary: string;
+            /** @description RFC 3339. */
+            time: string;
+            /** Format: int64 */
+            timeUnixSeconds: number;
+        };
+        /** @description One domain's lane. */
+        TimelineLane: {
+            blocked: number[];
+            /** Format: int64 */
+            blockedTotal: number;
+            /**
+             * @description Queries, blocked answers, and slow answers (over the latency objective's threshold) per
+             *     bin.
+             */
+            counts: number[];
+            /** @description The registrable domain; `other` for the rest; absent at privacy level 1 (names hashed). */
+            domain?: string | null;
+            /** @description When the device first contacted it, if that's inside the window (RFC 3339). */
+            firstSeenTime?: string | null;
+            /** @description The lane folds every domain below the top ones. */
+            other?: boolean;
+            slow: number[];
+            /** Format: int64 */
+            total: number;
+        };
         TokenInfo: {
             /** Format: int64 */
             createdUnixSeconds: number;
@@ -8388,6 +8479,59 @@ export interface operations {
                 };
             };
             /** @description `privacy_level`: the query log's privacy level hides devices and names. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    client_timeline: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start: RFC 3339 or relative (default 24 hours ago; at most 7 days before `to`).
+                 * @example -24h
+                 */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /** @description How many bins (default 288: 5 minutes over a day; at most 2,016). Bins are whole minutes. */
+                bins?: number;
+                /** @description Domain lanes before `other` (default 30, at most 50). */
+                lanes?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The device's address. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The lanes and the events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceTimeline"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `privacy_level`: the query log's privacy level hides devices. */
             422: {
                 headers: {
                     [name: string]: unknown;

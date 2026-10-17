@@ -15,7 +15,7 @@
 | Dashboard | `GET /stats/summary`, `/stats/timeseries?metric=&step=`, `/stats/top?kind=domains\|blocked\|clients\|nxdomain&limit=`, `/stats/latency?by=upstream\|client\|qtype\|stage` (percentiles), `/stats/slo` (objectives, error budgets, burn rates; OBS-016) |
 | Query log | `GET /queries` (filters: client, group, qname (substring/glob/regex), status[], qtype[], rcode[], upstream, node, minLatencyMs, cursor), `GET /queries/stream` (SSE), `GET /queries/export` |
 | Explain | `GET /explain?name=&client=&qtype=` |
-| Clients | `/clients` (CRUD; merge identities), `/clients/{id}/profile` (analytics), `/clients/{id}/rhythm` (inter-arrival histogram per tracked domain: OBS-031), `/clients/discovered` |
+| Clients | `/clients` (CRUD; merge identities), `/clients/{id}/profile` (analytics), `/clients/{id}/rhythm` (inter-arrival histogram per tracked domain: OBS-031), `/clients/{id}/timeline` (the device's day as lanes and events: OBS-034), `/clients/discovered` |
 | Groups | `/groups` CRUD, `/groups/{id}/pause` (POST `{minutes}`), `/groups/{id}/schedules` |
 | Lists | `/lists` CRUD, `POST /lists/refresh`, `/lists/{id}/stats`, `/lists/overlap` |
 | Rules | `/rules` (manual allow/deny, regex), bulk import/export |
@@ -40,7 +40,7 @@ Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framew
 | **Latency heatmap** | Answer time per bucket over time (Dashboard → Where time goes → Heatmap; per upstream on the Upstreams page), with exemplar dots that open their query and the latency objective's line (OBS-030) |
 | **Heatmap** | Days (or a typical week) × time of day for the network, one device, or one name; cells link to the query log; the change markers as ticks (OBS-029) |
 | **Query log** | Virtualized table; live-tail toggle; a filter bar with chips; per-row stage-timing bar; "Why?" (explain) drawer; quick actions (allow/block domain for this client's group) |
-| **Clients** | Discovered vs. named; merge identities (IP + MAC + client ID → one device); per-client profile page (traffic, top domains, new domains, latency, groups, protocols); **Rhythm** drawer (a strip per tracked domain, also inline on beacon findings: OBS-031) |
+| **Clients** | Discovered vs. named; merge identities (IP + MAC + client ID → one device); per-client profile page (traffic, top domains, new domains, latency, groups, protocols); device drawer with **Rhythm** (a strip per tracked domain, also inline on beacon findings: OBS-031) and **Timeline** (swimlanes per domain, latency lane, events rail; `#/clients?device=…&view=timeline`: OBS-034) |
 | **Groups** | Lists, rules, upstream group, block mode, schedules (weekly grid editor), safe search, services, pause |
 | **Lists** | Add by URL/preset; stats, overlap, dead-list hints; refresh |
 | **Upstreams** | Presets gallery; groups + strategy; routes; live health (sparklines, breaker state); "test" button |

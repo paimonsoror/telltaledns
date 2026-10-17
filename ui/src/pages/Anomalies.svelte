@@ -140,6 +140,8 @@
       </dl>
       <div class="row actions">
         <a class="small" href={href('/queries', { client: f.client, name: f.domain ?? undefined, match: f.domain ? 'suffix' : undefined })}>Show these queries</a>
+        <!-- REQ: OBS-034 — the device's day around it. -->
+        <a class="small" href={href('/clients', { device: f.client, view: 'timeline' })} data-testid="see-the-day">See the day</a>
         {#if f.nodes && f.nodes.length > 0}<span class="muted small">Found by {f.nodes.join(', ')}</span>{/if}
         <span class="spacer"></span>
         {#if writable}

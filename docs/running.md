@@ -2346,6 +2346,14 @@ The engine runs on the telemetry thread, never on the query path, keeps a few Ki
 - Select a row for that device's queries to the domain. In a cluster, every node's view of the device is added together.
 - It's measured, not judged: what alerts is still the beacon detector (30 s to an hour, low jitter, 4 hours). `GET /api/v1/clients/<ip>/rhythm` returns the bins and the words; the MCP tool `get_client_profile` includes the period and share per domain, and `find_anomalies` a beacon's bins. It needs the anomaly engine, so privacy level 0.
 
+### A device's day
+**Clients → Seen this hour → Day** (or **See the day** on an anomaly finding, or **Day timeline** on a device's heatmap) shows one device over a window (6 hours to 7 days) as swimlanes, from the query log:
+- One lane per domain it talks to (the 30 busiest; the rest in **other**), one cell per bin (5 minutes over a day), darker for more queries. A red underline marks blocked answers, an amber tick answers slower than the latency objective. A **new** tag marks where a domain was first contacted.
+- Under the lanes, the device's p99 answer time per bin; above them, dots for first contacts (hollow), anomaly findings (amber), and blocked bursts (red, 10 or more blocked in a bin), and grey ticks for changes. Select a dot for the page behind it, a lane's name for that device's queries to it.
+- Point at a cell for its numbers. **Table** sums the bins into at most 24 columns. Nothing older than the query log keeps can be shown: that part is grey. If a read stops early, the drawer says so.
+- In a cluster it reads the query log of the node you're on, with every node's rows that reach it. The same view within 30 seconds is answered from memory. At privacy level 1 the lanes have no names; from level 2 it isn't available.
+- `GET /api/v1/clients/<ip>/timeline?from=-24h` and the MCP tool `device_timeline` (24 bins by default: hours over a day) return the lanes and the events; agents need `querylog:read`.
+
 ### Acknowledging findings
 Once you've looked at a finding, acknowledge it: **Acknowledge** on its card (or **Acknowledge all**), `POST /api/v1/analytics/anomalies/acknowledge` with its `id`, or the MCP tool `acknowledge_anomalies`. It stops counting as new: the sidebar badge and anomaly alerts skip it, and the page hides it unless **Show acknowledged** is on, where it shows who acknowledged it, when, and the note. **Undo acknowledge** takes it back. Acknowledging blocks nothing and changes no configuration.
 - It needs the operator role (agents: `ops:anomalies`) and is recorded in the audit log as `anomaly.ack` or `anomaly.unack`.

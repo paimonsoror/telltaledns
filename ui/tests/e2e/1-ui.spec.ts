@@ -2201,3 +2201,88 @@ test('obs_031 rhythm strip', async () => {
   await page.unroute('**/api/v1/analytics/anomalies?*');
   await page.evaluate(() => delete document.documentElement.dataset.theme);
 });
+
+// REQ: OBS-034 (ADR-134) — a device's day: the Timeline tab draws the lanes, an event opens its
+// page, a lane label opens the query log, the table view, both themes, and the deep link from a
+// finding.
+test('obs_034 device timeline', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const day = Math.floor(Date.now() / 1000 / 86_400) * 86_400 - 86_400;
+  const bins = Array.from({ length: 288 }, (_, i) => day + i * 300);
+  const counts = (f: (i: number) => number) => bins.map((_, i) => f(i));
+  const zero = counts(() => 0);
+  const timeline = {
+    client: '192.168.2.14', from: new Date(day * 1000).toISOString(), to: new Date((day + 86_400) * 1000).toISOString(), binSeconds: 300, bins,
+    lanes: [
+      { domain: 'ntp.org', counts: counts((i) => (i >= 168 && i < 222 ? 120 : 0)), blocked: zero, slow: zero, total: 6480, blockedTotal: 0, firstSeenTime: new Date((day + 168 * 300) * 1000).toISOString() },
+      { domain: 'example.com', counts: counts((i) => (i % 12 === 0 ? 10 : 0)), blocked: zero, slow: counts((i) => (i === 2 ? 2 : 0)), total: 240, blockedTotal: 0 },
+      { domain: 'ads.example', counts: counts((i) => ([30, 100, 200].includes(i) ? 12 : 0)), blocked: counts((i) => ([30, 100, 200].includes(i) ? 12 : 0)), slow: zero, total: 36, blockedTotal: 36 },
+    ],
+    queries: counts((i) => (i >= 168 && i < 222 ? 120 : 0) + (i % 12 === 0 ? 10 : 0)),
+    p99Ms: counts((i) => (i % 12 === 0 ? 14 : 0)).map((v) => (v ? v : null)),
+    events: [
+      { time: new Date((day + 168 * 300) * 1000).toISOString(), timeUnixSeconds: day + 168 * 300, kind: 'firstSeen', summary: 'first query to ntp.org', href: '#/queries?client=192.168.2.14&name=ntp.org&match=suffix', domain: 'ntp.org' },
+      ...[30, 100, 200].map((i) => ({ time: new Date((day + i * 300) * 1000).toISOString(), timeUnixSeconds: day + i * 300, kind: 'blockedBurst', summary: '12 blocked in 5 min, mostly ads.example', href: '#/queries?client=192.168.2.14&status=blocked', domain: 'ads.example' })),
+    ],
+    markers: [{ t: new Date((day + 3600) * 1000).toISOString(), tUnixMs: (day + 3600) * 1000, kind: 'config.applied', summary: 'configuration 312 applied' }],
+    source: 'querylog', truncated: false,
+  };
+  const asked: string[] = [];
+  await page.route('**/api/v1/clients/*/timeline*', (route) => {
+    asked.push(new URL(route.request().url()).searchParams.get('from') ?? '');
+    return route.fulfill({ json: timeline });
+  });
+  await page.route('**/api/v1/clients/*/rhythm', (route) => route.fulfill({ json: { client: '192.168.2.14', available: true, binsS: [], domains: [] } }));
+  await page.goto('/#/clients?device=192.168.2.14&view=timeline');
+  const tl = page.getByTestId('timeline');
+  const cv = tl.getByTestId('timeline-canvas');
+  await expect(cv).toHaveAttribute('data-lanes', '3');
+  await expect(cv).toHaveAttribute('data-bins', '288');
+  await expect(tl.getByTestId('timeline-lane')).toHaveCount(3);
+  await expect(tl.getByTestId('timeline-event')).toHaveCount(4);
+  await expect(tl.locator('[data-testid="timeline-event"][data-kind="blockedBurst"]')).toHaveCount(3);
+  await expect(tl.getByTestId('timeline-marker')).toHaveCount(1);
+  await expect(tl.getByTestId('timeline-new')).toHaveCount(1);
+  // Drawn, in both themes.
+  const inked = () =>
+    cv.evaluate((c: HTMLCanvasElement) => {
+      const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+      return n;
+    });
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((t) => (document.documentElement.dataset.theme = t), theme);
+    await expect.poll(inked).toBeGreaterThan(500);
+  }
+  await page.evaluate(() => delete document.documentElement.dataset.theme);
+  // Hover a cell in ntp.org's lane.
+  const box = (await cv.boundingBox())!;
+  await page.mouse.move(box.x + (180.5 / 288) * box.width, box.y + 9);
+  await expect(tl.getByTestId('timeline-tip')).toContainText('ntp.org · 120 queries, 0 blocked');
+  // The window is asked for.
+  await tl.getByRole('button', { name: '7 d', exact: true }).click();
+  await expect.poll(() => asked.at(-1)).toBe('-7d');
+  // The table.
+  await tl.getByTestId('timeline-table-toggle').check();
+  await expect(tl.getByTestId('timeline-table').locator('tbody tr')).toHaveCount(4);
+  await tl.getByTestId('timeline-table-toggle').uncheck();
+  // A lane label opens the query log for the device and the name.
+  await tl.getByTestId('timeline-lane').first().click();
+  await expect(page).toHaveURL(/#\/queries\?.*client=192\.168\.2\.14.*name=ntp\.org/);
+  // An event opens its page.
+  await page.goto('/#/clients?device=192.168.2.14&view=timeline');
+  await tl.locator('[data-testid="timeline-event"][data-kind="blockedBurst"]').first().click();
+  await expect(page).toHaveURL(/#\/queries\?client=192\.168\.2\.14&status=blocked/);
+  // A finding links to the device's day.
+  await page.route('**/api/v1/analytics/anomalies?*', (route) =>
+    route.fulfill({ json: { items: [{ id: '6a2c0e00c1b2c3d4', kind: 'rate_spike', client: '192.168.2.14', windowStart: new Date(day * 1000).toISOString(), windowSeconds: 3600, observed: 4000, baseline: 100, spread: 20, threshold: 300, detail: '4000 queries in an hour' }] } }),
+  );
+  await page.goto('/#/anomalies');
+  await page.getByTestId('see-the-day').click();
+  await expect(page).toHaveURL(/#\/clients\?device=192\.168\.2\.14&view=timeline/);
+  await expect(page.getByTestId('timeline-canvas')).toBeVisible();
+  await page.unroute('**/api/v1/analytics/anomalies?*');
+  await page.unroute('**/api/v1/clients/*/timeline*');
+  await page.unroute('**/api/v1/clients/*/rhythm');
+});

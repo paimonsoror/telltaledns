@@ -2003,6 +2003,99 @@
         }
       }
     },
+    "/api/v1/clients/{id}/timeline": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "A device's day.",
+        "description": "One device over a window (default the last 24 hours, at most 7 days) as swimlanes: a lane per\nregistrable domain (the top `lanes` by queries, the rest in `other`) with its queries, blocked\nanswers, and slow answers (over the latency objective's threshold) per bin (`bins`, whole\nminutes; 288 by default, 5 minutes over a day); every query and the p99 answer time per bin\n(the latency lane); `events`: domains first contacted, anomaly findings for the device, and\nblocked bursts (10 or more blocked in a bin); and the change markers. From the query log, so\nnothing older than it keeps (`coverageFrom`); every node's rows that reached this one. The\nsame request within 30 seconds is answered from memory. `truncated` says a read stopped\nearly. At privacy level 1 the lanes have no domain; from level 2 it's refused. Use it to\nanswer \"when did this start, and what else did the device do?\". Example:\n`GET /api/v1/clients/192.168.2.14/timeline?from=-24h`.",
+        "operationId": "client_timeline",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device's address.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start: RFC 3339 or relative (default 24 hours ago; at most 7 days before `to`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "-24h"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bins",
+            "in": "query",
+            "description": "How many bins (default 288: 5 minutes over a day; at most 2,016). Bins are whole minutes.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "lanes",
+            "in": "query",
+            "description": "Domain lanes before `other` (default 30, at most 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The lanes and the events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTimeline"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`privacy_level`: the query log's privacy level hides devices.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/clients/{name}": {
       "put": {
         "tags": [
@@ -10077,6 +10170,117 @@
           }
         }
       },
+      "DeviceTimeline": {
+        "type": "object",
+        "description": "REQ: OBS-034 — one device's window as lanes and events.",
+        "required": [
+          "client",
+          "from",
+          "to",
+          "binSeconds",
+          "bins",
+          "lanes",
+          "queries",
+          "p99Ms",
+          "events",
+          "markers",
+          "source",
+          "truncated"
+        ],
+        "properties": {
+          "binSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bins": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Each bin's start, Unix seconds."
+          },
+          "client": {
+            "type": "string",
+            "description": "The device's address."
+          },
+          "coverageFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The query log keeps nothing older than this (RFC 3339), when it's inside the window."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimelineEvent"
+            },
+            "description": "Oldest first."
+          },
+          "from": {
+            "type": "string"
+          },
+          "lanes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TimelineLane"
+            },
+            "description": "Busiest first, `other` last."
+          },
+          "markers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Annotation"
+            },
+            "description": "The change markers in the window (OBS-033), oldest first."
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "p99Ms": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Every query per bin, and the p99 answer time per bin (ms; null without queries)."
+          },
+          "source": {
+            "type": "string",
+            "description": "`querylog`."
+          },
+          "to": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "A read stopped early (rows, groups, or time): the lanes cover what it read."
+          },
+          "truncatedReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "DhcpLease": {
         "type": "object",
         "description": "A device named by a router's DHCP or by mDNS (REQ: API-010; T8.2, T8.3).",
@@ -17056,6 +17260,111 @@
             "type": "integer",
             "format": "int32",
             "description": "Upstream exchanges, and how many failed.",
+            "minimum": 0
+          }
+        }
+      },
+      "TimelineEvent": {
+        "type": "object",
+        "description": "Something that happened to or on the device.",
+        "required": [
+          "time",
+          "timeUnixSeconds",
+          "kind",
+          "summary",
+          "href"
+        ],
+        "properties": {
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "href": {
+            "type": "string",
+            "description": "The UI page that shows it (`#/…`)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`firstSeen`, `anomaly`, or `blockedBurst`."
+          },
+          "summary": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "timeUnixSeconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TimelineLane": {
+        "type": "object",
+        "description": "One domain's lane.",
+        "required": [
+          "counts",
+          "blocked",
+          "slow",
+          "total",
+          "blockedTotal"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "blockedTotal": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "counts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Queries, blocked answers, and slow answers (over the latency objective's threshold) per\nbin."
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registrable domain; `other` for the rest; absent at privacy level 1 (names hashed)."
+          },
+          "firstSeenTime": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the device first contacted it, if that's inside the window (RFC 3339)."
+          },
+          "other": {
+            "type": "boolean",
+            "description": "The lane folds every domain below the top ones."
+          },
+          "slow": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
             "minimum": 0
           }
         }

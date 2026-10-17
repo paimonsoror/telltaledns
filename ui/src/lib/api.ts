@@ -186,6 +186,8 @@ export const api = {
   identities: () => get<S['Items_DeviceIdentity']>('/clients/identities'),
   identity: (id: string) => get<S['DeviceIdentity']>(`/clients/${encodeURIComponent(id)}/identity`),
   rhythm: (id: string) => get<S['ClientRhythm']>(`/clients/${encodeURIComponent(id)}/rhythm`),
+  timeline: (id: string, q: { from?: string; to?: string; bins?: number; lanes?: number } = {}) =>
+    get<S['DeviceTimeline']>(`/clients/${encodeURIComponent(id)}/timeline`, q),
   // REQ: OBS-024 (T13.1) — what a whole shared configuration would have done.
   simulate: (body: S['SimulateRequest']) => post<S['Simulation']>('/simulate', body),
   cluster: () => get<S['ClusterView']>('/cluster'),

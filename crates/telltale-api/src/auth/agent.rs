@@ -193,6 +193,8 @@ pub fn required(method: &Method, path: &str) -> Need {
             | "/api/v1/config/entries" => {
                 return Need::Scope("config:read");
             }
+            // REQ: OBS-034 — a device's names bin by bin reads like its query log.
+            _ if timeline_path(p) => return Need::Scope("querylog:read"),
             _ if under("/api/v1/stats") || under("/api/v1/analytics") => {
                 return Need::Scope("analytics:read");
             }
@@ -256,6 +258,13 @@ pub fn required(method: &Method, path: &str) -> Need {
         return need;
     }
     Need::Forbidden
+}
+
+/// REQ: OBS-034 — `/api/v1/clients/{id}/timeline`.
+fn timeline_path(p: &str) -> bool {
+    p.strip_prefix("/api/v1/clients/")
+        .and_then(|r| r.strip_suffix("/timeline"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// Reads under `analytics:read` beyond the plain paths.

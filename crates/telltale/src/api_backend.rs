@@ -884,6 +884,10 @@ impl Backend for ApiBackend {
 
     // REQ: OBS-029 (ADR-129) — a device's or a name's hours on this node, from the stored top
     // lists and, for the current hour (and the previous one until it's stored), memory's.
+    // REQ: OBS-034 — how far back the query log reaches.
+    fn qlog_retention_days(&self) -> u32 {
+        self.src.config.load().telemetry.qlog.retention_days
+    }
     fn qlog_privacy_level(&self) -> u8 {
         self.src.config.load().telemetry.qlog.privacy_level
     }
