@@ -5,6 +5,7 @@
   // their query (a trace ID the query log finds); the change markers as ticks.
   import { onDestroy } from 'svelte';
   import { api, type S } from '../api';
+  import { poll } from '../poll';
   import { href } from '../router.svelte';
   import { clock, ms, num } from '../format';
   import { changes } from '../annotations.svelte';
@@ -15,7 +16,8 @@
     by = 'path',
     upstream,
     testid = 'latency-heatmap',
-  }: { by?: 'path' | 'upstream'; upstream?: string; testid?: string } = $props();
+    wall = false,
+  }: { by?: 'path' | 'upstream'; upstream?: string; testid?: string; wall?: boolean } = $props();
 
   const windows = [
     { id: '1h', label: '1 h', from: '-1h', step: 'minute' },
@@ -27,7 +29,9 @@
   const PATH_LABEL: Record<string, string> = { cache: 'cache', upstream: 'upstream', local: 'local names', synthesized: 'blocked & special' };
   const PATH_COLOR: Record<string, string> = { cache: '--s-cached', upstream: '--s-forwarded', local: '--s-local', synthesized: '--s-blocked' };
 
-  let win = $state(windows[1]);
+  // REQ: OBS-035 — on the wall: the last hour, no controls, refreshed every 30 s.
+  // svelte-ignore state_referenced_locally
+  let win = $state(wall ? windows[0] : windows[1]);
   let paths = $state<string[]>([...PATHS]);
   let data = $state<S['LatencyHeatmap'] | null>(null);
   let exemplars = $state<S['LatencyExemplar'][]>([]);
@@ -55,6 +59,7 @@
   }
   $effect(() => {
     void [win, by];
+    if (wall) return poll(load, 30_000);
     void load();
   });
   $effect(() => {
@@ -193,6 +198,7 @@
 </script>
 
 <div class="lh" data-testid={testid}>
+  {#if !wall}
   <div class="row controls">
     <div class="seg" role="group" aria-label="Window">
       {#each windows as w (w.id)}
@@ -211,6 +217,7 @@
     <span class="spacer"></span>
     <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable}>{showTable ? 'Grid' : 'Table'}</button>
   </div>
+  {/if}
   <ErrorNote {error} />
   {#if !data}
     <p class="empty">Loading…</p>

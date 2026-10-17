@@ -5,6 +5,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { query } from './dns';
+import { Loop, Particles, Ticker, dotBudget, lerpBoxes, motionAllowed, parseEvery, parsePanels, type Box } from '../../src/lib/wall';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -2285,4 +2286,107 @@ test('obs_034 device timeline', async () => {
   await page.unroute('**/api/v1/analytics/anomalies?*');
   await page.unroute('**/api/v1/clients/*/timeline*');
   await page.unroute('**/api/v1/clients/*/rhythm');
+});
+
+// REQ: OBS-035 (ADR-135) — the wall's moving parts, checked directly: tweens land exactly on
+// both layouts, the flow never carries more than 60 particles, the ticker keeps the newest 50,
+// and the animation loop stops while the tab is hidden.
+test('obs_035 wall helpers', async () => {
+  expect(parsePanels('slo,flow,nope,slo')).toEqual(['slo', 'flow']);
+  expect(parsePanels(null)).toEqual(['map', 'flow', 'slo', 'latency', 'heat']);
+  expect([parseEvery('5'), parseEvery('1'), parseEvery(null), parseEvery('9999')]).toEqual([5, 5, 20, 600]);
+  expect([motionAllowed(null, false), motionAllowed('off', false), motionAllowed(null, true)]).toEqual([true, false, false]);
+  const a = new Map<string, Box>([['x', { x: 0, y: 0, w: 10, h: 10 }], ['y', { x: 10, y: 0, w: 5, h: 10 }]]);
+  const b = new Map<string, Box>([['x', { x: 2, y: 3, w: 8, h: 7 }], ['z', { x: 20, y: 20, w: 4, h: 4 }]]);
+  expect(lerpBoxes(a, b, 1)).toEqual(b);
+  const t0 = lerpBoxes(a, b, 0);
+  expect(t0.get('x')).toEqual(a.get('x'));
+  expect(t0.get('z')).toEqual({ x: 22, y: 22, w: 0, h: 0 });
+  expect(t0.has('y')).toBe(false);
+  const counts = Array.from({ length: 200 }, (_, i) => 1 + (i % 7) * 100);
+  expect(dotBudget(counts).reduce((x, y) => x + y, 0)).toBeLessThanOrEqual(60);
+  const p = new Particles();
+  p.plan(counts);
+  for (let i = 0; i < 100; i++) p.step(0.016);
+  expect(p.dots.length).toBeLessThanOrEqual(60);
+  expect(p.dots.every((d) => d.t >= 0 && d.t < 1)).toBe(true);
+  const ticker = new Ticker<number>(50);
+  for (let s = 0; s < 10; s++) ticker.push(Array.from({ length: 1000 }, (_, i) => s * 1000 + i));
+  expect(ticker.items.length).toBe(50);
+  expect(ticker.items[0]).toBe(9999);
+  expect(ticker.items[49]).toBe(9950);
+  // The loop: hidden stops it within the frame, visible resumes it.
+  let hidden = false;
+  let frames = 0;
+  const queue = new Map<number, (t: number) => void>();
+  let next = 1;
+  const loop = new Loop(() => frames++, {
+    request: (cb) => (queue.set(next, cb), next++),
+    cancel: (id) => void queue.delete(id),
+    hidden: () => hidden,
+  });
+  const run = (t: number) => {
+    const cbs = [...queue.entries()];
+    queue.clear();
+    for (const [, cb] of cbs) cb(t);
+  };
+  loop.start();
+  run(16);
+  run(32);
+  expect(frames).toBe(2);
+  hidden = true;
+  loop.visibility();
+  expect(loop.running).toBe(false);
+  run(48);
+  expect(frames).toBe(2);
+  hidden = false;
+  loop.visibility();
+  run(64);
+  expect(frames).toBe(3);
+  loop.stop();
+  expect(loop.running).toBe(false);
+});
+
+// REQ: OBS-035 (ADR-135) — the wall display: no navigation, the panels the URL names in its
+// order, rotation on the timer, every panel renders, Space pauses, motion=off animates nothing,
+// Esc goes back to the dashboard.
+test('obs_035 wall', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/wall?panels=slo,flow&every=5');
+  const wall = page.getByTestId('wall');
+  await expect(wall).toBeVisible();
+  await expect(page.locator('nav.side')).toHaveCount(0);
+  await expect(page.locator('header.top')).toHaveCount(0);
+  await expect(page.getByTestId('wall-order').locator('li')).toHaveCount(2);
+  expect(await page.getByTestId('wall-order').locator('li').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.panel))).toEqual(['slo', 'flow']);
+  await expect(page.getByTestId('wall-panel-slo')).toBeVisible();
+  await expect(page.getByTestId('wall-tail')).toBeVisible();
+  // Rotates after 5 s.
+  await expect(page.getByTestId('wall-panel-flow')).toBeVisible({ timeout: 9000 });
+  // Every panel renders.
+  await page.goto('/#/wall');
+  for (const id of ['map', 'flow', 'slo', 'latency', 'heat']) {
+    await expect(page.getByTestId(`wall-panel-${id}`)).toBeVisible();
+    await expect(page.getByTestId(`wall-${id}`)).toBeAttached();
+    await page.keyboard.press('ArrowRight');
+  }
+  await expect(page.getByTestId('wall-panel-map')).toBeVisible();
+  // The latency heatmap's controls are hidden on the wall.
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByTestId('wall-latency').locator('.controls')).toHaveCount(0);
+  // Space pauses.
+  await page.keyboard.press(' ');
+  await expect(page.getByTestId('wall-paused')).toBeVisible();
+  await expect(page.getByTestId('wall-progress')).toHaveCount(0);
+  // No motion: no animation classes.
+  await page.goto('/#/wall?motion=off&panels=map,flow');
+  await expect(wall).toHaveAttribute('data-motion', 'off');
+  await expect(wall).not.toHaveClass(/motion/);
+  await expect(page.locator('.progress.run, .pulse')).toHaveCount(0);
+  await expect(page.getByTestId('wall-flow').locator('circle.dot')).toHaveCount(0);
+  // Esc: back to the dashboard.
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.locator('nav.side')).toBeVisible();
 });

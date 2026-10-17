@@ -2065,6 +2065,13 @@ The dashboard's **Where time goes** card (Advanced view) has two views:
 - Point at a band for its count and share (of every answer, and of where it comes from); select a node to open what's behind it (a group's settings, the lists for **blocked**, the upstreams, or the query log for a decision or a response code). Nodes under 0.5 % fold into **other** until you tick **Show small**. **Live** refreshes it every 15 seconds. **Table** lists every band. On a phone the stages run top to bottom.
 - `GET /api/v1/stats/flow?from=-6h` (`client` for one device) and the MCP tool `query_flow` return the nodes and links. Grafana has no built-in Sankey panel; a community Sankey plugin can draw the same from that endpoint.
 
+### Wall display
+`#/wall` (the **Wall** link on the dashboard, in the Advanced view) is a full-screen page for a monitor on the wall or a tablet on a shelf: no menu, one panel at a time on a timer, and the live query stream as a ticker along the bottom.
+- Panels: `map` (this hour's busiest names as tiles that move as they grow), `flow` (the last hour's query flow, with dots travelling along the bands), `slo` (each service-level objective's budget left as a ring, the last hour's burn rate as a needle, and the devices that spent it), `latency` (the last hour's answer-time heatmap), and `heat` (the network's week).
+- The address chooses them: `#/wall?panels=slo,flow&every=30` shows those two, in that order, 30 seconds each (default: all five, 20 seconds; 5 to 600). `?motion=off` (or the system's reduced-motion setting) stops every animation; the panels still change.
+- **Space** pauses, the arrow keys move between panels, **Esc** or a click goes back to the dashboard. Nothing animates while the tab is hidden.
+- It needs a signed-in session like any page: sign in once on the wall's browser; it lasts as long as sessions do. The Grafana dashboard is the other wall.
+
 ### Change markers
 Every time chart (the dashboard's, the Cache page's) draws a thin line for each thing that was done to a node, or that the node did to itself, so a change lines up with what it did to the graph:
 

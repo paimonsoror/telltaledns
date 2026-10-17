@@ -6,6 +6,7 @@
   import { route, href } from './lib/router.svelte';
   import { poll } from './lib/poll';
   import Logo from './lib/components/Logo.svelte';
+  import Wall from './pages/Wall.svelte';
   import HelpButton from './lib/components/HelpButton.svelte';
   import Icon from './lib/components/Icon.svelte';
   import PauseControl from './lib/components/PauseControl.svelte';
@@ -182,6 +183,9 @@
   <Setup />
 {:else if !session.user}
   <Login />
+{:else if route.path === '/wall'}
+  <!-- REQ: OBS-035 — the wall display: signed in like any page, without the navigation. -->
+  <Wall />
 {:else}
   <div class="layout" class:open={menuOpen}>
     {#if menuOpen}

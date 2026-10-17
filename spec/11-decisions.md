@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-135 — The wall display: a kiosk layout over the existing reads (Proposed)
+**Context:** T14.9 (OBS-035; design `docs/design/wall-display.md`). The pack's views, composed for a wall monitor; the screenshot that makes people try the project.
+**Decision:**
+- `#/wall` renders without the sidebar and header (signed in like any page), one panel at a time from `?panels=` in its order, `?every=` seconds each, with the live tail (`/queries/stream`) as a ticker of the newest 50. No new endpoints, metrics, or storage.
+- Motion: tile tweens (600 ms, by key), up to 60 particles on the flow, a sliding progress hairline; none of it with `prefers-reduced-motion` or `?motion=off`; the animation loop stops while the tab is hidden.
+- Defaults taken at the start (owner: accept all defaults, 2026-10-16): wall-specific panels over the same layout modules (the map, flow, and heatmap are pages, not components) and the latency heatmap component with a `wall` prop; the map shows the busiest names only; a click anywhere exits; the SLO needle on a log scale to 14.4; the helpers in `ui/src/lib/wall.ts` checked by the Playwright spec importing them (no unit runner); rotation checked with a real 5 s timer; the Pi CPU figure, the demo screenshot and GIF left to do; a **Wall** link on the dashboard in the Advanced view. A viewer role or kiosk session (design §8) is an auth change for its own ADR, proposed to the owner.
+**Consequences:** the wall polls what the pages poll (top lists every 5 s, flow 10 s, SLO and latency 30 s, heatmap 5 min) plus one tail stream, so a wall costs about as much as a dashboard left open.
+
 ## ADR-134 — The device timeline: bounded vqlog reads folded into lanes, cached (Proposed)
 **Context:** T14.8 (OBS-034; design `docs/design/device-day-timeline.md`). The owner found the 2.5 s NTP loop of 192.168.2.14 by hand; nothing showed one device's day with what happened around it.
 **Decision:**
