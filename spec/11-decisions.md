@@ -1291,6 +1291,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-128 — Node comparison: robust statistics on the entry node, honest about small bases (Proposed)
+**Context:** T14.2 (OBS-028; design `docs/design/node-comparison.md`). The owner's cluster has two nodes of very different size (a Pi and the Kubernetes pods): a SERVFAIL share alone blames the smaller one for the same failures on a tenth of the traffic.
+**Decision:**
+- `GET /api/v1/cluster/compare` reads every non-witness node's buckets at once through the existing scoped timeseries read and computes on the entry node: no new RPC, no new storage, and older peers answer too. p50/p99 come from the latency histograms (OBS-030); a node with under 100 answers isn't compared on latency.
+- Three or more nodes: robust z against the *other* nodes' median and MAD (MAD floored at 0.0005 for ratios, 10 % of the median for latency), odd at |z| ≥ 3 when the node's own Wilson 95 % interval also leaves that median out. Two nodes: odd when the intervals don't overlap *and* the gap clears the same floored threshold, on the worse node only. A `note`, not odd, for about the same bad count (within 3, or a third) on under a third of the others' base.
+- `oddSince` is the change point of the node's cumulative excess over the others' pooled per-bucket rate (the latest minimum of the running sum), kept only when the node is still odd from there.
+- Defaults taken at the start (owner: accept all defaults, 2026-10-16): the leave-one-out median, the interval guard for three or more nodes, and the floor for two (without it the design's AC 2 first case would be odd, since its intervals don't overlap); the change point in place of "walk back until it stops being odd" (which lands on the window's start whenever the whole window is odd); `400` (not `heatmap_window`) for a window too long for its step; sparklines of at most 240 points; agents `analytics:read`, MCP `compare_nodes`; the Cluster page polls it every 60 s on every tab for the tab's "N odd". Not a health reason or alert rule (design §8) until the owner has watched it.
+**Consequences:** one comparison costs one timeseries read per node (as many as the dashboard's node picker would); everything is rounded, so the same data gives byte-identical JSON. The verdicts are only as good as each node's buckets: a pod that restarted reads only its new minutes (its shipped minutes count for the whole cluster's view, not per node).
+
 ## ADR-132 — Query flow: four exact joint counters, no proportional splits (Proposed)
 **Context:** T14.6 (OBS-032; design `docs/design/query-flow-sankey.md`). The buckets had marginals (by group, status, rcode) but no joints, so a flow diagram would have had to guess. The owner decided four stages (2026-10-16).
 **Decision:**

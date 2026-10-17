@@ -15,6 +15,7 @@
   import RolloutPanel from '../lib/components/RolloutPanel.svelte';
   import Tabs, { activeTab, type TabItem } from '../lib/components/Tabs.svelte';
   import TabPanel from '../lib/components/TabPanel.svelte';
+  import NodeCompare, { COMPARE_WINDOWS } from '../lib/components/NodeCompare.svelte';
   import { refreshHealth } from '../lib/health.svelte';
   import { tick } from 'svelte';
 
@@ -33,6 +34,42 @@
     }
   }
   $effect(() => poll(load, 5000));
+
+  // REQ: OBS-028 (ADR-128) — the node comparison, read on every tab so its tab can say when a
+  // node is odd (ADR-121); the window is remembered in this browser.
+  let compareWin = $state(rememberedWindow());
+  let compare = $state<S['NodeCompare'] | null>(null);
+  let compareError = $state<unknown>(null);
+  function rememberedWindow(): string {
+    try {
+      const w = localStorage.getItem('cluster.compare') ?? '';
+      return COMPARE_WINDOWS.some((x) => x.id === w) ? w : '24h';
+    } catch {
+      return '24h';
+    }
+  }
+  function setCompareWin(id: string) {
+    compareWin = id;
+    try {
+      localStorage.setItem('cluster.compare', id);
+    } catch {
+      // Private windows and blocked storage: the choice just isn't remembered.
+    }
+  }
+  async function loadCompare() {
+    const from = COMPARE_WINDOWS.find((w) => w.id === compareWin)?.from ?? '-24h';
+    try {
+      compare = await api.compare({ from });
+      compareError = null;
+    } catch (e) {
+      compareError = e;
+    }
+  }
+  $effect(() => {
+    void compareWin;
+    return poll(loadCompare, 60_000);
+  });
+  const oddNodes = $derived(new Set((compare?.findings ?? []).filter((f) => f.level === 'odd').map((f) => f.nodeId)).size);
 
   // REQ: OPS-010 (ADR-118) — maintenance per node: a form, an end button, the result's note.
   let maintFor = $state<string | null>(null);
@@ -163,6 +200,7 @@
     { id: 'health', label: 'Health', count: problems || null, alert: problems > 0 },
     { id: 'rollouts', label: 'Rollouts', count: stageWord[stage] ?? null, alert: stage === 'pinned' },
     { id: 'events', label: 'Events', count: recentProblems || null, alert: recentProblems > 0 },
+    { id: 'compare', label: 'Compare', count: oddNodes ? `${oddNodes} odd` : null, alert: oddNodes > 0 },
   ]);
   const tab = $derived(activeTab(tabs));
 
@@ -519,6 +557,8 @@ telltale cluster join tt_join_…</pre>
     {:else if tab === 'rollouts'}
       <!-- REQ: CLU-013 — the pin, the version baking, and the kept versions. -->
       <RolloutPanel nodes={view.nodes} onchanged={load} />
+    {:else if tab === 'compare'}
+      <NodeCompare data={compare} error={compareError} win={compareWin} onwindow={setCompareWin} />
     {:else}
       <section class="card">
         <h2>Events</h2>

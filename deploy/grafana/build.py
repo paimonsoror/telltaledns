@@ -351,6 +351,51 @@ ts("Encrypted DNS problems", 12, 12, 7,
    "ops", "Clients that couldn't talk to the encrypted listeners: an expired or wrong certificate, a broken client, or a load balancer without PROXY protocol.", fill=0)
 advance(7)
 
+# ---- REQ: OBS-028 (T14.2) — the nodes side by side (the web UI's Cluster → Compare adds the
+# odd-one-out findings and their small-denominator notes).
+row("Nodes")
+ts("SERVFAIL share by node", 0, 12, 7,
+   [(f'sum by (instance) (rate(telltale_responses_total{{{SEL}, rcode="SERVFAIL"}}[$__rate_interval])) / '
+     f'sum by (instance) (rate(telltale_responses_total{{{SEL}}}[$__rate_interval]))', "{{instance}}")],
+   "percentunit", "Each node's SERVFAIL share. A node with little traffic swings more: check its answered count in the table before blaming it.", fill=0)
+ts("Slow share by node", 12, 12, 7,
+   [(f'1 - sum by (instance) (rate(telltale_query_duration_seconds_bucket{{{SEL}, le="$slo_le"}}[$__rate_interval])) / '
+     f'sum by (instance) (rate(telltale_query_duration_seconds_count{{{SEL}}}[$__rate_interval]))', "{{instance}}")],
+   "percentunit", "Each node's share of answers slower than the latency objective's threshold.", fill=0)
+advance(7)
+panels.append({
+    "type": "table", "title": "Nodes over the range", "id": nid(), "datasource": DS,
+    "description": "Answers, SERVFAIL share, and slow share per node over the time range. The answered count is highlighted when a node has under a third of the busiest one's: its shares rest on a small base.",
+    "gridPos": place(24, 6, 0),
+    "targets": targets(
+        (f'sum by (instance) (increase(telltale_responses_total{{{SEL}}}[$__range]))', ""),
+        (f'sum by (instance) (increase(telltale_responses_total{{{SEL}, rcode="SERVFAIL"}}[$__range])) / '
+         f'sum by (instance) (increase(telltale_responses_total{{{SEL}}}[$__range]))', ""),
+        (f'1 - sum by (instance) (increase(telltale_query_duration_seconds_bucket{{{SEL}, le="$slo_le"}}[$__range])) / '
+         f'sum by (instance) (increase(telltale_query_duration_seconds_count{{{SEL}}}[$__range]))', ""),
+        instant=True),
+    "transformations": [
+        {"id": "merge", "options": {}},
+        {"id": "organize", "options": {"excludeByName": {"Time": True},
+                                       "renameByName": {"instance": "Node", "Value #A": "Answered",
+                                                        "Value #B": "SERVFAIL", "Value #C": "Slow"}}},
+    ],
+    "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "Answered"}, "properties": [
+            {"id": "unit", "value": "short"}, {"id": "decimals", "value": 0},
+            {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+            {"id": "thresholds", "value": {"mode": "percentage", "steps": [
+                {"color": "orange", "value": None}, {"color": "text", "value": 33}]}}]},
+        {"matcher": {"id": "byName", "options": "SERVFAIL"}, "properties": [
+            {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 3}]},
+        {"matcher": {"id": "byName", "options": "Slow"}, "properties": [
+            {"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 3}]},
+    ]},
+})
+for _t in panels[-1]["targets"]:
+    _t["format"] = "table"
+advance(6)
+
 # ---- Health of TelltaleDNS itself
 row("TelltaleDNS")
 # REQ: OBS-002 (T9.13) — restarts, counted in the data directory, so they survive restarts.

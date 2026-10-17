@@ -1780,6 +1780,15 @@ telltale cluster status
   The Helm chart's PrometheusRule alerts on a peer down for over a minute, configuration behind
   for over 30 s, failing syncs, and a certificate within 14 days of expiry.
 
+### Compare nodes
+**Cluster → Compare** puts every node side by side over the same window (1 hour to 30 days), for when "something seems odd with that node":
+- One row per measure: queries per second, the SERVFAIL share, the slow share (answers over the latency objective's threshold), the share answered from the cache, the share of upstream exchanges that failed, p50 and p99. Each cell has the window's number and a sparkline; the sparklines of a row share one scale.
+- **A node that deviates is outlined**, with one line saying how and since when. With three or more nodes, a node is odd when it sits at least 3 robust standard deviations (from the median and MAD of the *other* nodes, with a floor) away from them and its own 95 % interval leaves their median out. With two nodes, it's odd when the two 95 % intervals don't overlap by a clear margin, and the worse one is marked. **Since** is when its excess over the others began.
+- **A grey note** says when a node only looks worse: the same number of failures as the others on a much smaller base, such as a Pi with a tenth of the traffic.
+- **Table** shows the same numbers with their 95 % intervals, such as `0.04 % (0.02–0.06 %)`: a wide interval means few answers. **Open in dashboard** opens the dashboard for that node alone. On a phone, pick one measure at a time.
+- The tab says **1 odd** from any tab of the Cluster page. It's a lens, not an alarm: it doesn't change the health icon or alert. Nodes that don't answer are listed and the rest compared; one node alone has nothing to compare.
+- `GET /api/v1/cluster/compare?from=-24h` and the MCP tool `compare_nodes` return the numbers and the findings. Grafana's **Nodes** row has the SERVFAIL and slow shares by node and a table that highlights a node with little traffic.
+
 ## Taking a node down for maintenance
 Swapping a Pi's SD card, moving a box, or upgrading a node by hand: put the node in maintenance
 first. For a bounded time (an hour by default, a day at most) it:

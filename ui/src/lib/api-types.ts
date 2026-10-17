@@ -983,6 +983,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cluster/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Compare the nodes.
+         * @description Every node side by side over the same window: answered count, q/s, SERVFAIL share, slow
+         *     share, from-cache share, upstream failure share (each with a Wilson 95 % interval), p50 and
+         *     p99 (from the latency histograms), and per-node sparkline series. `findings` names a node
+         *     that deviates from the others (`odd`: robust z ≥ 3 against the others' median and MAD with
+         *     three or more nodes, non-overlapping intervals with two) with the time it started
+         *     (`oddSince`), and `note`s a node that only looks worse because it has the same bad count on a
+         *     much smaller base. Use it to answer "is something odd with that node?". Nodes that didn't
+         *     answer are in `missingNodes`. Example: `GET /api/v1/cluster/compare?from=-24h`.
+         */
+        get: operations["cluster_compare"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cluster/pin": {
         parameters: {
             query?: never;
@@ -5400,6 +5427,60 @@ export interface components {
             /** @description The token, shown only now: send as `Authorization: Bearer <token>`. */
             token: string;
         };
+        /** @description REQ: OBS-028 — every node side by side over one window. */
+        NodeCompare: {
+            /** @description `odd` findings first, then notes. */
+            findings: components["schemas"]["NodeFinding"][];
+            from: string;
+            /** @description Nodes that didn't answer; the findings cover the rest. */
+            missingNodes?: string[];
+            /**
+             * @description This node first, then the others in the cluster view's order. Witnesses don't answer
+             *     DNS and aren't listed.
+             */
+            nodes: components["schemas"]["NodeNumbers"][];
+            /**
+             * @description Some node had answers without latency counts (an older build's): its percentiles are
+             *     missing.
+             */
+            partial: boolean;
+            /** @description `minute` or `hour`. */
+            step: string;
+            to: string;
+        };
+        /** @description A node that stands out on one metric, or a note on why it only looks like it does. */
+        NodeFinding: {
+            detail: string;
+            label: string;
+            /**
+             * @description `odd` (it deviates from the others) or `note` (it looks worse only because its base is
+             *     smaller). Never an error: this is a lens, not a condition.
+             */
+            level: string;
+            /** @description `servfailPct`, `slowPct`, `fromCachePct`, `upstreamFailPct`, `p50Us`, or `p99Us`. */
+            metric: string;
+            nodeId: string;
+            /**
+             * Format: double
+             * @description The node's value (percent, or µs).
+             */
+            observed: number;
+            /**
+             * @description When the deviation started (RFC 3339): the change point of the node's excess over the
+             *     others. Absent when it covers the whole window, or for latency.
+             */
+            oddSince?: string | null;
+            /**
+             * Format: double
+             * @description The others' value: their median, or the other node's.
+             */
+            others: number;
+            /**
+             * Format: double
+             * @description The spread the deviation is measured against (1.4826 × MAD, floored).
+             */
+            spread: number;
+        };
         /**
          * @description REQ: OPS-010 (ADR-118) — a node's maintenance window: it reports not ready (balancers stop
          *     sending it new queries), keeps answering, and is left out of alerts, the health level, and
@@ -5421,6 +5502,74 @@ export interface components {
             since: string;
             /** @description When it ends (RFC 3339). */
             until: string;
+        };
+        /** @description One node's numbers over the window. */
+        NodeNumbers: {
+            /**
+             * Format: int64
+             * @description Answers (queries less the dropped ones).
+             */
+            answered: number;
+            /**
+             * Format: int64
+             * @description Answered from the cache (fresh, refreshed, or stale).
+             */
+            fromCache: number;
+            /** Format: double */
+            fromCachePct: number;
+            /** @description Wilson 95 % intervals of the percentages, `[low, high]`, by metric name. */
+            intervals: {
+                [key: string]: number[];
+            };
+            /** @description Its pod name, else its site, else its ID. */
+            label: string;
+            nodeId: string;
+            /**
+             * Format: int64
+             * @description From the latency histograms (absent without any).
+             */
+            p50Us?: number | null;
+            /** Format: int64 */
+            p99Us?: number | null;
+            /**
+             * Format: double
+             * @description Queries per second over the window.
+             */
+            qps: number;
+            series: components["schemas"]["NodeSeries"];
+            /** Format: int64 */
+            servfail: number;
+            /**
+             * Format: double
+             * @description Percentages, 0–100.
+             */
+            servfailPct: number;
+            /** Format: int64 */
+            slow: number;
+            /** Format: double */
+            slowPct: number;
+            /** @description The node answering this request. */
+            thisNode: boolean;
+            /** Format: double */
+            upstreamFailPct: number;
+            /** Format: int64 */
+            upstreamFailures: number;
+            /** Format: int64 */
+            upstreamQueries: number;
+        };
+        /**
+         * @description One node's ratios over time, for the sparklines (at most 240 points: buckets summed into
+         *     spans). A span without a base (no answers, no upstream exchanges) is null.
+         */
+        NodeSeries: {
+            fromCachePct: (number | null)[];
+            p99Us: (number | null)[];
+            qps: number[];
+            servfailPct: (number | null)[];
+            slowPct: (number | null)[];
+            /** @description Each span's start, Unix seconds. */
+            start: number[];
+            upstreamFailPct: (number | null)[];
         };
         /** @description REQ: OBS-033 — `POST /api/v1/annotations`: a note on every time chart. */
         NoteRequest: {
@@ -8261,6 +8410,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClusterView"];
+                };
+            };
+        };
+    };
+    cluster_compare: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start: RFC 3339 or relative (default 24 hours ago).
+                 * @example -24h
+                 */
+                from?: string;
+                /** @description End (default now). */
+                to?: string;
+                /**
+                 * @description `minute` (up to 48 hours) or `hour` (up to 400 days). Default: minute up to 48 hours,
+                 *     hour beyond.
+                 */
+                step?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The nodes and the findings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeCompare"];
+                };
+            };
+            /** @description Invalid request: problem+json says which parameter and how to fix it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

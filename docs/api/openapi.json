@@ -2151,6 +2151,68 @@
         }
       }
     },
+    "/api/v1/cluster/compare": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Compare the nodes.",
+        "description": "Every node side by side over the same window: answered count, q/s, SERVFAIL share, slow\nshare, from-cache share, upstream failure share (each with a Wilson 95 % interval), p50 and\np99 (from the latency histograms), and per-node sparkline series. `findings` names a node\nthat deviates from the others (`odd`: robust z ≥ 3 against the others' median and MAD with\nthree or more nodes, non-overlapping intervals with two) with the time it started\n(`oddSince`), and `note`s a node that only looks worse because it has the same bad count on a\nmuch smaller base. Use it to answer \"is something odd with that node?\". Nodes that didn't\nanswer are in `missingNodes`. Example: `GET /api/v1/cluster/compare?from=-24h`.",
+        "operationId": "cluster_compare",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start: RFC 3339 or relative (default 24 hours ago).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "-24h"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End (default now).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "step",
+            "in": "query",
+            "description": "`minute` (up to 48 hours) or `hour` (up to 400 days). Default: minute up to 48 hours,\nhour beyond.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The nodes and the findings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeCompare"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request: problem+json says which parameter and how to fix it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cluster/pin": {
       "delete": {
         "tags": [
@@ -14191,6 +14253,110 @@
           }
         }
       },
+      "NodeCompare": {
+        "type": "object",
+        "description": "REQ: OBS-028 — every node side by side over one window.",
+        "required": [
+          "from",
+          "to",
+          "step",
+          "nodes",
+          "findings",
+          "partial"
+        ],
+        "properties": {
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeFinding"
+            },
+            "description": "`odd` findings first, then notes."
+          },
+          "from": {
+            "type": "string"
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Nodes that didn't answer; the findings cover the rest."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NodeNumbers"
+            },
+            "description": "This node first, then the others in the cluster view's order. Witnesses don't answer\nDNS and aren't listed."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Some node had answers without latency counts (an older build's): its percentiles are\nmissing."
+          },
+          "step": {
+            "type": "string",
+            "description": "`minute` or `hour`."
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeFinding": {
+        "type": "object",
+        "description": "A node that stands out on one metric, or a note on why it only looks like it does.",
+        "required": [
+          "metric",
+          "nodeId",
+          "label",
+          "level",
+          "observed",
+          "others",
+          "spread",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string",
+            "description": "`odd` (it deviates from the others) or `note` (it looks worse only because its base is\nsmaller). Never an error: this is a lens, not a condition."
+          },
+          "metric": {
+            "type": "string",
+            "description": "`servfailPct`, `slowPct`, `fromCachePct`, `upstreamFailPct`, `p50Us`, or `p99Us`."
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "number",
+            "format": "double",
+            "description": "The node's value (percent, or µs)."
+          },
+          "oddSince": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the deviation started (RFC 3339): the change point of the node's excess over the\nothers. Absent when it covers the whole window, or for latency."
+          },
+          "others": {
+            "type": "number",
+            "format": "double",
+            "description": "The others' value: their median, or the other node's."
+          },
+          "spread": {
+            "type": "number",
+            "format": "double",
+            "description": "The spread the deviation is measured against (1.4826 × MAD, floored)."
+          }
+        }
+      },
       "NodeMaintenance": {
         "type": "object",
         "description": "REQ: OPS-010 (ADR-118) — a node's maintenance window: it reports not ready (balancers stop\nsending it new queries), keeps answering, and is left out of alerts, the health level, and\nelections until `until`.",
@@ -14230,6 +14396,211 @@
           "until": {
             "type": "string",
             "description": "When it ends (RFC 3339)."
+          }
+        }
+      },
+      "NodeNumbers": {
+        "type": "object",
+        "description": "One node's numbers over the window.",
+        "required": [
+          "nodeId",
+          "label",
+          "thisNode",
+          "answered",
+          "servfail",
+          "slow",
+          "fromCache",
+          "upstreamQueries",
+          "upstreamFailures",
+          "qps",
+          "servfailPct",
+          "slowPct",
+          "fromCachePct",
+          "upstreamFailPct",
+          "intervals",
+          "series"
+        ],
+        "properties": {
+          "answered": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answers (queries less the dropped ones).",
+            "minimum": 0
+          },
+          "fromCache": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Answered from the cache (fresh, refreshed, or stale).",
+            "minimum": 0
+          },
+          "fromCachePct": {
+            "type": "number",
+            "format": "double"
+          },
+          "intervals": {
+            "type": "object",
+            "description": "Wilson 95 % intervals of the percentages, `[low, high]`, by metric name.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "label": {
+            "type": "string",
+            "description": "Its pod name, else its site, else its ID."
+          },
+          "nodeId": {
+            "type": "string"
+          },
+          "p50Us": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "From the latency histograms (absent without any).",
+            "minimum": 0
+          },
+          "p99Us": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "qps": {
+            "type": "number",
+            "format": "double",
+            "description": "Queries per second over the window."
+          },
+          "series": {
+            "$ref": "#/components/schemas/NodeSeries"
+          },
+          "servfail": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "servfailPct": {
+            "type": "number",
+            "format": "double",
+            "description": "Percentages, 0–100."
+          },
+          "slow": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "slowPct": {
+            "type": "number",
+            "format": "double"
+          },
+          "thisNode": {
+            "type": "boolean",
+            "description": "The node answering this request."
+          },
+          "upstreamFailPct": {
+            "type": "number",
+            "format": "double"
+          },
+          "upstreamFailures": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upstreamQueries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "NodeSeries": {
+        "type": "object",
+        "description": "One node's ratios over time, for the sparklines (at most 240 points: buckets summed into\nspans). A span without a base (no answers, no upstream exchanges) is null.",
+        "required": [
+          "start",
+          "servfailPct",
+          "slowPct",
+          "fromCachePct",
+          "upstreamFailPct",
+          "qps",
+          "p99Us"
+        ],
+        "properties": {
+          "fromCachePct": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "p99Us": {
+            "type": "array",
+            "items": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "qps": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "servfailPct": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "slowPct": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "start": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Each span's start, Unix seconds."
+          },
+          "upstreamFailPct": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
           }
         }
       },

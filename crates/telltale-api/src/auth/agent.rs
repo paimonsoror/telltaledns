@@ -268,6 +268,8 @@ fn analytics_extra(p: &str) -> bool {
         // REQ: CLU-013 — the rollout in progress and the kept versions.
         || p == "/api/v1/cluster/rollout"
         || p == "/api/v1/cluster/versions"
+        // REQ: OBS-028 — the node comparison.
+        || p == "/api/v1/cluster/compare"
 }
 
 /// What a `DELETE` outside the configuration areas needs.

@@ -426,6 +426,16 @@
       "docs": "quick-rules"
     },
     {
+      "id": "cluster-compare",
+      "title": "Is something odd with that node?",
+      "term": "Node comparison",
+      "summary": "Every node side by side over the same window: queries per second, SERVFAIL, slow, from-cache and upstream-failure shares, p50 and p99, each with a sparkline on a shared scale. A node that deviates from the others is outlined, with when it started.",
+      "when": "One node looks worse on the dashboard and you want to know whether it really is, or only has less traffic.",
+      "example": "The Pi has 15 SERVFAILs and the pods 14, but the Pi answered a tenth as much: a grey note says it's a smaller base, not more failures.",
+      "caution": "Shares on few answers swing a lot; the table's 95 % intervals show how much. It's a lens, not an alarm: nothing alerts on it.",
+      "docs": "compare-nodes"
+    },
+    {
       "id": "cluster-topology",
       "title": "The cluster at a glance",
       "term": "Topology",

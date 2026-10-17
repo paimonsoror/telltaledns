@@ -142,6 +142,7 @@ export const api = {
     get<S['Heatmap']>('/stats/heatmap', q),
   // REQ: OBS-032 — where queries went (the network, or one device from the query log).
   flow: (q: { from?: string; client?: string; scope?: string }) => get<S['QueryFlow']>('/stats/flow', q),
+  compare: (q: { from?: string; to?: string; step?: string }) => get<S['NodeCompare']>('/cluster/compare', q),
   // REQ: OBS-027 — who and what spent an objective's error budget.
   sloAttribution: (q: { objective?: string; from?: string; scope?: string; limit?: number; step?: string }) =>
     get<S['SloAttribution']>('/stats/slo/attribution', q),

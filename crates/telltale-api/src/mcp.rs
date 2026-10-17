@@ -525,6 +525,22 @@ pub fn tools() -> Vec<Tool> {
                 )])
             },
         },
+        // REQ: OBS-028 (ADR-128)
+        Tool {
+            name: "compare_nodes",
+            description: "Read-only. Every cluster node side by side over one window: answered count, q/s, SERVFAIL, slow, from-cache, and upstream-failure shares (percent, each with a Wilson 95 % interval), and p50/p99 from the latency histograms. findings names a node that deviates from the others (level odd: robust z >= 3 against the others' median and MAD with three or more nodes, non-overlapping intervals with two), with oddSince when it started, and notes a node that only looks worse because it has the same bad count on a much smaller base (level note). Use it to answer 'is something odd with that node?' before blaming one. Nodes that didn't answer are in missingNodes; one node alone has nothing to compare.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "window": {"type": "string", "description": "Start: relative like -24h or RFC 3339 (default -24h; minute buckets up to 48 hours, hours beyond)."}
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "compare".into(),
+                    query("/api/v1/cluster/compare", a, &[("window", "from")]),
+                )])
+            },
+        },
         Tool {
             name: "new_domains",
             description: "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",

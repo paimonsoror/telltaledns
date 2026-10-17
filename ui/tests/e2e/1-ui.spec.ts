@@ -2044,3 +2044,93 @@ test('obs_032 flow', async () => {
   await expect(page.getByTestId('flow-truncated')).toBeVisible();
   await page.unroute('**/api/v1/stats/flow*');
 });
+
+// REQ: OBS-028 (ADR-128) — Cluster → Compare: the tab says a node is odd, the odd cell is
+// outlined with its finding, a smaller base is a grey note, the table shows the intervals, a
+// phone shows one metric at a time, and one node has nothing to compare.
+test('obs_028 node compare', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const member = (nodeId: string, site: string, o: Record<string, unknown> = {}) => ({
+    nodeId, site, ephemeral: false, witness: false, protocol: 4, role: 'replica', thisNode: false, eligible: true, version: '0.5.0',
+    up: true, connected: true, link: 'inbound', lastSeenSecondsAgo: 1, rttMs: 3, configSeq: 9, configLag: 0, ready: true,
+    qps: 10, servfailPercent: 0, upstreamP90Ms: 12, uptimeSeconds: 3600, ...o,
+  });
+  const view = {
+    enabled: true, clusterId: 'c1', name: 'home', thisNode: 'id-a', newestConfigSeq: 9, healthy: true, checks: [],
+    events: [], conflicts: [], authority: 'primary',
+    nodes: [member('id-a', 'a', { role: 'primary', thisNode: true, link: 'self', rttMs: null }), member('id-b', 'b'), member('id-c', 'c')],
+  };
+  const series = (v: number) => ({
+    start: [0, 360, 720], servfailPct: [v, v, null], slowPct: [0, 0, 0], fromCachePct: [60, 61, 62], upstreamFailPct: [1, 1, 1],
+    qps: [20, 21, 22], p99Us: [4000, 4100, null],
+  });
+  const numbers = (id: string, label: string, servfail: number, o: Record<string, unknown> = {}) => ({
+    nodeId: id, label, thisNode: id === 'id-a', answered: 2_880_000, servfail: 0, slow: 0, fromCache: 0, upstreamQueries: 1000,
+    upstreamFailures: 10, qps: 33.3, servfailPct: servfail, slowPct: 0, fromCachePct: 61, upstreamFailPct: 1,
+    intervals: { servfailPct: [servfail - 0.05, servfail + 0.05] }, p50Us: 900, p99Us: 4100, series: series(servfail), ...o,
+  });
+  const compare = (single = false) => ({
+    from: new Date(Date.now() - 86_400_000).toISOString(), to: new Date().toISOString(), step: 'minute', partial: false,
+    nodes: single ? [numbers('id-a', 'a', 0.05)] : [numbers('id-a', 'a', 0.05), numbers('id-b', 'b', 0.3, { answered: 38_000 }), numbers('id-c', 'c', 0.75)],
+    findings: single
+      ? []
+      : [
+          { metric: 'servfailPct', nodeId: 'id-c', label: 'c', level: 'odd', observed: 0.75, others: 0.05, spread: 0.074,
+            oddSince: '2026-10-16T15:00:00.000Z', detail: 'c SERVFAIL share is 0.75 %, higher than the others\' 0.050 %, since 2026-10-16T15:00:00.000Z' },
+          { metric: 'servfailPct', nodeId: 'id-b', label: 'b', level: 'note', observed: 0.3, others: 0.05, spread: 0.074,
+            detail: 'same bad count as the others (15 vs 14) on 13 % of the traffic: a smaller base, not more failures' },
+        ],
+  });
+  let single = false;
+  const asked: string[] = [];
+  await page.route('**/api/v1/cluster', (route) => route.fulfill({ json: view }));
+  await page.route('**/api/v1/cluster/rollout', (route) => route.fulfill({ json: { fromPrimary: true, canaries: [], bakeSecs: 300, stable: '0.5.0', stage: 'none', nodes: [] } }));
+  await page.route('**/api/v1/cluster/versions', (route) => route.fulfill({ json: { items: [], history: 20 } }));
+  await page.route('**/api/v1/cluster/compare*', (route) => {
+    asked.push(new URL(route.request().url()).searchParams.get('from') ?? '');
+    return route.fulfill({ json: compare(single) });
+  });
+  await page.goto('/#/cluster');
+  // The tab says so from any tab.
+  await expect(page.getByTestId('tab-compare')).toContainText('1 odd');
+  await expect(page.getByTestId('tab-compare').locator('.count.alert')).toBeVisible();
+  await page.getByTestId('tab-compare').click();
+  const grid = page.getByTestId('compare-grid');
+  await expect(grid).toBeVisible();
+  await expect(grid.getByTestId('compare-cell')).toHaveCount(21); // 7 metrics × 3 nodes
+  const odd = grid.locator('[data-testid="compare-cell"][data-node="c"][data-metric="servfailPct"]');
+  await expect(odd).toHaveClass(/odd/);
+  await expect(odd).toContainText('0.75 %');
+  await expect(odd.getByTestId('compare-finding')).toContainText('higher than the others');
+  await expect(grid.locator('.cell.odd')).toHaveCount(1);
+  const note = grid.locator('[data-testid="compare-cell"][data-node="b"][data-metric="servfailPct"]');
+  await expect(note).not.toHaveClass(/odd/);
+  await expect(note.locator('.finding.note')).toContainText('smaller base');
+  // The window is remembered and asked for.
+  await page.getByRole('button', { name: '7 d', exact: true }).click();
+  await expect.poll(() => asked.at(-1)).toBe('-7d');
+  // The table, with the intervals.
+  await page.getByTestId('compare-table-toggle').check();
+  const table = page.getByTestId('compare-table');
+  await expect(table.locator('tbody tr')).toHaveCount(3);
+  await expect(table.locator('td.odd')).toHaveCount(1);
+  await expect(table.locator('td.odd')).toContainText('0.75 % (0.70–0.80 %)');
+  await page.getByTestId('compare-table-toggle').uncheck();
+  // A phone: one metric at a time, nodes as cards.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await expect(page.getByTestId('compare-metric')).toBeVisible();
+  await expect(grid.getByTestId('compare-cell')).toHaveCount(3);
+  await page.getByTestId('compare-metric').selectOption('p99Us');
+  await expect(grid.getByTestId('compare-cell').first()).toHaveAttribute('data-metric', 'p99Us');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  // One node reporting: nothing to compare.
+  single = true;
+  await page.getByRole('button', { name: '1 h', exact: true }).click();
+  await expect(page.getByTestId('compare-single')).toContainText('One node; nothing to compare');
+  await page.getByRole('button', { name: '24 h', exact: true }).click();
+  await page.unroute('**/api/v1/cluster');
+  await page.unroute('**/api/v1/cluster/rollout');
+  await page.unroute('**/api/v1/cluster/versions');
+  await page.unroute('**/api/v1/cluster/compare*');
+});

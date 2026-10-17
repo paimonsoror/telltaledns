@@ -631,6 +631,26 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. Every cluster node side by side over one window: answered count, q/s, SERVFAIL, slow, from-cache, and upstream-failure shares (percent, each with a Wilson 95 % interval), and p50/p99 from the latency histograms. findings names a node that deviates from the others (level odd: robust z >= 3 against the others' median and MAD with three or more nodes, non-overlapping intervals with two), with oddSince when it started, and notes a node that only looks worse because it has the same bad count on a much smaller base (level note). Use it to answer 'is something odd with that node?' before blaming one. Nodes that didn't answer are in missingNodes; one node alone has nothing to compare.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "window": {
+          "description": "Start: relative like -24h or RFC 3339 (default -24h; minute buckets up to 48 hours, hours beyond).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "compare_nodes"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. Domains devices contacted for the first time, newest first, each with a DGA score (0 to 1: how machine-generated the name looks; 0.6 and up is suspicious). Optionally for one device.",
     "inputSchema": {
       "additionalProperties": false,

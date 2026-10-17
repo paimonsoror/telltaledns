@@ -24,7 +24,7 @@
 | Cache | `GET /cache/stats`, `POST /cache/flush` (`{name?, subtree?}`) |
 | Blocking | `POST /blocking/pause`, `POST /blocking/resume` (global) |
 | Settings | `GET/PATCH /config` (whole document, JSON-Patch), `GET /config/schema`, `POST /config/validate` |
-| Cluster | `GET /cluster` (members, roles, versions, lag, epochs), `POST /cluster/tokens`, `POST /cluster/promote`, `DELETE /cluster/nodes/{id}`, `GET /cluster/conflicts`, `POST /cluster/conflicts/{id}/reapply` |
+| Cluster | `GET /cluster` (members, roles, versions, lag, epochs), `GET /cluster/compare` (every node side by side, odd-one-out findings: OBS-028), `POST /cluster/tokens`, `POST /cluster/promote`, `DELETE /cluster/nodes/{id}`, `GET /cluster/conflicts`, `POST /cluster/conflicts/{id}/reapply` |
 | Analytics | `/analytics/new-domains`, `/analytics/suspicious`, `/analytics/anomalies` (every node's, `acknowledged=false`), `POST /analytics/anomalies/acknowledge` and `/unacknowledge` (`{ids, note?}`, OBS-014), `/analytics/lists/effectiveness`, `/analytics/cache` |
 | Alerts | `/alerts/rules`, `/alerts/destinations`, `/alerts/history` |
 | Ops | `/backup`, `/restore`, `/import/pihole`, `/import/technitium`, `/audit`, `/system/info`, `/system/health` (healthy, degraded, or severe, and why; OBS-015), `/healthz`, `/readyz`, `/livez`, `/metrics` |
@@ -45,7 +45,7 @@ Tech: Svelte 5 + Vite + TypeScript, uPlot for charts (fast, tiny), no CSS framew
 | **Lists** | Add by URL/preset; stats, overlap, dead-list hints; refresh |
 | **Upstreams** | Presets gallery; groups + strategy; routes; live health (sparklines, breaker state); "test" button |
 | **Local DNS** | Records, zones, rewrites |
-| **Cluster** | Topology view (sites → nodes), versions, lag, roles, epoch, heartbeat age; join-token wizard; promote; conflicts |
+| **Cluster** | Topology view (sites → nodes), versions, lag, roles, epoch, heartbeat age; join-token wizard; promote; conflicts; **Compare** tab: a small multiple per metric and node with the odd node outlined and since when, small-base notes, a table with intervals, one metric at a time on a phone (OBS-028) |
 | **Analytics** | New domains, suspicious (DGA/NXDOMAIN storms), anomalies, list effectiveness, cache efficiency |
 | **Settings** | Listeners/TLS, DNSSEC, cache, privacy level, telemetry/exporters, alerts, users/2FA/OIDC, backup/import, audit log |
 
