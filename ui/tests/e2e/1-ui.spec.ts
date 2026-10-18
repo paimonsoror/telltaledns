@@ -2023,6 +2023,23 @@ test('obs_032 flow', async () => {
   await page.getByTestId('flow-small').check();
   ns = await nodes();
   expect(ns.length).toBe(13);
+  // A click on a band shows its tip without focusing it (no focus box, the tip stays put).
+  const band = svg.locator('[data-source="upstream:quad9-1"][data-target="rcode:SERVFAIL"]');
+  await band.evaluate((el) => (el as SVGElement).blur());
+  const pt = await band.evaluate((el) => {
+    const p = el as SVGPathElement;
+    const q = p.getPointAtLength(p.getTotalLength() / 2);
+    const m = p.getScreenCTM()!;
+    return { x: q.x * m.a + m.e, y: q.y * m.d + m.f };
+  });
+  await page.mouse.click(pt.x, pt.y);
+  await expect(page.getByTestId('flow-tip')).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).not.toBe('flow-link');
+  // Live says when it last read the numbers.
+  await expect(page.getByTestId('flow-updated')).toHaveCount(0);
+  await page.getByTestId('flow-live').check();
+  await expect(page.getByTestId('flow-updated')).toContainText('every 15 s');
+  await page.getByTestId('flow-live').uncheck();
   await page.getByRole('button', { name: 'Table', exact: true }).click();
   await expect(page.getByTestId('flow-table')).toContainText('Upstream quad9-1');
   await expect(page.getByTestId('flow-table').locator('tr.fail')).toHaveCount(2);

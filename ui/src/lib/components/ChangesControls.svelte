@@ -102,51 +102,6 @@
     background: var(--surface-2);
     white-space: nowrap;
   }
-  .switch {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 28px;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .switch:has(input:checked) {
-    color: var(--text);
-    font-weight: 600;
-  }
-  .switch input {
-    appearance: none;
-    -webkit-appearance: none;
-    position: relative;
-    width: 28px;
-    height: 16px;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-    border: 0;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--muted) 55%, var(--surface-2));
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .switch input::before {
-    content: '';
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 2px rgb(16 24 40 / 25%);
-    transition: transform 0.15s;
-  }
-  .switch input:checked {
-    background: var(--accent);
-  }
-  .switch input:checked::before {
-    transform: translateX(12px);
-  }
   .note-btn {
     border: 0;
     border-radius: 999px;
@@ -160,12 +115,6 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .switch input,
-    .switch input::before {
-      transition: none;
-    }
   }
   .note-form {
     display: flex;

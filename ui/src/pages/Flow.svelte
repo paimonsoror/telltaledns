@@ -5,7 +5,7 @@
   import { onDestroy } from 'svelte';
   import { api, type S } from '../lib/api';
   import { href, navigate, route } from '../lib/router.svelte';
-  import { num } from '../lib/format';
+  import { clock, num } from '../lib/format';
   import { poll } from '../lib/poll';
   import { STAGES, STAGE_LABEL, fold, layout, share, type FlowLink, type FlowNode, type PlacedLink, type PlacedNode } from '../lib/sankey';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
@@ -30,6 +30,8 @@
   let showTable = $state(false);
   let data = $state<S['QueryFlow'] | null>(null);
   let error = $state<unknown>(null);
+  // When the shown numbers were read (Live says so, so a quiet refresh is still visible).
+  let updated = $state(0);
   let width = $state(0);
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
 
@@ -40,6 +42,7 @@
     }
     try {
       data = await api.flow({ from: win.from, client: device ? client : undefined });
+      updated = Date.now() / 1000;
       error = null;
     } catch (e) {
       data = null;
@@ -158,8 +161,10 @@
           <button type="button" aria-pressed={win.id === w.id} onclick={() => (win = w)}>{w.label}</button>
         {/each}
       </div>
-      <label class="small"><input type="checkbox" bind:checked={showSmall} data-testid="flow-small" /> Show small</label>
-      <label class="small"><input type="checkbox" bind:checked={live} data-testid="flow-live" /> Live</label>
+      <div class="switch-track">
+        <label class="switch"><input type="checkbox" role="switch" bind:checked={showSmall} data-testid="flow-small" />Show small</label>
+        <label class="switch"><input type="checkbox" role="switch" bind:checked={live} data-testid="flow-live" />Live</label>
+      </div>
     </div>
   </div>
   {#if device}
@@ -176,6 +181,7 @@
       <h2>
         {#if !device}The whole network{:else if client}{client}{:else}Pick a device{/if}
         {#if data}<span class="muted small">· {num(data.total)} answers{data.source === 'querylog' ? ', from the query log' : ''}</span>{/if}
+        {#if live && data}<span class="muted small" data-testid="flow-updated">· updated {clock(updated, true)}, every 15 s</span>{/if}
       </h2>
       <button class="link small" onclick={() => (showTable = !showTable)} aria-pressed={showTable} data-testid="flow-table-toggle">{showTable ? 'Diagram' : 'Table'}</button>
     </div>
@@ -238,6 +244,7 @@
                 data-y1={l.y1}
                 data-x0={l.x0}
                 data-x1={l.x1}
+                onmousedown={(e) => e.preventDefault()}
                 onmousemove={(e) => hoverLink(e, l)}
                 onmouseleave={() => (tip = null)}
                 onfocus={() => focusLink(l)}
@@ -302,10 +309,13 @@
     display: block;
     overflow: visible;
   }
+  /* A click doesn't focus a band (mousedown above): its tip stays at the pointer, and no browser
+     draws a focus box around the band's whole bounding rectangle. Tab still reaches each band. */
   path {
     fill: none;
     stroke-opacity: 0.35;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
   }
   path.failure {
     stroke-opacity: 0.6;
