@@ -6,31 +6,31 @@ groups:
 - name: telltale-slo
   rules:
   - record: telltale:slo_availability_errors:ratio_rate5m
-    expr: sum(rate(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[5m])) / sum(rate(telltale_responses_total{job="telltale-metrics"}[5m]))
+    expr: sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[5m])) / sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[5m]))
   - record: telltale:slo_latency_errors:ratio_rate5m
-    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[5m])) / sum(rate(telltale_query_duration_seconds_count{job="telltale-metrics"}[5m]))
+    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[5m])) / sum(rate(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[5m]))
   - record: telltale:slo_availability_errors:ratio_rate30m
-    expr: sum(rate(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[30m])) / sum(rate(telltale_responses_total{job="telltale-metrics"}[30m]))
+    expr: sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[30m])) / sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[30m]))
   - record: telltale:slo_latency_errors:ratio_rate30m
-    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[30m])) / sum(rate(telltale_query_duration_seconds_count{job="telltale-metrics"}[30m]))
+    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[30m])) / sum(rate(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[30m]))
   - record: telltale:slo_availability_errors:ratio_rate1h
-    expr: sum(rate(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[1h])) / sum(rate(telltale_responses_total{job="telltale-metrics"}[1h]))
+    expr: sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[1h])) / sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[1h]))
   - record: telltale:slo_latency_errors:ratio_rate1h
-    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[1h])) / sum(rate(telltale_query_duration_seconds_count{job="telltale-metrics"}[1h]))
+    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[1h])) / sum(rate(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[1h]))
   - record: telltale:slo_availability_errors:ratio_rate6h
-    expr: sum(rate(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[6h])) / sum(rate(telltale_responses_total{job="telltale-metrics"}[6h]))
+    expr: sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[6h])) / sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[6h]))
   - record: telltale:slo_latency_errors:ratio_rate6h
-    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[6h])) / sum(rate(telltale_query_duration_seconds_count{job="telltale-metrics"}[6h]))
+    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[6h])) / sum(rate(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[6h]))
   - record: telltale:slo_availability_errors:ratio_rate3d
-    expr: sum(rate(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[3d])) / sum(rate(telltale_responses_total{job="telltale-metrics"}[3d]))
+    expr: sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[3d])) / sum(rate(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[3d]))
   - record: telltale:slo_latency_errors:ratio_rate3d
-    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[3d])) / sum(rate(telltale_query_duration_seconds_count{job="telltale-metrics"}[3d]))
+    expr: 1 - sum(rate(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[3d])) / sum(rate(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[3d]))
   - alert: TelltaleDNSSLOAvailabilityBurnFast
     expr: |
       telltale:slo_availability_errors:ratio_rate1h > (14.4 * (1 - 0.999))
       and telltale:slo_availability_errors:ratio_rate5m > (14.4 * (1 - 0.999))
-      and on() sum(increase(telltale_responses_total{job="telltale-metrics"}[5m])) >= 50
-      and on() sum(increase(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[1h])) >= 10
+      and on() sum(increase(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[5m])) >= 50
+      and on() sum(increase(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[1h])) >= 10
     labels:
       severity: critical
       slo: availability
@@ -40,8 +40,8 @@ groups:
     expr: |
       telltale:slo_availability_errors:ratio_rate6h > (6 * (1 - 0.999))
       and telltale:slo_availability_errors:ratio_rate30m > (6 * (1 - 0.999))
-      and on() sum(increase(telltale_responses_total{job="telltale-metrics"}[30m])) >= 50
-      and on() sum(increase(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[6h])) >= 10
+      and on() sum(increase(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[30m])) >= 50
+      and on() sum(increase(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[6h])) >= 10
     labels:
       severity: critical
       slo: availability
@@ -51,8 +51,8 @@ groups:
     expr: |
       telltale:slo_availability_errors:ratio_rate3d > (1 * (1 - 0.999))
       and telltale:slo_availability_errors:ratio_rate6h > (1 * (1 - 0.999))
-      and on() sum(increase(telltale_responses_total{job="telltale-metrics"}[6h])) >= 50
-      and on() sum(increase(telltale_responses_total{job="telltale-metrics",rcode="SERVFAIL"}[3d])) >= 10
+      and on() sum(increase(telltale_responses_total{job=~"telltale(-resolver)?-metrics"}[6h])) >= 50
+      and on() sum(increase(telltale_responses_total{job=~"telltale(-resolver)?-metrics",rcode="SERVFAIL"}[3d])) >= 10
     labels:
       severity: warning
       slo: availability
@@ -62,8 +62,8 @@ groups:
     expr: |
       telltale:slo_latency_errors:ratio_rate1h > (14.4 * (1 - 0.99))
       and telltale:slo_latency_errors:ratio_rate5m > (14.4 * (1 - 0.99))
-      and on() sum(increase(telltale_query_duration_seconds_count{job="telltale-metrics"}[5m])) >= 50
-      and on() (sum(increase(telltale_query_duration_seconds_count{job="telltale-metrics"}[1h])) - sum(increase(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[1h]))) >= 10
+      and on() sum(increase(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[5m])) >= 50
+      and on() (sum(increase(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[1h])) - sum(increase(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[1h]))) >= 10
     labels:
       severity: critical
       slo: latency
@@ -73,8 +73,8 @@ groups:
     expr: |
       telltale:slo_latency_errors:ratio_rate6h > (6 * (1 - 0.99))
       and telltale:slo_latency_errors:ratio_rate30m > (6 * (1 - 0.99))
-      and on() sum(increase(telltale_query_duration_seconds_count{job="telltale-metrics"}[30m])) >= 50
-      and on() (sum(increase(telltale_query_duration_seconds_count{job="telltale-metrics"}[6h])) - sum(increase(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[6h]))) >= 10
+      and on() sum(increase(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[30m])) >= 50
+      and on() (sum(increase(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[6h])) - sum(increase(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[6h]))) >= 10
     labels:
       severity: critical
       slo: latency
@@ -84,8 +84,8 @@ groups:
     expr: |
       telltale:slo_latency_errors:ratio_rate3d > (1 * (1 - 0.99))
       and telltale:slo_latency_errors:ratio_rate6h > (1 * (1 - 0.99))
-      and on() sum(increase(telltale_query_duration_seconds_count{job="telltale-metrics"}[6h])) >= 50
-      and on() (sum(increase(telltale_query_duration_seconds_count{job="telltale-metrics"}[3d])) - sum(increase(telltale_query_duration_seconds_bucket{job="telltale-metrics",le="0.25"}[3d]))) >= 10
+      and on() sum(increase(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[6h])) >= 50
+      and on() (sum(increase(telltale_query_duration_seconds_count{job=~"telltale(-resolver)?-metrics"}[3d])) - sum(increase(telltale_query_duration_seconds_bucket{job=~"telltale(-resolver)?-metrics",le="0.25"}[3d]))) >= 10
     labels:
       severity: warning
       slo: latency

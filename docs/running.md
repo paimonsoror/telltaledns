@@ -324,7 +324,11 @@ the chart's schema rejects a mistyped value with its path.
   sending it queries, and only then stops. Outside Kubernetes the default is 0.
 - **Metrics.** With `serviceMonitor.enabled`, Prometheus scrapes the controller and every
   resolver pod (a headless `<release>-resolver-metrics` Service), so query, SERVFAIL, and
-  latency metrics cover all the traffic. On the controller, per member:
+  latency metrics cover all the traffic, and so do the alerts and SLO rules of
+  `prometheusRule.enabled` (both jobs, `<release>-metrics` and `<release>-resolver-metrics`;
+  before 0.5.0-edge.245 they watched only the controller). With the kube-prometheus-stack
+  chart, give the rules its `release` label so Prometheus loads them
+  (`prometheusRule.labels: {release: <its release name>}`). On the controller, per member:
   `telltale_cluster_peer_info{kube_node, pod}`,
   `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
   `telltale_cluster_peer_restarts`, per member.
