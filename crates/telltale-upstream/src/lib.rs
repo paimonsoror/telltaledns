@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use bootstrap::Bootstrap;
+pub use conn::{Close, ConnSnapshot, ConnStats};
 pub use endpoint::{Endpoint, Host, Protocol};
 pub use group::{Answer, Group, ResolveError, Strategy};
 pub use router::{Router, Selection, parse_qtype};

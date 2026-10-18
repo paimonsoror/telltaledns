@@ -16,6 +16,12 @@ use tokio::net::TcpListener;
 
 /// The first connection reads a query and closes; later ones answer every query.
 async fn flaky_server(connections: Arc<AtomicUsize>) -> std::net::SocketAddr {
+    server(connections, false).await
+}
+
+/// `silent`: the first connection reads queries and never answers or closes (as when something
+/// along the way drops it without a FIN or reset). Otherwise as [`flaky_server`].
+async fn server(connections: Arc<AtomicUsize>, silent: bool) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -33,6 +39,9 @@ async fn flaky_server(connections: Arc<AtomicUsize>) -> std::net::SocketAddr {
                     let mut msg = vec![0u8; usize::from(u16::from_be_bytes(len))];
                     if stream.read_exact(&mut msg).await.is_err() {
                         return;
+                    }
+                    if nth == 0 && silent {
+                        continue; // read, never answered
                     }
                     if nth == 0 {
                         return; // closed without answering
@@ -83,4 +92,52 @@ async fn ups_008_closed_before_answering_is_retried_on_a_fresh_connection() {
         2,
         "a second connection answered"
     );
+    assert_eq!(up.connections().snapshot().retried, 1);
+}
+
+fn question(name: &str) -> Question {
+    Question {
+        name: NameBuf::from_presentation(name).unwrap(),
+        qtype: rtype::A,
+        qclass: 1,
+        dnssec_ok: false,
+        checking_disabled: false,
+        client_subnet: 0,
+    }
+}
+
+/// REQ: UPS-008 — a connection that silently stops answering is closed once queries have waited
+/// 3 s with nothing coming back, and a query still waiting on it retries on a new connection,
+/// instead of the pool handing the dead connection out until TCP gives up.
+#[tokio::test]
+async fn ups_008_a_silent_connection_is_closed_and_its_queries_retried() {
+    let connections = Arc::new(AtomicUsize::new(0));
+    let addr = server(Arc::clone(&connections), true).await;
+    let ep = Endpoint::parse(&format!("tcp://{addr}")).unwrap();
+    let up = Upstream::build(
+        1,
+        "silent",
+        ep,
+        &UpstreamOptions::default(),
+        &TlsOptions::default(),
+    )
+    .unwrap();
+    // The first query times out on the silent connection.
+    assert!(
+        up.exchange(&question("a.example"), Duration::from_millis(300))
+            .await
+            .is_err()
+    );
+    // The second waits long enough to see the connection given up on, then retries.
+    let start = std::time::Instant::now();
+    let resp = up
+        .exchange(&question("b.example"), Duration::from_secs(8))
+        .await
+        .unwrap();
+    assert_eq!(summarize(&resp).unwrap().rcode, rcode::NOERROR);
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(connections.load(Ordering::SeqCst), 2);
+    let s = up.connections().snapshot();
+    assert_eq!(s.closed[3], 1, "Close::Unanswered");
+    assert_eq!(s.retried, 1);
 }

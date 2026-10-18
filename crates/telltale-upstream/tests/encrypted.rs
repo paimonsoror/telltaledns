@@ -64,12 +64,18 @@ async fn dot_server(c: &Cert) -> SocketAddr {
 }
 
 async fn dot_server_with(tls: tokio_rustls::TlsAcceptor) -> SocketAddr {
+    dot_server_slow(tls, Duration::ZERO).await
+}
+
+/// A DoT server that waits `handshake_delay` before each TLS handshake (a slow path).
+async fn dot_server_slow(tls: tokio_rustls::TlsAcceptor, handshake_delay: Duration) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     tokio::spawn(async move {
         while let Ok((tcp, _)) = l.accept().await {
             let tls = tls.clone();
             tokio::spawn(async move {
+                tokio::time::sleep(handshake_delay).await;
                 let Ok(s) = tls.accept(tcp).await else { return };
                 let (mut rd, wr) = tokio::io::split(s);
                 let wr = Arc::new(tokio::sync::Mutex::new(wr));
@@ -278,6 +284,65 @@ async fn ups_008_dot_pipelines_many_queries_on_one_connection() {
         1,
         "pool_size = 1: everything pipelined on one connection"
     );
+}
+
+/// REQ: UPS-008 — the connection counters: an open and its handshake, an idle close, and the
+/// next connection resuming the TLS session (one round trip shorter).
+#[tokio::test]
+async fn ups_008_dot_connections_are_counted_and_sessions_resume() {
+    let c = cert();
+    let addr = dot_server(&c).await;
+    let ep = Endpoint::parse(&format!("tls://{addr}")).unwrap();
+    let mut o = opts("dns.test");
+    o.idle_timeout = Duration::from_millis(200);
+    let trusted = TlsOptions {
+        extra_roots: vec![c.der.clone()],
+    };
+    let up = Upstream::build(1, "dot", ep, &o, &trusted).unwrap();
+    up.exchange(&question("a.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    let s = up.connections().snapshot();
+    assert_eq!((s.opened, s.open_failed, s.tls_full, s.live), (1, 0, 1, 1));
+    assert!(s.connect_us > 0);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let s = up.connections().snapshot();
+    assert_eq!(s.live, 0, "closed after the idle timeout");
+    assert_eq!(s.closed[0], 1, "Close::Idle");
+    up.exchange(&question("b.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    let s = up.connections().snapshot();
+    assert_eq!((s.opened, s.tls_full, s.tls_resumed), (2, 1, 1));
+}
+
+/// REQ: UPS-008 — a query that runs out of time during the handshake doesn't abandon it: the
+/// connection joins the pool, and the next query uses it instead of starting over.
+#[tokio::test]
+async fn ups_008_a_handshake_outlives_the_query_that_started_it() {
+    let c = cert();
+    let addr = dot_server_slow(acceptor(&c, &[]), Duration::from_millis(300)).await;
+    let ep = Endpoint::parse(&format!("tls://{addr}")).unwrap();
+    let trusted = TlsOptions {
+        extra_roots: vec![c.der.clone()],
+    };
+    let up = Upstream::build(1, "dot", ep, &opts("dns.test"), &trusted).unwrap();
+    assert!(
+        up.exchange(&question("a.example"), Duration::from_millis(100))
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(up.pooled_connections(), 1, "the handshake finished anyway");
+    let start = std::time::Instant::now();
+    up.exchange(&question("b.example"), Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "no second handshake"
+    );
+    assert_eq!(up.connections().snapshot().opened, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

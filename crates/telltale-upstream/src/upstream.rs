@@ -15,7 +15,7 @@ use telltale_proto::{
 use tokio::net::{TcpStream, UdpSocket};
 
 use crate::bootstrap::Bootstrap;
-use crate::conn::{BoxIo, Connector, Pool};
+use crate::conn::{BoxIo, ConnStats, Connector, Pool, counted};
 use crate::doh::Doh;
 use crate::doh3::Doh3;
 use crate::doq::Doq;
@@ -419,6 +419,8 @@ pub struct Upstream {
     pub ecs_client: bool,
     /// REQ: OBS-020 — see [`UpstreamOptions::self_probe`].
     self_probe: bool,
+    /// REQ: UPS-008 — connections opened and closed (TCP, DoT, DoH, and UDP's TCP fallback).
+    conns: Arc<ConnStats>,
 }
 
 /// A TCP stream to the target: directly, or through the proxy (REQ: UPS-010), which gets a
@@ -459,18 +461,26 @@ fn tls_connector(
     cfg: Arc<rustls::ClientConfig>,
     name: ServerName<'static>,
     proxy: Option<Arc<crate::proxy::Proxy>>,
+    stats: Arc<ConnStats>,
 ) -> Connector {
     let tls = tokio_rustls::TlsConnector::from(cfg);
     Arc::new(move || {
-        let (target, tls, name, proxy) = (
+        let (target, tls, name, proxy, stats) = (
             Arc::clone(&target),
             tls.clone(),
             name.clone(),
             proxy.clone(),
+            Arc::clone(&stats),
         );
         Box::pin(async move {
             let s = open_tcp(&target, proxy.as_deref()).await?;
-            Ok(Box::new(tls.connect(name, s).await?) as BoxIo)
+            let s = tls.connect(name, s).await?;
+            // A resumed session saves a round trip; rustls keeps the tickets per ClientConfig.
+            stats.tls(matches!(
+                s.get_ref().1.handshake_kind(),
+                Some(rustls::HandshakeKind::Resumed)
+            ));
+            Ok(Box::new(s) as BoxIo)
         })
     })
 }
@@ -542,7 +552,15 @@ impl Upstream {
             (None, Host::Name(h)) => h.clone(),
             (None, Host::Ip(ip)) => ip.to_string(),
         };
-        let pool = |c: Connector| Pool::new(c, opts.pool_size, opts.idle_timeout);
+        let conns = Arc::new(ConnStats::default());
+        let pool = |c: Connector| {
+            Pool::new(
+                counted(c, Arc::clone(&conns)),
+                opts.pool_size,
+                opts.idle_timeout,
+                Arc::clone(&conns),
+            )
+        };
         let transport = match endpoint.protocol {
             Protocol::Udp => Transport::Udp {
                 // REQ: UPS-010 (T9.9) — with a SOCKS5 proxy, UDP goes through its relay and a
@@ -561,6 +579,7 @@ impl Upstream {
                     cfg,
                     server_name(&tls_name)?,
                     opts.proxy.clone(),
+                    Arc::clone(&conns),
                 )))
             }
             Protocol::Https => {
@@ -575,11 +594,15 @@ impl Upstream {
                 } else {
                     format!("{host}:{}", endpoint.port)
                 };
-                let conn = tls_connector(
-                    Arc::clone(&target),
-                    cfg,
-                    server_name(&tls_name)?,
-                    opts.proxy.clone(),
+                let conn = counted(
+                    tls_connector(
+                        Arc::clone(&target),
+                        cfg,
+                        server_name(&tls_name)?,
+                        opts.proxy.clone(),
+                        Arc::clone(&conns),
+                    ),
+                    Arc::clone(&conns),
                 );
                 Transport::Https(Doh::new(
                     conn,
@@ -694,7 +717,13 @@ impl Upstream {
             ecs: opts.ecs.clone(),
             ecs_client: opts.ecs_client,
             self_probe: opts.self_probe,
+            conns,
         })
+    }
+
+    /// REQ: UPS-008 — this upstream's connection counters.
+    pub fn connections(&self) -> &ConnStats {
+        &self.conns
     }
 
     /// Per-attempt timeout: min(configured, 3 × EWMA + 50 ms, 1 s) per `spec/04` §4.

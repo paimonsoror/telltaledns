@@ -656,7 +656,7 @@ pub(crate) fn render(src: &Sources) -> String {
     w.family(
         "telltale_neighbors",
         "gauge",
-        "Entries in the IP-to-MAC neighbor table used to recognize clients.",
+        "Entries in the IP-to-MAC neighbor table used to recognize clients. It is read only while a [[client]] matches by MAC address, so 0 is normal without one.",
     )
     .sample("telltale_neighbors", &[], src.pipeline.neighbors.len());
     // REQ: OBS-013 — device anomaly findings (alert rules count their increase).
@@ -1515,6 +1515,98 @@ fn render_upstreams(w: &mut PromWriter, router: &Router) {
                 e.as_secs_f64(),
             );
         }
+    }
+    render_upstream_connections(w, router);
+}
+
+/// REQ: UPS-008, OBS-011 — connections to stream upstreams (TCP, DoT, DoH, UDP's TCP
+/// fallback): how often they open, how long that takes, TLS resumption, and why they end.
+/// Upstreams that never opened one (UDP-only so far, DoQ, plugins) are left out.
+fn render_upstream_connections(w: &mut PromWriter, router: &Router) {
+    let snaps: Vec<_> = router
+        .upstreams()
+        .iter()
+        .map(|u| (u.name.as_str(), u.connections().snapshot()))
+        .filter(|(_, c)| c.opened + c.open_failed > 0)
+        .collect();
+    w.family(
+        "telltale_upstream_connections_opened_total",
+        "counter",
+        "Connections opened to the upstream (outcome: ok, or failed to connect or handshake).",
+    );
+    for (name, c) in &snaps {
+        for (outcome, n) in [("ok", c.opened), ("failed", c.open_failed)] {
+            w.sample(
+                "telltale_upstream_connections_opened_total",
+                &[("upstream", name), ("outcome", outcome)],
+                n,
+            );
+        }
+    }
+    w.family(
+        "telltale_upstream_connect_seconds_total",
+        "counter",
+        "Time spent opening connections (TCP and TLS): divide by the ok opens for the mean.",
+    );
+    for (name, c) in &snaps {
+        #[allow(clippy::cast_precision_loss)] // microseconds, far below 2^52
+        w.sample(
+            "telltale_upstream_connect_seconds_total",
+            &[("upstream", name)],
+            c.connect_us as f64 / 1e6,
+        );
+    }
+    w.family(
+        "telltale_upstream_tls_handshakes_total",
+        "counter",
+        "TLS handshakes with the upstream: full, or resumed from a stored session (one round trip fewer).",
+    );
+    for (name, c) in snaps.iter().filter(|(_, c)| c.tls_full + c.tls_resumed > 0) {
+        for (kind, n) in [("full", c.tls_full), ("resumed", c.tls_resumed)] {
+            w.sample(
+                "telltale_upstream_tls_handshakes_total",
+                &[("upstream", name), ("kind", kind)],
+                n,
+            );
+        }
+    }
+    w.family(
+        "telltale_upstream_connections_closed_total",
+        "counter",
+        "Pooled connections ended, by reason: idle, server (closed or reset by it), write_failed, unanswered (queries waited 3 s with nothing coming back), unused.",
+    );
+    for (name, c) in &snaps {
+        for (why, n) in telltale_upstream::Close::ALL.iter().zip(c.closed) {
+            w.sample(
+                "telltale_upstream_connections_closed_total",
+                &[("upstream", name), ("reason", why.label())],
+                n,
+            );
+        }
+    }
+    w.family(
+        "telltale_upstream_connection_retries_total",
+        "counter",
+        "Queries sent again on a fresh connection because the pooled one closed first.",
+    );
+    for (name, c) in &snaps {
+        w.sample(
+            "telltale_upstream_connection_retries_total",
+            &[("upstream", name)],
+            c.retried,
+        );
+    }
+    w.family(
+        "telltale_upstream_connections",
+        "gauge",
+        "Open pooled connections (TCP and DoT; DoH keeps one HTTP/2 connection outside the pool).",
+    );
+    for (name, c) in &snaps {
+        w.sample(
+            "telltale_upstream_connections",
+            &[("upstream", name)],
+            c.live,
+        );
     }
 }
 
