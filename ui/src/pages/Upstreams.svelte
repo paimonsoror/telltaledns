@@ -143,9 +143,11 @@
     <section class="card" data-testid="upstream-latency">
       <div class="card-head">
         <h2>Answer time over time<HelpButton id="latency-heatmap" /></h2>
-        <select bind:value={latencyOf} aria-label="Upstream">
-          {#each upstreams as u (u.id)}<option value={u.name}>{u.name}</option>{/each}
-        </select>
+        <span class="pill-field bare">
+          <select bind:value={latencyOf} aria-label="Upstream">
+            {#each upstreams as u (u.id)}<option value={u.name}>{u.name}</option>{/each}
+          </select>
+        </span>
       </div>
       {#key latencyOf}<LatencyHeatmap by="upstream" upstream={latencyOf || upstreams[0].name} testid="upstream-latency-heatmap" />{/key}
     </section>

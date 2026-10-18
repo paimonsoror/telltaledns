@@ -254,7 +254,7 @@
     <div class="head-row">
       <h2>What's cached<HelpButton id="cache-page" /></h2>
       <span class="spacer"></span>
-      <label class="small">Sort
+      <label class="pill-field">Sort
         <select bind:value={sort} aria-label="Sort by">
           <option value="hits">most hits</option>
           <option value="bytes">largest</option>
@@ -262,10 +262,12 @@
         </select>
       </label>
       {#if stats.length > 1}
-        <select bind:value={node} aria-label="Node">
-          <option value="">every node</option>
-          {#each stats as s, i (s.node ?? i)}<option value={s.node ?? ''}>{label(s)}</option>{/each}
-        </select>
+        <label class="pill-field">Showing
+          <select bind:value={node} aria-label="Node">
+            <option value="">every node</option>
+            {#each stats as s, i (s.node ?? i)}<option value={s.node ?? ''}>{label(s)}</option>{/each}
+          </select>
+        </label>
       {/if}
       <button onclick={loadEntries} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
     </div>

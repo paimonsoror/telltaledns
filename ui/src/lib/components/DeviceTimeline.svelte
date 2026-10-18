@@ -112,7 +112,7 @@
         <button type="button" aria-pressed={win === w.id} onclick={() => (win = w.id)}>{w.label}</button>
       {/each}
     </div>
-    <label class="small"><input type="checkbox" bind:checked={table} data-testid="timeline-table-toggle" /> Table</label>
+    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="timeline-table-toggle" />Table</label></span>
     {#if loading}<span class="muted small">Reading the query log…</span>{/if}
   </div>
   <ErrorNote {error} />

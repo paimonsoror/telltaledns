@@ -222,19 +222,23 @@
         {/each}
       </div>
       {#if kind === 'network' && win.days <= 7}
-        <select bind:value={grain} aria-label="Slot">
-          <option value="hour">hours</option>
-          <option value="15m">15 minutes</option>
-          <option value="minute">minutes</option>
-        </select>
+        <span class="pill-field bare">
+          <select bind:value={grain} aria-label="Slot">
+            <option value="hour">hours</option>
+            <option value="15m">15 minutes</option>
+            <option value="minute">minutes</option>
+          </select>
+        </span>
       {/if}
       {#if kind !== 'client'}
-        <select bind:value={measure} aria-label="Count">
-          <option value="queries">queries</option>
-          <option value="blocked">blocked</option>
-        </select>
+        <span class="pill-field bare">
+          <select bind:value={measure} aria-label="Count">
+            <option value="queries">queries</option>
+            <option value="blocked">blocked</option>
+          </select>
+        </span>
       {/if}
-      <label class="small"><input type="checkbox" bind:checked={fold} data-testid="heatmap-fold" /> Typical week</label>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={fold} data-testid="heatmap-fold" />Typical week</label></span>
     </div>
   </div>
   {#if kind !== 'network'}

@@ -223,7 +223,7 @@ text, labels, or roles below breaks CI.
   Note: in Settings → Users, the add-user inputs are `aria-label="Username"` / `"Password"`.
 - **Buttons:** `Create admin and sign in`, `Sign in`, `Sign out`, `Table` (chart toggle),
   `Why?`, the status chip `local` (exact), `Explain`, `Create token`, `Revoke`, `Add` (exact),
-  the `Live` checkbox (label) with its status badge `.live-toggle .badge` showing `streaming`,
+  the `Live` switch (label) with its status badge `.live-toggle .badge` showing `streaming`,
   `Menu` (mobile nav).
 - **Links:** top-list entries are links whose name is the domain (`ads.e2e.test`); nav link
   `Dashboard`.

@@ -77,7 +77,7 @@
 <div class="page">
   <div class="page-head">
     <h1>Anomalies<HelpButton id="anomalies" /></h1>
-    <label class="small">
+    <label class="pill-field">
       Show
       <select bind:value={range} aria-label="Time range">
         <option value="-24h">last 24 hours</option>
@@ -94,7 +94,7 @@
     counting as new, on every node.
   </p>
   <div class="row toolbar">
-    <label class="small"><input type="checkbox" bind:checked={showAcked} data-testid="show-acknowledged" /> Show acknowledged ({ackedCount})</label>
+    <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={showAcked} data-testid="show-acknowledged" />Show acknowledged ({ackedCount})</label></span>
     <span class="spacer"></span>
     {#if writable && open.length > 1}
       <button class="small" disabled={busy} onclick={() => change(open.map((f) => f.id), true)} data-testid="ack-all"
@@ -161,7 +161,7 @@
     <div class="row head">
       <h2>New domains<HelpButton id="new-domains" /></h2>
       <span class="spacer"></span>
-      <label class="small"><input type="checkbox" bind:checked={suspiciousOnly} /> Only machine-generated-looking</label>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={suspiciousOnly} />Only machine-generated-looking</label></span>
     </div>
     <p class="muted small">Domains each device contacted for the first time (after its first day), newest first. The score says how generated the name looks (0.6 and up is suspicious).</p>
     {#if shown.length === 0}

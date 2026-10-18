@@ -574,7 +574,7 @@
                 <td>
                   {#if u.totpEnabled}<span class="badge ok">on</span> <button class="link small" onclick={() => patchUser(u, { resetTotp: true })}>Reset</button>{:else}<span class="muted">off</span>{/if}
                 </td>
-                <td><input type="checkbox" aria-label={`HTTP Basic for ${u.username}`} checked={u.allowBasicApi} onchange={(e) => patchUser(u, { allowBasicApi: e.currentTarget.checked })} /></td>
+                <td><input type="checkbox" role="switch" aria-label={`HTTP Basic for ${u.username}`} checked={u.allowBasicApi} onchange={(e) => patchUser(u, { allowBasicApi: e.currentTarget.checked })} /></td>
                 <td>
                   <button class="link" onclick={() => patchUser(u, { disabled: !u.disabled })}>{u.disabled ? 'Disabled · enable' : 'Active · disable'}</button>
                 </td>
@@ -623,7 +623,7 @@
             <option value="operator">operator</option>
             <option value="admin">admin</option>
           </select>
-          <label class="row small"><input type="checkbox" bind:checked={nu.allowBasicApi} /> HTTP Basic</label><HelpButton id="http-basic" />
+          <label class="switch small"><input type="checkbox" role="switch" bind:checked={nu.allowBasicApi} />HTTP Basic</label><HelpButton id="http-basic" />
           <button class="primary" type="submit">Add</button>
         </div>
         <p class="muted small">Viewers see dashboards and the query log; operators can also pause blocking and manage lists, clients, and groups; admins can do everything.</p>
@@ -636,13 +636,15 @@
       <div class="card-head">
         <h2>Audit log<HelpButton id="audit-log" /></h2>
         <div class="row">
-          <select aria-label="Action" bind:value={auditAction} onchange={() => loadAudit()}>
-            <option value="">All changes</option>
-            <option value="user.">Users</option>
-            <option value="token.">API tokens</option>
-            <option value="auth.">Sign-ins and lockouts</option>
-            <option value="config.">Configuration</option>
-          </select>
+          <span class="pill-field bare">
+            <select aria-label="Action" bind:value={auditAction} onchange={() => loadAudit()}>
+              <option value="">All changes</option>
+              <option value="user.">Users</option>
+              <option value="token.">API tokens</option>
+              <option value="auth.">Sign-ins and lockouts</option>
+              <option value="config.">Configuration</option>
+            </select>
+          </span>
           <button onclick={verifyAudit}>Verify chain</button>
         </div>
       </div>
@@ -763,7 +765,7 @@
     <section class="card" data-testid="changes-list">
       <h2>Changes<HelpButton id="change-markers" /></h2>
       <div class="change-filters">
-        <label class="small">
+        <label class="pill-field">
           Kind
           <select bind:value={changeKind} aria-label="Kind of change">
             <option value="">every kind</option>

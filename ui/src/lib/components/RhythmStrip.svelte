@@ -73,7 +73,7 @@
           <button type="button" aria-pressed={view === 'hour'} onclick={() => (view = 'hour')}>This hour</button>
         </div>
       {/if}
-      <label class="small"><input type="checkbox" bind:checked={table} data-testid="rhythm-table-toggle" /> Table</label>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="rhythm-table-toggle" />Table</label></span>
     </div>
   {/if}
   {#if rows.length === 0}

@@ -1509,7 +1509,7 @@ test('obs_024 simulate a quick rule, and the simulation settings', async () => {
   const row = editor.getByTestId('entry-row');
   await expect(row).toContainText('simulate when asked');
   await row.getByRole('button', { name: 'Edit' }).click();
-  const box = page.getByRole('checkbox', { name: "Agents' plans simulate by default" });
+  const box = page.getByRole('switch', { name: "Agents' plans simulate by default" });
   await box.check();
   await expect(box).toBeChecked();
   await page.getByRole('button', { name: 'Check', exact: true }).click();

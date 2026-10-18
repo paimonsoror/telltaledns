@@ -113,7 +113,7 @@
           <button type="button" aria-pressed={win === w.id} onclick={() => onwindow(w.id)}>{w.label}</button>
         {/each}
       </div>
-      <label class="small"><input type="checkbox" bind:checked={table} data-testid="compare-table-toggle" /> Table</label>
+      <span class="switch-track"><label class="switch"><input type="checkbox" role="switch" bind:checked={table} data-testid="compare-table-toggle" />Table</label></span>
     </div>
   </div>
   <ErrorNote {error} />
@@ -149,7 +149,7 @@
       <p class="muted small">Percentages with their 95 % intervals: with few answers the interval is wide, and a high share means little.</p>
     {:else}
       {#if narrow}
-        <label class="small">Metric
+        <label class="pill-field">Metric
           <select bind:value={phoneMetric} data-testid="compare-metric">
             {#each METRICS as m (m.key)}<option value={m.key}>{m.label}</option>{/each}
           </select>

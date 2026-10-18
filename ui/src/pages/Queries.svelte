@@ -206,10 +206,11 @@
 <div class="page">
   <div class="page-head">
     <h1>Query log<HelpButton id="query-log" /></h1>
-    <label class="row small live-toggle">
-      <input type="checkbox" bind:checked={live} /> Live<HelpButton id="live-view" />
+    <span class="switch-track live-toggle">
+      <label class="switch"><input type="checkbox" role="switch" bind:checked={live} />Live</label>
+      <HelpButton id="live-view" />
       {#if live}<span class="badge {liveState === 'open' ? 'ok' : 'warn'}">{liveState === 'open' ? 'streaming' : liveState}</span>{/if}
-    </label>
+    </span>
   </div>
   {#if liveIgnores}
     <div class="notice warn small">The live view ignores the Rcode, Since, and Group filters; it shows new queries as they happen.</div>

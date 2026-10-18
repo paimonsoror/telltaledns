@@ -296,7 +296,7 @@
                 oninput={(ev) => (editing!.values[f.key] = toLines((ev.currentTarget as HTMLTextAreaElement).value))}
               ></textarea>
             {:else if f.type === 'bool'}
-              <input type="checkbox" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} />
+              <input type="checkbox" role="switch" bind:checked={editing.values[f.key] as boolean} aria-label={f.label} />
             {:else if f.type === 'number'}
               <!-- step="any": thresholds such as 0.5 % are allowed. -->
               <input type="number" step="any" bind:value={editing.values[f.key]} placeholder={f.placeholder} aria-label={f.label} />

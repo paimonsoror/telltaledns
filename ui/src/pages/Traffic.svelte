@@ -207,10 +207,12 @@
           <button type="button" aria-pressed={show === s.id} onclick={() => (show = s.id)}>{s.label}</button>
         {/each}
       </div>
-      <select bind:value={hour} aria-label="Hour">
-        <option value="current">this hour</option>
-        <option value="previous">last hour</option>
-      </select>
+      <span class="pill-field bare">
+        <select bind:value={hour} aria-label="Hour">
+          <option value="current">this hour</option>
+          <option value="previous">last hour</option>
+        </select>
+      </span>
     </div>
   </div>
 
