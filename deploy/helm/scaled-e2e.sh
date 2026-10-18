@@ -135,12 +135,14 @@ done
 grep -q "pod=\"$pod\"" <<<"$info" || fail "the controller doesn't report pod $pod: $info"
 grep "pod=\"$pod\"" <<<"$info" | grep -q "kube_node=\"$knode\"" || fail "pod $pod isn't on Kubernetes node $knode: $info"
 id=$(grep "pod=\"$pod\"" <<<"$info" | sed -n 's/.*{node="\([^"]*\)".*/\1/p' | head -1)
+# The rate has two decimals (a whole number before 0.5.0-edge.243).
+at_least_2() { awk -v v="${1:-0}" 'BEGIN { exit !(v + 0 >= 2) }'; }
 qps=0
 for _ in $(seq 30); do
   qps=$(metric http://127.0.0.1:19153 telltale_cluster_peer_queries_per_second "node=\"$id\"")
-  [[ "${qps:-0}" -ge 2 ]] && break; sleep 1
+  at_least_2 "$qps" && break; sleep 1
 done
-[[ "${qps:-0}" -ge 2 ]] || fail "the controller sees ${qps:-0} q/s from pod $pod, not 2 or more"
+at_least_2 "$qps" || fail "the controller sees ${qps:-0} q/s from pod $pod, not 2 or more"
 echo "ok ($pod on $knode, $qps q/s)"
 
 echo "== 3. a node outside Kubernetes joins through the cluster port"
