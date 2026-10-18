@@ -149,6 +149,11 @@ fn main() {
         bytes as f64 / 1e6,
         t.elapsed()
     );
+    // T10.3 — with `COMPILE_BENCH_PHASES=1`: the parser alone and the FST alone, to split the
+    // compile's phases (off by default: they take as long again).
+    if std::env::var_os("COMPILE_BENCH_PHASES").is_some() {
+        phases(&inputs);
+    }
     let tmp = tempfile::tempdir().unwrap();
     let report = compile(
         inputs,
@@ -185,4 +190,51 @@ fn main() {
             report.manifest.lists[i].name, l.entries, l.unique, l.invalid, l.unsupported
         );
     }
+}
+
+/// The parser alone (one thread, a counting sink) and the FST alone (the same names' sorted
+/// reversed keys into a bare `fst::MapBuilder`): the compile's floors on one thread.
+fn phases(inputs: &[ListInput]) {
+    let t = Instant::now();
+    let mut rules = 0u64;
+    for i in inputs {
+        if let ListData::Bytes(b) = &i.data {
+            telltale_filter::parse::parse_list(b, i.options, |_, _| rules += 1);
+        }
+    }
+    println!("parse only: {:.2?} for {rules} rules", t.elapsed());
+    // T10.3 — the FST alone: the same names' reversed keys, sorted and deduplicated, into a
+    // bare `fst::MapBuilder` (the merge's floor on one thread).
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    for i in inputs {
+        if let ListData::Bytes(b) = &i.data {
+            telltale_filter::parse::parse_list(b, i.options, |_, r| {
+                if let telltale_filter::parse::Pattern::Domain { name, .. } = r.pattern {
+                    let mut k: Vec<u8> = Vec::with_capacity(name.len() + 1);
+                    for label in name.rsplit('.') {
+                        k.extend_from_slice(label.as_bytes());
+                        k.push(b'.');
+                    }
+                    keys.push(k);
+                }
+            });
+        }
+    }
+    let t = Instant::now();
+    keys.sort_unstable();
+    keys.dedup();
+    let sorted = t.elapsed();
+    let t = Instant::now();
+    let mut b = fst::MapBuilder::memory();
+    for (i, k) in keys.iter().enumerate() {
+        b.insert(k, i as u64 & 0xffff).unwrap();
+    }
+    let bytes = b.into_inner().unwrap().len();
+    println!(
+        "fst only: {:.2?} for {} keys ({:.1} MB), after a {sorted:.2?} sort",
+        t.elapsed(),
+        keys.len(),
+        bytes as f64 / 1e6
+    );
+    drop(keys);
 }

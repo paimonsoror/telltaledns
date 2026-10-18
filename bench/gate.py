@@ -54,6 +54,42 @@ def pinned_dnsperf(cpus, tmp):
     os.environ["PATH"] = f"{shim}:{os.environ['PATH']}"
 
 
+def wait_blocked(names, proc, timeout=30.0):
+    """REQ: NFR-001 (T10.4) — polls the DNS port every 5 ms, a different name of `names` each
+    time (so an answer cached before the filter loaded can't hide it), until one is answered
+    as blocked: NXDOMAIN, or an address outside the stub upstream's 198.18.0.0/15. Returns
+    when, on the monotonic clock."""
+    import socket
+    import struct
+    deadline = time.monotonic() + timeout
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(0.2)
+        for i, name in enumerate(names):
+            if time.monotonic() > deadline:
+                break
+            if proc.poll() is not None:
+                raise RuntimeError(f"server exited with {proc.returncode} before blocking")
+            qid = i & 0xFFFF
+            q = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
+            q += b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + b"\0"
+            q += struct.pack(">HH", 1, 1)
+            try:
+                sock.sendto(q, TARGET)
+                while True:
+                    resp, _ = sock.recvfrom(4096)
+                    if resp[:2] == q[:2]:
+                        break
+            except OSError:
+                time.sleep(0.005)
+                continue
+            rcode = resp[3] & 0x0F
+            ancount = struct.unpack(">H", resp[6:8])[0]
+            if rcode == 3 or (rcode == 0 and ancount and resp[-4:-2] not in (b"\xc6\x12", b"\xc6\x13")):
+                return time.monotonic()
+            time.sleep(0.005)
+    raise RuntimeError(f"no blocked answer after {timeout}s")
+
+
 def blocked_names(n):
     """The first `n` unique names of the bench lists (deterministic: sorted files, file order)."""
     seen, out = set(), []
@@ -203,12 +239,15 @@ def main():
         rss, hwm = st.rss_mib()
         r["rss_1m_100k"] = {"rss_mib": rss, "peak_mib": hwm, "cache_entries": entries}
         print(f"1M names + {entries} cache entries: RSS {rss} MiB (peak {hwm})", file=sys.stderr)
-        # Cold start with the compiled snapshot on disk: until blocked names are answered.
+        # Cold start with the compiled snapshot on disk: until blocked names are answered
+        # (T10.4: by DNS, every 5 ms; the lookup index, built after, is reported apart).
         st.stop_server()
         t0, ready = st.start()
+        blk = wait_blocked(names[::997], st.server)
         filt = bench.wait_filter(f"{URL}/metrics", st.server)
         r["cold_start_snapshot_ms"] = {"ready_ms": round((ready - t0) * 1000, 1),
-                                       "filter_ms": round((filt - t0) * 1000, 1),
+                                       "filter_ms": round((blk - t0) * 1000, 1),
+                                       "index_ms": round((filt - t0) * 1000, 1),
                                        "compile_s": bench.metric(f"{URL}/metrics", "telltale_filter_compile_seconds")}
         print(f"cold start with snapshot: {r['cold_start_snapshot_ms']}", file=sys.stderr)
     finally:

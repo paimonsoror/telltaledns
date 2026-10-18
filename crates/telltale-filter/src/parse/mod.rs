@@ -182,12 +182,61 @@ fn sample(stats: &mut ParseStats, line: u32, text: &str, reason: String, unsuppo
     }
 }
 
+/// Whether `s` is only name characters (and so can't be a comment, a modifier, a regex, a
+/// cosmetic rule, or an address: those need other characters, and digits-and-dots lines go
+/// the slow way).
+fn plain_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b[0] != b'.'
+        && b.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_'))
+        && !b.iter().all(|&c| c.is_ascii_digit() || c == b'.')
+}
+
+/// REQ: FLT-003 (T10.3) — the shapes nearly every list line has (`name`, `0.0.0.0 name`,
+/// `||name^`), handled without the general parser's scans. `None` for anything else, which
+/// goes the general way; the result is the same either way (tested on the bench lists).
+fn fast_line(l: &str, opts: ListOptions, out: &mut Vec<Rule>) -> Option<LineKind> {
+    if plain_name(l) {
+        return Some(match domain_pattern(l, opts.plain_scope()) {
+            Ok(pattern) => push(out, opts.action(), pattern, Modifiers::default()),
+            Err(kind) => kind,
+        });
+    }
+    if let Some(rest) = l
+        .strip_prefix("0.0.0.0")
+        .or_else(|| l.strip_prefix("127.0.0.1"))
+        && rest.starts_with([' ', '\t'])
+    {
+        let name = rest.trim_start();
+        if plain_name(name) {
+            return Some(hosts_line(std::iter::once(name), opts, out));
+        }
+        return None;
+    }
+    if let Some(name) = l.strip_prefix("||").and_then(|r| r.strip_suffix('^'))
+        && plain_name(name)
+    {
+        return Some(adblock(l, opts, out));
+    }
+    None
+}
+
 /// Parses one line, appending its rules to `out`.
 pub fn parse_line(line: &str, opts: ListOptions, out: &mut Vec<Rule>) -> LineKind {
-    let mut l = line.trim();
+    let l = line.trim();
     if l.is_empty() {
         return LineKind::Blank;
     }
+    if let Some(kind) = fast_line(l, opts, out) {
+        return kind;
+    }
+    general_line(l, opts, out)
+}
+
+/// Any trimmed, non-blank line, without the fast path.
+fn general_line(mut l: &str, opts: ListOptions, out: &mut Vec<Rule>) -> LineKind {
     if l.starts_with('#') || l.starts_with('!') || (l.starts_with('[') && l.ends_with(']')) {
         return LineKind::Comment;
     }

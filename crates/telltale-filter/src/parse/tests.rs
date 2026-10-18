@@ -297,3 +297,84 @@ fn flt_001_never_panics_on_garbage() {
         let _ = parse_list(&line, ListOptions::default(), |_, _| {});
     }
 }
+
+/// REQ: FLT-003 (T10.3) — the fast path decides every line exactly as the general parser:
+/// the same kind and the same rules, for the line table's shapes, the edge cases around the
+/// fast shapes, and (when present) every line of the bench lists.
+#[test]
+fn flt_003_fast_path_matches_the_general_parser() {
+    let mut lines: Vec<String> = [
+        "ads.example.com",
+        "Ads.Example.COM",
+        "ads.example.com.",
+        "_dmarc.example.com",
+        "1.2.3.4",
+        "10.0.0.1",
+        "123.example",
+        "a..b",
+        ".example.com",
+        "-bad-.example",
+        "0.0.0.0 ads.example.com",
+        "0.0.0.0\tads.example.com",
+        "127.0.0.1 localhost",
+        "127.0.0.1 tracker.example",
+        "0.0.0.0 0.0.0.0",
+        "0.0.0.0",
+        "0.0.0.0 a.example b.example",
+        "0.0.0.0 ads.example.com # tracker",
+        "0.0.0.0x.example",
+        "||ads.example.com^",
+        "||Ads.Example.com^",
+        "||ads.example.com^|",
+        "||ads.example.com^$important",
+        "||1.2.3.4^",
+        "||.example^",
+        "||^",
+        "|exact.example.org^",
+        "@@||ok.example.com^",
+        "*.wild.example.org",
+        "ads.example.com##.banner",
+        "xn--bcher-kva.example",
+        "a.example.com_",
+        &"a".repeat(64),
+        &format!("{}.com", "a".repeat(64)),
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    let lists = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/lists");
+    if let Ok(dir) = std::fs::read_dir(&lists) {
+        for f in dir.flatten() {
+            if let Ok(text) = std::fs::read_to_string(f.path()) {
+                lines.extend(text.lines().take(200_000).map(str::to_owned));
+            }
+        }
+    }
+    let modes = [
+        ListOptions::default(),
+        ListOptions {
+            kind: ListKind::Allow,
+            match_mode: ListMatch::Exact,
+        },
+    ];
+    let mut fast_taken = 0usize;
+    for line in &lines {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        for opts in modes {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let general = general_line(l, opts, &mut a);
+            let Some(fast) = fast_line(l, opts, &mut b) else {
+                continue;
+            };
+            fast_taken += 1;
+            assert_eq!((&fast, &b), (&general, &a), "{l:?} with {opts:?}");
+        }
+    }
+    assert!(
+        fast_taken > 20,
+        "the fast path was taken {fast_taken} times"
+    );
+}

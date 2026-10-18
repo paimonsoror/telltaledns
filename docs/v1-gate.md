@@ -31,8 +31,8 @@ This page records each target, the latest measurement, how it was taken, and the
 | Idle RSS, no lists | ≤ 20 MiB | 13.7 MiB 40 s after start, 16.1 MiB after 3 min (the shipped musl build, T10.2, `bench/memprobe.py`; 22.7 MiB before) | ✅ pass |
 | RSS, 1M blocked names + 100k cache entries + telemetry | ≤ 64 MiB | 60.0 MiB 40 s after the fill, 60.9 MiB after 3 min; peak 97.5 MiB during the compile (the shipped musl build; 71.4 MiB and a 170 MiB peak before T10.2's last step, 130.4 MiB at its start) | ✅ pass |
 | Compressed container image | ≤ 15 MiB per arch | amd64 11.1, arm64 10.6, arm/v7 11.0 MiB (`:latest` = 0.1.0) | ✅ pass |
-| List recompile, 2M names, Pi 4 | ≤ 8 s, p99 regression ≤ 10 % during the compile | this host: 2.0 s first compile, 3.1 s recompile. Pi 4 (2026-10-03): 6.4 s on 2 threads, **11.6 s on 1 thread (the recompile default)**. p99 under a recompile: within noise on the homelab (T2.7) | ❌ the Pi recompile misses |
-| Cold start to serving, snapshot on disk | ≤ 500 ms | **565 ms** until blocking works (53 ms until it answers). A cluster replica in CI: ≤ 500 ms | ❌ fail (by 65 ms) |
+| List recompile, 2M names, Pi 4 | ≤ 8 s, p99 regression ≤ 10 % during the compile | Pi 4 (2026-10-17, the gate's 2M names, `compile_bench`, bench build): **11.8 s on 1 thread** (the recompile default; 14.2 s before T10.3's parser fast path), 9.7 s on 2 threads; building the FST alone takes 8.1 s on one Pi core. p99 under a recompile on 4 cores (VM, `bench.py swap --server-cpus 0-3`): 44 → 49.5 µs on 1 thread, 40.5 → 54 µs on 2 | ❌ the Pi recompile misses: one thread can't build the FST inside 8 s |
+| Cold start to serving, snapshot on disk | ≤ 500 ms | 52 ms until a blocked name is answered blocked over DNS, 1M names (median of 5, the shipped build, `bench/coldstart.py`); the lookup index follows at about 0.5 s, blocking through the FST walk until then. A cluster replica in CI: ≤ 500 ms | ✅ pass |
 | Query-log search, 30 days / 50M rows, Pi 4 | ≤ 2 s | every query in the suite under 2 s (T3.2, 2026-10-03) | ✅ pass (re-run before 1.0) |
 | Config propagation, primary → all nodes incl. a cross-site Pi | ≤ 5 s p95 | under 5 s on loopback in CI (single samples) | ⏳ cross-site p95 not measured |
 | DNS availability with the primary down | 100 % | 100 % of a steady load while the primary is killed (CI, `deploy/cluster/e2e.sh`) | ✅ pass |
@@ -54,6 +54,6 @@ figure is now about 50 MB.
 
 ## Next
 
-Tracked as M10 in `spec/10-roadmap-and-tasks.md`: make the recompile meet 8 s on a Pi 4, bring
-the cold start under 500 ms, measure latency and Pi throughput on separate hardware, measure
-cross-site propagation, and the supply-chain items NFR-005 still lacks (T10.10).
+Tracked as M10 in `spec/10-roadmap-and-tasks.md`: make the recompile meet 8 s on a Pi 4, measure
+latency and Pi throughput on separate hardware, measure cross-site propagation, and the
+supply-chain items NFR-005 still lacks (T10.10).

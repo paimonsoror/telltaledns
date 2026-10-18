@@ -703,8 +703,14 @@ def cmd_swap(args):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_port(STUB_PORT)
         log = open(pathlib.Path(tmp.name) / "server.log", "w")
-        server = subprocess.Popen([str(args.bin), "run", "-c", str(cfg)], stdout=log, stderr=subprocess.STDOUT,
-                                  env=dict(os.environ, RUST_LOG="warn"))
+        # T10.3 — a Pi 4's four cores: the server (DNS workers and compile threads) on its own
+        # CPUs, dnsperf on others, so a compile competes with queries as it would there.
+        pin = ["taskset", "-c", args.server_cpus] if args.server_cpus else []
+        if args.client_cpus:
+            import gate
+            gate.pinned_dnsperf(args.client_cpus, tmp.name)
+        server = subprocess.Popen(pin + [str(args.bin), "run", "-c", str(cfg)], stdout=log,
+                                  stderr=subprocess.STDOUT, env=dict(os.environ, RUST_LOG="warn"))
         wait_ready(f"http://127.0.0.1:{METRICS_PORT}/readyz", server)
         t = wait_filter(metrics_url, server)
         print(f"filter ready; warming up", file=sys.stderr)
@@ -832,6 +838,8 @@ def main():
     w.add_argument("--clients", type=int, default=8)
     w.add_argument("--outstanding", type=int, default=200)
     w.add_argument("--max-regression", type=float, default=10.0, help="allowed p99 regression (%%)")
+    w.add_argument("--server-cpus", default="", help="pin the server to these CPUs (taskset), e.g. 0-3")
+    w.add_argument("--client-cpus", default="", help="pin dnsperf to these CPUs, e.g. 4-7")
     w.add_argument("--out", default=str(HERE / "results"))
     w.set_defaults(func=cmd_swap)
 
