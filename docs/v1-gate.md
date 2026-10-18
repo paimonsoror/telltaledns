@@ -48,12 +48,12 @@ figure is now about 50 MB.
 
 | Item | Status |
 |---|---|
-| All P0 requirements pass | ⚠️ checked (T10.6, `docs/v1-requirements.md`, kept current by CI): all 73 have tests or evidence, 66 with named tests. **Open:** NFR-005's `cargo-auditable` builds, CycloneDX SBOM, cosign-signed images, and reproducibility check (T10.10) |
+| All P0 requirements pass | ✅ checked (T10.6, `docs/v1-requirements.md`, kept current by CI): all 73 have tests or evidence, 66 with named tests; NFR-005's supply-chain items done in T10.10 (ADR-146) |
 | Comparative benchmark report published | ✅ decided (owner, 2026-10-17): TelltaleDNS publishes its own numbers and the exact method (hardware, load, corpus) so anyone can reproduce or compare them; no side-by-side with other resolvers |
 | Security review of sign-in, the cluster, and the parsers | ✅ done (T10.7, `docs/security-review.md`): 17 findings fixed with regression tests (2 high, in the cluster channel); accepted items and missing fuzz targets listed there |
 
 ## Next
 
-Tracked as M10 in `spec/10-roadmap-and-tasks.md`: make the recompile meet 8 s on a Pi 4, measure
-latency and Pi throughput on separate hardware, measure cross-site propagation, and the
-supply-chain items NFR-005 still lacks (T10.10).
+Tracked as M10 in `spec/10-roadmap-and-tasks.md`. Left: Pi 4 throughput (needs a Pi that isn't
+serving the home network) and the cross-site config propagation p95 (read from the live nodes'
+logs once more versions have been published).

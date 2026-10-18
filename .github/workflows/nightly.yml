@@ -61,3 +61,29 @@ jobs:
       - name: Publish on the project site
         env: { GH_TOKEN: "${{ github.token }}" }
         run: gh workflow run pages.yml --ref main -R "$GITHUB_REPOSITORY"
+
+  # REQ: NFR-005 (T10.10) — reproducible builds: two clean builds of this commit's amd64
+  # release binary (the Dockerfile's `bin` stage, no cache) must be byte-identical. The build
+  # identity is the commit's (as the image workflow stamps it), so anyone can rebuild a release
+  # and compare it with the published binary.
+  reproducible:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build twice from scratch and compare
+        run: |
+          date=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
+          args="--build-arg TELLTALE_BUILD_VERSION=repro --build-arg TELLTALE_BUILD_COMMIT=${GITHUB_SHA::7} --build-arg TELLTALE_BUILD_DATE=$date --build-arg TELLTALE_BUILD_CHANNEL=dev --build-arg SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)"
+          for n in 1 2; do
+            docker buildx build --no-cache $args --platform linux/amd64 --target bin --output "type=local,dest=out$n" .
+            docker buildx prune -af >/dev/null
+          done
+          sha256sum out1/telltale out2/telltale
+          if cmp -s out1/telltale out2/telltale; then
+            echo "## Reproducible: two clean builds of ${GITHUB_SHA::7} are identical" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::two clean builds of the same commit differ ($(cmp -l out1/telltale out2/telltale | wc -l) bytes)"
+            exit 1
+          fi

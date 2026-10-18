@@ -174,6 +174,17 @@ The same build identity, and how the node was installed (`native`, `container`, 
 - **Where it shows:** an **update** pill next to the version in the sidebar, the Version and updates panel (with the step for your install), the Cluster page (each node's version), and `telltale_update_available` (1 when an update exists).
 - **Air-gapped:** `[updates] check = false` means nothing leaves the node; `[updates] index_url` points at a mirror (still verified with the built-in key).
 
+**Checking what you run** (NFR-005):
+- **Binaries:** `SHA256SUMS` is signed with the release key (minisign; `install.sh` and `telltale self-update` check it for you). The public key is `deploy/release/telltale-release.pub`.
+- **Images** are signed with [cosign](https://docs.sigstore.dev/) through GitHub's keyless signing: the signature names the repository's image workflow, and is in Sigstore's public log.
+  ```sh
+  cosign verify ghcr.io/paimonsoror/telltale:0.5.0 \
+    --certificate-identity-regexp '^https://github\.com/paimonsoror/telltaledns/\.github/workflows/image\.yml@' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  ```
+- **What's inside:** each binary carries its dependency list (`cargo audit bin telltale` reads it), and every release has a CycloneDX SBOM per binary (`telltale-<arch>-linux.cdx.json`, listed in the signed `SHA256SUMS`).
+- **Rebuilding:** a release builds the same bytes from the same commit. The build date in `--version` is the commit's time. To compare, build the Dockerfile's `bin` stage with the build arguments `--version` shows (`TELLTALE_BUILD_VERSION`, `TELLTALE_BUILD_COMMIT`, `TELLTALE_BUILD_DATE`, `TELLTALE_BUILD_CHANNEL`) and `SOURCE_DATE_EPOCH` set to the commit's Unix time, then compare checksums. A nightly job builds every commit twice from scratch and fails if the two differ.
+
 TelltaleDNS never updates itself from the UI. The panel shows the step for your install:
 - **Native:** `sudo telltale self-update --restart` (`--channel edge` for edge).
 - **Container:** `docker compose pull && docker compose up -d`.

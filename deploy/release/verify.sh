@@ -5,7 +5,7 @@
 #
 #   deploy/release/verify.sh 0.1.0
 #
-# Needs: curl, minisign, sha256sum, helm, and docker (buildx) or crane.
+# Needs: curl, minisign, sha256sum, helm, cosign, and docker (buildx) or crane.
 set -eu
 v=${1:?usage: verify.sh <X.Y.Z>}
 repo=${GITHUB_REPOSITORY:-paimonsoror/telltaledns}
@@ -37,6 +37,8 @@ else
 fi
 for t in x86_64-linux aarch64-linux armv7-linux; do
   grep -q " telltale-$t\$" "$tmp/SHA256SUMS" || bad "no telltale-$t in SHA256SUMS"
+  # REQ: NFR-005 (T10.10) — a CycloneDX SBOM per binary, under the signed sums.
+  grep -q " telltale-$t.cdx.json\$" "$tmp/SHA256SUMS" || bad "no SBOM telltale-$t.cdx.json in SHA256SUMS"
 done
 grep -q "\"channel\": \"stable\"" "$tmp/releases.json" && grep -q "\"version\": \"$v\"" "$tmp/releases.json" &&
   ok "releases.json: channel stable, version $v" || bad "releases.json isn't stable $v"
@@ -70,6 +72,14 @@ else
   if command -v docker >/dev/null 2>&1; then
     plats=$(docker buildx imagetools inspect "$image:$v" | grep -c 'Platform: *linux/\(amd64\|arm64\|arm/v7\)' || true)
     [ "$plats" -ge 3 ] && ok "image has amd64, arm64, arm/v7" || bad "image platforms: $plats of 3"
+  fi
+  # REQ: NFR-005 (T10.10) — signed keylessly by the image workflow of this repository.
+  if cosign verify "$image@$want" \
+    --certificate-identity-regexp "^https://github\.com/$repo/\.github/workflows/image\.yml@" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+    ok "image $v signed (cosign, the image workflow's identity)"
+  else
+    bad "image $v has no valid cosign signature from the image workflow"
   fi
 fi
 

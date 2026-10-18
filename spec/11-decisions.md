@@ -1291,6 +1291,15 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-146 — Supply chain: auditable binaries, SBOMs from them, keyless image signatures, reproducible builds (Proposed)
+**Context:** T10.10 (NFR-005: `cargo-deny`, `cargo-auditable`, a CycloneDX SBOM, cosign-signed images, reproducible builds). `cargo-deny` already ran in CI and the binaries were already minisign-signed (ADR-046); the rest was missing. Two clean builds of the same tree differed: C code linked into the binary (mimalloc) embeds `__TIME__`, and the build date stamped into `--version` was the time of the build.
+**Decision:**
+- Release binaries are built with `cargo auditable` (pinned, checksum-verified like the other build tools): a compressed dependency list in a `.dep-v0` section, which CI checks is present in every binary.
+- The SBOM is read from the binary, not from `Cargo.lock`: `syft` (pinned) writes one CycloneDX JSON per binary (`telltale-<arch>-linux.cdx.json`), checked to list the crates it should, published with the release, and covered by the minisign-signed `SHA256SUMS`.
+- Images are signed by digest with cosign, keyless (the image workflow's GitHub OIDC identity; Fulcio certificate, Rekor log), on every push to `edge` and every release tag; the workflow verifies the signature it made, and `deploy/release/verify.sh` checks it for stable releases. No signing key to keep.
+- Builds are reproducible from the commit: the build date is the commit's time, and `SOURCE_DATE_EPOCH` (the commit's Unix time) is passed to the Docker build, so compilers take `__DATE__`/`__TIME__` from it and BuildKit stamps layers with it. A nightly job builds the amd64 release binary twice without cache and fails if they differ.
+**Consequences:** `--version`'s "built" date is the commit's date. Reproducing a published binary needs the same build arguments the workflow passes (all derived from the commit and the run: version, commit, date, channel, `SOURCE_DATE_EPOCH`). The image job needs `id-token: write`. The nightly reproducibility check costs two uncached builds (about 20 minutes each on a runner).
+
 ## ADR-145 — A recompiled filter goes live before its FSTs are written (Proposed)
 **Context:** T10.3 (FLT-003, `00` §5: a 2M-name recompile within 8 s on a Pi 4). On the Pi the one-thread recompile took 11.8 s, 8.1 s of it building the domain FSTs (the `fst` crate's builder, about 4 µs a name on one core); two threads cost more p99 during the compile, so the owner kept one thread (2026-10-17) and chose this change. The FSTs are the snapshot's on-disk form (cold start, replication, the walk fallback); queries are answered from the hash index (ADR-020), which `load` used to build from the FSTs after the compile.
 **Decision (owner, 2026-10-17: "I'll follow your recommendation"):**

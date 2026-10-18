@@ -28,6 +28,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # REQ: NFR-005 (T10.10) — cosign signs the pushed images keylessly with this run's
+      # GitHub OIDC identity (Sigstore's Fulcio certificate, Rekor transparency log).
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -43,12 +46,15 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then bv="${GITHUB_REF_NAME#v}"; ch=stable
           elif [[ "$GITHUB_REF" == refs/heads/main ]]; then bv="${pkg}-edge.${GITHUB_RUN_NUMBER}"; ch=edge
           else bv="${pkg}-pr.${GITHUB_RUN_NUMBER}"; ch=dev; fi
-          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # REQ: NFR-005 (T10.10) — the commit's time, not the build's: the same commit builds
+          # the same bytes (a rebuild can be compared with what was published).
+          date=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
           {
             echo "build_version=$bv"; echo "build_channel=$ch"; echo "build_date=$date"
             echo "build_commit=${GITHUB_SHA::7}"
           } >> "$GITHUB_OUTPUT"
-          echo "BUILD_ARGS=--build-arg TELLTALE_BUILD_VERSION=$bv --build-arg TELLTALE_BUILD_COMMIT=${GITHUB_SHA::7} --build-arg TELLTALE_BUILD_DATE=$date --build-arg TELLTALE_BUILD_CHANNEL=$ch" >> "$GITHUB_ENV"
+          sde=$(git log -1 --format=%ct)
+          echo "BUILD_ARGS=--build-arg TELLTALE_BUILD_VERSION=$bv --build-arg TELLTALE_BUILD_COMMIT=${GITHUB_SHA::7} --build-arg TELLTALE_BUILD_DATE=$date --build-arg TELLTALE_BUILD_CHANNEL=$ch --build-arg SOURCE_DATE_EPOCH=$sde" >> "$GITHUB_ENV"
 
       - name: Build all platforms (OCI layout)
         run: |
@@ -86,7 +92,25 @@ jobs:
           for f in dist/telltale-*; do
             grep -aqF "$line" "$f" || { echo "::error::$f doesn't carry '$line'"; exit 1; }
           done
-          (cd dist && sha256sum telltale-* > SHA256SUMS && cat SHA256SUMS)
+
+      # REQ: NFR-005 (T10.10) — each binary carries its dependency list (cargo-auditable), and
+      # each gets a CycloneDX SBOM read from that list, published with the release and covered
+      # by the signed SHA256SUMS.
+      - name: Dependency data and SBOMs
+        run: |
+          for f in dist/telltale-*-linux; do
+            readelf -S "$f" | grep -q '\.dep-v0' || { echo "::error::$f has no cargo-auditable data"; exit 1; }
+          done
+          curl -fsSLo /tmp/syft.tgz https://github.com/anchore/syft/releases/download/v1.54.1/syft_1.54.1_linux_amd64.tar.gz
+          echo "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47  /tmp/syft.tgz" | sha256sum -c -
+          tar -xzf /tmp/syft.tgz -C /tmp syft
+          for f in dist/telltale-*-linux; do
+            /tmp/syft scan "file:$f" -q -o "cyclonedx-json=$f.cdx.json"
+          done
+          python3 deploy/release/sbom_check.py dist/telltale-*-linux.cdx.json
+
+      - name: Checksums
+        run: (cd dist && sha256sum telltale-* > SHA256SUMS && cat SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -101,9 +125,10 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker buildx build $BUILD_ARGS --platform "$PLATFORMS" \
             --build-arg VERSION=edge --build-arg REVISION="$GITHUB_SHA" \
-            --cache-from type=gha \
+            --cache-from type=gha --metadata-file "$RUNNER_TEMP/edge.json" \
             -t "$IMAGE:edge" -t "$IMAGE:sha-${GITHUB_SHA::7}" --push .
           python3 deploy/image/size.py --remote "$IMAGE:edge"
+          sh .github/scripts/cosign-sign.sh "$IMAGE" "$RUNNER_TEMP/edge.json"
 
       - name: Push release tags
         if: startsWith(github.ref, 'refs/tags/v')
@@ -116,7 +141,8 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker buildx build $BUILD_ARGS --platform "$PLATFORMS" \
             --build-arg VERSION="$v" --build-arg REVISION="$GITHUB_SHA" \
-            --cache-from type=gha "${tags[@]}" --push .
+            --cache-from type=gha --metadata-file "$RUNNER_TEMP/release.json" "${tags[@]}" --push .
+          sh .github/scripts/cosign-sign.sh "$IMAGE" "$RUNNER_TEMP/release.json"
 
   # REQ: OPS-002 — the Helm chart as an OCI artifact, so others install it without cloning:
   # `helm install telltale oci://ghcr.io/<owner>/charts/telltale --version <v>`. Main
@@ -229,6 +255,9 @@ jobs:
       - name: Verify the release
         run: |
           sh .github/scripts/apt-install.sh minisign
+          sudo curl -fsSLo /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+          echo "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  /usr/local/bin/cosign" | sha256sum -c -
+          sudo chmod 755 /usr/local/bin/cosign
           # The registry and "latest release" can lag the publish by a little.
           for i in 1 2 3; do
             sh deploy/release/verify.sh "${GITHUB_REF_NAME#v}" && exit 0

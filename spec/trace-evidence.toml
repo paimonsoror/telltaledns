@@ -7,8 +7,8 @@
   "results and method in `docs/v1-gate.md` (M10)",
 ]
 "NFR-005" = [
-  "**partly met:** `cargo-deny` (licenses, advisories, sources) is the CI `deny` job; release binaries and `SHA256SUMS` are minisign-signed (`image.yml`)",
-  "**open (T10.10):** `cargo-auditable` builds, a CycloneDX SBOM, cosign-signed images, a reproducibility check",
+  "`cargo-deny` (licenses, advisories, sources) is the CI `deny` job; release binaries and `SHA256SUMS` are minisign-signed (`image.yml`)",
+  "T10.10 (ADR-146): `cargo auditable` release builds, checked for the `.dep-v0` section (`image.yml`); a CycloneDX SBOM per binary from `syft`, checked by `deploy/release/sbom_check.py` and listed in the signed `SHA256SUMS`; keyless cosign signatures on every pushed image, verified (`.github/scripts/cosign-sign.sh`, `deploy/release/verify.sh`); the nightly `reproducible` job compares two uncached builds",
 ]
 "NFR-006" = [
   "clean-room rule in `AGENTS.md` (rule 6) and `docs/analysis.md` (what was learned from public docs only)",

@@ -27,6 +27,9 @@ ARG TARGETVARIANT
 ARG PROFILE=release
 ARG ZIG_VERSION=0.15.2
 ARG ZIGBUILD_VERSION=0.23.4
+# REQ: NFR-005 (T10.10) — release binaries carry their dependency list (`cargo audit bin`,
+# syft and other scanners read it).
+ARG AUDITABLE_VERSION=0.7.7
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils tzdata \
@@ -47,9 +50,16 @@ RUN set -eu; \
       echo "9e3cf73485edbd45905c8aadbc0fdf869c7ddc3848f0c898229f2680db52e44b  /tmp/zb.tar.xz" | sha256sum -c -; \
       tar -xJf /tmp/zb.tar.xz -C /usr/local/cargo/bin --strip-components=1 \
         cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild && rm /tmp/zb.tar.xz; \
+      curl -fsSLo /tmp/ca.tar.xz "https://github.com/rust-secure-code/cargo-auditable/releases/download/v${AUDITABLE_VERSION}/cargo-auditable-x86_64-unknown-linux-musl.tar.xz"; \
+      echo "7676443367c5e33d9fb22acef63cccb5e9202de12dae1b0579995eb3e2bc7a18  /tmp/ca.tar.xz" | sha256sum -c -; \
+      mkdir /tmp/ca && tar -xJf /tmp/ca.tar.xz -C /tmp/ca && rm /tmp/ca.tar.xz; \
+      find /tmp/ca -type f -name cargo-auditable -exec install -m 755 {} /usr/local/cargo/bin/ \; ; \
+      rm -rf /tmp/ca; \
     else \
       cargo install --locked cargo-zigbuild --version "${ZIGBUILD_VERSION}"; \
-    fi
+      cargo install --locked cargo-auditable --version "${AUDITABLE_VERSION}"; \
+    fi; \
+    cargo auditable --version
 ENV PATH="/opt/zig:${PATH}"
 
 RUN case "${TARGETARCH}${TARGETVARIANT}" in \
@@ -66,12 +76,16 @@ ARG TELLTALE_BUILD_VERSION=dev
 ARG TELLTALE_BUILD_COMMIT=
 ARG TELLTALE_BUILD_DATE=
 ARG TELLTALE_BUILD_CHANNEL=dev
+# REQ: NFR-005 (T10.10) — reproducible builds: C code compiled into the binary (mimalloc,
+# zstd) takes `__DATE__`/`__TIME__` from this instead of the clock (CI passes the commit's
+# time); BuildKit stamps the image layers with it too. Unset, a local build uses the clock.
+ARG SOURCE_DATE_EPOCH
 COPY . .
 COPY --from=ui /ui/dist /src/ui/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=telltale-target-${TARGETARCH}${TARGETVARIANT},sharing=locked \
     set -eu; t="$(cat /rust-target)"; \
-    cargo zigbuild --locked --profile "${PROFILE}" -p telltale --target "$t"; \
+    cargo auditable zigbuild --locked --profile "${PROFILE}" -p telltale --target "$t"; \
     mkdir -p /out/usr/local/bin /out/etc/ssl/certs /out/var/lib/telltale /out/etc/telltale /out/usr/share; \
     cp "target/$t/${PROFILE}/telltale" /out/usr/local/bin/telltale; \
     cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
