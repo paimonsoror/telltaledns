@@ -277,32 +277,35 @@
 <div class="page">
   <div class="page-head">
     <h1>Dashboard<HelpButton id="how-it-works" /></h1>
-    {#if nodes.length > 1}
-      <!-- REQ: CLU-002 — every node together, or one node (or site) at a time. -->
-      <label class="small">
-        Showing
-        <select bind:value={scope} aria-label="Nodes">
-          <option value="">every node</option>
-          {#each nodes as n (n.nodeId)}<option value={`node:${n.nodeId}`}>{nodeLabel(n)}</option>{/each}
-          {#each podSites as s (s)}<option value={`site:${s}`}>site {s} (all its nodes)</option>{/each}
-        </select>
-      </label>
-    {/if}
-    {#if groups.length > 1}
-      <label class="small">
-        Top lists for
-        <select bind:value={group} aria-label="Group">
-          <option value="">every device</option>
-          {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
-        </select>
-      </label>
-    {/if}
-    <div class="seg" role="group" aria-label="Time range">
-      {#each ranges as r (r.id)}
-        <button aria-pressed={range.id === r.id} onclick={() => (range = r)}>{r.label}</button>
-      {/each}
+    <!-- The view controls, one group: on a narrow screen they wrap together below the heading. -->
+    <div class="head-controls">
+      {#if nodes.length > 1}
+        <!-- REQ: CLU-002 — every node together, or one node (or site) at a time. -->
+        <label class="pill-field">
+          Showing
+          <select bind:value={scope} aria-label="Nodes">
+            <option value="">every node</option>
+            {#each nodes as n (n.nodeId)}<option value={`node:${n.nodeId}`}>{nodeLabel(n)}</option>{/each}
+            {#each podSites as s (s)}<option value={`site:${s}`}>site {s} (all its nodes)</option>{/each}
+          </select>
+        </label>
+      {/if}
+      {#if groups.length > 1}
+        <label class="pill-field">
+          Top lists for
+          <select bind:value={group} aria-label="Group">
+            <option value="">every device</option>
+            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+          </select>
+        </label>
+      {/if}
+      <div class="seg" role="group" aria-label="Time range">
+        {#each ranges as r (r.id)}
+          <button aria-pressed={range.id === r.id} onclick={() => (range = r)}>{r.label}</button>
+        {/each}
+      </div>
+      <ChangesControls />
     </div>
-    <ChangesControls />
   </div>
   <ChangesControls part="body" {advanced} />
 
@@ -441,6 +444,13 @@
 </div>
 
 <style>
+  /* The header's view controls stay together, right of the heading; they wrap as one group. */
+  .head-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
   /* REQ: OBS-030 — the heatmap takes the row's width. */
   .card.wide {
     grid-column: 1 / -1;

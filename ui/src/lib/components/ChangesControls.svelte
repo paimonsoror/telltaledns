@@ -35,10 +35,12 @@
 </script>
 
 {#if part === 'head'}
+<!-- Shaped like the time-range control next to it: a track, a switch, and Note… as a segment. -->
 <div class="changes-controls">
-  <label class="small toggle">
+  <label class="switch">
     <input
       type="checkbox"
+      role="switch"
       checked={changes.show}
       onchange={(e) => changes.toggle(e.currentTarget.checked)}
       data-testid="changes-toggle"
@@ -47,7 +49,7 @@
   </label>
   <HelpButton id="change-markers" />
   {#if can('operator')}
-    <button type="button" class="small" aria-expanded={changes.noting} onclick={() => (changes.noting = !changes.noting)} data-testid="note-open">Note…</button>
+    <button type="button" class="note-btn" aria-expanded={changes.noting} onclick={() => (changes.noting = !changes.noting)} data-testid="note-open">Note…</button>
   {/if}
 </div>
 {:else}
@@ -94,12 +96,76 @@
   .changes-controls {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 2px;
+    padding: 3px 3px 3px 12px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    white-space: nowrap;
   }
-  .toggle {
+  .switch {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
+    min-height: 28px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .switch:has(input:checked) {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .switch input {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 28px;
+    height: 16px;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--muted) 55%, var(--surface-2));
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .switch input::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgb(16 24 40 / 25%);
+    transition: transform 0.15s;
+  }
+  .switch input:checked {
+    background: var(--accent);
+  }
+  .switch input:checked::before {
+    transform: translateX(12px);
+  }
+  .note-btn {
+    border: 0;
+    border-radius: 999px;
+    min-height: 28px;
+    padding: 3px 12px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .note-btn:hover,
+  .note-btn[aria-expanded='true'] {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .switch input,
+    .switch input::before {
+      transition: none;
+    }
   }
   .note-form {
     display: flex;

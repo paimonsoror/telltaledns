@@ -387,6 +387,37 @@ form.stack {
   box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
 }
 
+/* A labeled select shaped like .seg: the label on the track, the value like a pressed segment
+   (the dashboard header's view filters). */
+.pill-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 3px 3px 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pill-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 999px;
+  min-height: 28px;
+  max-width: 15rem;
+  padding: 3px 30px 3px 12px;
+  background-color: var(--surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a97a6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 10px 6px;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
+  cursor: pointer;
+}
 /* Tables */
 .table-wrap {
   overflow-x: auto;
