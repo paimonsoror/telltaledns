@@ -2,7 +2,7 @@
   // REQ: OBS-029 (ADR-129) — the rhythm heatmap: when the network (or one device, or one name)
   // asks, as days × time of day. The Traffic map says what; this says when. Built on the time
   // buckets and the hourly top lists: nothing new is counted.
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { api, type S } from '../lib/api';
   import { href, navigate, route } from '../lib/router.svelte';
   import { num } from '../lib/format';
@@ -67,7 +67,33 @@
   const grid = $derived<Grid | null>(
     data ? layout(data.starts, data.values, data.covered ?? null, data.slotSeconds, fold) : null,
   );
-  const geo = $derived(grid && width > 0 ? geometry(grid, width, 96, 52) : null);
+  let wrap = $state<HTMLDivElement | undefined>();
+  let innerHeight = $state(0);
+  // How far down the page the grid starts (the notes above it move it).
+  let top = $state(0);
+  $effect(() => {
+    void [innerHeight, width, data, showTable];
+    if (wrap) top = wrap.getBoundingClientRect().top + window.scrollY;
+  });
+  // Rows fill the window's height below the grid's top, less the legend and margins below.
+  const geo = $derived(grid && width > 0 ? geometry(grid, width, 96, 52, innerHeight - top - 120) : null);
+
+  // Links and Back change the URL without remounting the page.
+  $effect(() => {
+    const q = route.params;
+    // Only the URL is a dependency: the controls' own changes don't snap back.
+    untrack(() => {
+      const k = q.get('kind') ?? '';
+      kind = (['network', 'client', 'name'].includes(k) ? k : 'network') as Kind;
+      key = q.get('key') ?? '';
+      keyInput = key;
+      const w = windows.find((x) => x.id === q.get('window')) ?? windows[1];
+      if (w.id !== win.id) win = w;
+      grain = q.get('grain') ?? '15m';
+      measure = q.get('measure') === 'blocked' ? 'blocked' : 'queries';
+      fold = q.get('fold') === '1';
+    });
+  });
 
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
   let themeTick = $state(0);
@@ -184,7 +210,8 @@
   function setKey(e: SubmitEvent) {
     e.preventDefault();
     key = keyInput.trim();
-    navigate('/heatmap', { kind, key, window: win.id }, true);
+    // Everything shown goes in the URL: the URL is read back on every change.
+    navigate('/heatmap', { kind, key, window: win.id, grain: grain === '15m' ? undefined : grain, measure: measure === 'blocked' ? measure : undefined, fold: fold ? '1' : undefined }, true);
   }
   const kinds: { id: Kind; label: string }[] = [
     { id: 'network', label: 'Network' },
@@ -206,6 +233,8 @@
     }));
   });
 </script>
+
+<svelte:window bind:innerHeight />
 
 <div class="page">
   <div class="page-head">
@@ -282,7 +311,7 @@
         </table>
       </div>
     {/if}
-    <div class="grid-wrap" bind:clientWidth={width} hidden={!data || showTable}>
+    <div class="grid-wrap" bind:this={wrap} bind:clientWidth={width} hidden={!data || showTable}>
       <div
         class="grid-focus"
         tabindex="0"

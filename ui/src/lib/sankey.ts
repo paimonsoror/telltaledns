@@ -81,15 +81,31 @@ export function layout(nodes: FlowNode[], links: FlowLink[], width: number, heig
   const scale = Math.max(0, across - gap * (crowd - 1)) / biggest;
   const step = (along - nodeW) / (STAGES.length - 1);
   const placed: PlacedNode[] = [];
+  const centre = new Map<string, number>();
   cols.forEach((c, ci) => {
-    let at = 0;
-    for (const n of c) {
+    // A column with room to spare (upstreams carry only forwarded answers) puts each node level
+    // with what flows into it, keeping the column's order: a band then runs across instead of
+    // climbing over the others. The first column, and a full one, simply stack.
+    const want = c.map((n) => {
+      let w = 0;
+      let at = 0;
+      for (const l of links) {
+        const from = l.target === n.id ? centre.get(l.source) : undefined;
+        if (from !== undefined && l.count > 0) {
+          w += l.count;
+          at += l.count * from;
+        }
+      }
+      return w > 0 ? at / w - (n.count * scale) / 2 : 0;
+    });
+    const tops = settle(c.map((n) => n.count * scale), ci === 0 ? c.map(() => 0) : want, gap, across);
+    c.forEach((n, i) => {
       const h = n.count * scale;
       // Stored in screen terms: x and w across the page, y and h down it.
       const a = ci * step;
-      placed.push(vertical ? { ...n, col: ci, x: at, y: a, w: h, h: nodeW } : { ...n, col: ci, x: a, y: at, w: nodeW, h });
-      at += h + gap;
-    }
+      placed.push(vertical ? { ...n, col: ci, x: tops[i], y: a, w: h, h: nodeW } : { ...n, col: ci, x: a, y: tops[i], w: nodeW, h });
+      centre.set(n.id, tops[i] + h / 2);
+    });
   });
   const byId = new Map(placed.map((n) => [n.id, n]));
   const offset = (n: PlacedNode) => (vertical ? n.x : n.y);
@@ -132,6 +148,23 @@ export function layout(nodes: FlowNode[], links: FlowLink[], width: number, heig
     width,
     height,
   };
+}
+
+/**
+ * Tops for nodes of `sizes` (in order) as close to `want` as they fit in `0..room`, `gap` apart,
+ * order kept: pushed down past the one before, then up from the end.
+ */
+export function settle(sizes: number[], want: number[], gap: number, room: number): number[] {
+  const tops: number[] = [];
+  for (let i = 0; i < sizes.length; i++) {
+    const after = i ? tops[i - 1] + sizes[i - 1] + gap : 0;
+    tops.push(Math.max(after, want[i]));
+  }
+  for (let i = sizes.length - 1; i >= 0; i--) {
+    const below = i === sizes.length - 1 ? room : tops[i + 1] - gap;
+    tops[i] = Math.max(0, Math.min(tops[i], below - sizes[i]));
+  }
+  return tops;
 }
 
 /** A link's share of every answer and of its source's, as text. */

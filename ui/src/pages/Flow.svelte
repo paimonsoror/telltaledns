@@ -2,7 +2,7 @@
   // REQ: OBS-032 (ADR-132) — the query flow: groups → decision → upstream → response code, for
   // the network (the time buckets' joint counts) or one device (its query log). Each band is
   // an exact counter for its pair; nothing is split proportionally.
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { api, type S } from '../lib/api';
   import { href, navigate, route } from '../lib/router.svelte';
   import { clock, num } from '../lib/format';
@@ -34,6 +34,23 @@
   let updated = $state(0);
   let width = $state(0);
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
+  let wrap = $state<HTMLDivElement | undefined>();
+  let innerHeight = $state(0);
+  // How far down the page the diagram starts (the notes above it move it).
+  let top = $state(0);
+
+  // Links and Back change the URL without remounting the page.
+  $effect(() => {
+    const q = route.params;
+    // Only the URL is a dependency: the controls' own changes don't snap back.
+    untrack(() => {
+      client = q.get('client') ?? '';
+      clientInput = client;
+      device = !!client;
+      const w = windows.find((x) => x.id === q.get('window')) ?? windows[1];
+      if (w.id !== win.id) win = w;
+    });
+  });
 
   async function load() {
     if (device && !client) {
@@ -62,7 +79,14 @@
   const folded = $derived(data ? fold(data.nodes as FlowNode[], data.links as FlowLink[], data.total, showSmall ? 0 : SMALL) : null);
   const vertical = $derived(width > 0 && width < 560);
   const crowd = $derived(folded ? Math.max(...STAGES.map((s) => folded.nodes.filter((n) => n.stage === s).length)) : 0);
-  const height = $derived(vertical ? 560 : Math.max(320, crowd * 30));
+  $effect(() => {
+    void [innerHeight, width, data, showTable];
+    if (wrap) top = wrap.getBoundingClientRect().top + window.scrollY;
+  });
+  // The window's height below the diagram's top, less the stage names above it and the legend
+  // and margins below: thicker bands and more labels on a big screen, never under 320 px.
+  const fit = $derived(Math.min(1000, innerHeight - top - 120));
+  const height = $derived(vertical ? 560 : Math.max(320, crowd * 30, fit));
   // Room for the labels: the first three columns label to their right, the last to its left.
   const pad = $derived(vertical ? 0 : 4);
   const lay = $derived(folded && width > 0 ? layout(folded.nodes, folded.links, width - 2 * pad, height - (vertical ? 24 : 0), vertical) : null);
@@ -148,6 +172,8 @@
   );
 </script>
 
+<svelte:window bind:innerHeight />
+
 <div class="page">
   <div class="page-head">
     <h1>Flow<HelpButton id="flow" /></h1>
@@ -209,7 +235,7 @@
         </table>
       </div>
     {/if}
-    <div class="flow-wrap" bind:clientWidth={width} hidden={!data || !data.total || showTable}>
+    <div class="flow-wrap" bind:this={wrap} bind:clientWidth={width} hidden={!data || !data.total || showTable}>
       {#if lay}
         {#if !vertical}
           <div class="stages" aria-hidden="true">{#each STAGES as s (s)}<span>{STAGE_LABEL[s]}</span>{/each}</div>

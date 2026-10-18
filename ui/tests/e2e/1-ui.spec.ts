@@ -1894,6 +1894,12 @@ test('obs_029 heatmap', async () => {
   await page.getByRole('button', { name: 'Table', exact: true }).click();
   await expect(page.getByTestId('heatmap-table')).toContainText('125');
   await page.getByRole('button', { name: 'Grid', exact: true }).click();
+  // Two days fill the window's height (rows up to 64 px), not 26 px rows.
+  expect((await canvas.boundingBox())!.height).toBeGreaterThan(130);
+  // A link to the page it's on (or Back) changes what it shows.
+  await page.goto('/#/heatmap?kind=client&key=192.168.2.14&window=30d');
+  await expect(page.getByRole('button', { name: '30 d', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('heatmap-key')).toHaveValue('192.168.2.14');
   await canvas.click({ position: { x: 112, y: 26 } });
   await expect(page).toHaveURL(/#\/queries\?.*client=192\.168\.2\.14/);
   await page.unroute('**/api/v1/stats/heatmap*');
@@ -2003,6 +2009,11 @@ test('obs_032 flow', async () => {
     const c = ns.filter((n) => n.col === col).sort((a, b) => a.y - b.y);
     for (let i = 1; i < c.length; i++) expect(c[i].y).toBeGreaterThanOrEqual(c[i - 1].y + c[i - 1].h - 0.01);
   }
+  // The upstreams sit level with what feeds them (forwarded, servfail), not at the top; and the
+  // diagram takes the window's height (800 px here), not the 320 px minimum.
+  const fwd = ns.find((n) => n.id === 'status:forwarded')!;
+  expect(Math.min(...ns.filter((n) => n.col === 2).map((n) => n.y))).toBeGreaterThanOrEqual(fwd.y - 0.01);
+  expect(Number(await svg.getAttribute('height'))).toBeGreaterThan(340);
   const links = await svg.getByTestId('flow-link').evaluateAll((els) =>
     els.map((e) => ({ s: e.dataset.source ?? '', t: e.dataset.target ?? '', w: Number(e.dataset.width), y0: Number(e.dataset.y0), y1: Number(e.dataset.y1) })),
   );
@@ -2044,6 +2055,10 @@ test('obs_032 flow', async () => {
   await expect(page.getByTestId('flow-table')).toContainText('Upstream quad9-1');
   await expect(page.getByTestId('flow-table').locator('tr.fail')).toHaveCount(2);
   await page.getByRole('button', { name: 'Diagram', exact: true }).click();
+  // A link to the page it's on (or Back) changes what it shows.
+  await page.goto('/#/flow?window=24h');
+  await expect(page.getByRole('button', { name: '24 h', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(svg).toBeVisible();
   await svg.locator('[data-id="status:blocked"]').click();
   await expect(page).toHaveURL(/#\/lists/);
   // The phone layout: stages top to bottom.

@@ -122,10 +122,15 @@ export interface Geometry {
   ch: number;
 }
 
-/** Cell size for a grid drawn `width` wide (labels and marginals included). */
-export function geometry(grid: Grid, width: number, labelWidth: number, marginal: number): Geometry {
+/**
+ * Cell size for a grid drawn `width` wide (labels and marginals included). With `room` (the
+ * height the whole drawing may take), rows grow to fill it, up to 64 px: cells needn't be square.
+ */
+export function geometry(grid: Grid, width: number, labelWidth: number, marginal: number, room = 0): Geometry {
   const cw = Math.max(1, (width - labelWidth - marginal - 8) / grid.cols);
-  const ch = grid.cols > 100 ? 14 : Math.max(14, Math.min(26, cw));
+  const base = grid.cols > 100 ? 14 : Math.max(14, Math.min(26, cw));
+  const fill = Math.floor((room - 18 - 34) / Math.max(1, grid.rows.length));
+  const ch = Math.max(base, Math.min(64, fill));
   return { x0: labelWidth, y0: 18, cw, ch };
 }
 
