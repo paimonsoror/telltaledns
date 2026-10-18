@@ -21,10 +21,11 @@ use fst::MapBuilder;
 
 use self::listset::{Class, ListSetBuilder};
 use self::sort::{Record, Sorter, merge};
+use crate::matcher::{IndexBuilder, Matcher};
 use crate::parse::{Action, ListOptions, Modifiers, ParseStats, Pattern, Rule, Scope, parse_list};
 use crate::snapshot::{
     self, Blob, CompileStats, ListCompileStats, Manifest, ManifestList, ModRule, ModRules,
-    NegValue, RegexRule, Regexes,
+    NegValue, RegexRule, Regexes, Snapshot,
 };
 
 /// One list to compile. Its ID is its position in the input.
@@ -125,6 +126,9 @@ pub struct Timings {
     pub merge: Duration,
     pub tables: Duration,
     pub total: Duration,
+    /// REQ: FLT-003 (T10.3, ADR-145) — from the start until the recompiled filter could
+    /// answer ([`compile_live`]'s callback), before the FSTs were written; `None` without one.
+    pub ready: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +216,8 @@ fn regex_rule(list: u16, line: u32, pattern: &str, invert: bool, rule: &Rule) ->
 struct Parsed {
     sorter_sources: Vec<sort::Source>,
     runs: usize,
+    /// Records per scope (ADR-145: the lookup index's size).
+    scope_records: [u64; 3],
     mods: Vec<(Vec<u8>, ModRule, Rule)>,
     regexes: Vec<(RegexRule, Rule)>,
     /// `$badfilter` targets among plain domain rules: key → bitmask of classes.
@@ -336,6 +342,7 @@ fn parse_bucket(bucket: Vec<Unit>, budget: usize, tmp: &Path, tag: &str) -> io::
     let mut out = Parsed {
         sorter_sources: Vec::new(),
         runs: 0,
+        scope_records: [0; 3],
         mods: Vec::new(),
         regexes: Vec::new(),
         bad_domains: HashMap::new(),
@@ -404,6 +411,7 @@ fn parse_bucket(bucket: Vec<Unit>, budget: usize, tmp: &Path, tag: &str) -> io::
         out.stats.push((id, stats));
     }
     out.runs = sorter.runs();
+    out.scope_records = sorter.scope_records();
     out.sorter_sources = sorter.finish()?;
     Ok(out)
 }
@@ -433,6 +441,20 @@ pub fn compile(
     out: &Path,
     opts: &CompileOptions,
 ) -> Result<CompileReport, CompileError> {
+    compile_live(inputs, out, opts, None::<fn(Matcher)>)
+}
+
+/// REQ: FLT-003 (T10.3, ADR-145) — like [`compile`], calling `ready` with a matcher for the
+/// new rules as soon as the merge has filled its lookup index, before the domain FSTs are
+/// written (the slow part on a Pi). The snapshot directory is finished as with [`compile`];
+/// [`Matcher::reuse_index`] then shares the index. `ready` isn't called when the snapshot
+/// can't be indexed (too many list sets): it then goes live from the directory, as before.
+pub fn compile_live(
+    inputs: Vec<ListInput>,
+    out: &Path,
+    opts: &CompileOptions,
+    ready: Option<impl FnOnce(Matcher)>,
+) -> Result<CompileReport, CompileError> {
     let started = Instant::now();
     lower_priority();
     if inputs.len() > telltale_config::MAX_LISTS {
@@ -448,7 +470,7 @@ pub fn compile(
         fs::remove_dir_all(&tmp)?;
     }
     fs::create_dir_all(&tmp)?;
-    let result = build(inputs, &tmp, opts, started);
+    let result = build(inputs, &tmp, opts, started, ready);
     match result {
         Ok(report) => {
             fs::rename(&tmp, out)?;
@@ -472,6 +494,7 @@ fn build(
     dir: &Path,
     opts: &CompileOptions,
     started: Instant,
+    ready: Option<impl FnOnce(Matcher)>,
 ) -> Result<CompileReport, CompileError> {
     let mut timings = Timings::default();
     let meta: Vec<ListMeta> = inputs
@@ -485,11 +508,9 @@ fn build(
     let count = meta.len();
 
     // Steps 1–2: parse lists in parallel into sort runs.
-    let parsed = parse_all(plan(inputs, opts.threads)?, count, dir, opts)?;
+    let mut parsed = parse_all(plan(inputs, opts.threads)?, count, dir, opts)?;
     timings.parse = started.elapsed();
 
-    // Steps 3–4: merge into the scope FSTs and the list-set table.
-    let t = Instant::now();
     let mut stats = CompileStats::default();
     let mut per_list: Vec<ListCompileStats> = (0..count)
         .map(|i| ListCompileStats {
@@ -504,8 +525,33 @@ fn build(
         sync: opts.sync,
         max_regexes: opts.max_regexes,
     };
+
+    // Steps 5–6 (first, so a live matcher has them): modifier rules and regexes.
+    let t = Instant::now();
+    let regex_errors = write_tables(
+        std::mem::take(&mut parsed.mods),
+        std::mem::take(&mut parsed.regexes),
+        &parsed.bad_rules,
+        out,
+        &meta,
+        &mut per_list,
+        &mut stats,
+    )?;
+    timings.tables = t.elapsed();
+
+    // REQ: FLT-003 (T10.3, ADR-145) — a first merge pass fills the lookup index, and the new
+    // rules answer from it while the FSTs are written.
+    if let Some(ready) = ready
+        && let Some(m) = live_matcher(&mut parsed, dir, &meta, opts, count)?
+    {
+        timings.ready = Some(started.elapsed());
+        ready(m);
+    }
+
+    // Steps 3–4: merge into the scope FSTs and the list-set table.
+    let t = Instant::now();
     let names = merge_domains(
-        parsed.sources,
+        &mut parsed.sources,
         &parsed.bad_domains,
         out,
         count,
@@ -514,19 +560,6 @@ fn build(
         &mut stats,
     )?;
     timings.merge = t.elapsed();
-
-    // Steps 5–6: modifier rules and regexes.
-    let t = Instant::now();
-    let regex_errors = write_tables(
-        parsed.mods,
-        parsed.regexes,
-        &parsed.bad_rules,
-        out,
-        &meta,
-        &mut per_list,
-        &mut stats,
-    )?;
-    timings.tables = t.elapsed();
 
     stats.per_list = per_list;
     let manifest = write_manifest(
@@ -550,6 +583,7 @@ fn build(
 /// Everything the parser threads produced, combined.
 struct Combined {
     sources: Vec<sort::Source>,
+    scope_records: [u64; 3],
     mods: Vec<(Vec<u8>, ModRule, Rule)>,
     regexes: Vec<(RegexRule, Rule)>,
     bad_domains: HashMap<Vec<u8>, u8>,
@@ -591,6 +625,7 @@ fn parse_all(
     });
     let mut c = Combined {
         sources: Vec::new(),
+        scope_records: [0; 3],
         mods: Vec::new(),
         regexes: Vec::new(),
         bad_domains: HashMap::new(),
@@ -601,6 +636,9 @@ fn parse_all(
     for p in parsed {
         let p = p?;
         c.sources.extend(p.sorter_sources);
+        for (total, n) in c.scope_records.iter_mut().zip(p.scope_records) {
+            *total += n;
+        }
         c.spilled_runs += p.runs;
         c.mods.extend(p.mods);
         c.regexes.extend(p.regexes);
@@ -615,10 +653,92 @@ fn parse_all(
     Ok(c)
 }
 
+/// REQ: FLT-003 (T10.3, ADR-145) — the first merge pass: each distinct name's list set (the
+/// same IDs the FST pass will compute: same records, same order) into a lookup index, then
+/// a matcher over a pending snapshot. `None` when the snapshot can't be indexed (too many
+/// list sets). The sources are rewound for the FST pass.
+fn live_matcher(
+    parsed: &mut Combined,
+    dir: &Path,
+    meta: &[ListMeta],
+    opts: &CompileOptions,
+    lists: usize,
+) -> Result<Option<Matcher>, CompileError> {
+    let mut sets = ListSetBuilder::new(lists);
+    let mut index = IndexBuilder::new(parsed.scope_records);
+    let mut unindexable = false;
+    let mut current: Vec<u8> = Vec::with_capacity(256);
+    let mut flush = |key: &[u8], sets: &mut ListSetBuilder| {
+        if sets.union_count().0 == 0 || unindexable {
+            return;
+        }
+        let id = sets.intern();
+        if index.insert(usize::from(key[0]), &key[1..], id).is_err() {
+            unindexable = true;
+        }
+    };
+    let bad = &parsed.bad_domains;
+    merge(&mut parsed.sources, |rec: &Record| {
+        if current != rec.key {
+            if !current.is_empty() {
+                flush(&current, &mut sets);
+            }
+            sets.clear();
+            current.clear();
+            current.extend_from_slice(&rec.key);
+        }
+        let badfiltered = !bad.is_empty()
+            && bad
+                .get(rec.key.as_slice())
+                .is_some_and(|mask| mask & (1 << rec.class) != 0);
+        if !badfiltered && let Some(class) = Class::from_u8(rec.class) {
+            sets.set(class, rec.list);
+        }
+        Ok(())
+    })?;
+    if !current.is_empty() {
+        flush(&current, &mut sets);
+    }
+    for s in &mut parsed.sources {
+        s.rewind()?;
+    }
+    if unindexable {
+        return Ok(None);
+    }
+    let manifest = Manifest {
+        format: snapshot::FORMAT,
+        version: opts.version,
+        fst_shards: u32::try_from(fst_shards(opts.threads)).unwrap_or(1),
+        created: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        lists: manifest_lists(meta),
+        blobs: Vec::new(),
+        stats: CompileStats::default(),
+    };
+    let snap = Snapshot::pending(dir, manifest, sets.finish())?;
+    Ok(Matcher::with_index(Arc::new(snap), index).ok())
+}
+
+/// The manifest's list entries (list ID = position).
+fn manifest_lists(inputs: &[ListMeta]) -> Vec<ManifestList> {
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(i, l)| ManifestList {
+            id: u16::try_from(i).unwrap_or(u16::MAX),
+            name: l.name.clone(),
+            source_hash: l.source_hash.clone(),
+            kind: l.options.kind,
+            match_mode: l.options.match_mode,
+        })
+        .collect()
+}
+
 /// Merges sorted records into the sharded scope FSTs and `listsets.bin`, applying
 /// `$badfilter`. Returns the distinct names per scope.
 fn merge_domains(
-    sources: Vec<sort::Source>,
+    sources: &mut [sort::Source],
     bad_domains: &HashMap<Vec<u8>, u8>,
     dir: OutDir<'_>,
     lists: usize,
@@ -699,7 +819,7 @@ fn merge_domains(
         .collect();
     overlap.sort_unstable_by_key(|o| (o.a, o.b));
     stats.overlap = overlap;
-    stats.badfiltered = badfiltered;
+    stats.badfiltered += badfiltered;
     [
         stats.subtree_names,
         stats.exact_names,
@@ -820,17 +940,7 @@ fn write_manifest(
         created: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
-        lists: inputs
-            .iter()
-            .enumerate()
-            .map(|(i, l)| ManifestList {
-                id: u16::try_from(i).unwrap_or(u16::MAX),
-                name: l.name.clone(),
-                source_hash: l.source_hash.clone(),
-                kind: l.options.kind,
-                match_mode: l.options.match_mode,
-            })
-            .collect(),
+        lists: manifest_lists(inputs),
         blobs,
         stats,
     };

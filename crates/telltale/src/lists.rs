@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use telltale_config::{Config, Role};
-use telltale_filter::compile::{CompileOptions, CompileReport, ListData, ListInput, compile};
+use telltale_filter::compile::{CompileOptions, CompileReport, ListData, ListInput, compile_live};
 use telltale_filter::fetch::{
     Client, FetchSettings, Fetcher, ListSpec, Outcome, Resolve, Store, SystemResolver,
 };
@@ -158,10 +158,7 @@ impl Lists {
                 settings,
                 compile_rx,
                 changed,
-                Publisher {
-                    pipeline: Arc::clone(pipeline),
-                    generation: Arc::new(AtomicU64::new(0)),
-                },
+                Publisher::new(Arc::clone(pipeline)),
             )),
         ];
         Some(Self {
@@ -299,12 +296,18 @@ fn up_to_date(manifest: &Manifest, inputs: &[(CompileSpec, String, u64)]) -> boo
         })
 }
 
+/// What gets a compile's matcher before its snapshot is finished, with the snapshot's directory.
+type LiveFn<'a> = &'a dyn Fn(Matcher, &Path);
+
 /// Compiles a new snapshot if the inputs changed. Blocking: call from a blocking thread.
+/// REQ: FLT-003 (T10.3, ADR-145) — `live` gets the new rules' matcher before the FSTs are
+/// written, with the snapshot directory it will be finished in.
 fn compile_if_changed(
     store: &Store,
     settings: &CompileSettings,
     specs: &[CompileSpec],
     force: bool,
+    live: Option<LiveFn<'_>>,
 ) -> Result<Option<(CompileReport, PathBuf)>, String> {
     let inputs = gather(store, specs);
     // Nothing downloaded yet (first start): wait for the fetcher rather than publish an
@@ -333,7 +336,7 @@ fn compile_if_changed(
             size,
         })
         .collect();
-    let report = compile(
+    let report = compile_live(
         lists,
         &out,
         &CompileOptions {
@@ -343,6 +346,7 @@ fn compile_if_changed(
             sync: settings.sync,
             max_regexes: settings.max_regexes,
         },
+        live.map(|f| |m: Matcher| f(m, &out)),
     )
     .map_err(|e| e.to_string())?;
     // Keep the newest few; older ones are only useful for rollback. Snapshots set aside as
@@ -377,6 +381,15 @@ pub(crate) struct Publisher {
     pipeline: Arc<Pipeline>,
     /// Bumped per publish; a slow index build for an older snapshot is discarded.
     generation: Arc<AtomicU64>,
+    /// REQ: FLT-003 (T10.3, ADR-145) — the matcher serving a compile's rules before its
+    /// snapshot was finished, and the one it replaced (put back if the compile then fails).
+    live: Arc<Mutex<Option<Live>>>,
+}
+
+/// See [`Publisher::live`].
+struct Live {
+    matcher: Arc<Matcher>,
+    previous: Option<Arc<Matcher>>,
 }
 
 impl Publisher {
@@ -385,6 +398,59 @@ impl Publisher {
         Self {
             pipeline,
             generation: Arc::new(AtomicU64::new(0)),
+            live: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// REQ: FLT-003 (T10.3, ADR-145) — serves a compile's rules right away, before the FSTs
+    /// of `dir` are written; [`Publisher::load`] then reuses its index. Not while the cluster
+    /// is pinned to another snapshot (CLU-013).
+    pub(crate) fn activate_live(&self, matcher: Matcher, dir: &Path) {
+        if self.pinned_elsewhere(dir) {
+            return;
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let matcher = Arc::new(matcher);
+        let previous = self
+            .pipeline
+            .filter
+            .load_full()
+            .map(|f| Arc::clone(&f.matcher));
+        self.pipeline.set_filter(Some(Arc::clone(&matcher)));
+        #[allow(clippy::cast_precision_loss)] // MiB for a log line
+        let mib = matcher.index_bytes() as f64 / f64::from(1u32 << 20);
+        info!(
+            version = matcher.snapshot().map_or(0, |s| s.manifest.version),
+            index_mib = format!("{mib:.1}"),
+            "filter active (new rules from the merge; writing the snapshot)"
+        );
+        *self.live.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(Live { matcher, previous });
+    }
+
+    /// REQ: FLT-003 (ADR-145), FLT-004 — the compile that went live failed after all: the
+    /// filter it replaced serves again, so a node never serves rules it has no snapshot of.
+    /// (With nothing before it, the new rules stay: better than no filter.)
+    pub(crate) fn revert_live(&self) {
+        let Some(live) = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let serving = self
+            .pipeline
+            .filter
+            .load_full()
+            .is_some_and(|f| Arc::ptr_eq(&f.matcher, &live.matcher));
+        if let (true, Some(prev)) = (serving, live.previous) {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            self.pipeline.set_filter(Some(prev));
+            warn!(
+                "the list compile failed after its rules went live: the previous filter serves again"
+            );
         }
     }
 
@@ -448,6 +514,28 @@ impl Publisher {
             }
         };
         let version = snap.manifest.version;
+        // REQ: FLT-003 (T10.3, ADR-145) — the snapshot whose rules already went live: same
+        // rules, and the index is built; serve it from the snapshot without another build.
+        let live = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(live) = live
+            && let Ok(Some(m)) = Matcher::reuse_index(&snap, &live.matcher)
+        {
+            if self.generation.load(Ordering::SeqCst) == generation && !self.pinned_elsewhere(dir) {
+                self.pipeline.set_filter(Some(Arc::new(m)));
+                snap.release_pages();
+                info!(
+                    version,
+                    seconds = t.elapsed().as_secs_f64(),
+                    "filter snapshot active (its lookup index was built during the compile)"
+                );
+                crate::server::trim_code_pages("filter index");
+            }
+            return;
+        }
         let store = |m: Matcher| {
             if self.generation.load(Ordering::SeqCst) == generation && !self.pinned_elsewhere(dir) {
                 self.pipeline.set_filter(Some(Arc::new(m)));
@@ -544,10 +632,18 @@ async fn compile_loop(
         // A dedicated thread, not tokio's blocking pool: compiling lowers its thread's
         // priority, and pool threads are reused for other work.
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let live_pub = publisher.clone();
         let spawned = std::thread::Builder::new()
             .name("telltale-compile".into())
             .spawn(move || {
-                let _ = tx.send(compile_if_changed(&store2, &settings2, &current, false));
+                let live = move |m: Matcher, dir: &Path| live_pub.activate_live(m, dir);
+                let _ = tx.send(compile_if_changed(
+                    &store2,
+                    &settings2,
+                    &current,
+                    false,
+                    Some(&live),
+                ));
             });
         let result = match spawned {
             Ok(_) => rx
@@ -607,8 +703,10 @@ async fn compile_loop(
             }
             Ok(Ok(None)) => {}
             // REQ: FLT-004 — a failed compile keeps the previous snapshot.
-            Ok(Err(e)) => error!("list compile failed; keeping the previous snapshot: {e}"),
-            Err(e) => error!("list compile failed; keeping the previous snapshot: {e}"),
+            Ok(Err(e)) | Err(e) => {
+                publisher.revert_live();
+                error!("list compile failed; keeping the previous snapshot: {e}");
+            }
         }
         tokio::select! {
             r = changed.changed() => if r.is_err() { return },
@@ -640,7 +738,7 @@ pub(crate) fn compile_now(
     if !missing.is_empty() {
         writeln!(out, "not downloaded yet (skipped): {}", missing.join(", ")).map_err(io)?;
     }
-    let Some((report, dir)) = compile_if_changed(&store, &settings, &specs, true)? else {
+    let Some((report, dir)) = compile_if_changed(&store, &settings, &specs, true, None)? else {
         return Ok(true);
     };
     let st = &report.manifest.stats;
@@ -819,6 +917,7 @@ pub(crate) fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use telltale_filter::compile::compile;
 
     /// REQ: FLT-004 — at a cold start, a newest snapshot that can't be loaded (here: a torn
     /// FST file, as after a crash mid-write) is set aside and the previous one serves.
@@ -866,6 +965,86 @@ mod tests {
         assert_eq!(version, Some(1), "the previous snapshot serves");
         assert!(snapshots.join("2.broken").is_dir());
         assert!(!snapshots.join("2").exists());
+    }
+
+    /// REQ: FLT-003, FLT-004 (T10.3, ADR-145) — a recompile's rules serve from the merge (a
+    /// pending snapshot), the finished snapshot then serves with the same index, and a compile
+    /// that fails after going live puts the previous filter back.
+    #[test]
+    fn flt_003_a_recompile_goes_live_before_its_snapshot_is_finished() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshots = tmp.path().join("snapshots");
+        let input = |text: &str| ListInput {
+            name: "ads".into(),
+            options: ListOptions::default(),
+            data: ListData::Bytes(text.as_bytes().to_vec()),
+            source_hash: telltale_filter::fetch::content_hash(text.as_bytes()),
+            size: text.len() as u64,
+        };
+        let opts = |version| CompileOptions {
+            version,
+            ..CompileOptions::default()
+        };
+        let pipeline = Pipeline::new(
+            crate::pipeline::Settings::default(),
+            Arc::new(telltale_cache::Cache::new(
+                telltale_cache::CachePolicy::default(),
+            )),
+            Arc::new(telltale_upstream::Router::default()),
+            crate::pipeline::Policy::open(),
+        );
+        let publisher = Publisher::new(Arc::clone(&pipeline));
+        let serving = || {
+            let f = pipeline.filter.load_full().unwrap();
+            let s = f.matcher.snapshot().unwrap();
+            (s.manifest.version, s.is_pending(), f.matcher.lookup())
+        };
+        // Version 1 serves from its snapshot.
+        compile(
+            vec![input("||one.example^\n")],
+            &snapshots.join("1"),
+            &opts(1),
+        )
+        .unwrap();
+        let g = publisher.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        publisher.load(&snapshots.join("1"), g);
+        assert_eq!(serving(), (1, false, Lookup::Indexed));
+
+        // Version 2: live from the merge, then the finished snapshot with the same index.
+        let dir2 = snapshots.join("2");
+        let mut was_live = None;
+        compile_live(
+            vec![input("||one.example^\n||two.example^\n")],
+            &dir2,
+            &opts(2),
+            Some(|m: Matcher| {
+                publisher.activate_live(m, &dir2);
+                was_live = Some(serving());
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            was_live,
+            Some((2, true, Lookup::Indexed)),
+            "served before the FSTs"
+        );
+        let g = publisher.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        publisher.load(&dir2, g);
+        assert_eq!(serving(), (2, false, Lookup::Indexed));
+        assert!(publisher.live.lock().unwrap().is_none());
+
+        // Version 3 goes live, then its compile "fails": version 2 serves again.
+        let dir3 = snapshots.join("3");
+        compile_live(
+            vec![input("||three.example^\n")],
+            &dir3,
+            &opts(3),
+            Some(|m: Matcher| publisher.activate_live(m, &dir3)),
+        )
+        .unwrap();
+        assert_eq!(serving().0, 3);
+        publisher.revert_live();
+        assert_eq!(serving(), (2, false, Lookup::Indexed));
     }
 
     #[test]

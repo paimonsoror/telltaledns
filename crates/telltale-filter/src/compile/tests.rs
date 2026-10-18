@@ -344,3 +344,135 @@ fn flt_003_regex_rules_are_capped_and_reported() {
     assert_eq!(all.manifest.stats.regexes, 5);
     assert_eq!(all.manifest.stats.regex_rejected, 0);
 }
+
+/// REQ: FLT-003 (T10.3, ADR-145) — the matcher handed out before the FSTs are written decides
+/// every name exactly as the finished snapshot's matcher does, in memory and with spilled
+/// runs on two threads; the finished snapshot is byte-identical to a plain compile's, and
+/// reuses the early index.
+#[test]
+#[allow(clippy::too_many_lines)] // one comparison across two compile modes
+fn flt_003_the_live_matcher_decides_like_the_finished_snapshot() {
+    use crate::matcher::{ClientCtx, ListMask, Lookup, Scratch};
+    let tmp = tempfile::tempdir().unwrap();
+    let big = (0..20_000).fold(String::new(), |mut s, i| {
+        let _ = writeln!(s, "n{i}.example{}.com", i % 97);
+        s
+    });
+    let mut inputs = lists();
+    inputs.push(input("big", ListKind::Block, &big));
+    let names: Vec<String> = [
+        "ads.example.com",
+        "x.ads.example.com",
+        "ok.ads.example.com",
+        "tracker.example.net",
+        "exact.example.org",
+        "a.exact.example.org",
+        "a.wild.example.com",
+        "wild.example.com",
+        "shared.example.com",
+        "imp.example.com",
+        "only-more.example.com",
+        "v6.example.com",
+        "ad12.example.net",
+        "nothing.example",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .chain(
+        (0..20_000)
+            .step_by(37)
+            .map(|i| format!("n{i}.example{}.com", i % 97)),
+    )
+    .chain((0..500).map(|i| format!("miss{i}.example.com")))
+    .collect();
+    let client = ClientCtx {
+        ip: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 20)),
+        name: None,
+        client_id: None,
+    };
+    let decide = |m: &Matcher, name: &str| {
+        let wire = telltale_proto::NameBuf::from_presentation(name).unwrap();
+        let mut scratch = Scratch::default();
+        format!(
+            "{:?}",
+            m.decide(wire.as_wire(), 1, &client, &ListMask::all(8), &mut scratch)
+        )
+    };
+    let plain = compile(
+        inputs.clone(),
+        &tmp.path().join("plain"),
+        &CompileOptions::default(),
+    )
+    .unwrap();
+    for (tag, opts) in [
+        ("mem", CompileOptions::default()),
+        (
+            "spill",
+            CompileOptions {
+                threads: 2,
+                memory_budget: 0,
+                version: 1,
+                sync: false,
+                max_regexes: 1000,
+            },
+        ),
+    ] {
+        let out = tmp.path().join(tag);
+        let mut live: Option<Matcher> = None;
+        let report = compile_live(
+            inputs.clone(),
+            &out,
+            &opts,
+            Some(|m: Matcher| live = Some(m)),
+        )
+        .unwrap();
+        let live = live.expect("the live matcher was handed out");
+        assert!(live.snapshot().unwrap().is_pending());
+        assert_eq!(live.lookup(), Lookup::Indexed);
+        assert!(
+            report
+                .timings
+                .ready
+                .is_some_and(|r| r <= report.timings.total)
+        );
+        let snap = Arc::new(Snapshot::open(&out).unwrap());
+        let finished = Matcher::with_lookup(Some(Arc::clone(&snap)), Lookup::Indexed).unwrap();
+        let reused = Matcher::reuse_index(&snap, &live)
+            .unwrap()
+            .expect("same snapshot: index reused");
+        for name in &names {
+            let want = decide(&finished, name);
+            assert_eq!(decide(&live, name), want, "{tag}: live, {name}");
+            assert_eq!(decide(&reused, name), want, "{tag}: reused, {name}");
+        }
+        if tag == "mem" {
+            let blobs = |r: &CompileReport| {
+                r.manifest
+                    .blobs
+                    .iter()
+                    .map(|b| (b.name.clone(), b.blake3.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                blobs(&report),
+                blobs(&plain),
+                "the same snapshot as a plain compile"
+            );
+        }
+    }
+    // Another snapshot's index isn't reused.
+    let other = Arc::new(Snapshot::open(&tmp.path().join("plain")).unwrap());
+    let mut live = None;
+    compile_live(
+        lists(),
+        &tmp.path().join("small"),
+        &CompileOptions::default(),
+        Some(|m: Matcher| live = Some(m)),
+    )
+    .unwrap();
+    assert!(
+        Matcher::reuse_index(&other, &live.unwrap())
+            .unwrap()
+            .is_none()
+    );
+}

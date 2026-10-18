@@ -497,35 +497,48 @@ struct Bucket([u64; 8]);
 pub const MAX_INDEXED_LISTSETS: u64 = 1 << 16;
 
 impl ScopeIndex {
+    /// An empty index for up to `n` names (75% load: ~11 bytes per name, and few buckets
+    /// overflow into the next one).
+    fn with_capacity(n: usize, seed: u64) -> Self {
+        if n == 0 {
+            return Self::default();
+        }
+        Self {
+            seed,
+            buckets: vec![Bucket::default(); (n * 4 / 3).div_ceil(8).max(1)],
+        }
+    }
+
+    /// Adds `key` with list-set `value`. At most the capacity it was made with.
+    fn insert(&mut self, key: &[u8], value: u64) -> Result<(), String> {
+        if value >= MAX_INDEXED_LISTSETS {
+            return Err("too many list sets for the index".into());
+        }
+        let nb = self.buckets.len();
+        if nb == 0 {
+            return Err("the index was sized for no names".into());
+        }
+        let (mut b, fp) = self.locate(key);
+        let entry = (fp << 16) | value;
+        for _ in 0..nb {
+            for slot in &mut self.buckets[b].0 {
+                if *slot == 0 {
+                    *slot = entry;
+                    return Ok(());
+                }
+            }
+            b = if b + 1 == nb { 0 } else { b + 1 };
+        }
+        Err("the index is full".into())
+    }
+
     fn build(maps: &[fst::Map<crate::snapshot::FstData>], seed: u64) -> Result<Self, String> {
         use fst::Streamer;
-        let n: usize = maps.iter().map(fst::Map::len).sum();
-        if n == 0 {
-            return Ok(Self::default());
-        }
-        // 75% load: ~11 bytes per name, and few buckets overflow into the next one.
-        let nb = (n * 4 / 3).div_ceil(8).max(1);
-        let mut idx = Self {
-            seed,
-            buckets: vec![Bucket::default(); nb],
-        };
+        let mut idx = Self::with_capacity(maps.iter().map(fst::Map::len).sum(), seed);
         for map in maps {
             let mut stream = map.stream();
             while let Some((key, value)) = stream.next() {
-                if value >= MAX_INDEXED_LISTSETS {
-                    return Err("too many list sets for the index".into());
-                }
-                let (mut b, fp) = idx.locate(key);
-                let entry = (fp << 16) | value;
-                'insert: loop {
-                    for slot in &mut idx.buckets[b].0 {
-                        if *slot == 0 {
-                            *slot = entry;
-                            break 'insert;
-                        }
-                    }
-                    b = if b + 1 == nb { 0 } else { b + 1 };
-                }
+                idx.insert(key, value)?;
             }
         }
         Ok(idx)
@@ -571,18 +584,55 @@ impl ScopeIndex {
 #[derive(Debug, Default)]
 struct DomainIndex([ScopeIndex; 3]);
 
+/// Per-scope seeds from one random seed.
+fn scope_seeds() -> [u64; 3] {
+    let seed: u64 = rand::random();
+    [
+        seed ^ 0x9e37_79b9_7f4a_7c15,
+        seed ^ 0xc2b2_ae3d_27d4_eb4f,
+        seed ^ 0x1656_67b1_9e37_79f9,
+    ]
+}
+
 impl DomainIndex {
     fn build(s: &Snapshot) -> Result<Self, String> {
-        let seed: u64 = rand::random();
+        let [a, b, c] = scope_seeds();
         Ok(Self([
-            ScopeIndex::build(&s.domains[0], seed ^ 0x9e37_79b9_7f4a_7c15)?,
-            ScopeIndex::build(&s.domains[1], seed ^ 0xc2b2_ae3d_27d4_eb4f)?,
-            ScopeIndex::build(&s.domains[2], seed ^ 0x1656_67b1_9e37_79f9)?,
+            ScopeIndex::build(&s.domains[0], a)?,
+            ScopeIndex::build(&s.domains[1], b)?,
+            ScopeIndex::build(&s.domains[2], c)?,
         ]))
     }
 
     fn bytes(&self) -> usize {
         self.0.iter().map(ScopeIndex::bytes).sum()
+    }
+}
+
+/// REQ: FLT-003 (T10.3, ADR-145) — the lookup index filled straight from the compile's merge
+/// (in key order, scope by scope), so a recompiled filter answers before its FSTs exist.
+#[derive(Debug)]
+pub struct IndexBuilder(DomainIndex);
+
+impl IndexBuilder {
+    /// Room for at most `names[scope]` names per scope.
+    pub fn new(names: [u64; 3]) -> Self {
+        let seeds = scope_seeds();
+        let cap = |i: usize| usize::try_from(names[i]).unwrap_or(usize::MAX);
+        Self(DomainIndex([
+            ScopeIndex::with_capacity(cap(0), seeds[0]),
+            ScopeIndex::with_capacity(cap(1), seeds[1]),
+            ScopeIndex::with_capacity(cap(2), seeds[2]),
+        ]))
+    }
+
+    /// Adds a name's key (reversed labels, without the scope byte) with its list-set ID.
+    pub fn insert(&mut self, scope: usize, key: &[u8], listset: u32) -> Result<(), String> {
+        self.0
+            .0
+            .get_mut(scope)
+            .ok_or("no such scope")?
+            .insert(key, u64::from(listset))
     }
 }
 
@@ -606,7 +656,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Matcher {
     id: u64,
     snapshot: Option<Arc<Snapshot>>,
-    index: Option<DomainIndex>,
+    /// Shared: a finished snapshot reuses the index its pending matcher was built with.
+    index: Option<Arc<DomainIndex>>,
     mods: Vec<CompiledMod>,
     regexes: RegexSets,
     /// REQ: FLT-014 (T9.20) — any `$dnsrewrite` rule at all (else [`Matcher::rewrites`] is
@@ -749,7 +800,7 @@ impl Matcher {
                 RegexSets::new(s.regexes.clone())?,
                 match lookup {
                     // A snapshot beyond the index's limits still works, just via the walk.
-                    Lookup::Indexed => DomainIndex::build(s).ok(),
+                    Lookup::Indexed => DomainIndex::build(s).ok().map(Arc::new),
                     Lookup::Walk => None,
                 },
             ),
@@ -766,6 +817,30 @@ impl Matcher {
         })
     }
 
+    /// REQ: FLT-003 (T10.3, ADR-145) — a matcher over `snapshot` with an index filled by the
+    /// compile (`snapshot` may be pending: without FSTs, which an indexed matcher never reads).
+    pub fn with_index(snapshot: Arc<Snapshot>, index: IndexBuilder) -> Result<Self, String> {
+        let mut m = Self::with_lookup(Some(snapshot), Lookup::Walk)?;
+        m.index = Some(Arc::new(index.0));
+        Ok(m)
+    }
+
+    /// REQ: FLT-003 (T10.3, ADR-145) — a matcher over the finished `snapshot` that shares
+    /// `from`'s index, if `from` was built for the same snapshot (its version and list-set
+    /// table); `None` otherwise (build one as usual).
+    pub fn reuse_index(snapshot: &Arc<Snapshot>, from: &Self) -> Result<Option<Self>, String> {
+        let (Some(index), Some(prev)) = (&from.index, &from.snapshot) else {
+            return Ok(None);
+        };
+        if prev.manifest.version != snapshot.manifest.version || prev.listsets != snapshot.listsets
+        {
+            return Ok(None);
+        }
+        let mut m = Self::with_lookup(Some(Arc::clone(snapshot)), Lookup::Walk)?;
+        m.index = Some(Arc::clone(index));
+        Ok(Some(m))
+    }
+
     /// REQ: FLT-014 (T9.20) — whether any list has `$dnsrewrite` rules.
     pub fn has_rewrites(&self) -> bool {
         self.has_rewrites
@@ -777,7 +852,7 @@ impl Matcher {
 
     /// Heap bytes of the query-time domain index (0 in `Walk` mode).
     pub fn index_bytes(&self) -> usize {
-        self.index.as_ref().map_or(0, DomainIndex::bytes)
+        self.index.as_deref().map_or(0, DomainIndex::bytes)
     }
 
     pub fn lookup(&self) -> Lookup {
@@ -972,6 +1047,9 @@ impl Matcher {
         }
         // FST walk: depth 1 lives in the TLD's shard, depth ≥ 2 in the first-two-labels shard.
         let shards = s.domains[0].len();
+        if shards == 0 {
+            return; // a pending snapshot has no FSTs (ADR-145); its matcher is always indexed
+        }
         let deep = shard_of(name.prefix(keyed.min(2)), shards);
         let top = shard_of(name.prefix(1), shards);
         for (i, scope) in SCOPES.into_iter().enumerate() {

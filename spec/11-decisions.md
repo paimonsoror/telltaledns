@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-145 — A recompiled filter goes live before its FSTs are written (Proposed)
+**Context:** T10.3 (FLT-003, `00` §5: a 2M-name recompile within 8 s on a Pi 4). On the Pi the one-thread recompile took 11.8 s, 8.1 s of it building the domain FSTs (the `fst` crate's builder, about 4 µs a name on one core); two threads cost more p99 during the compile, so the owner kept one thread (2026-10-17) and chose this change. The FSTs are the snapshot's on-disk form (cold start, replication, the walk fallback); queries are answered from the hash index (ADR-020), which `load` used to build from the FSTs after the compile.
+**Decision (owner, 2026-10-17: "I'll follow your recommendation"):**
+- The compile merges the sorted records twice. The first pass computes each name's list set as before and fills the lookup index directly; with the modifier and regex tables (written first) it makes a matcher over a *pending* snapshot (no FSTs), which the server serves at once. The second pass writes the FSTs and `listsets.bin` exactly as before, and the snapshot directory is finished as before.
+- When the finished snapshot is loaded, it reuses the pending matcher's index (same version, same list-set table) instead of building another; the FST pages are released at once.
+- The 8 s gate is measured to when the recompiled filter answers (`CompileTimings::ready`); the total compile is reported too.
+- If the second pass fails (a full disk), the previous filter is put back, so a node never serves a filter it has no snapshot of.
+- Not for: a pinned cluster (the pin is served), or a snapshot past the index's 65,536 list sets (it waits for the FSTs and uses the walk, as before). Replicas still get the finished snapshot, after the second pass, as before.
+**Consequences:** a list change answers about 40 % sooner on the Pi; the compile does a second merge pass after that (more CPU in all, at `SCHED_IDLE`), and holds the index while writing the FSTs (the compile's peak grows by the index, about 11 bytes a name). The index is sized from the record count, not the distinct names (a few percent larger when lists overlap). While pending, `Snapshot::domain_hits` (a test and explain helper over the FSTs) returns nothing; explain itself goes through the index.
+
 ## ADR-144 — Memory: purge freed memory at once, release code pages after one-off work (Proposed)
 **Context:** T10.2 (NFR-001, `00` §5: ≤ 20 MiB idle, ≤ 64 MiB with 1M names and 100k cache entries). With the shipped musl build the node measured 22.7 MiB idle and 71.4 MiB loaded. Two things held memory nothing used: mimalloc's 10 ms purge delay kept a compile's freed pages (a 170 MiB peak, about 5 MiB after), and about 15 MiB of the 25 MiB of code stayed resident after running once at start-up, plus the kernel's fault-around neighbours.
 **Decision:**

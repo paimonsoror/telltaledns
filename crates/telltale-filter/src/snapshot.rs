@@ -323,6 +323,30 @@ impl Snapshot {
         })
     }
 
+    /// REQ: FLT-003 (T10.3, ADR-145) — a snapshot being compiled in `dir`, before its domain
+    /// FSTs are written: the modifier and regex tables already there, the list-set table from
+    /// the merge. Only an indexed matcher ([`crate::matcher::Matcher::with_index`]) may use it.
+    pub fn pending(dir: &Path, manifest: Manifest, listsets: ListSetTable) -> io::Result<Self> {
+        let modrules: ModRules = serde_json::from_slice(&fs::read(dir.join(MODRULES))?)
+            .map_err(|e| invalid(format!("{MODRULES}: {e}")))?;
+        let regexes: Regexes = serde_json::from_slice(&fs::read(dir.join(REGEX))?)
+            .map_err(|e| invalid(format!("{REGEX}: {e}")))?;
+        Ok(Self {
+            domains: Default::default(),
+            listsets,
+            modrules_index: Map::new(fs::read(dir.join(MODRULES_FST))?)
+                .map_err(|e| invalid(format!("{MODRULES_FST}: {e}")))?,
+            modrules: modrules.rules,
+            regexes: regexes.rules,
+            manifest,
+        })
+    }
+
+    /// Whether this is a [`Snapshot::pending`] one (no domain FSTs yet).
+    pub fn is_pending(&self) -> bool {
+        self.domains[0].is_empty()
+    }
+
     /// REQ: NFR-002 (T10.2) — drops the resident pages of the domain FSTs. Call it once the
     /// lookup index answers queries: after that only explain and list-set lookups beyond the
     /// index read the FSTs, and they fault in just the pages they touch.
@@ -340,6 +364,9 @@ impl Snapshot {
         let name = qname.trim_end_matches('.').to_ascii_lowercase();
         let labels: Vec<&str> = name.split('.').collect();
         let mut hits = Vec::new();
+        if self.is_pending() {
+            return hits; // no FSTs yet (ADR-145)
+        }
         let mut key = String::new();
         for depth in 1..=labels.len() {
             key.push_str(labels[labels.len() - depth]);

@@ -18,7 +18,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
-use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile};
+use telltale_filter::compile::{CompileOptions, ListData, ListInput, compile_live};
 use telltale_filter::fetch::content_hash;
 use telltale_filter::parse::ListOptions;
 
@@ -155,13 +155,15 @@ fn main() {
         phases(&inputs);
     }
     let tmp = tempfile::tempdir().unwrap();
-    let report = compile(
+    // T10.3 (ADR-145) — `ready`: when the new rules could answer, before the FSTs.
+    let report = compile_live(
         inputs,
         &tmp.path().join("snap"),
         &CompileOptions {
             threads,
             ..CompileOptions::default()
         },
+        Some(|_m| {}),
     )
     .unwrap();
     let st = &report.manifest.stats;
@@ -175,8 +177,9 @@ fn main() {
     }
     let tm = &report.timings;
     println!(
-        "bytes/name: {:.2}   compile: {:.2?} (parse {:.2?}, merge+fst {:.2?}, tables {:.2?})   threads {threads}   spilled runs {}   peak RSS {:.0} MiB",
+        "bytes/name: {:.2}   ready: {:.2?}   compile: {:.2?} (parse {:.2?}, merge+fst {:.2?}, tables {:.2?})   threads {threads}   spilled runs {}   peak RSS {:.0} MiB",
         st.bytes_per_name,
+        tm.ready.unwrap_or_default(),
         tm.total,
         tm.parse,
         tm.merge,

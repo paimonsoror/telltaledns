@@ -6,7 +6,7 @@
 
 use std::cmp::Ordering;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// One sorted record.
@@ -40,6 +40,9 @@ pub(crate) struct Sorter {
     tmp_dir: PathBuf,
     tag: String,
     runs: Vec<PathBuf>,
+    /// Records pushed per scope (the key's first byte): an upper bound on the distinct names,
+    /// to size the lookup index the first merge pass fills (ADR-145).
+    scope_records: [u64; 3],
 }
 
 impl Sorter {
@@ -51,7 +54,13 @@ impl Sorter {
             tmp_dir: tmp_dir.to_owned(),
             tag: tag.to_owned(),
             runs: Vec::new(),
+            scope_records: [0; 3],
         }
+    }
+
+    /// Records pushed per scope so far.
+    pub(crate) fn scope_records(&self) -> [u64; 3] {
+        self.scope_records
     }
 
     pub(crate) fn push(&mut self, key: &[u8], list: u16, class: u8) -> io::Result<()> {
@@ -62,6 +71,12 @@ impl Sorter {
             self.spill()?;
         }
         let off = u32::try_from(self.arena.len()).map_err(io::Error::other)?;
+        if let Some(n) = key
+            .first()
+            .and_then(|&s| self.scope_records.get_mut(usize::from(s)))
+        {
+            *n += 1;
+        }
         self.arena.extend_from_slice(key);
         let mut head = [0u8; 8];
         let n = key.len().min(8);
@@ -164,6 +179,17 @@ pub(crate) enum Source {
 }
 
 impl Source {
+    /// Back to the first record, for another merge pass (ADR-145).
+    pub(crate) fn rewind(&mut self) -> io::Result<()> {
+        match self {
+            Self::Memory { next, .. } => *next = 0,
+            Self::File { reader, .. } => {
+                reader.seek(SeekFrom::Start(0))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Reads the next record into `rec`, reusing its key buffer. Returns false at the end.
     fn next_into(&mut self, rec: &mut Record) -> io::Result<bool> {
         match self {
@@ -220,11 +246,11 @@ fn cmp(a: &Record, b: &Record) -> Ordering {
 /// by a linear scan of each source's current record; buffers are reused, so the merge does
 /// no allocation per record.
 pub(crate) fn merge(
-    mut sources: Vec<Source>,
+    sources: &mut [Source],
     mut f: impl FnMut(&Record) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut heads: Vec<Option<Record>> = Vec::with_capacity(sources.len());
-    for s in &mut sources {
+    for s in sources.iter_mut() {
         let mut r = Record::default();
         heads.push(s.next_into(&mut r)?.then_some(r));
     }
@@ -265,7 +291,11 @@ pub(crate) fn merge(
 mod tests {
     use super::*;
 
-    fn collect(sources: Vec<Source>) -> Vec<(String, u16, u8)> {
+    fn collect(mut sources: Vec<Source>) -> Vec<(String, u16, u8)> {
+        collect_from(&mut sources)
+    }
+
+    fn collect_from(sources: &mut [Source]) -> Vec<(String, u16, u8)> {
         let mut out = Vec::new();
         merge(sources, |r| {
             out.push((String::from_utf8(r.key.clone()).unwrap(), r.list, r.class));
@@ -315,5 +345,32 @@ mod tests {
         );
         // Run files are removed once merged.
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    /// REQ: FLT-003 (T10.3, ADR-145) — a rewound source gives the same records again, in
+    /// memory and from spilled runs: the second merge pass sees exactly what the first did.
+    /// Records are counted per scope (the key's first byte).
+    #[test]
+    fn flt_003_sources_rewind_for_a_second_pass() {
+        let tmp = tempfile::tempdir().unwrap();
+        for budget in [64 << 20, 0] {
+            let mut s = Sorter::new(budget, tmp.path(), "rw");
+            for i in 0..40_000u32 {
+                let key = [
+                    &[u8::try_from(i % 3).unwrap()][..],
+                    format!("com.n{i}.").as_bytes(),
+                ]
+                .concat();
+                s.push(&key, 0, 3).unwrap();
+            }
+            assert_eq!(s.scope_records(), [13_334, 13_333, 13_333]);
+            let mut sources = s.finish().unwrap();
+            let first = collect_from(&mut sources);
+            for src in &mut sources {
+                src.rewind().unwrap();
+            }
+            assert_eq!(collect_from(&mut sources), first, "budget {budget}");
+            assert_eq!(first.len(), 40_000);
+        }
     }
 }
