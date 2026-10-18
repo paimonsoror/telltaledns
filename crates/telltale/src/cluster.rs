@@ -311,15 +311,22 @@ fn started_at(ms: u64) -> Option<String> {
 /// REQ: CLU-008 (T6.14) — each node's share of the queries answered by the nodes that are up.
 #[allow(clippy::cast_precision_loss)] // a percentage for display
 fn query_shares(nodes: &mut [telltale_api::model::ClusterNode]) {
-    let total: u64 = nodes.iter().filter(|n| n.up).map(|n| n.qps).sum();
+    let total: f64 = nodes.iter().filter(|n| n.up).map(|n| n.qps).sum();
     for n in nodes.iter_mut() {
         n.query_share_percent =
-            (total > 0 && n.up).then(|| (n.qps as f64 * 1000.0 / total as f64).round() / 10.0);
+            (total > 0.0 && n.up).then(|| (n.qps * 1000.0 / total).round() / 10.0);
     }
 }
 
+/// REQ: CLU-008 — queries per second from a minute's count, to two decimals (a whole-number
+/// rate showed every node under 1 q/s as 0).
+#[allow(clippy::cast_precision_loss)] // a rate for display
+pub(crate) fn per_second(queries_last_minute: u64) -> f64 {
+    (queries_last_minute as f64 * 100.0 / 60.0).round() / 100.0
+}
+
 /// Queries per second below which a site's split isn't judged (too little to mean anything).
-const BALANCE_MIN_QPS: u64 = 5;
+const BALANCE_MIN_QPS: f64 = 5.0;
 
 /// REQ: CLU-008 (T6.14) — Kubernetes spreads queries over the pods of a site; one pod taking
 /// more than twice its fair share means the spreading isn't working (a sticky client, a
@@ -338,18 +345,18 @@ fn balance_check(nodes: &[telltale_api::model::ClusterNode]) -> telltale_api::mo
     }
     let mut problems = Vec::new();
     for (site, pods) in &sites {
-        let total: u64 = pods.iter().map(|n| n.qps).sum();
+        let total: f64 = pods.iter().map(|n| n.qps).sum();
         if pods.len() < 2 || total < BALANCE_MIN_QPS {
             continue;
         }
-        let fair = total as f64 / pods.len() as f64;
-        if let Some(top) = pods.iter().max_by_key(|n| n.qps)
-            && top.qps as f64 > 2.0 * fair
+        let fair = total / pods.len() as f64;
+        if let Some(top) = pods.iter().max_by(|a, b| a.qps.total_cmp(&b.qps))
+            && top.qps > 2.0 * fair
         {
             problems.push(format!(
                 "{site}: {} answers {:.0}% of the site's queries ({} pods, fair share {:.0}%)",
                 top.pod.as_deref().unwrap_or(&top.node_id),
-                top.qps as f64 * 100.0 / total as f64,
+                top.qps * 100.0 / total,
                 pods.len(),
                 100.0 / pods.len() as f64
             ));
@@ -429,7 +436,7 @@ pub(crate) fn view(
         config_lag: my_lag,
         behind_seconds: my_behind,
         ready: local.ready,
-        qps: local.qps,
+        qps: per_second(local.queries_last_minute),
         servfail_percent: f64::from(local.servfail_permille) / 10.0,
         upstream_p90_ms: local.p90_us as f64 / 1000.0,
         uptime_seconds: local.uptime_s,
@@ -473,7 +480,7 @@ pub(crate) fn view(
             config_lag: lag,
             behind_seconds: behind,
             ready: p.ready,
-            qps: p.qps,
+            qps: per_second(p.queries_last_minute),
             servfail_percent: f64::from(p.servfail_permille) / 10.0,
             upstream_p90_ms: p.p90_us as f64 / 1000.0,
             uptime_seconds: p.uptime_s,
@@ -1452,14 +1459,14 @@ pub(crate) fn parse_ttl(s: &str) -> Result<u64, String> {
 mod tests {
     use super::*;
 
-    fn pod(site: &str, name: &str, qps: u64) -> telltale_api::model::ClusterNode {
+    fn pod(site: &str, name: &str, qps: u32) -> telltale_api::model::ClusterNode {
         telltale_api::model::ClusterNode {
             node_id: format!("id-{name}"),
             site: site.into(),
             pod: Some(name.into()),
             up: true,
             ready: true,
-            qps,
+            qps: f64::from(qps),
             ..Default::default()
         }
     }
@@ -1510,7 +1517,7 @@ mod tests {
         assert_eq!(shares, [Some(60.0), Some(20.0), Some(20.0), None]);
         // 30 of 50 over 3 pods: 1.8× the fair share, not flagged.
         assert!(balance_check(&nodes).ok);
-        nodes[0].qps = 90;
+        nodes[0].qps = 90.0;
         let c = balance_check(&nodes);
         assert!(
             !c.ok && c.summary.contains("k8s: a answers 82%"),
@@ -1528,6 +1535,13 @@ mod tests {
             n.pod = None;
         }
         assert!(balance_check(&pis).ok);
+        // A quiet cluster still has shares (whole-number rates made them all 0, so none).
+        let mut quiet = [pod("k8s", "a", 0), pod("home", "pi", 0)];
+        quiet[0].qps = per_second(22);
+        quiet[1].qps = per_second(66);
+        query_shares(&mut quiet);
+        assert_eq!((quiet[0].qps, quiet[1].qps), (0.37, 1.1));
+        assert_eq!(quiet[0].query_share_percent, Some(25.2));
     }
 
     // REQ: CLU-005 (ADR-051, ADR-048) — who may be promoted.

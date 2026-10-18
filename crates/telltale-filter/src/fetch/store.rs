@@ -37,6 +37,9 @@ pub struct ListMeta {
     /// The most recent failure, cleared on success.
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
+    /// REQ: FLT-004 (ADR-147) — the hash of a download held back for shrinking too much: the
+    /// same content again is accepted.
+    pub held_hash: Option<String>,
 }
 
 impl ListMeta {

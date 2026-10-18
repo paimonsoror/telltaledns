@@ -186,6 +186,7 @@ fn settings() -> FetchSettings {
         backoff: Duration::from_millis(10),
         settle: Duration::from_secs(10),
         max_invalid_percent: 50,
+        max_shrink_percent: 50,
     }
 }
 
@@ -833,6 +834,114 @@ async fn flt_004_invalid_line_threshold_is_configurable() {
         .refresh_one(&spec("l", junk.url("http", "h", "/list")))
         .await;
     assert!(matches!(outcome, Outcome::Failed(_)), "{outcome:?}");
+}
+
+fn names(n: usize, tag: &str) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        s.push_str(tag);
+        s.push_str(&i.to_string());
+        s.push_str(".example.com\n");
+    }
+    s
+}
+
+/// REQ: FLT-004 (ADR-147) — a URL list that suddenly lost more than `max_shrink_percent` of its
+/// lines is held: the previous copy stays (and its validators, so the next GET isn't a 304) until
+/// a later refresh brings the same content. Growth, a short list, and 100 aren't held.
+#[tokio::test]
+async fn flt_004_a_list_that_shrank_a_lot_is_held_until_seen_again() {
+    // Requests (counted from 1) 1: 2,000 names; 2 and 3: 600 (lost 70 %); then 1,400.
+    let srv = serve(
+        handler(|_, n| {
+            let body = match n {
+                1 => names(2000, "a"),
+                2 | 3 => names(600, "b"),
+                _ => names(1400, "c"),
+            };
+            ok(&body).header("ETag", &format!("\"v{n}\""))
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let s = ListSpec {
+        max_bytes: 1 << 20,
+        ..spec("l", srv.url("http", "h", "/list"))
+    };
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
+    let Outcome::Held(why) = f.refresh_one(&s).await else {
+        panic!("a 70 % shrink was used at once");
+    };
+    assert!(why.contains("2000 to 600"), "{why}");
+    let meta = f.status()[0].1.clone();
+    assert_eq!(meta.lines, 2000, "the previous copy stays");
+    assert_eq!(meta.consecutive_failures, 0, "held isn't failing");
+    assert!(
+        meta.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("max_shrink_percent"))
+    );
+    assert!(f.store().read_source("l").unwrap().starts_with(b"a0."));
+    // The same content again: accepted.
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
+    let meta = f.status()[0].1.clone();
+    assert_eq!(meta.lines, 600);
+    assert!(meta.last_error.is_none() && meta.held_hash.is_none());
+    // The held refresh sent the first copy's validator, not the held one's.
+    assert_eq!(srv.requests()[2].headers["if-none-match"], "\"v1\"");
+    // 600 → 1,400 grows.
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
+
+    // At 100 nothing is held.
+    let srv = serve(
+        handler(|_, n| {
+            ok(&if n == 1 {
+                names(2000, "a")
+            } else {
+                names(10, "b")
+            })
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(
+        tmp.path(),
+        FetchSettings {
+            max_shrink_percent: 100,
+            ..settings()
+        },
+        &[],
+    );
+    let s = ListSpec {
+        max_bytes: 1 << 20,
+        ..spec("l", srv.url("http", "h", "/list"))
+    };
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
+
+    // A short list (under 1,000 lines) isn't held either.
+    let srv = serve(
+        handler(|_, n| {
+            ok(&if n == 1 {
+                names(900, "a")
+            } else {
+                names(10, "b")
+            })
+        }),
+        None,
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let f = fetcher(tmp.path(), settings(), &[]);
+    let s = ListSpec {
+        max_bytes: 1 << 20,
+        ..spec("l", srv.url("http", "h", "/list"))
+    };
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
+    assert_eq!(f.refresh_one(&s).await, Outcome::Updated);
 }
 
 /// REQ: FLT-004 — a disabled list is never fetched, not even by a manual refresh, and its

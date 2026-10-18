@@ -832,6 +832,7 @@ pub(crate) async fn fetch_once(cfg: &Config, out: &mut dyn Write) -> Result<bool
         let (result, note) = match outcome {
             Outcome::Updated => ("updated", String::new()),
             Outcome::Unchanged => ("unchanged", String::new()),
+            Outcome::Held(why) => ("held", why.clone()),
             Outcome::Failed(e) => {
                 all_ok = false;
                 let kept = if meta.has_content() {

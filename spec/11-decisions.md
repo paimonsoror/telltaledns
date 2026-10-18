@@ -1291,6 +1291,14 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-147 — A list that shrank a lot waits for the same content again (Proposed)
+**Context:** FLT-004 keeps a list's last good copy when a download fails, and refuses bodies that can't be a list (empty, HTML, mostly invalid lines, over the size cap). A body that *is* a list but much shorter passed every check: in the live review of 2026-10-14, hagezi-tif went from 2.55M to 1.53M lines over ten days, unnoticed. A truncated mirror or a source caught mid-rewrite would have dropped blocking the same way. The owner chose to add a guard (2026-10-18).
+**Decision:**
+- `[filter] max_shrink_percent` (default 50, 0–100; 100 = off). A URL list's download that differs from the stored copy and has lost more than that share of its lines is *held*: not stored, not compiled; the stored copy, its validators, and its schedule stay (a held download isn't a failure, so there's no early retry); its hash is kept in the list's metadata and the reason is the list's error on the Lists page and in the log.
+- The next download with the same hash is accepted (the next scheduled refresh, or a manual one: "Refresh now" is the way to accept a shrink at once). Different content is judged afresh against the stored copy.
+- Not held: stored copies under 1,000 lines (their size swings with a few edits), `path` and inline lists (they shrink because someone edited them), and a changed source URL.
+**Consequences:** a list that genuinely shrinks a lot takes one refresh interval longer to apply (the stored, larger copy keeps blocking meanwhile, the safe direction). A source that keeps serving different truncated bodies is never accepted while each one stays below the threshold, which is the point. Gradual shrinking (like tif's, a few percent a day) isn't caught; the Lists page's line counts remain the way to notice that.
+
 ## ADR-146 — Supply chain: auditable binaries, SBOMs from them, keyless image signatures, reproducible builds (Proposed)
 **Context:** T10.10 (NFR-005: `cargo-deny`, `cargo-auditable`, a CycloneDX SBOM, cosign-signed images, reproducible builds). `cargo-deny` already ran in CI and the binaries were already minisign-signed (ADR-046); the rest was missing. Two clean builds of the same tree differed: C code linked into the binary (mimalloc) embeds `__TIME__`, and the build date stamped into `--version` was the time of the build.
 **Decision:**
@@ -1524,7 +1532,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Implemented as `fetch::Client::with_server_name`, which applies to every request that client makes; each router gets its own client.
 **Consequences:**
 - When the console renews its certificate (the owner's expires 2027-04-13), the saved copy no longer matches. Polls fail and are logged once, and names stay as last read. DNS is never affected. Save the new certificate.
-- `[[router]]` is shared configuration, so every node needs the key and certificate files at the same paths. Helm resolver pods don't mount `secretMounts`: each logs one warning, and the controller (which serves the UI) reads the router.
+- `[[router]]` is shared configuration, so every node needs the key and certificate files at the same paths. Helm resolver pods don't mount `secretMounts`: each logs one warning, and the controller (which serves the UI) reads the router. *(Amended 2026-10-18, live review finding 1: on an ephemeral member, the resolver pod, that message and a failed OIDC setup are logged as info, not warning/error; the secrets still stay off resolver pods.)*
 
 ## ADR-119 — Expired answers given at once are `refreshed`, a cache answer; `stale` keeps meaning failure (Proposed)
 **Context:** the 2026-10-10 live review found a steady-state cache hit rate of about 6%: most repeat questions arrive just after their answer expired (devices cache too). The owner chose Pi-hole's behavior, an expired answer given at once while it's refreshed (RFC 8767 with a zero client response timer, `[cache] stale_answer_client_timeout_ms = 0`), with Technitium's 10 s TTL floor. Those answers were `stale`, the status that also says "upstreams failed or were slow", and counted on the upstream latency path, so the change would hide upstream trouble and make upstream latency look faster than it is. The owner asked that general users see one cache number and advanced users the split.

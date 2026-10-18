@@ -191,6 +191,7 @@
         "max_invalid_percent": 50,
         "max_list_bytes": "64MiB",
         "max_regexes": 1000,
+        "max_shrink_percent": 50,
         "refresh_secs": 86400,
         "stale_after_days": 30
       }
@@ -1575,6 +1576,14 @@
           "type": "integer",
           "format": "uint32",
           "default": 1000,
+          "minimum": 0
+        },
+        "max_shrink_percent": {
+          "description": "REQ: FLT-004 (ADR-147) — a URL list's download that has lost more than this percentage\nof the stored copy's lines (a truncated mirror, a source mid-rewrite) isn't used yet: the\nprevious copy stays until a later refresh brings the same content, or a manual refresh\naccepts it. Lists under 1,000 lines, files, and inline rules aren't held. 100 = off.",
+          "type": "integer",
+          "format": "uint8",
+          "default": 50,
+          "maximum": 255,
           "minimum": 0
         },
         "refresh_secs": {

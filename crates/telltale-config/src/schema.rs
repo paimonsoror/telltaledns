@@ -1430,6 +1430,11 @@ pub struct FilterConfig {
     /// count as invalid. 50 = refuse when invalid lines outnumber rules; 0 = refuse any list
     /// with an invalid line; 100 = accept anything that isn't empty or HTML.
     pub max_invalid_percent: u8,
+    /// REQ: FLT-004 (ADR-147) — a URL list's download that has lost more than this percentage
+    /// of the stored copy's lines (a truncated mirror, a source mid-rewrite) isn't used yet: the
+    /// previous copy stays until a later refresh brings the same content, or a manual refresh
+    /// accepts it. Lists under 1,000 lines, files, and inline rules aren't held. 100 = off.
+    pub max_shrink_percent: u8,
     /// Most regex rules a compiled snapshot keeps (default 1,000; 0 = no limit). Every query
     /// that no exact or suffix rule settles is tried against all of them, about a microsecond
     /// per thousand, and a few thousand that share a prefix can overwhelm the matcher's
@@ -1465,6 +1470,7 @@ impl Default for FilterConfig {
             fetch_retries: 3,
             max_list_bytes: ByteSize::mib(64),
             max_invalid_percent: 50,
+            max_shrink_percent: 50,
             max_regexes: 1000,
             allow_link_local_urls: false,
             compile_threads: 0,

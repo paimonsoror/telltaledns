@@ -2553,8 +2553,9 @@ pub struct ClusterNode {
     pub behind_seconds: Option<u64>,
     /// Serving DNS (listeners bound, not shutting down).
     pub ready: bool,
-    /// Queries per second over the last minute.
-    pub qps: u64,
+    /// Queries per second over the last minute, to two decimals (a node one minor version older
+    /// reports whole numbers).
+    pub qps: f64,
     /// SERVFAIL share over the last minute, percent.
     pub servfail_percent: f64,
     /// Upstream p90 this hour.
@@ -2574,7 +2575,8 @@ pub struct ClusterNode {
     pub started_at: Option<String>,
     /// Restarts this node has seen since it started itself (0 for this node).
     pub restarts: u32,
-    /// Its cache: entries, and the hit rate over the last minute (absent without lookups).
+    /// Its cache: entries, and over the last minute the cache share of its answers that weren't
+    /// blocked or local, as on the dashboard (absent without any).
     pub cache_entries: Option<u64>,
     pub cache_hit_percent: Option<f64>,
     /// Its share of the queries the nodes that are up answered over the last minute, percent

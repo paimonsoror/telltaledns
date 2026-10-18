@@ -336,6 +336,8 @@ pub struct Member {
     pub epoch: u64,
     pub applied_seq: u64,
     pub qps: u64,
+    /// REQ: CLU-008 — the queries it answered over the last minute (exact; `qps` rounds down).
+    pub queries_last_minute: u64,
     /// `inbound` (it dialed us) or `outbound`.
     pub via: &'static str,
     /// Whether a stream to it is open right now.
@@ -439,6 +441,8 @@ pub struct LocalState {
     pub epoch: u64,
     pub applied_seq: u64,
     pub qps: u64,
+    /// REQ: CLU-008 — queries answered over the last minute (exact; `qps` rounds down).
+    pub queries_last_minute: u64,
     pub ready: bool,
     pub servfail_permille: u32,
     pub p90_us: u64,
@@ -1590,6 +1594,7 @@ impl Cluster {
                 epoch: l.epoch.max(self.role().1),
                 applied_seq: l.applied_seq,
                 qps: l.qps,
+                queries_last_minute: Some(l.queries_last_minute),
                 echo_ms,
                 echo_delay_ms,
                 ready: l.ready,
@@ -1671,6 +1676,7 @@ impl Cluster {
                         epoch: h.epoch,
                         applied_seq: h.applied_seq,
                         qps: prev.as_ref().map_or(0, |p| p.qps),
+                        queries_last_minute: prev.as_ref().map_or(0, |p| p.queries_last_minute),
                         via,
                         connected: true,
                         connected_ms: now_ms(),
@@ -1775,6 +1781,9 @@ impl Cluster {
                     m.epoch = hb.epoch;
                     m.applied_seq = hb.applied_seq;
                     m.qps = hb.qps;
+                    m.queries_last_minute = hb
+                        .queries_last_minute
+                        .unwrap_or_else(|| hb.qps.saturating_mul(60));
                     m.ready = hb.ready;
                     m.servfail_permille = hb.servfail_permille;
                     m.p90_us = hb.p90_us;

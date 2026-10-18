@@ -2,6 +2,12 @@ const nf = new Intl.NumberFormat();
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
 
 export const num = (n: number | undefined | null) => (n == null ? '–' : nf.format(n));
+const rate2 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+const rate1 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+const rate0 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+/** A rate such as queries per second: two decimals under 10, one under 100, then whole. */
+export const rate = (n: number | undefined | null) =>
+  n == null ? '–' : (n < 10 ? rate2 : n < 100 ? rate1 : rate0).format(n);
 export const short = (n: number | undefined | null) => (n == null ? '–' : n < 10_000 ? nf.format(n) : compact.format(n));
 export const pct = (n: number | undefined | null, digits = 1) => (n == null || Number.isNaN(n) ? '–' : `${n.toFixed(digits)}%`);
 

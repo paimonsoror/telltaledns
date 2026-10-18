@@ -1447,6 +1447,9 @@ fn lists(cfg: &Config, r: &mut Report<'_>) {
     if f.max_invalid_percent > 100 {
         r.err("filter.max_invalid_percent", "must be between 0 and 100");
     }
+    if f.max_shrink_percent > 100 {
+        r.err("filter.max_shrink_percent", "must be between 0 and 100");
+    }
     if f.max_regexes > 100_000 {
         r.err(
             "filter.max_regexes",

@@ -321,13 +321,13 @@ fn peer_detail_metrics(peers: &[telltale_cluster::net::Member], w: &mut PromWrit
         w.sample(
             "telltale_cluster_peer_queries_per_second",
             &[("node", &p.node_id), ("site", &p.site)],
-            p.qps,
+            crate::cluster::per_second(p.queries_last_minute),
         );
     }
     w.family(
         "telltale_cluster_peer_cache_hit_ratio",
         "gauge",
-        "The peer's cache hits per lookup over the last minute (absent without lookups).",
+        "The share of the peer's forwardable answers that came from its cache (fresh, refreshed, or stale) over the last minute (absent without any).",
     );
     for p in peers {
         if let Some(h) = p.cache_hit_permille {

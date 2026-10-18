@@ -6,6 +6,7 @@
   // dashed red when down, amber when its configuration is behind, and as thick as its share of
   // the queries.
   import type { S } from '../api';
+  import { rate } from '../format';
 
   export type Node = S['ClusterNode'];
   export type Health = 'ok' | 'warn' | 'bad';
@@ -180,7 +181,7 @@
   const sub = (n: Node, px: number) => {
     const parts = [
       n.thisNode ? 'you' : '',
-      `${n.qps} q/s`,
+      `${rate(n.qps)} q/s`,
       n.querySharePercent != null ? `${Math.round(n.querySharePercent)}%` : '',
       n.rttMs != null && !n.thisNode ? `${Math.round(n.rttMs)} ms` : '',
     ].filter(Boolean);
@@ -205,7 +206,7 @@
       n.maintenance ? `in maintenance (${n.maintenance.reason})` : '',
       n.up ? (n.ready ? 'up, serving' : 'up, not ready') : 'down',
       n.configLag ? `configuration ${n.configLag} behind` : 'in sync',
-      `${n.qps} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
+      `${rate(n.qps)} q/s${n.querySharePercent != null ? `, ${n.querySharePercent}% of queries` : ''}`,
       n.cacheHitPercent != null ? `cache ${n.cacheHitPercent}% hits` : '',
       n.restarts ? `${n.restarts} restart${n.restarts === 1 ? '' : 's'}` : '',
     ]

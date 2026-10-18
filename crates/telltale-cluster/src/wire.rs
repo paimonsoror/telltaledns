@@ -165,6 +165,10 @@ pub struct Heartbeat {
     /// (and from older nodes).
     #[prost(uint64, tag = "27")]
     pub canary_of: u64,
+    /// REQ: CLU-008 — the queries it answered over the last minute: `qps` rounds down, so a
+    /// node under 1 q/s showed 0. Absent from older nodes (read as `qps` × 60).
+    #[prost(uint64, optional, tag = "28")]
+    pub queries_last_minute: Option<u64>,
 }
 
 /// REQ: CLU-008 (T6.11) — the resources of the machine a node runs on, for monitoring and
@@ -389,6 +393,27 @@ mod tests {
         };
         let back = Heartbeat::decode(&new.encode_to_vec()[..]).unwrap();
         assert_eq!(back, new);
+    }
+
+    /// REQ: CLU-008, CLU-010 — the exact per-minute count is optional both ways: absent from an
+    /// older node, and it survives a round trip.
+    #[test]
+    fn clu_008_queries_last_minute_is_optional_both_ways() {
+        let old = Heartbeat {
+            qps: 3,
+            ..Heartbeat::default()
+        }
+        .encode_to_vec();
+        assert_eq!(
+            Heartbeat::decode(&old[..]).unwrap().queries_last_minute,
+            None
+        );
+        let new = Heartbeat {
+            qps: 0,
+            queries_last_minute: Some(22),
+            ..Heartbeat::default()
+        };
+        assert_eq!(Heartbeat::decode(&new.encode_to_vec()[..]).unwrap(), new);
     }
 
     /// REQ: OPS-010, CLU-010 (T13.4) — the maintenance fields are optional both ways: an older

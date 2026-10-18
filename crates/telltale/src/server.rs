@@ -1033,6 +1033,7 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
         cfg.router.clone(),
         Arc::clone(&pipeline.router_leases),
         http_stopped.clone(),
+        cfg.cluster.ephemeral,
     ));
     // REQ: T8.3 — device names from mDNS announcements (read at startup).
     if cfg.clients.mdns {
@@ -1283,7 +1284,14 @@ async fn reload(
     } else {
         info!(signal = "SIGHUP", "reloading configuration");
     }
-    let Some(file) = load_files(files) else {
+    // An API or replicated change leaves the files as they were: their warnings (a replica's
+    // file has no upstreams, by design) were logged at start-up or on the last SIGHUP.
+    let loaded = if from_api {
+        load_files_quiet(files)
+    } else {
+        load_files(files)
+    };
+    let Some(file) = loaded else {
         error!("reload failed: configuration invalid; still serving the previous configuration");
         return false;
     };

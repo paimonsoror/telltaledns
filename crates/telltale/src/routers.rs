@@ -254,11 +254,14 @@ fn rebuild(parts: &HashMap<String, Seen>, view: &ArcSwap<Leases>) {
     view.store(Arc::new(m));
 }
 
-/// Polls every `[[router]]` until `stop`.
+/// Polls every `[[router]]` until `stop`. `resolver_pod`: a Helm resolver pod, which has the
+/// routers' settings but not their key files (ADR-120), logs its failures as info; the
+/// controller, which serves the names in the UI, warns.
 pub(crate) async fn run(
     routers: Vec<RouterConfig>,
     view: Arc<ArcSwap<Leases>>,
     mut stop: tokio::sync::watch::Receiver<bool>,
+    resolver_pod: bool,
 ) {
     if routers.is_empty() {
         return;
@@ -287,7 +290,11 @@ pub(crate) async fn run(
                 Ok(c) => c,
                 Err(e) => {
                     if !failing.get(r.name.as_str()).copied().unwrap_or(false) {
-                        warn!(router = %r.name, error = %e, "router integration: TLS settings");
+                        if resolver_pod {
+                            info!(router = %r.name, error = %e, "router integration: TLS settings (not on this resolver pod; the controller reads the router)");
+                        } else {
+                            warn!(router = %r.name, error = %e, "router integration: TLS settings");
+                        }
                     }
                     failing.insert(r.name.to_string(), true);
                     continue;
@@ -314,7 +321,11 @@ pub(crate) async fn run(
                 }
                 Err(e) => {
                     if !was_failing {
-                        warn!(router = %r.name, error = %e, "router integration failed (keeping its last answer)");
+                        if resolver_pod {
+                            info!(router = %r.name, error = %e, "router integration failed on this resolver pod (the controller reads the router)");
+                        } else {
+                            warn!(router = %r.name, error = %e, "router integration failed (keeping its last answer)");
+                        }
                     }
                     failing.insert(r.name.to_string(), true);
                 }

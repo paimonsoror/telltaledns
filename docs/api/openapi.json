@@ -9406,7 +9406,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "Its cache: entries, and the hit rate over the last minute (absent without lookups).",
+            "description": "Its cache: entries, and over the last minute the cache share of its answers that weren't\nblocked or local, as on the dashboard (absent without any).",
             "minimum": 0
           },
           "cacheHitPercent": {
@@ -9506,10 +9506,9 @@
             "minimum": 0
           },
           "qps": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Queries per second over the last minute.",
-            "minimum": 0
+            "type": "number",
+            "format": "double",
+            "description": "Queries per second over the last minute, to two decimals (a node one minor version older\nreports whole numbers)."
           },
           "querySharePercent": {
             "type": [

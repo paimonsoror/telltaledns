@@ -124,13 +124,7 @@ pub(crate) fn unpinned(file: &Config) -> Config {
         return crate::managed::effective(file);
     };
     if !with_managed {
-        let ignored = telltale_config::shared::ignored_on_replica(file);
-        if !ignored.is_empty() {
-            warn!(
-                sections = ?ignored,
-                "this node's configuration file sets shared settings that the cluster's primary replaces; they're ignored (CLU-006)"
-            );
-        }
+        warn_ignored_once(telltale_config::shared::ignored_on_replica(file));
     }
     match merged(file, &m) {
         Ok(c) if with_managed => crate::managed::effective(&c),
@@ -143,6 +137,25 @@ pub(crate) fn unpinned(file: &Config) -> Config {
             crate::managed::effective(file)
         }
     }
+}
+
+/// REQ: CLU-006 — says which of this node's own shared settings the primary replaces, once per
+/// set: every replicated change rebuilt the configuration and repeated it (2026-10-14 review).
+fn warn_ignored_once(ignored: Vec<String>) {
+    static LAST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *last == ignored {
+        return;
+    }
+    if !ignored.is_empty() {
+        warn!(
+            sections = ?ignored,
+            "this node's configuration file sets shared settings that the cluster's primary replaces; they're ignored (CLU-006)"
+        );
+    }
+    *last = ignored;
 }
 
 fn merged(file: &Config, m: &ClusterManifest) -> Result<Config, String> {
@@ -2138,24 +2151,24 @@ async fn serving_loop(
     let (kube_node, pod) = kube_names(|k| std::env::var(k).ok());
     let started_ms =
         now_ms().saturating_sub(u64::try_from(sources.started.elapsed().as_millis()).unwrap_or(0));
-    // Cache hits and misses at each pass for the last minute (12 passes of 5 s).
-    let mut cache_window: std::collections::VecDeque<(u64, u64)> =
-        std::collections::VecDeque::with_capacity(13);
     loop {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let (total, servfail, p90) = {
+        let (total, servfail, cache, p90) = {
             let agg = sources.pipeline.telemetry.aggregates();
+            let mut cache = CacheAnswers::default();
             let (t, s) = agg
                 .series(Resolution::Second, now.saturating_sub(60), now)
                 .iter()
                 .fold((0u64, 0u64), |(t, s), (_, c)| {
+                    cache.add(&c.status);
                     (t + u64::from(c.total), s + u64::from(c.rcode[2]))
                 });
             (
                 t,
                 s,
+                cache,
                 agg.latency(LatencyKey::StageUpstream, HourSel::Current)
                     .map_or(0, |p| p.p90),
             )
@@ -2165,17 +2178,11 @@ async fn serving_loop(
         let ready = sources.readiness.serving();
         let uptime = sources.started.elapsed().as_secs();
         let host = sources.host.latest();
-        let c = sources.cache.stats();
-        cache_window.push_back((c.hits, c.misses));
-        if cache_window.len() > 13 {
-            cache_window.pop_front();
-        }
-        let cache_hit_permille = cache_window.front().and_then(|&(h0, m0)| {
-            hit_permille(c.hits.saturating_sub(h0), c.misses.saturating_sub(m0))
-        });
-        let cache_entries = u64::try_from(c.entries).ok();
+        let cache_hit_permille = hit_permille(cache.hits, cache.misses);
+        let cache_entries = u64::try_from(sources.cache.stats().entries).ok();
         cluster.set_local(|l| {
             l.qps = total / 60;
+            l.queries_last_minute = total;
             l.servfail_permille =
                 u32::try_from((servfail * 1000).checked_div(total).unwrap_or(0)).unwrap_or(1000);
             l.p90_us = p90;
@@ -2212,6 +2219,26 @@ fn kube_names(env: impl Fn(&str) -> Option<String>) -> (String, String) {
 }
 
 /// Hits per thousand lookups; none without lookups.
+/// REQ: CLU-008 — a node's answers that looked in the cache, as the dashboard counts them: fresh
+/// hits and expired answers served (refreshed in the background, or stale because upstreams
+/// failed) are hits; forwarded answers and SERVFAILs from the upstreams are misses. The cache's
+/// own counters call every expired entry a miss, so the Cluster page disagreed with the
+/// dashboard (2026-10-14 review: resolvers 0 %).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CacheAnswers {
+    hits: u64,
+    misses: u64,
+}
+
+impl CacheAnswers {
+    fn add(&mut self, status: &[u32; telltale_telemetry::N_STATUS]) {
+        use telltale_telemetry::Status;
+        let n = |s: Status| u64::from(status[s as usize]);
+        self.hits += n(Status::Cached) + n(Status::Refreshed) + n(Status::Stale);
+        self.misses += n(Status::Forwarded) + n(Status::ServFail);
+    }
+}
+
 fn hit_permille(hits: u64, misses: u64) -> Option<u32> {
     let looked = hits.checked_add(misses)?;
     (looked > 0).then(|| u32::try_from(hits.saturating_mul(1000) / looked).unwrap_or(1000))
@@ -2254,6 +2281,32 @@ mod tests {
         assert_eq!(hit_permille(0, 0), None);
         assert_eq!(hit_permille(812, 188), Some(812));
         assert_eq!(hit_permille(5, 0), Some(1000));
+    }
+
+    // REQ: CLU-008 (2026-10-14 review) — refreshed and stale answers came from the cache, as on
+    // the dashboard; blocked and local answers never looked.
+    #[test]
+    fn clu_008_cache_hits_count_refreshed_answers() {
+        use telltale_telemetry::{N_STATUS, Status};
+        let mut s = [0u32; N_STATUS];
+        s[Status::Cached as usize] = 50;
+        s[Status::Refreshed as usize] = 30;
+        s[Status::Stale as usize] = 1;
+        s[Status::Forwarded as usize] = 18;
+        s[Status::ServFail as usize] = 1;
+        s[Status::Blocked as usize] = 400;
+        s[Status::Local as usize] = 9;
+        let mut c = CacheAnswers::default();
+        c.add(&s);
+        c.add(&[0; N_STATUS]);
+        assert_eq!(
+            c,
+            CacheAnswers {
+                hits: 81,
+                misses: 19
+            }
+        );
+        assert_eq!(hit_permille(c.hits, c.misses), Some(810));
     }
 
     #[test]

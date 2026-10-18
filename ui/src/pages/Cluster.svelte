@@ -5,7 +5,7 @@
   import { api, type S } from '../lib/api';
   import { can, session } from '../lib/session.svelte';
   import { poll } from '../lib/poll';
-  import { duration, ms, num, pct, logTime, logDate } from '../lib/format';
+  import { duration, ms, num, pct, rate, logTime, logDate } from '../lib/format';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import HelpButton from '../lib/components/HelpButton.svelte';
   import HostCard from '../lib/components/HostCard.svelte';
@@ -457,7 +457,7 @@ telltale cluster join tt_join_…</pre>
                   <td>
                     <span class="badge {n.ready ? 'ok' : 'bad'}">{n.ready ? 'ready' : 'not ready'}</span>
                     <div class="muted small">
-                      {num(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
+                      {rate(n.qps)} q/s{#if n.querySharePercent != null}{` (${pct(n.querySharePercent)} of queries)`}{/if} · {pct(n.servfailPercent)} SERVFAIL · upstream p90 {n.upstreamP90Ms > 0 ? ms(n.upstreamP90Ms) : '–'}
                     </div>
                     {#if n.cacheEntries != null}
                       <div class="muted small">cache: {n.cacheHitPercent != null ? `${pct(n.cacheHitPercent)} hits` : 'no lookups'} · {num(n.cacheEntries)} entries</div>
@@ -494,7 +494,7 @@ telltale cluster join tt_join_…</pre>
                     </button>
                     <span class="muted small">
                       {pods.filter((p) => p.up).length} up · {pods.filter((p) => p.ready).length} ready ·
-                      {num(pods.reduce((t, p) => t + p.qps, 0))} q/s · {pods.filter((p) => p.configLag > 0).length} behind
+                      {rate(pods.reduce((t, p) => t + p.qps, 0))} q/s · {pods.filter((p) => p.configLag > 0).length} behind
                       {#if avg(pods.map((p) => p.cacheHitPercent)) != null}· cache {pct(avg(pods.map((p) => p.cacheHitPercent)) ?? 0)} hits on average (each pod has its own){/if}
                     </span>
                   </td>

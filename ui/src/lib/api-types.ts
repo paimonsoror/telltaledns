@@ -3562,7 +3562,8 @@ export interface components {
             behindSeconds?: number | null;
             /**
              * Format: int64
-             * @description Its cache: entries, and the hit rate over the last minute (absent without lookups).
+             * @description Its cache: entries, and over the last minute the cache share of its answers that weren't
+             *     blocked or local, as on the dashboard (absent without any).
              */
             cacheEntries?: number | null;
             /** Format: double */
@@ -3602,8 +3603,9 @@ export interface components {
              */
             protocol: number;
             /**
-             * Format: int64
-             * @description Queries per second over the last minute.
+             * Format: double
+             * @description Queries per second over the last minute, to two decimals (a node one minor version older
+             *     reports whole numbers).
              */
             qps: number;
             /**

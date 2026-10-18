@@ -159,6 +159,12 @@ pub(crate) fn open(cfg: &Config) -> io::Result<Arc<Auth>> {
     match oidc(cfg) {
         Ok(Some(o)) => auth.set_oidc(o),
         Ok(None) => {}
+        // REQ: CLU-009 (ADR-120) — a Helm resolver pod has the chart's whole configuration but
+        // not its secrets, by design: nobody signs in there (its API has no Service port), so
+        // a missing secret isn't an error on it (2026-10-14 review: an error per pod start).
+        Err(e) if cfg.cluster.ephemeral => {
+            info!("OIDC sign-in isn't set up on this resolver pod (people sign in elsewhere): {e}");
+        }
         Err(e) => error!("OIDC sign-in disabled: {e}"),
     }
     bootstrap_from_env(&auth);

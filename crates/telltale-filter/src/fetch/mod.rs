@@ -105,12 +105,16 @@ pub struct FetchSettings {
     pub settle: Duration,
     /// `[filter] max_invalid_percent`: a body with a larger share of invalid lines is refused.
     pub max_invalid_percent: u8,
+    /// `[filter] max_shrink_percent`: a URL list that lost a larger share of its lines is held
+    /// until the source serves the same content again (100 = never held).
+    pub max_shrink_percent: u8,
 }
 
 impl FetchSettings {
     pub fn from_config(cfg: &Config) -> Self {
         Self {
             max_invalid_percent: cfg.filter.max_invalid_percent,
+            max_shrink_percent: cfg.filter.max_shrink_percent,
             concurrency: usize::from(cfg.filter.fetch_concurrency.max(1)),
             timeout: Duration::from_secs(u64::from(cfg.filter.fetch_timeout_secs)),
             retries: cfg.filter.fetch_retries,
@@ -129,12 +133,20 @@ pub enum Outcome {
     Unchanged,
     /// Nothing stored; the previous copy (if any) stays in use.
     Failed(String),
+    /// REQ: FLT-004 (ADR-147) — the download lost more of the stored copy's lines than
+    /// `max_shrink_percent` allows: not stored yet. The previous copy stays in use until a
+    /// later refresh (the next scheduled one, or a manual one) brings the same content.
+    Held(String),
 }
 
 /// Retry a failing list after 5 min, doubling up to 1 h (but never later than its normal
 /// refresh), instead of waiting a whole refresh interval.
 const FAIL_RETRY_BASE: u64 = 300;
 const FAIL_RETRY_MAX: u64 = 3600;
+
+/// Stored copies smaller than this many lines aren't held for shrinking: a short list's size
+/// swings a lot from a few edits.
+const SHRINK_MIN_LINES: u64 = 1_000;
 
 impl std::fmt::Debug for Fetcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -311,10 +323,9 @@ impl Fetcher {
                 // Hashing, checking, and zstd-compressing a large list takes hundreds of ms:
                 // never on a runtime worker, which also carries upstream answers (T2.7).
                 let (store, name, mut m) = (self.store.clone(), spec.name.clone(), meta.clone());
-                let max_invalid = self.settings.max_invalid_percent;
+                let checks = self.checks(spec);
                 let processed = tokio::task::spawn_blocking(move || {
-                    let r =
-                        accept_body(&store, &name, &mut m, same_source, &data, now, max_invalid);
+                    let r = accept_body(&store, &name, &mut m, same_source, &data, now, checks);
                     (r, m)
                 })
                 .await;
@@ -322,9 +333,13 @@ impl Fetcher {
                     Ok((r, m)) => {
                         meta = m;
                         r.map_or_else(Outcome::Failed, |outcome| {
-                            meta.source.clone_from(&key);
-                            meta.etag = etag;
-                            meta.last_modified = last_modified;
+                            // A held body keeps the stored copy's validators, so the next
+                            // conditional GET fetches it again rather than answering 304.
+                            if !matches!(outcome, Outcome::Held(_)) {
+                                meta.source.clone_from(&key);
+                                meta.etag = etag;
+                                meta.last_modified = last_modified;
+                            }
                             outcome
                         })
                     }
@@ -339,6 +354,7 @@ impl Fetcher {
                 meta.last_success = Some(now);
                 meta.last_error = None;
                 meta.consecutive_failures = 0;
+                meta.held_hash = None;
                 if outcome == Outcome::Updated {
                     info!(list = %spec.name, bytes = meta.bytes, lines = meta.lines, "list updated");
                 } else {
@@ -363,9 +379,27 @@ impl Fetcher {
                 };
                 warn!(list = %spec.name, "list refresh failed ({kept}): {e}");
             }
+            // Not a failure: no early retry, and the list's status says why it waits.
+            Outcome::Held(why) => {
+                meta.last_error = Some(why.clone());
+                warn!(list = %spec.name, "list update held: {why}");
+            }
         }
         self.put_meta(&spec.name, meta);
         outcome
+    }
+
+    /// The checks a download of `spec` must pass.
+    fn checks(&self, spec: &ListSpec) -> Checks {
+        Checks {
+            max_invalid_percent: self.settings.max_invalid_percent,
+            // A file or inline list shrinks because someone edited it.
+            max_shrink_percent: if matches!(spec.source, ListSource::Url(_)) {
+                self.settings.max_shrink_percent
+            } else {
+                100
+            },
+        }
     }
 
     /// One URL download with retries and backoff.
@@ -474,6 +508,13 @@ impl Fetcher {
     }
 }
 
+/// The `[filter]` checks a downloaded body must pass.
+#[derive(Debug, Clone, Copy)]
+struct Checks {
+    max_invalid_percent: u8,
+    max_shrink_percent: u8,
+}
+
 /// Checks a downloaded body and stores it if it differs from the stored copy. Updates the
 /// content fields of `meta`; the caller sets source and validators on success. Blocking.
 fn accept_body(
@@ -483,20 +524,47 @@ fn accept_body(
     same_source: bool,
     data: &[u8],
     now: u64,
-    max_invalid_percent: u8,
+    checks: Checks,
 ) -> Result<Outcome, String> {
     sanity_check(data)?;
-    usable_check(data, max_invalid_percent)?;
+    usable_check(data, checks.max_invalid_percent)?;
     let hash = content_hash(data);
     if same_source && meta.content_hash.as_deref() == Some(hash.as_str()) {
         return Ok(Outcome::Unchanged);
+    }
+    let lines = count_lines(data);
+    // REQ: FLT-004 (ADR-147) — a list that suddenly lost most of its lines (a truncated
+    // mirror, a source mid-rewrite) waits for the source to serve the same content again.
+    if same_source
+        && meta.lines >= SHRINK_MIN_LINES
+        && lines.saturating_mul(100)
+            < meta
+                .lines
+                .saturating_mul(100 - u64::from(checks.max_shrink_percent.min(100)))
+        && meta.held_hash.as_deref() != Some(hash.as_str())
+    {
+        meta.held_hash = Some(hash);
+        return Ok(Outcome::Held(format!(
+            "it shrank from {} to {lines} lines, more than [filter] max_shrink_percent ({} %) \
+             allows; the previous copy stays in use until a later refresh brings the same \
+             content (\"Refresh now\" accepts it)",
+            meta.lines, checks.max_shrink_percent
+        )));
+    }
+    if meta.held_hash.as_deref() == Some(hash.as_str()) {
+        info!(
+            list = name,
+            from = meta.lines,
+            to = lines,
+            "list shrank; the source served the same content again, so it's accepted"
+        );
     }
     store
         .save_source(name, data)
         .map_err(|e| format!("cannot store source: {e}"))?;
     meta.content_hash = Some(hash);
     meta.bytes = data.len() as u64;
-    meta.lines = count_lines(data);
+    meta.lines = lines;
     meta.last_changed = Some(now);
     Ok(Outcome::Updated)
 }
