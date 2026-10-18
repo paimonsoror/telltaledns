@@ -326,7 +326,7 @@ the chart's schema rejects a mistyped value with its path.
   resolver pod (a headless `<release>-resolver-metrics` Service), so query, SERVFAIL, and
   latency metrics cover all the traffic, and so do the alerts and SLO rules of
   `prometheusRule.enabled` (both jobs, `<release>-metrics` and `<release>-resolver-metrics`;
-  before 0.5.0-edge.245 they watched only the controller). With the kube-prometheus-stack
+  before 0.5.0 they watched only the controller). With the kube-prometheus-stack
   chart, give the rules its `release` label so Prometheus loads them
   (`prometheusRule.labels: {release: <its release name>}`). On the controller, per member:
   `telltale_cluster_peer_info{kube_node, pod}`,
@@ -2550,7 +2550,7 @@ curl -s -H "Authorization: Bearer $TOKEN" 'http://dns.lan:8053/api/v1/queries?cl
 ```
 
 ### From the shell: `telltale ctl`
-The same API from a terminal, with an API token (Settings → API tokens, or `POST /api/v1/tokens`):
+The same API from a terminal, with an API token (Settings → API tokens, or `POST /api/v1/tokens` from a signed-in session):
 ```sh
 export TELLTALE_TOKEN=tt_...                 # or --token-file /path/to/token
 telltale ctl status                          # version, uptime, the last day's numbers
@@ -2571,7 +2571,7 @@ telltale ctl put groups/kids --data '{"lists": ["oisd-small"]}'
 - `block` and `allow` take `--dry-run` to see what would change. Rule IDs come from the domain (`block-tiktok-com`).
 
 ## AI agents and automation
-Give an AI assistant (or any automation) an **agent token** instead of your own account. Create one in **Settings → API tokens → for an AI agent**, or with `POST /api/v1/tokens`:
+Give an AI assistant (or any automation) an **agent token** instead of your own account. Create one in **Settings → API tokens → for an AI agent**, or with `POST /api/v1/tokens` from a signed-in session (the session cookie and `X-CSRF-Token`: a token can't create tokens):
 ```json
 {"name": "assistant", "kind": "agent", "scopes": ["analytics:read", "config:read"], "group": "kids", "ratePerMinute": 60}
 ```

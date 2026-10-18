@@ -26,7 +26,8 @@ DEVICES = {
                          "update.games.example", "old.nx.example"], ADS, 0.10),
     "127.0.3.20": (2.0, ["www.netflix.com", "api.tv-vendor.example", "img.tv-vendor.example"],
                    ["metrics.tv-vendor.example"], 0.35),
-    "127.0.3.21": (0.6, ["api.thermostat.example", "time.example.net"], ["telemetry.example.net"], 0.20),
+    # The thermostat also polls time.example.net every 2.5 s (below): the rhythm strip's loop.
+    "127.0.3.21": (0.6, ["api.thermostat.example"], ["telemetry.climate.example"], 0.20),
     "127.0.3.22": (1.0, ["api.spotify.com", "speaker.example.com", "time.example.net"], [], 0.0),
 }
 
@@ -48,8 +49,13 @@ for ip in DEVICES:
 end = time.time() + float(sys.argv[1])
 t0 = time.time()
 sent = 0
+next_tick = time.time()
 while time.time() < end:
     t = time.time() - t0
+    if time.time() >= next_tick:
+        socks["127.0.3.21"].sendto(query("time.example.net"), SERVER)
+        sent += 1
+        next_tick += 2.5
     # A daily-looking swell: busier, then quieter, then busier again.
     level = 1.0 + 0.6 * math.sin(t / 90.0) + 0.3 * math.sin(t / 23.0)
     for ip, (rate, names, ads, ad_share) in DEVICES.items():

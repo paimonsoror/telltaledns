@@ -22,6 +22,23 @@
 </section>
 
 <section>
+  <h2>Against the v1.0 targets</h2>
+  <p>The release gate for 1.0 sets targets for speed and footprint. These were measured on the shipped build, with the method for each one in <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/v1-gate.md">docs/v1-gate.md</a>.</p>
+  <div class="table-wrap"><table class="std wrap">
+    <thead><tr><th>What</th><th>Target</th><th>Measured</th></tr></thead>
+    <tbody>
+      <tr><td>Time to answer from the cache or the blocklists, at half the maximum load sent from another machine</td><td>p99 ≤ 250 µs</td><td><b>99.999 %</b> of answers sent within 250 µs (p99 within 50 µs), with no queries lost</td></tr>
+      <tr><td>Memory at idle, no lists</td><td>≤ 20 MiB</td><td><b>13.7 MiB</b></td></tr>
+      <tr><td>Memory with a million blocked names, 100,000 cached answers, and telemetry</td><td>≤ 64 MiB</td><td><b>60 MiB</b></td></tr>
+      <tr><td>Raspberry Pi 4: new rules answering after a 2-million-name list changes</td><td>≤ 8 s</td><td><b>4.7 s</b> (the rest of the compile finishes in the background)</td></tr>
+      <tr><td>Start to serving, with the filter on disk</td><td>≤ 500 ms</td><td><b>52 ms</b> with a million names</td></tr>
+      <tr><td>Compressed container image</td><td>≤ 15 MiB</td><td><b>10.6 to 11.1 MiB</b> per architecture</td></tr>
+    </tbody>
+  </table></div>
+  <p class="muted">Still open before 1.0: throughput on a Raspberry Pi 4 that isn't serving a home network, and how fast a change reaches every node, measured over more changes.</p>
+</section>
+
+<section>
   <p class="muted">Screenshots of the UI moved to the <a href="tour.html">Tour</a>; what TelltaleDNS measures and alerts on is on <a href="monitoring.html">Monitoring</a>.</p>
 </section>
 

@@ -180,6 +180,14 @@ dig @127.0.0.1 example.com</code></pre>
       <p class="muted">Needs a recent Rust toolchain (the repository pins it). The first start creates a one-time setup token; <code>telltale auth setup-token</code> prints it. Open the web UI on port 8053 and use it to create your admin.</p>
     </div>
   </div>
+
+  <div class="callout" id="verify">
+    <p><b>Check what you run.</b> Release binaries come with a signed <code>SHA256SUMS</code> (the installer and <code>telltale self-update</code> check it for you), and images are signed with cosign through GitHub's keyless signing:</p>
+<pre><code>cosign verify ghcr.io/paimonsoror/telltale:&lt;version&gt; \
+  --certificate-identity-regexp '^https://github\.com/paimonsoror/telltaledns/\.github/workflows/image\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com</code></pre>
+    <p>Each binary carries its dependency list (<code>cargo audit bin telltale</code> reads it), every release has a CycloneDX SBOM per binary, and two builds of the same commit are byte for byte identical. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#versions-and-updates">How to rebuild and compare</a>.</p>
+  </div>
 </section>
 
 <section id="configure">

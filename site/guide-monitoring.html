@@ -93,7 +93,12 @@ grafanaDashboard:
   enabled: true        # the dashboard as a ConfigMap, labelled grafana_dashboard: "1"</code></pre>
       <ul>
         <li><b>The alert rules</b> cover the server down, all upstreams down, the SERVFAIL rate, stale lists, dropped telemetry, masked client IPs, device anomalies, the host (<code>TelltaleDNSDataDiskLow</code>, <code>TelltaleDNSMemoryPressure</code>, <code>TelltaleDNSOutOfMemoryKill</code>, <code>TelltaleDNSCpuThrottled</code>, <code>TelltaleDNSRunningHot</code>), and the listeners (<code>TelltaleDNSListenerNotAnswering</code>, <code>TelltaleDNSListenerCertExpiring</code>).</li>
-        <li><b>In <code>mode: scaled</code></b>, the ServiceMonitor also scrapes the resolver pods (through a headless <code>&lt;release&gt;-resolver-metrics</code> Service), so the query, SERVFAIL, and latency metrics cover all the traffic.</li>      </ul>
+        <li><b>In <code>mode: scaled</code></b>, the ServiceMonitor also scrapes the resolver pods (through a headless <code>&lt;release&gt;-resolver-metrics</code> Service), so the query, SERVFAIL, and latency metrics cover all the traffic. The alert and SLO rules watch both jobs, so an alert can fire for a resolver pod too.</li>
+        <li><b>With kube-prometheus-stack,</b> Prometheus only loads rules that carry its release label. Add it, or the rules are created but never evaluated:
+<pre><code>prometheusRule:
+  enabled: true
+  labels:
+    release: prometheus   # your kube-prometheus-stack release name</code></pre></li>      </ul>
       <p class="muted">Every key and default: <a href="helm-values.html">Helm values</a>. The rest of the chart: <a href="guide-kubernetes.html">Run on Kubernetes</a>.</p>
     </div>
   </div>

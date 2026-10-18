@@ -25,10 +25,9 @@ for (const theme of ['light', 'dark'] as const) {
     await page.getByLabel('Username', { exact: true }).fill('admin');
     await page.getByLabel('Password', { exact: true }).fill('correct horse battery');
     await page.getByRole('button', { name: 'Sign in' }).click();
-    // The dashboard's site shots come from the demo network instead (tests/demo/run.sh): this
-    // server is minutes old and has one client, which makes for an empty-looking dashboard.
+    // The dashboard, traffic map, query log, and "Why?" shots come from the demo network instead
+    // (tests/demo/run.sh): this server is minutes old, with one client and the suite's test names.
     for (const [name, path] of [
-      ['queries', '/#/queries'],
       ['lists', '/#/lists'],
       ['settings', '/#/settings?tab=tokens'],
       ['cache', '/#/cache'],
@@ -50,11 +49,6 @@ for (const theme of ['light', 'dark'] as const) {
     await page.unroute('**/api/v1/cluster');
     await page.unroute('**/api/v1/cluster/rollout');
     await page.unroute('**/api/v1/cluster/versions');
-    // "Why?" on a blocked query: it names the list and the rule.
-    await page.goto('/#/queries?status=blocked');
-    await page.getByRole('button', { name: 'Why?' }).first().click();
-    await page.waitForTimeout(400);
-    await page.screenshot({ path: shot(`why-${theme}`), type: 'jpeg', quality: 80 });
     // T6.8 — every other page too, for design review: written to ui/.shots/ (git-ignored),
     // not to the site.
     for (const [name, path] of [

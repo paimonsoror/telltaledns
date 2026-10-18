@@ -77,6 +77,7 @@ rules = [
   "||app-measurement.com^",
   "||ads.example.com^",
   "||telemetry.example.net^",
+  "||telemetry.climate.example^",
   "||metrics.tv-vendor.example^",
   "||tracker.example.org^",
 ]

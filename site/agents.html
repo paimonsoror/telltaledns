@@ -83,7 +83,7 @@
   <h2>Connect an assistant</h2>
   <ol class="steps">
     <li class="step"><h3>Make an agent token</h3>
-      <p>In <b>Settings → API tokens → for an AI agent</b>, or through the API. The default is read-only and leaves out the query log; add scopes only for what the agent should do.</p>
+      <p>In <b>Settings → API tokens → for an AI agent</b>, or through the API from a signed-in session (the session cookie and <code>X-CSRF-Token</code>: a token can't create tokens). The default is read-only and leaves out the query log; add scopes only for what the agent should do.</p>
 <pre><code>POST /api/v1/tokens
 {"name": "assistant", "kind": "agent",
  "scopes": ["analytics:read", "config:read", "querylog:read"]}</code></pre></li>

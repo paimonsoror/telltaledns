@@ -1,6 +1,6 @@
 #!/bin/sh
-# REQ: DOC-002 — dashboard screenshots for the README (docs/images/) and the site
-# (site/assets/shots/dashboard-*.jpg) on a made-up network, so no real network ever appears in
+# REQ: DOC-002 — screenshots for the README (docs/images/) and the site (site/assets/shots/:
+# dashboard, traffic, queries, why) on a made-up network, so no real network ever appears in
 # them. Starts two stub upstreams and a fresh server with demo.toml, sends synthetic traffic, and
 # runs shots.spec.ts. Nothing here is real: every device, name, and address is invented.
 #

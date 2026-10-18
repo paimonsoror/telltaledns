@@ -1,5 +1,6 @@
-// REQ: DOC-002 — dashboard screenshots for the README and the site, taken on the made-up network
-// of demo.toml after run.sh has sent it synthetic traffic. Not part of the e2e suite.
+// REQ: DOC-002 — dashboard, traffic map, and query log screenshots for the README and the site,
+// taken on the made-up network of demo.toml after run.sh has sent it synthetic traffic. Not part
+// of the e2e suite.
 import { test, type Browser } from '@playwright/test';
 import { resolve } from 'node:path';
 
@@ -51,6 +52,20 @@ for (const theme of ['light', 'dark'] as const) {
     await site.page.waitForTimeout(11_000);
     await site.page.mouse.move(0, 0);
     await site.page.screenshot({ path: `${repo}/site/assets/shots/traffic-${theme}.jpg`, type: 'jpeg', quality: 80 });
+    await site.context.close();
+  });
+
+  // The query log, and "Why?" on a blocked query (it names the list and the rule): the demo's
+  // made-up devices read better than the e2e suite's leftovers.
+  test(`query log ${theme}`, async ({ browser }) => {
+    const site = await capture(browser, theme, 1280, 860, 1);
+    await site.page.goto('/#/queries');
+    await site.page.waitForTimeout(1500);
+    await site.page.screenshot({ path: `${repo}/site/assets/shots/queries-${theme}.jpg`, type: 'jpeg', quality: 80 });
+    await site.page.goto('/#/queries?status=blocked');
+    await site.page.getByRole('button', { name: 'Why?' }).first().click();
+    await site.page.waitForTimeout(600);
+    await site.page.screenshot({ path: `${repo}/site/assets/shots/why-${theme}.jpg`, type: 'jpeg', quality: 80 });
     await site.context.close();
   });
 }

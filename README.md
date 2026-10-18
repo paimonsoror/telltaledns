@@ -13,7 +13,7 @@ Every connection on your network starts with a DNS lookup. TelltaleDNS answers i
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.jpg">
-    <img alt="The TelltaleDNS dashboard: queries, blocked share, and cache hits; queries by status and by group over 15 minutes; where time goes; and the top domains, blocked names, and devices with their groups" src="docs/images/dashboard-light.jpg" width="900">
+    <img alt="The TelltaleDNS dashboard: queries, blocked share, cache hits, upstream latency, and active clients; queries by status over 15 minutes and answers by status; and the top domains, blocked names, and devices with their groups" src="docs/images/dashboard-light.jpg" width="900">
   </picture>
   <br>
   <sub>The dashboard on a demo network. Every device, name, and address in it is made up.</sub>
@@ -31,11 +31,12 @@ Give everyone who runs a home or small network an honest, real-time view of what
 - **Every answer explained.** The query log ties each query to a named device, times every stage, and says why it was answered that way. Names come from your router, from what devices announce over mDNS, or from the UI, and TelltaleDNS recognizes what each device is (a Roku player, a camera, a thermostat) from its maker and the names it asks for.
 - **Your rules, per device.** Blocklists, groups for each network or VLAN, schedules, safe search, blocked services, rewrites, and quick rules. Before you save a change, see what it would have done to yesterday's real traffic.
 - **Encrypted both ways.** DoT, DoH, and DoQ for your devices and to your upstreams, DNSSEC validation, and full recursion when you'd rather not forward at all.
-- **Watch it work.** A dashboard for the whole cluster, one node, or one site; device anomalies and alerts; Prometheus metrics, OpenTelemetry, dnstap, and event sinks for your SIEM.
+- **Watch it work.** A dashboard for the whole cluster, one node, or one site. A heatmap of when your network asks, a flow from each group to its answers, answer times as a heatmap, every change marked on every chart, and which devices and names spent the error budget. Compare nodes side by side, see a device's rhythm and its day, and put it all on a wall display. Device anomalies and alerts; Prometheus metrics, OpenTelemetry, dnstap, and event sinks for your SIEM.
 - **One cluster, many places.** A Pi and Kubernetes nodes share one config and one management plane. A witness lets a replica take over automatically, and the config can live in Git. Changes can reach a few canary nodes first and roll back by themselves if those start failing, and maintenance mode takes a node out of service without dropped queries or false alarms.
 - **Private by design.** Privacy levels decide how much of each query is kept, from everything to counters only, and every change lands in an audit log.
 - **Ready for agents.** A documented REST API with OpenAPI, `telltale ctl` for the shell, and MCP tools with plans and approval for AI agents.
-- **Small.** One static binary in an image of about 13 MiB, for amd64, arm64, and 32-bit Pi OS, with signed releases.
+- **Small and fast.** One static binary in an image of about 13 MiB, for amd64, arm64, and 32-bit Pi OS. It idles at about 14 MiB of memory, holds a million blocked names in 60 MiB, and sends 99.999 % of cached and blocked answers within 250 µs of the query arriving, under load from another machine ([measurements](docs/v1-gate.md)).
+- **Verifiable.** Images are signed with cosign, each release binary carries its dependency list and an SBOM, and two builds of the same commit are identical ([how to check](docs/running.md#versions-and-updates)).
 
 ## Quick start
 On a Raspberry Pi or any Linux host with Docker:
