@@ -1127,6 +1127,7 @@ impl Backend for ApiBackend {
             TopKind::Blocked => telltale_telemetry::agg::TopKind::Blocked,
             TopKind::Nxdomain => telltale_telemetry::agg::TopKind::Nxdomain,
             TopKind::Clients => telltale_telemetry::agg::TopKind::Clients,
+            TopKind::Internal => telltale_telemetry::agg::TopKind::Internal,
         };
         let tops =
             self.src
@@ -1159,6 +1160,7 @@ impl Backend for ApiBackend {
                     TopKind::Blocked => telltale_telemetry::agg::TopKind::Blocked,
                     TopKind::Nxdomain => telltale_telemetry::agg::TopKind::Nxdomain,
                     TopKind::Clients => telltale_telemetry::agg::TopKind::Clients,
+                    TopKind::Internal => telltale_telemetry::agg::TopKind::Internal,
                 };
                 agg.top_names(k, hour(h), limit)
             }

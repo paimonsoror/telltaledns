@@ -19374,7 +19374,8 @@
           "domains",
           "blocked",
           "nxdomain",
-          "clients"
+          "clients",
+          "internal"
         ]
       },
       "TotpCode": {

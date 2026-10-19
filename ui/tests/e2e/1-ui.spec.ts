@@ -2900,3 +2900,21 @@ test('clu_014 drill', async () => {
   await page.unroute('**/api/v1/clients/affinity**');
   for (let i = problems.length - 1; i >= 0; i--) if (/status of 409/.test(problems[i])) problems.splice(i, 1);
 });
+
+// REQ: OBS-037 — internal names: reverse lookups of private addresses count under Top domains
+// → Internal, not Internet.
+test('obs_037 internal names', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  for (let i = 0; i < 3; i++) await query('20.1.168.192.in-addr.arpa', 12).catch(() => -1);
+  await page.goto('/#/');
+  const card = page.locator('section.card').filter({ has: page.getByRole('heading', { name: /^Top domains/ }) });
+  const ptr = card.getByRole('link', { name: '20.1.168.192.in-addr.arpa', exact: true });
+  await expect(card.getByRole('button', { name: 'Internet', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(async () => {
+    await page.reload();
+    await card.getByTestId('domains-internal-tab').click();
+    await expect(ptr).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+  await card.getByRole('button', { name: 'Internet', exact: true }).click();
+  await expect(ptr).toHaveCount(0);
+});

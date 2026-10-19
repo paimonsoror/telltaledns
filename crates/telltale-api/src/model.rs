@@ -320,6 +320,10 @@ pub enum TopKind {
     Nxdomain,
     /// Most active clients.
     Clients,
+    /// REQ: OBS-037 — most queried internal names (the cluster domain, reverse lookups of
+    /// private addresses, `[telemetry] internal_names`), which `domains` and `nxdomain`
+    /// leave out.
+    Internal,
 }
 
 /// Which hour a top-K or latency call reads.

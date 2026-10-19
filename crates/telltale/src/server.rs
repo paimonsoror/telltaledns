@@ -742,6 +742,25 @@ fn set_client_metrics(cfg: &Config, pipeline: &Pipeline) {
     // REQ: OBS-016 (ADR-105) — the time buckets count answers slower than the latency
     // objective's threshold.
     agg.slo_latency_us = u64::from(cfg.slo.latency_ms) * 1000;
+    agg.internal = internal_names(cfg);
+}
+
+/// REQ: OBS-037 (ADR-152) — the names the internal top list takes: reverse lookups of private
+/// addresses, `cluster.local` when Kubernetes is on, and `[telemetry] internal_names`.
+pub(crate) fn internal_names(cfg: &Config) -> telltale_telemetry::internal::InternalNames {
+    let cluster = cfg.kubernetes.enabled.then_some("cluster.local");
+    let names = cfg
+        .telemetry
+        .internal_names
+        .iter()
+        .map(|n| n.trim().trim_start_matches("*."))
+        .chain(cluster)
+        .filter_map(|n| {
+            telltale_proto::NameBuf::from_presentation(n)
+                .ok()
+                .map(|b| b.as_wire().to_vec())
+        });
+    telltale_telemetry::internal::InternalNames::new(names, true)
 }
 
 /// Starts the metrics and API listeners; both stop when `stop` turns true.
@@ -1502,6 +1521,36 @@ mod tests {
 
     use super::*;
     use crate::pipeline::{Handler, Policy};
+
+    // REQ: OBS-037 — `cluster.local` is internal only with Kubernetes on; `[telemetry]
+    // internal_names` adds suffixes; private reverse lookups always are; validation refuses a
+    // name that isn't one.
+    #[test]
+    fn obs_037_internal_names_from_config() {
+        let wire = |s: &str| NameBuf::from_presentation(s).unwrap().as_wire().to_vec();
+        let parse = |t: &str| toml::from_str::<Config>(t).unwrap();
+        let off = internal_names(&Config::default());
+        assert!(!off.is_internal(&wire("kubernetes.default.svc.cluster.local")));
+        assert!(off.is_internal(&wire("20.1.168.192.in-addr.arpa")));
+        let on = internal_names(&parse(
+            "[kubernetes]\nenabled = true\n[telemetry]\ninternal_names = [\"*.LAN\", \"home.arpa\"]\n",
+        ));
+        for name in [
+            "kubernetes.default.svc.cluster.local",
+            "nas.lan",
+            "printer.home.arpa",
+        ] {
+            assert!(on.is_internal(&wire(name)), "{name}");
+        }
+        assert!(!on.is_internal(&wire("example.com")));
+        let bad = parse("[telemetry]\ninternal_names = [\"not a name\"]\n");
+        let errs = telltale_config::validate_config(&bad).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.to_string().contains("telemetry.internal_names[0]")),
+            "{errs:?}"
+        );
+    }
 
     /// The OPT record's UDP payload size in the answer to a `localhost A` query that carries EDNS.
     fn advertised(cfg: &Config) -> u16 {

@@ -7494,7 +7494,7 @@ export interface components {
          * @description What a top-K list ranks.
          * @enum {string}
          */
-        TopKind: "domains" | "blocked" | "nxdomain" | "clients";
+        TopKind: "domains" | "blocked" | "nxdomain" | "clients" | "internal";
         TotpCode: {
             code: string;
         };

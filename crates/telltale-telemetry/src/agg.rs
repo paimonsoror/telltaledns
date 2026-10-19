@@ -512,6 +512,9 @@ pub enum TopKind {
     Blocked,
     Nxdomain,
     Clients,
+    /// REQ: OBS-037 — internal names (the cluster domain, private reverse lookups), which the
+    /// domains and NXDOMAIN lists leave out.
+    Internal,
 }
 
 /// Latency histogram selector.
@@ -551,6 +554,8 @@ struct Hour {
     domains: SpaceSaving<Box<[u8]>>,
     blocked: SpaceSaving<Box<[u8]>>,
     nxdomain: SpaceSaving<Box<[u8]>>,
+    /// REQ: OBS-037 — internal names, kept apart from `domains` and `nxdomain`.
+    internal: SpaceSaving<Box<[u8]>>,
     clients: SpaceSaving<[u8; 16]>,
     /// Client → (last seen, its domains).
     per_client: ClientDomains,
@@ -616,6 +621,8 @@ struct GroupTops {
     domains: SpaceSaving<Box<[u8]>>,
     blocked: SpaceSaving<Box<[u8]>>,
     clients: SpaceSaving<[u8; 16]>,
+    /// REQ: OBS-037 — the group's internal names.
+    internal: SpaceSaving<Box<[u8]>>,
 }
 
 /// Entries per group top list (smaller than the overall lists: there are several groups).
@@ -684,6 +691,7 @@ impl Hour {
             domains: SpaceSaving::new(TOP_CAPACITY),
             blocked: SpaceSaving::new(TOP_CAPACITY),
             nxdomain: SpaceSaving::new(TOP_CAPACITY),
+            internal: SpaceSaving::new(TOP_CAPACITY),
             clients: SpaceSaving::new(TOP_CAPACITY),
             per_client: HashMap::new(),
             total: vec![Hist::default(); Path::ALL.len() * Proto::ALL.len()],
@@ -697,7 +705,7 @@ impl Hour {
         }
     }
 
-    fn add_query(&mut self, e: &QueryEvent, name: &Name, seq: u64, slow_us: u64) {
+    fn add_query(&mut self, e: &QueryEvent, name: &Name, seq: u64, slow_us: u64, internal: bool) {
         let wire = name.as_wire();
         // REQ: OBS-027 — bad answers' names and clients (nothing for good answers).
         let servfail = e.rcode == Some(SERVFAIL);
@@ -727,17 +735,23 @@ impl Hour {
             }
         }
         if !wire.is_empty() {
-            self.domains.offer(wire, boxed);
+            // REQ: OBS-037 — an internal name counts in its own list, not the domains or
+            // NXDOMAIN lists; blocks, bad answers, and one device's own domains keep it.
+            if internal {
+                self.internal.offer(wire, boxed);
+            } else {
+                self.domains.offer(wire, boxed);
+                if e.rcode == Some(3) {
+                    self.nxdomain.offer(wire, boxed);
+                }
+            }
             if e.status == Status::Blocked {
                 self.blocked.offer(wire, boxed);
-            }
-            if e.rcode == Some(3) {
-                self.nxdomain.offer(wire, boxed);
             }
             self.per_client_domain(e.client_ip, wire, seq);
         }
         self.clients.offer(&e.client_ip, |ip| *ip);
-        self.group_add(e, wire);
+        self.group_add(e, wire, internal);
         if e.status.answered() {
             let us = u64::from(e.t_total_us);
             self.total[e.status.path() as usize * Proto::ALL.len() + e.proto as usize].record(us);
@@ -755,7 +769,7 @@ impl Hour {
         }
     }
 
-    fn group_add(&mut self, e: &QueryEvent, wire: &[u8]) {
+    fn group_add(&mut self, e: &QueryEvent, wire: &[u8], internal: bool) {
         let g = usize::from(e.group).min(MAX_IDS - 1);
         if self.per_group.len() <= g {
             self.per_group.resize(g + 1, None);
@@ -765,10 +779,15 @@ impl Hour {
                 domains: SpaceSaving::new(GROUP_TOP_CAPACITY),
                 blocked: SpaceSaving::new(GROUP_TOP_CAPACITY),
                 clients: SpaceSaving::new(GROUP_TOP_CAPACITY),
+                internal: SpaceSaving::new(GROUP_TOP_CAPACITY),
             })
         });
         if !wire.is_empty() {
-            t.domains.offer(wire, boxed);
+            if internal {
+                t.internal.offer(wire, boxed);
+            } else {
+                t.domains.offer(wire, boxed);
+            }
             if e.status == Status::Blocked {
                 t.blocked.offer(wire, boxed);
             }
@@ -826,6 +845,8 @@ pub struct Aggregates {
     /// REQ: OBS-030 — count the minute buckets' latency rows (on; off only to measure their
     /// cost).
     pub latency_hist: bool,
+    /// REQ: OBS-037 — which names count in the internal top list.
+    pub internal: crate::internal::InternalNames,
     /// REQ: OBS-032 — count the minute buckets' flow joints (on; off only to measure their
     /// cost).
     pub flow_joints: bool,
@@ -867,6 +888,7 @@ impl Aggregates {
             recent: RecentClients::default(),
             slo_latency_us: DEFAULT_SLO_LATENCY_US,
             latency_hist: true,
+            internal: crate::internal::InternalNames::default(),
             flow_joints: true,
             workloads: std::collections::HashMap::new(),
             seen: crate::seen::Seen::default(),
@@ -948,6 +970,26 @@ impl Aggregates {
 
     /// Folds one record in.
     pub fn record(&mut self, r: &Record) {
+        let internal = self.is_internal(r);
+        self.record_as(r, internal);
+    }
+
+    /// REQ: OBS-037 — folds `r` in as privacy level `level` keeps it ([`crate::event::private`]),
+    /// telling internal names apart before the name is hashed.
+    pub fn record_private(&mut self, r: &Record, level: u8) {
+        let internal = self.is_internal(r);
+        if level == 0 {
+            self.record_as(r, internal);
+        } else {
+            self.record_as(&crate::event::private(r, level), internal);
+        }
+    }
+
+    fn is_internal(&self, r: &Record) -> bool {
+        matches!(r, Record::Query(_, n) if self.internal.is_internal(n.as_wire()))
+    }
+
+    fn record_as(&mut self, r: &Record, internal: bool) {
         self.seq += 1;
         let ts_s = match r {
             Record::Query(e, _) => e.ts_us / 1_000_000,
@@ -979,7 +1021,7 @@ impl Aggregates {
                     c.add_query(e, slow_us, self.latency_hist, self.flow_joints);
                 }
                 if in_hour {
-                    self.current.add_query(e, name, self.seq, slow_us);
+                    self.current.add_query(e, name, self.seq, slow_us, internal);
                 }
             }
             Record::Upstream(e) => {
@@ -1010,12 +1052,15 @@ impl Aggregates {
         let hour = e.ts_us / 1_000_000 / 3600;
         self.seq += 1;
         let slow_us = self.slo_latency_us;
+        // A name the query log keeps hashed (privacy 1+) can't be told apart: it counts as a
+        // domain.
+        let internal = self.internal.is_internal(name.as_wire());
         if hour == self.current.index {
-            self.current.add_query(e, name, self.seq, slow_us);
+            self.current.add_query(e, name, self.seq, slow_us, internal);
         } else if hour + 1 == self.current.index {
             self.previous
                 .get_or_insert_with(|| Hour::new(hour))
-                .add_query(e, name, self.seq, slow_us);
+                .add_query(e, name, self.seq, slow_us, internal);
         }
     }
 
@@ -1053,6 +1098,7 @@ impl Aggregates {
             TopKind::Domains => names(&h.domains),
             TopKind::Blocked => names(&h.blocked),
             TopKind::Nxdomain => names(&h.nxdomain),
+            TopKind::Internal => names(&h.internal),
             TopKind::Clients => h
                 .clients
                 .top(n)
@@ -1096,6 +1142,7 @@ impl Aggregates {
             TopKind::Domains => names(&t.domains),
             TopKind::Blocked => names(&t.blocked),
             TopKind::Nxdomain => Vec::new(),
+            TopKind::Internal => names(&t.internal),
             TopKind::Clients => t
                 .clients
                 .top(n)

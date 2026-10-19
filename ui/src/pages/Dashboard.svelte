@@ -115,6 +115,9 @@
   let error = $state<unknown>(null);
   // REQ: OBS-030 — "Where time goes" as percentiles or as a heatmap over time.
   let timeView = $state<'table' | 'heatmap'>('table');
+  // REQ: OBS-037 — Top domains as names on the internet or internal names (cluster, private
+  // reverse lookups), which have their own list.
+  let domainsView = $state<'internet' | 'internal'>('internet');
 
   async function load() {
     const r = range;
@@ -126,7 +129,7 @@
       const [s, ts, d, b, c, u, st, lp, gs, cl, sl] = await Promise.all([
         api.summary(r.summary, undefined, sc),
         api.timeseries({ from: r.from, step: r.step, scope: sc }),
-        api.top('domains', 10, undefined, g, sc),
+        api.top(domainsView === 'internal' ? 'internal' : 'domains', 10, undefined, g, sc),
         api.top('blocked', 10, undefined, g, sc),
         api.top('clients', 10, undefined, g, sc),
         api.upstreams(),
@@ -415,7 +418,17 @@
       { title: 'Top clients', items: topClients, link: (k: string) => href('/queries', { client: k }) },
     ] as t (t.title)}
       <section class="card">
-        <h2>{t.title} <span class="muted small">(this hour)</span></h2>
+        {#if t.title === 'Top domains'}
+          <div class="card-head">
+            <h2>{t.title} <span class="muted small">(this hour)</span><HelpButton id="internal-names" /></h2>
+            <div class="seg" role="group" aria-label="Top domains on the internet or internal">
+              <button type="button" aria-pressed={domainsView === 'internet'} onclick={() => { domainsView = 'internet'; void load(); }}>Internet</button>
+              <button type="button" aria-pressed={domainsView === 'internal'} onclick={() => { domainsView = 'internal'; void load(); }} data-testid="domains-internal-tab">Internal</button>
+            </div>
+          </div>
+        {:else}
+          <h2>{t.title} <span class="muted small">(this hour)</span></h2>
+        {/if}
         {#if t.items.length === 0}
           <p class="empty">Nothing yet.</p>
         {:else}

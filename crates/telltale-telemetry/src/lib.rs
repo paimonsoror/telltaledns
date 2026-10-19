@@ -22,6 +22,7 @@ pub mod event;
 mod events_tests;
 pub mod exclude;
 pub mod export;
+pub mod internal;
 pub mod prom;
 pub mod recent;
 pub mod ring;

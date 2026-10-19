@@ -791,6 +791,16 @@
       "example": "Pin to version 3.124 with the reason \"new list blocks the bank\": all nodes serve 3.124 within seconds, the banner shows \"Held back since then: list: changed\", and the cluster_pinned alert keeps reminding you until you unpin.",
       "caution": "A pin doesn't rewrite your files, the entries made in the UI, or Git: unpinning publishes them as they are, so undo the bad change there first (or right after unpinning, while it bakes on the canaries). The primary keeps the last 20 versions; older ones can't be pinned. A node promoted to primary keeps the pin.",
       "docs": "pinning-the-cluster-to-a-version"
+    },
+    {
+      "id": "internal-names",
+      "title": "Internet and internal names",
+      "term": "Internal names",
+      "summary": "Internal names are your network talking to itself: reverse lookups of private addresses and, in Kubernetes, the cluster's own names (cluster.local). They have their own top list, so Top domains shows what your devices and workloads reach outside.",
+      "when": "Top domains is full of cluster.local or in-addr.arpa names; switch to Internal to see which Services your workloads call most, or which private addresses get looked up.",
+      "example": "A pod looking up api.github.com first tries api.github.com.argocd.svc.cluster.local and two more cluster names (its search list); those failures land under Internal, not in Top domains or the NXDOMAIN list.",
+      "caution": "Nothing is hidden: internal names stay in the query log, the live view, a device's own top domains, and the blocked list. Add your own (e.g. lan) with [telemetry] internal_names on each node.",
+      "docs": "internal-names"
     }
   ]
 }

@@ -2510,6 +2510,17 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
 - From the next query on, on every node of a cluster (`[exclusions]` is shared). Queries logged before stay (and the top lists rebuilt after a restart skip them too).
 - In the UI: **Settings → Query handling → Kept out of the log**, with a toggle, checked before it's applied, and *Revert to the file*. Under a Git-managed configuration, change `[exclusions]` in Git; the UI shows the TOML to commit. API: `PUT /api/v1/exclusions/default`; MCP: `plan_set_exclusions`.
 
+### Internal names
+Some names are your own network talking to itself: reverse lookups of private addresses (`20.1.168.192.in-addr.arpa`) and, in Kubernetes, the cluster's names (`postgres.db.svc.cluster.local`). A pod's search list alone turns one lookup of `api.github.com` into three failed ones under `cluster.local` first. These **internal names** get their own top list, so the dashboard's **Top domains** shows what your network reaches outside:
+- The dashboard's **Top domains** card switches between **Internet** and **Internal**. The NXDOMAIN list leaves internal names out too.
+- They're still in the query log, the live view, a device's own top domains, the blocked list, exports, and Prometheus: nothing is hidden, only sorted.
+- Internal by default: reverse lookups of private and local addresses (the same ranges as `[special] private_ptr_nxdomain`), and `cluster.local` with `[kubernetes] enabled`. Add your own, each with its subdomains, per node (`[telemetry]` isn't shared):
+  ```toml
+  [telemetry]
+  internal_names = ["lan", "home.arpa"]   # a Kubernetes cluster domain other than cluster.local goes here too
+  ```
+- API: `GET /api/v1/stats/top?kind=internal`; MCP: `top_items` with `kind: internal`. At privacy level 1 and above the list holds hashed names, sorted the same way. Top lists rebuilt from a privacy-hashed query log after a restart count those names as domains.
+
 ### OpenTelemetry (OTLP)
 Push the metrics to an OpenTelemetry collector (the OpenTelemetry Collector, Grafana Alloy, a hosted backend) instead of, or as well as, having Prometheus scrape them:
 ```toml

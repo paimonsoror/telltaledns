@@ -133,10 +133,10 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "top_items",
-            description: "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, or most active clients. Optionally for one client (domains only) or one client group.",
+            description: "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). Optionally for one client (domains only) or one client group.",
             input_schema: || {
                 json!({"type": "object", "properties": {
-                "kind": {"type": "string", "enum": ["domains", "blocked", "nxdomain", "clients"], "description": "Which list."},
+                "kind": {"type": "string", "enum": ["domains", "blocked", "nxdomain", "clients", "internal"], "description": "Which list."},
                 "hour": {"type": "string", "enum": ["current", "previous"], "description": "Which hour (default current)."},
                 "client": {"type": "string", "description": "A client IP: its top domains (kind=domains only)."},
                 "group": {"type": "string", "description": "A client group's top items."},
@@ -146,7 +146,10 @@ pub fn tools() -> Vec<Tool> {
             },
             calls: |a| {
                 if s(a, "kind").is_none() {
-                    return Err("`kind` is required: domains, blocked, nxdomain, or clients".into());
+                    return Err(
+                        "`kind` is required: domains, blocked, nxdomain, clients, or internal"
+                            .into(),
+                    );
                 }
                 Ok(vec![(
                     "items".into(),

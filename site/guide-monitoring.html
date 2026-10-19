@@ -24,6 +24,7 @@
     <li><a href="#alerts">Get alerts somewhere</a></li>
     <li><a href="#export">Send events and traces elsewhere</a></li>
     <li><a href="#exclusions">Keep names and devices out of the log</a></li>
+    <li><a href="#internal-names">Internal names</a></li>
     <li><a href="#anomalies">Review and acknowledge anomalies</a></li>
     <li><a href="#probes">Check your listeners</a></li>
     <li><a href="#which">Which tool for which question</a></li>
@@ -261,6 +262,18 @@ clients = ["192.168.1.10", "10.20.0.0/24"]               # addresses or networks
     <li>The dashboard's totals leave excluded queries out, so they'll be lower than Prometheus's. <code>telltale_queries_excluded_total</code> counts them.</li>
   </ul>
   <div class="callout"><p><b>Hiding names or devices for privacy instead?</b> Use <code>[telemetry.qlog] privacy_level</code>: <code>1</code> hashes names, <code>2</code> also drops client addresses, <code>3</code> keeps no per-query log. Counts, graphs, and latency keep working, but anomaly detection and new-device alerts are off at 1 and above. <a href="https://github.com/paimonsoror/telltaledns/blob/main/docs/running.md#query-log">Privacy levels</a>.</p></div>
+</section>
+
+<section id="internal-names">
+  <h2>Internal names</h2>
+  <p>Reverse lookups of private addresses, and in Kubernetes the cluster's own names, are your network talking to itself. A pod's search list alone turns one lookup of <code>api.github.com</code> into three failed ones under <code>cluster.local</code> first. These internal names have their own top list, so <b>Top domains</b> shows what your network reaches outside.</p>
+  <ul>
+    <li>The dashboard's <b>Top domains</b> card switches between <b>Internet</b> and <b>Internal</b>. The NXDOMAIN list leaves internal names out too.</li>
+    <li>Nothing is hidden: they stay in the query log, the live view, a device's own top domains, the blocked list, exports, and Prometheus.</li>
+    <li>Internal by default: reverse lookups of private and local addresses, and <code>cluster.local</code> when Kubernetes workloads are on. Add your own on each node:</li>
+  </ul>
+<pre><code>[telemetry]
+internal_names = ["lan", "home.arpa"]</code></pre>
 </section>
 
 <section id="anomalies">

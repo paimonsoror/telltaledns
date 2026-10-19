@@ -1291,6 +1291,16 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - Nothing new is persisted, and a plan can't outlive the configuration it was checked against.
 - In a cluster, an operator approves on the node the agent used. Agents should use the node whose UI people use (normally the primary). If agents and people use different nodes, plans would need to move to the replicated `state.db`.
 
+## ADR-152 — Internal names: their own top list, not hidden (Proposed)
+**Context:** OBS-037. Once the kubelet points every pod at TelltaleDNS (FLT-017), the dashboard's top lists fill with the cluster's own names: Services asked constantly, and a pod's `ndots: 5` search list turns one lookup of `api.github.com` into three NXDOMAINs under `cluster.local` first. Reverse lookups of private addresses are the same kind of noise on any network. The only way to hide names was `[exclusions]` (OBS-022), which also drops them from the query log and exports, and so from the workload view's point. The owner chose a separate list, with private reverse lookups included (2026-10-19).
+**Decision:**
+- An internal name is a reverse name in the RFC 6303 private and local ranges (the same as `[special] private_ptr_nxdomain`), a name at or under `cluster.local` when `[kubernetes] enabled`, or one under a suffix in `[telemetry] internal_names` (at most 100; node-local like the rest of `[telemetry]`, so a replica one version behind never sees it).
+- The aggregator counts an internal name in the hour's `internal` Space-Saving list (and the group's) instead of `domains` and `nxdomain`. The blocked list, the bad-answer lists, a device's own top domains, the time series, the query log, the live view, exports, and `/metrics` are unchanged: this sorts, it hides nothing.
+- The check runs on the aggregator thread before privacy hashes the name (`Aggregates::record_private`): a few suffix lookups, no allocation. Top lists rebuilt from a privacy-hashed query log after a restart can't tell and count those names as domains.
+- `GET /api/v1/stats/top?kind=internal` (with `group`; not with `client`), MCP `top_items` `kind: internal`, `hour_top` kind `internal`. A peer one version behind refuses the kind and is listed in `missingNodes`.
+- The dashboard's Top domains card switches between **Internet** (the default) and **Internal**; the switch asks for one list at a time.
+**Consequences:** The domains and NXDOMAIN lists change meaning for existing installs (less noise); history from before keeps both kinds in `domains`. A cluster domain other than `cluster.local` needs `[telemetry] internal_names` on each node: the chart doesn't write it, so a new chart still works with the previous image.
+
 ## ADR-151 — Failover drills: a maintenance window with a drop, a federated coverage report (Proposed)
 **Context:** CLU-014 (owner request 2026-10-18). Routers hand devices two DNS servers (the Pi and the homelab's .112), but a stub resolver uses its first server until it stops answering, so on a healthy network nothing shows whether the second one works for every device; a passive "single-homed" finding would be guesswork. Design: `docs/design/failover-drills.md`.
 **Decision:**

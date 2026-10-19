@@ -30,7 +30,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, or most active clients. Optionally for one client (domains only) or one client group.",
+    "description": "Read-only. The heaviest items in the current or previous hour: most queried domains, most blocked domains, names answered NXDOMAIN, most active clients, or most queried internal names (the Kubernetes cluster domain and reverse lookups of private addresses, which the domains and NXDOMAIN lists leave out). Optionally for one client (domains only) or one client group.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -56,7 +56,8 @@
             "domains",
             "blocked",
             "nxdomain",
-            "clients"
+            "clients",
+            "internal"
           ],
           "type": "string"
         },

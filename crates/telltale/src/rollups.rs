@@ -185,6 +185,7 @@ fn hour_tops(agg: &telltale_telemetry::Aggregates, privacy: u8) -> Tops {
         ("blocked", TopKind::Blocked),
         ("nxdomain", TopKind::Nxdomain),
         ("clients", TopKind::Clients),
+        ("internal", TopKind::Internal),
     ]
     .into_iter()
     .filter(|(_, kind)| privacy < 2 || *kind != TopKind::Clients)

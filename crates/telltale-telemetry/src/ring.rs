@@ -318,11 +318,7 @@ impl Hub {
                         let mut agg = hub.aggregates();
                         let analytics =
                             |agg: &mut Aggregates, sink: &mut Option<Box<dyn Sink>>, k: &Record| {
-                                if level == 0 {
-                                    agg.record(k);
-                                } else {
-                                    agg.record(&crate::event::private(k, level));
-                                }
+                                agg.record_private(k, level);
                                 if let Some(s) = sink.as_mut() {
                                     s.record_analytics(k);
                                 }
@@ -359,7 +355,7 @@ impl Hub {
                     let level = hub.privacy.load(Ordering::Relaxed);
                     let mut agg = hub.aggregates();
                     hold.flush(hub.workload_keys().as_deref(), |k| {
-                        agg.record(&crate::event::private(k, level));
+                        agg.record_private(k, level);
                         if let Some(s) = sink.as_mut() {
                             s.record_analytics(k);
                         }
@@ -382,7 +378,7 @@ impl Hub {
         drainer.drain(|r| {
             if !r.is_probe() && !self.left_out(excluded.as_deref(), &r) {
                 let keyed = keyed(keys.as_deref(), &r);
-                agg.record(&crate::event::private(keyed.as_ref().unwrap_or(&r), level));
+                agg.record_private(keyed.as_ref().unwrap_or(&r), level);
             }
         })
     }

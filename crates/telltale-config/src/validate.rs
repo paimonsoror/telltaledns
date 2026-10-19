@@ -295,21 +295,25 @@ fn routers(cfg: &Config, r: &mut Report<'_>) {
     }
 }
 
+/// A domain name for a suffix list (a leading `*.` and a trailing dot are allowed).
+fn suffix_name_ok(n: &str) -> bool {
+    let bare = n.trim().trim_start_matches("*.").trim_end_matches('.');
+    !bare.is_empty()
+        && bare.len() <= 253
+        && bare.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
 // REQ: OBS-022 (T12.1) — excluded names are domain names (a leading `*.` is allowed); at most
 // 1,000 of each, so the per-event check stays cheap.
 fn exclusions(cfg: &Config, r: &mut Report<'_>) {
     let x = &cfg.exclusions;
     for (i, n) in x.names.iter().enumerate() {
-        let bare = n.trim().trim_start_matches("*.").trim_end_matches('.');
-        let ok = !bare.is_empty()
-            && bare.len() <= 253
-            && bare.split('.').all(|l| {
-                !l.is_empty()
-                    && l.len() <= 63
-                    && l.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            });
-        if !ok {
+        if !suffix_name_ok(n) {
             r.err(
                 format!("exclusions.names[{i}]"),
                 format!("`{n}` isn't a domain name (e.g. connectivitycheck.gstatic.com)"),
@@ -320,6 +324,19 @@ fn exclusions(cfg: &Config, r: &mut Report<'_>) {
         if n > 1000 {
             r.err(format!("exclusions.{what}"), "at most 1,000");
         }
+    }
+    // REQ: OBS-037 — internal names are domain names too, at most 100.
+    let names = &cfg.telemetry.internal_names;
+    for (i, n) in names.iter().enumerate() {
+        if !suffix_name_ok(n) {
+            r.err(
+                format!("telemetry.internal_names[{i}]"),
+                format!("`{n}` isn't a domain name (e.g. lan or home.arpa)"),
+            );
+        }
+    }
+    if names.len() > 100 {
+        r.err("telemetry.internal_names", "at most 100");
     }
 }
 

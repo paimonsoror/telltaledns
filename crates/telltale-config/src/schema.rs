@@ -2058,6 +2058,12 @@ pub struct TelemetryConfig {
     pub otlp: OtlpConfig,
     /// REQ: OBS-007 (T7.18) — client queries and responses as dnstap.
     pub dnstap: DnstapConfig,
+    /// REQ: OBS-037 (ADR-152) — more internal names, each with its subdomains (e.g. `lan`,
+    /// `home.arpa`): they count in the dashboard's internal top list instead of the top
+    /// domains and NXDOMAIN lists, and stay in the query log. Reverse lookups of private
+    /// addresses always do, and so does `cluster.local` with `[kubernetes] enabled`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub internal_names: Vec<SafeString>,
 }
 
 /// Thresholds the latency objective may use, in milliseconds: the `/metrics` latency
@@ -2234,6 +2240,7 @@ impl Default for TelemetryConfig {
             sink: Vec::new(),
             otlp: OtlpConfig::default(),
             dnstap: DnstapConfig::default(),
+            internal_names: Vec::new(),
         }
     }
 }

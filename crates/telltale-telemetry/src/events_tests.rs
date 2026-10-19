@@ -950,3 +950,81 @@ fn flt_017_analytics_hold_unknown_addresses_briefly() {
     assert_eq!(out.len(), WORKLOAD_HOLD_MAX);
     assert!(out.windows(2).all(|w| w[0].0 < w[1].0));
 }
+
+// REQ: OBS-037 — internal names (a pod's search-list expansions, private reverse lookups)
+// count in the internal list, not the domains or NXDOMAIN lists, overall and per group; blocks
+// and one device's own domains keep them; the check is made before privacy hashes the name.
+#[test]
+fn obs_037_internal_names_have_their_own_list() {
+    let t0 = 1_700_000_000_u64;
+    let pod = ipv4(10, 0, 0, 81);
+    let names = [
+        ("postgres.authentik.svc.cluster.local", 0),
+        ("api.github.com.argocd.svc.cluster.local", 3),
+        ("20.1.168.192.in-addr.arpa", 3),
+        ("api.github.com", 0),
+        ("8.8.8.8.in-addr.arpa", 0),
+    ];
+    let run = |level: u8| {
+        let mut agg = Aggregates::new();
+        agg.internal = crate::internal::InternalNames::new([wire("cluster.local")], true);
+        for (i, (name, rcode)) in names.iter().enumerate() {
+            for j in 0..=i {
+                let mut e = query((t0 + j as u64) * 1_000_000, pod, Status::Forwarded, 100);
+                e.rcode = Some(*rcode);
+                agg.record_private(&Record::Query(e, decoded(name)), level);
+            }
+        }
+        agg
+    };
+    let agg = run(0);
+    let keys = |kind| -> Vec<String> {
+        agg.top_names(kind, HourSel::Current, 10)
+            .into_iter()
+            .map(|t| t.key)
+            .collect()
+    };
+    assert_eq!(
+        keys(TopKind::Domains),
+        ["8.8.8.8.in-addr.arpa", "api.github.com"]
+    );
+    assert!(
+        keys(TopKind::Nxdomain).is_empty(),
+        "{:?}",
+        keys(TopKind::Nxdomain)
+    );
+    assert_eq!(
+        keys(TopKind::Internal),
+        [
+            "20.1.168.192.in-addr.arpa",
+            "api.github.com.argocd.svc.cluster.local",
+            "postgres.authentik.svc.cluster.local",
+        ]
+    );
+    let in_group = agg.top_names_in_group(TopKind::Internal, HourSel::Current, 0, 10);
+    assert_eq!(in_group.len(), 3);
+    assert_eq!(
+        agg.top_names_in_group(TopKind::Domains, HourSel::Current, 0, 10)
+            .len(),
+        2
+    );
+    assert_eq!(
+        agg.top_client_domains(pod, 10).len(),
+        5,
+        "a device keeps them all"
+    );
+    // Privacy 1 hashes the names, but they still land in the right lists.
+    let hashed = run(1);
+    assert_eq!(
+        hashed
+            .top_names(TopKind::Internal, HourSel::Current, 10)
+            .len(),
+        3
+    );
+    assert_eq!(
+        hashed
+            .top_names(TopKind::Domains, HourSel::Current, 10)
+            .len(),
+        2
+    );
+}

@@ -3664,6 +3664,14 @@
             "sample_every": 1
           }
         },
+        "internal_names": {
+          "description": "REQ: OBS-037 (ADR-152) — more internal names, each with its subdomains (e.g. `lan`,\n`home.arpa`): they count in the dashboard's internal top list instead of the top\ndomains and NXDOMAIN lists, and stay in the query log. Reverse lookups of private\naddresses always do, and so does `cluster.local` with `[kubernetes] enabled`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
         "metrics": {
           "$ref": "#/$defs/MetricsConfig",
           "default": {
