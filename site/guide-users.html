@@ -23,6 +23,7 @@
     <li><a href="#two-factor">Turn on two-factor sign-in</a></li>
     <li><a href="#sso">Single sign-on with OpenID Connect</a></li>
     <li><a href="#tokens">Tokens for scripts, tools, and agents</a></li>
+    <li><a href="#https">Encrypt sign-ins with HTTPS</a></li>
     <li><a href="#security">Sessions, lockouts, and proxies</a></li>
     <li><a href="#cluster">Users in a cluster</a></li>
     <li><a href="#trouble">Troubleshooting</a></li>
@@ -239,6 +240,20 @@ allow_insecure_basic = true   # default false; on plain HTTP anyone on the path 
   <p class="muted">Verified credentials are cached for a minute. The Prometheus listener on <code>:9153</code> needs no sign-in (it's limited to <code>allowed_networks</code>); <code>/metrics</code> on the API port needs a viewer token or Basic.</p>
 
   <div class="callout"><p><b>A leaked token?</b> Revoke it without disabling its owner: an admin opens <b>Settings → Users → Tokens</b> for that user and chooses <b>Revoke</b> (<code>DELETE /api/v1/users/{id}/tokens/{tokenId}</code>, audited as <code>token.revoke</code>).</p></div>
+</section>
+
+<section id="https">
+  <h2>Encrypt sign-ins with HTTPS</h2>
+  <p>Out of the box the web UI on port 8053 is plain HTTP, so a password typed into the sign-in form crosses your network unencrypted. One line turns on HTTPS on the same port:</p>
+<pre><code>[api]
+tls = { self_signed = true }      # or: tls = { cert = "/etc/telltale/api.crt", key = "/etc/telltale/api.key" }</code></pre>
+  <ul>
+    <li><b>Self-signed:</b> TelltaleDNS makes a certificate on first start, for this host's name and addresses, and keeps it in <code>&lt;data_dir&gt;/api-tls/</code>. Your browser warns the first time: accept it, or import <code>cert.pem</code> into your trusted certificates to make the warning go away for good.</li>
+    <li><b>Your own certificate</b> (your CA, or Let's Encrypt with a DNS challenge): no warning, renewals are picked up within 10 s, and browsers are told to always use HTTPS for the name (HSTS).</li>
+    <li>Old <code>http://</code> links and bookmarks are redirected to <code>https://</code>. Health checks on <code>/livez</code>, <code>/readyz</code>, and <code>/healthz</code> keep working over plain HTTP.</li>
+    <li><code>telltale ctl</code> and <code>telltale mcp --stdio</code> on the node switch to HTTPS by themselves; from another machine, pass the node's <code>cert.pem</code> with <code>--ca-file</code>.</li>
+  </ul>
+  <p class="muted">Restart after changing <code>[api] tls</code>. In Kubernetes, terminate TLS at the ingress instead (below).</p>
 </section>
 
 <section id="security">

@@ -5,6 +5,7 @@
 //! API's own JSON, for scripts.
 
 use std::fmt::Write as _;
+use std::path::Path;
 use std::sync::Arc;
 
 use clap::Subcommand;
@@ -413,19 +414,27 @@ fn rule_id(action: &str, domain: &str) -> String {
     format!("{action}-{d}")
 }
 
-/// Runs `cmd` against `base` with `token`; returns the text to print.
+/// The HTTP client for a node's API, also trusting the certificates in `ca` (a node's
+/// self-signed `[api] tls`, ADR-149).
+pub(crate) fn client(ca: Option<&Path>) -> Result<telltale_filter::fetch::Client, String> {
+    let resolver = Arc::new(telltale_filter::fetch::SystemResolver);
+    match ca {
+        Some(p) => telltale_filter::fetch::Client::with_ca_file(resolver, &p.to_string_lossy()),
+        None => telltale_filter::fetch::Client::new(resolver, &[]),
+    }
+}
+
+/// Runs `cmd` against `base` with `token`; returns the text to print. `ca`: see [`client`].
 #[allow(clippy::too_many_lines)] // one arm per command
 pub(crate) async fn run(
     base: &str,
+    ca: Option<&Path>,
     token: &str,
     cmd: CtlCommand,
     json_out: bool,
 ) -> Result<String, String> {
     let api = Api {
-        client: telltale_filter::fetch::Client::new(
-            Arc::new(telltale_filter::fetch::SystemResolver),
-            &[],
-        )?,
+        client: client(ca)?,
         base: base.to_owned(),
         token: token.to_owned(),
     };

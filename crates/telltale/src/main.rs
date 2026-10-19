@@ -7,6 +7,7 @@ mod alerts;
 mod annotations;
 mod anomaly;
 mod api_backend;
+mod api_tls;
 mod archive;
 mod auth_setup;
 mod backup;
@@ -184,6 +185,10 @@ enum Command {
         /// The node's API address (default: from the config files' `[api] listen`).
         #[arg(long)]
         url: Option<String>,
+        /// Also trust the certificate(s) in this PEM file, for a node with a self-signed
+        /// `[api] tls` (default: this node's own, when the config says self-signed).
+        #[arg(long)]
+        ca_file: Option<PathBuf>,
         /// Read the API token from this file instead of `TELLTALE_TOKEN`.
         #[arg(long)]
         token_file: Option<PathBuf>,
@@ -201,6 +206,10 @@ enum Command {
         /// The node's API address (default: from the config files' `[api] listen`).
         #[arg(long, global = true)]
         url: Option<String>,
+        /// Also trust the certificate(s) in this PEM file, for a node with a self-signed
+        /// `[api] tls` (default: this node's own, when the config says self-signed).
+        #[arg(long, global = true)]
+        ca_file: Option<PathBuf>,
         /// Read the API token from this file instead of `TELLTALE_TOKEN`.
         #[arg(long, global = true)]
         token_file: Option<PathBuf>,
@@ -698,17 +707,26 @@ fn main() -> ExitCode {
         Command::Mcp {
             stdio,
             url,
+            ca_file,
             token_file,
             config,
-        } => Ok(run_mcp(stdio, url, token_file.as_deref(), config)),
+        } => Ok(run_mcp(stdio, url, ca_file, token_file.as_deref(), config)),
         Command::Cluster { command, config } => Ok(run_cluster(command, config)),
         Command::Ctl {
             command,
             url,
+            ca_file,
             token_file,
             json,
             config,
-        } => Ok(run_ctl(command, url, token_file.as_deref(), json, config)),
+        } => Ok(run_ctl(
+            command,
+            url,
+            ca_file,
+            token_file.as_deref(),
+            json,
+            config,
+        )),
         Command::Health { url } => Ok(match health(&url) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -798,8 +816,11 @@ fn run_cluster(command: ClusterCommand, config: Vec<PathBuf>) -> ExitCode {
 }
 
 /// The local API's URL from the config files' `[api] listen` (warnings stay off stdout,
-/// which is the MCP channel).
-fn api_url(config: Vec<PathBuf>) -> Result<String, Vec<telltale_config::ConfigError>> {
+/// which is the MCP channel), and with `[api] tls = { self_signed = true }` (ADR-149) the
+/// certificate to trust: this node's own.
+fn api_url(
+    config: Vec<PathBuf>,
+) -> Result<(String, Option<PathBuf>), Vec<telltale_config::ConfigError>> {
     let files = config_files(config);
     let l = files
         .iter()
@@ -814,18 +835,37 @@ fn api_url(config: Vec<PathBuf>) -> Result<String, Vec<telltale_config::ConfigEr
     } else {
         a.ip().to_string()
     };
-    Ok(format!("http://{host}:{}", a.port()))
+    let tls = l.config.api.tls.as_ref();
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let ca = tls
+        .filter(|t| t.self_signed)
+        .map(|_| api_tls::self_signed_paths(Path::new(l.config.node.data_dir.as_str())).0);
+    Ok((format!("{scheme}://{host}:{}", a.port()), ca))
+}
+
+/// The API's URL and the certificate to trust: `--url` and `--ca-file` as given, else from the
+/// config files.
+fn api_target(
+    url: Option<String>,
+    ca_file: Option<PathBuf>,
+    config: Vec<PathBuf>,
+) -> Result<(String, Option<PathBuf>), Vec<telltale_config::ConfigError>> {
+    match url {
+        Some(u) => Ok((u, ca_file)),
+        None => api_url(config).map(|(u, ca)| (u, ca_file.or(ca))),
+    }
 }
 
 // REQ: API-008 (T7.25)
 fn run_ctl(
     command: ctl::CtlCommand,
     url: Option<String>,
+    ca_file: Option<PathBuf>,
     token_file: Option<&Path>,
     json: bool,
     config: Vec<PathBuf>,
 ) -> ExitCode {
-    let url = match url.map_or_else(|| api_url(config), Ok) {
+    let (url, ca) = match api_target(url, ca_file, config) {
         Ok(u) => u,
         Err(errs) => {
             for e in &errs {
@@ -844,7 +884,7 @@ fn run_ctl(
             .enable_all()
             .build()
             .map_err(|e| e.to_string())?
-            .block_on(ctl::run(&url, t.trim(), command, json))
+            .block_on(ctl::run(&url, ca.as_deref(), t.trim(), command, json))
     });
     match result {
         Ok(text) => {
@@ -862,6 +902,7 @@ fn run_ctl(
 fn run_mcp(
     stdio: bool,
     url: Option<String>,
+    ca_file: Option<PathBuf>,
     token_file: Option<&Path>,
     config: Vec<PathBuf>,
 ) -> ExitCode {
@@ -869,7 +910,7 @@ fn run_mcp(
         eprintln!("error: say --stdio (HTTP agents use http://<node>:8053/mcp directly)");
         return ExitCode::FAILURE;
     }
-    let url = match url.map_or_else(|| api_url(config), Ok) {
+    let (url, ca) = match api_target(url, ca_file, config) {
         Ok(u) => u,
         Err(errs) => {
             for e in &errs {
@@ -890,7 +931,7 @@ fn run_mcp(
             .enable_all()
             .build()
             .map_err(|e| e.to_string())?
-            .block_on(mcp_stdio::run(&url, t.trim()))
+            .block_on(mcp_stdio::run(&url, ca.as_deref(), t.trim()))
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -1451,6 +1492,7 @@ fn run_config(cmd: ConfigCommand) -> io::Result<ExitCode> {
                     until,
                 },
                 url,
+                None,
                 token_file.as_deref(),
                 json,
                 config,

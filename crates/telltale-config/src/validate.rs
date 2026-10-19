@@ -996,6 +996,20 @@ fn auth(cfg: &Config, r: &mut Report<'_>) {
     if a.allow_insecure_basic {
         r.warn("auth.allow_insecure_basic: passwords sent with HTTP Basic cross the network in the clear");
     }
+    // REQ: API-003 (ADR-149)
+    if let Some(t) = &cfg.api.tls {
+        match (t.self_signed, &t.cert, &t.key) {
+            (true, None, None) | (false, Some(_), Some(_)) => {}
+            (true, _, _) => r.err(
+                "api.tls",
+                "self_signed = true makes its own certificate: leave out cert and key",
+            ),
+            (false, _, _) => r.err(
+                "api.tls",
+                "set self_signed = true, or both cert and key (PEM files)",
+            ),
+        }
+    }
     oidc(&a.oidc, r);
 }
 

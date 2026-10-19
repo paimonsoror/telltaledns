@@ -106,12 +106,21 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v)
 }
 
-/// REQ: API-003 (ADR-029, review 06-05) — the request came over HTTPS: a proxy in front said
-/// so with `X-Forwarded-Proto: https`. Like `X-Forwarded-For`, the header is believed only
-/// from `[api] trusted_proxies` or loopback (a TLS terminator on the same host), so a client
-/// talking plain HTTP can't claim HTTPS to send HTTP Basic credentials in the clear. The
-/// MCP server's in-process requests carry it only when their outer request qualified.
+/// REQ: API-003 (ADR-149) — set on every request that arrived over the API listener's own TLS
+/// (`[api] tls`), by the listener; never from anything the client sends.
+#[derive(Clone, Copy, Debug)]
+pub struct TlsConnection;
+
+/// REQ: API-003 (ADR-029, review 06-05) — the request came over HTTPS: the API listener's own
+/// TLS (ADR-149), or a proxy in front said so with `X-Forwarded-Proto: https`. Like
+/// `X-Forwarded-For`, the header is believed only from `[api] trusted_proxies` or loopback (a
+/// TLS terminator on the same host), so a client talking plain HTTP can't claim HTTPS to send
+/// HTTP Basic credentials in the clear. The MCP server's in-process requests carry it only when
+/// their outer request qualified.
 pub(crate) fn is_https(auth: &Auth, req_ext: &axum::http::Extensions, headers: &HeaderMap) -> bool {
+    if req_ext.get::<TlsConnection>().is_some() {
+        return true;
+    }
     let says = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())

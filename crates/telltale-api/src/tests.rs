@@ -2208,6 +2208,12 @@ async fn api_003_forwarded_proto_counts_only_from_trusted_peers() {
     );
     let (s, _, v) = send(&app, from([127, 0, 0, 1])).await;
     assert_eq!(s, StatusCode::OK, "a TLS terminator on this host: {v}");
+    // REQ: API-003 (ADR-149) — the listener's own TLS counts from anywhere, with no header.
+    let mut req = from([192, 168, 1, 50]);
+    req.headers_mut().remove("x-forwarded-proto");
+    req.extensions_mut().insert(auth::routes::TlsConnection);
+    let (s, _, v) = send(&app, req).await;
+    assert_eq!(s, StatusCode::OK, "over the API listener's TLS: {v}");
 }
 
 // REQ: API-003, API-006 (review 06-06) — an admin lists another user's API tokens and revokes

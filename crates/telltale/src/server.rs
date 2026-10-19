@@ -401,8 +401,9 @@ fn alt_svc(listen: &[Listener]) -> Option<String> {
         .map(|l| format!("h3=\":{}\"; ma=86400", l.addr.port()))
 }
 
-/// REQ: DNS-002/003 — re-reads the certificate files every 10 s (cert-manager renewals).
-fn watch_cert(store: Arc<CertStore>) -> JoinHandle<()> {
+/// REQ: DNS-002/003 — re-reads the certificate files every 10 s (cert-manager renewals). The
+/// API listener's own files too (API-003, ADR-149).
+pub(crate) fn watch_cert(store: Arc<CertStore>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(10));
         tick.tick().await;
@@ -633,6 +634,13 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
     if old.clients.mdns != new.clients.mdns || old.clients.mdns_port != new.clients.mdns_port {
         v.push("[clients] mdns / mdns_port");
     }
+    // The API listener is started once (API-003, ADR-149).
+    if old.api.enabled != new.api.enabled
+        || old.api.listen != new.api.listen
+        || old.api.tls != new.api.tls
+    {
+        v.push("[api] enabled / listen / tls");
+    }
     v
 }
 
@@ -780,10 +788,25 @@ async fn start_http(
         // REQ: FLT-005 (ADR-067) — expired quick rules are removed and audit-logged.
         crate::api_backend::spawn_rule_sweep(Arc::clone(sources), Arc::clone(&auth), stop.clone());
         let app = http::api_router(Arc::clone(sources), auth);
-        let bound = http::serve(addr, app, stopped(stop.clone()))
-            .await
-            .map_err(|e| io::Error::new(e.kind(), format!("api {addr}: {e}")))?;
-        info!(addr = %bound, "serving the API at /api/v1 (OpenAPI: /api/v1/openapi.json)");
+        // REQ: API-003 (ADR-149) — HTTPS on the listener itself. Without a certificate the API
+        // stays off rather than serving sign-ins in the clear; DNS keeps answering.
+        let tls = match &cfg.api.tls {
+            None => None,
+            Some(t) => match crate::api_tls::setup(cfg, t) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    error!("api disabled: its TLS certificate ([api] tls): {e}");
+                    return Ok(());
+                }
+            },
+        };
+        let bound = match &tls {
+            Some(t) => crate::api_tls::serve(addr, app, t, stopped(stop.clone())).await,
+            None => http::serve(addr, app, stopped(stop.clone())).await,
+        }
+        .map_err(|e| io::Error::new(e.kind(), format!("api {addr}: {e}")))?;
+        let scheme = if tls.is_some() { "https" } else { "http" };
+        info!(addr = %bound, scheme, "serving the API at /api/v1 (OpenAPI: /api/v1/openapi.json)");
     }
     Ok(())
 }

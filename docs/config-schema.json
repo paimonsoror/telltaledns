@@ -861,6 +861,17 @@
           "type": "string",
           "default": "0.0.0.0:8053"
         },
+        "tls": {
+          "description": "REQ: API-003 (ADR-149) — serve the web UI and API over HTTPS on `listen`: with\n`{ self_signed = true }` a certificate is made on first start and kept in the data\ndirectory (browsers warn until you trust it); with `{ cert = \"...\", key = \"...\" }`, your\nown PEM files (re-read within 10 s of a change, like the DNS listeners'). A plain\n`http://` request on the same port is redirected to `https://`, except the health\nprobes. Default: none (plain HTTP, for a TLS proxy or ingress in front).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiTls"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "trusted_proxies": {
           "description": "Reverse proxies or ingress controllers in front of the API (e.g. the pod network,\n`10.0.0.0/8`). For requests from them, the client address comes from\n`X-Forwarded-For` (sign-in lockouts, break-glass networks, the audit log), and\n`X-Forwarded-Proto: https` counts as HTTPS (HTTP Basic, the `Secure` cookie flag); from\nanyone else that header is ignored. Loopback always counts for `X-Forwarded-Proto`, so\na TLS terminator on the same host needs nothing here. Default: none (the connection's\naddress is the client).",
           "type": "array",
@@ -869,6 +880,34 @@
             "description": "IP network, e.g. \"192.168.0.0/16\" or \"fd00::/8\" (a bare address means a single host).",
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApiTls": {
+      "description": "REQ: API-003 (ADR-149) — the API listener's certificate: made by TelltaleDNS, or yours.",
+      "type": "object",
+      "properties": {
+        "cert": {
+          "description": "Your certificate chain (PEM, the server's first). With `key`; not with `self_signed`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "key": {
+          "description": "Its private key (PEM).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "self_signed": {
+          "description": "Make a self-signed certificate on first start (`<data_dir>/api-tls/`), for this host's\nname and addresses. Delete that directory to make a new one.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

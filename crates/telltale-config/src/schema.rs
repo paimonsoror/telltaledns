@@ -2271,6 +2271,14 @@ pub struct ApiConfig {
     /// a TLS terminator on the same host needs nothing here. Default: none (the connection's
     /// address is the client).
     pub trusted_proxies: Vec<Cidr>,
+    /// REQ: API-003 (ADR-149) — serve the web UI and API over HTTPS on `listen`: with
+    /// `{ self_signed = true }` a certificate is made on first start and kept in the data
+    /// directory (browsers warn until you trust it); with `{ cert = "...", key = "..." }`, your
+    /// own PEM files (re-read within 10 s of a change, like the DNS listeners'). A plain
+    /// `http://` request on the same port is redirected to `https://`, except the health
+    /// probes. Default: none (plain HTTP, for a TLS proxy or ingress in front).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<ApiTls>,
 }
 
 impl Default for ApiConfig {
@@ -2279,8 +2287,24 @@ impl Default for ApiConfig {
             enabled: true,
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8053),
             trusted_proxies: Vec::new(),
+            tls: None,
         }
     }
+}
+
+/// REQ: API-003 (ADR-149) — the API listener's certificate: made by TelltaleDNS, or yours.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ApiTls {
+    /// Make a self-signed certificate on first start (`<data_dir>/api-tls/`), for this host's
+    /// name and addresses. Delete that directory to make a new one.
+    pub self_signed: bool,
+    /// Your certificate chain (PEM, the server's first). With `key`; not with `self_signed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert: Option<SafeString>,
+    /// Its private key (PEM).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<SafeString>,
 }
 
 /// Sign-in settings (API-003, `spec/08` §6). Users, sessions, and tokens live in

@@ -3,17 +3,17 @@
 //! stdin is posted to a node's `/mcp` with an API token, and the answer is written to stdout.
 //! One implementation of the tools (the node's), whichever transport the agent speaks.
 
-use std::sync::Arc;
+use std::path::Path;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Most bytes one answer may have.
 const MAX_ANSWER: u64 = 16 << 20;
 
-/// Bridges stdin/stdout to `url` (`http://host:port`) with `token` until stdin closes.
-pub(crate) async fn run(url: &str, token: &str) -> Result<(), String> {
-    let client =
-        telltale_filter::fetch::Client::new(Arc::new(telltale_filter::fetch::SystemResolver), &[])?;
+/// Bridges stdin/stdout to `url` (`http://host:port` or `https://`) with `token` until stdin
+/// closes; `ca` is a PEM file of certificates to trust as well (a self-signed `[api] tls`).
+pub(crate) async fn run(url: &str, ca: Option<&Path>, token: &str) -> Result<(), String> {
+    let client = crate::ctl::client(ca)?;
     let endpoint = format!("{}/mcp", url.trim_end_matches('/'));
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();

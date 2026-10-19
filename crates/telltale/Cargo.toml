@@ -24,6 +24,14 @@ telltale-git = { version = "0.6.0", path = "../telltale-git" }
 blake3 = "1.8.7"
 arc-swap = "1.9.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "tower-log"] }
+# REQ: API-003 (ADR-149) — the API listener over TLS (and a plain-HTTP redirect on the same
+# port) serves connections itself; hyper and hyper-util are already in the tree (axum,
+# telltale-net, telltale-cluster).
+hyper = { version = "1.11.1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "service"] }
+# REQ: API-003 (ADR-149) — the API's self-signed certificate; already in the tree
+# (telltale-cluster's PKI).
+rcgen = "0.14.10"
 clap = { version = "4.6.7", features = ["derive"] }
 # REQ: 02 §3 — mimalloc (musl's allocator halves cache-hit throughput). no_thp: with THP on,
 # mimalloc's huge pages tripled idle RSS (22 MiB vs 6 MiB), breaking the 20 MiB gate (00 §5).

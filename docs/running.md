@@ -2796,6 +2796,19 @@ At the provider, create a confidential client with the redirect URI `<public_url
 - `disable_local_login = true` turns off password sign-in and HTTP Basic, except for admins from `allowed_admin_networks` (private networks by default): a break-glass way in when the provider is down.
 - The provider is only contacted while signing in; sessions are local afterwards. Changes to `[auth.oidc]` need a restart. If a provider can't be set up (for example its secret file is missing), it's logged and password sign-in keeps working.
 
+**HTTPS without a proxy.** Out of the box the UI and API on port 8053 are plain HTTP, so on a home network the sign-in form's password crosses the LAN in the clear. TelltaleDNS can serve them over HTTPS itself:
+```toml
+[api]
+tls = { self_signed = true }                 # a certificate made on first start
+# tls = { cert = "/etc/telltale/api.crt", key = "/etc/telltale/api.key" }   # or your own
+```
+- **Self-signed:** made once and kept in `<data_dir>/api-tls/` (`cert.pem`, `key.pem`), for `localhost`, the host's name (and `<name>.local`), and its addresses. Browsers warn until you trust it: accept the warning once, or import `cert.pem` into your computer's or browser's trusted certificates to make it go away. Delete the directory to make a new one (for a new address).
+- **Your own certificate** (from your CA, or Let's Encrypt with a DNS challenge): PEM files, the server's certificate first; a renewal is picked up within 10 s, and a broken one keeps the previous certificate. With your own certificate the UI also sends HSTS (`Strict-Transport-Security`), so browsers stick to HTTPS for that name. A self-signed one doesn't: with HSTS a browser stops offering to proceed past the warning.
+- The same port answers both: `http://` requests are redirected to `https://` (307, so turning TLS off later leaves no cached redirect), except `/livez`, `/readyz`, and `/healthz`, which keep answering health checks (`telltale health`, the Compose healthcheck) over plain HTTP.
+- Over HTTPS the session cookie is `Secure` and HTTP Basic works, as behind a TLS proxy.
+- `telltale ctl` and `telltale mcp --stdio` on the node use `https://` and trust its self-signed certificate by themselves. From another machine, copy `cert.pem` and pass `--ca-file cert.pem` (with `--url https://<node>:8053`).
+- Changing `[api] tls` needs a restart. If the certificate can't be made or loaded, the API stays off (it's logged), rather than falling back to plain HTTP; DNS keeps answering.
+
 **Behind a reverse proxy or ingress,** tell TelltaleDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
 ```toml
 [api]
