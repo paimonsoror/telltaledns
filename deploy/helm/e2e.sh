@@ -130,6 +130,11 @@ if ! grep -q '"kubernetes"' <<<"$schema"; then
   echo "SKIP: $image predates Kubernetes workloads (FLT-017)"
   exit 0
 fi
+# The chart marks its CoreDNS upstream node_only (CLU-006); an image from before that refuses it.
+if ! python3 -c 'import json,sys; sys.exit(0 if "node_only" in json.load(sys.stdin)["$defs"]["Upstream"]["properties"] else 1)' <<<"$schema" 2>/dev/null; then
+  echo "SKIP: $image predates node-only upstreams (the chart's route to CoreDNS)"
+  exit 0
+fi
 kubedns=$(k -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')
 helm --kube-context "$ctx" upgrade telltale deploy/helm/telltale -n "$ns" \
   --set image.repository="${image%:*}" --set image.tag="${image##*:}" --set image.pullPolicy=IfNotPresent \
