@@ -846,7 +846,7 @@ fn render_probes(w: &mut PromWriter, probes: &crate::probes::Probes) {
     w.family(
         "telltale_listener_cert_expiry_timestamp_seconds",
         "gauge",
-        "When a DoT/DoH/DoQ listener's certificate expires (Unix time).",
+        "When a DoT/DoH/DoQ listener's certificate expires (Unix time); proto=\"api\": the web UI and API's ([api] tls).",
     );
     for r in &results {
         if let Some(at) = r.cert_expires_unix_seconds {

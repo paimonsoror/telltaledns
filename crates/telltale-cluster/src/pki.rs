@@ -278,6 +278,36 @@ pub fn validity(cert_pem: &str) -> Result<(i64, i64), PkiError> {
     Ok((na - now, na - nb))
 }
 
+/// The DNS names and IP addresses a PEM certificate covers (its subject alternative names);
+/// REQ: API-003 (ADR-149), for the listener checks.
+pub fn names(cert_pem: &str) -> Result<Vec<String>, PkiError> {
+    use x509_parser::extensions::GeneralName;
+    let der = der_of(cert_pem)?;
+    let (_, cert) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|e| PkiError::Invalid(format!("certificate: {e}")))?;
+    let Ok(Some(san)) = cert.subject_alternative_name() else {
+        return Ok(Vec::new());
+    };
+    Ok(san
+        .value
+        .general_names
+        .iter()
+        .filter_map(|n| match n {
+            GeneralName::DNSName(d) => Some((*d).to_owned()),
+            GeneralName::IPAddress(b) => match b.len() {
+                4 => <[u8; 4]>::try_from(*b)
+                    .ok()
+                    .map(|a| std::net::IpAddr::from(a).to_string()),
+                16 => <[u8; 16]>::try_from(*b)
+                    .ok()
+                    .map(|a| std::net::IpAddr::from(a).to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect())
+}
+
 pub(crate) fn hex(b: &[u8]) -> String {
     use std::fmt::Write as _;
     b.iter()

@@ -5068,6 +5068,19 @@ export interface components {
                  * @description A TLS listener's certificate: when it expires and the days left (negative: expired).
                  */
                 certExpiresUnixSeconds?: number | null;
+                /** @description The names and addresses the certificate covers. */
+                certNames?: string[];
+                /**
+                 * @description TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it
+                 *     doesn't expire.
+                 */
+                certSelfSigned?: boolean;
+                /**
+                 * @description The certificate's SHA-256 fingerprint (colon-separated hex), to compare with the one a
+                 *     browser shows before trusting it.
+                 * @example 3F:A1:…
+                 */
+                certSha256?: string | null;
                 /** Format: int64 */
                 checkedUnixSeconds: number;
                 /**
@@ -5093,7 +5106,10 @@ export interface components {
                 node?: string | null;
                 /** @description The last probe got a well-formed answer (any response code). */
                 ok: boolean;
-                /** @description `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`. */
+                /**
+                 * @description `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`; or `api`: the web UI and API over HTTPS
+                 *     (`[api] tls`, ADR-149), checked with a `GET /livez`.
+                 */
                 proto: string;
                 /** @description Not probed, and why (a listener that requires the PROXY protocol header). */
                 skipped?: string | null;
@@ -5982,6 +5998,19 @@ export interface components {
              * @description A TLS listener's certificate: when it expires and the days left (negative: expired).
              */
             certExpiresUnixSeconds?: number | null;
+            /** @description The names and addresses the certificate covers. */
+            certNames?: string[];
+            /**
+             * @description TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it
+             *     doesn't expire.
+             */
+            certSelfSigned?: boolean;
+            /**
+             * @description The certificate's SHA-256 fingerprint (colon-separated hex), to compare with the one a
+             *     browser shows before trusting it.
+             * @example 3F:A1:…
+             */
+            certSha256?: string | null;
             /** Format: int64 */
             checkedUnixSeconds: number;
             /**
@@ -6007,7 +6036,10 @@ export interface components {
             node?: string | null;
             /** @description The last probe got a well-formed answer (any response code). */
             ok: boolean;
-            /** @description `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`. */
+            /**
+             * @description `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`; or `api`: the web UI and API over HTTPS
+             *     (`[api] tls`, ADR-149), checked with a `GET /livez`.
+             */
             proto: string;
             /** @description Not probed, and why (a listener that requires the PROXY protocol header). */
             skipped?: string | null;

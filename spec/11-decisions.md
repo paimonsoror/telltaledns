@@ -1300,6 +1300,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - HSTS (`max-age=31536000`) only with the operator's own certificate: with HSTS a browser offers no way past a certificate warning, and a self-signed certificate is one until it's trusted.
 - If the certificate can't be made or loaded, the API stays off (logged) rather than serving plain HTTP; DNS keeps answering. Changing `[api] tls` needs a restart (the API listener starts once), and a reload says so.
 - `telltale ctl` and `telltale mcp --stdio` use `https://` when the config has `[api] tls`, trust the node's own self-signed certificate, and take `--ca-file` for another node's.
+- The listener checks (OBS-020) include the web UI (`proto = "api"`): a `GET /livez` over HTTPS, and its certificate's expiry, SHA-256 fingerprint, and names, with the same health reasons, alert rule, and metric as the DNS listeners' certificates. It never counts toward `not_serving` (that's about DNS). Every listener's certificate now shows its fingerprint and names too.
 **Consequences:** sign-ins on a home network are encrypted with no setup beyond one line, at the cost of a browser warning (or importing the certificate once). The Helm chart is unchanged: in Kubernetes an ingress terminates TLS. The cookie's `Secure` flag stays conditional (ADR-029): plain HTTP without `[api] tls` still works.
 
 ## ADR-148 — Stream upstream connections: handshakes outlive their query, silent connections are closed, every connection is counted (Proposed)

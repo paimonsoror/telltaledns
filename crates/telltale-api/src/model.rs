@@ -2067,7 +2067,8 @@ pub struct ProbeResult {
     /// What was asked: `udp://127.0.0.1:53`, `https://127.0.0.1:443/dns-query`, ...
     #[schema(example = "tls://127.0.0.1:853")]
     pub target: String,
-    /// `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`.
+    /// `udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`; or `api`: the web UI and API over HTTPS
+    /// (`[api] tls`, ADR-149), checked with a `GET /livez`.
     pub proto: String,
     /// One of this node's listeners (else an extra `[probe] targets` entry).
     pub listener: bool,
@@ -2096,6 +2097,18 @@ pub struct ProbeResult {
     /// Why the certificate couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert_error: Option<String>,
+    /// The certificate's SHA-256 fingerprint (colon-separated hex), to compare with the one a
+    /// browser shows before trusting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "3F:A1:…")]
+    pub cert_sha256: Option<String>,
+    /// The names and addresses the certificate covers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cert_names: Vec<String>,
+    /// TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it
+    /// doesn't expire.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cert_self_signed: bool,
 }
 
 /// REQ: OBS-016 (ADR-105) — the service-level objectives, their error budgets, and how fast

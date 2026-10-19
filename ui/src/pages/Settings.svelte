@@ -390,9 +390,11 @@
   const certText = (p: S['ProbeResult']) =>
     p.certDaysLeft == null
       ? (p.certError ?? '')
-      : p.certDaysLeft < 0
-        ? `certificate expired ${-p.certDaysLeft} day(s) ago`
-        : `certificate expires in ${p.certDaysLeft} day(s)`;
+      : p.certSelfSigned && p.certDaysLeft > 36_500
+        ? 'self-signed certificate (doesn\'t expire)'
+        : p.certDaysLeft < 0
+          ? `certificate expired ${-p.certDaysLeft} day(s) ago`
+          : `certificate expires in ${p.certDaysLeft} day(s)`;
 
   // REQ: OPS-004 — check the release index now instead of at the daily check.
   let checking = $state(false);
@@ -742,7 +744,7 @@
               {#each probes as p (`${p.node ?? ''}|${p.target}`)}
                 <tr>
                   {#if probes.some((x) => x.node)}<td>{p.node ?? ''}</td>{/if}
-                  <td class="mono">{p.target}{#if !p.listener}<span class="muted small"> (extra target)</span>{/if}</td>
+                  <td>{#if p.proto === 'api'}<div class="web-ui">Web UI and API</div>{/if}<span class="mono">{p.target}</span>{#if !p.listener}<span class="muted small"> (extra target)</span>{/if}</td>
                   <td>
                     {#if p.skipped}<span class="badge">skipped</span>
                     {:else if p.ok}<span class="badge ok">answers</span>
@@ -753,6 +755,9 @@
                   <td class="small">
                     {p.skipped ?? p.error ?? ''}
                     {#if certText(p)}<span class:cert-soon={(p.certDaysLeft ?? 99) < 14}>{certText(p)}</span>{/if}
+                    <!-- REQ: API-003 (ADR-149) — what the certificate covers, and its fingerprint to compare with the browser's. -->
+                    {#if p.certNames?.length}<div class="muted" data-testid="cert-names">for {p.certNames.join(', ')}</div>{/if}
+                    {#if p.certSha256}<div class="muted fingerprint" data-testid="cert-sha256">SHA-256 <span class="mono">{p.certSha256}</span></div>{/if}
                   </td>
                 </tr>
               {/each}
@@ -760,7 +765,7 @@
           </table>
         </div>
       {/if}
-      <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would.</p>
+      <p class="muted small">Every 30 s each node asks each of its listeners a question through the listener's own protocol, the way a device would. With HTTPS on the web UI (<code>[api] tls</code>), it's checked too: compare its SHA-256 fingerprint with the one your browser shows before trusting a self-signed certificate.</p>
     </section>
     <section class="card" data-testid="changes-list">
       <h2>Changes<HelpButton id="change-markers" /></h2>
@@ -907,6 +912,13 @@
   .cert-soon {
     color: var(--warn);
     font-weight: 600;
+  }
+  .web-ui {
+    font-weight: 600;
+  }
+  .fingerprint .mono {
+    font-size: 11px;
+    overflow-wrap: anywhere;
   }
   .agent-scopes {
     display: grid;

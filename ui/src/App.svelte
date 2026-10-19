@@ -230,7 +230,17 @@
       <!-- REQ: OPS-004 (ADR-046) — which build this is, and whether a newer one exists. -->
       {#if info?.build}
         <a class="build small" href="#/settings?tab=system" data-testid="build-footer" onclick={closeMenu} title={`commit ${info.build.commit}, ${info.build.target}`}>
-          {#if info.node}<span class="node">{info.node}</span>{/if}
+          {#if info.node}<span class="node"
+              >{info.node}<!-- REQ: CLU-002 — in a cluster, which kind of node this UI belongs to. -->{#if info.cluster}<span
+                  class="role"
+                  class:primary={info.cluster.primary}
+                  data-testid="node-role"
+                  title={info.cluster.primary
+                    ? `the primary of cluster ${info.cluster.name} (site ${info.cluster.site}): configuration changes are made here`
+                    : `a replica in site ${info.cluster.site}: changes you save here are sent to the primary, which applies them for every node`}
+                  >{info.cluster.primary ? 'primary' : 'replica'}</span
+                >{/if}</span
+            >{/if}
           <span>{info.build.version} · {info.build.commit}</span>
           {#if info.update?.state === 'available'}<span class="pill">update</span>{/if}
         </a>
@@ -431,6 +441,19 @@
   .build .node {
     color: var(--side-text);
     font-weight: 600;
+  }
+  .role {
+    margin-left: 6px;
+    padding: 0 6px;
+    border: 1px solid var(--side-muted);
+    border-radius: 999px;
+    color: var(--side-muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .role.primary {
+    border-color: var(--side-text);
+    color: var(--side-text);
   }
   .pill {
     justify-self: start;

@@ -12,6 +12,10 @@
 //!
 //! Runs on the runtime as its own task, a round at a time with a timeout per probe; DNS never
 //! waits for it.
+//!
+//! With `[api] tls` (ADR-149) the web UI and API are checked too: a `GET /livez` over HTTPS, and
+//! the certificate's expiry, SHA-256 fingerprint, and names. They aren't a DNS listener, so
+//! they never count toward "isn't answering DNS".
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -23,6 +27,8 @@ use telltale_config::{Config, ListenProto};
 
 /// The question every probe asks (see `telltale_telemetry::event::PROBE_NAME`).
 pub(crate) const PROBE_QNAME: &str = "probe.telltale.invalid";
+/// The `proto` of the web UI and API's check (ADR-149).
+pub(crate) const API_PROTO: &str = "api";
 /// Failures in a row that degrade the health level and fire `probe_failing`.
 pub(crate) const FAILING_AFTER: u32 = 2;
 
@@ -35,6 +41,8 @@ pub(crate) struct Target {
     pub(crate) listener: bool,
     /// The listener's certificate file, for its expiry.
     pub(crate) cert: Option<String>,
+    /// The certificate is the API's self-signed one (ADR-149).
+    pub(crate) self_signed: bool,
     /// Why it isn't probed.
     pub(crate) skipped: Option<&'static str>,
 }
@@ -80,9 +88,32 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
                 .as_ref()
                 .filter(|_| l.proto.needs_tls())
                 .map(|t| t.cert.to_string()),
+            self_signed: false,
             skipped: l
                 .proxy_protocol
                 .then_some("it requires a PROXY protocol header, which probes don't send"),
+        });
+    }
+    // REQ: API-003 (ADR-149) — the web UI and API over HTTPS, and their certificate.
+    if cfg.api.enabled
+        && let Some(tls) = &cfg.api.tls
+    {
+        let cert = match &tls.cert {
+            Some(c) => c.to_string(),
+            None => {
+                crate::api_tls::self_signed_paths(std::path::Path::new(cfg.node.data_dir.as_str()))
+                    .0
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        out.push(Target {
+            url: format!("https://{}/livez", reachable(cfg.api.listen)),
+            proto: API_PROTO,
+            listener: true,
+            cert: Some(cert),
+            self_signed: tls.self_signed,
+            skipped: None,
         });
     }
     for t in &cfg.probe.targets {
@@ -102,6 +133,7 @@ pub(crate) fn targets(cfg: &Config) -> Vec<Target> {
             proto,
             listener: false,
             cert: None,
+            self_signed: false,
             skipped: None,
         });
     }
@@ -144,11 +176,42 @@ async fn ask(url: &str, timeout: Duration) -> Result<Duration, String> {
     }
 }
 
+/// REQ: API-003 (ADR-149) — `GET` the web UI's `/livez` over HTTPS. Certificate checks are
+/// off, as for the DNS probes: it connects by IP, and the certificate is read from its file.
+async fn ask_https(url: &str, timeout: Duration) -> Result<Duration, String> {
+    let client =
+        telltale_filter::fetch::Client::insecure(Arc::new(telltale_filter::fetch::SystemResolver))?;
+    let req = http::Request::get(url)
+        .body(Vec::new())
+        .map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    match tokio::time::timeout(timeout, client.request(req, 4096)).await {
+        Ok(Ok(r)) if r.status().is_success() => Ok(start.elapsed()),
+        Ok(Ok(r)) => Err(format!("HTTP {}", r.status())),
+        Ok(Err(e)) => Err(e.message),
+        Err(_) => Err("timed out".to_owned()),
+    }
+}
+
 /// A certificate file's expiry: (Unix seconds, days left), or why it can't be read.
 pub(crate) fn cert_expiry(path: &str, now: u64) -> Result<(u64, i64), String> {
     let pem = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let (left, _) = telltale_cluster::pki::validity(&pem).map_err(|e| e.to_string())?;
     Ok((now.saturating_add_signed(left), left.div_euclid(86_400)))
+}
+
+/// REQ: API-003 (ADR-149) — a certificate file's first certificate: its SHA-256 fingerprint
+/// (as browsers show it: colon-separated uppercase hex) and the names it covers.
+pub(crate) fn cert_identity(path: &str) -> Result<(String, Vec<String>), String> {
+    let pem = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let digest = telltale_cluster::pki::fingerprint(&pem).map_err(|e| e.to_string())?;
+    let sha256 = digest
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    let names = telltale_cluster::pki::names(&pem).unwrap_or_default();
+    Ok((sha256, names))
 }
 
 /// The probes' latest results and failure counts, for the API, health, alerts, and metrics.
@@ -228,6 +291,11 @@ impl Probes {
                     }
                     Err(e) => r.cert_error = Some(e),
                 }
+                if let Ok((sha256, names)) = cert_identity(path) {
+                    r.cert_sha256 = Some(sha256);
+                    r.cert_names = names;
+                }
+                r.cert_self_signed = t.self_signed;
             }
             latest.push(r);
         }
@@ -241,7 +309,11 @@ impl Probes {
         for (i, t) in targets.iter().enumerate() {
             if t.skipped.is_none() {
                 let url = t.url.clone();
-                set.spawn(async move { (i, ask(&url, timeout).await) });
+                if t.proto == API_PROTO {
+                    set.spawn(async move { (i, ask_https(&url, timeout).await) });
+                } else {
+                    set.spawn(async move { (i, ask(&url, timeout).await) });
+                }
             }
         }
         let mut outcomes: Vec<Option<Result<Duration, String>>> = vec![None; targets.len()];
@@ -331,6 +403,55 @@ targets = ["udp://192.168.5.112:53"]
         assert!(!t[4].listener);
     }
 
+    // REQ: API-003 (ADR-149) — with `[api] tls` the web UI is checked over HTTPS, with its
+    // certificate (the self-signed one's path in the data directory); the check answers, and
+    // the certificate's fingerprint and names are read.
+    #[tokio::test]
+    async fn api_003_the_web_ui_is_checked_over_https() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = cfg(&format!(
+            "[node]\ndata_dir = {:?}\n[api]\nlisten = \"0.0.0.0:8053\"\ntls = {{ self_signed = true }}\n",
+            dir.path().to_string_lossy()
+        ));
+        let t = targets(&c);
+        let api = t.iter().find(|t| t.proto == API_PROTO).unwrap();
+        assert_eq!(api.url, "https://127.0.0.1:8053/livez");
+        assert!(api.self_signed && api.listener);
+        assert!(api.cert.as_deref().unwrap().ends_with("api-tls/cert.pem"));
+
+        c.api.listen = "127.0.0.1:0".parse().unwrap();
+        let tls = crate::api_tls::setup(&c, c.api.tls.as_ref().unwrap()).unwrap();
+        let app = axum::Router::new().route("/livez", axum::routing::get(|| async { "ok\n" }));
+        let (_stop, rx) = tokio::sync::oneshot::channel::<()>();
+        let addr = crate::api_tls::serve(c.api.listen, app, &tls, async {
+            let _ = rx.await;
+        })
+        .await
+        .unwrap();
+        let url = format!("https://127.0.0.1:{}/livez", addr.port());
+        assert!(ask_https(&url, Duration::from_secs(5)).await.is_ok());
+
+        let p = Probes::default();
+        let target = Target {
+            url,
+            cert: api.cert.clone(),
+            ..api.clone()
+        };
+        p.record(&[target], vec![Some(Ok(Duration::from_millis(2)))], 100);
+        let r = &p.results()[0];
+        assert!(r.cert_self_signed);
+        assert_eq!(
+            r.cert_sha256.as_deref().map(str::len),
+            Some(95),
+            "32 bytes as AA:BB:…"
+        );
+        assert!(r.cert_names.iter().any(|n| n == "127.0.0.1"));
+        assert!(
+            r.cert_days_left.unwrap() > 365 * 100,
+            "a self-signed one doesn't expire"
+        );
+    }
+
     // REQ: OBS-020 — failures in a row count up and reset on success; the last success and the
     // failures since start are kept; an unreadable certificate says why.
     #[test]
@@ -341,6 +462,7 @@ targets = ["udp://192.168.5.112:53"]
             proto: "dot",
             listener: true,
             cert: Some("/nonexistent/cert.pem".into()),
+            self_signed: false,
             skipped: None,
         }];
         p.record(&t, vec![Some(Ok(Duration::from_millis(3)))], 100);

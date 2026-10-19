@@ -250,6 +250,7 @@ tls = { self_signed = true }      # or: tls = { cert = "/etc/telltale/api.crt", 
   <ul>
     <li><b>Self-signed:</b> TelltaleDNS makes a certificate on first start, for this host's name and addresses, and keeps it in <code>&lt;data_dir&gt;/api-tls/</code>. Your browser warns the first time: accept it, or import <code>cert.pem</code> into your trusted certificates to make the warning go away for good.</li>
     <li><b>Your own certificate</b> (your CA, or Let's Encrypt with a DNS challenge): no warning, renewals are picked up within 10 s, and browsers are told to always use HTTPS for the name (HSTS).</li>
+    <li><b>Check before you trust it:</b> <b>Settings → System → Listener checks</b> shows the certificate's SHA-256 fingerprint and names. Compare the fingerprint with the one your browser's certificate viewer shows. Your own certificate's expiry is watched there too, with the same warnings as the DNS listeners'.</li>
     <li>Old <code>http://</code> links and bookmarks are redirected to <code>https://</code>. Health checks on <code>/livez</code>, <code>/readyz</code>, and <code>/healthz</code> keep working over plain HTTP.</li>
     <li><code>telltale ctl</code> and <code>telltale mcp --stdio</code> on the node switch to HTTPS by themselves; from another machine, pass the node's <code>cert.pem</code> with <code>--ca-file</code>.</li>
   </ul>

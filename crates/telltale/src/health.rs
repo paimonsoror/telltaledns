@@ -61,10 +61,11 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
     let failing = |p: &&telltale_api::model::ProbeResult| {
         p.skipped.is_none() && p.consecutive_failures >= crate::probes::FAILING_AFTER
     };
+    // The web UI's check (ADR-149) isn't a DNS listener: it never makes "not answering DNS".
     let listeners: Vec<_> = l
         .probes
         .iter()
-        .filter(|p| p.listener && p.skipped.is_none())
+        .filter(|p| p.listener && p.skipped.is_none() && p.proto != crate::probes::API_PROTO)
         .collect();
     if l.serving && !listeners.is_empty() && listeners.iter().all(failing) {
         out.push(reason(
@@ -75,7 +76,9 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
         ));
     } else {
         for p in l.probes.iter().filter(failing) {
-            let what = if p.listener {
+            let what = if p.proto == crate::probes::API_PROTO {
+                "the web UI at"
+            } else if p.listener {
                 "listener"
             } else {
                 "probe target"
@@ -94,12 +97,17 @@ fn probe_reasons(l: &Local<'_>, out: &mut Vec<HealthReason>) {
         }
     }
     for p in l.probes {
+        let who = if p.proto == crate::probes::API_PROTO {
+            "browsers and tools can't open the web UI"
+        } else {
+            "encrypted DNS clients can't connect"
+        };
         match p.cert_days_left {
             Some(d) if d < 0 => out.push(reason(
                 SEVERE,
                 "cert_expired",
                 format!(
-                    "the certificate of {} expired {} day(s) ago: encrypted DNS clients can't connect",
+                    "the certificate of {} expired {} day(s) ago: {who}",
                     p.target, -d
                 ),
                 "#/settings?tab=system",
@@ -529,6 +537,26 @@ mod tests {
         assert_eq!(
             codes(&h),
             vec![("severe", "cert_expired"), ("degraded", "cert_expiring")]
+        );
+        // REQ: API-003 (ADR-149) — the web UI's check: an expiring certificate degrades like a
+        // listener's, but an answering web UI doesn't hide every DNS listener failing.
+        let mut web = probe("https://127.0.0.1:8053/livez", true, 0, Some(3));
+        web.proto = crate::probes::API_PROTO.into();
+        let mixed = [
+            probe("udp://127.0.0.1:53", true, 2, None),
+            probe("tcp://127.0.0.1:53", true, 2, None),
+            web,
+        ];
+        l.probes = &mixed;
+        let h = summarize(local_reasons(&l), vec![], String::new());
+        assert_eq!(
+            codes(&h),
+            vec![("severe", "not_serving"), ("degraded", "cert_expiring")]
+        );
+        assert!(
+            h.reasons
+                .iter()
+                .any(|r| r.code == "cert_expiring" && r.summary.contains("8053"))
         );
     }
 

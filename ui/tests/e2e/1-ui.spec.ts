@@ -348,6 +348,26 @@ test('obs_020 listener checks', async () => {
     (await fetch('/api/v1/queries?name=probe.telltale.invalid&limit=5')).json(),
   );
   expect(log.items).toEqual([]);
+  // REQ: API-003 (ADR-149) — the web UI's own check: a self-signed certificate says it doesn't
+  // expire, and shows its names and fingerprint (stubbed: the e2e server has no [api] tls).
+  const sha = Array.from({ length: 32 }, (_, i) => i.toString(16).padStart(2, '0').toUpperCase()).join(':');
+  await page.route('**/api/v1/system/probes', (route) =>
+    route.fulfill({
+      json: {
+        items: [{
+          target: 'https://127.0.0.1:8053/livez', proto: 'api', listener: true, ok: true, latencyMs: 3.2,
+          consecutiveFailures: 0, checkedUnixSeconds: 1, certExpiresUnixSeconds: 67_000_000_000, certDaysLeft: 770_000,
+          certSha256: sha, certNames: ['localhost', '192.168.3.2'], certSelfSigned: true,
+        }],
+      },
+    }),
+  );
+  await page.reload();
+  await expect(card).toContainText('Web UI and API');
+  await expect(card).toContainText("self-signed certificate (doesn't expire)");
+  await expect(card.getByTestId('cert-names')).toContainText('localhost, 192.168.3.2');
+  await expect(card.getByTestId('cert-sha256')).toContainText(sha);
+  await page.unroute('**/api/v1/system/probes');
 });
 
 // REQ: OPS-010 — maintenance from the Cluster page (the e2e server runs on its own): /readyz
@@ -2615,4 +2635,31 @@ test('obs_035 wall layouts', async () => {
   await expect(page.getByTestId('wall')).toHaveAttribute('data-slots', '1');
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/#/');
+});
+
+// REQ: CLU-002 — the sidebar's footer says which kind of node this UI belongs to, in a cluster
+// only (stubbed: the e2e server runs alone).
+test('clu_002 the footer names the node and its role', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/#/');
+  await expect(page.getByTestId('build-footer')).toBeVisible();
+  await expect(page.getByTestId('node-role')).toHaveCount(0);
+  const cluster = (primary: boolean) => ({
+    clusterId: 'c1', name: 'home', nodeId: 'id-a', site: primary ? 'k8s' : 'home-pi', primary,
+    certExpiresAt: '2027-01-01T00:00:00Z', configSeq: 9, configCreatedAt: null, configAppliedAt: null,
+    lastSyncFetched: 0, lastSyncMs: 0, syncError: null, peers: [],
+  });
+  for (const primary of [false, true]) {
+    await page.route('**/api/v1/system/info', async (route) => {
+      const res = await route.fetch();
+      const info = await res.json();
+      await route.fulfill({ response: res, json: { ...info, cluster: cluster(primary) } });
+    });
+    await page.reload();
+    const role = page.getByTestId('node-role');
+    await expect(role).toHaveText(primary ? 'primary' : 'replica');
+    await expect(role).toHaveAttribute('title', primary ? /the primary of cluster home/ : /sent to the primary/);
+    await page.unroute('**/api/v1/system/info');
+  }
+  await page.reload();
 });

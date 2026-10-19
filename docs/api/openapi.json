@@ -13349,6 +13349,25 @@
                   "description": "A TLS listener's certificate: when it expires and the days left (negative: expired).",
                   "minimum": 0
                 },
+                "certNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The names and addresses the certificate covers."
+                },
+                "certSelfSigned": {
+                  "type": "boolean",
+                  "description": "TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it\ndoesn't expire."
+                },
+                "certSha256": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The certificate's SHA-256 fingerprint (colon-separated hex), to compare with the one a\nbrowser shows before trusting it.",
+                  "example": "3F:A1:…"
+                },
                 "checkedUnixSeconds": {
                   "type": "integer",
                   "format": "int64",
@@ -13401,7 +13420,7 @@
                 },
                 "proto": {
                   "type": "string",
-                  "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`."
+                  "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`; or `api`: the web UI and API over HTTPS\n(`[api] tls`, ADR-149), checked with a `GET /livez`."
                 },
                 "skipped": {
                   "type": [
@@ -15664,6 +15683,25 @@
             "description": "A TLS listener's certificate: when it expires and the days left (negative: expired).",
             "minimum": 0
           },
+          "certNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names and addresses the certificate covers."
+          },
+          "certSelfSigned": {
+            "type": "boolean",
+            "description": "TelltaleDNS made the certificate itself (`[api] tls = { self_signed = true }`); it\ndoesn't expire."
+          },
+          "certSha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The certificate's SHA-256 fingerprint (colon-separated hex), to compare with the one a\nbrowser shows before trusting it.",
+            "example": "3F:A1:…"
+          },
           "checkedUnixSeconds": {
             "type": "integer",
             "format": "int64",
@@ -15716,7 +15754,7 @@
           },
           "proto": {
             "type": "string",
-            "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`."
+            "description": "`udp`, `tcp`, `dot`, `doh`, `doh3`, or `doq`; or `api`: the web UI and API over HTTPS\n(`[api] tls`, ADR-149), checked with a `GET /livez`."
           },
           "skipped": {
             "type": [

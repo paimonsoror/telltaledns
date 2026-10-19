@@ -166,7 +166,7 @@ telltale 0.1.0-edge.64 (commit 3f46fd4, built 2026-10-05T12:00:00Z, channel edge
 - builds of `main` are `0.1.0-edge.<run>`;
 - a local build is `dev` with its commit.
 
-The same build identity, and how the node was installed (`native`, `container`, or `helm`), shows in the web UI's sidebar and **Settings → System → Version and updates**, in `GET /api/v1/system/info` (`build`, `update`), in `telltale_build_info{version,commit,channel,target}`, and on the Cluster page for every node.
+The same build identity, and how the node was installed (`native`, `container`, or `helm`), shows in the web UI's sidebar (with the node's name and, in a cluster, whether it's the **primary** or a **replica**: changes saved on a replica's UI go to the primary) and **Settings → System → Version and updates**, in `GET /api/v1/system/info` (`build`, `update`), in `telltale_build_info{version,commit,channel,target}`, and on the Cluster page for every node.
 
 **Update checks:**
 - **How:** once a day, a node reads its channel's `releases.json` (published with every release, signed with the release key) and compares versions: `up_to_date`, `available`, `newer` (a dev build), or `unknown` (not checked yet, or failing). An index whose signature doesn't verify is ignored.
@@ -2200,8 +2200,9 @@ cert_warn_days = 14                      # a certificate expiring sooner degrade
 targets = ["udp://192.168.5.112:53"]     # extra: by IP, e.g. a load balancer's address
 ```
 - **What's asked:** `probe.telltale.invalid`, type A, which TelltaleDNS answers NXDOMAIN itself (no upstream). Any well-formed answer counts. A listener bound to `0.0.0.0` or `[::]` is asked on loopback; DoH on its `path`. Targets take `udp://`, `tcp://`, `tls://`, `https://…/dns-query`, `h3://`, and `quic://` with an IP address. Certificates aren't checked by name (probes connect by IP); a listener with `proxy_protocol = true` is skipped, since probes don't send the PROXY header.
-- **Certificates:** each DoT/DoH/DoH3/DoQ listener's certificate file is read for its expiry.
-- **Health:** a probe that fails twice in a row degrades the level (`probe_failing`); when every listener of a node fails, the node isn't serving DNS (`not_serving`, severe unless other nodes serve). A certificate within `cert_warn_days` degrades (`cert_expiring`); an expired one is severe (`cert_expired`), since encrypted clients can't connect.
+- **Certificates:** each DoT/DoH/DoH3/DoQ listener's certificate file is read for its expiry, its SHA-256 fingerprint, and the names it covers.
+- **The web UI:** with `[api] tls`, the web UI and API are checked too (`proto="api"`): a `GET /livez` over HTTPS, and their certificate like a listener's. A self-signed one shows as such (it doesn't expire); compare its fingerprint on this page with the one your browser shows before trusting it. Your own certificate's expiry warns and alerts like a DNS listener's.
+- **Health:** a probe that fails twice in a row degrades the level (`probe_failing`); when every DNS listener of a node fails, the node isn't serving DNS (`not_serving`, severe unless other nodes serve; the web UI's check doesn't count toward it). A certificate within `cert_warn_days` degrades (`cert_expiring`); an expired one is severe (`cert_expired`), since encrypted clients can't connect.
 - **Alerts:** `probe_failing` and `cert_expiring` rules (below); with `prometheusRule.enabled`, the Helm chart adds `TelltaleDNSListenerNotAnswering` (2 minutes) and `TelltaleDNSListenerCertExpiring` (under 14 days).
 - **Where:** **Settings → System → Listener checks**, `GET /api/v1/system/probes` (every node), the MCP tool `probe_status`, and `/metrics`: `telltale_probe_success{target,proto}`, `telltale_probe_duration_seconds`, `telltale_probe_failures_total`, and `telltale_listener_cert_expiry_timestamp_seconds{target}`.
 - **Cost:** a handful of queries a minute, from a background task. They count in `telltale_queries_total` like any query, but stay out of the query log, the dashboard's top lists, device analytics, and event sinks. dnstap still sees them as client queries from loopback.
@@ -2808,6 +2809,7 @@ tls = { self_signed = true }                 # a certificate made on first start
 - Over HTTPS the session cookie is `Secure` and HTTP Basic works, as behind a TLS proxy.
 - `telltale ctl` and `telltale mcp --stdio` on the node use `https://` and trust its self-signed certificate by themselves. From another machine, copy `cert.pem` and pass `--ca-file cert.pem` (with `--url https://<node>:8053`).
 - Changing `[api] tls` needs a restart. If the certificate can't be made or loaded, the API stays off (it's logged), rather than falling back to plain HTTP; DNS keeps answering.
+- **Settings → System → Listener checks** shows the web UI's certificate: self-signed or yours, the names it covers, its SHA-256 fingerprint (compare it with your browser's before trusting it), and for your own, the days left, with the same health level and alerts as the DNS listeners' certificates ([Listener checks](#listener-checks)).
 
 **Behind a reverse proxy or ingress,** tell TelltaleDNS which addresses are proxies so sign-in lockouts, break-glass networks, and the audit log use the real client address from `X-Forwarded-For` (otherwise everyone looks like the proxy, and one person's failed sign-ins lock out everyone):
 ```toml
