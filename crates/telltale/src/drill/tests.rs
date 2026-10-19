@@ -130,9 +130,11 @@ fn entry(
 }
 
 // REQ: CLU-014 (AC 4) — the verdicts: a device another node answered after its first dropped
-// query `followed` (time to failover from the two), one with 3+ dropped and nothing elsewhere
-// `stuck`, a target with too little to tell `quiet`, a non-target seen elsewhere `elsewhere`;
-// coverage = followed / (followed + stuck).
+// query and by 5 s after the end `followed` (time to failover from the two), one with 3+
+// dropped and no such answer `stuck`, a target with nothing dropped or too little to tell
+// `quiet`, a non-target seen elsewhere `elsewhere`; coverage = followed / (followed + stuck).
+// The first live drill (2026-10-19) showed the two cases a looser rule got wrong: an answer
+// elsewhere after the drill was over, and a target that only asked elsewhere.
 #[test]
 fn clu_014_verdicts() {
     let mut pi = Window::new("d1", 1_000);
@@ -142,11 +144,24 @@ fn clu_014_verdicts() {
         .insert(key(11), entry(1_100, 9_000, 6, 6, 1_100, 9_000)); // tv: stuck
     pi.clients
         .insert(key(12), entry(1_200, 1_200, 1, 1, 1_200, 1_200)); // quiet-ish
+    pi.clients
+        .insert(key(14), entry(1_400, 1_400, 1, 1, 1_400, 1_400)); // hub: one drop
+    pi.clients
+        .insert(key(15), entry(1_500, 2_000, 3, 3, 1_500, 2_000)); // three drops
+    pi.clients
+        .insert(key(17), entry(3_000, 3_000, 1, 1, 3_000, 3_000)); // asks both
     let mut k8s = Window::new("d1", 1_000);
     k8s.clients.insert(key(10), entry(2_250, 8_000, 9, 0, 0, 0)); // laptop followed
     k8s.clients.insert(key(20), entry(1_500, 3_000, 4, 0, 0, 0)); // not a target
+    k8s.clients
+        .insert(key(14), entry(40_000, 40_000, 1, 0, 0, 0)); // after the end + 5 s
+    k8s.clients
+        .insert(key(15), entry(50_000, 50_000, 1, 0, 0, 0)); // likewise
+    k8s.clients.insert(key(16), entry(5_000, 6_000, 2, 0, 0, 0)); // nothing dropped
+    k8s.clients
+        .insert(key(17), entry(1_000, 20_000, 5, 0, 0, 0)); // before and after
     let parts = vec![("pi".to_owned(), pi), ("k8s".to_owned(), k8s)];
-    let targets: HashSet<[u8; 16]> = [key(10), key(11), key(12), key(13)].into();
+    let targets: HashSet<[u8; 16]> = (10..=17).map(key).collect();
     let names = HashMap::from([(
         key(10),
         (Some("laptop".to_owned()), Some("home".to_owned())),
@@ -156,6 +171,7 @@ fn clu_014_verdicts() {
         parts: &parts,
         targets: &targets,
         since_ms: 1_000,
+        ended_ms: 31_000,
         names: &names,
     });
     let v: HashMap<String, (&str, Option<u64>)> = c
@@ -175,8 +191,26 @@ fn clu_014_verdicts() {
         "one dropped query tells nothing"
     );
     assert_eq!(v["192.168.1.13"].0, "quiet", "a target that never asked");
+    assert_eq!(
+        v["192.168.1.14"].0, "quiet",
+        "asked elsewhere only after the drill was over"
+    );
+    assert_eq!(
+        v["192.168.1.15"],
+        ("stuck", None),
+        "3 dropped; the answer elsewhere came too late"
+    );
+    assert_eq!(
+        v["192.168.1.16"].0, "quiet",
+        "nothing dropped: no evidence either way"
+    );
+    assert_eq!(
+        v["192.168.1.17"],
+        ("followed", None),
+        "it asked the other node before and after: time unknown"
+    );
     assert_eq!(v["192.168.1.20"].0, "elsewhere");
-    assert_eq!((c.followed, c.stuck, c.quiet, c.elsewhere), (1, 1, 2, 1));
+    assert_eq!((c.followed, c.stuck, c.quiet, c.elsewhere), (2, 2, 4, 1));
     assert_eq!(c.coverage_percent, Some(50.0));
     assert_eq!((c.median_ms, c.p90_ms), (Some(1_250), Some(1_250)));
     assert_eq!(c.devices[0].verdict, "stuck", "stuck first");
@@ -193,7 +227,7 @@ fn clu_014_verdicts() {
         .iter()
         .map(|n| (n.node.as_str(), n.queries))
         .collect();
-    assert_eq!((nodes["pi"], nodes["k8s"]), (8, 13));
+    assert_eq!((nodes["pi"], nodes["k8s"]), (13, 22));
 }
 
 // REQ: CLU-014 (AC 2, 3) — on a single node a drill is refused ("no other node", 409

@@ -1996,14 +1996,14 @@ For 15 seconds to 5 minutes (60 by default), one node stops answering the device
   hands its role over first (as for [maintenance](#taking-a-node-down-for-maintenance)). Unlike
   maintenance, **a restart cancels a drill**: the node comes back answering everyone.
 
-Every node keeps a record of who asked it while the drill runs. A minute after the drill ends (late
-switches still count), the drilled node gathers them into a **report**:
+Every node keeps a record of who asked it while the drill runs. A minute after the drill ends, the
+drilled node gathers them into a **report**:
 
 | Verdict | Meaning |
 |---|---|
-| **followed** | another node answered it after its first unanswered query: its second server works. With the time it took (`timeToFailoverMs`). |
-| **stuck** | 3 or more unanswered queries and nothing elsewhere: it has no working second server, or its second server is the same node. |
-| **quiet** | too few queries to tell (it may just have been idle). |
+| **followed** | another node answered it after its first unanswered query, before the drill ended or within 5 seconds after: its second server works. With the time it took (`timeToFailoverMs`). |
+| **stuck** | 3 or more unanswered queries and no such answer: it has no working second server, or its second server is the same node. |
+| **quiet** | nothing unanswered, or too little to tell (it may have been idle, or asked only the other node). An answer elsewhere after the drill is over proves nothing: the drilled node answers again by then. |
 | **elsewhere** | not targeted, but it asked another node during the drill: for information. |
 
 **Coverage** is followed / (followed + stuck). Fifteen minutes after the drill, the report also

@@ -11494,7 +11494,7 @@
           },
           "verdict": {
             "type": "string",
-            "description": "`followed` (asked another node after its first unanswered query), `stuck` (3 or more\nunanswered, nothing elsewhere: no working second server), `quiet` (no queries during\nthe drill: unknown), or `elsewhere` (not a target or in the baseline; asked another\nnode: informational)."
+            "description": "`followed` (asked another node after its first unanswered query, by 5 s after the end),\n`stuck` (3 or more unanswered and no such answer: no working second server), `quiet`\n(nothing unanswered, or too little: unknown), or `elsewhere` (not a target or in the\nbaseline; asked another node: informational)."
           }
         }
       },

@@ -47,8 +47,11 @@ use crate::maintenance::{label, now_ms};
 pub(crate) const KIND: &str = "drill";
 /// Reports and parts, under the data directory.
 const DIR: &str = "drills";
-/// Late failovers still count this long after the end.
+/// The nodes keep recording this long after the end (who asked where once it was over).
 pub(crate) const GRACE_MS: u64 = 60_000;
+/// A query to another node counts as following a dropped one until this long after the end (a
+/// stub resolver's retry timer); later, the drilled node answers again, so it proves nothing.
+const FOLLOW_GRACE_MS: u64 = 5_000;
 /// How long the drilled node keeps asking for missing parts: 5 minutes (test hook
 /// `TELLTALE_DRILL_RETRY_SECS`).
 fn part_retry_ms() -> u64 {
@@ -1649,6 +1652,7 @@ async fn collect(src: &Arc<Sources>, mut s: Stored) {
         parts: &parts,
         targets: &s.targets.iter().copied().collect(),
         since_ms: s.since_ms,
+        ended_ms: s.ended_ms.unwrap_or(s.until_ms),
         names: &names,
     });
     let sum = &mut s.report.summary;
@@ -1811,6 +1815,8 @@ pub(crate) struct Input<'a> {
     /// The baseline's devices the drill targeted.
     pub(crate) targets: &'a HashSet<[u8; 16]>,
     pub(crate) since_ms: u64,
+    /// When the drill ended (its end time, or earlier when stopped).
+    pub(crate) ended_ms: u64,
     /// Name and group per device.
     pub(crate) names: &'a HashMap<[u8; 16], (Option<String>, Option<String>)>,
 }
@@ -1833,9 +1839,9 @@ pub(crate) struct Computed {
 
 /// REQ: CLU-014 (ADR-151) — the verdicts. Per device among the targets, anyone the drilled node
 /// dropped, and anyone another node answered: `followed` when another node answered it after
-/// its first dropped query (or it was already elsewhere and nothing was dropped), `stuck` with
-/// [`STUCK_MIN`] or more dropped and nothing elsewhere, `quiet` otherwise for a target (too few
-/// queries to tell), and `elsewhere` for a device that wasn't targeted.
+/// its first dropped query and by [`FOLLOW_GRACE_MS`] after the end, `stuck` with [`STUCK_MIN`]
+/// or more dropped and no such answer, `quiet` otherwise for a target (nothing dropped, or too
+/// few to tell), and `elsewhere` for a device that wasn't targeted.
 #[allow(clippy::too_many_lines)] // one pass per device; the summary after
 pub(crate) fn compute(i: &Input<'_>) -> Computed {
     let mut out = Computed::default();
@@ -1859,6 +1865,7 @@ pub(crate) fn compute(i: &Input<'_>) -> Computed {
         });
     }
     let mut times = Vec::new();
+    let cutoff = i.ended_ms.saturating_add(FOLLOW_GRACE_MS);
     for k in &devices {
         let here = drilled.and_then(|w| w.clients.get(k));
         let dropped = here.map_or(0, |e| e.drilled);
@@ -1867,25 +1874,27 @@ pub(crate) fn compute(i: &Input<'_>) -> Computed {
             out.last_dropped_ms = out.last_dropped_ms.max(Some(e.last_drilled_ms));
         }
         let mut elsewhere_q = 0u32;
-        let mut last_elsewhere = 0u64;
         let mut first_after: Option<u64> = None;
+        // Asking another node before and after the first drop: it followed, time unknown.
+        let mut already_there = false;
         let mut nodes = Vec::new();
         for (label, w) in i.parts.iter().filter(|(l, _)| l != i.drilled) {
             if let Some(e) = w.clients.get(k) {
                 elsewhere_q = elsewhere_q.saturating_add(e.queries);
-                last_elsewhere = last_elsewhere.max(e.last_ms);
                 nodes.push(label.clone());
-                if let Some(fd) = first_drop
-                    && e.first_ms >= fd
-                {
-                    first_after = Some(first_after.map_or(e.first_ms, |f| f.min(e.first_ms)));
+                match first_drop {
+                    Some(fd) if e.first_ms >= fd && e.first_ms <= cutoff => {
+                        first_after = Some(first_after.map_or(e.first_ms, |f| f.min(e.first_ms)));
+                    }
+                    Some(fd) if e.first_ms < fd && e.last_ms >= fd => already_there = true,
+                    _ => {}
                 }
             }
         }
         let target = i.targets.contains(k) || dropped > 0;
         let verdict = if !target {
             "elsewhere"
-        } else if elsewhere_q > 0 && first_drop.is_none_or(|fd| last_elsewhere >= fd) {
+        } else if first_after.is_some() || already_there {
             "followed"
         } else if dropped >= STUCK_MIN {
             "stuck"

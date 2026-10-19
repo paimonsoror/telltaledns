@@ -4320,10 +4320,10 @@ export interface components {
              */
             timeToFailoverMs?: number | null;
             /**
-             * @description `followed` (asked another node after its first unanswered query), `stuck` (3 or more
-             *     unanswered, nothing elsewhere: no working second server), `quiet` (no queries during
-             *     the drill: unknown), or `elsewhere` (not a target or in the baseline; asked another
-             *     node: informational).
+             * @description `followed` (asked another node after its first unanswered query, by 5 s after the end),
+             *     `stuck` (3 or more unanswered and no such answer: no working second server), `quiet`
+             *     (nothing unanswered, or too little: unknown), or `elsewhere` (not a target or in the
+             *     baseline; asked another node: informational).
              */
             verdict: string;
         };
