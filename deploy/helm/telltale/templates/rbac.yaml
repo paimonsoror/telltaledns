@@ -1,0 +1,38 @@
+{{- if and .Values.kubernetes.enabled .Values.kubernetes.rbac.create }}
+# REQ: FLT-017 (T15.1, ADR-150) — the controller (or allInOne pod) watches pods and namespaces
+# to name pod addresses by their workload: read-only, those two resources, nothing else.
+# Resolver pods get no token (ADR-120).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "telltale.serviceAccountName" . }}
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "telltale.fullname" . }}-workloads
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "telltale.fullname" . }}-workloads
+  labels:
+    {{- include "telltale.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "telltale.fullname" . }}-workloads
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "telltale.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -70,6 +70,9 @@ pub enum Code {
     HeatmapWindow,
     /// The query log's privacy level hides what was asked for (names, or devices).
     PrivacyLevel,
+    /// REQ: FLT-017 — Kubernetes workloads aren't on (`[kubernetes] enabled`, the chart's
+    /// `kubernetes.enabled`).
+    KubernetesDisabled,
 }
 
 impl Code {
@@ -104,6 +107,7 @@ impl Code {
             Self::MethodNotAllowed => "https://telltaledns.dev/problems/method_not_allowed",
             Self::HeatmapWindow => "https://telltaledns.dev/problems/heatmap_window",
             Self::PrivacyLevel => "https://telltaledns.dev/problems/privacy_level",
+            Self::KubernetesDisabled => "https://telltaledns.dev/problems/kubernetes_disabled",
         }
     }
 
@@ -138,6 +142,7 @@ impl Code {
             Self::MethodNotAllowed => "Method not allowed",
             Self::HeatmapWindow => "Heatmap window too long",
             Self::PrivacyLevel => "Hidden by the privacy level",
+            Self::KubernetesDisabled => "Kubernetes workloads are off",
         }
     }
 
@@ -154,7 +159,8 @@ impl Code {
             | Self::SimulationBusy
             | Self::ClusterPinned
             | Self::NoRollout
-            | Self::VersionBlobsMissing => StatusCode::CONFLICT,
+            | Self::VersionBlobsMissing
+            | Self::KubernetesDisabled => StatusCode::CONFLICT,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::VersionConflict => StatusCode::PRECONDITION_FAILED,
             Self::InvalidConfig

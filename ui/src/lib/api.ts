@@ -193,6 +193,17 @@ export const api = {
   rhythm: (id: string) => get<S['ClientRhythm']>(`/clients/${encodeURIComponent(id)}/rhythm`),
   timeline: (id: string, q: { from?: string; to?: string; bins?: number; lanes?: number } = {}) =>
     get<S['DeviceTimeline']>(`/clients/${encodeURIComponent(id)}/timeline`, q),
+  // REQ: FLT-017 (T15.1) — Kubernetes workloads as devices.
+  kubernetesStatus: () => get<S['KubernetesStatus']>('/kubernetes/status'),
+  workloads: (q: { namespace?: string; group?: string; cursor?: string } = {}) =>
+    get<S['WorkloadPage']>('/kubernetes/workloads', q),
+  // The key keeps its slashes: `namespace/kind/name`.
+  putWorkloadGroup: (key: string, group: string, dryRun = false) =>
+    call<S['ConfigChange']>('PUT', `/kubernetes/map/${key.split('/').map(encodeURIComponent).join('/')}`, {
+      body: { group },
+      query: { dryRun: dryRun || undefined },
+      headers: dryRun ? {} : { 'idempotency-key': newKey() },
+    }),
   // REQ: OBS-024 (T13.1) — what a whole shared configuration would have done.
   simulate: (body: S['SimulateRequest']) => post<S['Simulation']>('/simulate', body),
   cluster: () => get<S['ClusterView']>('/cluster'),

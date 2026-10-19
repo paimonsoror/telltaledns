@@ -35,7 +35,13 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
       enableServiceLinks: false
+      {{- if .Values.kubernetes.enabled }}
+      # REQ: FLT-017 — only this pod reads the Kubernetes API (pods and namespaces, read-only).
+      serviceAccountName: {{ include "telltale.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}

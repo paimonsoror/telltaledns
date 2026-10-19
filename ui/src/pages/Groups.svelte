@@ -8,6 +8,15 @@
   import HelpButton from '../lib/components/HelpButton.svelte';
   import { currentMode } from '../lib/mode.svelte';
   import ConfigEditor, { type Field } from '../lib/components/ConfigEditor.svelte';
+  import ClientChip from '../lib/components/ClientChip.svelte';
+  import { loadWorkloads, workloads } from '../lib/workloads.svelte';
+
+  // REQ: FLT-017 — the workloads a group holds (the default group: those without one).
+  const workloadsIn = (group: string) =>
+    workloads.items.filter((w) => (w.group ?? 'default') === group);
+  $effect(() => {
+    void loadWorkloads();
+  });
 
   let groups = $state<S['GroupInfo'][]>([]);
   let tops = $state<Record<string, { domains: S['TopItem'][]; blocked: S['TopItem'][] }>>({});
@@ -132,7 +141,13 @@
           {/if}
         </div>
         <div class="muted small mono">
-          {g.networks.length ? g.networks.join(', ') : g.name === 'default' ? 'devices that match nothing else' : 'named devices only'}
+          {g.networks.length
+            ? g.networks.join(', ')
+            : g.name === 'default'
+              ? 'devices that match nothing else'
+              : workloadsIn(g.name).length
+                ? 'named devices and Kubernetes workloads'
+                : 'named devices only'}
         </div>
         {#if g.safeSearch}
           <div class="small" data-testid="group-safe-search">
@@ -198,6 +213,14 @@
             </div>
           </div>
         {/if}
+        <!-- REQ: FLT-017 — the Kubernetes workloads in the group, with their glyph. -->
+        {#if workloadsIn(g.name).length}
+          <div class="small workloads" data-testid="group-workloads">
+            <span class="muted">Workloads:</span>
+            {#each workloadsIn(g.name).slice(0, 8) as w (w.name)}<span class="wl"><ClientChip ip={w.key} name={w.name} /></span>{/each}
+            {#if workloadsIn(g.name).length > 8}<a href={href('/clients', { tab: 'workloads' })}>and {workloadsIn(g.name).length - 8} more</a>{/if}
+          </div>
+        {/if}
         <a class="small" href={href('/queries', { group: g.name })}>Show this group's queries</a>
       </section>
     {/each}
@@ -238,6 +261,12 @@
 </div>
 
 <style>
+  .workloads {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    align-items: baseline;
+  }
   .group-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));

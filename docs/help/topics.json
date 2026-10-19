@@ -135,6 +135,27 @@
       "docs": "a-devices-rhythm"
     },
     {
+      "id": "kubernetes-workloads",
+      "title": "Pods named by what they run",
+      "term": "Kubernetes workloads as devices",
+      "summary": "TelltaleDNS watches your cluster's pods and names each pod address by its workload (media/deploy/jellyfin): a Deployment's replicas are one device, so its queries, anomalies, rhythm, and timeline survive every rollout.",
+      "when": "You run apps in Kubernetes and want to see which workload asked for which domain, or give a namespace its own lists.",
+      "example": "media/deploy/jellyfin talks to api.themoviedb.org every 15 minutes; label the media namespace telltaledns.io/group=media and every pod in it gets the media group's lists.",
+      "caution": "Pods show up as themselves only when they ask TelltaleDNS directly (the cluster's DNS pointed at it, or a workload's dnsConfig); through CoreDNS they all look like CoreDNS.",
+      "docs": "kubernetes-workloads-as-devices"
+    },
+    {
+      "id": "workload",
+      "title": "What runs your pods",
+      "term": "Workload",
+      "summary": "The Kubernetes object that runs a set of pods: a Deployment, StatefulSet, DaemonSet, Job, or CronJob. TelltaleDNS names it namespace/kind/name and treats it as one device, whichever pods it runs.",
+      "when": "You see a name like kube-system/ds/cilium where you'd expect an address.",
+      "example": "db/sts/postgres is the StatefulSet postgres in the db namespace; its pod postgres-0 asks from 10.42.0.21.",
+      "caution": "A pod address is reused when pods come and go: TelltaleDNS names each logged query by the workload that held the address at the time.",
+      "docs": "kubernetes-workloads-as-devices",
+      "general": true
+    },
+    {
       "id": "anomalies",
       "title": "When a device behaves differently",
       "term": "Anomaly detection",

@@ -1,0 +1,8 @@
+<svg viewBox="0 0 320 150" role="img" width="320"><title>A workload's pods share one analytics key inside the discard prefix 100::/64, which never routes</title>
+<rect x="10" y="12" width="90" height="26" rx="8" class="svg-box"/><text x="55" y="30" text-anchor="middle" class="svg-mono">10.42.0.11</text>
+<rect x="10" y="46" width="90" height="26" rx="8" class="svg-box"/><text x="55" y="64" text-anchor="middle" class="svg-mono">10.42.0.12</text>
+<rect x="10" y="80" width="90" height="26" rx="8" class="svg-box"/><text x="55" y="98" text-anchor="middle" class="svg-mono">10.42.0.13</text>
+<path d="M100 25 L150 59 M100 59 H150 M100 93 L150 59" class="svg-stroke-brand" stroke-width="2"/>
+<rect x="150" y="44" width="160" height="30" rx="8" class="svg-ok" opacity=".8"/><text x="230" y="64" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">100::… jellyfin</text>
+<text x="160" y="132" text-anchor="middle" class="svg-sub">one device per workload · the key never routes</text>
+</svg>

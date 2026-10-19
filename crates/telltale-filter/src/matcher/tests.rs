@@ -179,6 +179,7 @@ fn flt_001_modifier_rules() {
             "||v6.example.com^$dnstype=AAAA\n||nohttps.example.com^$dnstype=~HTTPS\n\
              ||kids.example.org^$client=192.168.1.0/24|~192.168.1.99\n\
              ||tv.example.org^$client='Living Room TV'\n\
+             ||k8s.example.org^$client=media/deploy/jellyfin\n\
              ||example.edu^$denyallow=mail.example.edu\n\
              ||rewrite.example.com^$dnsrewrite=NOERROR;A;192.0.2.1\n",
         )],
@@ -200,6 +201,15 @@ fn flt_001_modifier_rules() {
         "block m mod"
     );
     assert_eq!(d("tv.example.org", rtype::A, &["laptop"]), "none");
+    // REQ: FLT-017 — a Kubernetes workload by its name (slashes and all).
+    assert_eq!(
+        d("k8s.example.org", rtype::A, &["media/deploy/jellyfin"]),
+        "block m mod"
+    );
+    assert_eq!(
+        d("k8s.example.org", rtype::A, &["media/deploy/sonarr"]),
+        "none"
+    );
     assert_eq!(d("www.example.edu", rtype::A, &[]), "block m mod");
     assert_eq!(d("mail.example.edu", rtype::A, &[]), "none", "denyallow");
     assert_eq!(

@@ -362,6 +362,27 @@ impl Client {
         req: http::Request<Vec<u8>>,
         max_bytes: u64,
     ) -> Result<http::Response<Vec<u8>>, HttpError> {
+        let (parts, mut body) = self.request_stream(req).await?;
+        let mut data = Vec::new();
+        while let Some(chunk) = body.next_chunk().await {
+            let chunk = chunk?;
+            if data.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(HttpError::fatal(format!(
+                    "response larger than {max_bytes} bytes"
+                )));
+            }
+            data.extend_from_slice(&chunk);
+        }
+        Ok(http::Response::from_parts(parts, data))
+    }
+
+    /// REQ: FLT-017 — sends one request as [`Client::request`] does and returns the response
+    /// head and its body to read as it arrives (a Kubernetes watch). The caller bounds each
+    /// read with a timeout.
+    pub async fn request_stream(
+        &self,
+        req: http::Request<Vec<u8>>,
+    ) -> Result<(http::response::Parts, BodyStream), HttpError> {
         let (parts, body) = req.into_parts();
         let uri = parts.uri.clone();
         let https = match uri.scheme_str() {
@@ -402,20 +423,8 @@ impl Client {
         } else {
             send(TokioIo::new(tcp), req).await?
         };
-        let (parts, mut body) = resp.into_parts();
-        let mut data = Vec::new();
-        while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|e| HttpError::retry(format!("reading body: {e}")))?;
-            if let Some(chunk) = frame.data_ref() {
-                if data.len() as u64 + chunk.len() as u64 > max_bytes {
-                    return Err(HttpError::fatal(format!(
-                        "response larger than {max_bytes} bytes"
-                    )));
-                }
-                data.extend_from_slice(chunk);
-            }
-        }
-        Ok(http::Response::from_parts(parts, data))
+        let (parts, body) = resp.into_parts();
+        Ok((parts, BodyStream(body)))
     }
 
     async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, HttpError> {
@@ -456,6 +465,26 @@ impl Client {
 enum Step {
     Done(Response),
     Redirect(String),
+}
+
+/// A response body read as it arrives ([`Client::request_stream`]).
+#[derive(Debug)]
+pub struct BodyStream(hyper::body::Incoming);
+
+impl BodyStream {
+    /// The next piece of the body; `None` at its end.
+    pub async fn next_chunk(&mut self) -> Option<Result<Bytes, HttpError>> {
+        loop {
+            match self.0.frame().await? {
+                Ok(f) => {
+                    if let Ok(d) = f.into_data() {
+                        return Some(Ok(d));
+                    }
+                }
+                Err(e) => return Some(Err(HttpError::retry(format!("reading body: {e}")))),
+            }
+        }
+    }
 }
 
 async fn send<I, B>(

@@ -62,8 +62,9 @@ kind: L2Advertisement
 metadata: { name: e2e, namespace: metallb-system }
 EOF
 
-# Pull the image on the host once and load it (faster, and works without registry auth).
-docker pull -q "$image" >/dev/null
+# Pull the image on the host once and load it (faster, and works without registry auth). A
+# local build (IMAGE=telltale:dev) is used as is.
+docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
 if [[ "$tool" == kind ]]; then kind load docker-image "$image" --name "$name" >/dev/null
 else k3d image import "$image" -c "$name" >/dev/null; fi
 
@@ -111,3 +112,87 @@ done
 echo "query log client for $marker: ${seen:-<none>}"
 [[ "$seen" == "$gateway" ]] || { echo "FAIL: expected client $gateway (client IP not preserved)"; exit 1; }
 echo "PASS ($tool): DNS via the LoadBalancer, client IP preserved in the query log"
+
+# REQ: FLT-017 (T15.1, AC 6) — Kubernetes workloads as devices: the controller pod (only) gets a
+# token and a read-only ClusterRole; a pod whose dnsConfig points at TelltaleDNS resolves an
+# outside name and a cluster name (forwarded to CoreDNS), and its query is named by its
+# workload. Images older than the feature skip this part.
+# (Captured first: with pipefail, `grep -q` closing the pipe early would fail the check.)
+schema=$(docker run --rm "$image" config schema 2>/dev/null || true)
+if ! grep -q '"kubernetes"' <<<"$schema"; then
+  echo "SKIP: $image predates Kubernetes workloads (FLT-017)"
+  exit 0
+fi
+kubedns=$(k -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')
+helm --kube-context "$ctx" upgrade telltale deploy/helm/telltale -n "$ns" \
+  --set image.repository="${image%:*}" --set image.tag="${image##*:}" --set image.pullPolicy=IfNotPresent \
+  --set kubernetes.enabled=true --set kubernetes.clusterDns="$kubedns" \
+  --set-string config='[[record]]
+name = "e2e.home.arpa"
+type = "A"
+value = "192.0.2.53"
+
+[[upstream]]
+name = "quad9"
+url = "udp://9.9.9.9"
+
+[[upstream_group]]
+name = "default"
+members = ["quad9"]' \
+  --wait --timeout 300s
+k -n "$ns" rollout status sts/telltale --timeout=180s >/dev/null
+[[ "$(k -n "$ns" get pod telltale-0 -o jsonpath='{.spec.automountServiceAccountToken}')" == true ]] \
+  || { echo "FAIL: the controller pod has no service-account token"; exit 1; }
+rules=$(k get clusterrole telltale-workloads -o json | python3 -c 'import json,sys
+r=json.load(sys.stdin)["rules"]
+print(";".join(sorted(",".join(sorted(x["resources"]))+":"+",".join(sorted(x["verbs"])) for x in r)))')
+[[ "$rules" == "namespaces,pods:get,list,watch" ]] || { echo "FAIL: ClusterRole rules: $rules"; exit 1; }
+echo "RBAC: OK (token on the controller only; $rules)"
+
+dnsip=$(k -n "$ns" get svc telltale-dns -o jsonpath='{.spec.clusterIP}')
+k -n default delete pod busybox --ignore-not-found --wait >/dev/null
+k -n default run busybox --image=busybox:1.36 --restart=Never --overrides="{\"spec\":{\"dnsPolicy\":\"None\",\"dnsConfig\":{\"nameservers\":[\"$dnsip\"],\"searches\":[\"default.svc.cluster.local\",\"svc.cluster.local\",\"cluster.local\"],\"options\":[{\"name\":\"ndots\",\"value\":\"5\"}]}}}" -- sleep 3600 >/dev/null
+k -n default wait --for=condition=Ready pod/busybox --timeout=180s >/dev/null
+podip=$(k -n default get pod busybox -o jsonpath='{.status.podIP}')
+
+# The API, for names at read time.
+pf=$(mktemp)
+( while true; do kubectl --context "$ctx" -n "$ns" port-forward svc/telltale-api 18059:8053 >/dev/null 2>&1; sleep 0.5; done ) &
+pfpid=$!
+trap 'kill $pfpid 2>/dev/null || true; cleanup' EXIT
+for _ in $(seq 40); do curl -s -o /dev/null --max-time 1 http://127.0.0.1:18059/api/v1/auth/status && break; sleep 0.5; done
+st=$(k -n "$ns" exec telltale-0 -- cat /var/lib/telltale/setup-token)
+csrf=$(curl -sf -c "$pf" -H 'content-type: application/json' \
+  -d "{\"setupToken\":\"$st\",\"username\":\"admin\",\"password\":\"e2e-password-123\"}" \
+  http://127.0.0.1:18059/api/v1/auth/setup | python3 -c 'import json,sys; print(json.load(sys.stdin)["csrfToken"])') \
+  || { echo "FAIL: couldn't set up the admin"; exit 1; }
+api() { curl -s --max-time 10 -b "$pf" -H "x-csrf-token: $csrf" "http://127.0.0.1:18059/api/v1$1"; }
+seen=""
+for _ in $(seq 60); do
+  seen=$(api /kubernetes/workloads | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(" ".join(w["name"] for w in d.get("items", [])))' 2>/dev/null || true)
+  [[ " $seen " == *" default/pod/busybox "* ]] && break
+  sleep 1
+done
+[[ " $seen " == *" default/pod/busybox "* ]] || { echo "FAIL: busybox isn't in the workload table: $seen"; exit 1; }
+echo "workloads: $seen"
+
+marker="flt017-$RANDOM.example.com"
+k -n default exec busybox -- nslookup e2e.home.arpa >/dev/null || { echo "FAIL: busybox can't resolve e2e.home.arpa"; exit 1; }
+k -n default exec busybox -- nslookup kubernetes.default.svc.cluster.local >/tmp/flt017-ns.txt 2>&1 \
+  || { echo "FAIL: kubernetes.default.svc.cluster.local didn't resolve through CoreDNS"; cat /tmp/flt017-ns.txt; exit 1; }
+k -n default exec busybox -- nslookup one.one.one.one >/dev/null \
+  || { echo "FAIL: busybox can't resolve an outside name through TelltaleDNS"; exit 1; }
+k -n default exec busybox -- nslookup "$marker" >/dev/null 2>&1 || true
+row=""
+for _ in $(seq 30); do
+  row=$(api "/queries?name=$marker&match=exact&limit=5" | python3 -c 'import json,sys
+items=json.load(sys.stdin).get("items", [])
+print(items[0]["client"] + " " + str(items[0].get("clientName")) if items else "")' 2>/dev/null || true)
+  [[ -n "$row" ]] && break
+  sleep 1
+done
+echo "query log row for $marker: ${row:-<none>}"
+[[ "$row" == "$podip default/pod/busybox" ]] || { echo "FAIL: expected '$podip default/pod/busybox'"; exit 1; }
+echo "PASS ($tool): Kubernetes workloads (the pod's own address, named by its workload; cluster names via CoreDNS)"

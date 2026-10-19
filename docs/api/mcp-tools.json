@@ -217,6 +217,75 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Read-only. The Kubernetes workloads TelltaleDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "From the previous page's nextCursor.",
+          "type": "string"
+        },
+        "group": {
+          "description": "Only workloads in this group (none: without one).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Rows (default 200).",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "namespace": {
+          "description": "Only this namespace.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_workloads"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read-only. One Kubernetes workload's profile, by its name (namespace/kind/name, e.g. media/deploy/jellyfin): the workload (group and where it came from, pods, 24-hour counts), its identity (class workload, its pods and labels), its rhythm per domain, and its recent and slow queries across every pod address it held. Recent queries need the querylog:read scope. To change its group, use plan_assign_client with the workload's name as `client`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "namespace/kind/name, or its analytics key (100::…).",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which nodes: cluster (default, every node), site:<name>, node:<name or ID>, or node:local (the node you're connected to). Nodes that don't answer within 2 s are listed in missingNodes.",
+          "type": "string"
+        },
+        "window": {
+          "description": "Start of the window: a relative offset like -1h, -24h, -7d, or an RFC 3339 time. Default -24h.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "get_workload"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Read-only. What kind of device an address is: a guess from its MAC vendor, the names it announces, and the domains it talks to, scored against TelltaleDNS's catalog (e.g. \"Roku player, likely\"), with the evidence (matched domains, vendor, name), a runner-up when close, and suggestedGroup when a group's device_classes asks for that kind. A device's configured kind wins (source override). Give an IP or a named device. Needs analytics:read.",
     "inputSchema": {
       "additionalProperties": false,
@@ -986,12 +1055,12 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. Needs the config:write:clients scope.",
+    "description": "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "client": {
-          "description": "The device's name (new or existing), or an IP.",
+          "description": "The device's name (new or existing), an IP, or a Kubernetes workload (namespace/kind/name).",
           "type": "string"
         },
         "groups": {

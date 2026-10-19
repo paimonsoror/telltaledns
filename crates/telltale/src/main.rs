@@ -29,6 +29,7 @@ mod host;
 mod http;
 mod identify;
 mod import;
+mod kubernetes;
 mod lists;
 mod maintenance;
 mod managed;

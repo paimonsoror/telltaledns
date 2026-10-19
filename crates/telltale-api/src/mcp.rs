@@ -54,7 +54,7 @@ fn s(args: &Value, k: &str) -> Option<String> {
     }
 }
 
-fn enc(v: &str) -> String {
+pub(crate) fn enc(v: &str) -> String {
     let mut out = String::new();
     for b in v.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~:".contains(&b) {
@@ -247,6 +247,54 @@ pub fn tools() -> Vec<Tool> {
                 s(a, "client").ok_or("`client` is required")?;
                 // The device's queries follow in `call_tool`, by its IP.
                 Ok(vec![("devices".into(), "/api/v1/clients".into())])
+            },
+        },
+        // REQ: FLT-017 (T15.1)
+        Tool {
+            name: "list_workloads",
+            description: "Read-only. The Kubernetes workloads TelltaleDNS names as devices: namespace/kind/name (a Deployment's replicas are one device across rollouts), the group and where it came from (pod label, namespace label, map rule, or default group), the pods and their addresses, queries and blocked answers in the last 24 hours (every node's), and when it last asked. Filter by namespace or group (`none` for workloads without one). A workload's name works as `client` in search_queries, get_client_profile, device_timeline, and activity_heatmap. Errors with kubernetes_disabled when the feature is off. Needs analytics:read.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "namespace": {"type": "string", "description": "Only this namespace."},
+                "group": {"type": "string", "description": "Only workloads in this group (none: without one)."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows (default 200)."},
+                "cursor": {"type": "string", "description": "From the previous page's nextCursor."},
+                "scope": scope_schema()
+            }, "additionalProperties": false})
+            },
+            calls: |a| {
+                Ok(vec![(
+                    "workloads".into(),
+                    query(
+                        "/api/v1/kubernetes/workloads",
+                        a,
+                        &[
+                            ("namespace", "namespace"),
+                            ("group", "group"),
+                            ("limit", "limit"),
+                            ("cursor", "cursor"),
+                            ("scope", "scope"),
+                        ],
+                    ),
+                )])
+            },
+        },
+        Tool {
+            name: "get_workload",
+            description: "Read-only. One Kubernetes workload's profile, by its name (namespace/kind/name, e.g. media/deploy/jellyfin): the workload (group and where it came from, pods, 24-hour counts), its identity (class workload, its pods and labels), its rhythm per domain, and its recent and slow queries across every pod address it held. Recent queries need the querylog:read scope. To change its group, use plan_assign_client with the workload's name as `client`.",
+            input_schema: || {
+                json!({"type": "object", "properties": {
+                "name": {"type": "string", "description": "namespace/kind/name, or its analytics key (100::…)."},
+                "window": window_schema(),
+                "scope": scope_schema()
+            }, "required": ["name"], "additionalProperties": false})
+            },
+            calls: |a| {
+                s(a, "name").ok_or("`name` is required")?;
+                Ok(vec![
+                    ("devices".into(), "/api/v1/clients".into()),
+                    ("workloads".into(), "/api/v1/kubernetes/workloads".into()),
+                ])
             },
         },
         // REQ: OBS-025 (T13.3)
@@ -832,10 +880,10 @@ pub fn write_tools() -> Vec<WriteTool> {
         },
         WriteTool {
             name: "plan_assign_client",
-            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. Needs the config:write:clients scope.",
+            description: "Plans a change (nothing changes until apply_plan). Names a device and puts it in groups (highest priority first), or changes a named device's groups or addresses. For a new device give `match` (its IPs, CIDRs, MACs, or id:<client-id>); an IP as `client` is enough. A Kubernetes workload (namespace/kind/name, from list_workloads) keeps its name: this puts it in the first group with a [[kubernetes.map]] rule (a pod or namespace label still wins). Needs the config:write:clients scope.",
             input_schema: || {
                 json!({"type": "object", "properties": {
-                "client": {"type": "string", "description": "The device's name (new or existing), or an IP."},
+                "client": {"type": "string", "description": "The device's name (new or existing), an IP, or a Kubernetes workload (namespace/kind/name)."},
                 "groups": {"type": "array", "items": {"type": "string"}, "description": "Its groups, highest priority first."},
                 "match": {"type": "array", "items": {"type": "string"}, "description": "How to recognize it (default: what it has now, or the IP given as client)."},
                 "kind": {"type": "string", "description": "What kind of device it is (camera, tv, streaming, plug, ... or unknown to stop guessing): wins over identify_device's guess."},
@@ -849,6 +897,23 @@ pub fn write_tools() -> Vec<WriteTool> {
                 let groups = strings(a, "groups");
                 if groups.is_empty() {
                     return Err("`groups` is required (at least one)".into());
+                }
+                // REQ: FLT-017 — a workload's group is a map rule for exactly it.
+                let parts: Vec<&str> = client.split('/').collect();
+                if parts.len() == 3
+                    && parts.iter().all(|p| {
+                        !p.is_empty()
+                            && p.bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.'))
+                    })
+                {
+                    return Ok(Write {
+                        method: "PUT",
+                        path: format!("/api/v1/kubernetes/map/{client}"),
+                        body: Some(json!({"group": groups[0]})),
+                        summary: format!("Put the Kubernetes workload {client} in {}", groups[0]),
+                        merge: None,
+                    });
                 }
                 let body = pick(
                     a,
@@ -2440,9 +2505,29 @@ impl Mcp {
                 out.insert(key, json!({"error": body}));
             }
         }
+        // REQ: FLT-017 — a workload's profile: the workload out of the list.
+        if name == "get_workload"
+            && let Some(c) = s(&args, "name")
+        {
+            let found = out
+                .get("workloads")
+                .and_then(|w| w.get("items"))
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|w| {
+                            w.get("name").and_then(Value::as_str) == Some(c.as_str())
+                                || w.get("key").and_then(Value::as_str) == Some(c.as_str())
+                        })
+                        .cloned()
+                });
+            out.remove("workloads");
+            out.insert("workload".into(), found.unwrap_or(Value::Null));
+        }
         // The device profile picks the device out of the list.
-        if name == "get_client_profile"
-            && let Some(c) = s(&args, "client")
+        if (name == "get_client_profile" || name == "get_workload")
+            && let Some(c) = s(&args, "client").or_else(|| s(&args, "name"))
             && let Some(Value::Array(items)) =
                 out.get("devices").and_then(|d| d.get("items")).cloned()
         {
@@ -2455,8 +2540,9 @@ impl Mcp {
                         .is_some_and(|m| m.iter().any(|x| x.as_str() == Some(c.as_str())))
             });
             out.remove("devices");
-            // The query log filters by address: the IP given, or the device's first one.
-            let ip = if c.parse::<std::net::IpAddr>().is_ok() {
+            // The query log filters by address: the IP given, or the device's first one; a
+            // Kubernetes workload (`ns/kind/name`) by its name (FLT-017).
+            let ip = if c.parse::<std::net::IpAddr>().is_ok() || c.split('/').count() == 3 {
                 Some(c.clone())
             } else {
                 found
@@ -2889,5 +2975,30 @@ mod tests {
         assert_eq!(g.body.unwrap()["block_mode"], "nxdomain");
         assert_eq!(g.merge, Some(("group", "kids".to_owned())));
         assert!((find("pause_blocking").write)(&json!({})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod flt_017_tests {
+    use super::*;
+
+    // REQ: FLT-017 — assigning a workload plans a map rule for exactly it; a device stays a
+    // device.
+    #[test]
+    fn flt_017_assigning_a_workload_plans_a_map_rule() {
+        let t = write_tools()
+            .into_iter()
+            .find(|t| t.name == "plan_assign_client")
+            .unwrap();
+        let w = (t.write)(
+            &json!({"client": "media/deploy/jellyfin", "groups": ["iot", "x"], "reason": "r"}),
+        )
+        .unwrap();
+        assert_eq!(w.path, "/api/v1/kubernetes/map/media/deploy/jellyfin");
+        assert_eq!(w.body, Some(json!({"group": "iot"})));
+        let w = (t.write)(&json!({"client": "tv", "groups": ["iot"], "reason": "r"})).unwrap();
+        assert_eq!(w.path, "/api/v1/clients/tv");
+        assert!(tools().iter().any(|t| t.name == "list_workloads"));
+        assert!(tools().iter().any(|t| t.name == "get_workload"));
     }
 }

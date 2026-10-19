@@ -41,6 +41,8 @@ pub struct Filter {
     pub name: Option<NameMatch>,
     /// Client address (v4-mapped).
     pub client_ip: Option<[u8; 16]>,
+    /// REQ: FLT-017 — any of these client addresses (a Kubernetes workload's pods); empty: any.
+    pub client_any: Vec<[u8; 16]>,
     pub client_ref: Option<u32>,
     pub group: Option<u16>,
     pub status: Vec<Status>,
@@ -255,6 +257,8 @@ struct Plan<'a> {
     name: Option<NamePred>,
     /// Bloom keys every candidate block must (maybe) contain.
     keys: Vec<u64>,
+    /// Bloom keys of which a candidate block must (maybe) contain one (FLT-017).
+    any_keys: Vec<u64>,
     /// Predicate columns besides time, name, and client.
     cols: Vec<Col>,
 }
@@ -305,6 +309,7 @@ pub fn search_with(
         to_us: if f.to_us == 0 { u64::MAX } else { f.to_us },
         name,
         keys,
+        any_keys: f.client_any.iter().map(format::client_key).collect(),
         cols: predicate_columns(f),
     };
     let mut segments: Vec<(SegmentId, std::path::PathBuf)> = list_segments(dir)?
@@ -437,6 +442,7 @@ pub fn estimate(dir: &Path, f: &Filter) -> io::Result<Estimate> {
     let name_key = name.as_ref().and_then(NamePred::bloom_key);
     let mut keys: Vec<u64> = name_key.into_iter().collect();
     keys.extend(f.client_ip.as_ref().map(format::client_key));
+    let any_keys: Vec<u64> = f.client_any.iter().map(format::client_key).collect();
     let to_us = if f.to_us == 0 { u64::MAX } else { f.to_us };
     let mut e = Estimate::default();
     for (id, path) in list_segments(dir)? {
@@ -455,7 +461,10 @@ pub fn estimate(dir: &Path, f: &Filter) -> io::Result<Estimate> {
         }
         let before = e.blocks;
         for (_, h) in &seg.blocks {
-            if block_may_match(h, f, to_us) && keys.iter().all(|&k| h.bloom_may_contain(k)) {
+            if block_may_match(h, f, to_us)
+                && keys.iter().all(|&k| h.bloom_may_contain(k))
+                && (any_keys.is_empty() || any_keys.iter().any(|&k| h.bloom_may_contain(k)))
+            {
                 e.blocks += 1;
                 e.rows += u64::from(h.rows);
             }
@@ -527,7 +536,10 @@ fn search_segment(
         .rev()
         .filter(|&i| {
             let h = &seg.blocks[i].1;
-            block_may_match(h, f, plan.to_us) && plan.keys.iter().all(|&k| h.bloom_may_contain(k))
+            block_may_match(h, f, plan.to_us)
+                && plan.keys.iter().all(|&k| h.bloom_may_contain(k))
+                && (plan.any_keys.is_empty()
+                    || plan.any_keys.iter().any(|&k| h.bloom_may_contain(k)))
         })
         .collect();
     if candidates.is_empty() {
@@ -536,16 +548,20 @@ fn search_segment(
     // The dictionary is read only when a predicate needs it, or for the first match's name.
     let mut dict: Option<Dictionary> = None;
     let (mut names, mut clients): (IdSet, IdSet) = (None, None);
-    if plan.name.is_some() || f.client_ip.is_some() {
+    if plan.name.is_some() || f.client_ip.is_some() || !f.client_any.is_empty() {
         let d = seg.dictionary()?;
         page.stats.dictionaries += 1;
         names = plan
             .name
             .as_ref()
             .map(|p| d.names().map(|n| p.matches(n, &mut s.dotted)).collect());
-        clients = f
-            .client_ip
-            .map(|ip| d.clients.iter().map(|c| *c == ip).collect());
+        clients = match f.client_ip {
+            Some(ip) => Some(d.clients.iter().map(|c| *c == ip).collect()),
+            None if !f.client_any.is_empty() => {
+                Some(d.clients.iter().map(|c| f.client_any.contains(c)).collect())
+            }
+            None => None,
+        };
         if !any(&names) || !any(&clients) {
             return Ok(false);
         }

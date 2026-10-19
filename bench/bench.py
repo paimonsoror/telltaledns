@@ -649,6 +649,7 @@ def cmd_sustain(args):
         before = (metric_sum(url, "telltale_telemetry_events_total") or 0,
                   metric_sum(url, "telltale_telemetry_dropped_total") or 0,
                   metric_sum(url, "telltale_queries_total") or 0)
+        cpu_before = (proc_stats(server.pid) or {}).get("cpu_s", 0.0)
         run = parse_dnsperf(dnsperf(target, path, args.duration, **common, max_qps=args.rate))
         time.sleep(0.5)  # let deferred answers and the aggregator catch up
         after = (metric_sum(url, "telltale_telemetry_events_total") or 0,
@@ -662,15 +663,20 @@ def cmd_sustain(args):
         stop(stub, "stub upstream")
         tmp.cleanup()
     events, dropped, queries = (a - b for a, b in zip(after, before))
+    # The server's CPU over the measured run (and the 0.5 s after it), as a share of one core.
+    cpu_s = round(stats.get("cpu_s", 0.0) - cpu_before, 2)
+    cpu_pct = round(100 * cpu_s / (args.duration + 0.5), 1)
     summary = {"corpus": args.corpus, "corpus_sha256": digest, "rate": args.rate, "duration": args.duration,
                "qps": run.get("qps"), "loss_pct": run.get("loss_pct"), "latency_us": run.get("latency_us"),
                "queries": queries, "events": events, "dropped": dropped,
-               "rss_kib": stats.get("rss_kib"), "peak_rss_kib": stats.get("hwm_kib")}
+               "rss_kib": stats.get("rss_kib"), "peak_rss_kib": stats.get("hwm_kib"),
+               "cpu_s": cpu_s, "cpu_pct_of_core": cpu_pct}
     print(json.dumps(summary), file=sys.stdout)
     ok = dropped == 0 and (run.get("loss_pct") or 0) == 0 and events >= queries
     print(f"sustained {run.get('qps', 0):.0f} qps for {args.duration} s: {queries:.0f} queries, "
           f"{events:.0f} events (incl. upstream), {dropped:.0f} dropped, loss {run.get('loss_pct')}%; "
-          f"RSS {stats.get('rss_kib', 0) // 1024} MiB -> {'PASS' if ok else 'FAIL'}", file=sys.stderr)
+          f"RSS {stats.get('rss_kib', 0) // 1024} MiB, CPU {cpu_pct}% of a core -> {'PASS' if ok else 'FAIL'}",
+          file=sys.stderr)
     return 0 if ok else 1
 
 

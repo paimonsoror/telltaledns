@@ -159,9 +159,13 @@ impl EventSinks {
             .then(|| {
                 let v6 = std::net::Ipv6Addr::from(ev.client_ip);
                 let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
-                let id = policy
-                    .clients
-                    .identify(ip, None, None, &self.pipeline.neighbors);
+                let id = policy.clients.identify(
+                    ip,
+                    None,
+                    None,
+                    &self.pipeline.neighbors,
+                    &self.pipeline.workloads,
+                );
                 policy.clients.client(id).map(|c| c.name.to_string())
             })
             .flatten();

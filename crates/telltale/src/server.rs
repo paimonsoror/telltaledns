@@ -646,7 +646,7 @@ fn restart_only_changes(old: &Config, new: &Config) -> Vec<&'static str> {
 
 /// REQ: OBS-003 — the query-log writer, fed by the aggregator thread. A failure to start
 /// it is logged and DNS carries on without a query log (`spec/02` §8.5).
-fn query_log(
+pub(crate) fn query_log(
     cfg: &Config,
 ) -> (
     Option<Box<dyn telltale_telemetry::ring::Sink>>,
@@ -894,6 +894,14 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     let extra =
         Some(Box::new(crate::tail::Fanout(extra)) as Box<dyn telltale_telemetry::ring::Sink>);
     let sink = crate::tail::combine(qlog, tail.as_deref(), extra);
+    // REQ: FLT-017 (ADR-150) — with Kubernetes on, the analytics wait briefly for pod addresses
+    // from the first query, before the first table arrives, and the workloads' counts carry on.
+    if crate::kubernetes::wanted(&cfg) {
+        pipeline
+            .telemetry
+            .set_workload_keys(Some(telltale_telemetry::workload::Keys::new()));
+        crate::kubernetes::restore_counts(cfg.node.data_dir.as_str(), &pipeline.telemetry);
+    }
     let _aggregator = pipeline
         .telemetry
         .spawn_aggregator(Duration::from_millis(25), sink)?;
@@ -1069,6 +1077,12 @@ pub(crate) async fn serve(files: Vec<PathBuf>, cfg: Config) -> io::Result<()> {
     // REQ: CLU-002 (ADR-125) — the device names the other nodes know, so every node names a
     // client the same way.
     tokio::spawn(crate::devices::run(
+        Arc::clone(&sources),
+        http_stopped.clone(),
+    ));
+    // REQ: FLT-017 — Kubernetes workloads: the watcher (on its own thread) or the table from
+    // the cluster; never on the DNS path.
+    tokio::spawn(crate::kubernetes::run(
         Arc::clone(&sources),
         http_stopped.clone(),
     ));
@@ -1392,6 +1406,9 @@ async fn reload(
     sources.config.store(Arc::new(new.clone()));
     sources.file_config.store(Arc::new(file));
     *current = new;
+    // REQ: FLT-017 — a `[[kubernetes.map]]` rule or a group change reaches the workload table
+    // before the next query, not on the watcher's next tick.
+    sources.pipeline.kube.reconfigured.notify_one();
     info!("configuration reloaded");
     true
 }

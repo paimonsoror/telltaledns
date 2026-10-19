@@ -23,7 +23,7 @@ import tempfile
 
 SITE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SITE)
-PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "tour.html",
+PAGES = ["index.html", "start.html", "install.html", "how-it-works.html", "groups.html", "agents.html", "monitoring.html", "kubernetes-workloads.html", "tour.html",
          # ADR-122 — the Guides menu.
          "guides.html", "guide-settings.html", "guide-cluster.html", "guide-kubernetes.html", "guide-upgrades.html",
          "guide-blocking.html", "guide-devices.html", "guide-encrypted.html", "guide-changes.html", "guide-monitoring.html",

@@ -12,6 +12,10 @@ metadata:
   {{- end }}
 spec:
   type: {{ $dns.type }}
+  {{- with $dns.clusterIP }}
+  # REQ: FLT-017 — a fixed address for the kubelet's cluster DNS.
+  clusterIP: {{ . }}
+  {{- end }}
   {{- if ne $dns.type "ClusterIP" }}
   externalTrafficPolicy: {{ $dns.externalTrafficPolicy }}
   {{- end }}

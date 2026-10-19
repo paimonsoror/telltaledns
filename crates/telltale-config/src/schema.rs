@@ -70,6 +70,9 @@ pub struct Config {
     /// REQ: OBS-025 (T13.3) — what kind of device each address is, guessed from its MAC
     /// vendor, the names it announces, and the domains it talks to.
     pub identify: IdentifyConfig,
+    /// REQ: FLT-017 (T15.1) — Kubernetes workloads as devices: the controller watches pods
+    /// and names each pod address by its workload (`media/deploy/jellyfin`).
+    pub kubernetes: KubernetesConfig,
     /// REQ: DNS-005 — settings of the DNS answers themselves.
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
@@ -135,6 +138,7 @@ impl Default for Config {
             exclusions: ExclusionsConfig::default(),
             simulate: SimulateConfig::default(),
             identify: IdentifyConfig::default(),
+            kubernetes: KubernetesConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
@@ -892,6 +896,82 @@ impl Default for IdentifyConfig {
         }
     }
 }
+
+/// REQ: FLT-017 (T15.1, ADR-150) — Kubernetes workloads as devices. Shared by the whole
+/// cluster; only a node running in a pod with a service-account token (the Helm chart's
+/// controller) watches the API server, and every other node gets its table over the cluster
+/// channel. Elsewhere `enabled = true` does nothing (one `info` line).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct KubernetesConfig {
+    /// Watch pods and namespaces (read-only) and name pod addresses by their workload.
+    pub enabled: bool,
+    /// Namespaces to watch; empty: all.
+    pub namespaces: Vec<SafeString>,
+    /// Namespaces never watched (their pods stay plain addresses).
+    pub exclude_namespaces: Vec<SafeString>,
+    /// The group of a workload no label or map rule places; empty: its network's group, or
+    /// `default`, as for any unknown device.
+    pub default_group: SafeString,
+    /// The pod or namespace label that names a workload's group.
+    pub label: SafeString,
+    /// Groups by namespace (and optionally kind and name), first match wins, after the
+    /// labels and before `default_group`.
+    pub map: Vec<KubernetesMapRule>,
+}
+
+impl Default for KubernetesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            namespaces: Vec::new(),
+            exclude_namespaces: Vec::new(),
+            default_group: SafeString::default(),
+            label: SafeString::from("telltaledns.io/group"),
+            map: Vec::new(),
+        }
+    }
+}
+
+/// REQ: FLT-017 — one `[[kubernetes.map]]` rule: a workload whose namespace matches the glob
+/// (`media*`, `*`), and kind and name when given, is in `group`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KubernetesMapRule {
+    /// Namespace glob (`*` matches any run of characters).
+    pub namespace: SafeString,
+    /// `deploy`, `sts`, `ds`, `job`, `cronjob`, `rs`, or `pod`; empty: any.
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub kind: SafeString,
+    /// One workload's name; empty: any.
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub name: SafeString,
+    /// The group (it must exist).
+    pub group: SafeString,
+}
+
+impl KubernetesMapRule {
+    /// The rule's key, `namespace/kind/name` with `*` for what it leaves open: how the API
+    /// names a rule (`/api/v1/kubernetes/map/{key}`).
+    pub fn key(&self) -> String {
+        let or_any = |s: &SafeString| {
+            if s.is_empty() {
+                "*".to_owned()
+            } else {
+                s.as_str().to_owned()
+            }
+        };
+        format!(
+            "{}/{}/{}",
+            self.namespace.as_str(),
+            or_any(&self.kind),
+            or_any(&self.name)
+        )
+    }
+}
+
+/// REQ: FLT-017 — the workload kinds a map rule may name.
+pub const WORKLOAD_KINDS: &[&str] = &["deploy", "sts", "ds", "job", "cronjob", "rs", "pod"];
 
 /// REQ: FLT-011 (T7.11) — YouTube Restricted Mode for a group with safe search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]

@@ -2663,3 +2663,66 @@ test('clu_002 the footer names the node and its role', async () => {
   }
   await page.reload();
 });
+
+// REQ: FLT-017 (T15.1, AC 7) — Kubernetes workloads as devices, from the server's fixture (no
+// API server): the Workloads tab with each group's origin, the chip's glyph and pod, and "Add
+// to group…" writing a rule (dry run first) that the workload's next query follows.
+test('flt_017 workloads', async () => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  for (const ip of ['127.0.0.81', '127.0.0.82', '127.0.0.83']) await query('nas.e2e.test', 1, 15354, ip);
+  await page.goto('/#/clients?tab=workloads');
+  const rows = page.getByTestId('workload-row');
+  await expect(rows).toHaveCount(3);
+  const jellyfin = rows.filter({ hasText: 'media/deploy/jellyfin' });
+  await expect(jellyfin.getByTestId('group-from')).toHaveText('network group');
+  await expect(rows.filter({ hasText: 'db/sts/postgres' }).getByTestId('group-from')).toHaveText('pod label');
+  await expect(rows.filter({ hasText: 'kube-system/ds/cilium' }).getByTestId('group-from')).toHaveText('namespace label');
+  await expect(jellyfin.locator('td').first()).toHaveAttribute('title', 'Deployment');
+  // Filter by namespace.
+  await page.getByTestId('workload-namespace').selectOption('db');
+  await expect(rows).toHaveCount(1);
+  await page.getByTestId('workload-namespace').selectOption('');
+  // In the query log: the pod's address, named by its workload, with the glyph and the pod.
+  await page.goto('/#/queries?client=127.0.0.81');
+  const chip = page.getByTestId('workload-chip').first();
+  await expect(chip).toContainText('media/deploy/jellyfin');
+  await expect(chip.getByLabel('Kubernetes workload')).toBeVisible();
+  await expect(chip).toHaveAttribute('title', /pod jellyfin-6c9f7b-abcde/);
+  // Kubernetes names it; "Add to group…" previews, then writes a rule.
+  await chip.click();
+  await expect(page.getByRole('menuitem', { name: /Name this device/ })).toBeDisabled();
+  await page.getByRole('menuitem', { name: 'Add to group…' }).click();
+  const form = page.getByTestId('workload-group-form');
+  await form.getByLabel('Group').selectOption('ipv6only');
+  await expect(form.getByRole('button', { name: 'Save' })).toHaveCount(0);
+  await form.getByRole('button', { name: 'Preview' }).click();
+  await expect(form.getByTestId('workload-dry-run')).toContainText('next query');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(form.getByRole('status')).toContainText('Saved');
+  await page.keyboard.press('Escape');
+  // A query from any of its pods is then in that group (each try asks again: the table is
+  // rebuilt right after the reload, a few milliseconds after the API answers).
+  await expect
+    .poll(
+      async () => {
+        await query('flt017.nas.e2e.test', 1, 15354, '127.0.0.82').catch(() => -1);
+        const r = await page.request.get('/api/v1/queries?name=flt017.nas.e2e.test&match=exact&limit=1');
+        const row = (await r.json()).items?.[0];
+        return row ? `${row.group} ${row.clientName}` : '';
+      },
+      { timeout: 20_000 },
+    )
+    .toBe('ipv6only media/deploy/jellyfin');
+  await page.goto('/#/clients?tab=workloads');
+  await expect(page.getByTestId('workload-row').filter({ hasText: 'media/deploy/jellyfin' }).getByTestId('group-from')).toHaveText('rule');
+  // The Groups page lists it under its new group.
+  await page.goto('/#/groups');
+  await expect(page.getByTestId('group-card').filter({ hasText: 'ipv6only' }).getByTestId('group-workloads')).toContainText(
+    'media/deploy/jellyfin',
+  );
+  // Explain says so.
+  const e = await (await page.request.get('/api/v1/explain?name=example.org&client=media/deploy/jellyfin')).json();
+  expect(e.client.identifiedBy).toBe('kubernetes');
+  expect(e.client.workload).toMatchObject({ name: 'media/deploy/jellyfin', groupFrom: 'map' });
+});

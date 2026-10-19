@@ -626,7 +626,13 @@ impl Decider {
         };
         let state = self.state(row.ts_s);
         let clients: &ClientTable = &self.policy.clients;
-        let mut ident = clients.identify(row.ip, None, None, empty_neighbors());
+        let mut ident = clients.identify(
+            row.ip,
+            None,
+            None,
+            empty_neighbors(),
+            telltale_policy::Workloads::none(),
+        );
         // A device identified by MAC or client ID when it asked can't be identified again by
         // its address alone: it keeps the group the query was logged with.
         if ident.source == IdSource::Default
@@ -691,7 +697,14 @@ impl Decider {
         // A list's `$dnsrewrite` decides before blocking (the pipeline's own function; a
         // replay never sees a pause).
         for f in filters {
-            if let Some((_, list)) = f.list_rewrite(&q, |_| ident, row.ip, None, never_paused()) {
+            if let Some((_, list)) = f.list_rewrite(
+                &q,
+                |_| ident,
+                row.ip,
+                None,
+                never_paused(),
+                telltale_policy::Workloads::none(),
+            ) {
                 let n = f
                     .list_names
                     .get(usize::from(list))
@@ -1198,7 +1211,13 @@ impl Replay<'_> {
 /// The group a device belongs to under the candidate (for `byGroup`).
 fn cand_group(d: &Decider, ip: IpAddr, logged: Option<&str>) -> String {
     let clients = &d.policy.clients;
-    let ident = clients.identify(ip, None, None, empty_neighbors());
+    let ident = clients.identify(
+        ip,
+        None,
+        None,
+        empty_neighbors(),
+        telltale_policy::Workloads::none(),
+    );
     if ident.source == IdSource::Default
         && ident.net.is_none()
         && let Some(g) = logged
@@ -1316,8 +1335,20 @@ fn devices_only_inner(inputs: &Inputs, started: Instant) -> Result<Tally, Proble
     scan(&inputs.dirs, &inputs.window, started, &mut tally, |r, t| {
         let ip = Ipv6Addr::from(r.client_ip).to_canonical();
         let same = *alike.entry(ip).or_insert_with(|| {
-            let b = base.group_names(base.identify(ip, None, None, empty_neighbors()));
-            let c = cand.group_names(cand.identify(ip, None, None, empty_neighbors()));
+            let b = base.group_names(base.identify(
+                ip,
+                None,
+                None,
+                empty_neighbors(),
+                telltale_policy::Workloads::none(),
+            ));
+            let c = cand.group_names(cand.identify(
+                ip,
+                None,
+                None,
+                empty_neighbors(),
+                telltale_policy::Workloads::none(),
+            ));
             b == c
                 || (b.len() == c.len()
                     && b.iter().zip(c).all(|(x, y)| {

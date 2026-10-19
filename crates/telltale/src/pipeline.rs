@@ -430,6 +430,7 @@ impl FilterState {
         ip: IpAddr,
         client_id: Option<&str>,
         pause: &Pause,
+        workloads: &telltale_policy::Workloads,
     ) -> Option<(telltale_filter::rewrite::ListRewrite, u16)> {
         if !self.matcher.has_rewrites() {
             return None;
@@ -438,14 +439,37 @@ impl FilterState {
         if pause.is_paused(&self.clients.primary_group(ident).name, unix_now) {
             return None;
         }
+        let wl = workload_table(ident, workloads);
         let client = ClientCtx {
             ip,
-            name: self.clients.client(ident).map(|c| &*c.name),
+            name: client_name(&self.clients, ident, wl.as_deref().map(Arc::as_ref), ip),
             client_id,
         };
         self.matcher
             .rewrites(q.qname.as_wire(), q.qtype, &client, self.mask(ident))
     }
+}
+
+/// REQ: FLT-017 — the workload table, loaded only for a query a workload asked.
+pub(crate) fn workload_table(
+    ident: Identity,
+    workloads: &telltale_policy::Workloads,
+) -> Option<arc_swap::Guard<Arc<telltale_policy::WorkloadTable>>> {
+    (ident.source == telltale_policy::IdSource::Workload).then(|| workloads.load())
+}
+
+/// The name `$client` rules see: a configured device's name, or a workload's text form
+/// (`media/deploy/jellyfin`, FLT-017).
+pub(crate) fn client_name<'a>(
+    clients: &'a ClientTable,
+    ident: Identity,
+    workloads: Option<&'a telltale_policy::WorkloadTable>,
+    ip: IpAddr,
+) -> Option<&'a str> {
+    clients
+        .client(ident)
+        .map(|c| &*c.name)
+        .or_else(|| workloads.and_then(|t| t.get(ip)).map(|h| &*h.workload.text))
 }
 
 thread_local! {
@@ -508,6 +532,10 @@ pub(crate) struct Pipeline {
     filter_lock: std::sync::Mutex<()>,
     /// IP → MAC from the kernel neighbor table (FLT-006), refreshed by the server.
     pub(crate) neighbors: Arc<Neighbors>,
+    /// REQ: FLT-017 — pod addresses → Kubernetes workloads, from the controller.
+    pub(crate) workloads: Arc<telltale_policy::Workloads>,
+    /// REQ: FLT-017 — the Kubernetes watcher's (or the peer side's) status and counters.
+    pub(crate) kube: Arc<crate::kubernetes::Kube>,
     /// Blocking paused globally or per group (FLT-009). Kept across reloads.
     pub(crate) pause: Pause,
     /// REQ: FLT-010 (T7.10) — schedules on now (the ticker in `server` updates it).
@@ -598,6 +626,8 @@ impl Pipeline {
             filter: ArcSwapOption::empty(),
             filter_lock: std::sync::Mutex::new(()),
             neighbors: Arc::new(Neighbors::default()),
+            workloads: Arc::default(),
+            kube: Arc::default(),
             pause: Pause::default(),
             schedules: arc_swap::ArcSwap::from_pointee(ScheduleNow::default()),
             dnstap: std::sync::OnceLock::new(),
@@ -707,6 +737,7 @@ impl Pipeline {
             dynamic: &dynamic,
             filter: filter.as_deref(),
             neighbors: &self.neighbors,
+            workloads: &self.workloads,
             pause: &self.pause,
             schedules: &schedules,
         };
@@ -831,6 +862,7 @@ impl Pipeline {
             who.client_id.as_ref().map(telltale_net::ClientId::as_str),
             who.mac,
             &self.neighbors,
+            &self.workloads,
         );
         oc.client_ref = ident.client.map_or(0, |c| u32::from(c) + 1);
         oc.group = st
@@ -982,6 +1014,7 @@ impl Pipeline {
             who.client_id.as_ref().map(telltale_net::ClientId::as_str),
             who.mac,
             &self.neighbors,
+            &self.workloads,
         );
         let g = policy.clients.primary_group(ident);
         g.dns64.map(|p| (p, g.dns64_exclude.clone()))
@@ -1230,10 +1263,19 @@ impl Pipeline {
         let client_id = who.client_id.as_ref().map(telltale_net::ClientId::as_str);
         f.list_rewrite(
             q,
-            |clients| clients.identify(who.peer, client_id, who.mac, &self.neighbors),
+            |clients| {
+                clients.identify(
+                    who.peer,
+                    client_id,
+                    who.mac,
+                    &self.neighbors,
+                    &self.workloads,
+                )
+            },
             who.peer,
             client_id,
             &self.pause,
+            &self.workloads,
         )
     }
 
@@ -1679,14 +1721,16 @@ impl Pipeline {
             who.client_id.as_ref().map(telltale_net::ClientId::as_str),
             who.mac,
             &self.neighbors,
+            &self.workloads,
         );
         let group = f.clients.primary_group(ident);
         if self.pause.is_paused(&group.name, unix_now) {
             return None;
         }
+        let wl = workload_table(ident, &self.workloads);
         let client = ClientCtx {
             ip: who.peer,
-            name: f.clients.client(ident).map(|c| &*c.name),
+            name: client_name(&f.clients, ident, wl.as_deref().map(Arc::as_ref), who.peer),
             client_id: who.client_id.as_ref().map(telltale_net::ClientId::as_str),
         };
         let decision = FILTER_SCRATCH.with(|s| {
@@ -1831,6 +1875,7 @@ impl Pipeline {
                     who.client_id.as_ref().map(telltale_net::ClientId::as_str),
                     who.mac,
                     &self.neighbors,
+                    &self.workloads,
                 );
                 st.policy.clients.primary_group(ident)
             })
@@ -1873,6 +1918,7 @@ impl Pipeline {
                     who.client_id.as_ref().map(telltale_net::ClientId::as_str),
                     who.mac,
                     &self.neighbors,
+                    &self.workloads,
                 );
                 if let Some(m) = self.quick_decision(&st.policy, target.as_wire(), ident, who) {
                     if m.allow {
@@ -2652,6 +2698,48 @@ impl QueryHandler for Handler {
                 }
             }
         });
+    }
+}
+
+/// Pipelines and queries for other modules' tests.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use std::sync::Arc;
+
+    use telltale_cache::{Cache, CachePolicy};
+    use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
+
+    use super::{Handler, Pipeline, Policy, Settings};
+
+    /// A pipeline over `cfg` (no filter snapshot).
+    pub(crate) fn pipeline_from(cfg: &telltale_config::Config) -> Arc<Pipeline> {
+        let (local, _) = telltale_policy::LocalData::from_config(cfg);
+        Pipeline::new(
+            Settings::default(),
+            Arc::new(Cache::new(CachePolicy::default())),
+            Arc::new(telltale_upstream::Router::from_config(cfg).unwrap_or_default()),
+            Policy::from_config(cfg, local),
+        )
+    }
+
+    /// Whether `name` (A) from `client` is answered at once (without an upstream).
+    pub(crate) fn answer(p: &Arc<Pipeline>, name: &str, client: &str) -> bool {
+        let n = telltale_proto::NameBuf::from_presentation(name).unwrap();
+        let mut q = [0u8; 512];
+        let len =
+            telltale_proto::build_query(&mut q, 7, &n, telltale_proto::rtype::A, 1, true, None)
+                .unwrap();
+        let meta = RequestMeta {
+            peer: format!("{client}:1000").parse().unwrap(),
+            local: None,
+            transport: Transport::Udp,
+            client_id: None,
+        };
+        let mut out = [0u8; 4096];
+        matches!(
+            Handler(Arc::clone(p)).handle(&q[..len], &meta, &mut out),
+            Response::Ready(l) if l > 12
+        )
     }
 }
 

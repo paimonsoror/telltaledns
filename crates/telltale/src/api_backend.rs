@@ -25,13 +25,84 @@ use telltale_upstream::health::Breaker;
 
 use crate::http::Sources;
 
+/// REQ: FLT-017, API-010 — the name of the device at `ip` (v4-mapped) when a query-log row from
+/// `ts_s` was made: a reused pod address is named by the workload that held it then. Every
+/// other address (and a pod address the history doesn't cover) is named as [`device_name`].
+pub(crate) fn device_name_at(src: &Sources, ip: [u8; 16], ts_s: u64) -> Option<String> {
+    let t = src.pipeline.workloads.load();
+    if t.has_any() {
+        let v6 = std::net::Ipv6Addr::from(ip);
+        let addr = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
+        if let Some(name) = t.name_at(addr, ts_s) {
+            return Some(name.to_owned());
+        }
+    }
+    drop(t);
+    device_name(src, ip)
+}
+
+/// REQ: FLT-017 — a workload that has no pods now, from its text form: no group, no pods.
+pub(crate) fn past_workload(
+    text: &str,
+    key: &[u8; 16],
+) -> Option<telltale_api::model::WorkloadInfo> {
+    let mut parts = text.splitn(3, '/');
+    let (ns, kind, name) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(telltale_api::model::WorkloadInfo {
+        name: text.to_owned(),
+        namespace: ns.to_owned(),
+        kind: kind.to_owned(),
+        workload_name: name.to_owned(),
+        key: std::net::Ipv6Addr::from(*key).to_string(),
+        group: None,
+        group_from: "none".to_owned(),
+        ..telltale_api::model::WorkloadInfo::default()
+    })
+}
+
+/// REQ: FLT-017 — the stretches a workload (its text form or analytics key) held each pod
+/// address, v4-mapped; `None` when `client` isn't a workload.
+pub(crate) fn workload_spans(src: &Sources, client: &str) -> Option<Vec<([u8; 16], u64, u64)>> {
+    let t = src.pipeline.workloads.load();
+    let text = crate::kubernetes::workload_ref(client, &t)?;
+    Some(
+        t.spans_of(&text)
+            .into_iter()
+            .map(|(ip, f, to)| (mapped(ip), f, to))
+            .collect(),
+    )
+}
+
 /// The current name of the device at `ip` (v4-mapped), by today's client table.
 pub(crate) fn device_name(src: &Sources, ip: [u8; 16]) -> Option<String> {
+    // REQ: FLT-017 — a workload's analytics key, or a pod address, is named by the workload.
+    if telltale_telemetry::workload::is_key(&ip) {
+        return src
+            .pipeline
+            .workloads
+            .load()
+            .key_name(&ip)
+            .map(str::to_owned);
+    }
     let v6 = std::net::Ipv6Addr::from(ip);
     let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
     let state = src.pipeline.current();
     let clients = &state.policy.clients;
-    let id = clients.identify(ip, None, None, &src.pipeline.neighbors);
+    let id = clients.identify(
+        ip,
+        None,
+        None,
+        &src.pipeline.neighbors,
+        &src.pipeline.workloads,
+    );
+    if id.source == telltale_policy::IdSource::Workload {
+        return src
+            .pipeline
+            .workloads
+            .load()
+            .get(ip)
+            .map(|h| h.workload.text.to_string());
+    }
     clients.client(id).map(|c| c.name.to_string()).or_else(|| {
         // REQ: T8.2 — an unnamed device is called by the name its router's DHCP knows.
         let IpAddr::V4(v4) = ip else { return None };
@@ -422,6 +493,9 @@ fn stale_days(
     (days >= limit).then_some(days)
 }
 
+/// REQ: FLT-017 — most pod addresses one workload's query-log search covers.
+const MAX_WORKLOAD_ADDRESSES: usize = 64;
+
 fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter, Problem> {
     let name = q
         .name
@@ -436,7 +510,10 @@ fn qlog_filter(q: &QueryParams, from_us: u64, to_us: u64) -> Result<qlog::Filter
     let client_ip = match &q.client {
         None => None,
         Some(c) => Some(mapped(c.parse::<IpAddr>().map_err(|_| {
-            Problem::invalid(format!("`client`: `{c}` is not an IP address"))
+            Problem::invalid(format!(
+                "`client`: `{c}` is not an IP address or a Kubernetes workload"
+            ))
+            .hint("Give an address, or a workload as namespace/kind/name (GET /api/v1/kubernetes/workloads).")
         })?)),
     };
     let status = csv(q.status.as_ref())
@@ -514,7 +591,7 @@ impl ApiBackend {
                     client: telltale_telemetry::agg::client_text(r.client_ip),
                     // REQ: API-010 — names are resolved now, from the address, so naming or
                     // renaming a device relabels its history without rewriting the log.
-                    client_name: device_name(&self.src, r.client_ip),
+                    client_name: device_name_at(&self.src, r.client_ip, r.ts_us / 1_000_000),
                     node: node.map(str::to_owned),
                     group: groups.get(usize::from(r.group)).map(|g| g.name.to_string()),
                     name: r.name.clone(),
@@ -541,6 +618,7 @@ impl ApiBackend {
                 rows_scanned: page.stats.rows_scanned,
             },
             missing_nodes: Vec::new(),
+            client_truncated: false,
         })
     }
 
@@ -1127,7 +1205,7 @@ impl Backend for ApiBackend {
             .map(|g| g.name.to_string())
             .collect();
         let src = Arc::clone(&self.src);
-        let filter = crate::tail::Filter::parse(p, &groups)?;
+        let filter = crate::tail::Filter::parse(p, &groups, &self.src.pipeline.workloads)?;
         let (events, slot) = tail.subscribe().ok_or_else(|| {
             Problem::unavailable(format!(
                 "too many live tails on this node (at most {})",
@@ -1185,7 +1263,41 @@ impl Backend for ApiBackend {
                 ),
             );
         }
-        let mut filter = qlog_filter(q, from_us, to_us)?;
+        // REQ: FLT-017 — `client` may name a Kubernetes workload (its text form or analytics
+        // key): the search covers the addresses it held in the window.
+        let workload = q
+            .client
+            .as_deref()
+            .and_then(|c| crate::kubernetes::workload_ref(c, &self.src.pipeline.workloads.load()));
+        let mut filter = match &workload {
+            Some(_) => {
+                let mut plain = q.clone();
+                plain.client = None;
+                qlog_filter(&plain, from_us, to_us)?
+            }
+            None => qlog_filter(q, from_us, to_us)?,
+        };
+        let mut client_truncated = false;
+        if let Some(text) = &workload {
+            let until_s = if to_us == 0 {
+                u64::MAX
+            } else {
+                to_us / 1_000_000 + 1
+            };
+            let mut ips =
+                self.src
+                    .pipeline
+                    .workloads
+                    .load()
+                    .addresses_of(text, from_us / 1_000_000, until_s);
+            client_truncated = ips.len() > MAX_WORKLOAD_ADDRESSES;
+            ips.truncate(MAX_WORKLOAD_ADDRESSES);
+            filter.client_any = ips.into_iter().map(mapped).collect();
+            if filter.client_any.is_empty() {
+                // Nothing held by it in the window: match no row (no address is a key).
+                filter.client_ip = Some(telltale_telemetry::workload::key(text));
+            }
+        }
         if let Some(g) = &q.group {
             filter.group = Some(self.group_index(g)?);
         }
@@ -1193,26 +1305,58 @@ impl Backend for ApiBackend {
         let dir = Path::new(&data_dir).join("qlog");
         // REQ: CLU-007 — query logs other nodes shipped here are searched too (ADR-055).
         let shipped = crate::ship::shipped_dirs(&data_dir);
-        if !shipped.is_empty() {
-            return self.search_with_shipped(&filter, limit, q.cursor.as_deref(), dir, shipped);
-        }
-        let cursor = match &q.cursor {
-            None => None,
-            Some(c) => Some(qlog::Cursor::decode(c).ok_or_else(bad_cursor)?),
+        let mut page = if shipped.is_empty() {
+            let cursor = match &q.cursor {
+                None => None,
+                Some(c) => Some(qlog::Cursor::decode(c).ok_or_else(bad_cursor)?),
+            };
+            self.search_dir(&dir, &filter, limit, cursor, None)?
+        } else {
+            self.search_with_shipped(&filter, limit, q.cursor.as_deref(), dir, shipped)?
         };
-        self.search_dir(&dir, &filter, limit, cursor, None)
+        page.client_truncated = client_truncated;
+        // REQ: FLT-017 — an address another workload held at the row's time isn't this one's.
+        if let Some(text) = &workload
+            && let Some(spans) = workload_spans(&self.src, text)
+        {
+            page.items.retain(|r| {
+                let Ok(ip) = r.client.parse::<IpAddr>() else {
+                    return false;
+                };
+                let (ip, ts) = (mapped(ip), r.ts_unix_micros / 1_000_000);
+                spans
+                    .iter()
+                    .any(|(a, f, t)| *a == ip && *f <= ts && ts < *t)
+            });
+        }
+        Ok(page)
     }
 
+    #[allow(clippy::too_many_lines)] // the explanation's fields, one by one
     fn explain(&self, p: &ExplainParams) -> Result<Explanation, Problem> {
         let qtype_text = p.qtype.clone().unwrap_or_else(|| "A".to_owned());
         let qtype = telltale_proto::rtype::from_name(&qtype_text)
             .ok_or_else(|| Problem::invalid(format!("`qtype`: unknown type `{qtype_text}`")))?;
-        let client: IpAddr = p
-            .client
-            .as_deref()
-            .unwrap_or("127.0.0.1")
-            .parse()
-            .map_err(|_| Problem::invalid("`client` is not an IP address"))?;
+        let given = p.client.as_deref().unwrap_or("127.0.0.1");
+        // REQ: FLT-017 — a Kubernetes workload: as if from one of its pods.
+        let pod_ip = {
+            let t = self.src.pipeline.workloads.load();
+            crate::kubernetes::workload_ref(given, &t).and_then(|text| {
+                t.by_text(&text).and_then(|w| {
+                    w.pods
+                        .iter()
+                        .filter(|p| p.deleted_s.is_none())
+                        .find_map(|p| p.ips.first().copied())
+                })
+            })
+        };
+        let client: IpAddr = match pod_ip {
+            Some(ip) => ip,
+            None => given.parse().map_err(|_| {
+                Problem::invalid("`client` is not an IP address")
+                    .hint("Give an address, or a Kubernetes workload with a running pod (namespace/kind/name).")
+            })?,
+        };
         let mac = match p.mac.as_deref().map(telltale_config::MatchKey::parse) {
             None => None,
             Some(Ok(telltale_config::MatchKey::Mac(m))) => Some(m),
@@ -1243,6 +1387,14 @@ impl Backend for ApiBackend {
                 device: e.client.device,
                 identified_by: e.client.identified_by.to_owned(),
                 groups: e.client.groups,
+                workload: e
+                    .client
+                    .workload
+                    .map(|w| telltale_api::model::ExplainWorkload {
+                        name: w.name,
+                        pod: w.pod,
+                        group_from: w.group_from.to_owned(),
+                    }),
             },
             outcome: label(&e.outcome),
             summary: e.summary,
@@ -1515,7 +1667,13 @@ impl Backend for ApiBackend {
         &self,
         client: &str,
     ) -> Result<telltale_api::rhythm_api::ClientRhythm, Problem> {
-        let addr = if let Ok(ip) = client.parse::<IpAddr>() {
+        let addr = if let Some(ip) = self
+            .workload(client)
+            .and_then(|(_, key)| key.parse::<IpAddr>().ok())
+        {
+            // REQ: FLT-017 — a workload's rhythm is under its analytics key.
+            ip
+        } else if let Ok(ip) = client.parse::<IpAddr>() {
             ip
         } else {
             let cfg = self.src.config.load();
@@ -1572,7 +1730,129 @@ impl Backend for ApiBackend {
         })
     }
 
+    // REQ: FLT-017 — a Kubernetes workload by its name or analytics key.
+    fn workload(&self, client: &str) -> Option<(String, String)> {
+        let t = self.src.pipeline.workloads.load();
+        let text = crate::kubernetes::workload_ref(client, &t)?;
+        let key = telltale_telemetry::workload::key(&text);
+        Some((text, std::net::Ipv6Addr::from(key).to_string()))
+    }
+
+    fn kubernetes_workloads(&self) -> Result<Vec<telltale_api::model::WorkloadInfo>, Problem> {
+        let kube = &self.src.pipeline.kube;
+        let t = self.src.pipeline.workloads.snapshot();
+        if kube.state().role == crate::kubernetes::Role::Off && t.workloads().is_empty() {
+            return Err(telltale_api::kubernetes_api::disabled());
+        }
+        let now = crate::kubernetes::now_s();
+        let agg = self.src.pipeline.telemetry.aggregates();
+        let counts = agg.workload_counts();
+        let items = t
+            .workloads()
+            .iter()
+            .map(|w| {
+                let (q, blocked, last) = counts.get(&w.key).map_or((0, 0, 0), |c| {
+                    let (q, b) = c.day(now);
+                    (q, b, c.last_seen_s)
+                });
+                telltale_api::model::WorkloadInfo {
+                    name: w.text.to_string(),
+                    namespace: w.namespace.to_string(),
+                    kind: w.kind.to_string(),
+                    workload_name: w.name.to_string(),
+                    key: std::net::Ipv6Addr::from(w.key).to_string(),
+                    group: w.group.as_deref().map(str::to_owned),
+                    group_from: w.origin.label().to_owned(),
+                    pods: w
+                        .pods
+                        .iter()
+                        .map(|p| telltale_api::model::WorkloadPod {
+                            name: p.name.to_string(),
+                            addresses: p.ips.iter().map(ToString::to_string).collect(),
+                            terminating: p.deleted_s.is_some(),
+                        })
+                        .collect(),
+                    queries_24h: q,
+                    blocked_24h: blocked,
+                    last_seen: (last > 0).then(|| format_us(last.saturating_mul(1_000_000))),
+                    labels: w
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut items = items;
+        // Workloads without pods now that asked in the last day (a CronJob between runs), named
+        // from the history.
+        for (key, c) in counts {
+            let (q, blocked) = c.day(now);
+            if q == 0 || t.by_key(key).is_some() {
+                continue;
+            }
+            if let Some(info) = t.key_name(key).and_then(|text| past_workload(text, key)) {
+                items.push(telltale_api::model::WorkloadInfo {
+                    queries_24h: q,
+                    blocked_24h: blocked,
+                    last_seen: Some(format_us(c.last_seen_s.saturating_mul(1_000_000))),
+                    ..info
+                });
+            }
+        }
+        Ok(items)
+    }
+
+    fn workload_counts(&self) -> Vec<telltale_api::model::WorkloadCount> {
+        let now = crate::kubernetes::now_s();
+        self.src
+            .pipeline
+            .telemetry
+            .aggregates()
+            .workload_counts()
+            .iter()
+            .map(|(k, c)| {
+                let (q, b) = c.day(now);
+                telltale_api::model::WorkloadCount {
+                    key: std::net::Ipv6Addr::from(*k).to_string(),
+                    queries_24h: q,
+                    blocked_24h: b,
+                    last_seen_unix_seconds: c.last_seen_s,
+                }
+            })
+            .collect()
+    }
+
+    fn kubernetes_status(&self) -> telltale_api::model::KubernetesStatus {
+        use crate::kubernetes::Role;
+        let kube = &self.src.pipeline.kube;
+        let st = kube.state();
+        let now = crate::kubernetes::now_s();
+        telltale_api::model::KubernetesStatus {
+            enabled: self.src.config.load().kubernetes.enabled || st.role == Role::Fixture,
+            role: match st.role {
+                Role::Off => "off",
+                Role::Peer => "peer",
+                Role::Watching => "watching",
+                Role::Fixture => "fixture",
+            }
+            .to_owned(),
+            watching: st.role.watches(),
+            last_sync_seconds_ago: kube.age_s(now),
+            pods: st.pods as u64,
+            workloads: st.workloads as u64,
+            namespaces_watched: st.namespaces,
+            last_error: st.last_error,
+            source: st.source,
+            addresses_dropped: kube.dropped.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     fn identity(&self, client: &str) -> Result<telltale_api::model::DeviceIdentity, Problem> {
+        // REQ: FLT-017 — a workload's identity is under its analytics key.
+        if let Some((_, key)) = self.workload(client) {
+            return Ok(self.src.identify.get(&key));
+        }
         if client.parse::<IpAddr>().is_ok() {
             return Ok(self.src.identify.get(client));
         }
@@ -1816,6 +2096,11 @@ impl Backend for ApiBackend {
             disk_used_percent,
             probes: &probes,
             cert_warn_days: self.src.config.load().probe.cert_warn_days,
+            kubernetes_stale_s: {
+                let now = crate::kubernetes::now_s();
+                let k = &self.src.pipeline.kube;
+                k.stale(now).then(|| k.age_s(now).unwrap_or(0))
+            },
         });
         // REQ: OPS-010 — a standalone node in maintenance leaves its own conditions out (in a
         // cluster, the federated health does it from every node's heartbeats).
@@ -2072,6 +2357,8 @@ impl Backend for ApiBackend {
                     .collect(),
                 upstreams: std::collections::HashMap::new(),
                 client_name: &no_names,
+                // Rollups keep no clients.
+                workload_spans: &|_| None,
                 qtype_name,
                 rcode_name,
                 rcode_value,
@@ -2113,6 +2400,7 @@ impl Backend for ApiBackend {
             groups,
             upstreams,
             client_name: &name,
+            workload_spans: &|c| workload_spans(&self.src, c),
             qtype_name,
             rcode_name,
             rcode_value,
@@ -3103,6 +3391,7 @@ fn kind_name(k: ManagedKind) -> &'static str {
         ManagedKind::Exclusions => crate::managed::EXCLUSIONS,
         ManagedKind::Simulate => crate::managed::SIMULATE,
         ManagedKind::Rollout => crate::managed::ROLLOUT,
+        ManagedKind::KubernetesMap => crate::managed::KUBERNETES_MAP,
     }
 }
 
@@ -3428,6 +3717,12 @@ fn managed_impact(src: &Sources, kind: ManagedKind, name: &str, setting: bool) -
         (ManagedKind::Rollout, false) => {
             "The config file's rollout settings (or none: every change reaches every node at once) apply again.".into()
         }
+        (ManagedKind::KubernetesMap, true) => {
+            "The workloads it matches use the group from their next query, and on the other nodes within a few seconds (a pod or namespace label still wins).".into()
+        }
+        (ManagedKind::KubernetesMap, false) => {
+            "The workloads it matched take the next rule, the default group, or their network's group from their next query, and on the other nodes within a few seconds.".into()
+        }
     };
     (recent_queries, impact)
 }
@@ -3458,6 +3753,7 @@ fn plan_managed(
             | ManagedKind::AlertDestination
             | ManagedKind::AlertRule
             | ManagedKind::Schedule
+            | ManagedKind::KubernetesMap
     ) {
         return plan_override(src, state, w);
     }
@@ -3768,6 +4064,82 @@ where
     Ok((before, body))
 }
 
+/// REQ: FLT-017 — a `[[kubernetes.map]]` rule by key (`namespace/kind/name`, `*` for any): the
+/// body names the group. Like [`override_step`], with the key parsed into the rule.
+fn kubernetes_map_step(
+    key: &str,
+    body: Option<&serde_json::Value>,
+    file: &telltale_config::Config,
+    before_cfg: &telltale_config::Config,
+    entries: &mut crate::managed::Entries,
+) -> Result<(Option<serde_json::Value>, Option<String>), Problem> {
+    let mut parts = key.split('/');
+    let (Some(ns), Some(kind), Some(name), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(
+            Problem::invalid(format!("`{key}`: a rule's key is namespace/kind/name"))
+                .hint("For one workload: media/deploy/jellyfin. For a whole namespace: media/*/*."),
+        );
+    };
+    let any = |s: &str| {
+        if s == "*" {
+            String::new()
+        } else {
+            s.to_owned()
+        }
+    };
+    let safe = |s: String| {
+        telltale_config::SafeString::new(s).map_err(|e| Problem::invalid(format!("`{key}`: {e}")))
+    };
+    let before = before_cfg
+        .kubernetes
+        .map
+        .iter()
+        .find(|r| r.key() == key)
+        .map(|r| serde_json::to_value(r).unwrap_or_default());
+    let stored = &mut entries.kubernetes_map;
+    let had = stored.iter().any(|(n, _)| n == key);
+    stored.retain(|(n, _)| n != key);
+    let body = match body {
+        Some(v) => {
+            let group = v
+                .get("group")
+                .and_then(serde_json::Value::as_str)
+                .filter(|g| !g.trim().is_empty())
+                .ok_or_else(|| {
+                    Problem::invalid("`group` is required")
+                        .hint("Send {\"group\": \"<a group's name>\"}.")
+                })?;
+            let rule = telltale_config::KubernetesMapRule {
+                namespace: safe(ns.to_owned())?,
+                kind: safe(any(kind))?,
+                name: safe(any(name))?,
+                group: safe(group.trim().to_owned())?,
+            };
+            if rule.key() != key {
+                return Err(Problem::invalid(format!(
+                    "`{key}`: use `*` for any kind or name"
+                )));
+            }
+            let s = serde_json::to_string(&rule).unwrap_or_default();
+            stored.push((key.to_owned(), crate::managed::Ovr::Set(rule)));
+            Some(s)
+        }
+        None if had => None,
+        None if file.kubernetes.map.iter().any(|r| r.key() == key) => {
+            stored.push((key.to_owned(), crate::managed::Ovr::Hidden));
+            Some(crate::managed::HIDDEN.to_owned())
+        }
+        None => {
+            return Err(Problem::not_found(format!(
+                "no [[kubernetes.map]] rule `{key}`"
+            )));
+        }
+    };
+    Ok((before, body))
+}
+
 /// REQ: API-002 (T9.22) — the impact sentence, plus the upstream groups a removal changes.
 fn with_cascade(impact: String, groups: &[String]) -> String {
     if groups.is_empty() {
@@ -3934,6 +4306,7 @@ fn named_json<T: crate::managed::Named + Serialize>(
 /// may override or hide the files' entry of the same name. `PUT` stores a definition; `DELETE`
 /// removes what the API stored (so the files' entry, if any, is back), or else hides the
 /// files' entry. The merged configuration must validate.
+#[allow(clippy::too_many_lines)] // one branch per kind of entry
 fn plan_override(
     src: &Sources,
     state: &telltale_store::state::State,
@@ -4008,6 +4381,9 @@ fn plan_override(
             before_cfg.schedule.iter().find(|u| u.name() == name),
             &mut entries.schedules,
         )?,
+        ManagedKind::KubernetesMap => {
+            kubernetes_map_step(&name, w.body.as_ref(), &file, &before_cfg, &mut entries)?
+        }
         _ => override_step(
             &name,
             w.body.as_ref(),
@@ -4025,6 +4401,12 @@ fn plan_override(
         ManagedKind::AlertDestination => named_json(&merged.alerts.destination, &name),
         ManagedKind::AlertRule => named_json(&merged.alerts.rule, &name),
         ManagedKind::Schedule => named_json(&merged.schedule, &name),
+        ManagedKind::KubernetesMap => merged
+            .kubernetes
+            .map
+            .iter()
+            .find(|r| r.key() == name)
+            .map(|r| serde_json::to_value(r).unwrap_or_default()),
         _ => named_json(&merged.group, &name),
     };
     let warnings = telltale_config::validate_config(&merged).unwrap_or_default();
@@ -4054,7 +4436,23 @@ impl ApiBackend {
         };
         let state = self.src.pipeline.current();
         let clients = &state.policy.clients;
-        let id = clients.identify(ip, None, None, &self.src.pipeline.neighbors);
+        // REQ: FLT-017 — a workload's key: its name, and its group (else the default's).
+        if telltale_telemetry::workload::is_key(&mapped(ip)) {
+            let t = self.src.pipeline.workloads.load();
+            let name = t.key_name(&mapped(ip)).map(str::to_owned);
+            let group = t
+                .by_key(&mapped(ip))
+                .and_then(|w| w.group.as_deref().map(str::to_owned))
+                .unwrap_or_else(|| "default".to_owned());
+            return (name, vec![group]);
+        }
+        let id = clients.identify(
+            ip,
+            None,
+            None,
+            &self.src.pipeline.neighbors,
+            &self.src.pipeline.workloads,
+        );
         (
             clients.client(id).map(|c| c.name.to_string()),
             clients
@@ -4395,8 +4793,32 @@ fn keep_in_git(
         ManagedKind::Exclusions => "exclusions",
         ManagedKind::Simulate => "simulate",
         ManagedKind::Rollout => "cluster.rollout",
+        ManagedKind::KubernetesMap => "kubernetes.map",
     };
     let head = "# Add to the configuration in Git (with the Helm chart: under `config:`).\n";
+    // REQ: FLT-017 — a map rule: `[[kubernetes.map]]`, or a label on the namespace or pod.
+    if kind == ManagedKind::KubernetesMap {
+        let Some(a) = after.filter(|_| body.is_some()) else {
+            return format!(
+                "# Remove the [[kubernetes.map]] rule `{name}` from the configuration in Git.\n"
+            );
+        };
+        let mut out = String::from(head);
+        if let Ok(toml::Value::Table(rule)) = toml::Value::try_from(a) {
+            let mut kube = toml::Table::new();
+            kube.insert(
+                "map".into(),
+                toml::Value::Array(vec![toml::Value::Table(rule)]),
+            );
+            let mut root = toml::Table::new();
+            root.insert("kubernetes".into(), toml::Value::Table(kube));
+            if let Ok(s) = toml::to_string(&root) {
+                out.push_str(&s);
+            }
+        }
+        out.push_str("# Or label the namespace: kubectl label namespace <namespace> telltaledns.io/group=<group>\n");
+        return out;
+    }
     if matches!(
         kind,
         ManagedKind::RateLimit

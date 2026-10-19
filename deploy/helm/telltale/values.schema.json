@@ -132,6 +132,10 @@
             },
             "port": {
               "type": "integer"
+            },
+            "clusterIP": {
+              "description": "REQ: FLT-017 \u2014 a fixed cluster address for the DNS Service (the kubelet's cluster DNS).",
+              "type": "string"
             }
           }
         },
@@ -286,6 +290,117 @@
           "type": "integer",
           "minimum": 60
         }
+      }
+    },
+    "kubernetes": {
+      "description": "REQ: FLT-017 \u2014 Kubernetes workloads as devices (the controller watches pods and namespaces, read-only).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "clusterDomain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clusterDns": {
+          "description": "CoreDNS's Service address: kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'",
+          "type": "string"
+        },
+        "podCidr": {
+          "type": "string",
+          "pattern": "^$|^(\\d{1,3}\\.){3}\\d{1,3}/(8|16|24|[0-9]|[12][0-9]|3[0-2])$"
+        },
+        "serviceCidr": {
+          "type": "string",
+          "pattern": "^$|^(\\d{1,3}\\.){3}\\d{1,3}/(8|16|24|[0-9]|[12][0-9]|3[0-2])$"
+        },
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          }
+        },
+        "excludeNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          }
+        },
+        "defaultGroup": {
+          "type": "string"
+        },
+        "map": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "group"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "pattern": "^[a-z0-9*][-a-z0-9.*]*$"
+              },
+              "kind": {
+                "enum": [
+                  "",
+                  "deploy",
+                  "sts",
+                  "ds",
+                  "job",
+                  "cronjob",
+                  "rs",
+                  "pod"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "group": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "rbac": {
+          "type": "object",
+          "properties": {
+            "create": {
+              "type": "boolean"
+            },
+            "serviceAccountName": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "then": {
+        "properties": {
+          "clusterDns": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(\\d{1,3}\\.){3}\\d{1,3}$|^[0-9a-fA-F:]+$"
+          }
+        },
+        "required": [
+          "clusterDns"
+        ]
       }
     }
   }

@@ -52,11 +52,16 @@ pub(crate) fn spawn(cfg: &Config, pipeline: &Arc<Pipeline>) {
     let pipeline = Arc::clone(pipeline);
     // REQ: OBS-022 — queries logged before a name or device was excluded stay out too.
     let excluded = crate::server::exclusions(cfg);
+    // REQ: FLT-017 — pods' queries come back under their workloads, as they were counted live.
+    let workloads_dir = crate::kubernetes::wanted(cfg).then(|| cfg.node.data_dir.to_string());
     let spawned = std::thread::Builder::new()
         .name("qlog-replay".into())
         .spawn(move || {
             telltale_net::background_thread();
             let t = Instant::now();
+            let workloads = workloads_dir
+                .as_deref()
+                .and_then(crate::kubernetes::persisted);
             let fold = |events: &[(QueryEvent, Name)]| {
                 let mut agg = pipeline.telemetry.aggregates();
                 for (e, name) in events {
@@ -66,7 +71,16 @@ pub(crate) fn spawn(cfg: &Config, pipeline: &Arc<Pipeline>) {
                     {
                         continue;
                     }
-                    agg.replay_hours(started_us / 1_000_000, e, name);
+                    match workloads.as_ref().and_then(|w| {
+                        crate::kubernetes::key_at(w, e.client_ip, e.ts_us / 1_000_000)
+                    }) {
+                        Some(key) => {
+                            let mut keyed = *e;
+                            keyed.client_ip = key;
+                            agg.replay_hours(started_us / 1_000_000, &keyed, name);
+                        }
+                        None => agg.replay_hours(started_us / 1_000_000, e, name),
+                    }
                 }
             };
             match replay(&dir, started_us, fold) {

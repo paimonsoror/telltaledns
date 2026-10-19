@@ -131,6 +131,27 @@ for line in open(path):
 sys.exit(1)
 PY
 }
+# REQ: FLT-017 — Kubernetes workloads: the primary watches a fixture file (the test hook: no
+# API server), every node takes its table.
+cat >> "$E/p.toml" <<EOF
+[kubernetes]
+enabled = true
+EOF
+k8s_pods() { # pod-name:ip ... -> the fixture (one Deployment per pod, in namespace e2e)
+  python3 - "$@" > "$E/k8s.json.tmp" <<'PY'
+import json, sys
+items = []
+for arg in sys.argv[1:]:
+    name, ip = arg.split(':')
+    items.append({"metadata": {"name": f"{name}-6c9f7b-x1", "namespace": "e2e",
+                               "labels": {"pod-template-hash": "6c9f7b"},
+                               "ownerReferences": [{"kind": "ReplicaSet", "name": f"{name}-6c9f7b", "controller": True}]},
+                  "spec": {}, "status": {"phase": "Running", "podIPs": [{"ip": ip}]}})
+print(json.dumps({"pods": {"items": items}, "namespaces": {"items": [{"metadata": {"name": "e2e"}}]}}))
+PY
+  mv "$E/k8s.json.tmp" "$E/k8s.json"
+}
+k8s_pods web:127.0.9.1 api:127.0.9.2
 # The replica ships its query log to the primary (CLU-007).
 cat >> "$E/r.toml" <<EOF
 [telemetry]
@@ -185,7 +206,7 @@ PY
 q() { python3 "$E/q.py" one "$@"; }
 
 "$B" cluster init --name e2e --advertise https://127.0.0.1:28441 -c "$E/p.toml" >/dev/null
-"$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
+TELLTALE_KUBERNETES_FIXTURE="$E/k8s.json" "$B" run -c "$E/p.toml" > "$E/p.log" 2>&1 & P_PID=$!
 for _ in $(seq 50); do [ "$(q 25301 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
 T=$("$B" cluster token create --ttl 10m --eligible -c "$E/p.toml" 2>/dev/null)
 # Retries until the primary's cluster port is up (a loaded machine can take longer to start).
@@ -236,6 +257,59 @@ both=$(get '/api/v1/stats/summary' | field 'd["queries"]')
 own=$(get '/api/v1/stats/summary?scope=node:local' | field 'd["queries"]')
 [ "$both" -gt "$own" ] || fail "cluster totals ($both) don't exceed this node's ($own)"
 echo "ok (cluster $both queries, primary alone $own)"
+
+# REQ: FLT-017 (T15.1, AC 4) — the primary's workload table reaches the replica: a change within
+# 5 s (pushed), a replica started afterwards within 60 s (pulled); a stopped replica is listed as
+# missing, never an error; and the replica names a pod's query by its workload.
+echo "== Kubernetes workloads reach every node (FLT-017)"
+wl() { { curl -s --max-time 2 "http://127.0.0.1:$1/metrics" || true; } | awk '/^telltale_kubernetes_workloads / {print $2+0}'; }
+for _ in $(seq 100); do [ "$(wl 29002)" = 2 ] && break; sleep 0.1; done
+[ "$(wl 29002)" = 2 ] || fail "the replica doesn't have the primary's two workloads (has '$(wl 29002)')"
+t0=$(date +%s.%N)
+k8s_pods web:127.0.9.1 api:127.0.9.2 db:127.0.9.3
+for _ in $(seq 100); do [ "$(wl 29002)" = 3 ] && break; sleep 0.1; done
+pushed=$(python3 -c "import time; print(round(time.time() - $t0, 1))")
+[ "$(wl 29002)" = 3 ] || fail "a new workload didn't reach the replica"
+python3 -c "import sys; sys.exit(0 if $pushed <= 5 else 1)" || fail "the table took ${pushed} s to reach the replica (over 5 s)"
+# A pod's query on the replica, named by its workload in the primary's federated log.
+python3 "$E/q.py" one 25302 k8s.r.test >/dev/null 2>&1 || true
+python3 - <<PY
+import socket, struct
+q = struct.pack('>HHHHHH', 5, 0x0100, 1, 0, 0, 0) + b'\x03k8s\x06e2e-db\x04test\x00' + struct.pack('>HH', 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('127.0.9.3', 0)); s.settimeout(1)
+s.sendto(q, ('127.0.0.1', 25302))
+try: s.recvfrom(4096)
+except OSError: pass
+PY
+named=""
+for _ in $(seq 40); do
+  named=$(get '/api/v1/queries?name=k8s.e2e-db.test' | field '" ".join(str(r.get("clientName")) for r in d["items"])')
+  [ -n "$named" ] && break; sleep 0.5
+done
+[ "$named" = e2e/deploy/db ] || fail "the replica's query from a pod isn't named by its workload (got '$named')"
+# A replica started afterwards (without its saved copy) pulls the table.
+kill "$R_PID"; wait "$R_PID" 2>/dev/null || true; R_PID=
+rm -f "$E/r/workloads.json"
+# Stopped: the primary's workload list still answers, listing it as missing.
+missing=""
+for _ in $(seq 30); do
+  missing=$(get '/api/v1/kubernetes/workloads' | field '",".join(d.get("missingNodes", []))') || fail "the workload list failed with the replica stopped"
+  [ -n "$missing" ] && break; sleep 0.5
+done
+[ "$missing" = r ] || fail "the stopped replica isn't listed as missing (got '$missing')"
+t0=$(date +%s.%N)
+"$B" run -c "$E/r.toml" >> "$E/r.log" 2>&1 & R_PID=$!
+for _ in $(seq 650); do [ "$(wl 29002)" = 3 ] && break; sleep 0.1; done
+pulled=$(python3 -c "import time; print(round(time.time() - $t0, 1))")
+[ "$(wl 29002)" = 3 ] || fail "the restarted replica didn't pull the table within 65 s"
+python3 -c "import sys; sys.exit(0 if $pulled <= 60 else 1)" || fail "the restarted replica took ${pulled} s to pull the table (over 60 s)"
+for _ in $(seq 100); do [ "$(q 25302 a.p.test)" = 10.0.0.1 ] && break; sleep 0.1; done
+# The next steps read the replica through the primary: wait until it's connected again.
+for _ in $(seq 400); do
+  [ "$(get '/api/v1/cluster' | field 'next((str(n["connected"]) for n in d["nodes"] if n["site"] == "r"), "")')" = True ] && break
+  sleep 0.1
+done
+echo "ok (pushed in ${pushed} s; a new replica pulled it in ${pulled} s; a stopped one is missing)"
 
 # REQ: AGT-011, CLU-002 (T7.3) — a read scoped to a site or a node reads only those nodes.
 echo "== scoped reads (AGT-011)"

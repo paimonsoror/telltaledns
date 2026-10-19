@@ -64,6 +64,24 @@ app.kubernetes.io/component: resolver
 {{- define "telltale.clusterSecret" -}}
 {{- .Values.cluster.bootstrapSecret.existingSecret | default (printf "%s-cluster" (include "telltale.fullname" .)) }}
 {{- end }}
+{{/* REQ: FLT-017 — the ServiceAccount the controller (or allInOne pod) uses to watch pods. */}}
+{{- define "telltale.serviceAccountName" -}}
+{{- .Values.kubernetes.rbac.serviceAccountName | default (printf "%s-workloads" (include "telltale.fullname" .)) }}
+{{- end }}
+{{/* REQ: FLT-017 — an IPv4 CIDR's reverse zone, rounded to whole octets (10.42.0.0/16 →
+42.10.in-addr.arpa). Empty for anything else. */}}
+{{- define "telltale.reverseZone" -}}
+{{- $parts := splitList "/" . }}
+{{- if eq (len $parts) 2 }}
+{{- $octets := splitList "." (index $parts 0) }}
+{{- $keep := div (atoi (index $parts 1)) 8 }}
+{{- if and (eq (len $octets) 4) (gt $keep 0) }}
+{{- $rev := list }}
+{{- range $i := until (int $keep) }}{{ $rev = prepend $rev (index $octets $i) }}{{ end }}
+{{- printf "%s.in-addr.arpa" (join "." $rev) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{/* The controller's in-cluster cluster URL (what resolver pods join). */}}
 {{- define "telltale.clusterURL" -}}
 https://{{ include "telltale.fullname" . }}-cluster.{{ .Release.Namespace }}.svc:{{ .Values.cluster.port }}

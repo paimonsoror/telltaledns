@@ -1569,6 +1569,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/kubernetes/map/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Kubernetes workloads in a group (FLT-017).
+         * @description Writes a `[[kubernetes.map]]` rule: the key in the path is `namespace/kind/name` with `*` for
+         *     any (`media/deploy/jellyfin` for one workload, `media*\/*\/*` for every namespace starting with
+         *     `media`), the body names the group: `{"group": "iot"}`. Rules made here are checked before
+         *     the configuration files' (first match wins); a pod or namespace label
+         *     (`telltaledns.io/group`) still wins over any rule (the way to do the same from Git).
+         *     The workload's next query uses the group.
+         */
+        put: operations["put_kubernetes_map"];
+        post?: never;
+        /**
+         * Remove a Kubernetes workloads' group rule (FLT-017).
+         * @description A rule made here goes; a rule of the configuration files is hidden until this one is put
+         *     back. The workloads it matched take the next rule, `default_group`, or their network's group.
+         */
+        delete: operations["delete_kubernetes_map"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/kubernetes/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether Kubernetes workloads are on, and how the table is doing (FLT-017).
+         * @description `role`: `watching` (this node lists and watches pods and namespaces), `peer` (it takes the
+         *     watcher's table over the cluster channel), `fixture` (a test file), or `off`. With
+         *     `lastSyncSecondsAgo` (the API server last confirmed the table, or a peer last sent it), the
+         *     table's size, the namespaces watched, and the last error until the next success. The health
+         *     level turns `degraded` (`kubernetes_stale`) when a watcher's table is older than 15 minutes;
+         *     DNS answers regardless.
+         */
+        get: operations["kubernetes_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/kubernetes/workloads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Kubernetes workloads TelltaleDNS names (FLT-017).
+         * @description One row per workload (`namespace/kind/name`, from its pods' owners: a Deployment's replicas
+         *     are one device across rollouts), sorted by name: its group and where that came from (a pod
+         *     label, a namespace label, a `[[kubernetes.map]]` rule, or `default_group`), its pods and
+         *     their addresses, queries and blocked answers in the last 24 hours (summed over every node in
+         *     a cluster; `missingNodes` lists nodes whose counts are missing), and when it last asked.
+         *     Every node holds the watcher's table, so the list itself never depends on one node. Use the
+         *     name or `key` as `client` anywhere a device goes: the query log, the timeline, rhythm,
+         *     identity. `kubernetes_disabled` (409) when the feature is off. Example:
+         *     `GET /api/v1/kubernetes/workloads?namespace=media`.
+         */
+        get: operations["workloads"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/lists": {
         parameters: {
             query?: never;
@@ -3809,7 +3892,7 @@ export interface components {
          * @description Stable error codes.
          * @enum {string}
          */
-        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level";
+        Code: "invalid_parameter" | "not_found" | "unsupported_scope" | "unavailable" | "internal" | "unauthorized" | "totp_required" | "forbidden" | "csrf_rejected" | "conflict" | "version_conflict" | "invalid_config" | "rate_limited" | "gitops_managed" | "maintenance_too_long" | "maintenance_invalid" | "node_unreachable" | "node_unknown" | "simulation_busy" | "simulation_window" | "cluster_pinned" | "no_rollout" | "version_unknown" | "version_blobs_missing" | "annotation_text" | "annotation_time" | "method_not_allowed" | "heatmap_window" | "privacy_level" | "kubernetes_disabled";
         /** @description What a change to local names or forwarded domains did (or would do, with `dryRun`). */
         ConfigChange: {
             /** @description The entry after (absent after a delete). */
@@ -3930,7 +4013,7 @@ export interface components {
             computedAt?: string | null;
             evidence?: components["schemas"]["IdentityEvidence"] | null;
             /**
-             * @description `likely`, `possibly`, or `unknown`.
+             * @description `likely`, `possibly`, or `unknown`; `certain` for a Kubernetes workload (FLT-017).
              * @example likely
              */
             level: string;
@@ -3949,7 +4032,7 @@ export interface components {
              */
             score: number;
             /**
-             * @description `inferred`, or `override` (`[[client]] kind`).
+             * @description `inferred`, `override` (`[[client]] kind`), or `kubernetes` (a workload, FLT-017).
              * @example inferred
              */
             source: string;
@@ -4056,10 +4139,11 @@ export interface components {
             device?: string | null;
             /** @description Highest priority first. */
             groups: string[];
-            /** @description `client_id`, `edns_mac`, `neighbor_mac`, `ip`, `cidr`, or `default`. */
+            /** @description `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`. */
             identifiedBy: string;
             ip: string;
             mac?: string | null;
+            workload?: components["schemas"]["ExplainWorkload"] | null;
         };
         ExplainFilter: {
             notes: string[];
@@ -4099,6 +4183,15 @@ export interface components {
             tier: string;
             /** @description This rule decides the query. */
             winner: boolean;
+        };
+        /** @description REQ: FLT-017 — a pod address's workload in an explanation. */
+        ExplainWorkload: {
+            /** @description `pod_label`, `namespace_label`, `map`, `default_group`, or `none`. */
+            groupFrom: string;
+            /** @example media/deploy/jellyfin */
+            name: string;
+            /** @example jellyfin-7d9f4c8b6-x2k1q */
+            pod: string;
         };
         /** @description Why a name is or isn't blocked for a client, and where it would go (FLT-013). */
         Explanation: {
@@ -4509,6 +4602,7 @@ export interface components {
         IdentityEvidence: {
             /** @description The signature's domains the device talked to, with their weights. */
             domains: components["schemas"]["MatchedDomain"][];
+            kubernetes?: components["schemas"]["WorkloadEvidence"] | null;
             /** @description The MAC's registry prefix (`D0:4D:2C`). */
             macPrefix?: string | null;
             /** @description The announced name that matched the signature. */
@@ -4734,7 +4828,7 @@ export interface components {
                 computedAt?: string | null;
                 evidence?: components["schemas"]["IdentityEvidence"] | null;
                 /**
-                 * @description `likely`, `possibly`, or `unknown`.
+                 * @description `likely`, `possibly`, or `unknown`; `certain` for a Kubernetes workload (FLT-017).
                  * @example likely
                  */
                 level: string;
@@ -4753,7 +4847,7 @@ export interface components {
                  */
                 score: number;
                 /**
-                 * @description `inferred`, or `override` (`[[client]] kind`).
+                 * @description `inferred`, `override` (`[[client]] kind`), or `kubernetes` (a workload, FLT-017).
                  * @example inferred
                  */
                 source: string;
@@ -5383,6 +5477,42 @@ export interface components {
             }[];
             /** @description Cluster nodes that couldn't be read, for federated reads (CLU-002). */
             missingNodes?: string[];
+        };
+        /**
+         * @description REQ: FLT-017 — whether Kubernetes workloads are on, and how the table is doing
+         *     (`GET /api/v1/kubernetes/status`).
+         */
+        KubernetesStatus: {
+            /**
+             * Format: int64
+             * @description Pod addresses left out past the table's cap (20,000).
+             */
+            addressesDropped: number;
+            /** @description `[kubernetes] enabled` (the chart's `kubernetes.enabled`). */
+            enabled: boolean;
+            /** @description The last error, until the next success. */
+            lastError?: string | null;
+            /**
+             * Format: int64
+             * @description Seconds since the table was last confirmed (watcher) or received (peer).
+             */
+            lastSyncSecondsAgo?: number | null;
+            /** @description `*` for every namespace. */
+            namespacesWatched: string[];
+            /** Format: int64 */
+            pods: number;
+            /**
+             * @description `off`, `watching` (this node watches the API server), `peer` (it takes the table from
+             *     the cluster), or `fixture` (a test file).
+             * @example watching
+             */
+            role: string;
+            /** @description The node a peer's table came from. */
+            source?: string | null;
+            /** @description This node watches the API server. */
+            watching: boolean;
+            /** Format: int64 */
+            workloads: number;
         };
         /**
          * @description What `GET /stats/latency` groups by.
@@ -6141,6 +6271,11 @@ export interface components {
         };
         /** @description A page of query-log rows, newest first. */
         QueryPage: {
+            /**
+             * @description REQ: FLT-017 — `client` named a Kubernetes workload that held more than 64 pod
+             *     addresses in the window: only the newest 64 were searched.
+             */
+            clientTruncated?: boolean;
             items: components["schemas"]["QueryRow"][];
             /** @description Cluster nodes that couldn't be read (CLU-002: partial results, never a hang). */
             missingNodes?: string[];
@@ -7177,6 +7312,94 @@ export interface components {
             /** @description The scan stopped early (`truncatedReason` says why); the numbers cover what it read. */
             truncated: boolean;
             truncatedReason?: string | null;
+        };
+        /** @description REQ: FLT-017 — a workload's identity, from the Kubernetes API. */
+        WorkloadEvidence: {
+            /** @description `app.kubernetes.io/name` and `app.kubernetes.io/part-of`, when its pods have them. */
+            labels: {
+                [key: string]: string;
+            };
+            /** @description Its pods now. */
+            pods: string[];
+            /**
+             * @description `media/deploy/jellyfin`.
+             * @example media/deploy/jellyfin
+             */
+            workload: string;
+        };
+        /**
+         * @description REQ: FLT-017 (T15.1) — one Kubernetes workload: a device TelltaleDNS names, groups, and
+         *     watches (`GET /api/v1/kubernetes/workloads`).
+         */
+        WorkloadInfo: {
+            /** Format: int64 */
+            blocked24h: number;
+            /** @description Its group; absent: its network's group or `default`, like any device. */
+            group?: string | null;
+            /**
+             * @description Where the group came from: `pod_label`, `namespace_label`, `map`, `default_group`, or
+             *     `none`.
+             * @example namespace_label
+             */
+            groupFrom: string;
+            /**
+             * @description Its analytics address (`100::/64`, RFC 6666): how top lists, anomalies, rhythm, and the
+             *     device timeline key it, across rollouts.
+             * @example 100::8a3f:12c4:9e01:77b2
+             */
+            key: string;
+            /**
+             * @description `deploy`, `sts`, `ds`, `job`, `cronjob`, `rs`, `pod`, or another controller's kind.
+             * @example deploy
+             */
+            kind: string;
+            /** @description `app.kubernetes.io/name` and `app.kubernetes.io/part-of`, when its pods have them. */
+            labels?: {
+                [key: string]: string;
+            };
+            /** @description When it last asked (RFC 3339), within the last day. */
+            lastSeen?: string | null;
+            /**
+             * @description Its device name everywhere: `namespace/kind/name`.
+             * @example media/deploy/jellyfin
+             */
+            name: string;
+            namespace: string;
+            /** @description Its pods now (a deleted one stays 30 seconds, `terminating`). */
+            pods: components["schemas"]["WorkloadPod"][];
+            /**
+             * Format: int64
+             * @description Queries and blocked answers in the last 24 hours (every node's, in a cluster).
+             */
+            queries24h: number;
+            /**
+             * @description The workload's own name (`jellyfin` for `media/deploy/jellyfin`).
+             * @example jellyfin
+             */
+            workloadName: string;
+        };
+        /** @description REQ: FLT-017 — a page of workloads, by name. */
+        WorkloadPage: {
+            items: components["schemas"]["WorkloadInfo"][];
+            /** @description Nodes whose counts are missing (the table itself is the watcher's, on every node). */
+            missingNodes?: string[];
+            /** @description Pass as `cursor` for the next page; absent on the last. */
+            nextCursor?: string | null;
+            /** @description Workloads matching the filters, on every page. */
+            total: number;
+        };
+        /** @description REQ: FLT-017 — one pod of a workload. */
+        WorkloadPod: {
+            /**
+             * @example [
+             *       "10.42.0.15"
+             *     ]
+             */
+            addresses: string[];
+            /** @example jellyfin-7d9f4c8b6-x2k1q */
+            name: string;
+            /** @description Deleted: its addresses stay its own for 30 seconds (queries in flight). */
+            terminating?: boolean;
         };
         /** @description REQ: DNS-018 (T7.22) — an authoritative zone from `[[zone]]`. */
         ZoneInfo: {
@@ -10070,6 +10293,194 @@ export interface operations {
             };
             /** @description Not found. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_kubernetes_map: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description namespace/kind/name; `*` for any kind or name; the namespace may be a glob. */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Applied (or, with dryRun, what would change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description The key isn't namespace/kind/name, or the body has no `group`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The configuration changed since the If-Match version: re-read it and retry. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such group, or an unknown kind. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_kubernetes_map: {
+        parameters: {
+            query?: {
+                /** @description Validate and report the change without applying it. */
+                dryRun?: boolean;
+                /**
+                 * @description REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,
+                 *     `7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the
+                 *     change would have done to those queries (`simulation`). `auto`: only when
+                 *     `[simulate] plans_by_default` is on.
+                 */
+                simulate?: string;
+                /**
+                 * @description REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).
+                 *     Default now.
+                 */
+                simulateUntil?: string;
+            };
+            header?: never;
+            path: {
+                /** @description namespace/kind/name, as the rule was made. */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigChange"];
+                };
+            };
+            /** @description No rule by that key. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    kubernetes_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KubernetesStatus"];
+                };
+            };
+        };
+    };
+    workloads: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Only this namespace.
+                 * @example media
+                 */
+                namespace?: string;
+                /** @description Only workloads in this group (`none` for those without one). */
+                group?: string;
+                /** @description At most this many (default and maximum 200). */
+                limit?: number;
+                /** @description From the previous page's `nextCursor`. */
+                cursor?: string;
+                /** @description `cluster` (default) or `node:local`: whose counts. */
+                scope?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workloads, a page at a time. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkloadPage"];
+                };
+            };
+            /** @description A bad cursor or scope. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description `kubernetes_disabled`: no node watches the Kubernetes API. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

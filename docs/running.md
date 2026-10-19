@@ -333,6 +333,112 @@ the chart's schema rejects a mistyped value with its path.
   `telltale_cluster_peer_queries_per_second`, `telltale_cluster_peer_cache_hit_ratio`, and
   `telltale_cluster_peer_restarts`, per member.
 
+### Kubernetes workloads as devices
+Your cluster's pods can be devices like any laptop or TV: named by the workload that runs
+them, grouped, filtered, and watched. TelltaleDNS reads each pod's owner and calls the pod's
+address by its **workload**: `media/deploy/jellyfin` for the Deployment `jellyfin` in the
+namespace `media`, and likewise `sts`, `ds`, `job`, `cronjob` (every run of a CronJob is one
+device), and `pod` for a bare pod. A Deployment's three replicas are one device, before and
+after every rollout, so its top domains, anomaly baseline, rhythm, and timeline carry on when
+its pods are replaced.
+
+A new pod often asks DNS before Kubernetes reports its address. The query log still names those
+first queries by the workload. The dashboard and the anomaly engine wait up to 2 seconds for an
+address they don't know yet, so a CronJob's short runs count under the CronJob. While this is on,
+those numbers run up to 2 seconds behind for devices outside the cluster. A restart of
+TelltaleDNS keeps all of it: each node saves its workload counts hourly and at shutdown
+(`workload-counts.json` in the data directory), and the restored top lists name workloads, not
+the pods' addresses.
+
+Turn it on in the chart's values:
+```yaml
+kubernetes:
+  enabled: true
+  clusterDns: 10.43.0.10     # kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'
+  podCidr: 10.42.0.0/16      # optional: PTR lookups for pod and Service addresses go to CoreDNS too
+  serviceCidr: 10.43.0.0/16
+service:
+  dns:
+    clusterIP: 10.43.0.53    # a fixed address inside the Service network, for the kubelet setting
+```
+The controller (or the `allInOne` pod) then gets a service-account token and a ClusterRole that
+can only `get`, `list`, and `watch` pods and namespaces. Resolver pods get no token. The
+controller sends the workload table to every node in the cluster (a Pi included, so it names
+the rows it ships), and the nodes ask for it again every minute. The chart also sends
+`cluster.local` (and the reverse zones of `podCidr` and `serviceCidr`) on to CoreDNS, so
+Service names keep working. Set Kubernetes options through these values, not as a
+`[kubernetes]` table in `config`: the chart writes that table.
+
+**Pods must ask TelltaleDNS directly.** If they ask CoreDNS and CoreDNS forwards to
+TelltaleDNS, every query comes from CoreDNS's address. Two ways to do it:
+1. **The whole cluster (recommended).** Point the kubelet's cluster DNS at TelltaleDNS's DNS
+   Service. On k3s, in `/etc/rancher/k3s/config.yaml` on every node, then restart k3s:
+   ```yaml
+   kubelet-arg:
+     - "cluster-dns=10.43.0.53"   # service.dns.clusterIP
+   ```
+   Use `kubelet-arg`, not k3s's own `cluster-dns` option, which also moves CoreDNS's
+   Service. New pods use the setting; restart workloads to move the pods that are running. On
+   kubeadm clusters, set `clusterDNS` in the kubelet's configuration. TelltaleDNS keeps
+   answering the cluster's names through CoreDNS, so Services resolve as before.
+2. **One workload at a time.** Give its pods their own DNS settings:
+   ```yaml
+   spec:
+     dnsPolicy: "None"
+     dnsConfig:
+       nameservers: ["10.43.0.53"]
+       searches: ["media.svc.cluster.local", "svc.cluster.local", "cluster.local"]
+       options: [{ name: ndots, value: "5" }]
+   ```
+Traffic from a pod to a Service address keeps the pod's own address (kube-proxy and Cilium don't
+rewrite it), so "Client IPs appear masked" isn't affected. With `ndots: 5` you'll see
+questions like `grafana.com.media.svc.cluster.local`. They go to CoreDNS and come back
+NXDOMAIN: that's how Kubernetes searches, and the traffic map shows it as it is.
+
+**Groups.** A workload's group is the first of:
+1. the label `telltaledns.io/group=<group>` on its pods;
+2. the same label on its namespace (`kubectl label namespace media telltaledns.io/group=media`);
+3. the first matching rule of `kubernetes.map` (`[{namespace: "media*", group: "iot"}]`, with
+   optional `kind` and `name`), or one made in the UI;
+4. `kubernetes.defaultGroup`;
+5. otherwise its network's group, or `default`, like any device you haven't named.
+
+A label naming a group that doesn't exist is logged once and ignored. Labels take effect within
+seconds, on every node, with no configuration change. Everything a group does then applies to
+the namespace: lists, quick rules, blocked services, schedules, upstreams. A `$client` rule
+names a workload by its name (`||ads.example^$client=media/deploy/jellyfin`).
+
+**In the UI**, the Clients page gets a **Workloads** tab: each workload with its kind,
+namespace, group and where it came from, its pods, its queries and blocks in the last 24 hours,
+and when it last asked. Click one for its day on the timeline. Everywhere a device shows, a
+workload has a small cube and its name, with the pod and address on hover. "Name this device…"
+is off for workloads, because Kubernetes names them. "Add to group…" previews and then saves a
+rule for exactly that workload. A label is the Git way to do the same. Explain says which
+workload and pod asked and where the group came from. The query log keeps each pod's own
+address. Each row is named by the workload that held that address when the query was made, so
+an address reused after a rollout doesn't relabel the past. Filter it by workload with
+`?client=media/deploy/jellyfin`.
+
+**API and agents.** `GET /api/v1/kubernetes/workloads` lists the workloads (filter by
+`namespace` or `group`), and `GET /api/v1/kubernetes/status` says whether this node watches or
+takes the table from the cluster. `PUT /api/v1/kubernetes/map/{namespace}/{kind}/{name}` with
+`{"group": "iot"}` writes a rule (`*` for any kind or name). The MCP tools are `list_workloads`
+and `get_workload`. `plan_assign_client` with a workload's name plans a rule. A workload's name
+works as `client` in the query log, the timeline, rhythm, identity, and explain.
+
+**When the API server can't be reached**, DNS answers as always. Pods keep the names they had,
+and new pods are plain addresses until the watch is back. After 15 minutes the health level
+turns **degraded** (`kubernetes_stale`), and the `TelltaleDNSKubernetesWatchStale` alert
+fires. Metrics: `telltale_kubernetes_pods`, `telltale_kubernetes_workloads`,
+`telltale_kubernetes_table_age_seconds`, `telltale_kubernetes_watch_errors_total`,
+`telltale_kubernetes_sync_total{result}`, and `telltale_kubernetes_watching`.
+
+Limits: one Kubernetes API per cluster; pods on the host network are the node's address and
+stay that; a deleted pod's address stays its own for 30 seconds (queries still in flight), then
+the history keeps who held it for 30 days; at most 20,000 pod addresses (the metric
+`telltale_kubernetes_addresses_dropped` says when more are left out). TelltaleDNS doesn't answer
+`cluster.local` itself: CoreDNS does.
+
 ## Seeing real client IPs
 Per-device statistics, groups, and rules need each query's real sender. TelltaleDNS checks this continuously: when more than 90% of the last 10 minutes' queries (at least 100) came from 3 or fewer *infrastructure* addresses, the UI shows a "Client IPs appear masked" banner, `GET /api/v1/system/info` includes `clientIpsMasked` with the evidence, the metric `telltale_client_ips_masked` is 1, and the log says so once.
 

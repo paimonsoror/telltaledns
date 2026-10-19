@@ -697,6 +697,8 @@ pub(crate) fn render(src: &Sources) -> String {
     render_maintenance(src, &mut w);
     crate::simulate::render(&mut w);
     src.identify.render(&mut w);
+    // REQ: FLT-017 — the workload table's size, age, and the watcher's errors.
+    src.pipeline.kube.render(&mut w, crate::kubernetes::now_s());
     render_slo(&mut w, &src.config.load().slo);
     render_probes(&mut w, &src.probes);
     render_filter_index(src, &mut w);
@@ -1915,7 +1917,7 @@ fn write_doh_metrics(w: &mut PromWriter, src: &Sources) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use telltale_cache::CachePolicy;
@@ -1923,7 +1925,7 @@ mod tests {
 
     use super::*;
 
-    fn sources() -> Sources {
+    pub(crate) fn sources() -> Sources {
         let metrics = Arc::new(Metrics::new(2));
         metrics.record(
             Proto::Udp,

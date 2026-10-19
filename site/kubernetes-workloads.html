@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes workloads — TelltaleDNS</title>
+<meta name="description" content="TelltaleDNS names your cluster's pods by the workload that runs them: see which Deployment asked for which domain, keep one history across rollouts, and filter per namespace with the groups you already use.">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body data-page="kubernetes-workloads">
+<!-- @header -->
+<main id="main">
+<div class="wrap">
+
+<section class="hero">
+  <div>
+    <p class="eyebrow">Kubernetes</p>
+    <h1>Which workload asked<br>for that domain?</h1>
+    <p class="lede">TelltaleDNS watches your cluster's pods and names each one by the workload that runs it. <code>media/deploy/jellyfin</code> is one device, whichever pods it runs, so you see what your apps talk to, keep one history across rollouts, and filter each namespace with the groups you already use.</p>
+    <div class="cta">
+      <a class="btn primary" href="guide-kubernetes.html#workloads">Set it up</a>
+      <a class="btn" href="#how">How it works</a>
+    </div>
+  </div>
+  <figure class="figure">
+    <picture>
+      <source srcset="assets/shots/k8s-workloads-dark.jpg" media="(prefers-color-scheme: dark)">
+      <img src="assets/shots/k8s-workloads-light.jpg" alt="The Clients page's Workloads tab: each workload by namespace and kind, its group and where the group came from, its pods, and its queries and blocks in the last 24 hours" width="1280" height="860">
+    </picture>
+    <figcaption>The Workloads tab (a kind cluster with made-up apps)</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">Why it matters</p>
+  <h2>Pod addresses don't tell you anything</h2>
+  <p>A query log full of <code>10.42.1.37</code> doesn't say which app asked, and that address belongs to another pod after the next rollout. Answering "which workload talked to that domain?" usually takes a service mesh or a flow-logging tool. Here it costs one table lookup on the query, and every view that shows a device shows the workload instead.</p>
+  <div class="grid">
+    <div class="card"><h3>One device per workload</h3><p>A Deployment's three replicas are one device. Its top domains, its anomaly baseline, its rhythm, its new-device alert, and its day on the timeline carry on when pods are replaced, rescheduled, or scaled. Every run of a CronJob counts under the CronJob, even a run that asks DNS the moment it starts.</p></div>
+    <div class="card"><h3>Names that stay true</h3><p>The query log keeps each pod's own address. Each row is named by the workload that held the address when the query was made, so an address reused after a rollout never relabels the past.</p></div>
+    <div class="card"><h3>Policy per namespace</h3><p>Label a namespace <code>telltaledns.io/group=iot</code> and every pod in it gets the iot group's lists, quick rules, blocked services, schedules, and upstreams. No new kind of rule to learn.</p></div>
+    <div class="card"><h3>From the cluster, not a guess</h3><p>A workload's identity is certain: it's what the API server says, with its pods and app labels as evidence. "Name this device" is off for workloads, because Kubernetes already named them.</p></div>
+    <div class="card"><h3>Read-only, controller only</h3><p>Only the controller pod gets a service-account token, and its role can only get, list, and watch pods and namespaces. Resolver pods have no token, and no Kubernetes client library is added.</p></div>
+    <div class="card"><h3>DNS never waits on it</h3><p>The watcher runs on its own background thread. If the API server is unreachable, pods keep their last names, DNS answers as always, and after 15 minutes the health icon turns amber and an alert can fire.</p></div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">See it</p>
+  <h2>What your apps talk to</h2>
+  <figure class="figure"><img src="assets/shots/k8s-queries-light.jpg" alt="The query log filtered to media/deploy/jellyfin: rows from both of its pods' addresses, each named by the workload with a small cube, and a blocked subtitle lookup" width="1280" height="860" loading="lazy"><figcaption>The query log for one workload, across both of its pods. Each row keeps the pod's own address; hover the name for the pod.</figcaption></figure>
+  <figure class="figure"><img src="assets/shots/k8s-timeline-light.jpg" alt="The device timeline of media/deploy/jellyfin: a lane per domain it talks to, with blocked bursts marked above" width="1280" height="860" loading="lazy"><figcaption>Its hour on the timeline: one lane per domain, whichever replica asked. A rollout replaces the pods; the lanes carry on.</figcaption></figure>
+  <figure class="figure"><img src="assets/shots/k8s-groups-light.jpg" alt="The Groups page: the media, home, and infra groups, each listing the workloads in it" width="1280" height="860" loading="lazy"><figcaption>Groups list their workloads: here from namespace labels, and a pod label for Grafana.</figcaption></figure>
+  <figure class="figure"><img src="assets/shots/k8s-add-group-light.jpg" alt="Add to group on a workload: the group chosen, and the preview of the rule before it's saved" width="1280" height="860" loading="lazy"><figcaption>"Add to group…" on a workload previews a rule before saving it. When the cluster's configuration comes from Git, the preview also shows the TOML to commit.</figcaption></figure>
+</section>
+
+<section id="how">
+  <p class="eyebrow">How it works</p>
+  <h2>Pods ask TelltaleDNS directly</h2>
+  <ol class="steps">
+    <li class="step"><b>The controller watches pods and namespaces</b> (read-only) and maps each pod address to its workload from the pod's owner: a ReplicaSet's Deployment, a StatefulSet, a DaemonSet, a Job or its CronJob, or the pod itself.</li>
+    <li class="step"><b>Every node gets the table</b> over the cluster channel within a couple of seconds, and asks again every minute, so resolver pods recognize pods on the query path and a Pi in the cluster names the rows it ships.</li>
+    <li class="step"><b>Pods send their DNS to TelltaleDNS</b>: the kubelet's cluster DNS for the whole cluster, or a workload's own <code>dnsConfig</code>. TelltaleDNS sends <code>cluster.local</code> on to CoreDNS, so Service names work as before.</li>
+  </ol>
+  <div class="callout"><p>Through CoreDNS forwarding, every pod would look like CoreDNS: pods have to ask TelltaleDNS themselves. The <a href="guide-kubernetes.html#workloads">guide</a> shows both ways, with the k3s setting.</p></div>
+</section>
+
+<section>
+  <p class="eyebrow">For agents</p>
+  <h2>In the API and MCP too</h2>
+  <p><code>GET /api/v1/kubernetes/workloads</code> lists the workloads with their groups and counts, and a workload's name works as <code>client</code> anywhere a device goes: the query log, the timeline, rhythm, identity, and explain. MCP has <code>list_workloads</code> and <code>get_workload</code>, and <code>plan_assign_client</code> with a workload's name plans a group rule for it. See <a href="agents.html">AI agents</a>.</p>
+</section>
+
+<section>
+  <div class="guide-nav">
+    <a class="btn" href="monitoring.html">← Monitoring and alerts</a>
+    <a class="btn primary" href="guide-kubernetes.html#workloads">Next: set it up →</a>
+  </div>
+</section>
+
+</div>
+</main>
+<!-- @footer -->
+</body>
+</html>

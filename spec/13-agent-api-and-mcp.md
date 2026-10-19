@@ -49,6 +49,8 @@ Implement with the official Rust MCP SDK (`rmcp`) or a minimal compliant impleme
 | `slo_status` | The service-level objectives: target, SLI and error budget left over the window, burn rates over 5m–3d, and whether the budget burns fast enough to warn (OBS-016) |
 | `simulate_change` | What a change *would have done* to the logged queries over a window (default 24 h): newly blocked and newly allowed, by device and name, changed routes, with the rows read and whether the result is partial. Takes the same change kinds as the plan tools (block/allow a domain, add a list, assign a device, update a group) without creating a plan (OBS-024) |
 | `identify_device` | What a device looks like: class and product (likely / possibly / unknown) with the evidence (MAC vendor, announced name, the domains it talks to), the suggested group, and any explicit override (OBS-025) |
+| `list_workloads` | The Kubernetes workloads named as devices (`namespace/kind/name`): group and where it came from, pods and addresses, 24-hour queries and blocks, last seen; by namespace or group (FLT-017) |
+| `get_workload` | One workload's profile by name: the workload, its identity (class `workload`, certain), rhythm, and recent and slow queries across every pod address it held (FLT-017) |
 | `rollout_status` | The current rollout (version, stage, canaries and what each runs, bake time left, guard readings), whether the cluster is pinned and to which version and why, and the kept versions with provenance and outcome (CLU-013) |
 | `cluster_status` | Members, roles, epochs, lag, versions, primary reachability; each node's maintenance window when set (OPS-010) |
 | `get_config` | Config section (secrets redacted) + current version |

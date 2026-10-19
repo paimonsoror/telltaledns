@@ -829,6 +829,9 @@ pub struct Aggregates {
     /// REQ: OBS-032 — count the minute buckets' flow joints (on; off only to measure their
     /// cost).
     pub flow_joints: bool,
+    /// REQ: FLT-017 — queries and blocks per Kubernetes workload over the last day, by its
+    /// analytics key (only events whose client is a workload key land here).
+    workloads: std::collections::HashMap<[u8; 16], crate::workload::Counts>,
 }
 
 /// The latency objective's default threshold (`[slo] latency_ms = 250`).
@@ -861,7 +864,53 @@ impl Aggregates {
             slo_latency_us: DEFAULT_SLO_LATENCY_US,
             latency_hist: true,
             flow_joints: true,
+            workloads: std::collections::HashMap::new(),
         }
+    }
+
+    /// REQ: FLT-017 — per-workload counts, by analytics key.
+    pub fn workload_counts(&self) -> &std::collections::HashMap<[u8; 16], crate::workload::Counts> {
+        &self.workloads
+    }
+
+    /// REQ: FLT-017 — a workload's saved counts, folded into what was counted since start.
+    pub fn restore_workload_counts(
+        &mut self,
+        key: [u8; 16],
+        last_seen_s: u64,
+        hours: impl IntoIterator<Item = (u64, u32, u32)>,
+    ) {
+        if !crate::workload::is_key(&key)
+            || (!self.workloads.contains_key(&key)
+                && self.workloads.len() >= crate::workload::MAX_COUNTED)
+        {
+            return;
+        }
+        let c = self.workloads.entry(key).or_default();
+        for (h, q, b) in hours {
+            c.merge(h, q, b);
+        }
+        c.last_seen_s = c.last_seen_s.max(last_seen_s);
+    }
+
+    fn count_workload(&mut self, e: &QueryEvent, ts_s: u64) {
+        if !crate::workload::is_key(&e.client_ip) {
+            return;
+        }
+        if !self.workloads.contains_key(&e.client_ip)
+            && self.workloads.len() >= crate::workload::MAX_COUNTED
+            && let Some(oldest) = self
+                .workloads
+                .iter()
+                .min_by_key(|(_, c)| c.last_seen_s)
+                .map(|(k, _)| *k)
+        {
+            self.workloads.remove(&oldest);
+        }
+        self.workloads
+            .entry(e.client_ip)
+            .or_default()
+            .add(ts_s, e.status == crate::Status::Blocked);
     }
 
     /// Folds one record in.
@@ -883,6 +932,7 @@ impl Aggregates {
             Record::Query(e, name) => {
                 self.exported.add_query(e);
                 self.recent.add(e.client_ip, ts_s);
+                self.count_workload(e, ts_s);
                 let slow_us = self.slo_latency_us;
                 if let Some(c) = self.seconds.at(ts_s) {
                     c.add_query(e, slow_us, false, false);

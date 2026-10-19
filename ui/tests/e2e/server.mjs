@@ -112,7 +112,47 @@ interval_secs = 5
 # T11.3 — the listener probe runs every 5 s, so the System tab shows it soon.
 [probe]
 interval_secs = 5
+
+# REQ: FLT-017 — Kubernetes workloads, from the fixture below (no API server).
+[kubernetes]
+enabled = true
 `,
+);
+
+// REQ: FLT-017 — the test hook's pods: their addresses are loopback ones, so a test can query
+// as a pod. jellyfin has no group of its own (its network's: lab), postgres's pod label and
+// kube-system's namespace label give theirs.
+const pod = (ns, name, owner, ip, labels = {}) => ({
+  metadata: { name, namespace: ns, labels, ownerReferences: owner ? [{ ...owner, controller: true }] : [] },
+  spec: {},
+  status: { phase: 'Running', podIPs: [{ ip }] },
+});
+const fixture = resolve(root, 'k8s.json');
+writeFileSync(
+  fixture,
+  JSON.stringify({
+    pods: {
+      items: [
+        pod('media', 'jellyfin-6c9f7b-abcde', { kind: 'ReplicaSet', name: 'jellyfin-6c9f7b' }, '127.0.0.81', {
+          'pod-template-hash': '6c9f7b',
+          'app.kubernetes.io/name': 'jellyfin',
+        }),
+        pod('media', 'jellyfin-6c9f7b-fghij', { kind: 'ReplicaSet', name: 'jellyfin-6c9f7b' }, '127.0.0.82', {
+          'pod-template-hash': '6c9f7b',
+          'app.kubernetes.io/name': 'jellyfin',
+        }),
+        pod('db', 'postgres-0', { kind: 'StatefulSet', name: 'postgres' }, '127.0.0.83', { 'telltaledns.io/group': 'lab' }),
+        pod('kube-system', 'cilium-x7k2p', { kind: 'DaemonSet', name: 'cilium' }, '127.0.0.84'),
+      ],
+    },
+    namespaces: {
+      items: [
+        { metadata: { name: 'media' } },
+        { metadata: { name: 'db' } },
+        { metadata: { name: 'kube-system', labels: { 'telltaledns.io/group': 'lab' } } },
+      ],
+    },
+  }),
 );
 
 // OIDC end-to-end (T3.6): OIDC_E2E=keycloak,authentik adds those providers (see ../oidc/),
@@ -161,6 +201,9 @@ stub.on('message', (q, from) => {
 stub.bind(15399, '127.0.0.1');
 
 const bin = process.env.TELLTALE_BIN ?? resolve(here, '../../../target/debug/telltale');
-const child = spawn(bin, ['run', '-c', cfg], { stdio: 'inherit' });
+const child = spawn(bin, ['run', '-c', cfg], {
+  stdio: 'inherit',
+  env: { ...process.env, TELLTALE_KUBERNETES_FIXTURE: fixture },
+});
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill('SIGTERM'));
 child.on('exit', (code) => process.exit(code ?? 0));

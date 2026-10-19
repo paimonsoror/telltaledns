@@ -45,6 +45,8 @@ pub(crate) const SIMULATE: &str = "simulate";
 /// REQ: CLU-013 (T13.2) — staged rollouts' settings: one entry, `default`, replacing
 /// `[cluster.rollout]`.
 pub(crate) const ROLLOUT: &str = "rollout";
+/// REQ: FLT-017 (T15.1) — `[[kubernetes.map]]` rules, by key (`namespace/kind/name`).
+pub(crate) const KUBERNETES_MAP: &str = "kubernetes_map";
 
 /// An API entry for a kind that can override the files (ADR-069): a definition, or the
 /// files' entry of that name left out.
@@ -137,6 +139,8 @@ pub(crate) struct Entries {
     pub(crate) simulate: Option<telltale_config::SimulateConfig>,
     /// REQ: CLU-013 — the `[cluster.rollout]` the API or UI set, likewise.
     pub(crate) rollout: Option<telltale_config::RolloutConfig>,
+    /// REQ: FLT-017 — `[[kubernetes.map]]` rules by key; they come before the files' rules.
+    pub(crate) kubernetes_map: Vec<(String, Ovr<telltale_config::KubernetesMapRule>)>,
 }
 
 /// Where the state database lives.
@@ -229,7 +233,26 @@ pub(crate) fn entries(state: &State) -> Entries {
             .into_iter()
             .next()
             .map(|(_, x)| x),
+        kubernetes_map: decode_ovr(state, KUBERNETES_MAP),
     }
+}
+
+/// REQ: FLT-017 — the API's `[[kubernetes.map]]` rules: each replaces (or hides) the files'
+/// rule with the same key, and comes first, so a rule made for one workload wins over a
+/// namespace glob in the files.
+fn apply_kubernetes_map(
+    cfg: &mut Config,
+    over: &[(String, Ovr<telltale_config::KubernetesMapRule>)],
+) {
+    let mut front = Vec::new();
+    for (key, o) in over {
+        cfg.kubernetes.map.retain(|r| r.key() != *key);
+        if let Ovr::Set(r) = o {
+            front.push(r.clone());
+        }
+    }
+    front.append(&mut cfg.kubernetes.map);
+    cfg.kubernetes.map = front;
 }
 
 /// The upstream group a forwarded domain uses.
@@ -279,6 +302,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
     apply_ovr(&mut cfg.alerts.destination, &e.alert_destinations);
     apply_ovr(&mut cfg.alerts.rule, &e.alert_rules);
     apply_ovr(&mut cfg.schedule, &e.schedules);
+    apply_kubernetes_map(&mut cfg, &e.kubernetes_map);
     apply_one_of(&mut cfg, e);
     for c in &e.clients {
         if !cfg.client.iter().any(|f| f.name == c.name) {
@@ -456,6 +480,63 @@ mod tests {
         let err =
             merge_clients(&file, vec![client("phone", "192.168.1.30", &["kids"])]).unwrap_err();
         assert!(err.iter().any(|e| e.contains("kids")), "{err:?}");
+    }
+
+    // REQ: FLT-017 — map rules made through the API come before the files' (first match
+    // wins), replace a file rule with the same key, or hide it.
+    #[test]
+    fn flt_017_api_map_rules_come_first() {
+        let file: Config = toml::from_str(
+            r#"
+            [[group]]
+            name = "iot"
+            [[group]]
+            name = "media"
+            [[kubernetes.map]]
+            namespace = "media*"
+            group = "iot"
+            [[kubernetes.map]]
+            namespace = "tools"
+            group = "iot"
+            "#,
+        )
+        .unwrap();
+        let rule =
+            |ns: &str, kind: &str, name: &str, group: &str| telltale_config::KubernetesMapRule {
+                namespace: SafeString::new(ns).unwrap(),
+                kind: SafeString::new(kind).unwrap(),
+                name: SafeString::new(name).unwrap(),
+                group: SafeString::new(group).unwrap(),
+            };
+        let e = Entries {
+            kubernetes_map: vec![
+                (
+                    "media/deploy/jellyfin".into(),
+                    Ovr::Set(rule("media", "deploy", "jellyfin", "media")),
+                ),
+                ("tools/*/*".into(), Ovr::Hidden),
+            ],
+            ..Entries::default()
+        };
+        let c = merge(&file, &e).unwrap();
+        let keys: Vec<String> = c
+            .kubernetes
+            .map
+            .iter()
+            .map(telltale_config::KubernetesMapRule::key)
+            .collect();
+        assert_eq!(keys, ["media/deploy/jellyfin", "media*/*/*"]);
+        // A rule naming a group that doesn't exist is refused with the reason.
+        let bad = Entries {
+            kubernetes_map: vec![("x/*/*".into(), Ovr::Set(rule("x", "", "", "nope")))],
+            ..Entries::default()
+        };
+        assert!(
+            merge(&file, &bad)
+                .unwrap_err()
+                .iter()
+                .any(|e| e.contains("nope"))
+        );
     }
 
     #[test]

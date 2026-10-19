@@ -33,6 +33,8 @@ const RESERVED: &[&str] = &[
     // T6.14 — the Kubernetes node and pod (downward API, set by the Helm charts).
     "KUBE_NODE",
     "POD",
+    // REQ: FLT-017 — the workload watcher's test hook (a pods file instead of an API server).
+    "KUBERNETES_FIXTURE",
 ];
 
 /// Applies matching variables onto `root`, using `defaults` for path resolution and types.

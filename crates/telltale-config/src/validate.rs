@@ -69,6 +69,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     exclusions(cfg, &mut r);
     simulate(cfg, &mut r);
     identify(cfg, &mut r);
+    kubernetes(cfg, &mut r);
     rollout(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
@@ -369,6 +370,77 @@ fn rollout(cfg: &Config, r: &mut Report<'_>) {
                 format!("cluster.rollout.canaries[{i}]"),
                 format!("`{c}`: a node ID, `site:<name>`, or `ephemeral`"),
             );
+        }
+    }
+}
+
+// REQ: FLT-017 (T15.1) — map rules name groups that exist and kinds TelltaleDNS knows; the
+// default group exists; namespace names are plain. A label value naming a missing group is
+// only logged at runtime (the cluster's labels aren't configuration).
+fn kubernetes(cfg: &Config, r: &mut Report<'_>) {
+    let k = &cfg.kubernetes;
+    let groups: HashSet<&str> = cfg
+        .group
+        .iter()
+        .map(|g| g.name.as_str())
+        .chain(["default"])
+        .collect();
+    if !k.default_group.is_empty() && !groups.contains(k.default_group.as_str()) {
+        r.err(
+            "kubernetes.default_group",
+            format!("unknown group `{}`", k.default_group),
+        );
+    }
+    if k.label.is_empty() || k.label.contains(char::is_whitespace) {
+        r.err(
+            "kubernetes.label",
+            "a label key such as telltaledns.io/group",
+        );
+    }
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'*'))
+    };
+    for (key, list) in [
+        ("namespaces", &k.namespaces),
+        ("exclude_namespaces", &k.exclude_namespaces),
+    ] {
+        for (i, n) in list.iter().enumerate() {
+            if !plain(n) || n.contains('*') {
+                r.err(
+                    format!("kubernetes.{key}[{i}]"),
+                    "a namespace name (lowercase letters, digits, and dashes)",
+                );
+            }
+        }
+    }
+    let mut keys = HashSet::new();
+    for (i, m) in k.map.iter().enumerate() {
+        let p = format!("kubernetes.map[{i}]");
+        if !plain(&m.namespace) {
+            r.err(
+                format!("{p}.namespace"),
+                "a namespace or a glob such as `media*` or `*`",
+            );
+        }
+        if !m.kind.is_empty() && !crate::schema::WORKLOAD_KINDS.contains(&m.kind.as_str()) {
+            r.err(
+                format!("{p}.kind"),
+                format!(
+                    "one of {} (or leave it out for any)",
+                    crate::schema::WORKLOAD_KINDS.join(", ")
+                ),
+            );
+        }
+        if !m.name.is_empty() && !plain(&m.name) {
+            r.err(format!("{p}.name"), "a workload name (no `/` or spaces)");
+        }
+        if !groups.contains(m.group.as_str()) {
+            r.err(format!("{p}.group"), format!("unknown group `{}`", m.group));
+        }
+        if !keys.insert(m.key()) {
+            r.err(p, format!("a second rule for `{}`", m.key()));
         }
     }
 }

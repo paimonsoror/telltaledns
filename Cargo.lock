@@ -3559,7 +3559,9 @@ dependencies = [
 name = "telltale-policy"
 version = "0.6.0"
 dependencies = [
+ "allocation-counter",
  "arc-swap",
+ "criterion",
  "parking_lot",
  "telltale-config",
  "telltale-proto",

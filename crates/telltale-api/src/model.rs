@@ -519,6 +519,10 @@ pub struct QueryPage {
     /// Cluster nodes that couldn't be read (CLU-002: partial results, never a hang).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_nodes: Vec<String>,
+    /// REQ: FLT-017 — `client` named a Kubernetes workload that held more than 64 pod
+    /// addresses in the window: only the newest 64 were searched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub client_truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, ToSchema, Deserialize)]
@@ -579,10 +583,25 @@ pub struct ExplainClient {
     /// The configured device it was recognized as.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
-    /// `client_id`, `edns_mac`, `neighbor_mac`, `ip`, `cidr`, or `default`.
+    /// `client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`.
     pub identified_by: String,
     /// Highest priority first.
     pub groups: Vec<String>,
+    /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload: Option<ExplainWorkload>,
+}
+
+/// REQ: FLT-017 — a pod address's workload in an explanation.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainWorkload {
+    #[schema(example = "media/deploy/jellyfin")]
+    pub name: String,
+    #[schema(example = "jellyfin-7d9f4c8b6-x2k1q")]
+    pub pod: String,
+    /// `pod_label`, `namespace_label`, `map`, `default_group`, or `none`.
+    pub group_from: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -838,7 +857,7 @@ pub struct DeviceIdentity {
     /// `phone`, `tv`, `streaming`, `camera`, ... or `unknown`.
     #[schema(example = "streaming")]
     pub class: String,
-    /// `likely`, `possibly`, or `unknown`.
+    /// `likely`, `possibly`, or `unknown`; `certain` for a Kubernetes workload (FLT-017).
     #[schema(example = "likely")]
     pub level: String,
     /// 0 to 1.
@@ -849,7 +868,7 @@ pub struct DeviceIdentity {
     /// The group whose `device_classes` lists this class, when the device isn't in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_group: Option<String>,
-    /// `inferred`, or `override` (`[[client]] kind`).
+    /// `inferred`, `override` (`[[client]] kind`), or `kubernetes` (a workload, FLT-017).
     #[schema(example = "inferred")]
     pub source: String,
     /// When it was worked out (RFC 3339).
@@ -888,6 +907,22 @@ pub struct IdentityEvidence {
     /// The next best guess, when it's within 0.1: "could also be …".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner_up: Option<IdentityRunnerUp>,
+    /// REQ: FLT-017 — a Kubernetes workload: what the API server says (`source: kubernetes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kubernetes: Option<WorkloadEvidence>,
+}
+
+/// REQ: FLT-017 — a workload's identity, from the Kubernetes API.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadEvidence {
+    /// `media/deploy/jellyfin`.
+    #[schema(example = "media/deploy/jellyfin")]
+    pub workload: String,
+    /// Its pods now.
+    pub pods: Vec<String>,
+    /// `app.kubernetes.io/name` and `app.kubernetes.io/part-of`, when its pods have them.
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -2941,4 +2976,112 @@ pub struct NoteRequest {
     #[serde(default)]
     #[schema(example = "2026-10-16T14:05:00Z")]
     pub time: Option<String>,
+}
+
+/// REQ: FLT-017 (T15.1) — one Kubernetes workload: a device TelltaleDNS names, groups, and
+/// watches (`GET /api/v1/kubernetes/workloads`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadInfo {
+    /// Its device name everywhere: `namespace/kind/name`.
+    #[schema(example = "media/deploy/jellyfin")]
+    pub name: String,
+    pub namespace: String,
+    /// `deploy`, `sts`, `ds`, `job`, `cronjob`, `rs`, `pod`, or another controller's kind.
+    #[schema(example = "deploy")]
+    pub kind: String,
+    /// The workload's own name (`jellyfin` for `media/deploy/jellyfin`).
+    #[schema(example = "jellyfin")]
+    pub workload_name: String,
+    /// Its analytics address (`100::/64`, RFC 6666): how top lists, anomalies, rhythm, and the
+    /// device timeline key it, across rollouts.
+    #[schema(example = "100::8a3f:12c4:9e01:77b2")]
+    pub key: String,
+    /// Its group; absent: its network's group or `default`, like any device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Where the group came from: `pod_label`, `namespace_label`, `map`, `default_group`, or
+    /// `none`.
+    #[schema(example = "namespace_label")]
+    pub group_from: String,
+    /// Its pods now (a deleted one stays 30 seconds, `terminating`).
+    pub pods: Vec<WorkloadPod>,
+    /// Queries and blocked answers in the last 24 hours (every node's, in a cluster).
+    pub queries_24h: u64,
+    pub blocked_24h: u64,
+    /// When it last asked (RFC 3339), within the last day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<String>,
+    /// `app.kubernetes.io/name` and `app.kubernetes.io/part-of`, when its pods have them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+}
+
+/// REQ: FLT-017 — one pod of a workload.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadPod {
+    #[schema(example = "jellyfin-7d9f4c8b6-x2k1q")]
+    pub name: String,
+    #[schema(example = json!(["10.42.0.15"]))]
+    pub addresses: Vec<String>,
+    /// Deleted: its addresses stay its own for 30 seconds (queries in flight).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminating: bool,
+}
+
+/// REQ: FLT-017 — a page of workloads, by name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadPage {
+    pub items: Vec<WorkloadInfo>,
+    /// Workloads matching the filters, on every page.
+    pub total: usize,
+    /// Pass as `cursor` for the next page; absent on the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Nodes whose counts are missing (the table itself is the watcher's, on every node).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_nodes: Vec<String>,
+}
+
+/// REQ: FLT-017 — one node's counts for one workload (what a cluster sums).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadCount {
+    /// The analytics key.
+    pub key: String,
+    pub queries_24h: u64,
+    pub blocked_24h: u64,
+    pub last_seen_unix_seconds: u64,
+}
+
+/// REQ: FLT-017 — whether Kubernetes workloads are on, and how the table is doing
+/// (`GET /api/v1/kubernetes/status`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStatus {
+    /// `[kubernetes] enabled` (the chart's `kubernetes.enabled`).
+    pub enabled: bool,
+    /// `off`, `watching` (this node watches the API server), `peer` (it takes the table from
+    /// the cluster), or `fixture` (a test file).
+    #[schema(example = "watching")]
+    pub role: String,
+    /// This node watches the API server.
+    pub watching: bool,
+    /// Seconds since the table was last confirmed (watcher) or received (peer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_seconds_ago: Option<u64>,
+    pub pods: u64,
+    pub workloads: u64,
+    /// `*` for every namespace.
+    pub namespaces_watched: Vec<String>,
+    /// The last error, until the next success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// The node a peer's table came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Pod addresses left out past the table's cap (20,000).
+    pub addresses_dropped: u64,
 }

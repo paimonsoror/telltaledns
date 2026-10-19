@@ -3851,6 +3851,287 @@
         }
       }
     },
+    "/api/v1/kubernetes/map/{key}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Put Kubernetes workloads in a group (FLT-017).",
+        "description": "Writes a `[[kubernetes.map]]` rule: the key in the path is `namespace/kind/name` with `*` for\nany (`media/deploy/jellyfin` for one workload, `media*/*/*` for every namespace starting with\n`media`), the body names the group: `{\"group\": \"iot\"}`. Rules made here are checked before\nthe configuration files' (first match wins); a pod or namespace label\n(`telltaledns.io/group`) still wins over any rule (the way to do the same from Git).\nThe workload's next query uses the group.",
+        "operationId": "put_kubernetes_map",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "namespace/kind/name; `*` for any kind or name; the namespace may be a glob.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or, with dryRun, what would change).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The key isn't namespace/kind/name, or the body has no `group`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The configuration changed since the If-Match version: re-read it and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No such group, or an unknown kind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Remove a Kubernetes workloads' group rule (FLT-017).",
+        "description": "A rule made here goes; a rule of the configuration files is hidden until this one is put\nback. The workloads it matched take the next rule, `default_group`, or their network's group.",
+        "operationId": "delete_kubernetes_map",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "namespace/kind/name, as the rule was made.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dryRun",
+            "in": "query",
+            "description": "Validate and report the change without applying it.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "simulate",
+            "in": "query",
+            "description": "REQ: OBS-024 — with `dryRun=true`: replay the query log over this window (`24h`,\n`7d`; at most 7 days; `true` for `[simulate] default_window`) and report what the\nchange would have done to those queries (`simulation`). `auto`: only when\n`[simulate] plans_by_default` is on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "simulateUntil",
+            "in": "query",
+            "description": "REQ: OBS-024 — where the simulated window ends: RFC 3339 or relative (`-24h`).\nDefault now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigChange"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No rule by that key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kubernetes/status": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Whether Kubernetes workloads are on, and how the table is doing (FLT-017).",
+        "description": "`role`: `watching` (this node lists and watches pods and namespaces), `peer` (it takes the\nwatcher's table over the cluster channel), `fixture` (a test file), or `off`. With\n`lastSyncSecondsAgo` (the API server last confirmed the table, or a peer last sent it), the\ntable's size, the namespaces watched, and the last error until the next success. The health\nlevel turns `degraded` (`kubernetes_stale`) when a watcher's table is older than 15 minutes;\nDNS answers regardless.",
+        "operationId": "kubernetes_status",
+        "responses": {
+          "200": {
+            "description": "The status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KubernetesStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kubernetes/workloads": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The Kubernetes workloads TelltaleDNS names (FLT-017).",
+        "description": "One row per workload (`namespace/kind/name`, from its pods' owners: a Deployment's replicas\nare one device across rollouts), sorted by name: its group and where that came from (a pod\nlabel, a namespace label, a `[[kubernetes.map]]` rule, or `default_group`), its pods and\ntheir addresses, queries and blocked answers in the last 24 hours (summed over every node in\na cluster; `missingNodes` lists nodes whose counts are missing), and when it last asked.\nEvery node holds the watcher's table, so the list itself never depends on one node. Use the\nname or `key` as `client` anywhere a device goes: the query log, the timeline, rhythm,\nidentity. `kubernetes_disabled` (409) when the feature is off. Example:\n`GET /api/v1/kubernetes/workloads?namespace=media`.",
+        "operationId": "workloads",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Only this namespace.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "media"
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "Only workloads in this group (`none` for those without one).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many (default and maximum 200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "From the previous page's `nextCursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`cluster` (default) or `node:local`: whose counts.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workloads, a page at a time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkloadPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A bad cursor or scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`kubernetes_disabled`: no node watches the Kubernetes API.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/lists": {
       "get": {
         "tags": [
@@ -10067,7 +10348,8 @@
           "annotation_time",
           "method_not_allowed",
           "heatmap_window",
-          "privacy_level"
+          "privacy_level",
+          "kubernetes_disabled"
         ]
       },
       "ConfigChange": {
@@ -10343,7 +10625,7 @@
           },
           "level": {
             "type": "string",
-            "description": "`likely`, `possibly`, or `unknown`.",
+            "description": "`likely`, `possibly`, or `unknown`; `certain` for a Kubernetes workload (FLT-017).",
             "example": "likely"
           },
           "node": {
@@ -10387,7 +10669,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`inferred`, or `override` (`[[client]] kind`).",
+            "description": "`inferred`, `override` (`[[client]] kind`), or `kubernetes` (a workload, FLT-017).",
             "example": "inferred"
           },
           "suggestedGroup": {
@@ -10711,7 +10993,7 @@
           },
           "identifiedBy": {
             "type": "string",
-            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `ip`, `cidr`, or `default`."
+            "description": "`client_id`, `edns_mac`, `neighbor_mac`, `kubernetes`, `ip`, `cidr`, or `default`."
           },
           "ip": {
             "type": "string"
@@ -10720,6 +11002,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "workload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExplainWorkload",
+                "description": "REQ: FLT-017 — the Kubernetes workload a pod address belongs to."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -10841,6 +11134,29 @@
           "winner": {
             "type": "boolean",
             "description": "This rule decides the query."
+          }
+        }
+      },
+      "ExplainWorkload": {
+        "type": "object",
+        "description": "REQ: FLT-017 — a pod address's workload in an explanation.",
+        "required": [
+          "name",
+          "pod",
+          "groupFrom"
+        ],
+        "properties": {
+          "groupFrom": {
+            "type": "string",
+            "description": "`pod_label`, `namespace_label`, `map`, `default_group`, or `none`."
+          },
+          "name": {
+            "type": "string",
+            "example": "media/deploy/jellyfin"
+          },
+          "pod": {
+            "type": "string",
+            "example": "jellyfin-7d9f4c8b6-x2k1q"
           }
         }
       },
@@ -11839,6 +12155,17 @@
             },
             "description": "The signature's domains the device talked to, with their weights."
           },
+          "kubernetes": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkloadEvidence",
+                "description": "REQ: FLT-017 — a Kubernetes workload: what the API server says (`source: kubernetes`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "macPrefix": {
             "type": [
               "string",
@@ -12468,7 +12795,7 @@
                 },
                 "level": {
                   "type": "string",
-                  "description": "`likely`, `possibly`, or `unknown`.",
+                  "description": "`likely`, `possibly`, or `unknown`; `certain` for a Kubernetes workload (FLT-017).",
                   "example": "likely"
                 },
                 "node": {
@@ -12512,7 +12839,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "description": "`inferred`, or `override` (`[[client]] kind`).",
+                  "description": "`inferred`, `override` (`[[client]] kind`), or `kubernetes` (a workload, FLT-017).",
                   "example": "inferred"
                 },
                 "suggestedGroup": {
@@ -14138,6 +14465,80 @@
               "type": "string"
             },
             "description": "Cluster nodes that couldn't be read, for federated reads (CLU-002)."
+          }
+        }
+      },
+      "KubernetesStatus": {
+        "type": "object",
+        "description": "REQ: FLT-017 — whether Kubernetes workloads are on, and how the table is doing\n(`GET /api/v1/kubernetes/status`).",
+        "required": [
+          "enabled",
+          "role",
+          "watching",
+          "pods",
+          "workloads",
+          "namespacesWatched",
+          "addressesDropped"
+        ],
+        "properties": {
+          "addressesDropped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pod addresses left out past the table's cap (20,000).",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "`[kubernetes] enabled` (the chart's `kubernetes.enabled`)."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last error, until the next success."
+          },
+          "lastSyncSecondsAgo": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds since the table was last confirmed (watcher) or received (peer).",
+            "minimum": 0
+          },
+          "namespacesWatched": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`*` for every namespace."
+          },
+          "pods": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "role": {
+            "type": "string",
+            "description": "`off`, `watching` (this node watches the API server), `peer` (it takes the table from\nthe cluster), or `fixture` (a test file).",
+            "example": "watching"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node a peer's table came from."
+          },
+          "watching": {
+            "type": "boolean",
+            "description": "This node watches the API server."
+          },
+          "workloads": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -15958,6 +16359,10 @@
           "scanned"
         ],
         "properties": {
+          "clientTruncated": {
+            "type": "boolean",
+            "description": "REQ: FLT-017 — `client` named a Kubernetes workload that held more than 64 pod\naddresses in the window: only the newest 64 were searched."
+          },
           "items": {
             "type": "array",
             "items": {
@@ -18487,6 +18892,188 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "WorkloadEvidence": {
+        "type": "object",
+        "description": "REQ: FLT-017 — a workload's identity, from the Kubernetes API.",
+        "required": [
+          "workload",
+          "pods",
+          "labels"
+        ],
+        "properties": {
+          "labels": {
+            "type": "object",
+            "description": "`app.kubernetes.io/name` and `app.kubernetes.io/part-of`, when its pods have them.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "pods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its pods now."
+          },
+          "workload": {
+            "type": "string",
+            "description": "`media/deploy/jellyfin`.",
+            "example": "media/deploy/jellyfin"
+          }
+        }
+      },
+      "WorkloadInfo": {
+        "type": "object",
+        "description": "REQ: FLT-017 (T15.1) — one Kubernetes workload: a device TelltaleDNS names, groups, and\nwatches (`GET /api/v1/kubernetes/workloads`).",
+        "required": [
+          "name",
+          "namespace",
+          "kind",
+          "workloadName",
+          "key",
+          "groupFrom",
+          "pods",
+          "queries24h",
+          "blocked24h"
+        ],
+        "properties": {
+          "blocked24h": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its group; absent: its network's group or `default`, like any device."
+          },
+          "groupFrom": {
+            "type": "string",
+            "description": "Where the group came from: `pod_label`, `namespace_label`, `map`, `default_group`, or\n`none`.",
+            "example": "namespace_label"
+          },
+          "key": {
+            "type": "string",
+            "description": "Its analytics address (`100::/64`, RFC 6666): how top lists, anomalies, rhythm, and the\ndevice timeline key it, across rollouts.",
+            "example": "100::8a3f:12c4:9e01:77b2"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`deploy`, `sts`, `ds`, `job`, `cronjob`, `rs`, `pod`, or another controller's kind.",
+            "example": "deploy"
+          },
+          "labels": {
+            "type": "object",
+            "description": "`app.kubernetes.io/name` and `app.kubernetes.io/part-of`, when its pods have them.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "lastSeen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it last asked (RFC 3339), within the last day."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its device name everywhere: `namespace/kind/name`.",
+            "example": "media/deploy/jellyfin"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "pods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkloadPod"
+            },
+            "description": "Its pods now (a deleted one stays 30 seconds, `terminating`)."
+          },
+          "queries24h": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queries and blocked answers in the last 24 hours (every node's, in a cluster).",
+            "minimum": 0
+          },
+          "workloadName": {
+            "type": "string",
+            "description": "The workload's own name (`jellyfin` for `media/deploy/jellyfin`).",
+            "example": "jellyfin"
+          }
+        }
+      },
+      "WorkloadPage": {
+        "type": "object",
+        "description": "REQ: FLT-017 — a page of workloads, by name.",
+        "required": [
+          "items",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkloadInfo"
+            }
+          },
+          "missingNodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Nodes whose counts are missing (the table itself is the watcher's, on every node)."
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; absent on the last."
+          },
+          "total": {
+            "type": "integer",
+            "description": "Workloads matching the filters, on every page.",
+            "minimum": 0
+          }
+        }
+      },
+      "WorkloadPod": {
+        "type": "object",
+        "description": "REQ: FLT-017 — one pod of a workload.",
+        "required": [
+          "name",
+          "addresses"
+        ],
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "10.42.0.15"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "example": "jellyfin-7d9f4c8b6-x2k1q"
+          },
+          "terminating": {
+            "type": "boolean",
+            "description": "Deleted: its addresses stay its own for 30 seconds (queries in flight)."
           }
         }
       },

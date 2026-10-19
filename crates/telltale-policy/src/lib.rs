@@ -10,6 +10,7 @@ pub mod local;
 pub mod quick;
 pub mod ratelimit;
 pub mod special;
+pub mod workloads;
 
 use std::net::IpAddr;
 
@@ -23,6 +24,7 @@ pub use local::{LoadReport, LocalData, reverse_name};
 pub use quick::{QuickMatch, QuickRule, QuickRules, RuleScope, quick_ref};
 pub use ratelimit::RateLimiter;
 pub use special::{Special, classify};
+pub use workloads::{GroupOrigin, Interval, Pod, Workload, WorkloadTable, Workloads};
 
 /// True if `ip` may use the resolver (`spec/08` §6: refuse everyone outside these networks).
 pub fn is_allowed(networks: &[Cidr], ip: IpAddr) -> bool {

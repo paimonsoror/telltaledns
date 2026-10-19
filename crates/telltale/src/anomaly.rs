@@ -172,6 +172,14 @@ impl Sink for AnomalySink {
         }
     }
 
+    /// REQ: FLT-017 — baselines, findings, and rhythms per workload, not per pod: the engine
+    /// takes the analytics' view (keyed, briefly held for unknown addresses), not the log's.
+    fn record_log(&mut self, _r: &Record) {}
+
+    fn record_analytics(&mut self, keyed: &Record) {
+        self.record(keyed);
+    }
+
     fn tick(&mut self, now: Instant) {
         if now.duration_since(self.saved) >= SAVE_EVERY {
             self.saved = now;

@@ -1121,3 +1121,58 @@ fn t8_2_routers_are_validated() {
         off.warnings
     );
 }
+
+// REQ: FLT-017 (T15.1) — `[kubernetes]`: map rules name known groups and kinds; the section is
+// shared but left out of the shared part while at its defaults (older replicas).
+#[test]
+fn flt_017_kubernetes_section() {
+    let ok = load_str(
+        r#"
+[[group]]
+name = "media"
+
+[kubernetes]
+enabled = true
+namespaces = ["media", "home"]
+default_group = "media"
+
+[[kubernetes.map]]
+namespace = "media*"
+group = "media"
+
+[[kubernetes.map]]
+namespace = "jobs"
+kind = "cronjob"
+name = "backup"
+group = "default"
+"#,
+    )
+    .unwrap();
+    let k = &ok.config.kubernetes;
+    assert!(k.enabled);
+    assert_eq!(k.label.as_str(), "telltaledns.io/group");
+    assert_eq!(k.map[0].key(), "media*/*/*");
+    assert_eq!(k.map[1].key(), "jobs/cronjob/backup");
+    let errs = load_str(
+        "[kubernetes]\ndefault_group = \"nope\"\n[[kubernetes.map]]\nnamespace = \"a b\"\nkind = \"vm\"\ngroup = \"kids\"\n",
+    )
+    .unwrap_err();
+    assert_eq!(
+        paths(&errs),
+        [
+            "kubernetes.default_group",
+            "kubernetes.map[0].namespace",
+            "kubernetes.map[0].kind",
+            "kubernetes.map[0].group"
+        ]
+    );
+    let errs = load_str(
+        "[[kubernetes.map]]\nnamespace = \"a\"\ngroup = \"default\"\n[[kubernetes.map]]\nnamespace = \"a\"\ngroup = \"default\"\n",
+    )
+    .unwrap_err();
+    assert_eq!(paths(&errs), ["kubernetes.map[1]"]);
+    let shared = telltale_config::shared::shared_part(&Config::default());
+    assert!(shared.get("kubernetes").is_none(), "defaults aren't sent");
+    let shared = telltale_config::shared::shared_part(&ok.config);
+    assert!(shared.get("kubernetes").is_some());
+}

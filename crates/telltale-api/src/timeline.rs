@@ -411,10 +411,23 @@ pub(crate) async fn client_timeline(
     Path(id): Path<String>,
     Query(p): Query<TimelineParams>,
 ) -> Result<Json<DeviceTimeline>, Problem> {
-    let ip: std::net::IpAddr = id.parse().map_err(|_| {
-        Problem::invalid(format!("`id`: `{id}` isn't an address"))
-            .hint("Give the device's IP address (the Clients page lists them).")
-    })?;
+    // REQ: FLT-017 — a Kubernetes workload (its name or analytics key): the analytics use its
+    // key, the query-log reads its name (every pod address it held, while it held it).
+    let (ip, log_client) = if let Some((text, key)) = b.workload(&id) {
+        (
+            key.parse::<std::net::IpAddr>()
+                .map_err(|_| Problem::internal("a workload key isn't an address"))?,
+            text,
+        )
+    } else {
+        let ip: std::net::IpAddr = id.parse().map_err(|_| {
+            Problem::invalid(format!(
+                "`id`: `{id}` isn't an address or a Kubernetes workload"
+            ))
+            .hint("Give the device's IP address (the Clients page lists them), or a workload as namespace/kind/name.")
+        })?;
+        (ip, ip.to_string())
+    };
     let privacy = b.qlog_privacy_level();
     if privacy >= 2 {
         return Err(Problem::new(
@@ -452,7 +465,7 @@ pub(crate) async fn client_timeline(
             );
             let slow_ms = bk.slo_settings().latency_ms;
             let mins = bin / 60;
-            let [q1, q2, q3] = texts(&client, mins, slow_ms);
+            let [q1, q2, q3] = texts(&log_client, mins, slow_ms);
             let by_status = read(&bk, &q1, from_us, to_us)?;
             let slow = read(&bk, &q2, from_us, to_us)?;
             let latency = read(&bk, &q3, from_us, to_us)?;
@@ -486,7 +499,11 @@ pub(crate) async fn client_timeline(
                         time_unix_seconds: at,
                         kind: "firstSeen".into(),
                         summary: format!("first query to {}", d.domain),
-                        href: format!("#/queries?client={client}&name={}&match=suffix", d.domain),
+                        href: format!(
+                            "#/queries?client={}&name={}&match=suffix",
+                            crate::mcp::enc(&log_client),
+                            d.domain
+                        ),
                         domain: Some(d.domain),
                     })
                 })
@@ -523,7 +540,7 @@ pub(crate) async fn client_timeline(
             {
                 events.push(e);
             }
-            events.extend(bursts(&lanes, &starts, bin, &client));
+            events.extend(bursts(&lanes, &starts, bin, &crate::mcp::enc(&log_client)));
             events.sort_by(|a, b| {
                 a.time_unix_seconds
                     .cmp(&b.time_unix_seconds)

@@ -11,7 +11,7 @@ use serde::Serialize;
 use telltale_config::BlockMode;
 use telltale_filter::explain::{Explained, explain as explain_rules};
 use telltale_filter::matcher::{ClientCtx, Tier};
-use telltale_policy::{ClientTable, IdSource, Neighbors, Pause, RewriteTarget, Special};
+use telltale_policy::{ClientTable, IdSource, Neighbors, Pause, RewriteTarget, Special, Workloads};
 use telltale_proto::{NameBuf, Query, build_query, class, parse_query, rcode};
 use telltale_upstream::Question;
 
@@ -79,6 +79,18 @@ pub(crate) struct ClientInfo {
     pub(crate) identified_by: &'static str,
     /// Highest priority first; the first one's settings apply.
     pub(crate) groups: Vec<String>,
+    /// REQ: FLT-017 — the Kubernetes workload a pod address belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workload: Option<WorkloadInfo>,
+}
+
+/// REQ: FLT-017 — a pod address's workload, its pod, and where the group came from.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WorkloadInfo {
+    pub(crate) name: String,
+    pub(crate) pod: String,
+    /// `pod_label`, `namespace_label`, `map`, `default_group`, or `none`.
+    pub(crate) group_from: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,6 +113,7 @@ fn source_name(s: IdSource) -> &'static str {
         IdSource::ClientId => "client_id",
         IdSource::EdnsMac => "edns_mac",
         IdSource::NeighborMac => "neighbor_mac",
+        IdSource::Workload => "kubernetes",
         IdSource::Ip => "ip",
         IdSource::Cidr => "cidr",
         IdSource::Default => "default",
@@ -119,6 +132,8 @@ pub(crate) struct State<'a> {
     pub(crate) dynamic: &'a Dynamic,
     pub(crate) filter: Option<&'a FilterState>,
     pub(crate) neighbors: &'a Neighbors,
+    /// REQ: FLT-017 — pod addresses → workloads.
+    pub(crate) workloads: &'a Workloads,
     pub(crate) pause: &'a Pause,
     /// REQ: FLT-010 — which schedules are on right now.
     pub(crate) schedules: &'a ScheduleNow,
@@ -151,8 +166,26 @@ pub(crate) fn explain(
         }
         None => st.neighbors,
     };
-    let ident = clients.identify(req.client, req.client_id, None, neighbors);
-    let device = clients.client(ident).map(|c| c.name.to_string());
+    let ident = clients.identify(req.client, req.client_id, None, neighbors, st.workloads);
+    // REQ: FLT-017 — a pod address is named by its workload (and `$client` rules match it).
+    let workload = (ident.source == IdSource::Workload)
+        .then(|| st.workloads.load())
+        .and_then(|t| {
+            t.get(req.client).map(|h| {
+                (
+                    WorkloadInfo {
+                        name: h.workload.text.to_string(),
+                        pod: h.pod.name.to_string(),
+                        group_from: h.workload.origin.label(),
+                    },
+                    h.workload.origin,
+                )
+            })
+        });
+    let device = clients
+        .client(ident)
+        .map(|c| c.name.to_string())
+        .or_else(|| workload.as_ref().map(|(w, _)| w.name.clone()));
     let mut e = Explanation {
         name: q.qname.display().to_string(),
         qtype: req.qtype,
@@ -166,6 +199,7 @@ pub(crate) fn explain(
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
+            workload: workload.as_ref().map(|(w, _)| w.clone()),
         },
         outcome: Outcome::Resolved,
         summary: String::new(),
@@ -175,6 +209,18 @@ pub(crate) fn explain(
         route: None,
         notes: Vec::new(),
     };
+    if let Some((w, origin)) = &workload {
+        let group = clients.primary_group(ident).name.to_string();
+        let from = if *origin == telltale_policy::GroupOrigin::None {
+            "its network's group, as for any device".to_owned()
+        } else {
+            origin.words().to_owned()
+        };
+        e.notes.push(format!(
+            "recognized as Kubernetes workload {} (pod {}), group {group} {from}",
+            w.name, w.pod
+        ));
+    }
 
     let special = match answered_early(policy, &q, req.client, clients.group_names(ident)) {
         Ok(special) => special,
@@ -371,8 +417,14 @@ fn list_rewrite_step(
 ) -> bool {
     use telltale_filter::rewrite::ListRewrite;
     let Some(f) = st.filter else { return false };
-    let Some((rewrite, list)) = f.list_rewrite(q, |_| ident, req.client, req.client_id, st.pause)
-    else {
+    let Some((rewrite, list)) = f.list_rewrite(
+        q,
+        |_| ident,
+        req.client,
+        req.client_id,
+        st.pause,
+        st.workloads,
+    ) else {
         return false;
     };
     let list = f

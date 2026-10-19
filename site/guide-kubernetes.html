@@ -25,6 +25,7 @@
     <li><a href="#config">Configuration and secrets</a></li>
     <li><a href="#scaled">More pods</a></li>
     <li><a href="#pi">A Pi in the same cluster</a></li>
+    <li><a href="#workloads">Your pods as devices</a></li>
     <li><a href="#extras">Monitoring and encrypted DNS</a></li>
   </ul>
 </section>
@@ -152,6 +153,53 @@ resolvers:
     <li class="step"><b>Optional: staged rollouts.</b> <code>cluster.rollout.canaries: [ephemeral]</code> gives each change to the resolver pods (and the controller) first, and to the Pi after a five-minute bake, pinning the cluster back if the pods start failing.</li>
   </ol>
   <div class="callout"><p>The Pi keeps its own <code>[cache]</code>, listeners, and sign-in settings in its own file: see <a href="guide-settings.html#shared">Shared or per node</a>.</p></div>
+</section>
+
+<section id="workloads">
+  <h2>Your pods as devices</h2>
+  <p>TelltaleDNS can name your cluster's pods by the workload that runs them, like any laptop or TV on the network: <code>media/deploy/jellyfin</code> for the Deployment <code>jellyfin</code> in <code>media</code>. A Deployment's replicas are one device across every rollout, so its top domains, anomaly baseline, rhythm, and day on the timeline carry on when its pods are replaced. Namespaces get groups, so lists, quick rules, schedules, and blocked services apply per namespace. See <a href="kubernetes-workloads.html">what it looks like</a>.</p>
+  <figure class="figure">
+    <svg viewBox="0 0 900 250" role="img" aria-labelledby="k8s-wl-title">
+      <title id="k8s-wl-title">Pods ask TelltaleDNS directly; it names each one by its workload, answers or forwards, and sends the cluster's own names on to CoreDNS. The controller watches pods (read-only) to know who is who.</title>
+      <defs><marker id="w-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="svg-brand"/></marker></defs>
+      <text x="10" y="18" class="svg-sub">Pods (their own addresses)</text>
+      <rect x="10" y="30" width="230" height="44" rx="10" class="svg-box"/><text x="22" y="49" class="svg-mono">jellyfin-7d9f4c8b6-x2k1q</text><text x="22" y="65" class="svg-sub">10.42.0.15</text>
+      <rect x="10" y="84" width="230" height="44" rx="10" class="svg-box"/><text x="22" y="103" class="svg-mono">jellyfin-7d9f4c8b6-m8pqz</text><text x="22" y="119" class="svg-sub">10.42.1.22</text>
+      <rect x="10" y="138" width="230" height="44" rx="10" class="svg-box"/><text x="22" y="157" class="svg-mono">postgres-0</text><text x="22" y="173" class="svg-sub">10.42.0.21</text>
+      <g class="svg-stroke-brand" stroke-width="2" marker-end="url(#w-arrow)">
+        <path d="M240 52 C290 52 300 105 330 105"/><path d="M240 106 H330"/><path d="M240 160 C290 160 300 115 330 115"/>
+        <path d="M570 80 H660"/><path d="M570 140 H660"/>
+      </g>
+      <path d="M450 222 V170" class="svg-stroke-brand" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#w-arrow)"/>
+      <rect x="330" y="50" width="240" height="120" rx="14" class="svg-brand"/>
+      <text x="450" y="80" text-anchor="middle" fill="#e8eef6" font-weight="700" font-size="15">TelltaleDNS</text>
+      <text x="450" y="104" text-anchor="middle" fill="#e8eef6" font-size="12">media/deploy/jellyfin: one device</text>
+      <text x="450" y="122" text-anchor="middle" fill="#e8eef6" font-size="12">db/sts/postgres: one device</text>
+      <text x="450" y="146" text-anchor="middle" fill="#e8eef6" font-size="12">each in its namespace's group</text>
+      <rect x="660" y="54" width="230" height="52" rx="10" class="svg-box"/><text x="674" y="76" class="svg-text">Upstreams</text><text x="674" y="94" class="svg-sub">the internet, filtered per group</text>
+      <rect x="660" y="114" width="230" height="52" rx="10" class="svg-box"/><text x="674" y="136" class="svg-text">CoreDNS</text><text x="674" y="154" class="svg-sub">cluster.local and reverse zones</text>
+      <text x="460" y="242" class="svg-sub">Kubernetes API: watch pods and namespaces (read-only)</text>
+    </svg>
+    <figcaption>Pods ask TelltaleDNS directly, so their own addresses arrive; Service names still come from CoreDNS.</figcaption>
+  </figure>
+  <ol class="steps">
+    <li class="step"><b>Turn it on</b> with CoreDNS's address (<code>kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'</code>) and a fixed address for the DNS Service inside the Service network:
+<pre><code>kubernetes:
+  enabled: true
+  clusterDns: 10.43.0.10
+  podCidr: 10.42.0.0/16       # optional: PTR lookups for pods and Services go to CoreDNS too
+  serviceCidr: 10.43.0.0/16
+service:
+  dns:
+    clusterIP: 10.43.0.53</code></pre>
+    The controller gets a token that can only read pods and namespaces; resolver pods get none.</li>
+    <li class="step"><b>Send the pods' DNS to TelltaleDNS.</b> For the whole cluster, point the kubelet at it. On k3s, in <code>/etc/rancher/k3s/config.yaml</code> on every node, then restart k3s and your workloads:
+<pre><code>kubelet-arg:
+  - "cluster-dns=10.43.0.53"</code></pre>
+    Use <code>kubelet-arg</code>, not k3s's own <code>cluster-dns</code> option, which moves CoreDNS's Service too. Or, for one workload, set <code>dnsPolicy: None</code> with <code>dnsConfig.nameservers: ["10.43.0.53"]</code> and the cluster search domains.</li>
+    <li class="step"><b>Group them.</b> Label a namespace (<code>kubectl label namespace media telltaledns.io/group=media</code>) or a pod the same way, list rules in <code>kubernetes.map</code> (<code>[{namespace: "media*", group: "iot"}]</code>), or use <b>Add to group…</b> on a workload in the web UI. Labels win, then rules, then <code>kubernetes.defaultGroup</code>, then the pod's network group.</li>
+  </ol>
+  <div class="callout"><p><b>Through CoreDNS, every pod looks like CoreDNS.</b> If CoreDNS forwards to TelltaleDNS instead, all you see is CoreDNS's address. The API server being unreachable never affects answering: pods keep their last names, and the health level turns degraded after 15 minutes.</p></div>
 </section>
 
 <section id="extras">

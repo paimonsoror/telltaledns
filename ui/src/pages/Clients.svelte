@@ -3,7 +3,7 @@
   // from either list.
   import { api, type S } from '../lib/api';
   import { href, navigate, route } from '../lib/router.svelte';
-  import { num } from '../lib/format';
+  import { ago, num } from '../lib/format';
   import { session } from '../lib/session.svelte';
   import ErrorNote from '../lib/components/ErrorNote.svelte';
   import ClientChip from '../lib/components/ClientChip.svelte';
@@ -14,6 +14,7 @@
   import Drawer from '../lib/components/Drawer.svelte';
   import RhythmStrip from '../lib/components/RhythmStrip.svelte';
   import DeviceTimeline from '../lib/components/DeviceTimeline.svelte';
+  import { groupFromText, loadWorkloads, workloadOf, workloads } from '../lib/workloads.svelte';
 
   let configured = $state<S['ClientInfo'][]>([]);
   let groups = $state<S['GroupInfo'][]>([]);
@@ -48,14 +49,30 @@
       .identities()
       .then((r) => (identities = Object.fromEntries(r.items.map((i) => [i.client, i]))))
       .catch(() => (identities = {}));
+    void loadWorkloads(true);
   }
 
   $effect(load);
+
+  // REQ: FLT-017 — Kubernetes workloads (a tab only when there are any), by namespace.
+  let namespace = $state('');
+  const namespaces = $derived([...new Set(workloads.items.map((w) => w.namespace))].sort());
+  const shownWorkloads = $derived(workloads.items.filter((w) => !namespace || w.namespace === namespace));
+  const kindText: Record<string, string> = {
+    deploy: 'Deployment',
+    sts: 'StatefulSet',
+    ds: 'DaemonSet',
+    job: 'Job',
+    cronjob: 'CronJob',
+    rs: 'ReplicaSet',
+    pod: 'Pod',
+  };
 
   // REQ: API-005 (ADR-121) — one table per tab, each with its size.
   const tabs = $derived<TabItem[]>([
     { id: 'seen', label: 'Seen this hour', count: seen.length },
     { id: 'devices', label: 'Devices', count: configured.length },
+    ...(workloads.items.length ? [{ id: 'workloads', label: 'Workloads', count: workloads.items.length }] : []),
     { id: 'discovered', label: 'Discovered', count: found.length },
   ]);
   const tab = $derived(activeTab(tabs));
@@ -164,6 +181,49 @@
         </div>
       {/if}
     </section>
+  {:else if tab === 'workloads'}
+    <section class="card" data-testid="workloads">
+      <div class="card-head">
+        <h2>Kubernetes workloads<HelpButton id="kubernetes-workloads" /></h2>
+        <label class="small">
+          Namespace
+          <select bind:value={namespace} aria-label="Namespace" data-testid="workload-namespace">
+            <option value="">All</option>
+            {#each namespaces as n (n)}<option value={n}>{n}</option>{/each}
+          </select>
+        </label>
+      </div>
+      <p class="muted small">
+        Each workload is one device, whichever pods it runs: its queries, anomalies, and timeline survive rollouts. Its
+        group comes from a <code>telltaledns.io/group</code> label on its pods or namespace, a rule, or the default group.
+        Counts cover the last 24 hours.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead
+            ><tr
+              ><th>Workload</th><th>Group</th><th class="num">Pods</th><th class="num" title="In the last 24 hours">Queries</th><th class="num" title="In the last 24 hours">Blocked</th><th>Last seen</th><th></th></tr
+            ></thead
+          >
+          <tbody>
+            {#each shownWorkloads as w (w.name)}
+              <tr data-testid="workload-row">
+                <td class="mono nowrap" title={kindText[w.kind] ?? w.kind}><ClientChip ip={w.key} name={w.name} onchanged={load} /></td>
+                <td class="small nowrap">
+                  {#if w.group}<span class="group-chip" style:--gc={groupColor(w.group)}>{w.group}</span>{/if}
+                  <div class="muted" data-testid="group-from">{groupFromText[w.groupFrom] ?? w.groupFrom}</div>
+                </td>
+                <td class="num" title={w.pods.map((p) => `${p.name} ${p.addresses.join(' ')}${p.terminating ? ' (terminating)' : ''}`).join('\n')}>{w.pods.filter((p) => !p.terminating).length}</td>
+                <td class="num">{num(w.queries24h)}</td>
+                <td class="num">{num(w.blocked24h)}</td>
+                <td class="small">{w.lastSeen ? ago(Date.parse(w.lastSeen) / 1000) : 'not in the last day'}</td>
+                <td class="num nowrap"><a href={href('/queries', { client: w.name })}>Queries</a> · <button type="button" class="link" onclick={() => openDevice(w.key, 'timeline')}>Day</button></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
   {:else}
     <section class="card" data-testid="discovered">
       <h2>Discovered on your network</h2>
@@ -196,7 +256,7 @@
   {/if}
   </TabPanel>
   {#if rhythmFor}
-    <Drawer title={rhythmFor} onclose={closeDevice}>
+    <Drawer title={workloadOf(rhythmFor)?.name ?? rhythmFor} onclose={closeDevice}>
       <div class="seg" role="group" aria-label="Device view">
         <button type="button" aria-pressed={view === 'rhythm'} onclick={() => openDevice(rhythmFor, 'rhythm')} data-testid="device-rhythm">Rhythm</button>
         <button type="button" aria-pressed={view === 'timeline'} onclick={() => openDevice(rhythmFor, 'timeline')} data-testid="device-timeline">Timeline</button>
@@ -219,3 +279,10 @@
     </Drawer>
   {/if}
 </div>
+
+<style>
+  /* REQ: FLT-017 — a workload's name on one line (the table scrolls instead). */
+  .nowrap {
+    white-space: nowrap;
+  }
+</style>

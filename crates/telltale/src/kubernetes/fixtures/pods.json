@@ -1,0 +1,117 @@
+{
+  "kind": "PodList",
+  "apiVersion": "v1",
+  "metadata": { "resourceVersion": "1000" },
+  "items": [
+    {
+      "metadata": {
+        "name": "jellyfin-7d9f4c8b6-x2k1q",
+        "namespace": "media",
+        "resourceVersion": "990",
+        "creationTimestamp": "2026-10-18T10:00:00Z",
+        "labels": {
+          "app.kubernetes.io/name": "jellyfin",
+          "app.kubernetes.io/part-of": "media-stack",
+          "pod-template-hash": "7d9f4c8b6"
+        },
+        "ownerReferences": [
+          { "apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "jellyfin-7d9f4c8b6", "uid": "a1", "controller": true, "blockOwnerDeletion": true }
+        ]
+      },
+      "spec": { "containers": [{ "name": "jellyfin", "image": "jellyfin/jellyfin" }] },
+      "status": {
+        "phase": "Running",
+        "podIP": "10.42.0.15",
+        "podIPs": [{ "ip": "10.42.0.15" }, { "ip": "fd00:42::f" }]
+      }
+    },
+    {
+      "metadata": {
+        "name": "postgres-0",
+        "namespace": "db",
+        "resourceVersion": "991",
+        "labels": { "app": "postgres", "controller-revision-hash": "postgres-5c7b", "telltaledns.io/group": "servers" },
+        "ownerReferences": [
+          { "apiVersion": "apps/v1", "kind": "StatefulSet", "name": "postgres", "uid": "a2", "controller": true }
+        ]
+      },
+      "spec": {},
+      "status": { "phase": "Running", "podIP": "10.42.0.21", "podIPs": [{ "ip": "10.42.0.21" }] }
+    },
+    {
+      "metadata": {
+        "name": "cilium-8xk2p",
+        "namespace": "kube-system",
+        "resourceVersion": "992",
+        "labels": { "k8s-app": "cilium", "controller-revision-hash": "6b9d" },
+        "ownerReferences": [
+          { "apiVersion": "apps/v1", "kind": "DaemonSet", "name": "cilium", "uid": "a3", "controller": true }
+        ]
+      },
+      "spec": {},
+      "status": { "phase": "Running", "podIP": "10.42.0.30", "podIPs": [{ "ip": "10.42.0.30" }] }
+    },
+    {
+      "metadata": {
+        "name": "backup-28456789-k7v2d",
+        "namespace": "jobs",
+        "resourceVersion": "993",
+        "labels": { "job-name": "backup-28456789", "batch.kubernetes.io/job-name": "backup-28456789" },
+        "ownerReferences": [
+          { "apiVersion": "batch/v1", "kind": "Job", "name": "backup-28456789", "uid": "a4", "controller": true }
+        ]
+      },
+      "spec": {},
+      "status": { "phase": "Running", "podIP": "10.42.0.41", "podIPs": [{ "ip": "10.42.0.41" }] }
+    },
+    {
+      "metadata": {
+        "name": "once-q9wz4",
+        "namespace": "tools",
+        "resourceVersion": "994",
+        "labels": { "job-name": "once" },
+        "ownerReferences": [
+          { "apiVersion": "batch/v1", "kind": "Job", "name": "once", "uid": "a5", "controller": true }
+        ]
+      },
+      "spec": {},
+      "status": { "phase": "Running", "podIP": "10.42.0.42", "podIPs": [{ "ip": "10.42.0.42" }] }
+    },
+    {
+      "metadata": {
+        "name": "debug",
+        "namespace": "tools",
+        "resourceVersion": "995",
+        "labels": { "run": "debug" }
+      },
+      "spec": {},
+      "status": { "phase": "Running", "podIP": "10.42.0.43", "podIPs": [{ "ip": "10.42.0.43" }] }
+    },
+    {
+      "metadata": {
+        "name": "node-exporter-abcde",
+        "namespace": "monitoring",
+        "resourceVersion": "996",
+        "ownerReferences": [
+          { "apiVersion": "apps/v1", "kind": "DaemonSet", "name": "node-exporter", "uid": "a6", "controller": true }
+        ]
+      },
+      "spec": { "hostNetwork": true },
+      "status": { "phase": "Running", "podIP": "192.168.5.2", "podIPs": [{ "ip": "192.168.5.2" }] }
+    },
+    {
+      "metadata": {
+        "name": "sonarr-5f6d7c9b8-zzz11",
+        "namespace": "media",
+        "resourceVersion": "997",
+        "deletionTimestamp": "2026-10-18T12:00:00Z",
+        "labels": { "pod-template-hash": "5f6d7c9b8" },
+        "ownerReferences": [
+          { "apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "sonarr-5f6d7c9b8", "uid": "a7", "controller": true }
+        ]
+      },
+      "spec": {},
+      "status": { "phase": "Running", "podIP": "10.42.0.50", "podIPs": [{ "ip": "10.42.0.50" }] }
+    }
+  ]
+}

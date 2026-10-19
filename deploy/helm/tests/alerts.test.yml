@@ -4,6 +4,33 @@ rule_files: [rules.yml]
 evaluation_interval: 1m
 
 tests:
+  # REQ: FLT-017 — the node that watches Kubernetes, 20 minutes without the API server, fires;
+  # a peer with an old table (it doesn't watch) and a fresh watcher don't.
+  - interval: 1m
+    input_series:
+      - series: 'telltale_kubernetes_table_age_seconds{job="telltale-metrics",instance="ctrl"}'
+        values: "1200x20"
+      - series: 'telltale_kubernetes_watching{job="telltale-metrics",instance="ctrl"}'
+        values: "1x20"
+      - series: 'telltale_kubernetes_table_age_seconds{job="telltale-metrics",instance="pi"}'
+        values: "1200x20"
+      - series: 'telltale_kubernetes_watching{job="telltale-metrics",instance="pi"}'
+        values: "0x20"
+      - series: 'telltale_kubernetes_table_age_seconds{job="telltale-metrics",instance="fresh"}'
+        values: "30x20"
+      - series: 'telltale_kubernetes_watching{job="telltale-metrics",instance="fresh"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TelltaleDNSKubernetesWatchStale
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: TelltaleDNSKubernetesWatchStale
+        exp_alerts:
+          - exp_labels: { severity: warning, job: telltale-metrics, instance: ctrl }
+            exp_annotations:
+              summary: "ctrl hasn't heard from the Kubernetes API server for 20m 0s: new pods are named by address until it's reachable (its RBAC, or the API server). DNS answers regardless."
+
   # The data disk: 5% free fires after 10 minutes; 50% free on another node doesn't.
   - interval: 1m
     input_series:

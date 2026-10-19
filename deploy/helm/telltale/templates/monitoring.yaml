@@ -84,6 +84,14 @@ spec:
           labels: { severity: info }
           annotations:
             summary: A device on {{ "{{" }} $labels.instance {{ "}}" }} behaves unusually ({{ "{{" }} $labels.kind {{ "}}" }}); see Anomalies in the web UI for the evidence.
+        # REQ: FLT-017 (ADR-150) — the node that watches Kubernetes hasn't heard from the API
+        # server for 15 minutes: new pods are named by address until it's back (DNS answers).
+        - alert: TelltaleDNSKubernetesWatchStale
+          expr: telltale_kubernetes_table_age_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} > 900 and on(instance) telltale_kubernetes_watching{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} == 1
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ "{{" }} $labels.instance {{ "}}" }} hasn't heard from the Kubernetes API server for {{ "{{" }} $value | humanizeDuration {{ "}}" }}: new pods are named by address until it's reachable (its RBAC, or the API server). DNS answers regardless."
         # REQ: CLU-008 — cluster health (only emitted by clustered nodes).
         - alert: TelltaleDNSClusterPeerDown
           expr: telltale_cluster_peer_up{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"} == 0 unless on(node) (max by (node) (last_over_time(telltale_cluster_peer_maintenance_until_seconds{job=~"{{ include "telltale.fullname" . }}(-resolver)?-metrics"}[1d])) > time())

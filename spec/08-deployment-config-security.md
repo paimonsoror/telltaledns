@@ -77,6 +77,12 @@ services:
       TELLTALE_TELEMETRY_MODE: local      # set "ship" if running on an SD card
 ```
 
+### 3.5 Pods as clients (FLT-017, ADR-150)
+- `kubernetes.enabled` (default `false`) gives the controller (or the `allInOne` pod) a service-account token and a read-only ClusterRole (`get/list/watch` on `pods` and `namespaces`, nothing else); resolver pods keep `automountServiceAccountToken: false` (ADR-120). The controller watches pods, builds the workload table, and pushes it to every peer.
+- Pods are only seen as themselves when they query TelltaleDNS **directly**: through CoreDNS forwarding every query comes from CoreDNS's address. Two supported wirings: (1) cluster-wide, point the kubelet's cluster DNS at the DNS Service (fixed with `service.dns.clusterIP`) and let TelltaleDNS forward the cluster domain and the pod/service reverse zones to CoreDNS (`kubernetes.clusterDns`, required when enabled; the chart writes the `[[forward]]` entries with a DNSSEC NTA); (2) per workload, `dnsPolicy: None` with `dnsConfig.nameservers` set to the Service address.
+- Pod-to-ClusterIP traffic keeps its source address (kube-proxy and Cilium don't SNAT it), so the masked-client-IP check (§3.2) is unaffected.
+- The API server being unreachable never affects answering: the last good table stays, health is degraded after 15 minutes (`kubernetes_stale`), and `TelltaleDNSKubernetesWatchStale` fires.
+
 ## 4. Linux / Raspberry Pi native (OPS-004, Tier 2)
 `install.sh` detects the arch, downloads + verifies (cosign/minisign) the binary, creates a `telltale` system user, and installs a hardened systemd unit with `DynamicUser`-style sandboxing (`ProtectSystem=strict`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `NoNewPrivileges`, `MemoryMax=256M`). It also detects and offers to disable systemd-resolved's stub listener. Upgrades go through `telltale self-update` (verifies the signature, atomic swap, restart; refuses if the cluster's min version is incompatible).
 

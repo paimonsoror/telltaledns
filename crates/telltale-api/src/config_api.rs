@@ -132,6 +132,11 @@ pub(crate) fn routes(backend: Arc<dyn Backend>, auth: Arc<Auth>) -> Router {
             "/api/v1/schedules/{name}",
             put(put_schedule).delete(delete_schedule),
         )
+        // REQ: FLT-017 — a workload's (or a namespace's) group.
+        .route(
+            "/api/v1/kubernetes/map/{*key}",
+            put(put_kubernetes_map).delete(delete_kubernetes_map),
+        )
         // REQ: DNS-014 (review 01 q1)
         .route(
             "/api/v1/ratelimit/default",
@@ -944,6 +949,82 @@ pub(crate) async fn put_schedule(
     .await
 }
 
+/// Put Kubernetes workloads in a group (FLT-017).
+///
+/// Writes a `[[kubernetes.map]]` rule: the key in the path is `namespace/kind/name` with `*` for
+/// any (`media/deploy/jellyfin` for one workload, `media*/*/*` for every namespace starting with
+/// `media`), the body names the group: `{"group": "iot"}`. Rules made here are checked before
+/// the configuration files' (first match wins); a pod or namespace label
+/// (`telltaledns.io/group`) still wins over any rule (the way to do the same from Git).
+/// The workload's next query uses the group.
+#[utoipa::path(put, path = "/api/v1/kubernetes/map/{key}", tag = "config",
+    params(("key" = String, Path, description = "namespace/kind/name; `*` for any kind or name; the namespace may be a glob."), DryRun),
+    request_body = Object,
+    responses(
+        (status = 200, body = ConfigChange, description = "Applied (or, with dryRun, what would change)."),
+        (status = 400, body = Problem, description = "The key isn't namespace/kind/name, or the body has no `group`."),
+        (status = 412, body = Problem, description = "The configuration changed since the If-Match version: re-read it and retry."),
+        (status = 422, body = Problem, description = "No such group, or an unknown kind."),
+    ))]
+pub(crate) async fn put_kubernetes_map(
+    State((backend, auth)): State<Ctx>,
+    Path(key): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+    b: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    let input = match body(b) {
+        Ok(i) => i,
+        Err(p) => return p.into_response(),
+    };
+    let key = key.trim_start_matches('/').to_owned();
+    let request = format!("PUT /kubernetes/map/{key} {}", json_of(&input));
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        key,
+        Op::Managed(ManagedKind::KubernetesMap, Some(input)),
+    )
+    .await
+}
+
+/// Remove a Kubernetes workloads' group rule (FLT-017).
+///
+/// A rule made here goes; a rule of the configuration files is hidden until this one is put
+/// back. The workloads it matched take the next rule, `default_group`, or their network's group.
+#[utoipa::path(delete, path = "/api/v1/kubernetes/map/{key}", tag = "config",
+    params(("key" = String, Path, description = "namespace/kind/name, as the rule was made."), DryRun),
+    responses(
+        (status = 200, body = ConfigChange, description = "The result."),
+        (status = 404, body = Problem, description = "No rule by that key."),
+    ))]
+pub(crate) async fn delete_kubernetes_map(
+    State((backend, auth)): State<Ctx>,
+    Path(key): Path<String>,
+    Query(q): Query<DryRun>,
+    headers: HeaderMap,
+    ext: axum::http::Extensions,
+) -> Response {
+    let key = key.trim_start_matches('/').to_owned();
+    let request = format!("DELETE /kubernetes/map/{key}");
+    write(
+        backend,
+        auth,
+        headers,
+        ext,
+        dry(&q),
+        request,
+        key,
+        Op::Managed(ManagedKind::KubernetesMap, None),
+    )
+    .await
+}
+
 /// Remove a schedule (FLT-010, T9.7).
 ///
 /// A group that still names it makes the configuration invalid (422 says which): take it out
@@ -1290,6 +1371,7 @@ impl Op {
             Self::Managed(ManagedKind::Exclusions, _) => "exclusions",
             Self::Managed(ManagedKind::Simulate, _) => "simulate",
             Self::Managed(ManagedKind::Rollout, _) => "rollout_settings",
+            Self::Managed(ManagedKind::KubernetesMap, _) => "kubernetes_map",
         }
     }
     fn deleting(&self) -> bool {

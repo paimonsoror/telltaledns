@@ -18,3 +18,11 @@ telltale-config = { version = "0.6.0", path = "../telltale-config" }
 telltale-proto = { version = "0.6.0", path = "../telltale-proto" }
 # T6.12: hashes quick-rule domains (already in the binary via telltale-proto and -filter).
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+allocation-counter = "0.8.1"
+criterion = { version = "0.8.2", default-features = false }
+
+[[bench]]
+name = "identify"
+harness = false

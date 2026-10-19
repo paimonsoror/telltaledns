@@ -92,11 +92,47 @@ hostNetwork: false
 # Container port for DNS when not on the host network (the Service maps 53 to it).
 dnsPort: 5353
 
+# REQ: FLT-017 (T15.1) — Kubernetes workloads as devices: the controller (or the allInOne pod)
+# watches pods and namespaces, read-only, and names each pod address by its workload
+# (media/deploy/jellyfin); a Deployment's replicas are one device across rollouts. Pods are
+# seen as themselves only when they ask TelltaleDNS directly: point the cluster's DNS at the DNS
+# Service (`service.dns.clusterIP`, then the kubelet's cluster DNS; see NOTES and
+# docs/running.md), or give a workload `dnsConfig.nameservers`. TelltaleDNS sends the cluster
+# domain (and the pod and service reverse zones) on to CoreDNS. Don't set `[kubernetes]` in
+# `config` as well: the chart writes it.
+kubernetes:
+  enabled: false
+  # The cluster's DNS domain.
+  clusterDomain: cluster.local
+  # CoreDNS's Service address (required when enabled):
+  #   kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'
+  clusterDns: ""
+  # Optional: the pod and service networks (IPv4 CIDRs, e.g. 10.42.0.0/16 and 10.43.0.0/16 on
+  # k3s); their reverse zones (PTR) go to CoreDNS too, rounded to whole octets.
+  podCidr: ""
+  serviceCidr: ""
+  # Namespaces to watch (empty: all), and namespaces never watched.
+  namespaces: []
+  excludeNamespaces: []
+  # The group of a workload no label or rule places (empty: its network's group, or default).
+  defaultGroup: ""
+  # Groups by namespace glob (and optionally kind and name), first match wins after the
+  # telltaledns.io/group labels: [{namespace: "media*", group: "iot"}].
+  map: []
+  rbac:
+    # A ServiceAccount, and a ClusterRole that can only get/list/watch pods and namespaces.
+    create: true
+    # Use an existing ServiceAccount instead (it needs those rights).
+    serviceAccountName: ""
+
 service:
   dns:
     # One Service with both UDP and TCP 53.
     type: LoadBalancer
     port: 53
+    # REQ: FLT-017 — a fixed cluster address for the Service, so the kubelet's cluster DNS
+    # setting survives reinstalls (e.g. 10.43.0.53 inside k3s's 10.43.0.0/16). Empty: assigned.
+    clusterIP: ""
     # Local keeps client source IPs (per-device filtering and the query log need them).
     # Cluster masks them behind node IPs: NOTES.txt warns.
     externalTrafficPolicy: Local

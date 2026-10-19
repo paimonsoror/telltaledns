@@ -876,3 +876,73 @@ fn obs_032_flow_joints_cost_under_50_ns_per_event() {
     );
     assert!(added < 50.0, "+{added:.1} ns per event");
 }
+
+/// REQ: FLT-017 (ADR-150) — the analytics wait briefly for a new pod's address: a query from an
+/// address no workload holds yet is held, then counted under the workload key once the table
+/// names it; known addresses and the no-workload case never wait; order per address holds.
+#[test]
+fn flt_017_analytics_hold_unknown_addresses_briefly() {
+    use crate::ring::{Hold, WORKLOAD_HOLD, WORKLOAD_HOLD_MAX};
+    let name = crate::event::Name::from_wire(&wire("s3.example"));
+    let (pod, lan) = (ipv4(10, 244, 0, 47), ipv4(192, 168, 1, 20));
+    let key = crate::workload::key("jobs/cronjob/backup");
+    let other = crate::workload::key("media/deploy/jellyfin");
+    let rec = |ts: u64, ip: [u8; 16]| Record::Query(query(ts, ip, Status::Cached, 5), name);
+    let client = |r: &Record| match r {
+        Record::Query(e, _) => (e.ts_us, e.client_ip),
+        Record::Upstream(_) => (0, [0; 16]),
+    };
+    let t0 = Instant::now();
+    let mut hold = Hold::default();
+    let mut out = Vec::new();
+
+    // No workload known: nothing waits.
+    hold.release(None, t0, |r| out.push(client(r)));
+    hold.offer(None, rec(1, pod), t0, |r| out.push(client(r)));
+    assert_eq!(out, vec![(1, pod)]);
+    out.clear();
+
+    // Some workload known, not this pod yet: its queries (and the LAN's) wait.
+    let before: Arc<crate::workload::Keys> =
+        Arc::new(HashMap::from([(ipv4(10, 244, 0, 9), other)]));
+    hold.release(Some(&before), t0, |r| out.push(client(r)));
+    hold.offer(Some(&before), rec(2, pod), t0, |r| out.push(client(r)));
+    hold.offer(Some(&before), rec(3, lan), t0, |r| out.push(client(r)));
+    hold.offer(Some(&before), rec(4, ipv4(10, 244, 0, 9)), t0, |r| {
+        out.push(client(r));
+    });
+    assert_eq!(out, vec![(4, other)], "a known pod never waits");
+    assert_eq!(hold.len(), 2);
+    out.clear();
+
+    // The watch event arrives: the table changes and everything goes out, the pod keyed.
+    let after: Arc<crate::workload::Keys> =
+        Arc::new(HashMap::from([(ipv4(10, 244, 0, 9), other), (pod, key)]));
+    hold.release(Some(&after), t0 + Duration::from_millis(900), |r| {
+        out.push(client(r));
+    });
+    assert_eq!(out, vec![(2, key), (3, lan)]);
+    assert!(hold.is_empty());
+    out.clear();
+
+    // An address no workload ever holds goes out after the wait, as itself.
+    hold.offer(Some(&after), rec(5, lan), t0, |r| out.push(client(r)));
+    hold.release(Some(&after), t0 + WORKLOAD_HOLD / 2, |r| {
+        out.push(client(r));
+    });
+    assert_eq!(out, Vec::<(u64, [u8; 16])>::new());
+    hold.release(Some(&after), t0 + WORKLOAD_HOLD, |r| out.push(client(r)));
+    assert_eq!(out, vec![(5, lan)]);
+    out.clear();
+
+    // Bounded: past the cap the oldest goes out early, in order.
+    for i in 0..=WORKLOAD_HOLD_MAX as u64 {
+        hold.offer(Some(&after), rec(100 + i, lan), t0, |r| out.push(client(r)));
+    }
+    assert_eq!(out, vec![(100, lan)]);
+    assert_eq!(hold.len(), WORKLOAD_HOLD_MAX);
+    out.clear();
+    hold.flush(Some(&after), |r| out.push(client(r)));
+    assert_eq!(out.len(), WORKLOAD_HOLD_MAX);
+    assert!(out.windows(2).all(|w| w[0].0 < w[1].0));
+}

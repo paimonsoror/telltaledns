@@ -51,6 +51,9 @@ pub(crate) struct Local<'a> {
     /// REQ: OBS-020 — its synthetic probes, and when a certificate expiring counts.
     pub(crate) probes: &'a [telltale_api::model::ProbeResult],
     pub(crate) cert_warn_days: u32,
+    /// REQ: FLT-017 — this node watches Kubernetes and its table is this many seconds old
+    /// (`None`: it doesn't watch, or the table is fresh).
+    pub(crate) kubernetes_stale_s: Option<u64>,
 }
 
 /// REQ: OBS-020 (ADR-107) — listeners (or extra targets) that failed their probe twice in a
@@ -197,6 +200,19 @@ pub(crate) fn local_reasons(l: &Local<'_>) -> Vec<HealthReason> {
                 "#/lists",
             ));
         }
+    }
+    // REQ: FLT-017 (ADR-150) — the API server unreachable for 15 minutes: pods keep their
+    // last names, new pods are plain addresses until it's back. DNS is unaffected.
+    if let Some(s) = l.kubernetes_stale_s {
+        out.push(reason(
+            DEGRADED,
+            "kubernetes_stale",
+            format!(
+                "the Kubernetes workload table is {} minutes old: pods may be named by address until the API server is reachable",
+                s / 60
+            ),
+            "#/clients?tab=workloads",
+        ));
     }
     if let Some(d) = l.disk_used_percent.filter(|d| *d > DISK_FULL) {
         out.push(reason(
@@ -476,7 +492,28 @@ mod tests {
             disk_used_percent: Some(40.0),
             probes: &[],
             cert_warn_days: 14,
+            kubernetes_stale_s: None,
         }
+    }
+
+    // REQ: FLT-017 (ADR-150) — a watcher's table older than 15 minutes degrades, with the
+    // reason in words; nothing else changes.
+    #[test]
+    fn flt_017_stale_workload_table_degrades() {
+        let (ups, recent) = (Vec::new(), Vec::new());
+        assert!(local_reasons(&local(&ups, &recent)).is_empty());
+        let stale = Local {
+            kubernetes_stale_s: Some(1_200),
+            ..local(&ups, &recent)
+        };
+        let r = local_reasons(&stale);
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            (r[0].level.as_str(), r[0].code.as_str()),
+            (DEGRADED, "kubernetes_stale")
+        );
+        assert!(r[0].summary.contains("20 minutes"), "{}", r[0].summary);
+        assert!(r[0].summary.contains("named by address"));
     }
 
     fn probe(

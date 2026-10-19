@@ -26,6 +26,7 @@ pub mod prom;
 pub mod recent;
 pub mod ring;
 pub mod topk;
+pub mod workload;
 
 pub use agg::Aggregates;
 pub use event::{QueryEvent, Rule, RuleKind, UpstreamEvent};

@@ -28,6 +28,19 @@ impl Backend for Fake {
     fn now_unix_seconds(&self) -> u64 {
         NOW
     }
+    // REQ: FLT-017 — the map rule writes reach the backend as managed writes.
+    fn write_managed(
+        &self,
+        w: crate::ManagedWrite,
+    ) -> crate::BoxFuture<Result<crate::model::ConfigChange, Problem>> {
+        self.seen.lock().unwrap().push(format!(
+            "managed {:?} {} {}",
+            w.kind,
+            w.name,
+            w.body.map(|b| b.to_string()).unwrap_or_default()
+        ));
+        Box::pin(async { Err(Problem::unavailable("recorded")) })
+    }
     fn annotations(&self, f: &crate::model::AnnotationFilter) -> Vec<crate::model::Annotation> {
         let mut v: Vec<_> = self
             .notes
@@ -168,6 +181,7 @@ impl Backend for Fake {
             items,
             scanned: ScanStats::default(),
             missing_nodes: Vec::new(),
+            client_truncated: false,
         })
     }
     fn tail(
@@ -218,6 +232,7 @@ impl Backend for Fake {
                 device: None,
                 identified_by: "default".into(),
                 groups: vec!["default".into()],
+                workload: None,
             },
             outcome: "resolved".into(),
             summary: "no rule applies; resolved normally".into(),
@@ -1118,7 +1133,8 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 100 with OBS-028's /cluster/compare; 101 with OBS-031's /clients/{id}/rhythm; 102 with
     // OBS-034's /clients/{id}/timeline.
     // 105 with OBS-035's /auth/display, /displays and /displays/{id}.
-    assert_eq!(paths.len(), 105);
+    // 108 with FLT-017's /kubernetes/workloads, /kubernetes/status and /kubernetes/map/{key}.
+    assert_eq!(paths.len(), 108);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.
@@ -2496,5 +2512,32 @@ async fn api_003_account_changes_need_a_signed_in_session() {
         (s, v["code"].as_str()),
         (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited")),
         "locked, even with the right password: {v}"
+    );
+}
+
+// REQ: FLT-017 — the workload routes: off by default (409 with a hint), the status, and a map
+// rule's key with its slashes reaching the backend whole.
+#[tokio::test]
+async fn flt_017_kubernetes_routes() {
+    let (app, fake) = app();
+    let (s, ctype, v) = get(&app, "/api/v1/kubernetes/workloads").await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(ctype, "application/problem+json");
+    assert_eq!(v["code"], "kubernetes_disabled");
+    assert!(v["hint"].as_str().unwrap().contains("kubernetes.enabled"));
+    let (s, _, v) = get(&app, "/api/v1/kubernetes/status").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["enabled"], false);
+    let req = Request::put("/api/v1/kubernetes/map/media/deploy/jellyfin?dryRun=true")
+        .header("authorization", format!("Bearer {}", app.bearer))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"group":"iot"}"#))
+        .unwrap();
+    let _ = send(&app, req).await;
+    let seen = fake.seen.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .any(|x| x == r#"managed KubernetesMap media/deploy/jellyfin {"group":"iot"}"#),
+        "{seen:?}"
     );
 }

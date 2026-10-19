@@ -28,6 +28,9 @@ const MAX_GROUPS: usize = 100_000;
 const DEADLINE: Duration = Duration::from_secs(25);
 const PAGE: usize = 20_000;
 
+/// REQ: FLT-017 — `(address, from_s, to_s)`: a workload's stretches on each pod address.
+pub(crate) type Spans = Vec<([u8; 16], u64, u64)>;
+
 /// What the plan needs from the server.
 pub(crate) struct Ctx<'a> {
     /// Group names by index.
@@ -35,6 +38,9 @@ pub(crate) struct Ctx<'a> {
     /// Upstream names by ID.
     pub(crate) upstreams: HashMap<u16, String>,
     pub(crate) client_name: &'a dyn Fn([u8; 16]) -> Option<String>,
+    /// REQ: FLT-017 — a Kubernetes workload (`ns/kind/name`, or its analytics key) as the
+    /// stretches it held each address: `(address, from_s, to_s)`; `None` when it isn't one.
+    pub(crate) workload_spans: &'a dyn Fn(&str) -> Option<Spans>,
     pub(crate) qtype_name: fn(u16) -> String,
     pub(crate) rcode_name: fn(u8) -> String,
     pub(crate) rcode_value: fn(&str) -> Option<u8>,
@@ -50,6 +56,8 @@ enum Pred {
     Client {
         neg: bool,
         nets: Vec<([u8; 16], u8)>,
+        /// REQ: FLT-017 — a workload's addresses, each only while it held it.
+        spans: Vec<([u8; 16], u64, u64)>,
     },
     Group {
         neg: bool,
@@ -114,7 +122,16 @@ impl Pred {
                     Op::Gt | Op::Ge | Op::Lt | Op::Le => false,
                 }
             }
-            Self::Client { neg, nets } => pick(*neg, nets.iter().any(|n| in_net(&r.client_ip, n))),
+            Self::Client { neg, nets, spans } => {
+                let ts = r.ts_us / 1_000_000;
+                pick(
+                    *neg,
+                    nets.iter().any(|n| in_net(&r.client_ip, n))
+                        || spans
+                            .iter()
+                            .any(|(ip, f, t)| *ip == r.client_ip && *f <= ts && ts < *t),
+                )
+            }
             Self::Group { neg, set } => pick(*neg, set.contains(&r.group)),
             Self::Status { neg, set } => pick(*neg, set.contains(&r.status)),
             Self::Qtype { neg, set } => pick(*neg, set.contains(&r.qtype)),
@@ -169,18 +186,21 @@ fn resolve(c: &Cond, ctx: &Ctx<'_>) -> Result<Pred, Problem> {
             op: c.op,
             values: c.values.iter().map(|v| v.trim_end_matches('.').to_ascii_lowercase()).collect(),
         },
-        Field::Client => Pred::Client {
-            neg,
-            nets: c
-                .values
-                .iter()
-                .map(|v| {
-                    client_net(v).ok_or_else(|| {
-                        bad(Field::Client, v, "Use the device's address or a CIDR (192.168.1.0/24); get_client_profile gives a named device's address.")
-                    })
-                })
-                .collect::<Result<_, _>>()?,
-        },
+        Field::Client => {
+            let (mut nets, mut spans) = (Vec::new(), Vec::new());
+            for v in &c.values {
+                // REQ: FLT-017 — a workload's text form or key: its addresses, while it held
+                // each one.
+                if let Some(s) = (ctx.workload_spans)(v) {
+                    spans.extend(s);
+                } else {
+                    nets.push(client_net(v).ok_or_else(|| {
+                        bad(Field::Client, v, "Use the device's address, a CIDR (192.168.1.0/24), or a Kubernetes workload (namespace/kind/name); get_client_profile gives a named device's address.")
+                    })?);
+                }
+            }
+            Pred::Client { neg, nets, spans }
+        }
         Field::Group => Pred::Group {
             neg,
             set: c
@@ -295,8 +315,27 @@ fn pushdown(preds: &[Pred], from_us: u64, to_us: u64) -> qlog::Filter {
                     _ => None,
                 };
             }
-            Pred::Client { neg: false, nets } if nets.len() == 1 && nets[0].1 == 128 => {
+            Pred::Client {
+                neg: false,
+                nets,
+                spans,
+            } if spans.is_empty() && nets.len() == 1 && nets[0].1 == 128 => {
                 f.client_ip = Some(nets[0].0);
+            }
+            Pred::Client {
+                neg: false,
+                nets,
+                spans,
+            } if nets.is_empty() => {
+                let mut ips: Vec<[u8; 16]> = spans.iter().map(|s| s.0).collect();
+                ips.sort_unstable();
+                ips.dedup();
+                if ips.is_empty() {
+                    // A workload that held no address: no row can match.
+                    f.client_ip = Some([0xff; 16]);
+                } else if ips.len() <= 64 {
+                    f.client_any = ips;
+                }
             }
             Pred::Group { neg: false, set } if set.len() == 1 => f.group = Some(set[0]),
             Pred::Status { neg: false, set } => f.status.clone_from(set),
@@ -924,6 +963,7 @@ mod tests {
             groups: vec!["default".into(), "kids".into()],
             upstreams: HashMap::from([(1, "quad9".to_owned())]),
             client_name: &name,
+            workload_spans: &|_| None,
             qtype_name: crate::api_backend::qtype_name,
             rcode_name: crate::api_backend::rcode_name,
             rcode_value: crate::api_backend::rcode_value,
@@ -1074,6 +1114,7 @@ mod tests {
             groups: vec!["default".into(), "kids".into()],
             upstreams: HashMap::new(),
             client_name: &name,
+            workload_spans: &|_| None,
             qtype_name: crate::api_backend::qtype_name,
             rcode_name: crate::api_backend::rcode_name,
             rcode_value: crate::api_backend::rcode_value,
@@ -1124,6 +1165,7 @@ mod tests {
             groups: vec![],
             upstreams: HashMap::new(),
             client_name: &name,
+            workload_spans: &|_| None,
             qtype_name: crate::api_backend::qtype_name,
             rcode_name: crate::api_backend::rcode_name,
             rcode_value: crate::api_backend::rcode_value,

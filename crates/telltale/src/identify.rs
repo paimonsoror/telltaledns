@@ -246,6 +246,62 @@ pub(crate) fn to_identity(key: &str, g: &Guess, inp: &Inputs, at_s: u64) -> Devi
                 product_id: id.clone(),
                 score: (s * 1000.0).round() / 1000.0,
             }),
+            kubernetes: None,
+        }),
+    }
+}
+
+/// REQ: FLT-017 (ADR-150) — a workload's identity: `class: workload`, `product: "<kind> in
+/// <namespace>"`, certain, with its pods and app labels as evidence.
+pub(crate) fn workload_identity(
+    key: &str,
+    w: &telltale_policy::Workload,
+    at_s: u64,
+) -> DeviceIdentity {
+    let kind = match &*w.kind {
+        "deploy" => "Deployment",
+        "sts" => "StatefulSet",
+        "ds" => "DaemonSet",
+        "job" => "Job",
+        "cronjob" => "CronJob",
+        "rs" => "ReplicaSet",
+        "pod" => "Pod",
+        other => other,
+    };
+    DeviceIdentity {
+        client: key.to_owned(),
+        available: true,
+        reason: None,
+        product: Some(format!("{kind} in {}", w.namespace)),
+        product_id: Some(format!("kubernetes-{}", w.kind)),
+        class: "workload".to_owned(),
+        level: "certain".to_owned(),
+        score: 1.0,
+        vendor: None,
+        suggested_group: None,
+        source: "kubernetes".to_owned(),
+        computed_at: Some(telltale_api::time::format_us(
+            at_s.saturating_mul(1_000_000),
+        )),
+        node: None,
+        changed_at: None,
+        previous: None,
+        evidence: Some(IdentityEvidence {
+            kubernetes: Some(telltale_api::model::WorkloadEvidence {
+                workload: w.text.to_string(),
+                pods: w
+                    .pods
+                    .iter()
+                    .filter(|p| p.deleted_s.is_none())
+                    .map(|p| p.name.to_string())
+                    .collect(),
+                labels: w
+                    .labels
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            }),
+            ..IdentityEvidence::default()
         }),
     }
 }
@@ -457,7 +513,13 @@ impl Identifier {
         let mut stale: Vec<(u64, String)> = seen
             .iter()
             .filter(|(k, s)| {
-                observed.get(*k).is_none_or(|o| o.1.is_empty()) && s.domains_s + LOG_REFRESH_S < now
+                observed.get(*k).is_none_or(|o| o.1.is_empty())
+                    && s.domains_s + LOG_REFRESH_S < now
+                    // REQ: FLT-017 — a workload's key never appears in the log (and needs no
+                    // domains: it isn't scored).
+                    && !k
+                        .parse::<IpAddr>()
+                        .is_ok_and(|ip| telltale_telemetry::workload::is_key(&octets(ip)))
             })
             .map(|(k, s)| (s.domains_s, k.clone()))
             .collect();
@@ -517,8 +579,21 @@ impl Identifier {
         let before = self.current.load_full();
         let mut changes: Vec<(String, String)> = Vec::new();
         let mut by_client = BTreeMap::new();
+        let workloads = src.pipeline.workloads.load();
         for d in &devices {
-            let ident = clients.identify(d.ip, None, None, &src.pipeline.neighbors);
+            // REQ: FLT-017 — a Kubernetes workload is what the API server says it is; the
+            // signature catalog isn't consulted.
+            if let Some(w) = workloads.by_key(&octets(d.ip)) {
+                by_client.insert(d.key.clone(), workload_identity(&d.key, w, now));
+                continue;
+            }
+            let ident = clients.identify(
+                d.ip,
+                None,
+                None,
+                &src.pipeline.neighbors,
+                &src.pipeline.workloads,
+            );
             let kind = clients
                 .client(ident)
                 .and_then(|c| cfg.client.iter().find(|x| x.name.as_str() == &*c.name))

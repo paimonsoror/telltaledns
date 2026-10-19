@@ -46,3 +46,21 @@ NOTE (mode: scaled): the {{ if eq .Values.service.api.type "LoadBalancer" }}api{
   (and .cluster) instead, and leave those Services on ClusterIP.
 {{- end }}
 {{- end }}
+{{- if .Values.kubernetes.enabled }}
+
+Kubernetes workloads (FLT-017): the {{ if include "telltale.scaled" . }}controller{{ else }}pod{{ end }} watches pods and namespaces (read-only) and
+names each pod address by its workload, e.g. media/deploy/jellyfin. Pods are seen as themselves
+only when they ask TelltaleDNS directly; through CoreDNS they all look like CoreDNS. Either:
+  1. Cluster-wide: point the kubelet's cluster DNS at the DNS Service{{ with .Values.service.dns.clusterIP }} ({{ . }}){{ end }}.
+     k3s, in /etc/rancher/k3s/config.yaml on every node, then restart k3s:
+       kubelet-arg: ["cluster-dns={{ .Values.service.dns.clusterIP | default "<the DNS Service's ClusterIP>" }}"]
+     New pods use it; restart workloads to move existing pods. TelltaleDNS sends
+     {{ .Values.kubernetes.clusterDomain }}{{ if or .Values.kubernetes.podCidr .Values.kubernetes.serviceCidr }} and the {{ if .Values.kubernetes.podCidr }}pod{{ end }}{{ if and .Values.kubernetes.podCidr .Values.kubernetes.serviceCidr }} and {{ end }}{{ if .Values.kubernetes.serviceCidr }}service{{ end }} reverse zones{{ end }} on to CoreDNS ({{ .Values.kubernetes.clusterDns }}).
+  2. Per workload: dnsPolicy: None, with dnsConfig.nameservers set to the DNS Service's address
+     and the cluster search domains.
+{{- if not .Values.service.dns.clusterIP }}
+  Set service.dns.clusterIP to a fixed address first, so the kubelet setting survives reinstalls.
+{{- end }}
+Group workloads with a telltaledns.io/group label on a namespace or pod, kubernetes.map, or the
+Clients page's Workloads tab. See "Kubernetes workloads as devices" in docs/running.md.
+{{- end }}

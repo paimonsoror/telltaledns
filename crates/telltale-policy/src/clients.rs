@@ -1,9 +1,9 @@
 //! Client identification and group membership (`spec/03` §3 step 2, `spec/05` §1).
 //!
 //! REQ: FLT-005, FLT-006. Precedence: client ID (DoH path / DoT SNI) → EDNS MAC (only from
-//! trusted forwarders) → MAC from the neighbor table → exact IP → most specific CIDR →
-//! the `default` group. All lookups are hash maps or a short prefix list built once per
-//! config, so identifying a client allocates nothing.
+//! trusted forwarders) → MAC from the neighbor table → Kubernetes workload (FLT-017) → exact
+//! IP → most specific CIDR → the `default` group. All lookups are hash maps or a short prefix
+//! list built once per config, so identifying a client allocates nothing.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -271,6 +271,8 @@ pub enum IdSource {
     ClientId,
     EdnsMac,
     NeighborMac,
+    /// REQ: FLT-017 — a Kubernetes pod address, named by its workload.
+    Workload,
     Ip,
     Cidr,
     /// Unknown device: the `default` group.
@@ -282,7 +284,8 @@ pub struct Identity {
     /// Index into [`ClientTable::clients`], or `None` for an unknown device.
     pub client: Option<u16>,
     pub source: IdSource,
-    /// The group of the most specific network the device is in (ADR-050).
+    /// The group a device without groups of its own takes: its network's (ADR-050), or for
+    /// a Kubernetes workload the group its labels or map rules give (FLT-017).
     pub net: Option<u16>,
 }
 
@@ -326,6 +329,8 @@ pub struct ClientTable {
     cidrs: Vec<(Cidr, u16)>,
     /// Group networks → group index, most specific first (ADR-050).
     group_nets: Vec<(Cidr, u16)>,
+    /// REQ: FLT-017 — group index by name, for a workload's group.
+    group_index: HashMap<Box<str>, u16>,
     /// One-group slices for network membership, by group index.
     single: Vec<[u16; 1]>,
     single_names: Vec<[Box<str>; 1]>,
@@ -448,6 +453,10 @@ impl ClientTable {
             by_ip: HashMap::new(),
             cidrs: Vec::new(),
             group_nets: Vec::new(),
+            group_index: index
+                .iter()
+                .map(|(name, &i)| (Box::<str>::from(*name), i))
+                .collect(),
             single: Vec::new(),
             single_names: Vec::new(),
             trust_mac: cfg.clients.trust_edns_mac_from.clone(),
@@ -538,6 +547,11 @@ impl ClientTable {
         self.clients.get(usize::from(id.client?))
     }
 
+    /// REQ: FLT-017 — a group's index by name.
+    pub fn group_id(&self, name: &str) -> Option<u16> {
+        self.group_index.get(name).copied()
+    }
+
     /// Identifies the sender of a query.
     pub fn identify(
         &self,
@@ -545,6 +559,7 @@ impl ClientTable {
         client_id: Option<&str>,
         edns_mac: Option<[u8; 6]>,
         neighbors: &Neighbors,
+        workloads: &crate::workloads::Workloads,
     ) -> Identity {
         let peer = peer.to_canonical();
         // A short scan (a home has a handful of networks), no allocation: query path.
@@ -576,6 +591,19 @@ impl ClientTable {
             {
                 return found(c, IdSource::NeighborMac);
             }
+        }
+        // REQ: FLT-017 (ADR-150) — a pod address is its workload, before IP and CIDR: a
+        // `[[client]]` keyed by a pod address is stale after the first rollout. One relaxed
+        // load when there are no workloads; else one `ArcSwap` load and one hash lookup.
+        if workloads.is_active()
+            && let Some(hit) = workloads.load().get(peer)
+        {
+            let group = hit.workload.group.as_deref().and_then(|g| self.group_id(g));
+            return Identity {
+                client: None,
+                source: IdSource::Workload,
+                net: group.or(net),
+            };
         }
         if let Some(&c) = self.by_ip.get(&peer) {
             return found(c, IdSource::Ip);
@@ -640,6 +668,7 @@ impl ClientTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workloads::Workloads;
 
     // REQ: FLT-005 (ADR-050) — VLANs as groups.
     #[test]
@@ -680,14 +709,20 @@ groups = ["kids"]
         let t = ClientTable::from_config(&cfg);
         let n = Neighbors::default();
         let names = |ip: &str| -> Vec<String> {
-            let id = t.identify(ip.parse().unwrap(), None, None, &n);
+            let id = t.identify(ip.parse().unwrap(), None, None, &n, Workloads::none());
             t.group_names(id).iter().map(ToString::to_string).collect()
         };
         // An unknown device on the IoT VLAN is in `iot`.
         assert_eq!(names("192.168.2.99"), ["iot"]);
         // Naming a device keeps its network group.
         assert_eq!(names("192.168.2.40"), ["iot"]);
-        let tv = t.identify("192.168.2.40".parse().unwrap(), None, None, &n);
+        let tv = t.identify(
+            "192.168.2.40".parse().unwrap(),
+            None,
+            None,
+            &n,
+            Workloads::none(),
+        );
         assert_eq!(t.client(tv).unwrap().name.as_ref(), "Living room TV");
         // Explicit groups win over the network.
         assert_eq!(names("192.168.2.41"), ["kids"]);
@@ -702,9 +737,15 @@ groups = ["kids"]
             Some("lab")
         );
         assert_eq!(
-            t.primary_group(t.identify("192.168.5.10".parse().unwrap(), None, None, &n))
-                .name
-                .as_ref(),
+            t.primary_group(t.identify(
+                "192.168.5.10".parse().unwrap(),
+                None,
+                None,
+                &n,
+                Workloads::none()
+            ))
+            .name
+            .as_ref(),
             "lab"
         );
     }
@@ -763,7 +804,7 @@ trust_edns_mac_from = ["192.168.1.1/32"]
         mac: Option<[u8; 6]>,
         n: &Neighbors,
     ) -> (String, IdSource) {
-        let i = t.identify(ip.parse().unwrap(), id, mac, n);
+        let i = t.identify(ip.parse().unwrap(), id, mac, n, Workloads::none());
         (
             t.client(i).map_or("-".into(), |c| c.name.to_string()),
             i.source,
@@ -844,11 +885,23 @@ trust_edns_mac_from = ["192.168.1.1/32"]
     fn flt_005_groups_by_priority() {
         let t = table();
         let n = Neighbors::default();
-        let tablet = t.identify("1.2.3.4".parse().unwrap(), Some("kids-tablet"), None, &n);
+        let tablet = t.identify(
+            "1.2.3.4".parse().unwrap(),
+            Some("kids-tablet"),
+            None,
+            &n,
+            Workloads::none(),
+        );
         let names: Vec<&str> = t.group_names(tablet).iter().map(|g| &**g).collect();
         assert_eq!(names, ["kids", "iot"]);
         assert_eq!(&*t.primary_group(tablet).name, "kids");
-        let unknown = t.identify("172.16.0.1".parse().unwrap(), None, None, &n);
+        let unknown = t.identify(
+            "172.16.0.1".parse().unwrap(),
+            None,
+            None,
+            &n,
+            Workloads::none(),
+        );
         assert_eq!(t.group_names(unknown).len(), 1);
         assert_eq!(&*t.primary_group(unknown).name, "default");
         assert_eq!(
@@ -856,7 +909,13 @@ trust_edns_mac_from = ["192.168.1.1/32"]
             None,
             "implicit default: every list"
         );
-        let office = t.identify("10.1.1.1".parse().unwrap(), None, None, &n);
+        let office = t.identify(
+            "10.1.1.1".parse().unwrap(),
+            None,
+            None,
+            &n,
+            Workloads::none(),
+        );
         assert_eq!(&*t.primary_group(office).name, "default");
     }
 }

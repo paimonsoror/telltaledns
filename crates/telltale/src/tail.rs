@@ -120,6 +120,16 @@ impl Sink for Fanout {
             s.record(r);
         }
     }
+    fn record_log(&mut self, r: &Record) {
+        for s in &mut self.0 {
+            s.record_log(r);
+        }
+    }
+    fn record_analytics(&mut self, keyed: &Record) {
+        for s in &mut self.0 {
+            s.record_analytics(keyed);
+        }
+    }
     fn tick(&mut self, now: Instant) {
         for s in &mut self.0 {
             s.tick(now);
@@ -147,6 +157,8 @@ pub(crate) fn combine(
 pub(crate) struct Filter {
     name: Option<(NameMatch, String)>,
     client: Option<[u8; 16]>,
+    /// REQ: FLT-017 — a Kubernetes workload: whichever pod address it holds when a query comes.
+    workload: Option<(Box<str>, Arc<telltale_policy::Workloads>)>,
     group: Option<u16>,
     statuses: Vec<Status>,
     qtypes: Vec<u16>,
@@ -156,8 +168,13 @@ pub(crate) struct Filter {
 }
 
 impl Filter {
-    /// Validates `p`; `groups` are the configured group names by index.
-    pub(crate) fn parse(p: &TailParams, groups: &[String]) -> Result<Self, Problem> {
+    /// Validates `p`; `groups` are the configured group names by index, `workloads` the pod
+    /// table (FLT-017: `client` may name a workload).
+    pub(crate) fn parse(
+        p: &TailParams,
+        groups: &[String],
+        workloads: &Arc<telltale_policy::Workloads>,
+    ) -> Result<Self, Problem> {
         let csv = |v: &Option<String>| -> Vec<String> {
             v.as_deref()
                 .unwrap_or("")
@@ -177,11 +194,20 @@ impl Filter {
             }
             (Some(n), m) => Some((m, n.trim().trim_end_matches('.').to_ascii_lowercase())),
         };
+        let mut workload = None;
         let client = match &p.client {
             None => None,
-            Some(c) => Some(mapped(c.parse::<IpAddr>().map_err(|_| {
-                Problem::invalid(format!("`client`: `{c}` is not an IP address"))
-            })?)),
+            Some(c) => match crate::kubernetes::workload_ref(c, &workloads.load()) {
+                Some(text) => {
+                    workload = Some((text.into(), Arc::clone(workloads)));
+                    None
+                }
+                None => Some(mapped(c.parse::<IpAddr>().map_err(|_| {
+                    Problem::invalid(format!(
+                        "`client`: `{c}` is not an IP address or a Kubernetes workload"
+                    ))
+                })?)),
+            },
         };
         let group = match &p.group {
             None => None,
@@ -215,6 +241,7 @@ impl Filter {
         Ok(Self {
             name,
             client,
+            workload,
             group,
             statuses,
             qtypes,
@@ -235,6 +262,13 @@ impl Filter {
             || e.t_total_us < self.min_us
         {
             return false;
+        }
+        if let Some((text, wl)) = &self.workload {
+            let v6 = std::net::Ipv6Addr::from(e.client_ip);
+            let ip = v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4);
+            if wl.load().get(ip).is_none_or(|h| *h.workload.text != **text) {
+                return false;
+            }
         }
         let Some((m, want)) = &self.name else {
             return true;
@@ -409,7 +443,7 @@ mod tests {
         let groups = vec!["default".to_owned(), "kids".to_owned()];
         let e = event("ads.Example.com", Status::Blocked, 5);
         let ok = |p: TailParams| {
-            Filter::parse(&p, &groups)
+            Filter::parse(&p, &groups, &Arc::default())
                 .unwrap()
                 .matches(&e, &mut String::new())
         };
@@ -447,7 +481,10 @@ mod tests {
                 p.name_match = Some(NameMatch::Regex);
             }),
         ] {
-            assert!(Filter::parse(&bad, &groups).is_err(), "{bad:?}");
+            assert!(
+                Filter::parse(&bad, &groups, &Arc::default()).is_err(),
+                "{bad:?}"
+            );
         }
     }
 

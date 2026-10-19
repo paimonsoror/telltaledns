@@ -213,6 +213,18 @@
         "signatures_file": ""
       }
     },
+    "kubernetes": {
+      "description": "REQ: FLT-017 (T15.1) — Kubernetes workloads as devices: the controller watches pods\nand names each pod address by its workload (`media/deploy/jellyfin`).",
+      "$ref": "#/$defs/KubernetesConfig",
+      "default": {
+        "default_group": "",
+        "enabled": false,
+        "exclude_namespaces": [],
+        "label": "telltaledns.io/group",
+        "map": [],
+        "namespaces": []
+      }
+    },
     "list": {
       "description": "Filter lists: blocklists and allowlists from URLs, files, or inline rules (`spec/05`).",
       "type": "array",
@@ -2030,6 +2042,87 @@
         }
       },
       "additionalProperties": false
+    },
+    "KubernetesConfig": {
+      "description": "REQ: FLT-017 (T15.1, ADR-150) — Kubernetes workloads as devices. Shared by the whole\ncluster; only a node running in a pod with a service-account token (the Helm chart's\ncontroller) watches the API server, and every other node gets its table over the cluster\nchannel. Elsewhere `enabled = true` does nothing (one `info` line).",
+      "type": "object",
+      "properties": {
+        "default_group": {
+          "description": "The group of a workload no label or map rule places; empty: its network's group, or\n`default`, as for any unknown device.",
+          "type": "string",
+          "default": "",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "enabled": {
+          "description": "Watch pods and namespaces (read-only) and name pod addresses by their workload.",
+          "type": "boolean",
+          "default": false
+        },
+        "exclude_namespaces": {
+          "description": "Namespaces never watched (their pods stay plain addresses).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "label": {
+          "description": "The pod or namespace label that names a workload's group.",
+          "type": "string",
+          "default": "telltaledns.io/group",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "map": {
+          "description": "Groups by namespace (and optionally kind and name), first match wins, after the\nlabels and before `default_group`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/KubernetesMapRule"
+          }
+        },
+        "namespaces": {
+          "description": "Namespaces to watch; empty: all.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "KubernetesMapRule": {
+      "description": "REQ: FLT-017 — one `[[kubernetes.map]]` rule: a workload whose namespace matches the glob\n(`media*`, `*`), and kind and name when given, is in `group`.",
+      "type": "object",
+      "properties": {
+        "group": {
+          "description": "The group (it must exist).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "kind": {
+          "description": "`deploy`, `sts`, `ds`, `job`, `cronjob`, `rs`, or `pod`; empty: any.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "name": {
+          "description": "One workload's name; empty: any.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "namespace": {
+          "description": "Namespace glob (`*` matches any run of characters).",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "group"
+      ]
     },
     "ListKind": {
       "description": "Whether a list's rules block or allow (`spec/05` §1). Exception rules (@@) allow regardless.",

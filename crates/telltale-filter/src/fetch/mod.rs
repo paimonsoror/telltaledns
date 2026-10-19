@@ -18,7 +18,9 @@ use tokio::sync::{Notify, Semaphore, watch};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-pub use self::http::{Client, Conditional, HttpError, Resolve, Response, SystemResolver};
+pub use self::http::{
+    BodyStream, Client, Conditional, HttpError, Resolve, Response, SystemResolver,
+};
 pub use self::store::{ListMeta, Store, content_hash, count_lines};
 
 /// Where a list's rules come from.

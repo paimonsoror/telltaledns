@@ -236,6 +236,7 @@ pub fn merge_queries(pages: Vec<NodePage>, limit: usize, prev: &Bounds) -> Query
     let mut rows: Vec<(String, QueryRow)> = Vec::new();
     let mut scanned = ScanStats::default();
     let mut returned: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let client_truncated = pages.iter().any(|p| p.page.client_truncated);
     for p in pages {
         scanned.segments += p.page.scanned.segments;
         scanned.blocks_read += p.page.scanned.blocks_read;
@@ -277,6 +278,7 @@ pub fn merge_queries(pages: Vec<NodePage>, limit: usize, prev: &Bounds) -> Query
         next_cursor: more.then(|| encode_cursor(&bounds)),
         scanned,
         missing_nodes: Vec::new(),
+        client_truncated,
     }
 }
 
@@ -490,6 +492,7 @@ mod tests {
             next_cursor: None,
             scanned: ScanStats::default(),
             missing_nodes: Vec::new(),
+            client_truncated: false,
         };
         let first = merge_queries(
             vec![

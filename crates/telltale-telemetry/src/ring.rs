@@ -51,6 +51,8 @@ pub struct Hub {
     /// REQ: OBS-022 — queries left out of the analytics and every sink, and how many so far.
     exclusions: Mutex<Option<Arc<crate::exclude::Exclusions>>>,
     excluded: AtomicU64,
+    /// REQ: FLT-017 — pod address → workload analytics key, read once per drain.
+    workload_keys: Mutex<Option<Arc<crate::workload::Keys>>>,
 }
 
 static NEXT_HUB: AtomicU64 = AtomicU64::new(1);
@@ -95,6 +97,7 @@ impl Hub {
             privacy: AtomicU8::new(0),
             exclusions: Mutex::new(None),
             excluded: AtomicU64::new(0),
+            workload_keys: Mutex::new(None),
         })
     }
 
@@ -152,6 +155,25 @@ impl Hub {
             .exclusions
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = x.filter(|x| !x.is_empty()).map(Arc::new);
+    }
+
+    /// REQ: FLT-017 (ADR-150) — from the next drain on, a query from one of these pod addresses
+    /// counts in the analytics under its workload's key. `Some` (even empty) means workloads
+    /// are kept: the analytics then hold other addresses briefly ([`Hold`]); `None` means
+    /// Kubernetes is off and nothing waits.
+    pub fn set_workload_keys(&self, keys: Option<crate::workload::Keys>) {
+        *self
+            .workload_keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = keys.map(Arc::new);
+    }
+
+    /// The pod address → workload key map in force (for replays from the query log).
+    pub fn workload_keys(&self) -> Option<Arc<crate::workload::Keys>> {
+        self.workload_keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Queries left out so far ([`Self::set_exclusions`]), for `/metrics`.
@@ -284,6 +306,7 @@ impl Hub {
             .name("telltale-telemetry".into())
             .spawn(move || {
                 let mut drainer = hub.drainer();
+                let mut hold = Hold::default();
                 loop {
                     let done = flag.load(Ordering::Acquire);
                     let t = Instant::now();
@@ -291,21 +314,36 @@ impl Hub {
                     {
                         let level = hub.privacy.load(Ordering::Relaxed);
                         let excluded = hub.exclusions();
+                        let keys = hub.workload_keys();
                         let mut agg = hub.aggregates();
+                        let analytics =
+                            |agg: &mut Aggregates, sink: &mut Option<Box<dyn Sink>>, k: &Record| {
+                                if level == 0 {
+                                    agg.record(k);
+                                } else {
+                                    agg.record(&crate::event::private(k, level));
+                                }
+                                if let Some(s) = sink.as_mut() {
+                                    s.record_analytics(k);
+                                }
+                            };
+                        let now = Instant::now();
+                        hold.release(keys.as_ref(), now, |k| analytics(&mut agg, &mut sink, k));
                         drainer.drain(|r| {
                             // REQ: OBS-020 — the listener probes stay out of the analytics,
                             // the query log, and every export; so do excluded queries (OBS-022).
                             if r.is_probe() || hub.left_out(excluded.as_deref(), &r) {
                                 return;
                             }
-                            if level == 0 {
-                                agg.record(&r);
-                            } else {
-                                agg.record(&crate::event::private(&r, level));
-                            }
+                            // REQ: FLT-017 — the sinks that log a query get it now, with the
+                            // pod's address; the analytics count a pod's query under its
+                            // workload's key, and may see an unknown address's query late.
                             if let Some(s) = sink.as_mut() {
-                                s.record(&r);
+                                s.record_log(&r);
                             }
+                            hold.offer(keys.as_deref(), r, now, |k| {
+                                analytics(&mut agg, &mut sink, k);
+                            });
                         });
                     }
                     if let Some(s) = sink.as_mut() {
@@ -315,6 +353,17 @@ impl Hub {
                         break;
                     }
                     std::thread::sleep(period.saturating_sub(t.elapsed()));
+                }
+                // Whatever is still held counts as it is.
+                {
+                    let level = hub.privacy.load(Ordering::Relaxed);
+                    let mut agg = hub.aggregates();
+                    hold.flush(hub.workload_keys().as_deref(), |k| {
+                        agg.record(&crate::event::private(k, level));
+                        if let Some(s) = sink.as_mut() {
+                            s.record_analytics(k);
+                        }
+                    });
                 }
                 drop(sink);
             })?;
@@ -328,10 +377,12 @@ impl Hub {
     pub fn drain_once(&self, drainer: &mut Drainer) -> usize {
         let level = self.privacy.load(Ordering::Relaxed);
         let excluded = self.exclusions();
+        let keys = self.workload_keys();
         let mut agg = self.aggregates();
         drainer.drain(|r| {
             if !r.is_probe() && !self.left_out(excluded.as_deref(), &r) {
-                agg.record(&crate::event::private(&r, level));
+                let keyed = keyed(keys.as_deref(), &r);
+                agg.record(&crate::event::private(keyed.as_ref().unwrap_or(&r), level));
             }
         })
     }
@@ -346,10 +397,138 @@ impl Hub {
     }
 }
 
+/// REQ: FLT-017 (ADR-150) — `r` with a pod's address replaced by its workload's analytics key,
+/// when it's a query from a known pod address. One hash lookup per query event, only while
+/// some workload is known.
+pub fn keyed(keys: Option<&crate::workload::Keys>, r: &Record) -> Option<Record> {
+    let keys = keys?;
+    match r {
+        Record::Query(e, name) => keys.get(&e.client_ip).map(|k| {
+            let mut e = *e;
+            e.client_ip = *k;
+            Record::Query(e, *name)
+        }),
+        Record::Upstream(_) => None,
+    }
+}
+
+/// How long the analytics wait for a query from an address no workload holds yet.
+/// REQ: FLT-017 (ADR-150) — a new pod (a `CronJob` run) asks DNS as soon as it starts, often
+/// before the watch event that gives its address arrives; the analytics would count it as a
+/// new device under its bare address. The query log is never held.
+pub const WORKLOAD_HOLD: Duration = Duration::from_secs(2);
+/// At most this many held records (about 300 bytes each); past it the oldest go out early.
+pub const WORKLOAD_HOLD_MAX: usize = 8192;
+
+/// REQ: FLT-017 (ADR-150) — the analytics' short wait for unknown addresses while some workload
+/// is known. Records for addresses the table names never wait; every other query waits up to
+/// [`WORKLOAD_HOLD`] and is keyed when it goes out. A change to the table lets everything
+/// out at once, keyed by the new table, so each address's records stay in order.
+#[derive(Debug, Default)]
+pub struct Hold {
+    held: std::collections::VecDeque<(Instant, Record)>,
+    /// The table the held records were last checked against.
+    keys: Option<Arc<crate::workload::Keys>>,
+}
+
+impl Hold {
+    /// Lets out what has waited long enough, or everything if the table changed (or there is
+    /// none any more).
+    pub fn release(
+        &mut self,
+        keys: Option<&Arc<crate::workload::Keys>>,
+        now: Instant,
+        mut out: impl FnMut(&Record),
+    ) {
+        let same = match (keys, self.keys.as_ref()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.keys = keys.cloned();
+            self.flush(keys.map(Arc::as_ref), out);
+            return;
+        }
+        while let Some((at, _)) = self.held.front()
+            && now.duration_since(*at) >= WORKLOAD_HOLD
+        {
+            if let Some((_, r)) = self.held.pop_front() {
+                out(keyed(keys.map(Arc::as_ref), &r).as_ref().unwrap_or(&r));
+            }
+        }
+        self.shrink();
+    }
+
+    /// One drained record: out now if it is keyed (or not a query, or no workload is known),
+    /// held otherwise.
+    pub fn offer(
+        &mut self,
+        keys: Option<&crate::workload::Keys>,
+        r: Record,
+        now: Instant,
+        mut out: impl FnMut(&Record),
+    ) {
+        let Some(k) = keys else {
+            out(&r);
+            return;
+        };
+        if let Some(kr) = keyed(Some(k), &r) {
+            out(&kr);
+            return;
+        }
+        if !matches!(r, Record::Query(..)) {
+            out(&r);
+            return;
+        }
+        if self.held.len() >= WORKLOAD_HOLD_MAX
+            && let Some((_, old)) = self.held.pop_front()
+        {
+            out(keyed(Some(k), &old).as_ref().unwrap_or(&old));
+        }
+        self.held.push_back((now, r));
+    }
+
+    /// Lets everything out, keyed by `keys`.
+    pub fn flush(&mut self, keys: Option<&crate::workload::Keys>, mut out: impl FnMut(&Record)) {
+        for (_, r) in self.held.drain(..) {
+            out(keyed(keys, &r).as_ref().unwrap_or(&r));
+        }
+        self.shrink();
+    }
+
+    /// Records waiting now.
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+
+    /// Gives back a burst's memory once it has gone out.
+    fn shrink(&mut self) {
+        if self.held.is_empty() && self.held.capacity() > 1024 {
+            self.held = std::collections::VecDeque::new();
+        }
+    }
+}
+
 /// Receives every drained record on the aggregator thread (the query log's write path).
 /// Must not block for long: it runs between ring drains.
 pub trait Sink: Send {
     fn record(&mut self, r: &Record);
+    /// REQ: FLT-017 — the record as it happened, with a Kubernetes pod's address, as soon as
+    /// it is drained. The sinks that log what happened take this (the default).
+    fn record_log(&mut self, r: &Record) {
+        self.record(r);
+    }
+    /// REQ: FLT-017 — the same record for per-device analytics (the anomaly engine): a pod's
+    /// address replaced by its workload's analytics key, up to [`WORKLOAD_HOLD`] late for an
+    /// address no workload holds yet. Default: nothing.
+    fn record_analytics(&mut self, keyed: &Record) {
+        let _ = keyed;
+    }
     /// Called after every drain, for time-based work such as flushing aged blocks.
     fn tick(&mut self, _now: Instant) {}
 }

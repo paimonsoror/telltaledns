@@ -265,6 +265,16 @@
       ],
       "summary": "The recursive:// upstream asks the built-in root hints for the root's current servers once, then uses that list (renewed daily), so a root server's new address needs no new build.",
       "diagram": "rfc8109"
+    },
+    {
+      "rfc": "6666",
+      "title": "A discard prefix for IPv6 (100::/64)",
+      "status": "supported",
+      "reqs": [
+        "FLT-017"
+      ],
+      "summary": "A Kubernetes workload counts in the analytics under one key, whichever pods ask: an address inside 100::/64, which is set aside for discarding traffic and never routes, so a key can't be mistaken for a real device. The query log keeps each pod's own address.",
+      "diagram": "rfc6666"
     }
   ]
 }

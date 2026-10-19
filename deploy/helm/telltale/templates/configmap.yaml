@@ -70,6 +70,55 @@ data:
   # From values.config (later files override earlier ones).
   10-values.toml: |
     {{- .Values.config | nindent 4 }}
+    {{- with .Values.kubernetes }}
+    {{- if .enabled }}
+    {{- $zones := list .clusterDomain }}
+    {{- range list .podCidr .serviceCidr }}
+    {{- with include "telltale.reverseZone" . }}{{ $zones = append $zones . }}{{ end }}
+    {{- end }}
+
+    # REQ: FLT-017 — set by the chart (kubernetes.*), in this file so its upstream and route
+    # add to the ones above instead of replacing them.
+    [kubernetes]
+    enabled = true
+    {{- with .namespaces }}
+    namespaces = [{{ range $i, $n := . }}{{ if $i }}, {{ end }}{{ $n | quote }}{{ end }}]
+    {{- end }}
+    {{- with .excludeNamespaces }}
+    exclude_namespaces = [{{ range $i, $n := . }}{{ if $i }}, {{ end }}{{ $n | quote }}{{ end }}]
+    {{- end }}
+    {{- with .defaultGroup }}
+    default_group = {{ . | quote }}
+    {{- end }}
+    {{- range .map }}
+
+    [[kubernetes.map]]
+    namespace = {{ .namespace | quote }}
+    {{- with .kind }}
+    kind = {{ . | quote }}
+    {{- end }}
+    {{- with .name }}
+    name = {{ . | quote }}
+    {{- end }}
+    group = {{ .group | quote }}
+    {{- end }}
+
+    # The cluster domain and the pod/service reverse zones go on to CoreDNS (no DNSSEC there).
+    [[upstream]]
+    name = "kubernetes-dns"
+    url = {{ printf "udp://%s" (required "kubernetes.clusterDns: CoreDNS's Service address (kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')" .clusterDns) | quote }}
+
+    [[upstream_group]]
+    name = "kubernetes"
+    members = ["kubernetes-dns"]
+    strategy = "failover"
+
+    [[route]]
+    match_suffix = [{{ range $i, $z := $zones }}{{ if $i }}, {{ end }}{{ $z | quote }}{{ end }}]
+    upstream_group = "kubernetes"
+    dnssec_nta = true
+    {{- end }}
+    {{- end }}
   {{- if include "telltale.scaled" . }}
   # REQ: CLU-009 — the controller creates the cluster on first start and accepts the shared
   # bootstrap secret; resolver pods join with it as ephemeral members.

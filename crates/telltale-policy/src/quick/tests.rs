@@ -48,7 +48,9 @@ impl Setup {
     /// The decision for `name` asked from `ip` at `now`: Some(allow) or None (lists decide).
     fn ask(&self, ip: &str, name: &str, now: i64) -> Option<bool> {
         let peer: IpAddr = ip.parse().unwrap();
-        let who = self.table.identify(peer, None, None, &self.neighbors);
+        let who = self
+            .table
+            .identify(peer, None, None, &self.neighbors, crate::Workloads::none());
         let groups = self.table.group_ids(who);
         self.rules
             .decide(&q(name), who, peer, groups, now)
@@ -236,7 +238,9 @@ fn flt_005_quick_cost() {
     .collect();
     for (label, s) in [("none", setup("")), ("1000", setup(&rules))] {
         let peer: IpAddr = KID.parse().unwrap();
-        let who = s.table.identify(peer, None, None, &s.neighbors);
+        let who = s
+            .table
+            .identify(peer, None, None, &s.neighbors, crate::Workloads::none());
         let groups = s.table.group_ids(who).to_vec();
         let n = 2_000_000u32;
         let t = std::time::Instant::now();

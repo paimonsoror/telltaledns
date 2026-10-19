@@ -64,6 +64,7 @@ Detailed behavior lives in the referenced spec section. If this table and a sect
 | FLT-014 | P1 | Rewrites (`$dnsrewrite`-like): map a domain to an answer per group. |
 | FLT-015 | P1 | Response IP filtering: block answers whose A/AAAA falls in a configured CIDR (DNS rebinding protection; private IPs from public names). |
 | FLT-016 | P2 | Per-group AAAA filtering: a group's AAAA questions get no data (devices fall back to IPv4 on a network with broken IPv6); local data still answers, blocks still win, not combined with DNS64 (owner request 2026-10-09, from Pi-hole's feature requests). |
+| FLT-017 | P1 | Kubernetes workloads as devices (owner request 2026-10-18): the controller watches the Kubernetes API (pods and namespaces, read-only) and maps each pod address to its workload (`ns/kind/name`, from `ownerReferences`); every device view names the workload, a Deployment's replicas are one device across rollouts (a synthetic analytics key in `100::/64`, RFC 6666), and a workload's group comes from a pod label, a namespace label, a `[[kubernetes.map]]` rule, or `default_group`. One gated lookup on the query path; the API server being down never affects answering (`05` §4, `08` §3.5, ADR-150). |
 
 ## Observability (OBS) — see `06`
 | ID | Pri | Requirement |

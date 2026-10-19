@@ -153,6 +153,8 @@ enum Read {
     Overblocking {
         limit: usize,
     },
+    /// REQ: FLT-017 — the peer's per-workload counts (older peers don't know it).
+    WorkloadCounts,
 }
 
 /// The reads that change the answering node: operational actions a user asked for on the
@@ -234,12 +236,14 @@ fn answer(b: &dyn Backend, r: Read) -> Result<Vec<u8>, String> {
         Read::UpstreamChecks => serde_json::to_vec(&b.upstream_checks()),
         Read::ShadowLists => serde_json::to_vec(&b.shadow_lists()),
         Read::Overblocking { limit } => serde_json::to_vec(&b.overblocking(limit)),
+        Read::WorkloadCounts => serde_json::to_vec(&b.workload_counts()),
     }
     .map_err(|e| e.to_string())
 }
 
 /// What answers peers: reads from this node's local backend (on a blocking thread), and
 /// forwarded writes when this node is the primary (T5.7).
+#[allow(clippy::too_many_lines)] // one branch per call
 pub(crate) fn rpc_handler(
     src: Arc<crate::http::Sources>,
     local: Shared,
@@ -302,6 +306,15 @@ pub(crate) fn rpc_handler(
             if kind == crate::devices::KIND {
                 // REQ: CLU-002 (ADR-125) — the device names this node's routers and mDNS know.
                 return crate::devices::own(&src.pipeline);
+            }
+            if kind == crate::kubernetes::KIND {
+                // REQ: FLT-017 — asked for this node's workload table, or given the watcher's.
+                // Resolver pods (ephemeral) never watch, so they never send one.
+                return tokio::task::spawn_blocking(move || {
+                    crate::kubernetes::handle(&src, &body, !ephemeral)
+                })
+                .await
+                .map_err(|e| format!("workload table worker failed: {e}"))?;
             }
             if kind == crate::simulate::KIND {
                 // REQ: OBS-024 — another node simulating a change over the cluster's logs (a
@@ -1418,6 +1431,79 @@ impl Backend for Federated {
             }));
         }
         crate::identify::merge(all)
+    }
+    // REQ: FLT-017 — every node holds the watcher's table: names and keys are this node's.
+    fn workload(&self, client: &str) -> Option<(String, String)> {
+        self.local.workload(client)
+    }
+    fn kubernetes_status(&self) -> telltale_api::model::KubernetesStatus {
+        self.local.kubernetes_status()
+    }
+    fn workload_counts(&self) -> Vec<telltale_api::model::WorkloadCount> {
+        self.local.workload_counts()
+    }
+    // REQ: FLT-017, CLU-002 — the list from this node's table; the counts summed over every
+    // node that answers (each counts the queries it answered).
+    fn kubernetes_workloads(&self) -> Result<Vec<telltale_api::model::WorkloadInfo>, Problem> {
+        let mut items = self.local.kubernetes_workloads()?;
+        if !self.with_me() {
+            for w in &mut items {
+                (w.queries_24h, w.blocked_24h, w.last_seen) = (0, 0, None);
+            }
+        }
+        let mut sums: std::collections::HashMap<String, (u64, u64, u64)> =
+            std::collections::HashMap::new();
+        for counts in
+            self.everyone::<Vec<telltale_api::model::WorkloadCount>>(|| Read::WorkloadCounts)
+        {
+            for c in counts {
+                let e = sums.entry(c.key).or_default();
+                e.0 += c.queries_24h;
+                e.1 += c.blocked_24h;
+                e.2 = e.2.max(c.last_seen_unix_seconds);
+            }
+        }
+        // Workloads only other nodes counted, without pods now (a CronJob between runs).
+        let known: std::collections::HashSet<String> =
+            items.iter().map(|w| w.key.clone()).collect();
+        for (key, (q, _, last)) in &sums {
+            if *q == 0 || known.contains(key) {
+                continue;
+            }
+            let Some((text, _)) = self.local.workload(key) else {
+                continue;
+            };
+            let Some(info) = key
+                .parse::<std::net::Ipv6Addr>()
+                .ok()
+                .and_then(|k| crate::api_backend::past_workload(&text, &k.octets()))
+            else {
+                continue;
+            };
+            items.push(telltale_api::model::WorkloadInfo {
+                last_seen: Some(telltale_api::time::format_us(
+                    last.saturating_mul(1_000_000),
+                )),
+                ..info
+            });
+        }
+        for w in &mut items {
+            if let Some((q, b, last)) = sums.get(&w.key) {
+                w.queries_24h += q;
+                w.blocked_24h += b;
+                let mine = w
+                    .last_seen
+                    .as_deref()
+                    .and_then(|t| telltale_api::time::parse_time(t, 0).ok())
+                    .unwrap_or(0);
+                if *last > mine {
+                    w.last_seen = Some(telltale_api::time::format_us(
+                        last.saturating_mul(1_000_000),
+                    ));
+                }
+            }
+        }
+        Ok(items)
     }
     fn identity(&self, client: &str) -> Result<telltale_api::model::DeviceIdentity, Problem> {
         let mut local = self.local.identity(client)?;

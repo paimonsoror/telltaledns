@@ -8,6 +8,8 @@
   import Drawer from './Drawer.svelte';
   import HelpButton from './HelpButton.svelte';
   import ChangePreview from './ChangePreview.svelte';
+  import Icon from './Icon.svelte';
+  import { groupFromText, loadWorkloads, podAt, workloadOf } from '../workloads.svelte';
 
   let {
     ip,
@@ -16,8 +18,26 @@
   }: { ip: string; name?: string | null; onchanged?: (name: string) => void } = $props();
 
   let open = $state(false);
-  let editing = $state<'name' | 'groups' | null>(null);
+  let editing = $state<'name' | 'groups' | 'workload' | null>(null);
   let root = $state<HTMLElement | undefined>();
+
+  // REQ: FLT-017 — a Kubernetes workload (by its key, a pod address, or its name): its glyph,
+  // its name, and the pod on hover; Kubernetes names it, and "Add to group…" writes a rule.
+  $effect(() => {
+    void loadWorkloads();
+  });
+  const workload = $derived(workloadOf(ip) ?? workloadOf(name));
+  const pod = $derived(podAt(ip));
+  const label = $derived(workload ? (name ?? workload.name) : (name ?? ip));
+  const tip = $derived(
+    workload
+      ? `Kubernetes workload ${workload.name}${pod ? ` (pod ${pod}, ${ip})` : workload.pods.length ? ` (pods: ${workload.pods.map((p) => p.name).join(', ')})` : ''}`
+      : name
+        ? `${name} (${ip})`
+        : ip,
+  );
+  let wGroup = $state('');
+  let preview = $state<S['ConfigChange'] | null>(null);
 
   // Form state, loaded when the drawer opens.
   let existing = $state<S['ClientInfo'] | null>(null);
@@ -48,6 +68,54 @@
 
   function key(e: KeyboardEvent) {
     if (e.key === 'Escape') open = false;
+  }
+
+  /** REQ: FLT-017 — "Add to group…" for a workload: its groups, then a dry run, then a rule. */
+  async function editWorkload() {
+    open = false;
+    editing = 'workload';
+    error = '';
+    done = '';
+    preview = null;
+    loading = true;
+    try {
+      groups = (await api.groups()).items;
+      wGroup = workload?.group ?? '';
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function previewWorkload() {
+    if (!workload || !wGroup) return;
+    busy = true;
+    error = '';
+    try {
+      preview = await api.putWorkloadGroup(workload.name, wGroup, true);
+    } catch (e) {
+      error = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveWorkload(ev: SubmitEvent) {
+    ev.preventDefault();
+    if (!workload || !wGroup) return;
+    busy = true;
+    error = '';
+    try {
+      await api.putWorkloadGroup(workload.name, wGroup);
+      done = `Saved. ${workload.name}'s next query uses ${wGroup}.`;
+      void loadWorkloads(true);
+      onchanged?.(workload.name);
+    } catch (e) {
+      error = e instanceof ApiError && e.hint ? `${e.message} ${e.hint}` : e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
   }
 
   async function edit(mode: 'name' | 'groups') {
@@ -134,26 +202,69 @@
 <span class="chip" bind:this={root}>
   <button
     class="link chip-button"
-    title={name ? `${name} (${ip})` : ip}
+    title={tip}
     aria-haspopup="menu"
     aria-expanded={open}
+    data-testid={workload ? 'workload-chip' : undefined}
     onclick={(e) => {
       e.stopPropagation();
       open = !open;
-    }}>{name ?? ip}</button
+    }}
+    >{#if workload}<span class="glyph" aria-label="Kubernetes workload"><Icon name="workload" size={14} /></span>{/if}{label}</button
   >
   {#if open}
     <span class="menu" role="menu" aria-label={`Device ${ip}`}>
-      {#if canEdit}
+      {#if canEdit && workload}
+        <button role="menuitem" disabled title="Kubernetes names workloads">Name this device… <span class="muted small">(named by Kubernetes)</span></button>
+        <button role="menuitem" onclick={editWorkload}>Add to group…</button>
+      {:else if canEdit}
         <button role="menuitem" onclick={() => edit('name')}>Name this device…</button>
         <button role="menuitem" onclick={() => edit('groups')}>Add to group…</button>
       {/if}
-      <a role="menuitem" href={href('/queries', { client: ip })} onclick={close}>Show queries</a>
+      <a role="menuitem" href={href('/queries', { client: workload ? workload.name : ip })} onclick={close}>Show queries</a>
     </span>
   {/if}
 </span>
 
-{#if editing}
+{#if editing === 'workload' && workload}
+  <Drawer title="Put the workload in a group" onclose={() => (editing = null)}>
+    {#if loading}
+      <p class="muted" role="status" aria-live="polite">Loading…</p>
+    {:else}
+      <form class="stack" onsubmit={saveWorkload} data-testid="workload-group-form">
+        <p class="muted small">
+          <b>{workload.name}</b> is a Kubernetes workload: its name comes from Kubernetes.
+          {#if workload.group}Its group is {workload.group} now (set by its {groupFromText[workload.groupFrom] ?? workload.groupFrom}).{:else}It has no
+            group of its own now: its network's group applies.{/if} This adds a rule for exactly this workload; a <code>telltaledns.io/group</code> label on its pods or namespace still
+          wins, and is the way to do it from Git.<HelpButton id="kubernetes-workloads" />
+        </p>
+        <label>
+          Group
+          <select bind:value={wGroup} onchange={() => (preview = null)} aria-label="Group">
+            <option value="" disabled>Choose a group</option>
+            {#each groups as g (g.name)}<option value={g.name}>{g.name}</option>{/each}
+          </select>
+        </label>
+        {#if preview}
+          <div class="notice" data-testid="workload-dry-run">
+            <p class="impact">{preview.impact}</p>
+            {#if preview.keepInGit}<pre class="small">{preview.keepInGit}</pre>{/if}
+          </div>
+        {/if}
+        {#if error}<p class="notice bad" role="alert">{error}</p>{/if}
+        {#if done}<p class="notice ok" role="status">{done}</p>{/if}
+        <div class="row">
+          {#if !preview}
+            <button type="button" class="primary" disabled={busy || !wGroup} onclick={previewWorkload}>{busy ? 'Checking…' : 'Preview'}</button>
+          {:else}
+            <button type="submit" class="primary" disabled={busy || !!done}>{busy ? 'Saving…' : 'Save'}</button>
+          {/if}
+          <button type="button" onclick={() => (editing = null)}>Close</button>
+        </div>
+      </form>
+    {/if}
+  </Drawer>
+{:else if editing === 'name' || editing === 'groups'}
   <Drawer title={editing === 'name' ? 'Name this device' : 'Add to a group'} onclose={() => (editing = null)}>
     {#if loading}
       <p class="muted" role="status" aria-live="polite">Loading…</p>
@@ -212,6 +323,9 @@
 {/if}
 
 <style>
+  .impact {
+    margin: 0;
+  }
   .chip {
     position: relative;
     display: inline-block;
@@ -219,6 +333,16 @@
   .chip-button {
     font: inherit;
     padding: 0;
+  }
+  .glyph {
+    display: inline-flex;
+    vertical-align: -2px;
+    margin-right: 3px;
+    color: var(--accent, currentColor);
+  }
+  .menu button:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .menu {
     position: absolute;
