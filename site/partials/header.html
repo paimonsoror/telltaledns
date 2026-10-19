@@ -7,14 +7,13 @@
     </a>
     <!-- T6.10, ADR-122: Get started, then three menus by what the reader wants: what it does
          (Features), how to do something (Guides), and to look something up (Reference). On phones
-         all of it folds into ☰. Built on <details>, so it works without JavaScript. Kubernetes
-         is a page of its own beside Get started (2026-10-19): the second way in. -->
+         all of it folds into ☰. Built on <details>, so it works without JavaScript. The
+         Kubernetes pages have their own heading in Features (2026-10-19). -->
     <details class="menu" open>
       <summary aria-label="Menu"><span aria-hidden="true">☰</span></summary>
       <nav class="nav" aria-label="Main">
         <a href="start.html" data-page="start">Get started</a>
-        <a href="kubernetes.html" data-page="kubernetes">Kubernetes</a>
-        <details class="sub" data-group="index tour how-it-works groups monitoring kubernetes-workloads failover-drills agents performance">
+        <details class="sub" data-group="index tour how-it-works groups monitoring failover-drills agents performance kubernetes kubernetes-workloads">
           <summary>Features</summary>
           <div class="sub-list">
             <a href="index.html" data-page="index">Overview</a>
@@ -22,10 +21,12 @@
             <a href="how-it-works.html" data-page="how-it-works">How it works</a>
             <a href="groups.html" data-page="groups">Groups and VLANs</a>
             <a href="monitoring.html" data-page="monitoring">Monitoring and alerts</a>
-            <a href="kubernetes-workloads.html" data-page="kubernetes-workloads">Kubernetes workloads</a>
             <a href="failover-drills.html" data-page="failover-drills">Failover drills</a>
             <a href="agents.html" data-page="agents">AI agents</a>
             <a href="performance.html" data-page="performance">Performance</a>
+            <span class="sub-head">On Kubernetes</span>
+            <a href="kubernetes.html" data-page="kubernetes">Kubernetes overview</a>
+            <a href="kubernetes-workloads.html" data-page="kubernetes-workloads">Kubernetes workloads</a>
           </div>
         </details>
         <details class="sub" data-group="guides guide-settings guide-cluster guide-kubernetes guide-upgrades guide-blocking guide-devices guide-encrypted guide-changes guide-monitoring guide-users">
