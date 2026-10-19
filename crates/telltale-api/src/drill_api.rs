@@ -178,6 +178,7 @@ async fn start(
         handover: req.handover.unwrap_or(true),
         by: actor.name.clone(),
         dry_run: params.dry_run,
+        mode: req.mode.unwrap_or_default(),
     };
     match backend.drill(&id, write).await {
         Ok(r) if r.dry_run => Json(r).into_response(),

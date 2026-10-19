@@ -73,6 +73,9 @@ pub struct Config {
     /// REQ: FLT-017 (T15.1) — Kubernetes workloads as devices: the controller watches pods
     /// and names each pod address by its workload (`media/deploy/jellyfin`).
     pub kubernetes: KubernetesConfig,
+    /// REQ: CLU-014 (T15.2, owner 2026-10-19) — scheduled failover drills: once a month, at night,
+    /// the nodes named here drill themselves and the report goes out as a `drill_report` alert.
+    pub drill: DrillConfig,
     /// REQ: DNS-005 — settings of the DNS answers themselves.
     pub dns: DnsConfig,
     /// Special-name handling (RFC 6761 etc.).
@@ -139,6 +142,7 @@ impl Default for Config {
             simulate: SimulateConfig::default(),
             identify: IdentifyConfig::default(),
             kubernetes: KubernetesConfig::default(),
+            drill: DrillConfig::default(),
             dns: DnsConfig::default(),
             special: SpecialConfig::default(),
             cache: CacheConfig::default(),
@@ -970,6 +974,70 @@ impl KubernetesMapRule {
     }
 }
 
+/// REQ: CLU-014 — how often scheduled drills run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DrillSchedule {
+    /// No scheduled drills (drills still run when someone starts one).
+    #[default]
+    Off,
+    /// Once a month: on a day in the first week (the same day each month for a node, picked
+    /// from its name), at `hour`.
+    Monthly,
+}
+
+/// REQ: CLU-014 — what a drilled node does with its targets' queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DrillMode {
+    /// No answer at all (UDP dropped, TCP and DoT closed): a dead server, which every stub
+    /// resolver fails over from after its timeout. The realistic drill.
+    #[default]
+    Drop,
+    /// REFUSED at once: faster, but some stub resolvers don't try their next server on it.
+    Refused,
+}
+
+/// REQ: CLU-014 (owner 2026-10-19) — scheduled failover drills (`[drill]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct DrillConfig {
+    /// `off` (default) or `monthly`.
+    pub schedule: DrillSchedule,
+    /// The nodes that drill themselves on the schedule: sites, pod names, or node IDs.
+    pub nodes: Vec<SafeString>,
+    /// Drill one group's devices; with neither `group` nor `clients`, everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<SafeString>,
+    /// Drill these devices (addresses, device names, or workloads).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clients: Vec<SafeString>,
+    /// How long, in seconds (15 to 300).
+    pub for_secs: u32,
+    /// The local hour it starts in (0 to 23; default 3, at night).
+    pub hour: u8,
+    /// The time zone of `hour` (IANA, e.g. `Europe/Berlin`); default the system's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<SafeString>,
+    /// `drop` (default) or `refused`.
+    pub mode: DrillMode,
+}
+
+impl Default for DrillConfig {
+    fn default() -> Self {
+        Self {
+            schedule: DrillSchedule::Off,
+            nodes: Vec::new(),
+            group: None,
+            clients: Vec::new(),
+            for_secs: 30,
+            hour: 3,
+            tz: None,
+            mode: DrillMode::Drop,
+        }
+    }
+}
+
 /// REQ: FLT-017 — the workload kinds a map rule may name.
 pub const WORKLOAD_KINDS: &[&str] = &["deploy", "sts", "ds", "job", "cronjob", "rs", "pod"];
 
@@ -1258,6 +1326,9 @@ pub enum AlertWhen {
     /// REQ: OBS-036 — a device asks a domain at a steady rhythm faster than every 30 s
     /// (informational findings, which `anomaly` leaves out; one alert per finding).
     ChattyLoop,
+    /// REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once
+    /// per drill): who followed, who was stuck, coverage.
+    DrillReport,
 }
 
 /// REQ: FLT-014 (T7.20) — one rewrite.

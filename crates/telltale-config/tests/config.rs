@@ -1176,3 +1176,35 @@ group = "default"
     let shared = telltale_config::shared::shared_part(&ok.config);
     assert!(shared.get("kubernetes").is_some());
 }
+
+// REQ: CLU-014 (owner 2026-10-19) — `[drill]`: a monthly schedule names its nodes, 15 to 300 s,
+// an hour of the day, a known zone and group, not a group and devices both; the defaults
+// (schedule off) aren't sent to the cluster.
+#[test]
+fn clu_014_drill_section() {
+    let ok = load_str(
+        "[[group]]\nname = \"iot\"\n[drill]\nschedule = \"monthly\"\nnodes = [\"home-pi\"]\ngroup = \"iot\"\nfor_secs = 45\nhour = 4\ntz = \"UTC\"\nmode = \"refused\"\n",
+    )
+    .unwrap();
+    let d = &ok.config.drill;
+    assert_eq!(d.schedule, telltale_config::DrillSchedule::Monthly);
+    assert_eq!((d.for_secs, d.hour), (45, 4));
+    assert_eq!(d.mode, telltale_config::DrillMode::Refused);
+    let errs = load_str(
+        "[drill]\nschedule = \"monthly\"\nfor_secs = 400\nhour = 24\ntz = \"Mars/Base\"\ngroup = \"nope\"\nclients = [\"tv\"]\n",
+    )
+    .unwrap_err();
+    assert_eq!(
+        paths(&errs),
+        [
+            "drill.for_secs",
+            "drill.hour",
+            "drill.tz",
+            "drill.group",
+            "drill.clients",
+            "drill.nodes"
+        ]
+    );
+    let shared = telltale_config::shared::shared_part(&Config::default());
+    assert!(shared.get("drill").is_none(), "defaults aren't sent");
+}

@@ -2013,6 +2013,32 @@ one (Windows stays for about 15 minutes; that's normal).
 Start small: one device of your own for 30 seconds, then a group, then everyone. Devices without
 a working second server lose DNS for the drill's length.
 
+**REFUSED instead of silence.** With `"mode": "refused"` (the form's "REFUSED at once"), the
+node answers its targets REFUSED (extended error 14, "failover drill") instead of nothing. It's
+faster: no device waits out a timeout. It's also less realistic: some devices try their next
+server on REFUSED, others just fail the lookup, so a device that is `stuck` here may still fail
+over from a dead server. Use the default for the real question.
+
+**Every month, at night.** A `[drill]` section schedules drills:
+
+```toml
+[drill]
+schedule = "monthly"      # "off" (the default)
+nodes = ["home-pi"]       # the nodes that drill themselves: sites, pod names, or node IDs
+for_secs = 30             # 15 to 300
+hour = 3                  # local hour it starts in
+tz = "Europe/Berlin"      # default: the system's zone
+# group = "iot"           # or clients = ["192.168.1.20"]; neither: everyone
+# mode = "refused"        # default "drop"
+```
+
+Each named node drills itself once a month, during that hour, on a day in the first week picked
+from its name and the month (so the day moves, and two nodes rarely share it). It tries once a
+minute through the hour; if a precondition fails all hour, it skips the month. It never drills
+within 7 days of another drill on the same node. To get the report, add an alert rule with
+`when = "drill_report"` (it covers drills started by hand too), for example to an email
+destination.
+
 ```sh
 # on the Cluster page: a node's Drill… (how long, whom, why), Preview, then Start drill
 curl -X POST https://pi:8443/api/v1/nodes/pi/drill?dryRun=true -d '{"forSecs":30,"targets":{"clients":["192.168.1.20"]},"reason":"does the second server work?"}'
@@ -2622,6 +2648,7 @@ Rules watch:
 | `rollout_failed` | a [staged rollout](#rolling-a-change-out-in-stages)'s guard failed a version and pinned the cluster to the one before, with the reason | version |
 | `cluster_pinned` | the cluster is [pinned](#pinning-the-cluster-to-a-version) to an older version, so changes wait (raise `for_secs` if you pin on purpose for long) | cluster |
 | `chatty_loop` | a device asks a domain at a steady rhythm faster than every 30 s (an informational finding the `anomaly` rule leaves out; see [Device anomalies](#device-anomalies)) | finding |
+| `drill_report` | a [failover drill](#failover-drills)'s report is ready, scheduled or started by hand: followed, stuck, quiet, coverage | drill |
 
 - **Nodes in maintenance** are left out of the per-node conditions, and an alert about one that was firing resolves with "(maintenance)". When the window ends, `for_secs` counts from zero. The Alerts page says whose alerts are paused, until when.
 - A condition must hold for `for_secs` (60 by default) before the alert goes out, so a short blip stays quiet; when it clears, a "Resolved" message follows. Anomalies, updates, new devices, pending plans, and failed rollouts go out once each.

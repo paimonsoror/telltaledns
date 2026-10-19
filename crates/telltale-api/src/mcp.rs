@@ -964,6 +964,7 @@ pub fn write_tools() -> Vec<WriteTool> {
                 "forSecs": {"type": "integer", "minimum": 15, "maximum": 300, "description": "How long (default 60)."},
                 "group": {"type": "string", "description": "Drill one group's devices."},
                 "clients": {"type": "array", "items": {"type": "string"}, "description": "Drill these devices (addresses, names, or Kubernetes workloads). With neither group nor clients: everyone."},
+                "mode": {"type": "string", "enum": ["drop", "refused"], "description": "drop (default): no answer at all, like a dead server. refused: REFUSED at once, faster, but some devices don't try their next server on it."},
                 "reason": reason_schema()
             }, "required": ["reason"], "additionalProperties": false})
             },
@@ -980,10 +981,17 @@ pub fn write_tools() -> Vec<WriteTool> {
                     (None, true) => (json!("all"), "everyone".to_owned()),
                 };
                 let secs = a.get("forSecs").and_then(Value::as_u64).unwrap_or(60);
+                let mut body = json!({"forSecs": secs, "targets": targets, "reason": reason});
+                if let Some(m) = s(a, "mode") {
+                    if m != "drop" && m != "refused" {
+                        return Err("`mode`: drop or refused".into());
+                    }
+                    body["mode"] = m.into();
+                }
                 Ok(Write {
                     method: "POST",
                     path: format!("/api/v1/nodes/{}/drill", enc(&node)),
-                    body: Some(json!({"forSecs": secs, "targets": targets, "reason": reason})),
+                    body: Some(body),
                     summary: format!("Failover drill on {node} for {secs} s: stop answering {who}"),
                     merge: None,
                 })

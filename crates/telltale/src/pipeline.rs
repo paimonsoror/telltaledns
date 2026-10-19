@@ -923,6 +923,16 @@ impl Pipeline {
             ) {
                 self.drill.count();
                 oc.status = Status::Drilled;
+                // REQ: CLU-014 (owner 2026-10-19) — the REFUSED mode: an answer at once.
+                if t.refused {
+                    return self.simple(
+                        &q,
+                        out,
+                        rcode::REFUSED,
+                        Some((ede::NOT_READY, "failover drill")),
+                        meta,
+                    );
+                }
                 return Response::Close;
             }
         }

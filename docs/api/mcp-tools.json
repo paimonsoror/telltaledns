@@ -1155,6 +1155,14 @@
           "description": "Drill one group's devices.",
           "type": "string"
         },
+        "mode": {
+          "description": "drop (default): no answer at all, like a dead server. refused: REFUSED at once, faster, but some devices don't try their next server on it.",
+          "enum": [
+            "drop",
+            "refused"
+          ],
+          "type": "string"
+        },
         "node": {
           "description": "The node to drill: local (default), or a node's ID, site, or pod name (cluster_status lists them).",
           "type": "string"

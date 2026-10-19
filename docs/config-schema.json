@@ -168,6 +168,17 @@
         "negative_trust_anchors": []
       }
     },
+    "drill": {
+      "description": "REQ: CLU-014 (T15.2, owner 2026-10-19) — scheduled failover drills: once a month, at night,\nthe nodes named here drill themselves and the report goes out as a `drill_report` alert.",
+      "$ref": "#/$defs/DrillConfig",
+      "default": {
+        "for_secs": 30,
+        "hour": 3,
+        "mode": "drop",
+        "nodes": [],
+        "schedule": "off"
+      }
+    },
     "exclusions": {
       "description": "REQ: OBS-022 (T12.1) — names and devices kept out of the query log and analytics.\nAlways serialized, like every top-level section: a replica merges the primary's shared\nsections into its own by key (`shared::with_shared`).",
       "$ref": "#/$defs/ExclusionsConfig",
@@ -754,6 +765,11 @@
           "description": "REQ: OBS-036 — a device asks a domain at a steady rhythm faster than every 30 s\n(informational findings, which `anomaly` leaves out; one alert per finding).",
           "type": "string",
           "const": "chatty_loop"
+        },
+        {
+          "description": "REQ: CLU-014 — a failover drill's report is ready (scheduled or started by hand; once\nper drill): who followed, who was stuck, coverage.",
+          "type": "string",
+          "const": "drill_report"
         }
       ]
     },
@@ -1501,6 +1517,101 @@
       "enum": [
         "post",
         "get"
+      ]
+    },
+    "DrillConfig": {
+      "description": "REQ: CLU-014 (owner 2026-10-19) — scheduled failover drills (`[drill]`).",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Drill these devices (addresses, device names, or workloads).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "for_secs": {
+          "description": "How long, in seconds (15 to 300).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "group": {
+          "description": "Drill one group's devices; with neither `group` nor `clients`, everyone.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "hour": {
+          "description": "The local hour it starts in (0 to 23; default 3, at night).",
+          "type": "integer",
+          "format": "uint8",
+          "default": 3,
+          "maximum": 255,
+          "minimum": 0
+        },
+        "mode": {
+          "description": "`drop` (default) or `refused`.",
+          "$ref": "#/$defs/DrillMode",
+          "default": "drop"
+        },
+        "nodes": {
+          "description": "The nodes that drill themselves on the schedule: sites, pod names, or node IDs.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+          }
+        },
+        "schedule": {
+          "description": "`off` (default) or `monthly`.",
+          "$ref": "#/$defs/DrillSchedule",
+          "default": "off"
+        },
+        "tz": {
+          "description": "The time zone of `hour` (IANA, e.g. `Europe/Berlin`); default the system's.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DrillMode": {
+      "description": "REQ: CLU-014 — what a drilled node does with its targets' queries.",
+      "oneOf": [
+        {
+          "description": "No answer at all (UDP dropped, TCP and DoT closed): a dead server, which every stub\nresolver fails over from after its timeout. The realistic drill.",
+          "type": "string",
+          "const": "drop"
+        },
+        {
+          "description": "REFUSED at once: faster, but some stub resolvers don't try their next server on it.",
+          "type": "string",
+          "const": "refused"
+        }
+      ]
+    },
+    "DrillSchedule": {
+      "description": "REQ: CLU-014 — how often scheduled drills run.",
+      "oneOf": [
+        {
+          "description": "No scheduled drills (drills still run when someone starts one).",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Once a month: on a day in the first week (the same day each month for a node, picked\nfrom its name), at `hour`.",
+          "type": "string",
+          "const": "monthly"
+        }
       ]
     },
     "EdeKind": {

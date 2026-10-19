@@ -31,6 +31,7 @@
   let group = $state('');
   let clients = $state('');
   let reason = $state('');
+  let refused = $state(false);
   let groups = $state<string[]>([]);
   let preview = $state<S['DrillStart'] | null>(null);
   let busy = $state(false);
@@ -55,7 +56,7 @@
 
   // Any change makes the preview stale.
   $effect(() => {
-    void [secs, who, group, clients, reason];
+    void [secs, who, group, clients, reason, refused];
     preview = null;
   });
 
@@ -63,7 +64,7 @@
     busy = true;
     error = null;
     try {
-      const r = await api.startDrill(node, { forSecs: secs, targets, reason: reason.trim() }, dryRun);
+      const r = await api.startDrill(node, { forSecs: secs, targets, reason: reason.trim(), mode: refused ? 'refused' : 'drop' }, dryRun);
       if (dryRun) preview = r;
       else ondone(r);
     } catch (e) {
@@ -105,6 +106,10 @@
     >
   {/if}
   <label class="field">Why <input bind:value={reason} maxlength="200" placeholder="does the second server work?" data-testid="drill-reason" /></label>
+  <label class="check"
+    ><input type="checkbox" bind:checked={refused} data-testid="drill-refused" /> Answer REFUSED at once instead of nothing (faster, less
+    realistic: some devices don't try their next server on REFUSED)</label
+  >
   {#if preview}
     <div class="preview" data-testid="drill-preview">
       <p>{preview.preview}</p>
@@ -158,6 +163,12 @@
     gap: 4px;
     margin: 8px 0;
     max-width: 420px;
+  }
+  .check {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    margin: 8px 0;
   }
   .preview p {
     margin: 6px 0;

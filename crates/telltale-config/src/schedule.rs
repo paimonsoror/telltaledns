@@ -88,6 +88,37 @@ pub fn time_zone(name: Option<&str>) -> Result<TimeZone, String> {
     }
 }
 
+/// REQ: CLU-014 (owner 2026-10-19) — the day of the month (1 to 7) `node`'s scheduled drill
+/// falls on in `year`/`month`: picked from the three, so it moves around the first week and two
+/// nodes rarely share it.
+pub fn drill_day(node: &str, year: i16, month: i8) -> i8 {
+    // FNV-1a: stable across builds and platforms.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in node
+        .bytes()
+        .chain(year.to_be_bytes())
+        .chain(month.to_be_bytes())
+    {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    i8::try_from(h % 7).unwrap_or(0) + 1
+}
+
+/// REQ: CLU-014 — the month (`year`, `month`) whose scheduled drill is due for `node` at `now`
+/// (Unix seconds): during `[drill] hour` on that month's drill day, in `[drill] tz`. `None`
+/// otherwise, or when the schedule is off.
+pub fn drill_slot(cfg: &crate::schema::DrillConfig, node: &str, now: i64) -> Option<(i16, i8)> {
+    if cfg.schedule != crate::schema::DrillSchedule::Monthly {
+        return None;
+    }
+    let tz = time_zone(cfg.tz.as_ref().map(crate::types::SafeString::as_str)).ok()?;
+    let z = jiff::Timestamp::from_second(now).ok()?.to_zoned(tz);
+    let (year, month) = (z.year(), z.month());
+    (z.day() == drill_day(node, year, month) && i64::from(z.hour()) == i64::from(cfg.hour))
+        .then_some((year, month))
+}
+
 /// A schedule ready to evaluate.
 #[derive(Debug, Clone)]
 pub struct Compiled {
@@ -185,6 +216,47 @@ mod tests {
     }
 
     /// REQ: FLT-010 — the schedule's own time zone decides (UTC always exists).
+    // REQ: CLU-014 — a monthly drill: one hour on one day in the first week, the same for a node
+    // and month, at the configured hour in the configured zone; never when the schedule is off.
+    #[test]
+    fn clu_014_drill_slot() {
+        use crate::schema::{DrillConfig, DrillSchedule};
+        let cfg = DrillConfig {
+            schedule: DrillSchedule::Monthly,
+            hour: 3,
+            tz: Some(SafeString::from("UTC")),
+            ..DrillConfig::default()
+        };
+        let day = drill_day("home-pi", 2026, 11);
+        assert!((1..=7).contains(&day));
+        assert_eq!(day, drill_day("home-pi", 2026, 11), "stable");
+        let days: std::collections::HashSet<i8> =
+            (1..=12).map(|m| drill_day("home-pi", 2026, m)).collect();
+        assert!(days.len() > 1, "it moves around the first week");
+        let at = |d: i8, h: i8| {
+            jiff::civil::date(2026, 11, d)
+                .at(h, 30, 0, 0)
+                .to_zoned(TimeZone::UTC)
+                .unwrap()
+                .timestamp()
+                .as_second()
+        };
+        assert_eq!(drill_slot(&cfg, "home-pi", at(day, 3)), Some((2026, 11)));
+        assert_eq!(
+            drill_slot(&cfg, "home-pi", at(day, 4)),
+            None,
+            "another hour"
+        );
+        let other = if day == 7 { 1 } else { day + 1 };
+        assert_eq!(
+            drill_slot(&cfg, "home-pi", at(other, 3)),
+            None,
+            "another day"
+        );
+        let off = DrillConfig::default();
+        assert_eq!(drill_slot(&off, "home-pi", at(day, 3)), None, "off");
+    }
+
     #[test]
     fn flt_010_time_zone() {
         assert!(time_zone(Some("Mars/Olympus_Mons")).is_err());

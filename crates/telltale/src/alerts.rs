@@ -136,6 +136,7 @@ fn one_off(w: AlertWhen) -> bool {
             | AlertWhen::NewDevice
             | AlertWhen::PlanPending
             | AlertWhen::RolloutFailed
+            | AlertWhen::DrillReport
     )
 }
 
@@ -624,7 +625,48 @@ fn observe(
                 _ => Vec::new(),
             }
         }
+        // REQ: CLU-014 (owner 2026-10-19) — once per drill report, from every node, for reports
+        // that ended in the last 2 hours (a restart doesn't send old ones again).
+        AlertWhen::DrillReport => {
+            let Ok(h) = tokio::runtime::Handle::try_current() else {
+                return Vec::new();
+            };
+            let page = h.block_on(b.drills(20, 0)).unwrap_or_default();
+            let since = i64::try_from(now).unwrap_or(i64::MAX) - 2 * 3600;
+            page.items
+                .into_iter()
+                .filter(|d| d.status == "complete")
+                .filter(|d| {
+                    d.ended
+                        .as_deref()
+                        .and_then(telltale_config::parse_rfc3339)
+                        .is_some_and(|t| t >= since)
+                })
+                .map(|d| (d.id.clone(), drill_text(&d)))
+                .collect()
+        }
     }
+}
+
+/// REQ: CLU-014 — a drill report in one sentence (the `drill_report` alert).
+fn drill_text(d: &telltale_api::model::DrillSummary) -> String {
+    let how = if d.by == "schedule" {
+        "scheduled failover drill"
+    } else {
+        "failover drill"
+    };
+    let coverage = d
+        .coverage_percent
+        .map_or_else(String::new, |c| format!("; coverage {c:.0} %"));
+    let missing = if d.missing_nodes.is_empty() {
+        String::new()
+    } else {
+        format!(" (no answer from {})", d.missing_nodes.join(", "))
+    };
+    format!(
+        "{how} on {} ({}): {} followed, {} stuck, {} quiet{coverage}{missing}. The report: Cluster → Drills.",
+        d.node, d.targets, d.followed, d.stuck, d.quiet
+    )
 }
 
 /// The message for a destination: (body, content type, extra headers).
@@ -975,6 +1017,32 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: CLU-014 (owner 2026-10-19) — a drill report goes out once (a one-off, like a failed
+    // rollout), saying scheduled or not, the counts, coverage, and missing nodes.
+    #[test]
+    fn clu_014_drill_report_alert() {
+        assert!(one_off(AlertWhen::DrillReport));
+        let d = telltale_api::model::DrillSummary {
+            node: "home-pi".into(),
+            targets: "everyone".into(),
+            by: "schedule".into(),
+            followed: 9,
+            stuck: 1,
+            quiet: 4,
+            coverage_percent: Some(90.0),
+            missing_nodes: vec!["telltaledns-resolver-x".into()],
+            ..Default::default()
+        };
+        let t = drill_text(&d);
+        assert!(t.starts_with("scheduled failover drill on home-pi (everyone): 9 followed, 1 stuck, 4 quiet; coverage 90 %"), "{t}");
+        assert!(t.contains("no answer from telltaledns-resolver-x"), "{t}");
+        let mut e = Engine::default();
+        let rules = [rule(AlertWhen::DrillReport, 0)];
+        let seen = vec![vec![("d1".to_owned(), t.clone())]];
+        assert_eq!(e.step(100, &rules, &seen).len(), 1);
+        assert!(e.step(200, &rules, &seen).is_empty(), "once");
+    }
 
     fn rule(when: AlertWhen, for_secs: u32) -> AlertRule {
         AlertRule {

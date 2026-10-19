@@ -224,6 +224,10 @@ pub(crate) enum DrillCmd {
         /// Check the preconditions and list the devices without dropping anything.
         #[arg(long)]
         dry_run: bool,
+        /// Answer REFUSED at once instead of nothing (faster; some devices don't try their
+        /// next server on REFUSED).
+        #[arg(long)]
+        refused: bool,
     },
     /// End a node's drill now (the report still comes).
     Stop {
@@ -767,7 +771,9 @@ pub(crate) async fn run(
             reason,
             node,
             dry_run,
+            refused,
         }) => {
+            let mode = if refused { "refused" } else { "drop" };
             let targets = match (group, client.is_empty()) {
                 (Some(g), _) => json!({ "group": g }),
                 (None, false) => json!({ "clients": client }),
@@ -781,7 +787,7 @@ pub(crate) async fn run(
                         path_segment(&node),
                         if dry_run { "?dryRun=true" } else { "" }
                     ),
-                    Some(&json!({"forSecs": for_secs, "targets": targets, "reason": reason})),
+                    Some(&json!({"forSecs": for_secs, "targets": targets, "reason": reason, "mode": mode})),
                 )
                 .await?,
                 Some(Box::new(|v: &Value| {

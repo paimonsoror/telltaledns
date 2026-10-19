@@ -1302,7 +1302,7 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - **Interfaces:** `POST/DELETE/GET /api/v1/nodes/{id}/drill` (`dryRun`), `GET /api/v1/drills[/{id}]`, `GET /api/v1/clients/affinity`; MCP `plan_failover_drill`, `drill_report`; the Cluster page's **Drill…** and Drills list; metrics; annotations `drill.started`/`drill.ended`. Never a health reason.
 **Consequences:**
 - The first real drill should be on the owner's own laptop for 30 s, then a group, then everyone; never run against the live Pi without the owner's go.
-- Scheduled drills and a REFUSED mode are open questions; neither is built.
+- Scheduled drills and a REFUSED mode were open questions; the owner said yes to both (below), and both are built.
 - Devices that never queried during the window are `quiet`: a drill can't tell an idle device from one without DNS.
 
 **Amendments at implementation (T15.2, 2026-10-19):**
@@ -1315,6 +1315,11 @@ The engine can already express device-scoped rules (`$client` in the manual-rule
 - **Markers:** `drill.started` and `drill.ended` are new marker kinds; a drill's maintenance window leaves no `maintenance.*` markers of its own.
 - **Test hooks:** `TELLTALE_DRILL_GAP_SECS`, `TELLTALE_DRILL_RETURN_SECS`, and `TELLTALE_DRILL_RETRY_SECS` shorten the 10-minute gap, the 15-minute check, and the 5-minute retry for the cluster e2e. `TELLTALE_DRILL_IGNORE_HEALTH` passes the health check (shown as ignored in the checks): the e2e's nodes have no working upstream, so their health is severe.
 - **CLI:** `telltale ctl drill start|stop|report` over the API (the design's local `telltale drill` subcommands are the same calls; only `ctl` is built).
+
+**Owner decisions (2026-10-19, the open questions):**
+- **Scheduled drills: yes.** `[drill] schedule = "monthly"` with `nodes` (the nodes that drill themselves), the targets (`group` or `clients`, else everyone), `for_secs` (default 30), `hour` (default 3) and `tz`, and `mode`. The day is in the first week, picked from the node's label and the month (FNV-1a), so it moves from month to month; the node tries once a minute through the hour, skips the month if a precondition fails all hour, and never drills within 7 days of another drill. The report goes out through a new one-off alert kind `drill_report` (any drill, scheduled or not, reports ended in the last 2 hours) to whatever destinations the rule names, email included. Shared configuration, so `nodes` says where it runs.
+- **REFUSED mode: yes.** `mode: "refused"` (API, form, MCP, `ctl --refused`, `[drill] mode`): the node answers REFUSED with extended error 14 (Not Ready, "failover drill") at once, still counted as `drilled`. Drop stays the default; the preview says the REFUSED drill is faster but less realistic.
+- **The live Pi: yes**, laptop first for 30 s, then a group, then everyone.
 
 ## ADR-150 — Kubernetes workloads as devices: a read-only pod watcher on the controller, a synthetic analytics key, groups from labels (Proposed)
 **Context:** FLT-017 (owner request 2026-10-18). On the homelab k3s node, pods are clients like any other, but a pod address names nothing and changes on every rollout, so a Deployment's three replicas look like three short-lived devices and per-device analytics (baselines, rhythm, timeline, new-device status) restart each time. Nothing in the code talks to the Kubernetes API today, and the chart mounts no service-account token (ADR-120 keeps secrets off resolver pods). Design: `docs/design/kubernetes-workloads.md`.

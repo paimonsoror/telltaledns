@@ -70,6 +70,7 @@ pub(crate) fn validate(cfg: &Config, errors: &mut Vec<ConfigError>) -> Vec<Strin
     simulate(cfg, &mut r);
     identify(cfg, &mut r);
     kubernetes(cfg, &mut r);
+    drill(cfg, &mut r);
     rollout(cfg, &mut r);
     cache_and_telemetry(cfg, &mut r);
     auth(cfg, &mut r);
@@ -377,6 +378,41 @@ fn rollout(cfg: &Config, r: &mut Report<'_>) {
 // REQ: FLT-017 (T15.1) — map rules name groups that exist and kinds TelltaleDNS knows; the
 // default group exists; namespace names are plain. A label value naming a missing group is
 // only logged at runtime (the cluster's labels aren't configuration).
+// REQ: CLU-014 — a scheduled drill names its nodes, a length of 15 to 300 s, an hour, a known
+// zone and group, and not both a group and devices.
+fn drill(cfg: &Config, r: &mut Report<'_>) {
+    let d = &cfg.drill;
+    if !(15..=300).contains(&d.for_secs) {
+        r.err(
+            "drill.for_secs",
+            "15 to 300 seconds: longer, a drill is an outage",
+        );
+    }
+    if d.hour > 23 {
+        r.err("drill.hour", "an hour of the day, 0 to 23");
+    }
+    if let Some(tz) = &d.tz
+        && let Err(e) = crate::schedule::time_zone(Some(tz.as_str()))
+    {
+        r.err("drill.tz", e);
+    }
+    if let Some(g) = &d.group {
+        let known = g.as_str() == "default" || cfg.group.iter().any(|x| x.name == *g);
+        if !known {
+            r.err("drill.group", format!("unknown group `{g}`"));
+        }
+        if !d.clients.is_empty() {
+            r.err("drill.clients", "set `group` or `clients`, not both");
+        }
+    }
+    if d.schedule == crate::schema::DrillSchedule::Monthly && d.nodes.is_empty() {
+        r.err(
+            "drill.nodes",
+            "name the nodes that drill themselves (sites, pod names, or node IDs)",
+        );
+    }
+}
+
 fn kubernetes(cfg: &Config, r: &mut Report<'_>) {
     let k = &cfg.kubernetes;
     let groups: HashSet<&str> = cfg

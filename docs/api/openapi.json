@@ -11498,6 +11498,14 @@
           }
         }
       },
+      "DrillMode": {
+        "type": "string",
+        "description": "REQ: CLU-014 (owner 2026-10-19) — what the drilled node does with its targets' queries.",
+        "enum": [
+          "drop",
+          "refused"
+        ]
+      },
       "DrillNodeCount": {
         "type": "object",
         "description": "REQ: CLU-014 — queries one node answered (or dropped) during a drill.",
@@ -11633,6 +11641,17 @@
             ],
             "description": "On the primary under automatic failover: hand the role over first (default true)."
           },
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DrillMode",
+                "description": "`drop` (default: no answer at all, like a dead server) or `refused` (REFUSED at once:\nfaster, but some devices don't try their next server on it)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reason": {
             "type": [
               "string",
@@ -11750,7 +11769,8 @@
         ],
         "properties": {
           "by": {
-            "type": "string"
+            "type": "string",
+            "description": "Who started it: a user, an agent, or `schedule` (`[drill] schedule`)."
           },
           "coveragePercent": {
             "type": [
@@ -11794,6 +11814,10 @@
               "type": "string"
             },
             "description": "Nodes whose part is missing (unreachable, or too old to record drills)."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/DrillMode",
+            "description": "`drop` or `refused`."
           },
           "node": {
             "type": "string",

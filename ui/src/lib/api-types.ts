@@ -4327,6 +4327,11 @@ export interface components {
              */
             verdict: string;
         };
+        /**
+         * @description REQ: CLU-014 (owner 2026-10-19) — what the drilled node does with its targets' queries.
+         * @enum {string}
+         */
+        DrillMode: "drop" | "refused";
         /** @description REQ: CLU-014 — queries one node answered (or dropped) during a drill. */
         DrillNodeCount: {
             /** Format: int32 */
@@ -4379,6 +4384,7 @@ export interface components {
             forSecs?: number | null;
             /** @description On the primary under automatic failover: hand the role over first (default true). */
             handover?: boolean | null;
+            mode?: components["schemas"]["DrillMode"] | null;
             /**
              * @description Why, in a few words (1 to 200 characters, one line).
              * @example does the Pi's second server work?
@@ -4426,6 +4432,7 @@ export interface components {
         };
         /** @description REQ: CLU-014 — a drill in a list. */
         DrillSummary: {
+            /** @description Who started it: a user, an agent, or `schedule` (`[drill] schedule`). */
             by: string;
             /**
              * Format: double
@@ -4443,6 +4450,8 @@ export interface components {
             medianFailoverMs?: number | null;
             /** @description Nodes whose part is missing (unreachable, or too old to record drills). */
             missingNodes: string[];
+            /** @description `drop` or `refused`. */
+            mode?: components["schemas"]["DrillMode"];
             /** @description The drilled node. */
             node: string;
             /** Format: int64 */

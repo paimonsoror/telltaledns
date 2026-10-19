@@ -2336,6 +2336,19 @@ pub struct DrillRequest {
     /// On the primary under automatic failover: hand the role over first (default true).
     #[serde(default)]
     pub handover: Option<bool>,
+    /// `drop` (default: no answer at all, like a dead server) or `refused` (REFUSED at once:
+    /// faster, but some devices don't try their next server on it).
+    #[serde(default)]
+    pub mode: Option<DrillMode>,
+}
+
+/// REQ: CLU-014 (owner 2026-10-19) — what the drilled node does with its targets' queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DrillMode {
+    #[default]
+    Drop,
+    Refused,
 }
 
 /// REQ: CLU-014 — one precondition and whether it holds.
@@ -2463,7 +2476,11 @@ pub struct DrillSummary {
     pub ended: Option<String>,
     pub targets: String,
     pub reason: String,
+    /// Who started it: a user, an agent, or `schedule` (`[drill] schedule`).
     pub by: String,
+    /// `drop` or `refused`.
+    #[serde(default)]
+    pub mode: DrillMode,
     /// `running`, `collecting` (the 60-second grace and the other nodes' parts),
     /// `complete`, or `cancelled` (a restart ended it; no report).
     pub status: String,

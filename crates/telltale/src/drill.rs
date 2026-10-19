@@ -31,8 +31,8 @@ use arc_swap::{ArcSwap, Guard};
 use serde::{Deserialize, Serialize};
 use telltale_api::DrillWrite;
 use telltale_api::model::{
-    ActiveDrill, DrillCheck, DrillDevice, DrillNodeCount, DrillReport, DrillStart, DrillSummary,
-    DrillTargetDevice, DrillTargets,
+    ActiveDrill, DrillCheck, DrillDevice, DrillMode, DrillNodeCount, DrillReport, DrillStart,
+    DrillSummary, DrillTargetDevice, DrillTargets,
 };
 use telltale_api::problem::{Code, Problem};
 use telltale_cluster::net::{Cluster, DrillMark};
@@ -98,6 +98,8 @@ pub(crate) struct Targets {
     pub(crate) spared_ips: HashSet<IpAddr>,
     /// Excluded devices (OBS-022) are never dropped either.
     pub(crate) excluded: Option<Arc<telltale_telemetry::exclude::Exclusions>>,
+    /// REQ: CLU-014 (owner 2026-10-19) — answer REFUSED instead of nothing.
+    pub(crate) refused: bool,
 }
 
 impl Targets {
@@ -306,6 +308,8 @@ pub(crate) struct Drills {
     cancelled: AtomicU64,
     /// The last report's numbers, for `/metrics`.
     last: Mutex<Option<DrillSummary>>,
+    /// REQ: CLU-014 — the last try to start a scheduled drill (Unix ms): once a minute at most.
+    scheduled_try_ms: AtomicU64,
     changed: tokio::sync::Notify,
 }
 
@@ -618,7 +622,7 @@ fn member_label(m: &telltale_cluster::net::Member) -> String {
 }
 
 /// What a drill will do, in plain words.
-fn preview(secs: u32, resolved: usize, all: bool) -> String {
+fn preview(secs: u32, resolved: usize, all: bool, mode: DrillMode) -> String {
     let who = if all {
         "every device that asks it".to_owned()
     } else if resolved == 1 {
@@ -626,9 +630,14 @@ fn preview(secs: u32, resolved: usize, all: bool) -> String {
     } else {
         format!("{resolved} devices")
     };
-    format!(
-        "For {secs} seconds this node will not answer {who}. Devices with a second DNS server switch to it within a few seconds; devices without one lose DNS until the drill ends."
-    )
+    match mode {
+        DrillMode::Drop => format!(
+            "For {secs} seconds this node will not answer {who}. Devices with a second DNS server switch to it within a few seconds; devices without one lose DNS until the drill ends."
+        ),
+        DrillMode::Refused => format!(
+            "For {secs} seconds this node will answer {who} with REFUSED. Devices that try their next server on REFUSED switch at once; the others fail their lookups until the drill ends, even with a second server."
+        ),
+    }
 }
 
 /// A new drill's ID: the start time and some randomness.
@@ -637,17 +646,31 @@ fn new_id(now: u64) -> String {
     format!("d{now}-{r:08x}")
 }
 
+/// REQ: CLU-014 — a drill to start (or dry-run) on this node, as the API checked it.
+#[derive(Debug, Clone)]
+pub(crate) struct Request {
+    pub(crate) for_secs: u32,
+    pub(crate) spec: DrillTargets,
+    pub(crate) reason: String,
+    pub(crate) handover: bool,
+    pub(crate) by: String,
+    pub(crate) dry_run: bool,
+    /// REQ: CLU-014 (owner 2026-10-19) — REFUSED instead of no answer.
+    pub(crate) mode: DrillMode,
+}
+
 /// REQ: CLU-014 — starts (or dry-runs) a drill on this node; the API checked the request.
 #[allow(clippy::too_many_lines)] // checks, resolve, notify, start: one sequence
-pub(crate) async fn start_here(
-    src: Arc<Sources>,
-    for_secs: u32,
-    spec: DrillTargets,
-    reason: String,
-    handover: bool,
-    by: String,
-    dry_run: bool,
-) -> Result<DrillStart, Problem> {
+pub(crate) async fn start_here(src: Arc<Sources>, req: Request) -> Result<DrillStart, Problem> {
+    let Request {
+        for_secs,
+        spec,
+        reason,
+        handover,
+        by,
+        dry_run,
+        mode,
+    } = req;
     let now = now_ms();
     let this = label(&src);
     if src.drills.running().is_some_and(|s| s.until_ms > now) {
@@ -680,7 +703,7 @@ pub(crate) async fn start_here(
         checks: checks.clone(),
         devices: Vec::new(),
         handover: "not_needed".into(),
-        preview: preview(for_secs, hit.len(), all),
+        preview: preview(for_secs, hit.len(), all, mode),
         note: None,
     };
     let no_device = !all && hit.is_empty();
@@ -746,7 +769,13 @@ pub(crate) async fn start_here(
             drill: Some(id.clone()),
         })
         .map_err(|e| Problem::internal(format!("can't write the drill's window: {e}")))?;
-    src.pipeline.drill.set(targets, until);
+    src.pipeline.drill.set(
+        Targets {
+            refused: mode == DrillMode::Refused,
+            ..targets
+        },
+        until,
+    );
     if let Some(c) = &src.cluster {
         c.set_local(|l| {
             l.drill = Some(DrillMark {
@@ -767,6 +796,7 @@ pub(crate) async fn start_here(
                 targets: text.clone(),
                 reason: reason.clone(),
                 by: by.clone(),
+                mode,
                 status: "running".into(),
                 via_balancer,
                 ..DrillSummary::default()
@@ -1025,10 +1055,23 @@ pub(crate) async fn apply(
             handover,
             by,
             dry_run,
+            mode,
         } => {
             let for_secs = telltale_api::drill_api::check_secs(Some(for_secs))?;
             let by = via.map_or(by.clone(), |v| format!("{by} via {v}"));
-            start_here(src, for_secs, targets, reason, handover, by, dry_run).await
+            start_here(
+                src,
+                Request {
+                    for_secs,
+                    spec: targets,
+                    reason,
+                    handover,
+                    by,
+                    dry_run,
+                    mode,
+                },
+            )
+            .await
         }
         DrillWrite::End { .. } => {
             let this = label(&src);
@@ -1438,6 +1481,98 @@ async fn tick(src: &Arc<Sources>) {
             }
             _ => {}
         }
+    }
+    scheduled(src).await;
+}
+
+/// The names `[drill] nodes` may use for this node: its label, site, pod, and ID.
+fn own_names(src: &Sources) -> Vec<String> {
+    let mut v = vec![label(src)];
+    if let Some(c) = &src.cluster {
+        let m = &c.identity.meta;
+        v.push(m.node_id.clone());
+        v.push(m.site.clone());
+        v.push(c.local_state().pod);
+    }
+    v.retain(|n| !n.is_empty());
+    v
+}
+
+/// REQ: CLU-014 (owner 2026-10-19) — `[drill] schedule = "monthly"`: on the nodes `[drill]
+/// nodes` names, in the drill's hour on its day, start it (tried once a minute through the hour:
+/// a precondition that fails all hour skips the month), never within 7 days of another drill on
+/// this node. The report goes out as the `drill_report` alert.
+async fn scheduled(src: &Arc<Sources>) {
+    let cfg = src.config.load_full();
+    let d = &cfg.drill;
+    if d.schedule == telltale_config::DrillSchedule::Off {
+        return;
+    }
+    let names = own_names(src);
+    if !d
+        .nodes
+        .iter()
+        .any(|n| names.iter().any(|x| x == n.as_str()))
+    {
+        return;
+    }
+    let now = now_ms();
+    let Some((year, month)) = telltale_config::schedule::drill_slot(
+        d,
+        &label(src),
+        i64::try_from(now / 1000).unwrap_or(i64::MAX),
+    ) else {
+        return;
+    };
+    if now < src.drills.scheduled_try_ms.load(Ordering::Relaxed) + 60_000
+        || src.drills.running().is_some()
+    {
+        return;
+    }
+    src.drills.scheduled_try_ms.store(now, Ordering::Relaxed);
+    if stored(src)
+        .iter()
+        .any(|s| s.since_ms + 7 * 86_400_000 > now)
+    {
+        return;
+    }
+    let spec = match (&d.group, d.clients.is_empty()) {
+        (Some(g), _) => DrillTargets::Group {
+            group: g.to_string(),
+        },
+        (None, false) => DrillTargets::Clients {
+            clients: d.clients.iter().map(ToString::to_string).collect(),
+        },
+        (None, true) => DrillTargets::All(telltale_api::model::DrillAll::All),
+    };
+    let req = Request {
+        for_secs: d.for_secs.clamp(15, 300),
+        spec,
+        reason: format!("scheduled monthly drill ({year}-{month:02})"),
+        handover: true,
+        by: "schedule".into(),
+        dry_run: false,
+        mode: match d.mode {
+            telltale_config::DrillMode::Drop => DrillMode::Drop,
+            telltale_config::DrillMode::Refused => DrillMode::Refused,
+        },
+    };
+    match start_here(Arc::clone(src), req).await {
+        Ok(r) => {
+            info!(id = %r.id, "scheduled failover drill started");
+            if let Some(auth) = src.auth.get() {
+                auth.record(
+                    &telltale_api::auth::Actor::system("schedule"),
+                    "drill.start",
+                    &r.node,
+                    &serde_json::json!({ "id": r.id, "until": r.until, "targets": r.targets, "scheduled": true }),
+                );
+            }
+        }
+        Err(p) => info!(
+            "scheduled failover drill not started ({}); tried again in a minute, until the hour ends",
+            p.detail
+        ),
     }
 }
 

@@ -203,52 +203,86 @@ fn clu_014_verdicts() {
 async fn clu_014_preconditions() {
     let src = Arc::new(crate::http::tests::sources_in(&tmp()));
     let all = || DrillTargets::All(telltale_api::model::DrillAll::All);
-    let dry = start_here(
-        Arc::clone(&src),
-        60,
-        all(),
-        "test".into(),
-        true,
-        "alice".into(),
-        true,
-    )
-    .await
-    .unwrap();
+    let req = |spec: DrillTargets, dry_run: bool, mode: DrillMode| Request {
+        for_secs: 60,
+        spec,
+        reason: "test".into(),
+        handover: true,
+        by: "alice".into(),
+        dry_run,
+        mode,
+    };
+    let dry = start_here(Arc::clone(&src), req(all(), true, DrillMode::Drop))
+        .await
+        .unwrap();
     assert!(dry.dry_run && dry.id.is_empty());
     let other = dry.checks.iter().find(|c| c.name == "other_node").unwrap();
     assert!(!other.ok, "{other:?}");
     assert!(dry.checks.iter().any(|c| c.name == "health"));
+    assert!(dry.preview.contains("will not answer"), "{}", dry.preview);
     assert!(
         src.pipeline.drill.active().is_none(),
         "a dry run drops nothing"
     );
-    let e = start_here(
-        Arc::clone(&src),
-        60,
-        all(),
-        "test".into(),
-        true,
-        "alice".into(),
-        false,
-    )
-    .await
-    .unwrap_err();
+    let refused = start_here(Arc::clone(&src), req(all(), true, DrillMode::Refused))
+        .await
+        .unwrap();
+    assert!(refused.preview.contains("REFUSED"), "{}", refused.preview);
+    let e = start_here(Arc::clone(&src), req(all(), false, DrillMode::Drop))
+        .await
+        .unwrap_err();
     assert_eq!((e.code, e.status), (Code::DrillRefused, 409));
     assert!(e.detail.contains("No other node"), "{}", e.detail);
-    let e = start_here(
-        Arc::clone(&src),
-        60,
-        DrillTargets::Group {
-            group: "nope".into(),
-        },
-        "test".into(),
-        true,
-        "alice".into(),
-        true,
-    )
-    .await
-    .unwrap_err();
+    let nope = DrillTargets::Group {
+        group: "nope".into(),
+    };
+    let e = start_here(Arc::clone(&src), req(nope, true, DrillMode::Drop))
+        .await
+        .unwrap_err();
     assert_eq!((e.code, e.status), (Code::DrillTargets, 422));
+}
+
+// REQ: CLU-014 (owner 2026-10-19) — the REFUSED mode: a target gets REFUSED (EDE 14, "failover
+// drill") at once, logged as `drilled`.
+#[test]
+fn clu_014_refused_mode_answers_refused() {
+    use telltale_net::{QueryHandler, RequestMeta, Response, Transport};
+    let p = crate::pipeline::tests_support::pipeline_from(&telltale_config::Config::default());
+    p.drill.set(
+        Targets {
+            ips: HashSet::from([ip(14)]),
+            refused: true,
+            ..Targets::default()
+        },
+        now_ms() + 60_000,
+    );
+    let qname = telltale_proto::NameBuf::from_presentation("localhost").unwrap();
+    let mut query = [0u8; 512];
+    let len = telltale_proto::build_query(
+        &mut query,
+        7,
+        &qname,
+        telltale_proto::rtype::A,
+        1,
+        true,
+        None,
+    )
+    .unwrap();
+    let meta = RequestMeta {
+        peer: "192.168.1.14:1000".parse().unwrap(),
+        local: None,
+        transport: Transport::Udp,
+        client_id: None,
+    };
+    let mut out = [0u8; 4096];
+    let Response::Ready(answered) =
+        crate::pipeline::Handler(Arc::clone(&p)).handle(&query[..len], &meta, &mut out)
+    else {
+        panic!("REFUSED is an answer");
+    };
+    let summary = telltale_proto::summarize(&out[..answered]).unwrap();
+    assert_eq!(summary.rcode, telltale_proto::rcode::REFUSED);
+    assert_eq!(p.drill.dropped.load(Ordering::Relaxed), 1);
 }
 
 // REQ: CLU-014 (AC 2) — a restart during a drill cancels it: the window file is removed, the
