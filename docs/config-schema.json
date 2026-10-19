@@ -3016,6 +3016,10 @@
             "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
           }
         },
+        "node_only": {
+          "description": "REQ: CLU-006, FLT-017 — keep this route on this node only (like `upstream.node_only`);\nother nodes answer these names as if the route weren't there.",
+          "type": "boolean"
+        },
         "upstream_group": {
           "description": "Target upstream group.",
           "type": "string",
@@ -3841,6 +3845,10 @@
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
+        "node_only": {
+          "description": "REQ: CLU-006, FLT-017 — keep this upstream on this node only: a cluster primary doesn't\nshare it, and a replica keeps it next to the cluster's upstreams (an address only this\nnode can reach, like a Kubernetes cluster's `CoreDNS`).",
+          "type": "boolean"
+        },
         "pool_size": {
           "description": "Max pooled connections for TCP/DoT/DoH.",
           "type": "integer",
@@ -3983,6 +3991,10 @@
           "description": "Unique group name. Queries that match no route use the group named `default`.",
           "type": "string",
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "node_only": {
+          "description": "REQ: CLU-006, FLT-017 — keep this group on this node only (like `upstream.node_only`).",
+          "type": "boolean"
         },
         "parallel_fanout": {
           "description": "How many members to race (strategy `parallel` only).",

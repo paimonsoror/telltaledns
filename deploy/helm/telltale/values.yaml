@@ -108,7 +108,9 @@ kubernetes:
   #   kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'
   clusterDns: ""
   # Optional: the pod and service networks (IPv4 CIDRs, e.g. 10.42.0.0/16 and 10.43.0.0/16 on
-  # k3s); their reverse zones (PTR) go to CoreDNS too, rounded to whole octets.
+  # k3s); their reverse zones (PTR) go to CoreDNS too, rounded to whole octets. Leave them
+  # empty if CoreDNS forwards to TelltaleDNS (the node's own DNS server is TelltaleDNS's
+  # address): CoreDNS passes on reverse names it doesn't know, so an unknown one would loop.
   podCidr: ""
   serviceCidr: ""
   # Namespaces to watch (empty: all), and namespaces never watched.

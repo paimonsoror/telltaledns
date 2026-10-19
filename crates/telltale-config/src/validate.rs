@@ -764,13 +764,22 @@ pub fn probe_target(t: &str) -> Result<(&str, std::net::SocketAddr, Option<&str>
 // and a warning when the sample is large enough to add noticeable upstream traffic.
 fn upstream_check(cfg: &Config, r: &mut Report<'_>) {
     let c = &cfg.upstream_check;
-    if let Some(g) = &c.reference
-        && !cfg.upstream_group.iter().any(|x| x.name == *g)
-    {
-        r.err(
-            "upstream_check.reference",
-            format!("no upstream group `{}`", g.as_str()),
-        );
+    if let Some(g) = &c.reference {
+        match cfg.upstream_group.iter().find(|x| x.name == *g) {
+            None => r.err(
+                "upstream_check.reference",
+                format!("no upstream group `{}`", g.as_str()),
+            ),
+            // REQ: CLU-006 — the setting is shared; a node-only group is on one node only.
+            Some(x) if x.node_only => r.err(
+                "upstream_check.reference",
+                format!(
+                    "upstream group `{}` is node_only; pick a shared group",
+                    g.as_str()
+                ),
+            ),
+            Some(_) => {}
+        }
     }
     if !(1..=1000).contains(&c.keep) {
         r.err("upstream_check.keep", "from 1 to 1000");
@@ -1418,6 +1427,12 @@ fn groups<'c>(cfg: &'c Config, upstreams: &HashSet<&str>, r: &mut Report<'_>) ->
                     format!("{p}.members[{j}]"),
                     format!("unknown upstream `{m}`"),
                 );
+            } else if !g.node_only && cfg.upstream.iter().any(|u| u.name == *m && u.node_only) {
+                // REQ: CLU-006, FLT-017 — other nodes wouldn't have it.
+                r.err(
+                    format!("{p}.members[{j}]"),
+                    format!("upstream `{m}` is node_only, so this group must be node_only too"),
+                );
             }
         }
         if g.strategy == Strategy::Parallel
@@ -1438,15 +1453,28 @@ fn groups<'c>(cfg: &'c Config, upstreams: &HashSet<&str>, r: &mut Report<'_>) ->
 }
 
 fn routes(cfg: &Config, groups: &HashSet<&str>, r: &mut Report<'_>) {
+    // REQ: CLU-006, FLT-017 — a node-only group exists on its own node only, so nothing the
+    // cluster shares may name it.
+    let node_only = |g: &str| {
+        cfg.upstream_group
+            .iter()
+            .any(|x| x.name.as_str() == g && x.node_only)
+    };
+    let shared_err = |g: &str| format!("upstream group `{g}` is node_only, so this must be too");
     // REQ: UPS-007 (T9.25) — a client group's own upstream group.
     for (i, g) in cfg.group.iter().enumerate() {
-        if let Some(u) = &g.upstreams
-            && !groups.contains(u.as_str())
-        {
-            r.err(
-                format!("group[{i}].upstreams"),
-                format!("unknown upstream group `{u}`"),
-            );
+        if let Some(u) = &g.upstreams {
+            if !groups.contains(u.as_str()) {
+                r.err(
+                    format!("group[{i}].upstreams"),
+                    format!("unknown upstream group `{u}`"),
+                );
+            } else if node_only(u) {
+                r.err(
+                    format!("group[{i}].upstreams"),
+                    format!("upstream group `{u}` is node_only; a client group is shared, so use a route with node_only = true"),
+                );
+            }
         }
     }
     for (i, route) in cfg.route.iter().enumerate() {
@@ -1455,6 +1483,11 @@ fn routes(cfg: &Config, groups: &HashSet<&str>, r: &mut Report<'_>) {
             r.err(
                 format!("{p}.upstream_group"),
                 format!("unknown upstream group `{}`", route.upstream_group),
+            );
+        } else if !route.node_only && node_only(&route.upstream_group) {
+            r.err(
+                format!("{p}.upstream_group"),
+                shared_err(&route.upstream_group),
             );
         }
         if route.match_suffix.is_empty()

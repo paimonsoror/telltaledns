@@ -23,6 +23,14 @@ pub const NODE_LOCAL: &[&str] = &[
     "cache",
 ];
 
+/// Shared lists whose entries can say `node_only = true` (CLU-006): such an entry stays on
+/// its node. FLT-017: the chart's route to `CoreDNS`, which only pods in that cluster can reach.
+const NODE_ONLY_LISTS: &[&str] = &["record", "upstream", "upstream_group", "route"];
+
+fn node_only(v: &Value) -> bool {
+    v.get("node_only") == Some(&Value::Bool(true))
+}
+
 /// The shared part of `cfg` as a JSON object. Serializing the same struct always gives the
 /// same key order, so equal configs give equal bytes and equal hashes.
 pub fn shared_part(cfg: &Config) -> Value {
@@ -31,9 +39,11 @@ pub fn shared_part(cfg: &Config) -> Value {
         for k in NODE_LOCAL {
             m.remove(*k);
         }
-        // Node-only records stay on their node (CLU-006).
-        if let Some(Value::Array(records)) = m.get_mut("record") {
-            records.retain(|r| r.get("node_only") != Some(&Value::Bool(true)));
+        // Node-only entries stay on their node (CLU-006).
+        for k in NODE_ONLY_LISTS {
+            if let Some(Value::Array(list)) = m.get_mut(*k) {
+                list.retain(|v| !node_only(v));
+            }
         }
         // REQ: CLU-013 — `[cluster.rollout]` is the one part of `[cluster]` the cluster shares
         // (who the canaries are, for every node to show). Older replicas skip `cluster`.
@@ -87,15 +97,14 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
             )]);
         }
     };
-    // This node's node-only records survive the merge (CLU-006).
-    let own_records: Vec<Value> = match merged.get("record") {
-        Some(Value::Array(r)) => r
-            .iter()
-            .filter(|r| r.get("node_only") == Some(&Value::Bool(true)))
-            .cloned()
-            .collect(),
-        _ => Vec::new(),
-    };
+    // This node's node-only entries survive the merge (CLU-006).
+    let own: Vec<(&str, Vec<Value>)> = NODE_ONLY_LISTS
+        .iter()
+        .map(|k| match merged.get(*k) {
+            Some(Value::Array(l)) => (*k, l.iter().filter(|v| node_only(v)).cloned().collect()),
+            _ => (*k, Vec::new()),
+        })
+        .collect();
     // A shared section the primary didn't send is at its default (see `shared_part`).
     if let Ok(Value::Object(d)) = serde_json::to_value(Config::default()) {
         for (k, v) in d {
@@ -126,11 +135,16 @@ pub fn with_shared(local: &Config, shared: &Value) -> Result<Config, Vec<ConfigE
         }
         merged.insert(k.clone(), v.clone());
     }
-    if !own_records.is_empty() {
-        if let Some(Value::Array(r)) = merged.get_mut("record") {
-            r.extend(own_records);
+    for (k, mine) in own.into_iter().filter(|(_, l)| !l.is_empty()) {
+        if let Some(Value::Array(l)) = merged.get_mut(k) {
+            // A named entry of this node's own takes the place of the cluster's of that name
+            // (an older primary that still shares it, mid-rollout).
+            if matches!(k, "upstream" | "upstream_group") {
+                l.retain(|v| !mine.iter().any(|m| m.get("name") == v.get("name")));
+            }
+            l.extend(mine);
         } else {
-            merged.insert("record".into(), Value::Array(own_records));
+            merged.insert(k.into(), Value::Array(mine));
         }
     }
     let cfg: Config = serde_json::from_value(Value::Object(merged)).map_err(|e| {
@@ -348,6 +362,97 @@ rules = ["||x.test^"]
             )),
             Vec::<String>::new()
         );
+    }
+
+    // REQ: FLT-017, CLU-006 (regression 2026-10-19) — the chart's route to CoreDNS is
+    // node-only: a Pi in the same cluster can't reach 10.43.0.10, and got the upstream, timed
+    // out on it, and reported its group as down. Pods in the cluster keep it.
+    #[test]
+    fn flt_017_kubernetes_route_stays_on_the_nodes_in_the_cluster() {
+        let chart = r#"
+[[upstream]]
+name = "q9"
+url = "udp://9.9.9.9"
+[[upstream_group]]
+name = "default"
+members = ["q9"]
+[[upstream]]
+name = "kubernetes-dns"
+url = "udp://10.43.0.10"
+node_only = true
+[[upstream_group]]
+name = "kubernetes"
+members = ["kubernetes-dns"]
+node_only = true
+[[route]]
+match_suffix = ["cluster.local"]
+upstream_group = "kubernetes"
+node_only = true
+"#;
+        let primary = load(chart);
+        let shared = shared_part(&primary);
+        let names = |v: &Value, k: &str| -> Vec<String> {
+            v[k].as_array()
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|x| x["name"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(names(&shared, "upstream"), ["q9"]);
+        assert_eq!(names(&shared, "upstream_group"), ["default"]);
+        assert!(shared.get("route").is_none(), "{shared}");
+        // The Pi: the cluster's default group, no route to CoreDNS.
+        let pi = with_shared(&load("[node]\nname = \"pi\"\n"), &shared).unwrap();
+        assert_eq!(pi.upstream.len(), 1);
+        assert!(pi.route.is_empty() && pi.upstream_group.len() == 1);
+        // A resolver pod loads the same chart file: it keeps its own route.
+        let pod = with_shared(&primary, &shared).unwrap();
+        assert_eq!(pod.upstream, primary.upstream);
+        assert_eq!(pod.upstream_group, primary.upstream_group);
+        assert_eq!(pod.route, primary.route);
+        assert_eq!(
+            ignored_on_replica(&load(chart)),
+            ["upstream", "upstream_group"]
+        );
+        // Mid-rollout, an older primary still shares the chart's upstream and group (no
+        // node_only); the pod's own copies take their place instead of clashing.
+        let mut old = shared.clone();
+        for (k, x) in [
+            ("upstream", serde_json::to_value(&primary.upstream)),
+            (
+                "upstream_group",
+                serde_json::to_value(&primary.upstream_group),
+            ),
+        ] {
+            old[k] = x.unwrap();
+            for v in old[k].as_array_mut().unwrap() {
+                v.as_object_mut().unwrap().remove("node_only");
+            }
+        }
+        let pod = with_shared(&primary, &old).unwrap();
+        assert_eq!(pod.upstream.len(), 2);
+        assert!(
+            pod.upstream
+                .iter()
+                .all(|u| u.name.as_str() == "q9" || u.node_only)
+        );
+        // Nothing shared may lean on a node-only entry: other nodes wouldn't have it.
+        for bad in [
+            "[[upstream]]\nname = \"k\"\nurl = \"udp://10.43.0.10\"\nnode_only = true\n[[upstream_group]]\nname = \"default\"\nmembers = [\"k\"]\n",
+            "[[upstream]]\nname = \"k\"\nurl = \"udp://10.43.0.10\"\n[[upstream_group]]\nname = \"g\"\nmembers = [\"k\"]\nnode_only = true\n[[route]]\nmatch_suffix = [\"cluster.local\"]\nupstream_group = \"g\"\n",
+        ] {
+            let e = Loader::new()
+                .toml_str("t", bad)
+                .load()
+                .unwrap_err()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(e.contains("node_only"), "{e}");
+        }
     }
 
     #[test]

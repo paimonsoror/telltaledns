@@ -104,19 +104,23 @@ data:
     {{- end }}
 
     # The cluster domain and the pod/service reverse zones go on to CoreDNS (no DNSSEC there).
+    # Node-only: nodes outside this Kubernetes cluster (a Pi) can't reach CoreDNS (CLU-006).
     [[upstream]]
     name = "kubernetes-dns"
     url = {{ printf "udp://%s" (required "kubernetes.clusterDns: CoreDNS's Service address (kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')" .clusterDns) | quote }}
+    node_only = true
 
     [[upstream_group]]
     name = "kubernetes"
     members = ["kubernetes-dns"]
     strategy = "failover"
+    node_only = true
 
     [[route]]
     match_suffix = [{{ range $i, $z := $zones }}{{ if $i }}, {{ end }}{{ $z | quote }}{{ end }}]
     upstream_group = "kubernetes"
     dnssec_nta = true
+    node_only = true
     {{- end }}
     {{- end }}
   {{- if include "telltale.scaled" . }}

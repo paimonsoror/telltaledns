@@ -154,7 +154,7 @@ path = "telltale/shared.toml"
     </div>
     <div class="card">
       <h3>Each node's own</h3>
-      <p><code>[node]</code>, <code>[[listen]]</code>, <code>[cluster]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, and <code>[cache]</code>, from that node's file. A <code>[[record]]</code> with <code>node_only = true</code> stays on its node too.</p>
+      <p><code>[node]</code>, <code>[[listen]]</code>, <code>[cluster]</code>, <code>[api]</code>, <code>[auth]</code>, <code>[telemetry]</code>, and <code>[cache]</code>, from that node's file. A <code>[[record]]</code>, <code>[[upstream]]</code>, <code>[[upstream_group]]</code>, or <code>[[route]]</code> with <code>node_only = true</code> stays on its node too (the Helm chart's route to CoreDNS is one).</p>
     </div>
   </div>
   <div class="callout">

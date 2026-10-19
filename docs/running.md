@@ -1693,6 +1693,14 @@ what was added in its UI or API. Each node keeps its own `[node]`, `[[listen]]`,
   value = "192.168.3.2"
   node_only = true
   ```
+- **Upstreams and routes for one node only:** `node_only = true` works the same way on
+  `[[upstream]]`, `[[upstream_group]]`, and `[[route]]`, for a server only some nodes can reach.
+  The Helm chart marks its route to CoreDNS this way (`kubernetes.enabled`), so a Pi in the
+  same cluster doesn't try to reach `cluster.local` it can't get to. Nothing shared may point
+  at a node-only entry: a shared group can't list a node-only upstream, and a shared route, a
+  client group's `upstreams`, or `upstream_check.reference` can't name a node-only group. If a
+  node's own node-only upstream or group has the same name as a shared one, the node's own is
+  used.
 - **Leftovers in a replica's file:** if its file still sets shared sections (upstreams, lists,
   records, groups…), the primary's replace them. The node logs a warning naming them, and the
   Cluster page's **node_settings** check fails until they're removed.

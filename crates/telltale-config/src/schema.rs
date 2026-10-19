@@ -552,6 +552,11 @@ pub struct Upstream {
     /// and below.
     #[serde(default, skip_serializing_if = "RecursiveConfig::is_default")]
     pub recursive: RecursiveConfig,
+    /// REQ: CLU-006, FLT-017 — keep this upstream on this node only: a cluster primary doesn't
+    /// share it, and a replica keeps it next to the cluster's upstreams (an address only this
+    /// node can reach, like a Kubernetes cluster's `CoreDNS`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub node_only: bool,
 }
 
 /// Options for a `recursive://` upstream (`spec/03` §6).
@@ -625,6 +630,9 @@ pub struct UpstreamGroup {
     /// How many members to race (strategy `parallel` only).
     #[serde(default = "default_parallel_fanout")]
     pub parallel_fanout: u8,
+    /// REQ: CLU-006, FLT-017 — keep this group on this node only (like `upstream.node_only`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub node_only: bool,
 }
 
 /// Conditional forwarding / routing rule (UPS-007, DNS-017).
@@ -645,6 +653,10 @@ pub struct Route {
     /// Add a DNSSEC negative trust anchor for the suffixes (local zones are usually unsigned).
     #[serde(default)]
     pub dnssec_nta: bool,
+    /// REQ: CLU-006, FLT-017 — keep this route on this node only (like `upstream.node_only`);
+    /// other nodes answer these names as if the route weren't there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub node_only: bool,
 }
 
 /// A local DNS record (DNS-010). Value formats by type:

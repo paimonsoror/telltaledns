@@ -368,6 +368,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
                     members,
                     strategy: telltale_config::Strategy::Failover,
                     parallel_fanout: 2,
+                    node_only: false,
                 });
                 cfg.route.push(Route {
                     match_suffix: vec![d],
@@ -375,6 +376,7 @@ pub(crate) fn merge(file: &Config, e: &Entries) -> Result<Config, Vec<String>> {
                     match_qtype: Vec::new(),
                     upstream_group: g,
                     dnssec_nta: true,
+                    node_only: false,
                 });
             }
             _ => errs.push(format!("forward `{domain}`: invalid name")),
