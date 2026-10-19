@@ -1996,7 +1996,10 @@ For 15 seconds to 5 minutes (60 by default), one node stops answering the device
   hands its role over first (as for [maintenance](#taking-a-node-down-for-maintenance)). Unlike
   maintenance, **a restart cancels a drill**: the node comes back answering everyone.
 
-Every node keeps a record of who asked it while the drill runs. A minute after the drill ends, the
+Every node keeps a record of who asked it while the drill runs, including nodes the drilled one has
+no direct connection to (a resolver pod only talks to the controller, and a node outside
+Kubernetes to no resolver pod): the primary passes the notice and the request for the records on
+to them. A minute after the drill ends, the
 drilled node gathers them into a **report**:
 
 | Verdict | Meaning |
@@ -2058,8 +2061,9 @@ above, reports have counts only.
 
 **Kubernetes.** A drill on a resolver pod behind one balancer address tests the balancer, not the
 devices: they never see a server change. The pod reports not ready, the Service stops sending it
-queries, and the report's `balancerSwitchMs` says how long that took. For two real servers (the Pi
-and the cluster's address), drill the Pi.
+queries, and the report's `balancerSwitchMs` says how long that took: about 4 seconds with the
+chart's readiness probe (every 2 seconds, 2 failures). For two real servers (the Pi and the
+cluster's address), drill the Pi.
 
 **Metrics.** `telltale_drill_active`, `telltale_drill_dropped_total`,
 `telltale_drill_last_coverage_percent`, `telltale_drill_last_stuck`,

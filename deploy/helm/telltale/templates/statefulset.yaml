@@ -148,9 +148,12 @@ spec:
             httpGet: { path: "/readyz?startup=1", port: metrics }
             periodSeconds: 2
             failureThreshold: 60
+          # Leaves the Service within about 4 s of turning not ready (maintenance, a drill, a
+          # failure); at 5 s × 3 a live drill measured 13 s of queries still sent to it.
           readinessProbe:
             httpGet: { path: /readyz, port: metrics }
-            periodSeconds: 5
+            periodSeconds: 2
+            failureThreshold: 2
           livenessProbe:
             httpGet: { path: /livez, port: metrics }
             periodSeconds: 10

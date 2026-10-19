@@ -298,13 +298,18 @@ fn prune(src: &Sources) {
 
 // ---- State ----
 
+/// A window being recorded: `(id, until, ended, watched)`; `watched` when the drilled node is a
+/// peer here, so its heartbeat tells an early end (a window relayed by the primary runs to
+/// `until`).
+type Recording = (String, u64, Option<u64>, bool);
+
 /// REQ: CLU-014 — this node's drills: the one it runs, the window it records, and counters.
 #[derive(Debug, Default)]
 pub(crate) struct Drills {
     /// The drill this node runs.
     running: Mutex<Option<Stored>>,
-    /// The window this node records: `(id, until, ended)`.
-    recording: Mutex<Option<(String, u64, Option<u64>)>>,
+    /// The window this node records.
+    recording: Mutex<Option<Recording>>,
     /// The last drill anywhere in the cluster ended (Unix ms).
     last_any_ms: AtomicU64,
     completed: AtomicU64,
@@ -569,6 +574,9 @@ fn checks(src: &Arc<Sources>, now: u64) -> Vec<DrillCheck> {
         !recent && running_elsewhere.is_none() && src.drills.running().is_none(),
         if let Some(n) = running_elsewhere {
             format!("{n} is running a drill: one at a time.")
+        } else if last > now {
+            // A drill relayed by the primary: its node isn't a peer here.
+            "Another node is running a drill: one at a time.".into()
         } else if recent {
             format!(
                 "A drill ended {} s ago: let devices settle for 10 minutes between drills.",
@@ -757,7 +765,7 @@ pub(crate) async fn start_here(src: Arc<Sources>, req: Request) -> Result<DrillS
     *src.drills
         .recording
         .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some((id.clone(), until, None));
+        .unwrap_or_else(PoisonError::into_inner) = Some((id.clone(), until, None, true));
     let (outcome, note, step_down) = match &src.cluster {
         Some(c) => crate::maintenance::handover_plan(c, handover, now),
         None => ("not_needed", None, false),
@@ -844,23 +852,100 @@ pub(crate) async fn start_here(src: Arc<Sources>, req: Request) -> Result<DrillS
     Ok(out)
 }
 
-/// Tells every peer to start recording (best effort, at most [`NOTICE_DEADLINE`]).
+/// Tells every peer to start recording, and the others through the primary (best effort, at
+/// most [`NOTICE_DEADLINE`] plus the relay's hop).
 async fn notify_peers(src: &Sources, id: &str, since_ms: u64, until_ms: u64) {
     let Some(c) = &src.cluster else { return };
     let now = now_ms();
-    let Ok(body) = serde_json::to_vec(&Op::Window {
+    let op = Op::Window {
         id: id.to_owned(),
         since_ms,
         until_ms,
-    }) else {
+        node: None,
+    };
+    let Ok(body) = serde_json::to_vec(&op) else {
         return;
     };
     let mut calls = tokio::task::JoinSet::new();
     for m in c.members().into_iter().filter(|m| m.up(now)) {
         let (c, body) = (Arc::clone(c), body.clone());
-        calls.spawn(async move { c.call(&m.node_id, KIND, body, NOTICE_DEADLINE).await });
+        calls.spawn(async move {
+            let _ = c.call(&m.node_id, KIND, body, NOTICE_DEADLINE).await;
+        });
     }
-    while calls.join_next().await.is_some() {}
+    let relayed = via_primary(c, &op, NOTICE_DEADLINE);
+    let direct = async { while calls.join_next().await.is_some() {} };
+    let _ = tokio::join!(relayed, direct);
+}
+
+/// REQ: CLU-014 — asks the primary to pass `op` on to the peers this node has no stream to.
+/// `None` on the primary itself, without a connected primary, or from an older one.
+async fn via_primary(cluster: &Arc<Cluster>, op: &Op, deadline: Duration) -> Option<Relayed> {
+    if cluster.is_primary() {
+        return None;
+    }
+    let members = cluster.members();
+    let primary = members
+        .iter()
+        .find(|m| m.primary && m.connected)?
+        .node_id
+        .clone();
+    let skip: Vec<String> = members
+        .iter()
+        .map(|m| m.node_id.clone())
+        .chain([cluster.identity.meta.node_id.clone()])
+        .collect();
+    let body = relay_body(op, &skip)?;
+    let hop = deadline + Duration::from_millis(500);
+    let reply = cluster.call(&primary, KIND, body, hop).await.ok()?;
+    serde_json::from_slice(&reply).ok()
+}
+
+/// An [`Op::Relay`] of `op` (built from a reference: `Op` isn't `Clone`).
+fn relay_body(op: &Op, skip: &[String]) -> Option<Vec<u8>> {
+    serde_json::to_vec(&serde_json::json!({
+        "op": "relay",
+        "call": serde_json::to_value(op).ok()?,
+        "skip": skip,
+    }))
+    .ok()
+}
+
+/// REQ: CLU-014 — on the primary: `op` to the peers outside `skip`, for `caller`.
+async fn relay(
+    cluster: &Arc<Cluster>,
+    op: &Op,
+    caller: &str,
+    skip: &[String],
+    deadline: Duration,
+) -> Relayed {
+    let Ok(body) = serde_json::to_vec(op) else {
+        return Relayed::default();
+    };
+    let mut calls = tokio::task::JoinSet::new();
+    for m in cluster
+        .members()
+        .into_iter()
+        .filter(|m| relays_to(&m.node_id, caller, skip))
+    {
+        let (c, body) = (Arc::clone(cluster), body.clone());
+        calls.spawn(async move {
+            let label = member_label(&m);
+            (label, c.call(&m.node_id, KIND, body, deadline).await)
+        });
+    }
+    let mut out = Relayed::default();
+    while let Some(r) = calls.join_next().await {
+        match r {
+            Ok((label, Ok(b))) => match serde_json::from_slice(&b) {
+                Ok(v) => out.answers.push((label, v)),
+                Err(_) => out.missing.push(label),
+            },
+            Ok((label, Err(_))) => out.missing.push(label),
+            Err(_) => {}
+        }
+    }
+    out
 }
 
 /// REQ: CLU-014 — ends this node's drill (early, or at its end); the report follows after the
@@ -889,7 +974,7 @@ pub(crate) fn end_here(src: &Sources, why: &str) -> Option<Stored> {
     s.ended_ms = Some(ended);
     s.report.summary.ended = Some(telltale_api::time::format_us(ended.saturating_mul(1000)));
     s.report.summary.status = "collecting".into();
-    if let Some((_, _, e)) = src
+    if let Some((_, _, e, _)) = src
         .drills
         .recording
         .lock()
@@ -941,12 +1026,19 @@ pub(crate) fn cancelled_at_start(src: &Sources) {
 pub(crate) enum Op {
     /// Start or end a drill on the node called (a user acted elsewhere).
     Write { write: DrillWrite, sent_ms: u64 },
-    /// A drill started on the caller: record a window.
+    /// A drill started on the caller (or on `node`, when the primary relays it): record a
+    /// window.
     Window {
         id: String,
         since_ms: u64,
         until_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
     },
+    /// On the primary: pass `call` (a read, or a window notice) on to its peers outside
+    /// `skip`, for a caller with no stream to them (a resolver pod knows only the primary; the
+    /// Pi knows no resolver pod). Answers a [`Relayed`].
+    Relay { call: Box<Op>, skip: Vec<String> },
     /// This node's part of a drill's window.
     Part { id: String },
     /// This node's drills.
@@ -957,6 +1049,25 @@ pub(crate) enum Op {
     Active,
     /// This node's seen table over `days` (the affinity view).
     Seen { days: u32 },
+}
+
+/// The primary's answer to [`Op::Relay`]: each peer's answer by label, and who didn't answer.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct Relayed {
+    answers: Vec<(String, serde_json::Value)>,
+    missing: Vec<String>,
+}
+
+/// REQ: CLU-014 — whether the primary passes `op` on: reads and window notices only, never a
+/// start or end (a node's own state) or another relay.
+fn relayable(op: &Op) -> bool {
+    !matches!(op, Op::Write { .. } | Op::Relay { .. })
+}
+
+/// REQ: CLU-014 — whether the primary relays to peer `node`: neither the caller nor in `skip`
+/// (the caller and the peers it reached itself).
+fn relays_to(node: &str, caller: &str, skip: &[String]) -> bool {
+    node != caller && !skip.iter().any(|s| s == node)
 }
 
 /// A part: the window, or why there's none yet.
@@ -1027,9 +1138,28 @@ pub(crate) async fn handle(
             id,
             since_ms,
             until_ms,
+            node,
         } => {
-            record_window(&src, &id, since_ms, until_ms);
+            let origin = node.unwrap_or_else(|| peer.clone());
+            let watched = cluster.members().iter().any(|m| m.node_id == origin);
+            record_window(&src, &id, since_ms, until_ms, watched);
             json(&true)
+        }
+        Op::Relay { call, skip } => {
+            if !cluster.is_primary() {
+                return Err("only the primary relays drill calls".into());
+            }
+            if !relayable(&call) {
+                return Err("the primary doesn't relay that call".into());
+            }
+            let mut call = *call;
+            let deadline = if let Op::Window { node, .. } = &mut call {
+                node.get_or_insert_with(|| peer.clone());
+                NOTICE_DEADLINE
+            } else {
+                READ_DEADLINE
+            };
+            json(&relay(&cluster, &call, &peer, &skip, deadline).await)
         }
         Op::Part { id } => json(&part(&src, &id)),
         Op::List => json(
@@ -1136,8 +1266,8 @@ pub(crate) async fn send(
     crate::forward::decode_answer(&reply)
 }
 
-/// Asks every member for `op`: the answers by label, and who didn't answer (unreachable, or
-/// too old to know drills).
+/// Asks every member for `op`, and the nodes this one has no stream to through the primary:
+/// the answers by label, and who didn't answer (unreachable, or too old to know drills).
 pub(crate) async fn ask_all(
     cluster: &Arc<Cluster>,
     op: &Op,
@@ -1153,17 +1283,32 @@ pub(crate) async fn ask_all(
             (label, c.call(&m.node_id, KIND, body, READ_DEADLINE).await)
         });
     }
-    let mut ok = Vec::new();
-    let mut missing = Vec::new();
-    while let Some(r) = calls.join_next().await {
-        match r {
-            Ok((label, Ok(b))) => ok.push((label, b)),
-            Ok((label, Err(_))) => missing.push(label),
-            Err(_) => {}
+    let direct = async {
+        let mut ok = Vec::new();
+        let mut missing = Vec::new();
+        while let Some(r) = calls.join_next().await {
+            match r {
+                Ok((label, Ok(b))) => ok.push((label, b)),
+                Ok((label, Err(_))) => missing.push(label),
+                Err(_) => {}
+            }
+        }
+        (ok, missing)
+    };
+    let ((mut ok, mut missing), relayed) =
+        tokio::join!(direct, via_primary(cluster, op, READ_DEADLINE));
+    let relayed = relayed.unwrap_or_default();
+    for (label, v) in relayed.answers {
+        if let Ok(b) = serde_json::to_vec(&v)
+            && !ok.iter().any(|(l, _)| *l == label)
+        {
+            ok.push((label, b));
         }
     }
+    missing.extend(relayed.missing);
     ok.sort_by(|a, b| a.0.cmp(&b.0));
     missing.sort();
+    missing.dedup();
     (ok, missing)
 }
 
@@ -1340,17 +1485,22 @@ pub(crate) fn affinity_page(
 
 // ---- Windows and parts (every node) ----
 
-/// Starts recording a drill's window here (from the drilled node's notice or its heartbeat).
-fn record_window(src: &Sources, id: &str, since_ms: u64, until_ms: u64) {
+/// Starts recording a drill's window here (from the drilled node's notice, relayed or not, or
+/// its heartbeat). `watched`: the drilled node is a peer here (see [`Drills::recording`]).
+fn record_window(src: &Sources, id: &str, since_ms: u64, until_ms: u64, watched: bool) {
     if !valid_id(id) {
         return;
     }
+    // No drill anywhere until the gap after this one (a relayed drill has no heartbeat here).
+    src.drills
+        .last_any_ms
+        .fetch_max(until_ms, Ordering::Relaxed);
     let mut rec = src
         .drills
         .recording
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if rec.as_ref().is_some_and(|(r, _, _)| r == id) {
+    if rec.as_ref().is_some_and(|(r, _, _, _)| r == id) {
         return;
     }
     if rec.is_some() {
@@ -1367,8 +1517,8 @@ fn record_window(src: &Sources, id: &str, since_ms: u64, until_ms: u64) {
         .telemetry
         .aggregates()
         .start_window(id, since_ms);
-    *rec = Some((id.to_owned(), until_ms, None));
-    info!(%id, "recording a failover drill's window");
+    *rec = Some((id.to_owned(), until_ms, None, watched));
+    info!(%id, watched, "recording a failover drill's window");
 }
 
 /// Stops recording and saves this node's part.
@@ -1379,7 +1529,7 @@ fn freeze(src: &Sources) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take();
-    let Some((id, _, _)) = taken else { return };
+    let Some((id, _, _, _)) = taken else { return };
     let w = src.pipeline.telemetry.aggregates().take_window();
     if let Some(w) = w.filter(|w| w.id == id) {
         let path = dir(src).join(format!("{id}.part.json"));
@@ -1400,7 +1550,7 @@ fn part(src: &Sources, id: &str) -> PartAnswer {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
-        .is_some_and(|(r, _, _)| r == id)
+        .is_some_and(|(r, _, _, _)| r == id)
     {
         return PartAnswer::Recording;
     }
@@ -1423,14 +1573,15 @@ async fn tick(src: &Arc<Sources>) {
         for m in c.members() {
             if let Some(d) = &m.drill {
                 if d.until_ms > now {
-                    record_window(src, &d.id, d.since_ms, d.until_ms);
+                    record_window(src, &d.id, d.since_ms, d.until_ms, true);
                 }
                 src.drills
                     .last_any_ms
                     .fetch_max(d.until_ms.min(now), Ordering::Relaxed);
             }
         }
-        // A recorded drill that vanished from heartbeats ended early.
+        // A recorded drill that vanished from heartbeats ended early (only a peer's: a window
+        // the primary relayed has no heartbeat here, so it runs to its end).
         let marks: HashSet<String> = c
             .members()
             .into_iter()
@@ -1442,13 +1593,13 @@ async fn tick(src: &Arc<Sources>) {
             .recording
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some((id, until, ended)) = rec.as_mut()
+        if let Some((id, until, ended, watched)) = rec.as_mut()
             && ended.is_none()
-            && (!marks.contains(id.as_str()) || *until <= now)
+            && ((*watched && !marks.contains(id.as_str())) || *until <= now)
         {
             *ended = Some(now.min(*until));
         }
-    } else if let Some((_, until, ended)) = src
+    } else if let Some((_, until, ended, _)) = src
         .drills
         .recording
         .lock()
@@ -1465,7 +1616,7 @@ async fn tick(src: &Arc<Sources>) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
-        .and_then(|(_, _, e)| *e)
+        .and_then(|(_, _, e, _)| *e)
         .is_some_and(|e| now >= e + GRACE_MS);
     if due {
         freeze(src);

@@ -276,6 +276,102 @@ async fn clu_014_preconditions() {
     assert_eq!((e.code, e.status), (Code::DrillTargets, 422));
 }
 
+// REQ: CLU-014 — the relay through the primary (the first live drill on a resolver pod,
+// 2026-10-19, reached only the primary): a pod knows only the primary and the Pi knows no pod,
+// so notices and reads go on through it. Only reads and window notices are relayed, never a
+// start or end or another relay; never back to the caller or to peers it reached itself; the
+// request decodes on the primary as sent, and an older peer's notice (no `node`) still does.
+#[test]
+fn clu_014_relay_wire() {
+    let window = Op::Window {
+        id: "d1-abcdef01".into(),
+        since_ms: 1,
+        until_ms: 2,
+        node: None,
+    };
+    assert!(relayable(&window) && relayable(&Op::List) && relayable(&Op::Seen { days: 7 }));
+    let write = Op::Write {
+        write: DrillWrite::End { by: "alice".into() },
+        sent_ms: 1,
+    };
+    assert!(!relayable(&write), "a start or end is never relayed");
+    let body = relay_body(&window, &["pi".to_owned(), "pod-a".to_owned()]).unwrap();
+    let Op::Relay { call, skip } = serde_json::from_slice::<Op>(&body).unwrap() else {
+        panic!("not a relay");
+    };
+    assert!(matches!(*call, Op::Window { ref node, .. } if node.is_none()));
+    assert!(
+        !relayable(&Op::Relay {
+            call,
+            skip: skip.clone()
+        }),
+        "no relay of a relay"
+    );
+    assert!(
+        relays_to("pod-b", "pod-a", &skip),
+        "a peer the caller can't reach"
+    );
+    assert!(
+        !relays_to("pod-a", "pod-a", &skip),
+        "never back to the caller"
+    );
+    assert!(
+        !relays_to("pi", "pod-a", &skip),
+        "the caller reached it itself"
+    );
+    let older: Op =
+        serde_json::from_str(r#"{"op":"window","id":"d1-abcdef01","since_ms":1,"until_ms":2}"#)
+            .unwrap();
+    assert!(matches!(older, Op::Window { node: None, .. }));
+    let r: Relayed = serde_json::from_slice(
+        &serde_json::to_vec(&Relayed {
+            answers: vec![("pod-b".into(), serde_json::json!({"state": "recording"}))],
+            missing: vec!["pod-c".into()],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (r.answers.len(), r.missing.as_slice()),
+        (1, &["pod-c".to_owned()][..])
+    );
+}
+
+// REQ: CLU-014 — a window the primary relayed (its node isn't a peer here, so no heartbeat
+// tells its end) holds the one-drill-at-a-time rule here until its end plus the gap.
+#[tokio::test]
+async fn clu_014_relayed_window_holds_the_gap() {
+    let src = Arc::new(crate::http::tests::sources_in(&tmp()));
+    let now = now_ms();
+    record_window(&src, "d1-abcdef01", now, now + 30_000, false);
+    assert!(matches!(part(&src, "d1-abcdef01"), PartAnswer::Recording));
+    let dry = start_here(
+        Arc::clone(&src),
+        Request {
+            for_secs: 30,
+            spec: DrillTargets::All(telltale_api::model::DrillAll::All),
+            reason: "test".into(),
+            handover: true,
+            by: "alice".into(),
+            dry_run: true,
+            mode: DrillMode::Drop,
+        },
+    )
+    .await
+    .unwrap();
+    let gap = dry
+        .checks
+        .iter()
+        .find(|c| c.name == "recent_drill")
+        .unwrap();
+    assert!(!gap.ok, "{gap:?}");
+    assert!(
+        gap.detail.contains("Another node is running a drill"),
+        "{}",
+        gap.detail
+    );
+}
+
 // REQ: CLU-014 (owner 2026-10-19) — the REFUSED mode: a target gets REFUSED (EDE 14, "failover
 // drill") at once, logged as `drilled`.
 #[test]
