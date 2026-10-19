@@ -63,10 +63,17 @@ metadata: { name: e2e, namespace: metallb-system }
 EOF
 
 # Pull the image on the host once and load it (faster, and works without registry auth). A
-# local build (IMAGE=telltale:dev) is used as is.
+# local build (IMAGE=telltale:dev) is used as is. Docker 29's containerd image store keeps the
+# whole multi-platform index while pulling one platform, and loading it whole then fails
+# ("content digest … not found"), so load a one-platform archive (`docker save --platform`
+# needs Docker 28; older ones save the one platform they have anyway).
 docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" >/dev/null
-if [[ "$tool" == kind ]]; then kind load docker-image "$image" --name "$name" >/dev/null
-else k3d image import "$image" -c "$name" >/dev/null; fi
+archive="$(mktemp -d)/image.tar"
+docker save --platform "linux/$(docker version -f '{{.Server.Arch}}')" -o "$archive" "$image" 2>/dev/null \
+  || docker save -o "$archive" "$image"
+if [[ "$tool" == kind ]]; then kind load image-archive "$archive" --name "$name" >/dev/null
+else k3d image import "$archive" -c "$name" >/dev/null; fi
+rm -rf "$(dirname "$archive")"
 
 helm --kube-context "$ctx" install telltale deploy/helm/telltale -n "$ns" --create-namespace \
   --set image.repository="${image%:*}" --set image.tag="${image##*:}" --set image.pullPolicy=IfNotPresent \
@@ -161,7 +168,8 @@ pf=$(mktemp)
 pfpid=$!
 trap 'kill $pfpid 2>/dev/null || true; cleanup' EXIT
 for _ in $(seq 40); do curl -s -o /dev/null --max-time 1 http://127.0.0.1:18059/api/v1/auth/status && break; sleep 0.5; done
-st=$(k -n "$ns" exec telltale-0 -- cat /var/lib/telltale/setup-token)
+# The image has no shell or cat: the binary prints its own setup token (as the chart's notes say).
+st=$(k -n "$ns" exec telltale-0 -- /usr/local/bin/telltale auth setup-token "${cfg[@]}")
 csrf=$(curl -sf -c "$pf" -H 'content-type: application/json' \
   -d "{\"setupToken\":\"$st\",\"username\":\"admin\",\"password\":\"e2e-password-123\"}" \
   http://127.0.0.1:18059/api/v1/auth/setup | python3 -c 'import json,sys; print(json.load(sys.stdin)["csrfToken"])') \
